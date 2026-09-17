@@ -580,6 +580,33 @@ mod tests {
         assert!(codex_payload["hooks"]["Stop"].is_array());
         assert!(CODEX_HOOKS.contains("thurbox-cli session signal"));
 
+        // codex's second block edge is the question tool, and it is the only
+        // thing `PreToolUse` is used for: an unmatched group there would signal
+        // on every tool call, and codex runs an event's hooks concurrently, so
+        // it would race this one rather than lose to it.
+        let pre_tool_use = codex_payload["hooks"]["PreToolUse"]
+            .as_array()
+            .expect("codex payload declares PreToolUse");
+        assert_eq!(
+            pre_tool_use.len(),
+            1,
+            "codex PreToolUse is one matched group"
+        );
+        // What excludes the non-blocking `request_user_input_async` is codex's
+        // rule rather than this string: a matcher is matched against the whole
+        // tool name, so the bare literal would exclude it just as well. The
+        // anchors are redundant under that rule and are there to say so out
+        // loud. Pinned exactly so that changing the matcher is a decision
+        // somebody made rather than a tidy-up somebody slipped in.
+        assert_eq!(
+            pre_tool_use[0]["matcher"].as_str(),
+            Some("^request_user_input$"),
+            "codex's question-tool matcher"
+        );
+        assert!(pre_tool_use[0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("--state blocked")));
+
         // vibe drops a managed hooks.toml into ~/.vibe/ (guarded by requires_dir).
         let vibe = def
             .external_files

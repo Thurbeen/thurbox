@@ -17,7 +17,10 @@
 //! For the JSON payloads the hook commands are *run*, in order, with the event
 //! body the agent would pipe in on stdin — claude's `case "$(cat)"` matcher
 //! included, since whether a body reads as a permission prompt is half the
-//! behaviour. The `thurbox-cli` they call is a stub that records the state
+//! behaviour. A payload's own `matcher` key is the one thing here that is
+//! modelled rather than executed: it selects which groups run, because it is
+//! the agent and not the shell that applies it ([`matcher_applies`]). The
+//! `thurbox-cli` they call is a stub that records the state
 //! word. The script payloads (opencode, pi, omp) are run too, under Node's
 //! own (type-stripped for the two TypeScript ones) ESM loader: each is
 //! imported for real and driven through its actual `pi.on`/`ThurboxStatus`
@@ -129,14 +132,60 @@ fn commands_for(value: &serde_json::Value) -> Vec<String> {
     }
 }
 
+/// Whether a group carrying `matcher` applies to the tool `tool_name`.
+///
+/// codex matches a `matcher` against the **whole** tool name, verified against
+/// codex-cli 0.154.0 by driving a turn with a `request_user` group registered
+/// alongside a `^request_user_input$` one: only the anchored full name fired.
+/// The anchors are therefore decoration codex neither needs nor rejects, and
+/// they are stripped rather than interpreted, because this is a literal
+/// comparison and not a regex engine.
+///
+/// Which is why anything left over that a *real* engine would read as syntax is
+/// a panic rather than a literal to compare. A matcher widened to
+/// `^request_user_input.*$` would otherwise pass
+/// [`an_async_question_is_not_a_block`] — this function would compare it to
+/// `request_user_input_async` and find them different — while codex matched it
+/// and reported `blocked` on a question it never waits on. Failing loudly here
+/// is the honest answer: the payloads ship literal tool names, and one that
+/// grows real syntax needs this helper replaced, not quietly believed.
+fn matcher_applies(group: &serde_json::Value, tool_name: &str) -> bool {
+    let Some(matcher) = group.get("matcher").and_then(|m| m.as_str()) else {
+        return true;
+    };
+    if matcher.is_empty() || matcher == ".*" {
+        return true;
+    }
+    let literal = matcher.trim_start_matches('^').trim_end_matches('$');
+    assert!(
+        !literal.contains(|c| "\\.+*?()[]{}|^$".contains(c)),
+        "matcher {matcher:?} is a regex, which this literal comparison would \
+         silently get wrong — give it a real engine or keep the payloads literal"
+    );
+    literal == tool_name
+}
+
 /// Run every hook the payload registers for `event`, feeding it `body` on
 /// stdin exactly as the agent does.
-fn fire(payload: &serde_json::Value, dir: &Path, event: &str, body: &str) {
+///
+/// `tool_name` is the tool the event is about, for the events that have one;
+/// a group whose `matcher` names a different tool is skipped, as the agent
+/// skips it. `None` fires every group — which is what the events that carry no
+/// tool want, and what keeps copilot's `notification` matcher (a notification
+/// *kind*, not a tool) out of a tool-name comparison it would always lose.
+fn fire(payload: &serde_json::Value, dir: &Path, event: &str, body: &str, tool_name: Option<&str>) {
     let path = path_with(dir);
     let Some(hooks) = payload["hooks"].get(event) else {
         return;
     };
-    for command in commands_for(hooks) {
+    let groups: Vec<&serde_json::Value> = match (hooks.as_array(), tool_name) {
+        (Some(groups), Some(tool)) => groups
+            .iter()
+            .filter(|group| matcher_applies(group, tool))
+            .collect(),
+        _ => vec![hooks],
+    };
+    for command in groups.into_iter().flat_map(commands_for) {
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(&command)
@@ -212,8 +261,10 @@ const TURNS: &[(&str, &str, [&str; 5])] = &[
         ["", "PreToolUse", "Notification", "PostToolUse", "Stop"],
     ),
     (
-        // codex has a real approval event, so the blocked hook needs no matcher
-        // and PostToolUse is the edge back out.
+        // codex has a real approval event, so this turn's block edge needs no
+        // matcher and PostToolUse is the edge back out. (Its *other* block edge,
+        // the question tool, is matcher-gated — see
+        // `asking_the_user_a_question_blocks_the_session`.)
         "codex",
         "codex-hooks.json",
         [
@@ -247,8 +298,8 @@ fn granting_a_permission_puts_the_session_back_to_working() {
         let payload = payload_json(file);
         let log = stub_cli(dir.path());
 
-        fire(&payload, dir.path(), prompt, &body(prompt, ""));
-        fire(&payload, dir.path(), pre, &body(pre, ""));
+        fire(&payload, dir.path(), prompt, &body(prompt, ""), None);
+        fire(&payload, dir.path(), pre, &body(pre, ""), Some("shell"));
         assert_eq!(current(&log), "working", "{agent}: a tool call is work");
 
         fire(
@@ -256,22 +307,106 @@ fn granting_a_permission_puts_the_session_back_to_working() {
             dir.path(),
             notify,
             &body(notify, "Claude needs your permission to use Bash"),
+            None,
         );
         assert_eq!(current(&log), "blocked", "{agent}: a prompt is a block");
 
         // The user approves and the tool runs to completion. Whatever the agent
         // does next — another tool, minutes of output, or just prose until the
         // turn ends — it is no longer waiting on anyone.
-        fire(&payload, dir.path(), post, &body(post, ""));
+        fire(&payload, dir.path(), post, &body(post, ""), Some("shell"));
         assert_eq!(
             current(&log),
             "working",
             "{agent}: granted permission left the session blocked"
         );
 
-        fire(&payload, dir.path(), stop, &body(stop, ""));
+        fire(&payload, dir.path(), stop, &body(stop, ""), None);
         assert_eq!(current(&log), "done", "{agent}: the turn ended");
     }
+}
+
+/// The *other* way a turn stops and waits for you: the agent asks a question
+/// rather than for permission. codex does that by calling a tool
+/// (`request_user_input`, the one plan mode leans on), so the only event that
+/// fires is `PreToolUse` — and a payload that reads every tool call as work
+/// left a session sitting on an unanswered question spinning "working", which
+/// is exactly the state the dot exists to distinguish. The answer arriving is
+/// the tool completing, the same edge back out an approval takes.
+///
+/// pi and omp's equivalent (`ask_user_question` / `ask`) is driven for real in
+/// `the_script_payloads_report_working_when_the_block_clears`.
+#[test]
+fn asking_the_user_a_question_blocks_the_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = payload_json("codex-hooks.json");
+    let log = stub_cli(dir.path());
+    let question = Some("request_user_input");
+
+    fire(
+        &payload,
+        dir.path(),
+        "UserPromptSubmit",
+        &body("UserPromptSubmit", ""),
+        None,
+    );
+    assert_eq!(current(&log), "working", "codex: the turn started");
+
+    fire(
+        &payload,
+        dir.path(),
+        "PreToolUse",
+        &body("PreToolUse", ""),
+        question,
+    );
+    assert_eq!(
+        current(&log),
+        "blocked",
+        "codex: an unanswered question is a block"
+    );
+
+    fire(
+        &payload,
+        dir.path(),
+        "PostToolUse",
+        &body("PostToolUse", ""),
+        question,
+    );
+    assert_eq!(current(&log), "working", "codex: the answer arrived");
+
+    fire(&payload, dir.path(), "Stop", &body("Stop", ""), None);
+    assert_eq!(current(&log), "done", "codex: the turn ended");
+}
+
+/// `request_user_input_async` poses a question the agent does **not** wait on —
+/// it keeps working while the question sits there — so the block edge is the
+/// exact tool name and nothing that merely starts with it. codex full-matches a
+/// matcher, so this is what the payload must *not* claim.
+#[test]
+fn an_async_question_is_not_a_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = payload_json("codex-hooks.json");
+    let log = stub_cli(dir.path());
+
+    fire(
+        &payload,
+        dir.path(),
+        "UserPromptSubmit",
+        &body("UserPromptSubmit", ""),
+        None,
+    );
+    fire(
+        &payload,
+        dir.path(),
+        "PreToolUse",
+        &body("PreToolUse", ""),
+        Some("request_user_input_async"),
+    );
+    assert_eq!(
+        current(&log),
+        "working",
+        "codex: an async question stopped nothing"
+    );
 }
 
 /// The other reason claude fires a notification: nobody has typed for 60s.
@@ -284,12 +419,19 @@ fn the_idle_nudge_is_not_a_block() {
         let payload = payload_json(file);
         let log = stub_cli(dir.path());
 
-        fire(&payload, dir.path(), "PreToolUse", &body("PreToolUse", ""));
+        fire(
+            &payload,
+            dir.path(),
+            "PreToolUse",
+            &body("PreToolUse", ""),
+            Some("shell"),
+        );
         fire(
             &payload,
             dir.path(),
             "Notification",
             &body("Notification", "Claude is waiting for your input"),
+            None,
         );
         assert_eq!(current(&log), "working", "{file}: the nudge blocked");
     }

@@ -143,8 +143,10 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         states: &["working", "blocked", "done", "idle"],
         delivery: HookDelivery::ConfigMerge,
         hook_file: Some("~/.codex/hooks.json"),
-        // codex has a real `PermissionRequest` event, so the block edge is
-        // structured; `PostToolUse` clears it when the approved tool runs.
+        // Both of codex's block edges are structured: a real
+        // `PermissionRequest` event, and a `PreToolUse` matched on the
+        // `request_user_input` tool (the questions plan mode asks, which fire
+        // no approval event). `PostToolUse` clears either one.
         blocked_is_heuristic: false,
     },
     AgentHookCoverage {
