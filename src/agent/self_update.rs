@@ -168,11 +168,15 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
     checksums
         .lines()
         .find(|line| line.contains(artifact))
-        .map(digest_token)
+        .and_then(|line| line.split_whitespace().next())
         .map(str::to_string)
 }
 
-/// The digest out of one `sha256sum` / `shasum` line.
+/// The digest out of one line of `sha256sum` / `shasum` **output**.
+///
+/// Not for a published checksums file, which [`parse_checksum`] reads: the
+/// escaping below is the local tool's, and a release artifact's name never
+/// carries a backslash to trigger it.
 ///
 /// Normally the first whitespace token, but **GNU coreutils escapes the whole
 /// line** when the file name holds a backslash or a newline: it prefixes the
@@ -528,10 +532,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         // The ordinary line is untouched, and so is an empty answer.
         assert_eq!(digest_token("c5bd00112233  thurbox-cli"), "c5bd00112233");
         assert_eq!(digest_token(""), "");
-        assert_eq!(
-            parse_checksum(&format!("{escaped}\n"), "thurbox-cli.exe").as_deref(),
-            Some("c5bd00112233")
-        );
     }
 
     #[test]
