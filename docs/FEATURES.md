@@ -198,7 +198,10 @@ arguments (see *Inter-session messages* for the same identity contract).
 **`thurbox-cli session doctor [uuid]`** is the diagnostic, in the spirit
 of `notify --test`: is the hooks extension active, does this agent have
 coverage, is its payload really on disk where the agent reads it, could
-a hook command resolve `thurbox-cli` on `PATH` at all, what was last
+a hook command resolve `thurbox-cli` on the **pane's own** `PATH` at all
+(the pane's, because that is the one a hook runs against — answering
+with the `PATH` `doctor` itself was run on is how it once reported
+healthy wiring for panes that could find no binary), what was last
 reported and when, and does the pane agree. Every shipped hook command
 ends in `|| true`, so a signal that never lands is otherwise
 indistinguishable from an agent that has not signalled — this is how to

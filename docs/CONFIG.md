@@ -955,6 +955,20 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
 | `THURBOX_SOCKET_FOR` | the data dir that injected `THURBOX_SOCKET` belongs to. Read only to tell an inherited socket from one you exported: a child that points `THURBOX_DATA_DIR` somewhere else no longer matches, and derives its own socket instead of creating windows on the spawning instance's server |
 
+A pane's **`PATH`** is the `PATH` of the thurbox that spawned it, which tmux
+copies in by itself. thurbox adds one thing to it: the directory holding its own
+`thurbox-cli`, in front, prepended and never replacing what was there. Without
+it a session spawned by a `thurbox-cli` running over ssh — which on a
+shared-sessions host is every session, since the local TUI delegates
+`session create` to the host's CLI — inherits sshd's `PATH` for a
+non-interactive command (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has
+no `~/.local/bin` on it. The bare `thurbox-cli` the status hooks call then
+resolves to nothing and the `|| true` after it hides that. It arrives as an
+`env PATH=…` prefix on the window command rather than as one more injected
+variable, because `PATH` is the one tmux will not take that way: both
+`new-window -e PATH=…` and `set-environment -g PATH …` are ignored (verified
+against tmux 3.5a).
+
 `THURBOX_SESSION` is a **stable integration contract**, not an internal
 detail of the hooks extension. It is set on the pane, so every process
 started inside it inherits it — including an agent a driver of your own
@@ -1047,3 +1061,16 @@ The SQLite schema migrates automatically (`schema_version` in
 `metadata`). The TOML files carry a `config_version = 1` marker so a
 future format change can migrate them too; current files are version 1
 and the field is optional.
+
+`schema_version` records what *ran*, which is not the same as what is *there*,
+and the two came apart: migrations were originally written as
+`let _ = conn.execute("ALTER …")`, which swallowed a real failure while the
+version advanced anyway. One database in the field reported the current version
+with none of v41's four columns on `sessions`, so every status signal failed
+with `no such column: stopped_at` and no session on that machine ever reported
+a state. The version gate could not repair it — the version was the thing that
+was wrong — so the **additive** steps — those that add a column or a table of
+their own if absent — are now re-asserted on **every open**, not only on an
+upgrade. A healthy database changes nothing and pays a handful of catalogue
+reads. Steps that rewrite or seed data stay gated on the version, because
+applying one twice does not mean what applying it once meant.
