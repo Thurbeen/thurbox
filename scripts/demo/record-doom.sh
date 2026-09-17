@@ -130,6 +130,15 @@ python3 -c 'import tomllib' 2>/dev/null || {
 export TMUX_TMPDIR="$SBX/tmux"
 export THURBOX_CONFIG_DIR="$SBX/config"
 export THURBOX_DATA_DIR="$SBX/data"
+# The server thurbox itself runs on, named outright rather than assumed: the
+# relocated data dir above makes thurbox derive a socket of its own
+# (`thurbox-<digest>`), so `cleanup` was killing a name nothing created and
+# leaving the recording's server — with its agent panes — behind on every run.
+# THURBOX_SOCKET_FOR goes with it: a run started from inside a thurbox pane
+# inherits a tag naming the operator's instance, and that makes thurbox read
+# the name below as inherited and derive one anyway.
+export THURBOX_SOCKET="thurbox-doom"
+unset THURBOX_SOCKET_FOR
 
 rm -rf "$SBX"
 mkdir -p "$SBX"/{tmux,config,data}
@@ -162,11 +171,11 @@ TRIMMED="$SBX/trimmed.cast"
 GIF="$SBX/doom.gif"
 
 # Both kills are scoped by the exported TMUX_TMPDIR above, which is why killing
-# the `thurbox` socket by name here cannot reach your real thurbox server. It is
-# also what reaps Doom, whose program pane is a window on that socket.
+# these sockets by name here cannot reach your real thurbox server. The second
+# is also what reaps Doom, whose program pane is a window on that socket.
 cleanup() {
     tmux -L thurbox-doom-rec kill-server 2>/dev/null
-    tmux -L thurbox kill-server 2>/dev/null
+    tmux -L "$THURBOX_SOCKET" kill-server 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -282,7 +291,7 @@ echo "==> recording thurbox (${COLS}x${ROWS})"
 # asciinema owns the pty, so `tmux send-keys` below reaches thurbox through it.
 tmux -L thurbox-doom-rec new-session -d -x "$COLS" -y "$ROWS" -c "$REPO" -s r \
     "TMUX_TMPDIR=$TMUX_TMPDIR THURBOX_CONFIG_DIR=$THURBOX_CONFIG_DIR \
-     THURBOX_DATA_DIR=$THURBOX_DATA_DIR PATH=$PATH \
+     THURBOX_DATA_DIR=$THURBOX_DATA_DIR THURBOX_SOCKET=$THURBOX_SOCKET PATH=$PATH \
      asciinema rec --overwrite --quiet --cols $COLS --rows $ROWS -c thurbox '$CAST'"
 
 send() { tmux -L thurbox-doom-rec send-keys -t r "$@"; }
