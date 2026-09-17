@@ -317,8 +317,12 @@ fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
     /// `set_var(\n  SOCKET_OVERRIDE_ENV,\n  …)` puts the verb and the name on
     /// different lines; an import naming the same constant is not a use of it.
     /// A bare literal needs the verb beside it, or every mention would count.
-    fn touches(line: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
+    fn touches(line: &str, prev: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
         let line = line.trim_start();
+        // The multi-line form puts the verb on the line before the name:
+        //     std::env::set_var(
+        //         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
+        let continued = prev.trim_end().ends_with('(') && verbs.iter().any(|v| prev.contains(v));
         if line.starts_with("use ") {
             return false;
         }
@@ -329,7 +333,10 @@ fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
             line.match_indices(k)
                 .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
         }) {
-            return true;
+            // …and it has to be a *set* or a *clear*. `var(SOCKET_OVERRIDE_ENV)`
+            // reads the socket rather than moving it, and counting that as a pin
+            // would fail a harness for asking a question.
+            return verbs.iter().any(|v| line.contains(v)) || continued;
         }
         line.contains(literal) && verbs.iter().any(|v| line.contains(v))
     }
@@ -350,7 +357,10 @@ fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
             lines
                 .iter()
                 .enumerate()
-                .filter(|(_, l)| touches(l, konst, literal, verbs))
+                .filter(|(i, l)| {
+                    let prev = if *i == 0 { "" } else { lines[i - 1] };
+                    touches(l, prev, konst, literal, verbs)
+                })
                 .map(|(i, _)| i)
                 .collect()
         };
@@ -361,14 +371,34 @@ fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
         // No crate constant for this one: tmux's own variable, set by name.
         let scoped = mark(None, "\"TMUX_TMPDIR\"", &set);
 
+        // One clear and one socket directory *each*. Nearest-first and claimed as
+        // they are taken, so two pins ten lines apart cannot both point at the
+        // same `remove_var` — under a plain proximity test the unscoped one
+        // would borrow its neighbour's and pass.
+        let mut spare_clears = cleared.clone();
+        let mut spare_scopes = scoped.clone();
         for at in pinned {
             pins += 1;
-            let near = |xs: &[usize]| xs.iter().any(|x| x.abs_diff(at) <= WINDOW);
+            let claim = |xs: &mut Vec<usize>| -> bool {
+                match xs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| x.abs_diff(at) <= WINDOW)
+                    .min_by_key(|(_, x)| x.abs_diff(at))
+                    .map(|(i, _)| i)
+                {
+                    Some(i) => {
+                        xs.remove(i);
+                        true
+                    }
+                    None => false,
+                }
+            };
             let mut missing = Vec::new();
-            if !near(&cleared) {
+            if !claim(&mut spare_clears) {
                 missing.push("clear THURBOX_SOCKET_FOR");
             }
-            if !near(&scoped) {
+            if !claim(&mut spare_scopes) {
                 missing.push("set TMUX_TMPDIR to a directory of its own");
             }
             if !missing.is_empty() {
