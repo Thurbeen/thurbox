@@ -1167,7 +1167,11 @@ impl Drop for ThrowawayServer {
         // `tmux-<uid>/<name>`); this test cannot point `TMUX_TMPDIR`
         // somewhere private instead, because the lib's unit tests share one
         // process and the variable is process-wide.
+        // Empty is not a directory, and tmux itself only honours the variable
+        // when it is non-empty — matching that is what keeps this pointing at
+        // the file tmux actually made.
         let tmpdir = std::env::var_os("TMUX_TMPDIR")
+            .filter(|dir| !dir.is_empty())
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
         // SAFETY: `getuid` is always successful and takes no arguments.

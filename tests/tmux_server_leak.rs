@@ -15,15 +15,14 @@
 //! per test run, forever. That is how a developer's machine came to hold a
 //! hundred of them.
 //!
-//! Three tests: the resolution that makes the mistake possible, the recipe that
-//! avoids it end to end, and a gate holding every other harness in this
-//! directory to that recipe — because the leak is silent, and a run that leaks
-//! still passes every assertion it makes.
+//! `tests/cli_socket_isolation.rs` owns that resolution and pins it. What is
+//! here is its consequence for a test harness: the recipe that avoids the leak,
+//! driven end to end, and a gate holding every other harness in this directory
+//! to the same recipe — because the leak is silent, and a run that leaks still
+//! passes every assertion it makes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-use serde_json::Value;
 
 /// The `GIT_*` location variables git exports to hook processes, scrubbed so a
 /// suite running under this repository's own pre-commit hook does not point the
@@ -88,11 +87,11 @@ impl Profile {
         for sub in ["home", "config", "data"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        // Per *profile*, not per process: `cargo test` runs this file's tests in
-        // one process on several threads, and a shared name would have one
-        // test's `Drop` remove the socket directory another is still using.
-        // (nextest, the runner this repo uses, gives each test a process of its
-        // own and would have hidden that.)
+        // Per *profile*, not per process, so a second test added to this file
+        // cannot take this one's socket directory out from under it when its
+        // `Drop` runs. nextest gives each test a process of its own, so only a
+        // plain `cargo test` would ever notice — which is the run that would
+        // notice it as a mystery.
         static NTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let nth = NTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let socket = format!("thurbox-leak-{}-{nth}", std::process::id());
@@ -125,12 +124,9 @@ impl Profile {
         self.root.path().join(sub)
     }
 
-    /// Run `thurbox-cli` in this profile.
-    ///
-    /// `inherit_owner` decides whether the run carries the `THURBOX_SOCKET_FOR`
-    /// tag a suite started inside a thurbox pane inherits — the one variable
-    /// between a harness that scopes itself and one that only thinks it does.
-    fn cli(&self, args: &[&str], inherit_owner: bool) -> std::process::Output {
+    /// Run `thurbox-cli` in this profile, scoped the way a harness must scope
+    /// itself: pinned socket, cleared owner tag, private socket directory.
+    fn cli(&self, args: &[&str]) -> std::process::Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         cmd.args(args);
         cmd.current_dir(self.root.path());
@@ -140,14 +136,10 @@ impl Profile {
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
         cmd.env("TMUX_TMPDIR", &self.sockets);
         cmd.env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket);
-        if inherit_owner {
-            cmd.env(
-                thurbox::agent::tmux::SOCKET_OWNER_ENV,
-                "/somebody/elses/data/dir",
-            );
-        } else {
-            cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
-        }
+        // The tag a suite run inside a thurbox pane inherits. Left in place it
+        // would rule the pin above inherited — `cli_socket_isolation` owns that
+        // resolution and pins it; here it simply has to be gone.
+        cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
         cmd.env_remove("TMUX");
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
@@ -155,21 +147,6 @@ impl Profile {
             cmd.env_remove(var);
         }
         cmd.output().expect("run thurbox-cli")
-    }
-
-    /// The socket this run actually resolved, as `version --json` reports it.
-    fn resolved_socket(&self, inherit_owner: bool) -> String {
-        let out = self.cli(&["version", "--json"], inherit_owner);
-        assert!(
-            out.status.success(),
-            "thurbox-cli version failed:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let doc: Value = serde_json::from_slice(&out.stdout).expect("version --json is JSON");
-        doc["tmux_socket"]
-            .as_str()
-            .expect("version --json reports tmux_socket")
-            .to_string()
     }
 
     /// Every socket file under this profile's private `TMUX_TMPDIR`. tmux nests
@@ -219,8 +196,11 @@ impl Profile {
 
 impl Drop for Profile {
     fn drop(&mut self) {
-        // Every socket that turned up, not just the pinned one: a scenario here
-        // deliberately runs unscoped, and its server is this test's to reap.
+        // Every socket that turned up, not just the pinned one. The failure
+        // this file exists to catch is a run landing on a name it did not
+        // choose, and a test that fails that way has started a server too —
+        // reaping only the pinned name would leak exactly the thing under
+        // test, on the one run where it went wrong.
         for socket in self.sockets() {
             let _ = Command::new("tmux")
                 .env("TMUX_TMPDIR", &self.sockets)
@@ -229,30 +209,6 @@ impl Drop for Profile {
         }
         let _ = std::fs::remove_dir_all(&self.sockets);
     }
-}
-
-/// An inherited `THURBOX_SOCKET_FOR` moves a relocated instance off the socket
-/// it was told to use — which is why clearing it is a harness's job and not a
-/// nicety.
-///
-/// The product behaviour is deliberate (`socket_for`): a name injected for
-/// another instance must not win. Pinned here so the cost of leaving the tag in
-/// place stays visible, because it is invisible everywhere else — the run
-/// succeeds, the assertions pass, and only the leftover server says otherwise.
-#[test]
-fn an_inherited_owner_tag_moves_a_relocated_instance_off_its_pinned_socket() {
-    let profile = Profile::new();
-
-    assert_eq!(
-        profile.resolved_socket(false),
-        profile.socket,
-        "a cleared tag leaves the pinned socket in force"
-    );
-    assert_ne!(
-        profile.resolved_socket(true),
-        profile.socket,
-        "an inherited tag is what makes the pin silently stop applying"
-    );
 }
 
 /// The recipe end to end: a run that pins a socket, clears the tag and keeps
@@ -271,19 +227,16 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
     let profile = Profile::new();
     let repo = repo(profile.root.path());
 
-    let created = profile.cli(
-        &[
-            "session",
-            "create",
-            "--name",
-            "probe",
-            "--repo-path",
-            repo.to_str().expect("utf-8 path"),
-            "--agent",
-            "shell",
-        ],
-        false,
-    );
+    let created = profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+    ]);
     assert!(
         created.status.success(),
         "session create failed:\n{}",
@@ -315,6 +268,21 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
     );
 }
 
+/// `src` with its line comments removed, so a rule below is answered by code
+/// rather than by a comment that talks about it. Line comments are all this
+/// needs: `tests/` carries no block comments, and one appearing later costs a
+/// false *failure* — a harness reported as unscoped when it is not — which is
+/// the direction that gets noticed and fixed rather than trusted.
+fn code_of(src: &str) -> String {
+    src.lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Every harness that pins a tmux socket clears the inherited owner tag and
 /// gives itself a private socket directory.
 ///
@@ -323,6 +291,13 @@ fn a_scoped_run_leaves_no_tmux_server_behind() {
 /// leak still passes every assertion it makes. The two things checked are the
 /// two halves of "a server this harness starts is one this harness can find
 /// again" — the name it goes by, and the directory it lives in.
+///
+/// Comments are stripped before anything is matched, the way
+/// `tests/architecture_rules.rs` strips them before extracting references. A
+/// rule read off raw text is satisfied by *prose*: a harness that pins a socket
+/// and says "the owner tag is cleared by the helper above" in a comment — true
+/// when written, false once the helper moves — would pass this gate while
+/// leaking a server on every run, which is the one thing it exists to catch.
 #[test]
 fn every_harness_that_pins_a_socket_scopes_it_completely() {
     // A *pin* is a set, so lines that remove the variable are dropped first: a
@@ -331,7 +306,15 @@ fn every_harness_that_pins_a_socket_scopes_it_completely() {
     // some harnesses reach for the constant, others set the literal name on a
     // child `Command`.
     const PINS: [&str; 2] = ["SOCKET_OVERRIDE_ENV", "\"THURBOX_SOCKET\""];
-    const CLEARS: [&str; 2] = ["SOCKET_OWNER_ENV", "THURBOX_SOCKET_FOR"];
+    // Spelled as calls, not as bare names: what counts is clearing the variable,
+    // and `remove_var(SOCKET_OWNER_ENV)` or `env_remove("THURBOX_SOCKET_FOR")`
+    // is the only shape that does it.
+    const CLEARS: [&str; 4] = [
+        "remove_var(SOCKET_OWNER_ENV",
+        "remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV",
+        "env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV",
+        "env_remove(\"THURBOX_SOCKET_FOR\"",
+    ];
 
     // The one file that is *about* the resolution, sets the pair on purpose,
     // and never starts a multiplexer.
@@ -345,7 +328,7 @@ fn every_harness_that_pins_a_socket_scopes_it_completely() {
         if !name.ends_with(".rs") || EXEMPT.contains(&name.as_str()) {
             continue;
         }
-        let src = std::fs::read_to_string(entry.path()).expect("read test source");
+        let src = code_of(&std::fs::read_to_string(entry.path()).expect("read test source"));
         let pinned: String = src
             .lines()
             .filter(|line| !line.contains("remove"))
