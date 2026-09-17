@@ -12,7 +12,7 @@
 //! our own beliefs about that rather than the behaviour. Those tests skip where
 //! tmux is not installed; the rest need no pane at all.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
@@ -188,7 +188,7 @@ impl Drop for PathGuard {
 /// every window lookup fail, and the pane check then reports "could not read"
 /// for a reason that has nothing to do with what it is testing.
 #[cfg(unix)]
-fn doctor_bin_with_tmux(dir: &Path) -> PathBuf {
+fn doctor_bin_with_tmux(dir: &Path) -> std::path::PathBuf {
     let bin = dir.join("doctor-bin");
     std::fs::create_dir_all(&bin).expect("mkdir");
     let tmux_path = Command::new("sh")
@@ -928,4 +928,58 @@ fn a_pane_that_can_find_the_cli_is_healthy_though_the_doctor_cannot() {
             .is_some_and(|d| d.contains(&cli_file.to_string_lossy().into_owned())),
         "the answer must name what the pane resolves: {cli}"
     );
+}
+
+/// A pane thurbox did not hand a `PATH` is **unverifiable**, not healthy.
+///
+/// The shape is a session spawned before thurbox put its CLI on a pane's
+/// `PATH` — every live session on a host the moment this ships. There is no
+/// prefix to read, and falling back to the `PATH` `doctor` itself runs on
+/// reports exactly the green `cli` check that hid the original bug. `Warn`
+/// says the honest thing and still exits 0, so a session that is in fact fine
+/// does not fail the machine.
+#[cfg(unix)]
+#[test]
+fn a_pane_thurbox_did_not_hand_a_path_is_unverifiable_not_healthy() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("TMUX_TMPDIR", home.path());
+    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _config = isolated_config(dir.path());
+
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    // No `env PATH=…` prefix: the window command an older build wrote.
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-legacy-pane",
+        "while :; do sleep 1; done",
+    ]);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("legacy-pane", "claude", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    let path = PathGuard::only(&doctor_bin_with_tmux(dir.path()), true);
+    let out = doctor(&db, row.id);
+    drop(path);
+    tmux(&["kill-server"]);
+
+    let cli = check(&out, "cli");
+    assert_eq!(
+        cli["level"],
+        Value::String("warn".into()),
+        "a PATH thurbox did not write cannot be reported as a working one: {cli}"
+    );
+    // Warn and not Fail is the substance: it may well be working, and a session
+    // nobody has restarted yet must not read as broken wiring. (The report's
+    // own verdict is `fail` here for an unrelated reason — this scratch config
+    // has no hooks payload installed — so the level is what carries it.)
+    assert_ne!(cli["level"], Value::String("fail".into()), "{cli}");
 }

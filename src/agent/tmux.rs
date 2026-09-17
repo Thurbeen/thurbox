@@ -1883,15 +1883,20 @@ impl SessionBackend for TmuxBackend {
             // A remote pane's `PATH` is the host's, restored by the login
             // wrap; a local one is inherited from this process, which need not
             // have the CLI its hooks call on it (see `path_prefix_args`).
-            let shell_cmd = if self.transport.is_remote() {
-                shell_cmd
-            } else {
-                path_prefix_args()
-                    .iter()
-                    .map(|a| control_mode::shell_escape(a))
-                    .chain(std::iter::once(shell_cmd))
-                    .collect::<Vec<_>>()
-                    .join(" ")
+            let shell_cmd = match self.transport.is_remote() {
+                true => shell_cmd,
+                // A shell reads this whole string, so the prefix has to be
+                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
+                // mangled one (see `path_prefix_args`).
+                false => shell_prefix_tokens()
+                    .map(|tokens| {
+                        tokens
+                            .into_iter()
+                            .chain(std::iter::once(shell_cmd.clone()))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or(shell_cmd),
             };
             self.login_wrap_for_remote(&shell_cmd)
         };
@@ -2924,35 +2929,60 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
 /// terminal, which is the way it is usually asked. tmux's own record has no
 /// such rule, and no platform gate either.
 ///
-/// `None` when there is no such prefix to read — a pane spawned before thurbox
-/// put one there, a psmux window, or a `PATH` whose quoting tmux had to alter.
-/// The caller says which `PATH` it ended up answering about rather than
-/// guessing. Remote sessions are the caller's to exclude: this reads **this**
-/// machine's server.
-pub fn agent_pane_path(session_id: &str, session_name: &str) -> Option<String> {
-    let target = agent_target(session_id, session_name)?;
+/// Three answers, not two. "This machine's server holds no agent window for the
+/// session" and "the window is there and its `PATH` is not one thurbox wrote"
+/// are different facts, and rounding the second to the first is what let a
+/// broken pane report healthy: a parked session has nothing to verify, while a
+/// live pane that cannot be verified is a live pane that may not work.
+/// Remote sessions are the caller's to exclude: this reads **this** machine's
+/// server.
+pub fn agent_pane_path(session_id: &str, session_name: &str) -> PanePath {
+    let Some(target) = agent_target(session_id, session_name) else {
+        return PanePath::Absent;
+    };
     let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
     let mut argv = Vec::with_capacity(6);
     if DEFAULT_MUX != "psmux" {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
-    let raw = local_mux_command(&argv)
+    let Some(raw) = local_mux_command(&argv)
         .output()
         .ok()
         .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())?;
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    else {
+        return PanePath::Absent;
+    };
     let line = normalized_pane_answer(&raw);
     let mut fields = line.split(PANE_STATE_SEP);
-    let start_command = fields.next()?;
+    let (Some(start_command), Some(window)) = (fields.next(), fields.next()) else {
+        return PanePath::Absent;
+    };
     // `display-message` against a target it cannot resolve does **not** fail:
     // it answers for the client's current pane and exits 0. That is the trap
     // `pane_state` guards against too, and here it would hand back a stranger's
     // `PATH` as this session's.
-    if fields.next()? != agent_window_name(session_name) {
-        return None;
+    if window != agent_window_name(session_name) {
+        return PanePath::Absent;
     }
-    path_from_prefix(start_command)
+    match path_from_prefix(start_command) {
+        Some(path) => PanePath::Known(path),
+        None => PanePath::Unknown,
+    }
+}
+
+/// What [`agent_pane_path`] found.
+pub enum PanePath {
+    /// The `PATH` thurbox handed the pane, read off its start command.
+    Known(String),
+    /// The window is there, but its `PATH` is not one thurbox wrote: a pane
+    /// spawned before the prefix existed, a psmux window (which never gets
+    /// one), or a `PATH` whose quoting tmux had to alter.
+    Unknown,
+    /// This machine's server holds no agent window for the session — parked,
+    /// gone, or never here. Nothing to read a `PATH` from.
+    Absent,
 }
 
 /// The `PATH` out of an `env PATH=… <program> …` window command, or `None` when
@@ -3374,28 +3404,31 @@ fn push_window_program(
     // died instantly with status 127 and a `sleep 300: No such file` from
     // `env`. So with no args the prefix joins the same single token and the
     // shell still does the splitting it always did.
-    let prefix = path_prefix_args();
-    match (prefix.as_slice(), args.is_empty()) {
-        ([], _) => {
-            tmux.arg(program);
-        }
-        (prefix, true) => {
-            let mut token = prefix
-                .iter()
-                .map(|a| control_mode::shell_escape(a))
-                .collect::<Vec<_>>();
-            // The program itself is **not** escaped: it is what the shell was
-            // already splitting, and escaping it now would break the very
-            // commands this branch exists to keep working.
-            token.push(program);
-            tmux.arg(token.join(" "));
-        }
-        (prefix, false) => {
-            for arg in prefix {
-                tmux.arg(arg);
+    if args.is_empty() {
+        // One token means a shell reads it, and a shell reads text — so this is
+        // the one place the prefix has to be spellable as text. An unspellable
+        // one (a `PATH` that is not UTF-8) and an absent one lead to the same
+        // command: the program alone, exactly as before.
+        //
+        // The program itself is **not** escaped: it is what the shell was
+        // already splitting, and escaping it now would break the very commands
+        // this branch exists to keep working.
+        match shell_prefix_tokens() {
+            Some(mut token) => {
+                token.push(program);
+                tmux.arg(token.join(" "));
             }
-            tmux.arg(program);
+            None => {
+                tmux.arg(program);
+            }
         }
+    } else {
+        // Several tokens already go to `execvp`, so the prefix rides as argv
+        // and the `PATH` keeps its bytes.
+        for arg in path_prefix_args() {
+            tmux.arg(arg);
+        }
+        tmux.arg(program);
     }
     for a in args {
         tmux.arg(a);
@@ -3432,14 +3465,35 @@ fn push_window_program(
 /// Empty (no prefix at all) when there is no CLI directory to add or no `env`
 /// to add it with: an improvement where it succeeds, never a new way to fail.
 #[cfg(not(windows))]
-fn path_prefix_args() -> Vec<String> {
+fn path_prefix_args() -> Vec<std::ffi::OsString> {
     let (Some(path), Some(env_bin)) = (path_with_cli_directory(), posix_env_binary()) else {
         return Vec::new();
     };
-    vec![
-        env_bin.to_string_lossy().into_owned(),
-        format!("PATH={}", path.to_string_lossy()),
-    ]
+    // Carried as `OsString` the whole way, never through `to_string_lossy`: a
+    // Unix `PATH` is bytes, not UTF-8, and replacing an offending one would
+    // hand the pane a **corrupted** `PATH` — losing it every lookup that used
+    // to work, which is worse than the lookup this exists to add.
+    let mut assignment = std::ffi::OsString::from("PATH=");
+    assignment.push(&path);
+    vec![env_bin.into_os_string(), assignment]
+}
+
+/// [`path_prefix_args`] as **shell-escaped text**, for the two places a whole
+/// window command is one string a shell will read.
+///
+/// `None` when the prefix cannot be spelled as text — a `PATH` that is not
+/// UTF-8 — which the callers take as "no prefix", never as a mangled one. Also
+/// `None` when there was no prefix to begin with, since an empty one and an
+/// unspellable one lead to the same command.
+#[cfg(not(windows))]
+fn shell_prefix_tokens() -> Option<Vec<String>> {
+    let args = path_prefix_args();
+    if args.is_empty() {
+        return None;
+    }
+    args.iter()
+        .map(|a| a.to_str().map(control_mode::shell_escape))
+        .collect()
 }
 
 /// This process's `PATH` with the directory holding this build's `thurbox-cli`
@@ -3486,7 +3540,7 @@ fn posix_env_binary() -> Option<std::path::PathBuf> {
 /// reach it — [`push_window_program`] folds the environment into a PowerShell
 /// token there instead.
 #[cfg(windows)]
-fn path_prefix_args() -> Vec<String> {
+fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 

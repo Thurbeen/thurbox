@@ -228,8 +228,14 @@ own, which is the point.
   `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
   restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
   would answer for a `doctor` run from the TUI and refuse the same question
-  typed into a terminal. A pane with no prefix — spawned by an older build —
-  reads as unknown, and the finding then names which `PATH` it answered about.
+  typed into a terminal. The answer is **three-valued**, because "no pane here"
+  and "a pane whose `PATH` thurbox did not write" are different facts: a parked
+  or absent pane falls back to this command's own `PATH` and says so, while a
+  **live** pane with no prefix — one spawned before this existed, or a psmux
+  window, which never gets one — is `warn`, never `ok`. Rounding that second
+  case to the first is what reported healthy wiring for panes that could find no
+  binary at all; `warn` still exits 0, so a session nobody has restarted yet
+  does not fail the machine.
 - **Persistence.** `sessions.hook_state` / `hook_state_at` / `seen_at`
   (schema **v34**), with targeted-UPDATE accessors `set_hook_state` /
   `mark_session_seen` / `load_hook_states` (`storage/sessions.rs`).

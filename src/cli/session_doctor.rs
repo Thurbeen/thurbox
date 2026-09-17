@@ -341,16 +341,29 @@ fn diagnose(
                      put its CLI on a pane's PATH picks it up on restart"
                 .into(),
         },
-        // The pane's own PATH was not readable, so what is reported is the
-        // PATH this command is running on — a different question with the same
-        // shape, and the detail says so rather than letting the answer read as
-        // one about the pane.
-        HookCli::Unread(Some(path)) => Finding {
+        // A live pane whose PATH thurbox did not write. Warn rather than Ok:
+        // the check cannot see what its hooks resolve, and answering with this
+        // command's own PATH is the confusion that reported healthy wiring for
+        // panes that could find no binary at all. Warn rather than Fail because
+        // it may well be working — `Warn` is this report's word for
+        // unverifiable, and it still exits 0.
+        HookCli::PaneUnverifiable => Finding {
+            key: "cli",
+            level: Level::Warn,
+            detail: "this pane carries a PATH thurbox did not write, so what its hooks resolve \
+                     cannot be read from here — a session started before thurbox put its CLI on \
+                     a pane's PATH picks it up on restart"
+                .into(),
+        },
+        // No pane, so there is no pane PATH to be wrong about. What is reported
+        // is the PATH this command is running on — a different question with
+        // the same shape, and the detail says so.
+        HookCli::NoPane(Some(path)) => Finding {
             key: "cli",
             level: Level::Ok,
             detail: format!(
-                "this machine's PATH resolves `thurbox-cli` to {path}; what this pane's own \
-                 PATH resolves cannot be read from here"
+                "this machine's PATH resolves `thurbox-cli` to {path}; this session has no pane \
+                 here whose own PATH could be read"
             ),
         },
         // Nothing thurbox installed for this session invokes the binary, so
@@ -361,14 +374,14 @@ fn diagnose(
         // signal` does need the binary. A session with an agent thurbox ships
         // no hooks for is the other way round — its driver's `session signal`
         // *is* the only route, so a missing binary there is a genuine failure.
-        HookCli::Unread(None) if !hooks_expected => Finding {
+        HookCli::NoPane(None) if !hooks_expected => Finding {
             key: "cli",
             level: Level::Warn,
             detail: "`thurbox-cli` is not on PATH — nothing thurbox installed for this session \
                      runs it, but a driver calling `session signal` from the pane needs it"
                 .into(),
         },
-        HookCli::Unread(None) => Finding {
+        HookCli::NoPane(None) => Finding {
             key: "cli",
             level: Level::Fail,
             detail: "`thurbox-cli` is not on PATH — every hook command is `… || true`, so its \
@@ -549,10 +562,14 @@ enum HookCli {
     OnPanePath(String),
     /// Read from the pane's own `PATH`: it resolves none.
     NotOnPanePath,
-    /// The pane's own `PATH` could not be read, so this is what the `PATH`
-    /// **this command** is running on resolves. A different question, and the
-    /// finding says which one it answered.
-    Unread(Option<String>),
+    /// The pane is there and its `PATH` is not one thurbox wrote, so whether
+    /// its hooks can resolve the binary is **unknown**. Never healthy: this is
+    /// exactly the shape that used to report `ok` while nothing worked.
+    PaneUnverifiable,
+    /// No pane to read at all — parked, gone, or never on this machine. What
+    /// follows is what the `PATH` **this command** is running on resolves: a
+    /// different question, and the finding says which one it answered.
+    NoPane(Option<String>),
 }
 
 /// Ask the pane first, and fall back to this process only when it cannot
@@ -566,13 +583,18 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     if remote {
         return HookCli::Remote;
     }
-    let Some(path) = crate::agent::tmux::agent_pane_path(&session.id.to_string(), &session.name)
-    else {
-        return HookCli::Unread(cli_on_path.map(str::to_owned));
-    };
-    match resolve_cli_on(std::ffi::OsStr::new(&path)) {
-        Some(found) => HookCli::OnPanePath(found),
-        None => HookCli::NotOnPanePath,
+    // Spelled out at every mention rather than imported: `cli` may reach
+    // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
+    // that holds for a `use` inside a function too.
+    match crate::agent::tmux::agent_pane_path(&session.id.to_string(), &session.name) {
+        crate::agent::tmux::PanePath::Known(path) => {
+            match resolve_cli_on(std::ffi::OsStr::new(&path)) {
+                Some(found) => HookCli::OnPanePath(found),
+                None => HookCli::NotOnPanePath,
+            }
+        }
+        crate::agent::tmux::PanePath::Unknown => HookCli::PaneUnverifiable,
+        crate::agent::tmux::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
     }
 }
 
