@@ -1118,7 +1118,7 @@ struct ThrowawayServer {
 
 #[cfg(unix)]
 impl ThrowawayServer {
-    const SESSION: &'static str = "lists";
+    const SESSION: &str = "lists";
 
     /// `None` when tmux is absent or will not start a server: an environment
     /// fact, not a regression.

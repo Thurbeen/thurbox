@@ -283,15 +283,129 @@ fn code_of(src: &str) -> String {
         .join("\n")
 }
 
+/// How far from a pin the clear and the socket directory may sit. The widest
+/// real gap is nine lines, so this is headroom rather than latitude: the point
+/// is that they are part of the same setup, not somewhere else in the file.
+const WINDOW: usize = 15;
+
+/// Verbs that *set* an environment variable, and verbs that *clear* one.
+const SET: [&str; 2] = ["set_var(", ".env("];
+const CLEAR: [&str; 2] = ["remove_var(", "env_remove("];
+
+/// Whether `line` sets or clears the variable spelled `literal`, whose crate
+/// constant — where it has one — is `konst`.
+///
+/// The constant counts without a verb beside it, because the multi-line form
+/// `set_var(\n  SOCKET_OVERRIDE_ENV,\n  …)` puts the two on different lines;
+/// `prev` is how that case is recognised. An import naming the constant is not
+/// a use of it, and a bare literal needs the verb, or every mention would count.
+fn touches(line: &str, prev: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
+    let line = line.trim_start();
+    if line.starts_with("use ") {
+        return false;
+    }
+    let verbed = verbs.iter().any(|v| line.contains(v));
+    // A real use of the constant, not this file's own description of one:
+    // `marks(Some("SOCKET_OVERRIDE_ENV"), …)` names it inside a string, and a
+    // use never is.
+    let names_konst = konst.is_some_and(|k| {
+        line.match_indices(k)
+            .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
+    });
+    if names_konst {
+        // …and it still has to be a set or a clear. `var(SOCKET_OVERRIDE_ENV)`
+        // reads the socket rather than moving it, and counting that as a pin
+        // would fail a harness for asking a question.
+        let continued = prev.trim_end().ends_with('(') && verbs.iter().any(|v| prev.contains(v));
+        return verbed || continued;
+    }
+    line.contains(literal) && verbed
+}
+
+/// The lines of `lines` that touch one variable — see [`touches`].
+fn marks(lines: &[&str], konst: Option<&str>, literal: &str, verbs: &[&str]) -> Vec<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| {
+            touches(
+                l,
+                if *i == 0 { "" } else { lines[i - 1] },
+                konst,
+                literal,
+                verbs,
+            )
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Take the line nearest `at` within [`WINDOW`] out of `xs`, or answer that
+/// there is none left to take.
+///
+/// Taking is what makes this one-for-one: two pins ten lines apart cannot both
+/// point at the same `remove_var`, which under a plain proximity test would let
+/// the unscoped one borrow its neighbour's and pass.
+fn claim_nearest(xs: &mut Vec<usize>, at: usize) -> bool {
+    let found = xs
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| x.abs_diff(at) <= WINDOW)
+        .min_by_key(|(_, x)| x.abs_diff(at))
+        .map(|(i, _)| i);
+    match found {
+        Some(i) => {
+            xs.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Every pin in `src`, and for each one what it failed to do: how many pins
+/// were seen, and a line-numbered complaint per pin that is not scoped.
+fn scope_failures(src: &str) -> (usize, Vec<String>) {
+    let code = code_of(src);
+    let lines: Vec<&str> = code.lines().map(str::trim_end).collect();
+
+    let pinned = marks(
+        &lines,
+        Some("SOCKET_OVERRIDE_ENV"),
+        "\"THURBOX_SOCKET\"",
+        &SET,
+    );
+    let mut clears = marks(
+        &lines,
+        Some("SOCKET_OWNER_ENV"),
+        "\"THURBOX_SOCKET_FOR\"",
+        &CLEAR,
+    );
+    // No crate constant for this one: tmux's own variable, set by name.
+    let mut scopes = marks(&lines, None, "\"TMUX_TMPDIR\"", &SET);
+
+    let mut failures = Vec::new();
+    for at in &pinned {
+        let mut missing = Vec::new();
+        if !claim_nearest(&mut clears, *at) {
+            missing.push("clear THURBOX_SOCKET_FOR");
+        }
+        if !claim_nearest(&mut scopes, *at) {
+            missing.push("set TMUX_TMPDIR to a directory of its own");
+        }
+        if !missing.is_empty() {
+            failures.push(format!("{} must {}", at + 1, missing.join(" and ")));
+        }
+    }
+    (pinned.len(), failures)
+}
+
 /// Every *place* a harness pins a tmux socket also clears the inherited owner
 /// tag and points `TMUX_TMPDIR` somewhere of its own.
 ///
 /// Per pin site, not per file. A file-wide check is satisfied by one correctly
 /// scoped test while a sibling beside it leaks: `attach_by_name` scopes five
 /// times, and a sixth test that pinned a socket and forgot the rest would sit
-/// behind the other five and leak a server on every run. Both halves are
-/// required within [`WINDOW`] lines of the pin, which is what "accompanied by"
-/// means when the check cannot read intent.
+/// behind the other five and leak a server on every run.
 ///
 /// Read off the sources rather than by running them: the leak only shows up on
 /// a machine where the suite runs inside a thurbox pane, and a run that does
@@ -301,45 +415,9 @@ fn code_of(src: &str) -> String {
 /// merely *mentions* the owner tag would pass while leaking.
 #[test]
 fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
-    /// How far from the pin the other two may sit. The widest real gap is nine
-    /// lines, so this is headroom rather than latitude: the point is that they
-    /// are part of the same setup, not somewhere else in the file.
-    const WINDOW: usize = 15;
-
     // The one file that is *about* the resolution, sets the pair on purpose,
     // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
-
-    /// Whether `line` sets or clears the variable spelled `literal`, whose
-    /// crate constant — where it has one — is `konst`.
-    ///
-    /// The constant counts on its own, because the multi-line form
-    /// `set_var(\n  SOCKET_OVERRIDE_ENV,\n  …)` puts the verb and the name on
-    /// different lines; an import naming the same constant is not a use of it.
-    /// A bare literal needs the verb beside it, or every mention would count.
-    fn touches(line: &str, prev: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
-        let line = line.trim_start();
-        // The multi-line form puts the verb on the line before the name:
-        //     std::env::set_var(
-        //         thurbox::agent::tmux::SOCKET_OVERRIDE_ENV,
-        let continued = prev.trim_end().ends_with('(') && verbs.iter().any(|v| prev.contains(v));
-        if line.starts_with("use ") {
-            return false;
-        }
-        // A real use of the constant, not this file's own description of one:
-        // `mark(Some("SOCKET_OVERRIDE_ENV"), …)` names it inside a string, and a
-        // use never is.
-        if konst.is_some_and(|k| {
-            line.match_indices(k)
-                .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
-        }) {
-            // …and it has to be a *set* or a *clear*. `var(SOCKET_OVERRIDE_ENV)`
-            // reads the socket rather than moving it, and counting that as a pin
-            // would fail a harness for asking a question.
-            return verbs.iter().any(|v| line.contains(v)) || continued;
-        }
-        line.contains(literal) && verbs.iter().any(|v| line.contains(v))
-    }
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut offenders = Vec::new();
@@ -350,61 +428,9 @@ fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
             continue;
         }
         let src = std::fs::read_to_string(entry.path()).expect("read test source");
-        let code = code_of(&src);
-        let lines: Vec<&str> = code.lines().map(str::trim_end).collect();
-
-        let mark = |konst: Option<&str>, literal: &str, verbs: &[&str]| -> Vec<usize> {
-            lines
-                .iter()
-                .enumerate()
-                .filter(|(i, l)| {
-                    let prev = if *i == 0 { "" } else { lines[i - 1] };
-                    touches(l, prev, konst, literal, verbs)
-                })
-                .map(|(i, _)| i)
-                .collect()
-        };
-        let set = ["set_var(", ".env("];
-        let clear = ["remove_var(", "env_remove("];
-        let pinned = mark(Some("SOCKET_OVERRIDE_ENV"), "\"THURBOX_SOCKET\"", &set);
-        let cleared = mark(Some("SOCKET_OWNER_ENV"), "\"THURBOX_SOCKET_FOR\"", &clear);
-        // No crate constant for this one: tmux's own variable, set by name.
-        let scoped = mark(None, "\"TMUX_TMPDIR\"", &set);
-
-        // One clear and one socket directory *each*. Nearest-first and claimed as
-        // they are taken, so two pins ten lines apart cannot both point at the
-        // same `remove_var` — under a plain proximity test the unscoped one
-        // would borrow its neighbour's and pass.
-        let mut spare_clears = cleared.clone();
-        let mut spare_scopes = scoped.clone();
-        for at in pinned {
-            pins += 1;
-            let claim = |xs: &mut Vec<usize>| -> bool {
-                match xs
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, x)| x.abs_diff(at) <= WINDOW)
-                    .min_by_key(|(_, x)| x.abs_diff(at))
-                    .map(|(i, _)| i)
-                {
-                    Some(i) => {
-                        xs.remove(i);
-                        true
-                    }
-                    None => false,
-                }
-            };
-            let mut missing = Vec::new();
-            if !claim(&mut spare_clears) {
-                missing.push("clear THURBOX_SOCKET_FOR");
-            }
-            if !claim(&mut spare_scopes) {
-                missing.push("set TMUX_TMPDIR to a directory of its own");
-            }
-            if !missing.is_empty() {
-                offenders.push(format!("{name}:{} must {}", at + 1, missing.join(" and ")));
-            }
-        }
+        let (found, failures) = scope_failures(&src);
+        pins += found;
+        offenders.extend(failures.into_iter().map(|f| format!("{name}:{f}")));
     }
 
     assert!(

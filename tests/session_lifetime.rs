@@ -84,9 +84,10 @@ fn a_session_that_names_a_pane_is_not_treated_as_missing_its_agent() {
 async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
     // The reboot case, in miniature: a real tmux server with no window for this
     // session. Skipped where tmux is not installed, like the other backend tests.
-    if std::process::Command::new("tmux")
+    if tokio::process::Command::new("tmux")
         .arg("-V")
         .output()
+        .await
         .map(|out| !out.status.success())
         .unwrap_or(true)
     {
@@ -106,10 +107,11 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
     std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let socket = ["-L", "thurbox-life-test"];
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
-        .output();
+        .output()
+        .await;
 
     let mut terminals = Terminals::new();
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
@@ -124,12 +126,13 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
         if !missing.is_empty() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .arg("kill-server")
-        .output();
+        .output()
+        .await;
 
     assert_eq!(
         missing,
@@ -140,9 +143,10 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_whose_window_exists_is_not_relaunched() {
-    if std::process::Command::new("tmux")
+    if tokio::process::Command::new("tmux")
         .arg("-V")
         .output()
+        .await
         .map(|out| !out.status.success())
         .unwrap_or(true)
     {
@@ -155,11 +159,12 @@ async fn a_session_whose_window_exists_is_not_relaunched() {
     std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     let socket = ["-L", "thurbox-life-ok"];
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
-        .output();
-    let _ = std::process::Command::new("tmux")
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args([
             "new-window",
@@ -169,22 +174,24 @@ async fn a_session_whose_window_exists_is_not_relaunched() {
             "tb-demo",
             "sh -c 'while :; do sleep 1; done'",
         ])
-        .output();
+        .output()
+        .await;
 
     let mut terminals = Terminals::new();
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
     for _ in 0..40 {
         terminals.sync(&rows, 24, 80);
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if terminals.is_attached("aaa") {
             break;
         }
     }
     let missing = terminals.missing_agents(&rows);
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .arg("kill-server")
-        .output();
+        .output()
+        .await;
 
     assert!(
         missing.is_empty(),
@@ -200,9 +207,10 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
     // absent — and "absent from a listing taken before you existed" was read as
     // "your agent is gone", so the interface killed the window the spawn had just
     // created and started a second agent in its place.
-    if std::process::Command::new("tmux")
+    if tokio::process::Command::new("tmux")
         .arg("-V")
         .output()
+        .await
         .map(|out| !out.status.success())
         .unwrap_or(true)
     {
@@ -219,14 +227,16 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
 
     let socket = ["-L", "thurbox-life-new"];
     let idle = "sh -c 'while :; do sleep 1; done'";
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
-        .output();
-    let _ = std::process::Command::new("tmux")
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-window", "-t", "thurbox-dev", "-n", "tb-alpha", idle])
-        .output();
+        .output()
+        .await;
 
     // First, get a survey on the board — this is the "run that started with a
     // session" precondition, and it is what made the bug fire on every later
@@ -238,14 +248,15 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
         if terminals.is_attached("aaa") {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     // Now a second session appears, window first, exactly as spawn orders it.
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-window", "-t", "thurbox-dev", "-n", "tb-beta", idle])
-        .output();
+        .output()
+        .await;
     let both = snapshot(vec![
         row("aaa", "alpha", "local-tmux", None),
         row("bbb", "beta", "local-tmux", None),
@@ -260,7 +271,7 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
         if terminals.is_attached("bbb") {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let attached = terminals.is_attached("bbb");
 
@@ -277,13 +288,14 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
         if !ghost_missing.is_empty() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .arg("kill-server")
-        .output();
+        .output()
+        .await;
 
     assert!(
         ever_missing.is_empty(),
@@ -374,9 +386,10 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
     // `forget` is still the faster half and still tested below: a restart KNOWS
     // the pane is gone, and saying so beats waiting for a notification and
     // clears the retry backoff that would otherwise hold the next attach off.
-    if std::process::Command::new("tmux")
+    if tokio::process::Command::new("tmux")
         .arg("-V")
         .output()
+        .await
         .map(|out| !out.status.success())
         .unwrap_or(true)
     {
@@ -391,8 +404,10 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
     );
     std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     let socket = ["-L", "thurbox-forget-test"];
-    let window = |name: &str| {
-        let _ = std::process::Command::new("tmux")
+    // An `async fn` rather than a closure: it awaits, and a closure body is not
+    // an async context.
+    async fn window(socket: [&str; 2], name: &str) {
+        let _ = tokio::process::Command::new("tmux")
             .args(socket)
             .args([
                 "new-window",
@@ -402,14 +417,16 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
                 name,
                 "sh -c 'while :; do sleep 1; done'",
             ])
-            .output();
-    };
+            .output()
+            .await;
+    }
 
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
-        .output();
-    window("tb-demo");
+        .output()
+        .await;
+    window(socket, "tb-demo").await;
 
     let mut terminals = Terminals::new();
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
@@ -418,7 +435,7 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
         if terminals.is_attached("aaa") {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(terminals.is_attached("aaa"), "did not attach to begin with");
 
@@ -428,11 +445,12 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
     // `drop_lost_panes` lets go of a pane that has stopped. Measured on this
     // path 2026-09-11: let go on the first sync after the kill, attached to the
     // replacement about half a second later.
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .args(["kill-window", "-t", "thurbox-dev:tb-demo"])
-        .output();
-    window("tb-demo");
+        .output()
+        .await;
+    window(socket, "tb-demo").await;
     let mut let_go = false;
     for _ in 0..60 {
         terminals.sync(&rows, 24, 80);
@@ -440,7 +458,7 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
             let_go = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(
         let_go,
@@ -453,7 +471,7 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
             healed = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(
         healed,
@@ -470,12 +488,13 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
             back = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let _ = std::process::Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(socket)
         .arg("kill-server")
-        .output();
+        .output()
+        .await;
     assert!(
         back,
         "letting go must be followed by attaching to the new pane"
