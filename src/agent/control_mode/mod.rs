@@ -12,7 +12,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -1308,6 +1308,23 @@ impl ControlMode {
         cmd: &str,
         blocks: usize,
     ) -> Result<String> {
+        let rx = Self::enqueue_command_on(stdin, response_queue, cmd, blocks)?;
+        Self::await_response(rx, cmd, COMMAND_TIMEOUT)
+    }
+
+    /// Write `cmd` and take a place in the waiter queue, without waiting.
+    ///
+    /// Split out of [`Self::send_command_on`] so a caller can decline the wait
+    /// ([`Self::send_command_detached`]) or shorten it
+    /// ([`Self::send_command_within`]) while every caller keeps the one
+    /// invariant that matters: a place in the queue per command written, in
+    /// the order written.
+    fn enqueue_command_on(
+        stdin: &Arc<Mutex<ChildStdin>>,
+        response_queue: &ResponseQueue,
+        cmd: &str,
+        blocks: usize,
+    ) -> Result<Receiver<CommandResponse>> {
         let (tx, rx) = sync_channel(1);
 
         {
@@ -1338,8 +1355,17 @@ impl ControlMode {
             }
         }
 
+        Ok(rx)
+    }
+
+    /// Wait for an enqueued command's answer, for at most `budget`.
+    fn await_response(
+        rx: Receiver<CommandResponse>,
+        cmd: &str,
+        budget: std::time::Duration,
+    ) -> Result<String> {
         let response = rx
-            .recv_timeout(COMMAND_TIMEOUT)
+            .recv_timeout(budget)
             .context(format!("Timeout waiting for response to: {cmd}"))?;
 
         if response.is_error {
@@ -1347,6 +1373,37 @@ impl ControlMode {
         }
 
         Ok(response.lines.join("\n"))
+    }
+
+    /// [`Self::send_command`] on a budget of the caller's choosing.
+    ///
+    /// For the callers that are the interface's own loop, where the answer is
+    /// worth a short wait and nothing is worth a long one.
+    pub(super) fn send_command_within(
+        &self,
+        cmd: &str,
+        budget: std::time::Duration,
+    ) -> Result<String> {
+        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1)?;
+        Self::await_response(rx, cmd, budget)
+    }
+
+    /// Send a command and never wait for its answer.
+    ///
+    /// The answer still comes — control mode replies to everything — so a place
+    /// is kept for it and the receiver dropped, which makes `deliver_response`
+    /// discard it (its `send` already tolerates a receiver that is gone). That
+    /// kept place is the whole difference from [`Self::send_command_nowait`],
+    /// whose documented hazard is exactly its absence: with no place of its
+    /// own, the answer is handed to whichever waiter is next in line and every
+    /// later response is delivered one command off for the life of the
+    /// connection.
+    ///
+    /// For a command whose *effect* is the point and whose answer nothing
+    /// reads — a resize tells the agent how to wrap, and no frame is waiting on
+    /// the confirmation.
+    pub(super) fn send_command_detached(&self, cmd: &str) -> Result<()> {
+        Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1).map(drop)
     }
 
     /// Send a command without waiting for a response.
