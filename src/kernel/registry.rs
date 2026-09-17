@@ -104,7 +104,9 @@ pub struct Pill {
     /// The action pressing it runs — the same identifier a key binds to.
     pub action: String,
     pub label: String,
-    /// Higher is kept longer when the band runs out of width.
+    /// Higher is kept longer when the band runs out of width, and drawn
+    /// further left. The plugin declares it; `ui.json`'s `pills` section
+    /// replaces it, so ordering the band does not mean editing a plugin.
     pub priority: i64,
 }
 
@@ -197,6 +199,21 @@ pub struct Registry {
     binding_overrides: BTreeMap<String, String>,
     /// Persisted overrides: `plugin.setting` → value.
     setting_overrides: BTreeMap<String, Value>,
+    /// Persisted overrides: a pill's action → the priority it is given.
+    ///
+    /// The one decision about the interface that used to live in the plugin
+    /// that declared it, which meant ordering the action band by editing
+    /// somebody else's file. No default is kept beside it: `declare_all`
+    /// replaces the pill list, so the declared number is simply what is there
+    /// when no entry names the action.
+    ///
+    /// Held as the JSON the file carried rather than as an `i64`, so a value of
+    /// the wrong shape is *kept* and refused at apply time — which is what
+    /// `setting_overrides` does, and it matters more here. `persist` rewrites
+    /// `ui.json` from these maps on any unrelated change, so an entry dropped at
+    /// read time would take the user's own typo out of their file before they
+    /// ever ran `thurbox-cli config validate` over it, leaving nothing to find.
+    pill_overrides: BTreeMap<String, serde_json::Value>,
     /// Plugins the user turned off: absolute paths, present on disk and not
     /// loaded.
     ///
@@ -235,7 +252,7 @@ pub struct Registry {
 ///
 /// A registry built with [`Default`] holds no overrides at all, so persisting
 /// one does not *change* `ui.json` — it empties it: every disabled plugin, every
-/// trust grant and every setting a user chose is gone, replaced by the four
+/// trust grant and every setting a user chose is gone, replaced by the five
 /// empty tables the fresh registry has. That is not hypothetical. thurbox
 /// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
 /// run from inside thurbox resolves the *real* config directory, and the tests
@@ -264,11 +281,12 @@ impl Registry {
             origin: Origin::File,
             ..Self::default()
         };
-        let (bindings, settings, trusted, disabled, mut warnings) = read_overrides();
+        let (bindings, settings, pills, trusted, disabled, mut warnings) = read_overrides();
         registry.binding_overrides = bindings;
         registry.trusted = trusted;
         registry.disabled = disabled;
         registry.setting_overrides = settings;
+        registry.pill_overrides = pills;
 
         if registry.binding_overrides.is_empty() {
             let (migrated, notes) = migrate_v1_bindings();
@@ -368,6 +386,25 @@ impl Registry {
                 if value.type_name() == setting.default.type_name() {
                     setting.value = value.clone();
                 }
+            }
+        }
+        for pill in &mut self.pills {
+            // Only what the user moved, and only onto something a plugin
+            // declared. An entry naming an unknown action is left alone rather
+            // than turned into a button: a binding may be synthesised from an
+            // override because a bound command becomes a key, but a pill has no
+            // such source, and a chip that does nothing when pressed is what
+            // `bands::entries` already drops declared entries to avoid.
+            //
+            // A priority is a whole number, so `"75"` or `75.5` is refused here
+            // rather than coerced — the same check the settings loop above makes
+            // against a declared default.
+            let overridden = self
+                .pill_overrides
+                .get(&pill.action)
+                .and_then(serde_json::Value::as_i64);
+            if let Some(priority) = overridden {
+                pill.priority = priority;
             }
         }
     }
@@ -734,6 +771,10 @@ impl Registry {
             .collect();
         json.insert("settings".to_string(), serde_json::Value::Object(settings));
         json.insert(
+            "pills".to_string(),
+            serde_json::to_value(&self.pill_overrides).map_err(|e| e.to_string())?,
+        );
+        json.insert(
             "trusted".to_string(),
             serde_json::to_value(&self.trusted).map_err(|e| e.to_string())?,
         );
@@ -869,9 +910,9 @@ pub fn normalise_chord(raw: &str) -> String {
 ///
 /// For `thurbox-cli config validate`, which was checking v1's `keybindings.json`
 /// — a file nothing reads now — and not this one, which the interface reads on
-/// every launch for rebindings, trust and the disabled set.
+/// every launch for rebindings, band order, trust and the disabled set.
 pub fn validate_overrides() -> Vec<String> {
-    read_overrides().4
+    read_overrides().5
 }
 
 /// Where the user's interface decisions live: `<config>/ui.json`.
@@ -887,11 +928,12 @@ fn overrides_path() -> Option<PathBuf> {
     crate::paths::config_file().and_then(|config| config.parent().map(|dir| dir.join("ui.json")))
 }
 
-/// What `ui.json` carries: rebound chords, changed settings, trusted plugins,
-/// and anything worth warning about.
+/// What `ui.json` carries: rebound chords, changed settings, reordered pills,
+/// trusted plugins, and anything worth warning about.
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
+    BTreeMap<String, serde_json::Value>,
     BTreeMap<String, Granted>,
     BTreeSet<String>,
     Vec<String>,
@@ -939,7 +981,7 @@ fn read_overrides() -> Overrides {
         Ok(value) => value,
         Err(e) => {
             let mut unreadable = Overrides::default();
-            unreadable.4.push(format!("{}: {e}", path.display()));
+            unreadable.5.push(format!("{}: {e}", path.display()));
             return unreadable;
         }
     };
@@ -948,6 +990,7 @@ fn read_overrides() -> Overrides {
     (
         read_bindings(&parsed),
         read_settings(&parsed),
+        read_pills(&parsed, &mut warnings),
         read_trusted(&parsed, &mut warnings),
         read_disabled(&parsed),
         warnings,
@@ -980,6 +1023,40 @@ fn read_settings(parsed: &serde_json::Value) -> BTreeMap<String, Value> {
         }
     }
     settings
+}
+
+/// The `pills` half of `ui.json`: a pill's action → the priority it is given.
+///
+/// Every entry is kept, whatever shape it has, because `persist` writes this map
+/// back over the user's file — see [`Registry::pill_overrides`]. `apply_overrides`
+/// is what refuses one that is not a whole number; here it is only *reported*, as
+/// `read_trusted` reports a malformed grant, so `thurbox-cli config validate`
+/// names the typo on every run rather than once.
+///
+/// The section itself cannot be kept that way, since a map is not an array:
+/// `"pills": []` is as easy to write as `[]` is right for the neighbouring
+/// `disabled`, so that one is reported and the section ignored.
+fn read_pills(
+    parsed: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut pills = BTreeMap::new();
+    let Some(section) = parsed.get("pills") else {
+        return pills;
+    };
+    let Some(map) = section.as_object() else {
+        warnings.push("ui.json: pills is not an object of action → priority; ignoring it".into());
+        return pills;
+    };
+    for (action, priority) in map {
+        if priority.as_i64().is_none() {
+            warnings.push(format!(
+                "ui.json: pills[{action}] is not a whole number; ignoring it"
+            ));
+        }
+        pills.insert(action.clone(), priority.clone());
+    }
+    pills
 }
 
 /// The `trusted` half of `ui.json`: path → the grant made to it.
@@ -1575,7 +1652,7 @@ mod tests {
     }
 
     /// The bug this guards: a registry nobody read from disk used to write
-    /// itself over `ui.json`, and its four empty tables *are* the whole file. A
+    /// itself over `ui.json`, and its five empty tables *are* the whole file. A
     /// test run inherits `THURBOX_CONFIG_DIR` from the session that spawned it,
     /// so `cargo test` from inside thurbox emptied the running interface's
     /// disabled set, trust grants and plugin settings.
@@ -1638,5 +1715,188 @@ mod tests {
         // And it comes back on the next launch, which is the whole point.
         let reloaded = Registry::load();
         assert!(reloaded.is_disabled("/ui/plugins/65_search.lua"));
+    }
+
+    fn pill(plugin: &str, action: &str, label: &str, priority: i64) -> Pill {
+        Pill {
+            plugin: plugin.into(),
+            action: action.into(),
+            label: label.into(),
+            priority,
+        }
+    }
+
+    /// The kernel's Settings on F6 and a third-party Fleet on F3, declared with
+    /// the numbers the issue reported: 60 against 50, so the band prints them
+    /// F6 before F3.
+    fn banded() -> (Vec<Binding>, Vec<Pill>) {
+        (
+            vec![
+                binding("kernel", "f6", "kernel.settings", Scope::Global),
+                binding("fleetqueue", "f3", "fleetqueue.toggle", Scope::Global),
+            ],
+            vec![
+                pill("kernel", "kernel.settings", "Settings", 60),
+                pill("fleetqueue", "fleetqueue.toggle", "Fleet", 50),
+            ],
+        )
+    }
+
+    fn band_labels(registry: &Registry) -> Vec<String> {
+        super::super::bands::entries(registry.pills(), registry)
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect()
+    }
+
+    fn write_overrides(dir: &std::path::Path, body: &str) {
+        std::fs::write(dir.join("ui.json"), body).expect("write ui.json");
+    }
+
+    /// The issue's own case: ordering the band meant editing the plugin that
+    /// declared the number, and one of those plugins was somebody else's.
+    #[test]
+    fn a_pills_priority_is_overridden_from_ui_json() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(home.path(), r#"{ "pills": { "fleetqueue.toggle": 75 } }"#);
+
+        let mut registry = Registry::load();
+        let (bindings, pills) = banded();
+        registry.declare_all(bindings, Vec::new(), pills);
+
+        assert_eq!(band_labels(&registry), vec!["Fleet", "Settings"]);
+    }
+
+    /// Removing the entry is how the plugin's own number comes back. There is no
+    /// second copy of it to restore from — `declare_all` replaces the list, so
+    /// the declared value is simply what is there when no override names it.
+    #[test]
+    fn clearing_a_pill_override_restores_the_declared_priority() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(home.path(), r#"{ "pills": { "fleetqueue.toggle": 75 } }"#);
+
+        let mut overridden = Registry::load();
+        let (bindings, pills) = banded();
+        overridden.declare_all(bindings, Vec::new(), pills);
+        assert_eq!(band_labels(&overridden), vec!["Fleet", "Settings"]);
+
+        write_overrides(home.path(), r#"{ "pills": {} }"#);
+        let mut cleared = Registry::load();
+        let (bindings, pills) = banded();
+        cleared.declare_all(bindings, Vec::new(), pills);
+        assert_eq!(band_labels(&cleared), vec!["Settings", "Fleet"]);
+    }
+
+    /// An override naming nothing is not a button. A binding may be synthesised
+    /// from an override because a bound command becomes a key; a pill has no
+    /// such source, and a chip that does nothing when pressed is what
+    /// `bands::entries` already drops declared entries to avoid.
+    #[test]
+    fn a_pill_override_for_an_unknown_action_is_ignored() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(
+            home.path(),
+            r#"{ "pills": { "nobody.declares.this": 99 } }"#,
+        );
+
+        let mut registry = Registry::load();
+        let (bindings, pills) = banded();
+        registry.declare_all(bindings, Vec::new(), pills);
+
+        assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
+    }
+
+    /// A priority is a whole number. A string or a fraction is refused rather
+    /// than coerced, reported so `thurbox-cli config validate` can name it —
+    /// and **kept in the file**. Deleting it at read time would have `persist`
+    /// erase the user's own typo on the next unrelated write, leaving a clean
+    /// file, no warning and nothing to find.
+    #[test]
+    fn a_pill_priority_of_the_wrong_shape_is_refused_and_kept() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(
+            home.path(),
+            r#"{ "pills": { "fleetqueue.toggle": "75", "kernel.settings": 12.5 } }"#,
+        );
+
+        let mut registry = Registry::load();
+        let (bindings, pills) = banded();
+        registry.declare_all(bindings, Vec::new(), pills);
+
+        assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
+        let warnings = registry.warnings();
+        assert_eq!(warnings.len(), 2, "one per refused entry: {warnings:?}");
+        for action in ["fleetqueue.toggle", "kernel.settings"] {
+            assert!(
+                warnings.iter().any(|w| w.contains(action)),
+                "{action} was refused without saying so: {warnings:?}"
+            );
+        }
+
+        // The write that used to take the evidence with it.
+        registry
+            .trust("/ui/plugins/mine.lua", "return {}")
+            .expect("trust");
+        let written = std::fs::read_to_string(home.path().join("ui.json")).expect("read back");
+        assert!(written.contains("\"75\""), "{written}");
+        assert!(written.contains("12.5"), "{written}");
+        assert_eq!(
+            Registry::load().warnings().len(),
+            2,
+            "the typo must still be there to be reported on the next run"
+        );
+    }
+
+    /// `disabled` beside it is a list, so `"pills": []` is the plausible typo,
+    /// and it loses the whole section rather than one line of it.
+    #[test]
+    fn a_pills_section_of_the_wrong_shape_is_ignored_and_reported() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(home.path(), r#"{ "pills": ["fleetqueue.toggle"] }"#);
+
+        let mut registry = Registry::load();
+        let (bindings, pills) = banded();
+        registry.declare_all(bindings, Vec::new(), pills);
+
+        assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
+        // One warning for the section, not one per entry it might have held:
+        // the per-entry message carries a `pills[...]` and this one must not be
+        // confusable with it.
+        let warnings = registry.warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("pills is not an object"),
+            "the section was dropped without saying so: {warnings:?}"
+        );
+    }
+
+    /// `persist` writes a fresh object, so a section it does not know about is
+    /// dropped the next time anything at all is written back. A hand-written
+    /// `pills` section that survives only until the next rebind is worse than no
+    /// feature: it works, and then one day it does not.
+    #[test]
+    fn a_pill_override_survives_a_persist_triggered_by_something_else() {
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let _guard = crate::paths::TestPathGuard::new(home.path());
+        write_overrides(home.path(), r#"{ "pills": { "fleetqueue.toggle": 75 } }"#);
+
+        let mut registry = Registry::load();
+        let (bindings, pills) = banded();
+        registry.declare_all(bindings, Vec::new(), pills);
+        // Nothing to do with the band: trusting a file, rebinding a chord in the
+        // help editor or turning a plugin off all reach the same `persist`.
+        registry
+            .trust("/ui/plugins/mine.lua", "return {}")
+            .expect("trust");
+
+        let mut reloaded = Registry::load();
+        let (bindings, pills) = banded();
+        reloaded.declare_all(bindings, Vec::new(), pills);
+        assert_eq!(band_labels(&reloaded), vec!["Fleet", "Settings"]);
     }
 }

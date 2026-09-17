@@ -101,7 +101,7 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
 }
 
 /// Validate `ui.json` — the file the interface actually reads for rebindings,
-/// trust and the disabled set.
+/// band order, trust and the disabled set.
 fn validate_ui_json() -> (Value, bool) {
     let path = crate::kernel::registry::overrides_file();
     let problems = crate::kernel::registry::validate_overrides();
