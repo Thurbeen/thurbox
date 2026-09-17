@@ -142,6 +142,12 @@ fn isolate_tmux() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", dir.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance. `socket_for` then reads the override
+    // above as inherited and derives a socket from this test's own data dir —
+    // a server no `kill-server` here names, left running for good.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
     dir
 }
 

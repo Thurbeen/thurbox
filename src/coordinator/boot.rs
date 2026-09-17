@@ -28,6 +28,30 @@ use thurbox::kernel::watch::Watcher;
 use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal, snapshots_db};
 use crate::App;
 
+/// Days of `thurbox.log.<date>` kept by the rolling appender.
+const LOG_FILES_KEPT: usize = 30;
+
+/// The log appender: one file per day in `dir`, the newest
+/// [`LOG_FILES_KEPT`] kept and the rest deleted as it is built.
+///
+/// Capped because `rolling::daily` never deletes anything — it opened a new
+/// `thurbox.log.<date>` every day and left every earlier one in the data dir
+/// for good, which on a machine thurbox runs on daily is an unbounded disk
+/// leak. A month still holds the log of whatever a user is reporting.
+///
+/// The name has to stay `thurbox.log.<date>`: that spelling is what
+/// `docs/PERFORMANCE.md` tells a reader to open, and it is also what the
+/// pruning above matches on, so a different prefix would silently orphan every
+/// file written by an earlier release instead of retiring it.
+fn log_appender(dir: PathBuf) -> tracing_appender::rolling::RollingFileAppender {
+    tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("thurbox.log")
+        .max_log_files(LOG_FILES_KEPT)
+        .build(dir)
+        .expect("a daily log appender in the data dir")
+}
+
 pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Put the terminal back before the panic message prints.
     //
@@ -84,8 +108,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     tokio::task::spawn_blocking(move || std::fs::create_dir_all(create))
         .await
         .ok();
-    let (writer, guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::daily(log_dir, "thurbox.log"));
+    let (writer, guard) = tracing_appender::non_blocking(log_appender(log_dir));
     Box::leak(Box::new(guard));
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -481,6 +504,84 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The log appender keeps a bounded number of days and names them the way
+    /// the docs say.
+    ///
+    /// Both halves are the bug: `rolling::daily` never deleted anything, so the
+    /// data dir grew a file per day for good; and the cap only retires a file it
+    /// recognises, so a prefix that stopped spelling `thurbox.log.<date>` would
+    /// leave every older file orphaned *and* break the path
+    /// `docs/PERFORMANCE.md` hands the reader. Pruning happens as the appender
+    /// is built, which is what makes this observable without waiting a day.
+    #[test]
+    fn the_log_appender_keeps_a_months_worth_and_no_more() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // More days than the cap, named exactly as the appender names them.
+        let seeded = LOG_FILES_KEPT + 5;
+        for nth in 0..seeded {
+            // Real dates, in the year 2000 so today's file is never one of
+            // them, and rolled into months rather than run past the end of
+            // January. `2000-01-32` would be the subtler bug: the cap reads a
+            // file's age from its birth time and falls back to parsing the
+            // date out of the name, so on a filesystem that does not record
+            // birth times — a container on overlayfs — an impossible date
+            // parses as nothing, drops out of the candidates and is never
+            // pruned, failing this test for a reason that is not the
+            // behaviour under test.
+            let day = format!("2000-{:02}-{:02}", nth / 28 + 1, nth % 28 + 1);
+            std::fs::write(dir.path().join(format!("thurbox.log.{day}")), b"old\n")
+                .expect("seed a day of logs");
+        }
+        // A file that is not the appender's is not the appender's to delete.
+        std::fs::write(dir.path().join("version-check.json"), b"{}\n").expect("seed");
+
+        let mut appender = log_appender(dir.path().to_path_buf());
+        appender.write_all(b"today\n").expect("write a line");
+        appender.flush().expect("flush");
+
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read the log dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+
+        let logs: Vec<&String> = names
+            .iter()
+            .filter(|n| n.starts_with("thurbox.log."))
+            .collect();
+        assert_eq!(
+            logs.len(),
+            LOG_FILES_KEPT,
+            "seeded {seeded} days, kept {}: {logs:?}",
+            logs.len()
+        );
+        assert!(
+            names.iter().any(|n| n == "version-check.json"),
+            "the cap deleted a file that was not a log: {names:?}"
+        );
+
+        // Today's file is among them, spelled `thurbox.log.<date>` — the name
+        // the docs give and the one the cap matches on.
+        // Everything seeded is dated 2000, so the one file that is not is the
+        // one the write above went to.
+        let today = logs
+            .iter()
+            .find(|n| !n.starts_with("thurbox.log.2000-"))
+            .unwrap_or_else(|| panic!("the line just written went somewhere else: {logs:?}"));
+        let date = today
+            .strip_prefix("thurbox.log.")
+            .expect("checked by the filter above");
+        assert_eq!(
+            date.len(),
+            "2000-01-01".len(),
+            "the live log is not `thurbox.log.<date>`: {today}"
+        );
+    }
 
     /// Startup says which interface loaded, but only when there is a question.
     ///

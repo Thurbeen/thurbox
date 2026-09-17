@@ -83,9 +83,17 @@ _tbx_resolve_root() {
     export TMUX_TMPDIR
     mkdir -p "$TMUX_TMPDIR"
     # Name the socket outright (see TBX_DEV_SOCKET) so teardown/clean can find
-    # it whichever flavor of isolation ran.
+    # it whichever flavor of isolation ran. THURBOX_SOCKET_FOR — the tag that
+    # tells thurbox an injected socket from an operator's own — has to go with
+    # it: a sandbox started from inside a thurbox pane inherits one naming the
+    # operator's data dir, and socket_for then rules the name above inherited
+    # and derives one from the sandbox's own data dir instead. The sandbox
+    # would run on a server nothing here can name, and the teardown below would
+    # kill an empty one — a leaked tmux server (with its agents and heartbeat)
+    # per sandbox run.
     THURBOX_SOCKET="$TBX_DEV_SOCKET"
     export THURBOX_SOCKET
+    unset THURBOX_SOCKET_FOR
     PATH="$TBX_REPO_ROOT/target/debug:$PATH"
     export PATH
 }

@@ -1118,7 +1118,7 @@ struct ThrowawayServer {
 
 #[cfg(unix)]
 impl ThrowawayServer {
-    const SESSION: &'static str = "lists";
+    const SESSION: &str = "lists";
 
     /// `None` when tmux is absent or will not start a server: an environment
     /// fact, not a regression.
@@ -1160,6 +1160,23 @@ impl Drop for ThrowawayServer {
         let _ = TmuxTransport::Local
             .tmux_command(&self.socket, &["kill-server"])
             .output();
+        // tmux does not unlink its socket when the server exits, so a killed
+        // server still leaves a dead socket file in the shared socket
+        // directory — one per test process, kept for good. The path is the
+        // rule tmux itself applies (`$TMUX_TMPDIR` or `/tmp`, then
+        // `tmux-<uid>/<name>`); this test cannot point `TMUX_TMPDIR`
+        // somewhere private instead, because the lib's unit tests share one
+        // process and the variable is process-wide.
+        // Empty is not a directory, and tmux itself only honours the variable
+        // when it is non-empty — matching that is what keeps this pointing at
+        // the file tmux actually made.
+        let tmpdir = std::env::var_os("TMUX_TMPDIR")
+            .filter(|dir| !dir.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        // SAFETY: `getuid` is always successful and takes no arguments.
+        let uid = unsafe { libc::getuid() };
+        let _ = std::fs::remove_file(tmpdir.join(format!("tmux-{uid}")).join(&self.socket));
     }
 }
 

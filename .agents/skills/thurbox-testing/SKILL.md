@@ -172,6 +172,35 @@ process. A `static` holds it and `atexit` removes it.
 both by re-running the tests that create them in a child process and checking what
 survived it.
 
+A test that starts a **tmux server owns its removal too**, and that takes three
+things, not one — `tests/tmux_server_leak.rs` is the worked example and the gate:
+
+1. **Pin the socket** (`agent::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
+   name to kill.
+2. **Clear `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
+   `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
+   thurbox session inherits both. `agent::tmux::socket_for` drops an override
+   tagged for another instance's data dir — correctly: a harness that isolated
+   its database but not its server would be spawning windows on the operator's
+   tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in
+   place lands on a *derived* socket, and its `kill-server` kills a name nothing
+   created. One orphan server, agents and all, per run.
+3. **Point `TMUX_TMPDIR` at a directory of its own**, and let it go away with the
+   test. tmux never unlinks a socket, so even a server killed correctly leaves a
+   dead socket file behind — in the shared directory that is one more file per
+   run, for good.
+
+`tests/tmux_server_leak::every_socket_a_harness_pins_is_scoped_where_it_is_pinned`
+reads (2) and (3) off the sources of every file in `tests/`, because a run that
+leaks still passes every assertion it makes: nothing else here would notice. It
+checks each **pin site**, not each file — `attach_by_name` scopes five times, and
+a file-wide check would let a sixth test that pinned a socket and forgot the rest
+sit behind the other five. Comments are stripped first, so a harness whose
+comment merely mentions the owner tag does not satisfy the rule.
+`src/agent/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
+cannot do (3) — the lib's unit tests share a process and `TMUX_TMPDIR` is
+process-wide — so it removes the socket file by hand instead.
+
 > v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
 > test and `tests/v1_recordings.rs` were deleted with `src/app`. They are in the
 > history if a behaviour needs archaeology.

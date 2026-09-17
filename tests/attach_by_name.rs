@@ -92,6 +92,12 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    // Cleared, not merely overridden: thurbox tags an injected socket with the
+    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
+    // tag naming the operator's instance. `socket_for` then reads the override
+    // above as inherited and derives a socket from this test's own data dir —
+    // a server no `kill-server` here names, left running for good.
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     // The window a session named `demo` produces: `tb-demo`.
@@ -114,7 +120,7 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
     while std::time::Instant::now() < deadline && !attached {
         terminals.sync(&rows, 24, 80);
         attached = terminals.is_attached("11111111-1111-1111-1111-111111111111");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let failure = terminals
         .failure("11111111-1111-1111-1111-111111111111")
@@ -146,6 +152,7 @@ async fn a_window_that_appears_later_is_still_picked_up() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
 
@@ -175,7 +182,7 @@ async fn a_window_that_appears_later_is_still_picked_up() {
             tmux(&["kill-server"]);
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let failure = terminals
         .failure("11111111-1111-1111-1111-111111111111")
@@ -217,6 +224,7 @@ async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     let pane_of =
@@ -259,7 +267,7 @@ async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
         terminals.sync(&rows, 24, 80);
         both = terminals.is_attached("11111111-1111-1111-1111-111111111111")
             && terminals.is_attached("22222222-2222-2222-2222-222222222222");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     // Neither pane was resolved by name, so there is nothing to migrate.
     let adopted = terminals.drain_adopted_panes();
@@ -283,6 +291,7 @@ async fn two_windows_of_the_same_name_are_refused_rather_than_guessed() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     for _ in 0..2 {
@@ -325,6 +334,7 @@ async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("TMUX_TMPDIR", home.path());
     std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
+    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     tmux(&[
@@ -346,7 +356,7 @@ async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
     while std::time::Instant::now() < deadline && !attached {
         terminals.sync(&rows, 24, 80);
         attached = terminals.is_attached("11111111-1111-1111-1111-111111111111");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let failure = terminals
         .failure("11111111-1111-1111-1111-111111111111")

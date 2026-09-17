@@ -27,7 +27,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data"] {
+        for sub in ["home", "config", "data", "tmux"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
         Self { root }
@@ -45,6 +45,13 @@ impl Env {
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
         cmd.env_remove("THURBOX_SOCKET");
+        cmd.env_remove("THURBOX_SOCKET_FOR");
+        // The one test here that spawns a pane starts a real server on the
+        // socket this instance's relocated data dir derives. tmux never unlinks
+        // a socket, so killing that server still leaves the file behind — in a
+        // directory of this instance's own it goes away with the tempdir, in
+        // the shared one it would be one more dead socket per run.
+        cmd.env("TMUX_TMPDIR", self.path("tmux"));
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
         cmd.output().expect("run thurbox-cli")
@@ -732,6 +739,9 @@ fn a_failed_reports_as_write_leaves_the_new_session_in_place() {
         .to_string();
     env.run(&["session", "delete", &id, "--force", "--json"]);
     let _ = std::process::Command::new("tmux")
+        // The same socket *directory* the run used, or this names a server in
+        // the shared one instead and the real one is left standing.
+        .env("TMUX_TMPDIR", env.path("tmux"))
         .args(["-L", &socket, "kill-server"])
         .output();
 }

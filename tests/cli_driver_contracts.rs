@@ -23,7 +23,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data", "work"] {
+        for sub in ["home", "config", "data", "work", "tmux"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
         Self { root }
@@ -54,6 +54,15 @@ impl Env {
         // Named outright: a relocated data dir derives a socket of its own, and
         // the pane verbs must never reach the operator's server.
         cmd.env("THURBOX_SOCKET", "thurbox-driver-contract-test");
+        // …and cleared of the tag that would disarm it: thurbox pairs an
+        // injected socket with the data dir it belongs to, so a suite run
+        // inside a thurbox pane inherits one naming the operator's instance,
+        // and `socket_for` then drops the name above as inherited.
+        cmd.env_remove("THURBOX_SOCKET_FOR");
+        // A socket directory of this instance's own, so a server started here
+        // by mistake is visibly this test's rather than a stray in the shared
+        // one everybody's tmux uses.
+        cmd.env("TMUX_TMPDIR", self.path("tmux"));
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
         cmd
