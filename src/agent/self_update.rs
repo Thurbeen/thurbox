@@ -16,11 +16,14 @@
 //! [`decide_update`], [`crosses_major`], [`current_version`]) so dev builds
 //! (`0.0.0-dev`) never auto-update and **a new major is never installed
 //! automatically** — 2.x replaced v1's whole interface, so crossing that line is
-//! the user's decision, not a background download's. It mirrors
-//! `scripts/install.sh` exactly: the same release artifacts, target-triple
-//! mapping, and SHA256 verification. Downloads go through the `curl`/`wget`
-//! helpers and `tar` is shelled out to; the checksum is computed in process, so
-//! verification does not depend on what the local machine has on `PATH`.
+//! the user's decision, not a background download's. It installs what
+//! `scripts/install.sh` installs — the same release artifacts, the same
+//! target-triple mapping, the same digest verified before anything is replaced.
+//! It does not reach for the same *tools*: downloads go through the
+//! `curl`/`wget` helpers and `tar` is shelled out to, but the checksum is
+//! computed in process, so verification does not depend on what the local
+//! machine has on `PATH` (the installer's `sha256sum`/`shasum` do not exist on
+//! native Windows — issue #1182).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -544,7 +544,7 @@ fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
         return crate::agent::tmux::WindowIndex::default();
     }
     let Some(host) = super::resolve_host(backend_type).flatten() else {
-        listing_failed(backend_type, now);
+        listing_failed(backend_type, std::time::Instant::now());
         return crate::agent::tmux::WindowIndex::default();
     };
     match crate::agent::tmux::remote_window_index(&host) {
@@ -554,21 +554,30 @@ fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
         }
         Err(e) => {
             tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
-            listing_failed(backend_type, now);
+            // Stamped when the attempt *ended*, not when it began: a machine
+            // that is down answers by timing out, and an ssh connect timeout
+            // can outlast the interval itself — dating the failure from the
+            // start would leave it already expired the moment it was written,
+            // and the next pass five seconds later would probe again.
+            listing_failed(backend_type, std::time::Instant::now());
             crate::agent::tmux::WindowIndex::default()
         }
     }
 }
 
-/// When each host was last asked for its windows and failed, and how many times
-/// in a row — the sweep's own backoff, keyed by backend type.
+/// A host's backoff state: when its listing last failed, and how many times in
+/// a row it has now failed — which is what sets the next attempt's distance.
+type ListingFailure = (std::time::Instant, u32);
+
+/// The backoff state of every host whose windows could not be listed, keyed by
+/// backend type.
 ///
 /// Process-wide, like the host-usability probe's verdict cache it borrows its
 /// curve from: the sweep has no state of its own between passes.
-fn unlistable_hosts(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>> {
+fn unlistable_hosts() -> &'static std::sync::Mutex<std::collections::HashMap<String, ListingFailure>>
+{
     static HOSTS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+        std::sync::Mutex<std::collections::HashMap<String, ListingFailure>>,
     > = std::sync::OnceLock::new();
     HOSTS.get_or_init(Default::default)
 }
