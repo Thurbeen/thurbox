@@ -196,14 +196,22 @@ impl Database {
     /// `parent_path`) so a remote parent group disappears as one unit.
     pub fn delete_repo_bookmark(&self, host: &str, repo_path: &Path) -> rusqlite::Result<bool> {
         let path_str = repo_path.to_string_lossy().to_string();
-        self.conn.execute(
+        // One transaction, because the gap between the two statements is a state
+        // no other writer may see: with the members gone and the folder still
+        // there, a rescan committing in it passes
+        // `replace_parent_children`'s parent check, reinserts its children, and
+        // the second DELETE takes only the folder — leaving every member as a
+        // bookmark of its own.
+        let tx = self.write_transaction()?;
+        tx.execute(
             "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
             params![host, path_str],
         )?;
-        let count = self.conn.execute(
+        let count = tx.execute(
             "DELETE FROM repo_bookmarks WHERE host = ?1 AND repo_path = ?2",
             params![host, path_str],
         )?;
+        tx.commit()?;
         Ok(count > 0)
     }
 }
@@ -211,6 +219,63 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Forgetting a folder must never leave its members behind as loose rows.
+    ///
+    /// The rescan side of this is staged below; this is the delete side, and it
+    /// needs the load shape because the window is *inside* `delete_repo_bookmark`
+    /// — between the DELETE of the members and the DELETE of the folder itself.
+    /// A rescan committing in that window passes the parent-still-remembered
+    /// check, reinserts its children, and the second DELETE takes only the
+    /// folder: the members survive with a `parent_path` pointing at nothing, and
+    /// `flatten` offers each as a bookmark of its own. Both statements therefore
+    /// go in one transaction.
+    ///
+    /// Weaker than a staged test by design — it can only under-report, since a
+    /// scheduler that never interleaves the two simply finds nothing — which is
+    /// the same trade `storage::mod`'s continuous-peer test makes, and for the
+    /// same reason: there is no hook inside the call to stage against.
+    #[test]
+    fn forgetting_a_folder_racing_its_rescan_leaves_no_orphans() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open(&path).unwrap();
+        let children: Vec<PathBuf> = (0..8)
+            .map(|n| PathBuf::from(format!("/srv/r{n}")))
+            .collect();
+
+        for round in 0..200 {
+            let folder = PathBuf::from(format!("/srv/f{round}"));
+            db.upsert_repo_bookmark_kind("ssh:box", &folder, true)
+                .unwrap();
+            db.replace_parent_children("ssh:box", &folder, &children)
+                .unwrap();
+
+            // The rescan worker and the keypress, on their own connections.
+            let scan_path = path.clone();
+            let scan_folder = folder.clone();
+            let scan_children = children.clone();
+            let scan = std::thread::spawn(move || {
+                let db = Database::open_existing(&scan_path).unwrap();
+                db.replace_parent_children("ssh:box", &scan_folder, &scan_children)
+            });
+            let forget_path = path.clone();
+            let forget_folder = folder.clone();
+            let forget = std::thread::spawn(move || {
+                let db = Database::open_existing(&forget_path).unwrap();
+                db.delete_repo_bookmark("ssh:box", &forget_folder)
+            });
+            scan.join().unwrap().unwrap();
+            forget.join().unwrap().unwrap();
+
+            let left = db.list_repo_bookmarks("ssh:box").unwrap();
+            assert!(
+                left.is_empty(),
+                "round {round}: forgetting the folder left {:?}",
+                left.iter().map(|row| &row.repo_path).collect::<Vec<_>>()
+            );
+        }
+    }
 
     /// A rescan that lands after its folder was forgotten must write nothing.
     ///
