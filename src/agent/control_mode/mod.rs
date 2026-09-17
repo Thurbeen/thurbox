@@ -777,8 +777,11 @@ pub(super) struct ControlMode {
     /// Where each registered pane lives, for turning `%window-close` into EOF.
     /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
     pub(super) pane_windows: PaneWindowsMapShared,
-    /// FIFO queue of waiters — one per `send_command()`/`send_command_list()`
-    /// call, in order.
+    /// FIFO queue of waiters — one per command written, in the order written.
+    /// Every sender takes a place, including the ones that will not read the
+    /// answer (`send_command_detached`) or will stop waiting for it
+    /// (`send_command_within`): the place is what keeps the queue aligned with
+    /// the wire, not the caller's interest in what comes back.
     response_queue: ResponseQueue,
     /// `(pane_id, state)` pairs from `%subscription-changed` notifications
     /// (remote hook status — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]),

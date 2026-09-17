@@ -1597,7 +1597,7 @@ impl TmuxBackend {
     /// the callers that *can* wait will reconnect soon enough.
     fn ctrl_command_within(&self, cmd: &str, budget: std::time::Duration) -> Result<String> {
         let deadline = std::time::Instant::now() + budget;
-        self.within(deadline, |ctrl| {
+        self.with_control_until(deadline, |ctrl| {
             ctrl.send_command_within(
                 cmd,
                 deadline.saturating_duration_since(std::time::Instant::now()),
@@ -1610,19 +1610,19 @@ impl TmuxBackend {
     /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
     /// the budget covers only the lock, there being no answer to wait for.
     fn ctrl_command_detached(&self, cmd: &str) -> Result<()> {
-        self.within(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+        self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
             ctrl.send_command_detached(cmd)
         })
     }
 
-    /// [`Self::with_control`] that will not wait past `deadline` for the lock.
+    /// [`Self::with_control`], but it will not wait past `deadline` for the lock.
     ///
     /// The plain lock is held across a whole round trip, so one backend is one
     /// queue and a caller can be made to wait out someone else's command as
     /// well as its own — the mirror pass and the attach worker share this lock
     /// with the loop. A caller that must not block bounds the wait here and
     /// takes "busy" for an answer.
-    fn within<F, R>(&self, deadline: std::time::Instant, f: F) -> Result<R>
+    fn with_control_until<F, R>(&self, deadline: std::time::Instant, f: F) -> Result<R>
     where
         F: FnOnce(&ControlMode) -> Result<R>,
     {

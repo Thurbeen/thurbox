@@ -1613,11 +1613,12 @@ Both are sub-millisecond on a healthy link, which is why they read as free. The
 assumption they rest on is that a connection is either working or broken. A link
 that has gone bad is neither: it stays open and carries nothing, so every ssh
 timeout in `shell::SSH_HARDENING_OPTS` is the wrong instrument — nothing fails.
-`send_command` ran out `COMMAND_TIMEOUT` (10 s), `ctrl_command` reconnected —
+`send_command` runs out `COMMAND_TIMEOUT` (10 s), `ctrl_command` reconnects —
 itself a fresh ssh handshake plus `drain_implicit_attach_response` read back
-synchronously — and ran out again. One keypress, twenty-odd seconds of an
-interface that answered nothing. This is the gap the freeze audit recorded as
-"remote-session render and status cost is unmeasured".
+synchronously, neither bounded — and runs out again. Measured below, the
+interface does not answer *at all* for as long as the link stays wedged. This
+is the gap the freeze audit recorded as "remote-session render and status cost
+is unmeasured".
 
 **Decision**: neither question is allowed to wait on the wire.
 
@@ -1669,6 +1670,33 @@ What is **not** fixed: `ChildStdin` is still a `Mutex` shared by the writer and
 every command sender, and a writer blocked on a full pipe holds it. A single
 writer thread owning that handle, fed by a bounded channel, is the remaining
 half.
+
+**Measurement.** The harness is the two scenarios themselves — there is nothing
+for `perf-run.sh` or `frame_cost` to say about a loop that stops answering, and
+an average over a run that includes a hang is not the number anyone wants.
+Terminal 40x120, one session on `ssh:devbox` reached through the stand-in, link
+wedged, timed from the keypress to the palette painted; the same scenario on
+each side of the change, `src/agent/{tmux,control_mode}` swapped and nothing
+else:
+
+| | before | after |
+| --- | --- | --- |
+| a chord answered (`ctrl+e`, then the palette on `ctrl+p`) | not within 30 s | 266 ms |
+| a frame repainted at a new width (40x120 -> 30x100) | not within 30 s | 32 ms |
+
+The "before" figures are a floor, not a reading: each measurement was capped and
+neither ever arrived, so the honest statement is that the interface stopped
+answering, not that it took some particular time to recover. The "after" chord
+is dominated by `LOOP_COMMAND_BUDGET` itself — what a bounded ask costs when the
+host never replies — while the repaint pays nothing, because it no longer asks
+at all.
+
+Both numbers are wall clock, which ADR-P2 and ADR-P5 keep out of the gating
+suite. They are not a threshold here: what the tests assert is that the
+interface answered at all, on a budget that has to clear the measured answer by
+enough to survive this suite's own parallelism and still sit far below a failure
+that never arrives. `tests/tui_e2e.rs`'s `RESPONSIVE` carries that reasoning
+where a reader of the test will meet it.
 
 ---
 

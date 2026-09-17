@@ -2136,11 +2136,22 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
 
 /// How long the interface is given to answer while a remote link is wedged.
 ///
-/// Deliberately far below `control_mode::COMMAND_TIMEOUT` (10 s) and far above
-/// a healthy answer (milliseconds): a frame that arrives inside this could not
-/// have waited on the wire, and one that misses it did. `WAIT` is no use here —
-/// it is longer than the timeout, so a frozen interface would pass.
-const RESPONSIVE: Duration = Duration::from_secs(2);
+/// A **liveness** bound, not a performance one — which is why it does not run
+/// against ADR-P2's "caught by counting, not timing" or ADR-P5's refusal of a
+/// startup-time gate. Neither of those excludes a wall clock as such: `WAIT`
+/// above is one, and every `wait_for` in this file is a timeout. What they
+/// exclude is a threshold close enough to the real value that machine variance
+/// decides the verdict. This one is nowhere near: the measured answer is
+/// ~270 ms and ~20 ms (ADR-P24) while the failure it catches never arrives at
+/// all — measured past 30 s. The budget has to clear the first by enough to
+/// survive this suite's own parallelism, which on a loaded machine delays a pty
+/// test's frames by seconds (the reason `WAIT` is 20 s), and still sit far
+/// below the second. It asks whether the interface answered, not how quickly.
+///
+/// `WAIT` itself is no use here for the opposite reason: at 20 s it is longer
+/// than the `COMMAND_TIMEOUT` (10 s) bounding a single wedged round trip, so a
+/// frozen interface would pass.
+const RESPONSIVE: Duration = Duration::from_secs(5);
 
 /// The remote session's name. Long enough that a narrow terminal cannot show
 /// it, which is what lets a test tell a repaint from leftover glyphs.
@@ -2396,17 +2407,24 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
 
     link.wedge();
 
-    // The rect changes, so the next frame re-sizes the pane behind it.
+    // The rect changes, so the next frame re-sizes the pane behind it — and
+    // that frame is the assertion. Narrowing to 100 columns cuts the header's
+    // right-hand end out of the grid, so `Default` can only be back once the
+    // interface has painted a whole frame at the new width. Blocked mid-paint,
+    // it never does.
+    //
+    // Asserted on the repaint rather than on a chord sent after it: a press
+    // made before the reflow lands can be refused (focus may only rest on a
+    // slot the last painted frame placed, which is what
+    // `a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it`
+    // pins), so pressing here tested the race and not the resize.
     tui.resize(30, 100);
-    tui.send(CTRL_P);
     tui.wait_within(
         RESPONSIVE,
-        "the palette to open after a resize on a wedged link",
-        |frame| frame.contains("type to filter commands"),
+        "the interface to repaint at the new width on a wedged link",
+        |frame| frame.contains("Default"),
     );
 
     link.heal();
-    tui.send(ESC);
-    tui.wait_gone("type to filter commands");
     assert!(tui.quit().success());
 }
