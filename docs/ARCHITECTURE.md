@@ -775,7 +775,7 @@ stalls. Worth the most manual testing.
 ### psmux divergences from tmux
 
 The control-mode protocol is byte-identical over either transport, but the
-**psmux** binary diverges from tmux in four places (all verified against psmux
+**psmux** binary diverges from tmux in five places (all verified against psmux
 3.3.6, each branched on `TmuxTransport::uses_psmux()`). The
 `thurbox-remote-hosts` skill keeps a summary; this is the reference to read
 before touching that path.
@@ -853,6 +853,27 @@ before touching that path.
   every session it was written for and only `kill-server` clears it.
   psmux resolves by window name instead, which is what ADR-25 always intended
   for it.
+- **The `attach-session` carried on argv is answered with nothing.** tmux
+  replies to it with one `%begin`/`%end` block that is not a reply to anything
+  the client sent, and `ControlMode::start` consumes it synchronously, before
+  the reader thread exists, so no waiter can race it. psmux sends no such
+  block — its command counter numbers the *client's* first command 1:
+
+  ```console
+  $ printf 'display-message -p first\ndisplay-message -p second\n' \
+      | psmux -L probe -C attach-session -t thurbox
+  %begin 1789657328 1 1     # the first command sent, not the attach
+  %begin 1789657328 2 1
+  ```
+
+  So the drain is asked only of a multiplexer that answers
+  (`sends_implicit_attach_response`). Asking psmux parks `ControlMode::start`
+  on a `read_until` that returns only when psmux closes the pipe: `ensure_ready`
+  never returns, `kernel::terminal`'s discovery worker never reports, and every
+  session renders "session has no pane yet" with **nothing logged**, because
+  nothing failed — it never came back. That was the headline symptom of issue
+  #1168, and the stamp fix above does not reach it: the two are independent and
+  either one alone leaves the interface attaching no pane at all.
 
 ### A Windows host speaks PowerShell, not `sh`
 

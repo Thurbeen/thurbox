@@ -93,7 +93,12 @@ routes a bracketed paste out of band through the one-shot CLI
 the ADR-25 window stamp there (`stamp_window` / `stamp_local_window` /
 `stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
 `#{@...}` then answers with for **every** window, which made one session's id
-every window's identity and cost Windows every pane it had (issue #1168). Each
+every window's identity. psmux also **answers the argv `attach-session` with
+no `%begin`/`%end` block**, so `ControlMode::start` drains one only where one
+is sent (`sends_implicit_attach_response`); draining psmux parks `ensure_ready`
+on a read that never returns, which is why discovery reported nothing and no
+pane ever attached on Windows (issue #1168 — the two faults are independent and
+either alone is the whole symptom). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
