@@ -261,6 +261,20 @@ const CORE_FIELDS: &[CoreField] = &[
             }
         },
     },
+    CoreField {
+        id: "git_poll_secs",
+        description: "seconds between git stats of a session; 0 is off",
+        get: |s| Value::Number(s.git_poll_secs as f64),
+        // Floored at 0 and nowhere else: 0 is the off switch, and a machine
+        // where every process launch is scanned is exactly where someone wants
+        // it. Every other value is the operator's trade of freshness for
+        // subprocesses.
+        set: |s, v| {
+            if let Value::Number(n) = v {
+                s.git_poll_secs = n.max(0.0) as u64;
+            }
+        },
+    },
 ];
 
 /// The delivery backends, in the order `←`/`→` cycles them. An enum, so it is

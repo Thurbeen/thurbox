@@ -835,9 +835,16 @@ un-lands") and latched: `merged` is a fact about HEAD, HEAD moves when the sessi
 keeps working after its PR lands, and the first `true` fed itself back through
 `drain` forever — so the delete confirmation stopped warning about commits that
 existed nowhere else. A 5 s TTL does not save a key like that; it re-ran the
-worker without re-opening the question. Only `true` is cached, because only one
-direction of staleness is safe here: a stale `true` hides work, a stale `false`
-costs one needless question.
+worker without re-opening the question. Only `true` was cached, because only one
+direction of staleness is safe without a clock: a stale `true` hides work, a
+stale `false` costs one needless question.
+
+> **Revised by ADR-P25.** The `false` is cached too now, on the same commit key
+> and aged by the caller (`snapshot`'s `MERGE_RECHECK`). The direction of
+> staleness is unchanged and still the reason this works — what changed is the
+> price of the needless question: recomputing it is seven subprocesses, per
+> session, per poll, and an open pull request is where a worktree spends most of
+> its life.
 
 **Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
 (`kernel::runs`) every frame — that is the documented pattern, because a fresh answer
@@ -1708,6 +1715,105 @@ where a reader of the test will meet it.
 
 ---
 
+## ADR-P25: The polled git cost is per session, and it is not the frame's (2026-09-17)
+
+**Context**: every ADR above this one is about a frame. This one is about the
+processes an idle thurbox starts. `GitStats` re-stats each session's worktree on
+a fixed 5 s TTL, off the render path, which is correct and was never the
+problem; the problem is the multiplier. Issue #1167 measured `git` running **298
+times in 30 seconds** on an instance holding 16 sessions — no agent responsible,
+the interface itself the parent of every one. The floor is two subprocesses per
+session per TTL, but the ceiling is nine: a branch that is *ahead of the default
+and has not landed* pays `merged_into_default`'s seven as well (`symbolic-ref`,
+`merge-base --is-ancestor`, `diff --quiet`, `merge-base`, `cherry`,
+`commit-tree`, `cherry`), because only a `Some(true)` was ever remembered. An
+open pull request is the state a worktree spends most of its life in, so the
+expensive case was the common one, and `worktree_stats` said so in the
+doc-comment it carried at the time — *"the one answer it never caches"*. On a machine where an
+endpoint-protection agent (Microsoft Defender / Intune on macOS, Defender for
+Endpoint on Windows) scans every process as it is created, that is not a
+background cost at all.
+
+**Decision**: four changes, in order of what they save.
+
+1. **Cache the unmerged answer too**, keyed on the commit exactly as the merged
+   one is, and aged by the caller: `snapshot`'s `MERGE_RECHECK` (60 s) is how
+   old a `false` may be before the next poll stops offering it and runs the
+   check again — a floor on that cadence rather than a deadline, since it is a
+   poll that carries it (see **Consequences**). `worktree_stats` takes a
+   `git::KnownMerge { head, merged }` instead of a bare head.
+2. **Back a session off when its answer stops moving**: each `Stat` carries its
+   own `interval`, doubling per unchanged poll to `GIT_STAT_BACKOFF` (12) times
+   the base and resetting on the first change. A miss — every remote session,
+   every non-repository — is a stable answer too, so it backs off the same way.
+3. **Make the base interval a setting**: `settings.toml`'s `git_poll_secs`,
+   default 5, `0` for off. Read once, where the cache is built.
+4. **Skip the numstat when the status already answered it**: `git diff --numstat
+   HEAD` reports on tracked files, so a `StatusV2` with no `1`/`2`/`u` record
+   means an empty diff by construction.
+
+**Measured** by counting the processes rather than reasoning about them — a
+shim ahead of `git` on `PATH`, over one worktree in the shape a session spends
+most of its life in (ahead of the default, pushed, not landed), which is
+`git::tests::a_polled_stat_costs_nine_subprocesses_cold_and_two_warm` and is
+asserted rather than described, the counts being deterministic:
+
+| one poll of one session | `git` processes |
+| --- | --- |
+| nothing remembered — every poll, before | **9** |
+| the merge answer remembered, a tracked file changed | **2** |
+| the merge answer remembered, nothing tracked changed | **1** |
+
+Per session per minute, at the default and once the answer has settled: 9,
+against 108 before — exactly a twelfth, the remembered answer being re-asked
+once a minute and the stat itself twelve times less often. For the 16-session
+instance the issue measured at ~10/s that is ~2/s, and `git_poll_secs = 0` is
+none. The base scales the rest of the way: at `30` the same session pays its
+nine every six minutes, because the merge recheck then fires on the poll rather
+than ahead of it.
+
+**Rejected**:
+
+- *Only making the TTL a setting* (what the issue offered a PR for) — it makes a
+  badly-scaling loop adjustable rather than making it scale, and leaves the
+  merge check, the dominant cost, running at whatever the operator picked.
+- *Keying the `false` on the commit alone*, with no clock. A branch lands
+  upstream without the worktree moving, so that answer would stand until the
+  session's next commit — `at_risk` would stop warning, which is the failure
+  this check exists to prevent.
+- *Polling only what the screen shows.* The kernel does not know which rows a
+  plugin drew — panes are Lua and the list is theirs — and a snapshot that
+  answered differently depending on who looked would break the one rule this
+  module has (ADR-P6: plugins read a snapshot, they do not drive it).
+- *Watching the worktree with an fs notifier instead of polling.* A watch per
+  session, recursive, over directories an agent writes constantly — more
+  machinery and more wakeups than the thing it replaces, and it still cannot
+  answer "has this branch landed upstream".
+
+**Consequences**: a diffstat can lag. An untouched session's is up to
+`12 × git_poll_secs` old — a minute at the default — and a merged badge as much,
+`MERGE_RECHECK` being a floor on the recheck's cadence rather than a deadline:
+it rides on a poll, so the age it really bounds is a minute *or* that session's
+interval, whichever is longer. At `git_poll_secs = 30` that is six minutes for
+both, which is what raising the knob asks for. The first change anywhere in the
+answer puts a session back on the base cadence, so the one an agent is working
+in never leaves it. At
+`git_poll_secs = 0` the session list shows no diffstat at all and every delete
+asks for confirmation — `at_risk` reads the stat, and a state that could not be
+read is a reason to ask rather than an assumption of clean, which is the
+existing contract for a remote session. That is the trade an operator on a
+scanned machine is asking to make. The demanded diff
+(`kernel::diff`, `DIFF_TTL`) is deliberately untouched: the loop asks for it for
+the **selected** session alone, so one session's worth of it exists however long
+the session list is — which is the property this ADR is restoring for the stat.
+Pinned by the counts above, by
+`git::tests::an_unmerged_answer_is_reused_while_head_stands_still`
+(the control being a worktree whose remote is gone, so only the cache can
+answer), `kernel::snapshot::tests::a_session_whose_answer_stops_moving_is_asked_less_often`
+and `…::a_backed_off_session_is_not_asked_again_inside_its_interval`.
+
+---
+
 ## Measuring: the bench and the load harness (2026-08-29)
 
 Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"
@@ -2003,6 +2109,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | Profile CPU | `cargo flamegraph --profile release-with-debug --bin thurbox` |
 | Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/*.rs` |
 | Confirm idle CPU is low | `scripts/dev/perf-run.sh --idle` — or launch and leave it idle, where `idle skips` climbs while `frames` stays flat |
+| See why `git` keeps running | It is the per-session worktree poll — `git_poll_secs` in `settings.toml` sets its cadence and `0` turns it off (ADR-P25) |
 | Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, below) |
 | See where the time in a frame goes | `cargo bench --bench frame_cost` |
 | Attribute a change | Run one of the two above before and after — a paired reading at the same size and session count, never two absolute numbers from different days |

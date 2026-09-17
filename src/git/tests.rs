@@ -1534,12 +1534,14 @@ fn loose_objects(dir: &Path) -> usize {
 #[test]
 fn re_statting_an_unmerged_worktree_writes_no_further_objects() {
     // The squash check squares the branch off with `commit-tree`, and this is
-    // the caller that re-asks: `worktree_stats` runs every five seconds for as
-    // long as a session sits on unmerged work, `merged: Some(false)` being the
-    // one answer never cached. So the probe commit has to hash the same every
-    // time, or the poll leaves a loose object every five seconds: 28k of them
-    // in one repository here, past the point where `git gc --auto` gives up and
-    // writes `.git/gc.log`.
+    // the caller that re-asks: for as long as a session sits on unmerged work,
+    // every recheck of that answer runs it again. So the probe commit has to
+    // hash the same every time, or each one leaves a loose object: 28k of them
+    // in one repository here — back when the recheck was every five seconds and
+    // the answer was cached for no time at all — past the point where `git gc
+    // --auto` gives up and writes `.git/gc.log`. The recheck is a minute apart
+    // now (`snapshot`'s `MERGE_RECHECK`), which makes the leak slower rather
+    // than bounded.
     //
     // Deliberately `worktree_stats` rather than `merged_into_default`: the leak
     // is a property of the polled path, and a future git call added to that
@@ -1848,7 +1850,14 @@ fn a_merged_answer_is_reused_only_for_the_commit_it_was_computed_for() {
     run(&["add", "-A"]);
     run(&["commit", "-qm", "follow-up work, merged nowhere"]);
 
-    let after = worktree_stats(&work, Some(&landed_head)).expect("stats");
+    let after = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &landed_head,
+            merged: true,
+        }),
+    )
+    .expect("stats");
     assert_ne!(
         after.head, landed.head,
         "the commit the cached answer belonged to is gone"
@@ -1885,10 +1894,224 @@ fn a_merged_answer_is_reused_when_head_has_not_moved() {
     assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
 
     let head = fresh.head.clone().expect("head");
-    let cached = worktree_stats(&work, Some(&head)).expect("stats");
+    let cached = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &head,
+            merged: true,
+        }),
+    )
+    .expect("stats");
     assert_eq!(
         cached.merged,
         Some(true),
         "the key matches HEAD, so the stored answer is taken without re-asking"
     );
+}
+
+#[test]
+fn an_unmerged_answer_is_reused_while_head_stands_still() {
+    // The polling cost issue #1167 measured. `merged: Some(false)` is what a
+    // session answers for as long as its pull request is open — most of its
+    // life — and reaching it costs seven subprocesses (`symbolic-ref`,
+    // `merge-base --is-ancestor`, `diff --quiet`, `merge-base`, two `cherry`s
+    // and a `commit-tree`) on top of the two the stat already pays. Remembered
+    // for `true` only, that ran per session every five seconds, forever.
+    //
+    // Proven the way the `true` half is: hand the key back after taking the
+    // repository's ability to answer the question away, so only the
+    // short-circuit can produce `Some(false)`.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
+    commit_file(&work, "wip.txt", "wip", "work in progress");
+
+    let fresh = worktree_stats(&work, None).expect("stats");
+    assert_eq!(fresh.merged, Some(false), "genuinely unmerged");
+    let head = fresh.head.clone().expect("head");
+
+    // No remote, no default branch to measure against: the check can no longer
+    // reach an answer at all.
+    git_in(&work, &["remote", "remove", "origin"]);
+    assert_eq!(
+        worktree_stats(&work, None).and_then(|s| s.merged),
+        None,
+        "the control: recomputed, this worktree has no answer left to give"
+    );
+
+    let cached = worktree_stats(
+        &work,
+        Some(KnownMerge {
+            head: &head,
+            merged: false,
+        }),
+    )
+    .expect("stats");
+    assert_eq!(
+        cached.merged,
+        Some(false),
+        "the key matches HEAD, so the stored answer stands without re-asking"
+    );
+
+    // And it retires with the commit it belongs to, exactly as a `true` does:
+    // an answer about HEAD may not outlive HEAD.
+    commit_file(&work, "more.txt", "more", "more work");
+    assert_eq!(
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            })
+        )
+        .and_then(|s| s.merged),
+        None,
+        "a stale key must force the recheck, not hand back the old answer"
+    );
+}
+
+#[test]
+fn an_untracked_only_status_needs_no_numstat() {
+    // `git diff --numstat HEAD` is the second subprocess every stat pays, and
+    // the status that precedes it already determines the answer: with no `1`,
+    // `2` or `u` record, no tracked file differs from HEAD and the diff is
+    // empty by construction. `tracked` is what lets the caller skip the run, so
+    // the parse has to tell an untracked-only tree from a changed one.
+    let untracked_only = "# branch.oid abc123\n# branch.head wip\n? new.txt\n";
+    let status = parse_status_v2(untracked_only);
+    assert!(status.dirty, "an untracked file still dirties the tree");
+    assert_eq!(status.untracked, 1);
+    assert!(
+        !status.tracked,
+        "nothing tracked differs from HEAD, so the diff is known to be empty"
+    );
+
+    let changed = "# branch.oid abc123\n1 .M N... 100644 100644 100644 aaa bbb one.txt\n";
+    assert!(
+        parse_status_v2(changed).tracked,
+        "a changed tracked file is exactly what the numstat is for"
+    );
+    let unmerged = "# branch.oid abc123\nu UU N... 100644 100644 100644 100644 a b c one.txt\n";
+    assert!(parse_status_v2(unmerged).tracked, "a conflict counts too");
+}
+
+#[test]
+fn an_untracked_file_reports_dirty_with_no_diff_of_its_own() {
+    // The skip above must not cost the answer: an untracked file moves
+    // `untracked`/`dirty` and nothing else, which is what `diff HEAD` would
+    // have said had it run.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = pr_repo(tmp.path());
+    std::fs::write(work.join("scratch.txt"), "not added").unwrap();
+
+    let stats = worktree_stats(&work, None).expect("stats");
+    assert!(stats.dirty);
+    assert_eq!(stats.untracked, 1);
+    assert_eq!(
+        (stats.files_changed, stats.insertions, stats.deletions),
+        (0, 0, 0),
+        "an untracked file is in no diff against HEAD"
+    );
+}
+
+/// Run `f` with a counting shim ahead of the real `git` on `PATH`, and report
+/// how many `git` processes it started.
+///
+/// The cost this path is judged on is a **process count** — that is what an
+/// endpoint-protection agent scans and what issue #1167 measured with `ps` —
+/// so it is counted directly rather than inferred from the code. The shim
+/// delegates to the real binary, so the answers under measurement are the real
+/// ones.
+#[cfg(unix)]
+fn count_git<T>(at: &Path, f: impl FnOnce() -> T) -> (T, usize) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let real = crate::paths::resolve_on_path("git").expect("git is on PATH");
+    let bin = at.join("shim");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = at.join("git-calls.log");
+    let _ = std::fs::remove_file(&log);
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
+            log = log.display(),
+            real = real.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Prepended rather than replacing: git resolves its own helpers through the
+    // environment it was started with.
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = crate::paths::with_path(path, f);
+    let count = std::fs::read_to_string(&log)
+        .map(|calls| calls.lines().count())
+        .unwrap_or(0);
+    (out, count)
+}
+
+#[test]
+#[cfg(unix)]
+fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
+    // The measurement behind ADR-P25, and the regression gate on it: these
+    // counts are deterministic, so they are asserted rather than described.
+    //
+    // The worktree is the shape a session spends most of its life in — ahead of
+    // the default branch, pushed, not landed — with one staged change so the
+    // numstat has something to report. `set-head` gives `origin` the advertised
+    // HEAD a clone would have, without which the fixture pays one extra
+    // `rev-parse` that a real worktree does not.
+    let tmp = tempfile::tempdir().unwrap();
+    let work = squash_merged_repo(tmp.path());
+    git_in(&work, &["remote", "set-head", "origin", "main"]);
+    git_in(&work, &["checkout", "-q", "-b", "wip", "origin/main"]);
+    commit_file(&work, "wip.txt", "wip", "work in progress");
+    std::fs::write(work.join("wip.txt"), "wip, edited").unwrap();
+
+    let (cold, cold_calls) = count_git(tmp.path(), || worktree_stats(&work, None));
+    let cold = cold.expect("stats");
+    assert_eq!(cold.merged, Some(false), "the stat reached the merge check");
+    assert_eq!(
+        cold_calls, 9,
+        "status + numstat + the merge check's seven: the cost of every single \
+         poll before the answer could be remembered"
+    );
+
+    let head = cold.head.clone().expect("head");
+    let (warm, warm_calls) = count_git(tmp.path(), || {
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            }),
+        )
+    });
+    assert_eq!(warm.expect("stats").merged, Some(false), "same answer");
+    assert_eq!(
+        warm_calls, 2,
+        "with the answer in hand a poll is the status and the numstat"
+    );
+
+    // And with nothing tracked changed, the numstat is a foregone conclusion.
+    git_in(&work, &["checkout", "-q", "--", "wip.txt"]);
+    let (clean, clean_calls) = count_git(tmp.path(), || {
+        worktree_stats(
+            &work,
+            Some(KnownMerge {
+                head: &head,
+                merged: false,
+            }),
+        )
+    });
+    let clean = clean.expect("stats");
+    assert!(!clean.dirty);
+    assert_eq!(clean_calls, 1, "one status, and it answered everything");
 }

@@ -35,6 +35,16 @@ config_version = 1
 # Days of audit-log and session-event history kept (pruned on startup).
 # audit_retention_days = 90
 
+# How often each session's git working tree is re-examined (seconds), for the
+# diffstat and ahead/behind beside it in the session list. `0` turns it off.
+#
+# This is the one knob that governs how much `git` thurbox runs, and the work is
+# per session: raise it on an instance holding many sessions, or where a process
+# launch is expensive for reasons outside thurbox (an endpoint-protection agent
+# that scans every one). A session whose answer stops changing is backed off to
+# 12x this on its own, so the cost of a dormant session is already small.
+# git_poll_secs = 5
+
 # Feature flags: turn whole TUI features off. All default to true.
 # Disabling `automations` also stops the TUI firing schedules and arming
 # the tmux heartbeat on startup; explicit `thurbox-cli automation`
@@ -98,6 +108,11 @@ config_version = 1
 #
 # Keep more terminal history (e.g. long build logs):
 # scrollback_lines = 10000
+#
+# Many sessions, or a machine that scans every process launch (Microsoft
+# Defender / Intune on macOS and Windows): re-stat git less often, or not at all.
+# git_poll_secs = 30
+# git_poll_secs = 0
 #
 # Minimal / focused TUI — turn off panels you don't use (frees key chords too):
 # [features]
@@ -234,6 +249,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
+    doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
 
     if !doc.contains_key("features") {
         doc["features"] = toml_edit::table();
@@ -303,6 +319,7 @@ mod tests {
             "two_panel_min_cols",
             "three_panel_min_cols",
             "audit_retention_days",
+            "git_poll_secs",
             "[features]",
             "tasks",
             "automations",
@@ -334,6 +351,7 @@ mod tests {
         for marker in [
             "Common recipes",
             "scrollback_lines = 10000",
+            "git_poll_secs = 0",
             "version_check = false",
             "auto_update = false",
         ] {

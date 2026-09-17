@@ -68,9 +68,14 @@ struct Computed {
 /// How long a settled diff is trusted before a request recomputes it, and how
 /// soon a failure is retried.
 ///
-/// The TTL matches the git-stat one (`snapshot`'s `GIT_STAT_TTL`, the same 5 s):
-/// both shell out to git about the same worktree, and this was the last cache
-/// without an age — once `Ready`, an entry stood for the life of the process
+/// Five seconds, the same figure the git stat beside it starts from
+/// (`snapshot`'s `git_poll_interval`): both shell out to git about the same
+/// worktree. Fixed rather than settable, and not backed off, because this one
+/// is asked for **one session** — the selection, which is what the loop
+/// requests a diff for — where the stat is asked for every session there is.
+/// A cost bounded by the selection does not track the session list, which is
+/// the whole of what `git_poll_secs` exists to bound. This was the last
+/// cache without an age — once `Ready`, an entry stood for the life of the process
 /// unless something explicitly invalidated it, so a pane watching an agent that
 /// was still writing code showed the diff it first saw. A *failure* retries
 /// sooner (mirroring `repos`' `BRANCHES_RETRY`): held for the full TTL, one
