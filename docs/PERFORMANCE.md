@@ -835,9 +835,16 @@ un-lands") and latched: `merged` is a fact about HEAD, HEAD moves when the sessi
 keeps working after its PR lands, and the first `true` fed itself back through
 `drain` forever — so the delete confirmation stopped warning about commits that
 existed nowhere else. A 5 s TTL does not save a key like that; it re-ran the
-worker without re-opening the question. Only `true` is cached, because only one
-direction of staleness is safe here: a stale `true` hides work, a stale `false`
-costs one needless question.
+worker without re-opening the question. Only `true` was cached, because only one
+direction of staleness is safe without a clock: a stale `true` hides work, a
+stale `false` costs one needless question.
+
+> **Revised by ADR-P25.** The `false` is cached too now, on the same commit key
+> and aged by the caller (`snapshot`'s `MERGE_RECHECK`). The direction of
+> staleness is unchanged and still the reason this works — what changed is the
+> price of the needless question: recomputing it is seven subprocesses, per
+> session, per poll, and an open pull request is where a worktree spends most of
+> its life.
 
 **Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
 (`kernel::runs`) every frame — that is the documented pattern, because a fresh answer

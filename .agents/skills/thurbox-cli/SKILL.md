@@ -603,9 +603,13 @@ The answer is cached against the **commit** it was computed for (`branch.oid`,
 already free from the same `status --porcelain=v2 --branch` run), never against
 the session: `merged` is a fact about HEAD, and a session that keeps working
 after its PR landed is unmerged again on its next commit, so a per-session key
-would latch the stale `true` and stop warning about work. Only `true` is
-cached — a stale `false` costs one needless question, a stale `true` hides
-commits.
+would latch the stale `true` and stop warning about work. Both answers are
+cached and they age differently: a `true` stands as long as HEAD does, a
+`false` only until `snapshot`'s `MERGE_RECHECK` (60 s) retires it, because a
+branch lands upstream without the worktree moving. Caching the `false` at all
+is ADR-P25 — recomputing it is seven subprocesses, per session, per poll — and
+it is the safe direction: a stale `false` costs one needless question, a stale
+`true` hides commits.
 The assessment is the pane's (`at_risk` in `ui/plugins/10_sessions.lua`, reading
 the snapshot's `git` stats — v1 computed it in Rust over `git::worktree_stats`),
 and the question travels through the shared `store.confirm` to the confirmation
