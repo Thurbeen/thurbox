@@ -172,6 +172,27 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The digest out of one line of `sha256sum` / `shasum` **output**.
+///
+/// Not for a published checksums file, which [`parse_checksum`] reads: the
+/// escaping below is the local tool's, and a release artifact's name never
+/// carries a backslash to trigger it.
+///
+/// Normally the first whitespace token, but **GNU coreutils escapes the whole
+/// line** when the file name holds a backslash or a newline: it prefixes the
+/// line with `\\` and escapes those characters inside the name. A Windows path
+/// handed to `sha256sum` inside WSL always contains backslashes, so the digest
+/// came back as `\\c5bd…` and compared unequal to an identical `c5bd…` — which
+/// marked an auto-discovered WSL host permanently unusable and put its probe in
+/// a retry loop that wrote a 4.9 MB log in a day (issue #1168).
+///
+/// Only the one leading marker is stripped: everything after it is the digest
+/// as the tool computed it, and a second `\\` would be part of no digest.
+fn digest_token(line: &str) -> &str {
+    let token = line.split_whitespace().next().unwrap_or("");
+    token.strip_prefix('\\').unwrap_or(token)
+}
+
 /// Verify `file`'s SHA256 against `expected`, shelling out to `sha256sum`
 /// (falling back to `shasum -a 256`) — same tools as `install.sh`.
 fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
@@ -183,7 +204,7 @@ fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
         match cmd.output() {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                let actual = stdout.split_whitespace().next().unwrap_or("");
+                let actual = digest_token(&stdout);
                 return if actual.eq_ignore_ascii_case(expected.trim()) {
                     Ok(())
                 } else {
@@ -498,6 +519,19 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             parse_checksum(body, "thurbox-v0.114.0-aarch64-apple-darwin.tar.gz").as_deref(),
             Some("cccc3333")
         );
+    }
+
+    /// coreutils escapes a line whose file name holds a backslash — which every
+    /// Windows path handed to `sha256sum` inside WSL does. Taking the raw first
+    /// token then compares `\\c5bd…` against `c5bd…` and calls an identical
+    /// digest a mismatch (issue #1168).
+    #[test]
+    fn a_coreutils_escaped_line_yields_the_digest_itself() {
+        let escaped = "\\c5bd00112233  C:\\Users\\me\\thurbox-cli.exe";
+        assert_eq!(digest_token(escaped), "c5bd00112233");
+        // The ordinary line is untouched, and so is an empty answer.
+        assert_eq!(digest_token("c5bd00112233  thurbox-cli"), "c5bd00112233");
+        assert_eq!(digest_token(""), "");
     }
 
     #[test]

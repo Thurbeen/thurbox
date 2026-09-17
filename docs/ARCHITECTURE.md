@@ -775,7 +775,7 @@ stalls. Worth the most manual testing.
 ### psmux divergences from tmux
 
 The control-mode protocol is byte-identical over either transport, but the
-**psmux** binary diverges from tmux in three places (all verified against psmux
+**psmux** binary diverges from tmux in five places (all verified against psmux
 3.3.6, each branched on `TmuxTransport::uses_psmux()`). The
 `thurbox-remote-hosts` skill keeps a summary; this is the reference to read
 before touching that path.
@@ -828,6 +828,52 @@ before touching that path.
   prompt path (`paste_prompt_args`, feeding `send_prompt_now`/
   `deferred_prompt_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
+- **There are no per-window options.** `set-option -w -t <pane> @k v` stores one
+  option for the whole server, and `#{@k}` then expands to *that* on every
+  window — measured on a Windows host running psmux 3.3.6:
+
+  ```console
+  $ psmux -L probe set-option -w -t %3 @probe VALUE_FOR_W2
+  $ psmux -L probe list-windows -F '#{pane_id}|#{window_name}|#{@probe}'
+  %1|w1|VALUE_FOR_W2      # never set on this window
+  %3|w2|VALUE_FOR_W2
+  ```
+
+  So the ADR-25 stamp cannot be written there (`stamp_window` /
+  `stamp_local_window` return early) **and** cannot be read there
+  (`stamps_are_per_window` gates `parse_discovered`, which drops both fields).
+  Both halves are needed: writing alone poisoned the server — one session's id
+  came back as every window's identity, so the session it named saw several
+  windows claiming it (`Located::Unknown`) and every other session saw its own
+  window stamped for somebody else (`Located::Absent`). Both read as
+  "session has no pane yet", and since `Absent` is the one answer a relaunch
+  acts on, each start gave those sessions a *second* agent window (issue #1168).
+  Dropping the stamp on the read side is also what heals a server already
+  carrying a global one, which no migration could reach: the option outlives
+  every session it was written for and only `kill-server` clears it.
+  psmux resolves by window name instead, which is what ADR-25 always intended
+  for it.
+- **The `attach-session` carried on argv is answered with nothing.** tmux
+  replies to it with one `%begin`/`%end` block that is not a reply to anything
+  the client sent, and `ControlMode::start` consumes it synchronously, before
+  the reader thread exists, so no waiter can race it. psmux sends no such
+  block — its command counter numbers the *client's* first command 1:
+
+  ```console
+  $ printf 'display-message -p first\ndisplay-message -p second\n' \
+      | psmux -L probe -C attach-session -t thurbox
+  %begin 1789657328 1 1     # the first command sent, not the attach
+  %begin 1789657328 2 1
+  ```
+
+  So the drain is asked only of a multiplexer that answers
+  (`sends_implicit_attach_response`). Asking psmux parks `ControlMode::start`
+  on a `read_until` that returns only when psmux closes the pipe: `ensure_ready`
+  never returns, `kernel::terminal`'s discovery worker never reports, and every
+  session renders "session has no pane yet" with **nothing logged**, because
+  nothing failed — it never came back. That was the headline symptom of issue
+  #1168, and the stamp fix above does not reach it: the two are independent and
+  either one alone leaves the interface attaching no pane at all.
 
 ### A Windows host speaks PowerShell, not `sh`
 
@@ -1684,9 +1730,13 @@ whose name cannot be resolved is left alone rather than given a second agent.
 Migration is the sole-namesake rule — an unstamped window is adoptable only
 while it is the only one with that name, and it is stamped on adoption
 (`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
-first use. psmux (ADR-13) has no usable window options, so every window there
-reads as unstamped and the name fallback stands — the one place it still
-does, matching the shape of the other psmux carve-outs. And because the stamp
+first use. psmux (ADR-13) has no usable window options, so the name fallback
+stands there — the one place it still does, matching the shape of the other
+psmux carve-outs. "No usable window options" had been read as "a stamp written
+there is simply lost"; it is not, and that cost every Windows pane
+(issue #1168). psmux keeps a *global* option under the name and answers
+`#{@...}` with it for every window, so the stamp has to be withheld at both
+ends rather than merely expected to fail. And because the stamp
 answers for a *role*, the companion shell became reachable: a session owns a
 `tb-` and a `tbs-` window, `sessions.shell_backend_id` is written only once
 the interface has opened one, and every teardown — force delete, reap, `stop`,
