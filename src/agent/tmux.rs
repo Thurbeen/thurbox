@@ -803,6 +803,21 @@ pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex
 /// which draws the same distinction one layer up.
 const SSH_ERROR_EXIT: i32 = 255;
 
+/// The most a command issued from the interface's own loop may cost it —
+/// waiting for the control lock, and for an answer where one is wanted.
+///
+/// Sized against the two things it sits between: a healthy round trip over an
+/// already-open connection is sub-millisecond, and the budget a keypress has
+/// before the interface reads as frozen is a fraction of a second. Generous
+/// enough that a loaded machine or a slow link still gets a real answer; short
+/// enough that a link carrying nothing costs a hitch instead of a freeze.
+const LOOP_COMMAND_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often [`TmuxBackend::ctrl_command_within`] retries the control lock
+/// while its budget lasts. Short enough to be invisible next to the budget,
+/// long enough not to spin.
+const CONTROL_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
 /// Whether a failed listing means the server genuinely holds nothing, given
 /// the layer that failed (`is_ssh` + the exit `code`) and what it said.
 ///
@@ -1571,6 +1586,64 @@ impl TmuxBackend {
         }
     }
 
+    /// Ask one question on a budget, for a caller that must not be made to
+    /// wait: the control lock and the answer together get `budget`, and
+    /// neither a lock held by someone else's round trip nor a link that has
+    /// stopped carrying anything can overrun it.
+    ///
+    /// No reconnect on failure, unlike every other path here. A reconnect is a
+    /// fresh ssh handshake plus the implicit attach response read back
+    /// synchronously — precisely the unbounded wait this exists to avoid — and
+    /// the callers that *can* wait will reconnect soon enough.
+    fn ctrl_command_within(&self, cmd: &str, budget: std::time::Duration) -> Result<String> {
+        let deadline = std::time::Instant::now() + budget;
+        self.with_control_until(deadline, |ctrl| {
+            ctrl.send_command_within(
+                cmd,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+    }
+
+    /// Send a command whose answer nobody reads, without waiting for it.
+    ///
+    /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
+    /// the budget covers only the lock, there being no answer to wait for.
+    fn ctrl_command_detached(&self, cmds: &[&str]) -> Result<()> {
+        self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+            ctrl.send_command_detached(cmds)
+        })
+    }
+
+    /// [`Self::with_control`], but it will not wait past `deadline` for the lock.
+    ///
+    /// The plain lock is held across a whole round trip, so one backend is one
+    /// queue and a caller can be made to wait out someone else's command as
+    /// well as its own — the mirror pass and the attach worker share this lock
+    /// with the loop. A caller that must not block bounds the wait here and
+    /// takes "busy" for an answer.
+    fn with_control_until<F, R>(&self, deadline: std::time::Instant, f: F) -> Result<R>
+    where
+        F: FnOnce(&ControlMode) -> Result<R>,
+    {
+        let guard = loop {
+            match self.control.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(e)) => bail!("control lock: {e}"),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= deadline {
+                        bail!("control mode is busy with another command");
+                    }
+                    std::thread::sleep(CONTROL_LOCK_POLL);
+                }
+            }
+        };
+        let ctrl = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Control mode not started"))?;
+        f(ctrl)
+    }
+
     /// Send a command via control mode without waiting for a response.
     /// On broken pipe, reconnects control mode and retries once.
     fn ctrl_command_nowait(&self, cmd: &str) -> Result<()> {
@@ -2131,20 +2204,37 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        // Resize the window first — panes cannot exceed their window's dimensions.
-        self.ctrl_command(&format!(
-            "resize-window -t {backend_id} -x {cols} -y {rows}"
-        ))?;
-
-        self.ctrl_command(&format!("resize-pane -t {backend_id} -x {cols} -y {rows}"))?;
-
-        Ok(())
+        // Sent, not asked. The caller is the render thread matching the pane to
+        // the rect it is painting into, and the answer is of no use to the
+        // frame: a resize tells the *agent* how to wrap, which is a message to
+        // the host. Waiting for the confirmation put a control-mode round trip
+        // inside the paint, and on a link that had gone bad that was the whole
+        // interface frozen until the command timed out.
+        //
+        // Still two commands and still in this order — a pane cannot exceed its
+        // window — but as one list, so they take the lock once and tmux runs
+        // them without returning to its event loop in between. Sent separately
+        // they could be refused separately, and a window resized around a pane
+        // that was not leaves the agent wrapping at the old width until some
+        // later rect change asks again.
+        self.ctrl_command_detached(&[
+            &format!("resize-window -t {backend_id} -x {cols} -y {rows}"),
+            &format!("resize-pane -t {backend_id} -x {cols} -y {rows}"),
+        ])
     }
 
     fn is_dead(&self, backend_id: &str) -> Result<bool> {
-        let result = self.ctrl_command(&format!(
-            "display-message -t {backend_id} -p '#{{pane_dead}}'"
-        ))?;
+        // Bounded, because the only caller is the interface's own loop deciding
+        // where a chord goes (`coordinator::input`'s passthrough gate). The
+        // unbounded ask ran out `COMMAND_TIMEOUT`, reconnected and ran out
+        // again on a link that had stopped carrying anything — twenty-odd
+        // seconds of an interface that answered nothing, to settle a question
+        // whose honest answer when the host says nothing is the one the caller
+        // already reads an error as: not known to be dead.
+        let result = self.ctrl_command_within(
+            &format!("display-message -t {backend_id} -p '#{{pane_dead}}'"),
+            LOOP_COMMAND_BUDGET,
+        )?;
         Ok(result.trim() == "1")
     }
 

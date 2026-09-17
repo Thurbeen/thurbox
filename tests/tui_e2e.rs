@@ -44,6 +44,9 @@ const WAIT: Duration = Duration::from_secs(20);
 const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
 const CTRL_Y: &[u8] = b"\x19";
+/// Readline's end-of-line, and so one of the chords the interface defers to a
+/// focused agent (`passthrough` in `ui/plugins/10_sessions.lua`).
+const CTRL_E: &[u8] = b"\x05";
 /// What a legacy terminal sends for `ctrl+/` (the search plugin folds
 /// `ctrl+/`, `ctrl+7` and `ctrl+_` into one chord).
 const CTRL_SLASH: &[u8] = b"\x1f";
@@ -88,6 +91,9 @@ fn have_tmux() -> bool {
 /// multiplexer's socket directory, which has to be short.
 struct Profile {
     root: tempfile::TempDir,
+    /// A directory at the front of `PATH`. Empty unless a scenario drops a
+    /// stand-in for a binary the real one resolves there — see `fake_ssh`.
+    bin: PathBuf,
     /// `TMUX_TMPDIR`. An AF_UNIX socket path is limited to ~104 bytes and a
     /// tempdir under a long `TMPDIR` blows through it with "File name too
     /// long", so this is its own short directory — `$XDG_RUNTIME_DIR` where
@@ -99,7 +105,7 @@ struct Profile {
 impl Profile {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        for sub in ["home", "config", "data"] {
+        for sub in ["home", "config", "data", "bin"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
         let socket = private_socket();
@@ -116,8 +122,10 @@ impl Profile {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
+        let bin = root.path().join("bin");
         Self {
             root,
+            bin,
             sockets,
             socket,
         }
@@ -140,6 +148,18 @@ impl Profile {
         // above read as inherited, and the server lands on a derived socket that
         // `Drop` never kills.
         cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+        // `bin` first, so a stand-in dropped there shadows the real binary for
+        // every process this profile launches — the TUI and `thurbox-cli` both,
+        // which is what a scenario that stubs `ssh` needs (the session is
+        // created by one and attached by the other).
+        cmd.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                self.bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
         cmd.env("TERM", "xterm-256color");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
@@ -353,7 +373,13 @@ impl Tui {
     }
 
     fn wait_until(&self, what: &str, done: impl Fn(&str) -> bool) {
-        let deadline = Instant::now() + WAIT;
+        self.wait_within(WAIT, what, done);
+    }
+
+    /// [`Self::wait_until`] on a budget of the caller's choosing — for the
+    /// scenarios where *how long* is the assertion rather than the setup.
+    fn wait_within(&self, budget: Duration, what: &str, done: impl Fn(&str) -> bool) {
+        let deadline = Instant::now() + budget;
         while Instant::now() < deadline {
             if done(&self.frame()) {
                 return;
@@ -2104,4 +2130,301 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+// --- a remote session whose link goes bad -----------------------------------
+
+/// How long the interface is given to answer while a remote link is wedged.
+///
+/// A **liveness** bound, not a performance one — which is why it does not run
+/// against ADR-P2's "caught by counting, not timing" or ADR-P5's refusal of a
+/// startup-time gate. Neither of those excludes a wall clock as such: `WAIT`
+/// above is one, and every `wait_for` in this file is a timeout. What they
+/// exclude is a threshold close enough to the real value that machine variance
+/// decides the verdict. This one is nowhere near: the measured answer is
+/// ~270 ms and ~20 ms (ADR-P24) while the failure it catches never arrives at
+/// all — measured past 30 s. The budget has to clear the first by enough to
+/// survive this suite's own parallelism, which on a loaded machine delays a pty
+/// test's frames by seconds (the reason `WAIT` is 20 s), and still sit far
+/// below the second. It asks whether the interface answered, not how quickly.
+///
+/// `WAIT` itself is no use here for the opposite reason: at 20 s it is longer
+/// than the `COMMAND_TIMEOUT` (10 s) bounding a single wedged round trip, so a
+/// frozen interface would pass.
+const RESPONSIVE: Duration = Duration::from_secs(5);
+
+/// The remote session's name. Long enough that a narrow terminal cannot show
+/// it, which is what lets a test tell a repaint from leftover glyphs.
+const REMOTE_NAME: &str = "afar-on-bad-link";
+
+/// A stand-in for `ssh` that runs the "remote" command on this machine.
+///
+/// The point is not to imitate a network. It is to reproduce the one thing a
+/// real `ssh` puts between thurbox and the multiplexer: **a process that copies
+/// the bytes**, which a test can then stop.
+///
+/// That relay has to be built rather than inherited, because a local tmux has
+/// none. `tmux -C attach-session` hands its stdin and stdout *file descriptors*
+/// to the tmux server and then only shepherds; the server does the I/O on those
+/// inherited fds. So stopping the client changes nothing — it is not on the
+/// data path — while stopping `ssh` wedges the link exactly as a bad network
+/// does. The control connection therefore runs through a pair of `cat` pumps
+/// over fifos, one per direction, and those are the pids recorded.
+///
+/// Every *other* call `exec`s straight through: they are short round trips
+/// whose **exit status is load-bearing** (`has-session` answering "no" is how
+/// `ensure_ready` decides to create a session, and the git probes read theirs),
+/// and only the long-lived connection ever needs to be wedged. Real ssh joins
+/// the command words with spaces and hands them to the host's login shell,
+/// which is what `eval` reads them as here — the same re-splitting
+/// `posix_quote` is written against.
+fn fake_ssh(profile: &Profile) -> Link {
+    use std::os::unix::fs::PermissionsExt;
+    let pids = profile.root.path().join("ssh-pids");
+    let script = profile.bin.join("ssh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             while [ \"$#\" -gt 0 ]; do\n\
+             \x20 case \"$1\" in\n\
+             \x20   -o) shift; shift ;;\n\
+             \x20   -*) shift ;;\n\
+             \x20   *) break ;;\n\
+             \x20 esac\n\
+             done\n\
+             [ \"$#\" -gt 0 ] && shift\n\
+             [ \"$#\" -eq 0 ] && exit 0\n\
+             printf '%s\\n' \"$$\" >> {pids}\n\
+             case \" $* \" in\n\
+             \x20 *\" -C attach-session \"*)\n\
+             \x20   d=$(mktemp -d {root}/link.XXXXXX) || exit 1\n\
+             \x20   mkfifo \"$d/up\" \"$d/down\" || exit 1\n\
+             \x20   eval \"$* \" < \"$d/up\" > \"$d/down\" &\n\
+             \x20   cat < \"$d/down\" &\n\
+             \x20   printf '%s\\n' \"$!\" >> {pids}\n\
+             \x20   exec cat > \"$d/up\"\n\
+             \x20   ;;\n\
+             esac\n\
+             eval \"exec $*\"\n",
+            pids = shell_word(&pids),
+            root = shell_word(profile.root.path()),
+        ),
+    )
+    .expect("write the ssh stand-in");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    Link { pids }
+}
+
+/// A path as one shell word. The profile root is a tempdir, so it is ordinary —
+/// but a `TMPDIR` with a space in it would otherwise split the redirect.
+fn shell_word(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+/// The link the stand-in carries, and the switch that takes it away.
+struct Link {
+    pids: PathBuf,
+}
+
+impl Link {
+    /// Every process the stand-in recorded that is still running — in practice
+    /// the control connection's two pumps, the short calls having exited.
+    fn live(&self) -> Vec<libc::pid_t> {
+        std::fs::read_to_string(&self.pids)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.trim().parse::<libc::pid_t>().ok())
+            // SAFETY: signal 0 delivers nothing; it only reports whether the
+            // process exists.
+            .filter(|pid| unsafe { libc::kill(*pid, 0) } == 0)
+            .collect()
+    }
+
+    fn signal(&self, sig: libc::c_int) -> usize {
+        let live = self.live();
+        for pid in &live {
+            // SAFETY: a pid this process started, and a plain signal number.
+            unsafe { libc::kill(*pid, sig) };
+        }
+        live.len()
+    }
+
+    /// Wedge the link: up, and carrying nothing.
+    ///
+    /// Stopped pumps carry nothing in either direction while every pipe stays
+    /// open, which is what a link that has gone bad looks like from this end —
+    /// and is the case no timeout in the ssh option set reaches, because the
+    /// connection never fails, it just stops working. Killing them instead
+    /// would exercise the broken-pipe path, which already works.
+    fn wedge(&self) {
+        assert_eq!(
+            self.signal(libc::SIGSTOP),
+            2,
+            "a wedge needs both of the control connection's pumps; the session \
+             cannot have attached over the stand-in"
+        );
+    }
+
+    fn heal(&self) {
+        self.signal(libc::SIGCONT);
+    }
+}
+
+impl Drop for Link {
+    /// A wedged process would otherwise outlive a panicking test — it cannot
+    /// even act on the `kill-server` the profile's own drop sends.
+    fn drop(&mut self) {
+        self.heal();
+    }
+}
+
+/// A profile with one `sh` session on a *remote* host, attached and painted.
+///
+/// The host is this machine reached through `fake_ssh`, so everything below
+/// the launcher is real: the `TmuxTransport::Ssh` arm, the POSIX quoting, the
+/// control-mode protocol, the attach worker. `share_sessions = false` because
+/// the host's database would be this database (the ADR-24 loopback), and the
+/// socket is named outright for the same reason the profile names it — a
+/// default would put the "remote" server on the developer's own.
+fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    let link = fake_ssh(&profile);
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    std::fs::write(
+        profile.path("config/hosts.toml"),
+        format!(
+            "[[hosts]]\n\
+             name = \"devbox\"\n\
+             destination = \"e2e@localhost\"\n\
+             socket = \"{socket}\"\n\
+             share_sessions = false\n\
+             worktrees_dir = \"{worktrees}\"\n",
+            socket = profile.socket,
+            worktrees = profile.path("worktrees").display(),
+        ),
+    )
+    .expect("seed hosts");
+    let repo = repo(profile.root.path());
+
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        REMOTE_NAME,
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+        "--host",
+        "devbox",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+
+    let tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for(REMOTE_NAME);
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    Some((profile, link, tui))
+}
+
+#[test]
+fn a_chord_is_answered_while_a_remote_sessions_link_is_wedged() {
+    // The interface must stay the user's while the network is not.
+    //
+    // A *passthrough* chord is the one that goes over the wire. Before it can
+    // be left to the agent, `coordinator::input`'s gate asks whether the
+    // focused pane is dead — `focused_terminal_is_dead` -> `Terminals::is_dead`
+    // -> `TmuxBackend::is_dead`, a control-mode round trip made on the loop
+    // itself. With the link wedged that runs out `COMMAND_TIMEOUT`, reconnects,
+    // and runs out again, and nothing else is handled meanwhile.
+    //
+    // So `ctrl+e` is the press under test and `ctrl+p` is the assertion: the
+    // palette is drawn entirely from the kernel's own registry and needs
+    // nothing from the host, so it can only be late if the press before it
+    // stopped the loop. Two presses rather than one because a live pane's
+    // passthrough chord has no visible outcome of its own — it is forwarded,
+    // which is the whole point of it.
+    //
+    // The answer is already here, without asking: the pane's reader thread sets
+    // `WiredPane::exited` on EOF, and `has_exited` reads it with an atomic load.
+    let Some((_profile, link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+
+    link.wedge();
+
+    tui.send(CTRL_E);
+    tui.send(CTRL_P);
+    tui.wait_within(
+        RESPONSIVE,
+        "the palette to open on a wedged link",
+        |frame| frame.contains("type to filter commands"),
+    );
+
+    // Healed before the exit: quitting detaches every backend, and a wedged one
+    // would hold that up for reasons this test has already made its point about.
+    link.heal();
+    tui.send(ESC);
+    tui.wait_gone("type to filter commands");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
+    // The other half, on the thread that owns the screen. `render_session`
+    // matches the pane to the rect it is painted into, and `Session::resize`
+    // does that by asking the backend — a control-mode round trip, mid-frame.
+    // The placeholder branch right above it already refuses to (*"would issue a
+    // blocking ssh resize on the UI thread — the freeze we're avoiding"*); the
+    // live branch is the one this pins.
+    //
+    // Nothing on screen needs that answer: the pane is resized so the *agent*
+    // wraps correctly, which is a message to the host, not an input to the
+    // frame. It belongs on the queue the keystrokes already go out on.
+    //
+    // Same shape as the chord test, and for the same reason — the palette is
+    // the only thing asserted on, because it is drawn from the kernel's own
+    // registry and owes the host nothing. The session list is deliberately not
+    // used: it comes back on a snapshot tick, which is seconds even on a
+    // healthy link, so it cannot tell a frozen interface from a patient one.
+    let Some((_profile, link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+
+    link.wedge();
+
+    // The rect changes, so the next frame re-sizes the pane behind it — and
+    // that frame is the assertion. Narrowing to 100 columns cuts the header's
+    // right-hand end out of the grid, so `Default` can only be back once the
+    // interface has painted a whole frame at the new width. Blocked mid-paint,
+    // it never does.
+    //
+    // Asserted on the repaint rather than on a chord sent after it: a press
+    // made before the reflow lands can be refused (focus may only rest on a
+    // slot the last painted frame placed, which is what
+    // `a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it`
+    // pins), so pressing here tested the race and not the resize.
+    tui.resize(30, 100);
+    tui.wait_within(
+        RESPONSIVE,
+        "the interface to repaint at the new width on a wedged link",
+        |frame| frame.contains("Default"),
+    );
+
+    link.heal();
+    assert!(tui.quit().success());
 }

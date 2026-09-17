@@ -82,6 +82,18 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   — and, where tmux exists, a headlessly created session attached, painted and
   typed into (`sh` as the agent). Also `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.
+  Two scenarios there cover a **remote session whose link has gone bad**, which
+  needs a stand-in that a local tmux cannot supply on its own: `tmux -C
+  attach-session` hands its stdin and stdout *file descriptors* to the tmux
+  server and then only shepherds, so stopping the client changes nothing, while
+  a real `ssh` is a byte relay whose stopping wedges the link. The `ssh`
+  stand-in therefore runs the control connection through a pair of `cat` pumps
+  over fifos — the pids the test `SIGSTOP`s — and `exec`s straight through for
+  every other call, whose **exit status is load-bearing** (`has-session`
+  answering "no" is how `ensure_ready` decides to create a session). Both
+  scenarios assert only on a kernel-owned overlay, never on the session list:
+  the list returns on a snapshot tick, seconds even on a healthy link, so it
+  cannot tell a frozen interface from a patient one. See ADR-P24.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
   throwaway socket (skipped when tmux is absent), because the bug it pins only
   exists in how tmux resolves a target. 13 tests. Six pin the reap itself: a

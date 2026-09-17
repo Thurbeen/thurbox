@@ -1595,6 +1595,119 @@ window did not move.
 
 ---
 
+## ADR-P24: A wedged link is not a slow one, and the loop waits for neither (2026-09-17)
+
+**Context**: ADR-P7 and ADR-P12 moved everything that *connects* to an off-local
+host off the loop — readying a backend, spawning, restoring. What stayed on it
+were two questions asked of a connection already open, on the assumption that an
+open connection answers promptly:
+
+- `render_session` matches a pane to the rect it is painting into, and
+  `Session::resize` did that by asking the backend — a control-mode round trip
+  inside the paint.
+- `coordinator::input`'s passthrough gate asks whether the focused pane is dead
+  before leaving a `ctrl+<letter>` to the agent — `TmuxBackend::is_dead`, another
+  round trip, on the thread that had just read the key.
+
+Both are sub-millisecond on a healthy link, which is why they read as free. The
+assumption they rest on is that a connection is either working or broken. A link
+that has gone bad is neither: it stays open and carries nothing, so every ssh
+timeout in `shell::SSH_HARDENING_OPTS` is the wrong instrument — nothing fails.
+`send_command` runs out `COMMAND_TIMEOUT` (10 s), `ctrl_command` reconnects —
+itself a fresh ssh handshake plus `drain_implicit_attach_response` read back
+synchronously, neither bounded — and runs out again. Measured below, the
+interface does not answer *at all* for as long as the link stays wedged. This
+is the gap the freeze audit recorded as "remote-session render and status cost
+is unmeasured".
+
+**Decision**: neither question is allowed to wait on the wire.
+
+- **The resize is sent, not asked** (`ControlMode::send_command_detached`). Its
+  answer was never an input to the frame: a resize tells the *agent* how to
+  wrap, which is a message to the host. Both of its commands go as one list, so
+  they take the lock once and cannot be refused separately — a window resized
+  around a pane that was not is the wrong width made durable. The render path
+  memoizes the size it asked for, so it memoizes only what actually went out;
+  otherwise a refused resize would be remembered as done and nothing would ask
+  again. The command still takes a place in the waiter queue and drops the
+  receiver, so `deliver_response` discards the answer
+  — that kept place is what distinguishes it from the pre-existing
+  `send_command_nowait`, whose documented hazard is exactly its absence (with no
+  place of its own, an answer is handed to the next waiter in line and every
+  later response is delivered one command off for the life of the connection).
+- **The deadness question is bounded** (`LOOP_COMMAND_BUDGET`, 250 ms). When the
+  host says nothing inside it, the answer is the one every caller already reads
+  an error as: not known to be dead, so the chord goes to the agent as it would
+  have.
+- **The budget covers the lock, not just the answer** (`TmuxBackend::within`).
+  One backend is one connection is one serialized queue, and the plain
+  `with_control` holds that lock across a whole round trip — the mirror pass and
+  the attach worker share it with the loop, so an unbounded wait for the lock
+  would reintroduce the freeze with none of the waiting done on our own command.
+- **Neither path reconnects.** A reconnect is the unbounded wait this exists to
+  avoid; the callers that *can* wait still reconnect on their own schedule.
+
+**Rejected**:
+
+- *Loosening `SSH_HARDENING_OPTS`* — it does not apply. The connection never
+  fails, so no keepalive fires.
+- *Reading `WiredPane::has_exited` instead of asking* — it flips on the reader's
+  EOF, and a window kept by `remain-on-exit` never delivers one. That is the
+  case the gate exists for (issue: `ctrl+d` could not delete a session whose
+  agent had exited), so the local flag cannot replace the question — only bound
+  how long it is worth waiting for an answer.
+- *Caching the answer with a TTL* — the first ask after a pane dies still has to
+  go out, so the stall is bounded either way, and a cache adds a staleness
+  window to a question asked a few times an hour.
+
+**Consequences**: pinned by two scenarios in `tests/tui_e2e.rs` driving the real
+binary against a real `TmuxTransport::Ssh`, with a stand-in `ssh` whose control
+connection runs through a pair of `cat` pumps that the test stops (`SIGSTOP`) —
+a link up and carrying nothing. One presses a chord and requires the palette —
+drawn from the kernel's own registry, owing the host nothing — inside
+`RESPONSIVE`; the other narrows the terminal and requires a whole frame painted
+at the new width, which a render thread blocked mid-paint never produces.
+Against the pre-fix source both run their budget out. The relay has to be built
+rather than borrowed because a local tmux has none: `tmux -C attach-session`
+hands its stdin and stdout *file descriptors* to the server and then only
+shepherds, so stopping the client
+changes nothing, while stopping `ssh` wedges the link exactly as a bad network
+does.
+
+What is **not** fixed: `ChildStdin` is still a `Mutex` shared by the writer and
+every command sender, and a writer blocked on a full pipe holds it. A single
+writer thread owning that handle, fed by a bounded channel, is the remaining
+half.
+
+**Measurement.** The harness is the two scenarios themselves — there is nothing
+for `perf-run.sh` or `frame_cost` to say about a loop that stops answering, and
+an average over a run that includes a hang is not the number anyone wants.
+Terminal 40x120, one session on `ssh:devbox` reached through the stand-in, link
+wedged, timed from the keypress to the palette painted; the same scenario on
+each side of the change, `src/agent/{tmux,control_mode}` swapped and nothing
+else:
+
+| | before | after |
+| --- | --- | --- |
+| a chord answered (`ctrl+e`, then the palette on `ctrl+p`) | not within 30 s | 266 ms |
+| a frame repainted at a new width (40x120 -> 30x100) | not within 30 s | 32 ms |
+
+The "before" figures are a floor, not a reading: each measurement was capped and
+neither ever arrived, so the honest statement is that the interface stopped
+answering, not that it took some particular time to recover. The "after" chord
+is dominated by `LOOP_COMMAND_BUDGET` itself — what a bounded ask costs when the
+host never replies — while the repaint pays nothing, because it no longer asks
+at all.
+
+Both numbers are wall clock, which ADR-P2 and ADR-P5 keep out of the gating
+suite. They are not a threshold here: what the tests assert is that the
+interface answered at all, on a budget that has to clear the measured answer by
+enough to survive this suite's own parallelism and still sit far below a failure
+that never arrives. `tests/tui_e2e.rs`'s `RESPONSIVE` carries that reasoning
+where a reader of the test will meet it.
+
+---
+
 ## Measuring: the bench and the load harness (2026-08-29)
 
 Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"
@@ -1864,7 +1977,9 @@ worktree/spawn offload should ride with that branch or follow it.
   `fix/automation-exec-nonblocking`.
 - **Remote-session render and status cost is unmeasured**: no active remote
   session existed and both hosts were up, so the `Unreachable` placeholder path
-  never engaged.
+  never engaged. *Partly closed by ADR-P24*, which reproduces the case this
+  audit could not — a link that stays open and carries nothing — and takes the
+  two round trips it froze on off the loop.
 - **Per-frame allocation counts are static reads**, not an allocation profile;
   no allocator instrumentation was added. The O(sessions) left-panel rebuild is
   described by code inspection, not by a measured allocation count.

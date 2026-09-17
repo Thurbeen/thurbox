@@ -178,6 +178,19 @@ session), never on the loop, ADR-P12).
   teeth in the loop, since a down host runs out its ssh timeout. So an
   unreachable or slow host never blocks a frame, and nothing is readied that
   nothing is looking at (ADR-P7/ADR-P12, `docs/PERFORMANCE.md`).
+- **A connection already open is still not something the loop waits on**
+  (ADR-P24). A link that has gone bad stays open and carries nothing, so no ssh
+  timeout fires and a round trip made from the loop runs out `COMMAND_TIMEOUT`,
+  reconnects and runs out again. The two the loop makes are bounded or removed:
+  the pane resize behind a paint is **sent, not asked**
+  (`ControlMode::send_command_detached` — a place kept in the waiter queue with
+  the receiver dropped, which is what `send_command_nowait` lacks), and the
+  passthrough gate's deadness question gets `LOOP_COMMAND_BUDGET`. Both go through
+  `TmuxBackend::within`, which bounds the wait for the **control lock** as well
+  as for the answer — one backend is one connection is one serialized queue,
+  shared with the mirror pass and the attach worker — and neither reconnects,
+  because a reconnect is a fresh handshake plus a synchronous read of the
+  implicit attach response.
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
 - **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
