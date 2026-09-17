@@ -1738,8 +1738,10 @@ background cost at all.
 
 1. **Cache the unmerged answer too**, keyed on the commit exactly as the merged
    one is, and aged by the caller: `snapshot`'s `MERGE_RECHECK` (60 s) is how
-   long a `false` is offered before the check is run again. `worktree_stats`
-   takes a `git::KnownMerge { head, merged }` instead of a bare head.
+   old a `false` may be before the next poll stops offering it and runs the
+   check again — a floor on that cadence rather than a deadline, since it is a
+   poll that carries it (see **Consequences**). `worktree_stats` takes a
+   `git::KnownMerge { head, merged }` instead of a bare head.
 2. **Back a session off when its answer stops moving**: each `Stat` carries its
    own `interval`, doubling per unchanged poll to `GIT_STAT_BACKOFF` (12) times
    the base and resetting on the first change. A miss — every remote session,

@@ -95,7 +95,9 @@ stopped warning about commits that existed nowhere else. Both answers are
 cached, and they age differently: a `true` is a fact about the commit and stands
 as long as HEAD does, while a `false` is a fact about a moment as well — the
 branch lands with the worktree standing still — so the caller stops offering it
-after `MERGE_RECHECK` (60 s). **The cost this cache governs is per session**, so
+once it is `MERGE_RECHECK` (60 s) old. That is a floor on the recheck's
+cadence, not a deadline: it rides on a poll, so the age it really bounds is a
+minute or that session's own interval, whichever is longer. **The cost this cache governs is per session**, so
 it also carries a per-session interval that doubles while the answer does not
 move (`GIT_STAT_BACKOFF`, 12× the base) and a base that is a setting rather than
 a constant (`git_poll_secs`, `0` = off) — nine subprocesses per unlanded session

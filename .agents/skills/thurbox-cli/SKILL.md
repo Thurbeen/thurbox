@@ -604,12 +604,15 @@ already free from the same `status --porcelain=v2 --branch` run), never against
 the session: `merged` is a fact about HEAD, and a session that keeps working
 after its PR landed is unmerged again on its next commit, so a per-session key
 would latch the stale `true` and stop warning about work. Both answers are
-cached and they age differently: a `true` stands as long as HEAD does, a
-`false` only until `snapshot`'s `MERGE_RECHECK` (60 s) retires it, because a
-branch lands upstream without the worktree moving. Caching the `false` at all
-is ADR-P25 — recomputing it is seven subprocesses, per session, per poll — and
-it is the safe direction: a stale `false` costs one needless question, a stale
-`true` hides commits.
+cached and they age differently. A `true` stands as long as HEAD does. A
+`false` is retired by `snapshot`'s `MERGE_RECHECK` (60 s), because a branch
+lands upstream without the worktree moving — but that is a floor on the
+recheck's cadence rather than a deadline: the recheck rides on a poll, so the
+age it really bounds is 60 s *or* that session's own interval, whichever is
+longer, which is six minutes at `git_poll_secs = 30`. Caching the `false` at
+all is ADR-P25 — recomputing it is seven subprocesses, per session, per poll —
+and it is the safe direction: a stale `false` costs one needless question, a
+stale `true` hides commits.
 The assessment is the pane's (`at_risk` in `ui/plugins/10_sessions.lua`, reading
 the snapshot's `git` stats — v1 computed it in Rust over `git::worktree_stats`),
 and the question travels through the shared `store.confirm` to the confirmation
