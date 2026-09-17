@@ -11,6 +11,12 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-create-e2e";
 
@@ -55,31 +61,6 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
-/// Point the spawn at a private socket in a private directory, so it can never
-/// see — or race — the shared dev server (`thurbox-dev`). Without this the
-/// pipeline lands on the real socket: the "throwaway socket" was aspirational,
-/// `cleanup` killed a server nothing used, and the spawned windows leaked into
-/// (and interfered with) whatever else ran there. nextest runs one process per
-/// test, so env mutation is safe. Returns the tempdir so it outlives the test.
-fn isolate_tmux() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
-    dir
-}
-
-fn cleanup() {
-    let _ = Command::new("tmux")
-        .args(["-L", SOCKET, "kill-server"])
-        .output();
-}
-
 /// How many worktrees git has registered for `repo` — the main checkout plus
 /// each linked one.
 ///
@@ -109,7 +90,7 @@ fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
         return;
     }
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (_home, _config) = isolated_config();
     drop(on_disk_db());
 
@@ -151,7 +132,6 @@ fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
             .into_iter()
             .find(|entry| entry.phase == Phase::Failed)
         {
-            cleanup();
             let error = failed.error.unwrap_or_default();
             if error.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {error}");
@@ -167,7 +147,6 @@ fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    cleanup();
     let row = row.expect("a session named after the worktree directory");
 
     assert_eq!(row.cwd.as_deref(), Some(foreign.as_path()));
@@ -191,7 +170,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
 
     // Isolate config and data, so this uses neither the real agents.toml nor
     // the real database. nextest runs each test in its own process, so a
@@ -239,7 +218,6 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
     let spawned = match result {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             // A tmux server that will not start is an environment problem.
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
@@ -294,8 +272,6 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
         .find(|s| s.name == "e2e-probe")
         .expect("the new session should reach the snapshot");
     assert_eq!(published.branch.as_deref(), Some("feat/e2e"));
-
-    cleanup();
 }
 
 /// Two sessions sharing a name — the state accepting the creation flow's
@@ -312,7 +288,7 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     thurbox::paths::set_test_dir(home.path());
     let config = thurbox::paths::config_file()
@@ -339,7 +315,6 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
     let first = match thurbox::session_ops::spawn::spawn_session_headless(&db, request()) {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -349,7 +324,6 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
     };
     let second = thurbox::session_ops::spawn::spawn_session_headless(&db, request())
         .expect("second creation");
-    cleanup();
 
     assert!(first.backend_id.starts_with('%'), "{:?}", first.backend_id);
     assert!(
@@ -381,7 +355,7 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     thurbox::paths::set_test_dir(home.path());
     let config = thurbox::paths::config_file()
@@ -420,7 +394,6 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
     let spawned = match result {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -438,7 +411,6 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
         .expect("query")
         .expect("session persisted")
         .agent_session_id;
-    cleanup();
     assert_eq!(
         persisted.as_deref(),
         Some(external_conversation_id),
@@ -521,7 +493,7 @@ fn create_hooks_fire_once_each_with_the_facts_and_can_reach_the_database() {
         return;
     }
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (home, config) = isolated_config();
     let db = on_disk_db();
     let log = home.path().join("hooks.log");
@@ -543,7 +515,6 @@ fn create_hooks_fire_once_each_with_the_facts_and_can_reach_the_database() {
     ) {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -551,7 +522,6 @@ fn create_hooks_fire_once_each_with_the_facts_and_can_reach_the_database() {
             panic!("creation failed: {e}");
         }
     };
-    cleanup();
 
     assert!(
         spawned.hook_failures.is_empty(),
@@ -587,7 +557,7 @@ fn a_pre_create_veto_leaves_nothing_behind() {
     // the point — so this runs everywhere.
     use std::sync::{Arc, Mutex};
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (_home, config) = isolated_config();
     let db = on_disk_db();
     write_hooks(
@@ -649,7 +619,7 @@ fn a_vetoed_creation_reports_through_the_command_bus() {
     // pipeline, and the refusal is the in-flight error the placeholder shows.
     use thurbox::kernel::command::{Command, CommandBus, Phase};
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (_home, config) = isolated_config();
     drop(on_disk_db());
     write_hooks(
@@ -694,7 +664,7 @@ fn a_post_create_failure_leaves_the_session_running() {
         return;
     }
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (_home, config) = isolated_config();
     let db = on_disk_db();
     write_hooks(
@@ -708,7 +678,6 @@ fn a_post_create_failure_leaves_the_session_running() {
     ) {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -716,7 +685,6 @@ fn a_post_create_failure_leaves_the_session_running() {
             panic!("creation failed: {e}");
         }
     };
-    cleanup();
 
     assert_eq!(
         spawned.hook_failures.len(),
@@ -745,7 +713,7 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
         return;
     }
     let repo = repo();
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let (home, config) = isolated_config();
     let db = on_disk_db();
     let log = home.path().join("hooks.log");
@@ -768,7 +736,6 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
     ) {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -807,7 +774,6 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
     let forced =
         thurbox::session_ops::delete_session_headless(&db, id, true).expect("force delete");
     assert!(forced.hook_failures.is_empty());
-    cleanup();
     assert_eq!(
         events(&log),
         [
@@ -836,13 +802,11 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
     ) {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             panic!("second creation failed: {e}");
         }
     };
     let err = thurbox::session_ops::delete_session_headless(&db, kept.session_id, true)
         .expect_err("the veto refuses the delete");
-    cleanup();
     assert!(err.contains("build still running"), "{err}");
     let row = db
         .get_session_by_id(kept.session_id)
@@ -868,7 +832,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     thurbox::paths::set_test_dir(home.path());
 
@@ -900,7 +864,6 @@ fn a_command_session_survives_restart_and_can_be_parked() {
     let spawned = match result {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -968,8 +931,6 @@ fn a_command_session_survives_restart_and_can_be_parked() {
         id,
         "the session kept its identity across the whole cycle"
     );
-
-    cleanup();
 }
 
 /// Forking a registry-agent session must carry over its recorded `--env`.
@@ -989,7 +950,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
 
     let repo = repo();
     let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let _tmux_dir = isolate_tmux();
+    let _server = TmuxServer::pin(SOCKET);
     let home = tempfile::tempdir().expect("tempdir");
     thurbox::paths::set_test_dir(home.path());
     let config = thurbox::paths::config_file()
@@ -1031,7 +992,6 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
     let spawned = match result {
         Ok(spawned) => spawned,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -1062,7 +1022,6 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
     ) {
         Ok(fork) => fork,
         Err(e) => {
-            cleanup();
             if e.contains("tmux") {
                 eprintln!("skipping: tmux would not spawn a window: {e}");
                 return;
@@ -1079,6 +1038,4 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
         Some("1"),
         "a fork of a registry-agent session must keep the env its parent recorded"
     );
-
-    cleanup();
 }

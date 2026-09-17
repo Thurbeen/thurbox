@@ -25,6 +25,12 @@ use std::time::{Duration, Instant};
 
 use thurbox::kernel::terminal::{ProgramKey, ProgramTransition, Terminals};
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 const SOCKET: &str = "thurbox-program-restart-e2e";
 
 /// Generous next to the exit itself: the budget is for a loaded machine starting
@@ -39,12 +45,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-fn cleanup() {
-    let _ = Command::new("tmux")
-        .args(["-L", SOCKET, "kill-server"])
-        .output();
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn restarting_a_finished_program_still_reports_the_ending() {
     if !have_tmux() {
@@ -53,13 +53,8 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    // nextest runs one process per test, so process-wide env is safe here.
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
     let mut terminals = Terminals::new();
@@ -72,7 +67,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     // this is back to the moment it was written as.
     let short = ["-c".to_string(), "printf started; sleep 1".to_string()];
     if let Err(e) = terminals.start_program(&key, "sh", &short, Some(dir.path()), 24, 80) {
-        cleanup();
         // Not a skip: tmux is installed, so a pane that would not start is the
         // path under test being broken — and a skip would pass it off as a
         // machine without a multiplexer.
@@ -90,7 +84,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     if !exited(&terminals) {
-        cleanup();
         panic!("the program never reported that it ended; nothing to restart over");
     }
 
@@ -112,7 +105,6 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
         .program_state(&key)
         .map(|(_, exited)| !exited)
         .unwrap_or(false);
-    cleanup();
 
     assert!(restarted.is_ok(), "the restart failed: {restarted:?}");
     assert!(

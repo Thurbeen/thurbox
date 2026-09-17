@@ -21,6 +21,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// `claude` reports every state, so nothing here is answered by a coverage gap.
 const AGENTS_TOML: &str = r#"
 config_version = 1
@@ -36,14 +42,20 @@ command = "claude"
 /// the in-process one read the very same files.
 struct Env {
     root: tempfile::TempDir,
+    /// Named outright and reaped structurally: a relocated data dir derives a
+    /// socket of its own, nothing here may reach the operator's server even by
+    /// accident, and a server started here by mistake goes with this `Env`.
+    server: TmuxServer,
 }
 
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
         std::fs::write(root.path().join("agents.toml"), AGENTS_TOML).expect("write agents.toml");
-        std::fs::create_dir_all(root.path().join("tmux")).expect("mkdir");
-        Self { root }
+        Self {
+            root,
+            server: TmuxServer::private("thurbox-agreement-test"),
+        }
     }
 
     fn base(&self) -> PathBuf {
@@ -55,23 +67,15 @@ impl Env {
     }
 
     fn cli(&self, args: &[&str]) -> Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-            .args(args)
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(args)
             .env("HOME", self.base())
             .env("USERPROFILE", self.base())
             .env("THURBOX_CONFIG_DIR", self.base())
             .env("THURBOX_DATA_DIR", self.base())
-            // Named outright: a relocated data dir derives a socket of its own,
-            // and nothing here may reach the operator's server by accident.
-            .env("THURBOX_SOCKET", "thurbox-agreement-test")
-            .env_remove("THURBOX_SOCKET_FOR")
-            // …in a socket directory of this instance's own, so a server
-            // started here by mistake is visibly this test's rather than a
-            // stray in the shared one everybody's tmux uses.
-            .env("TMUX_TMPDIR", self.base().join("tmux"))
-            .env_remove("THURBOX_SESSION")
-            .output()
-            .expect("run thurbox-cli");
+            .env_remove("THURBOX_SESSION");
+        self.server.scope(&mut cmd);
+        let out = cmd.output().expect("run thurbox-cli");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),

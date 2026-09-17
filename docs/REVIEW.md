@@ -207,6 +207,14 @@ A test that shells out to git must scrub the GIT_* location variables
 under this project's own pre-commit hook inherits a GIT_DIR pointing at the
 real repository and will rewrite it.
 
+A test that starts a tmux server must hold a TmuxServer guard
+(tests/support/tmux_server.rs) rather than pin a socket and kill it by hand.
+Teardown written at each exit point is skipped by every path that panics or
+times out, and the server it leaves has lost its socket file with the run's own
+directory, so nothing can connect to reap it. tests/tmux_server_leak.rs gates
+this per pin site; do not propose a cleanup() call as the fix for a leak it
+names.
+
 tests/frames.rs pins bundled panes' frames cell for cell as literals on
 purpose, against fully pinned inputs; that is an owned snapshot contract, not
 an accident, and a failing test prints the new literal to paste. Do not propose

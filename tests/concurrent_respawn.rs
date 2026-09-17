@@ -19,6 +19,12 @@
 use std::collections::HashMap;
 use std::process::Command;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-respawn-test";
 
@@ -50,20 +56,9 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    // Private socket directory as well as a private socket name: the sandbox
-    // pattern, so nothing here can reach a real thurbox server.
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
-    // No server and no session: the state a reboot leaves behind, and the only
-    // state in which the create races at all.
-    tmux(&["kill-server"]);
+    // A guard on a socket directory of its own: no server and no session, which
+    // is the state a reboot leaves behind and the only one the create races in.
+    let _server = TmuxServer::pin(SOCKET);
 
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(SESSIONS));
     let spawns: Vec<_> = (0..SESSIONS)
@@ -95,7 +90,6 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
     let windows =
         String::from_utf8_lossy(&tmux(&["list-windows", "-a", "-F", "#{window_name}"]).stdout)
             .to_string();
-    tmux(&["kill-server"]);
 
     let refused: Vec<&String> = outcomes.iter().filter_map(|o| o.as_ref().err()).collect();
     assert!(

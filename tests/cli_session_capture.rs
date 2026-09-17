@@ -17,6 +17,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-capture-test";
 
@@ -121,17 +127,7 @@ fn capture_reports_the_panes_cursor_foreground_process_and_live_cwd() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    // Private socket directory as well as a private socket name: the sandbox
-    // pattern, so nothing here can reach a real thurbox server.
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     // The pane's directory is deliberately *not* the session's recorded `cwd`
     // (left `None` below): `foreground_cwd` has to come from the live pane, not
@@ -162,7 +158,6 @@ fn capture_reports_the_panes_cursor_foreground_process_and_live_cwd() {
 
     let plain = capture_when_ready(&db, id, false);
     let ansi = capture_when_ready(&db, id, true);
-    tmux(&["kill-server"]);
 
     let text = plain["output"].as_str().expect("output is a string");
     assert!(
@@ -295,10 +290,7 @@ fn capture_reports_pane_state_under_a_non_utf8_locale() {
     std::env::set_var("LANG", "C");
     std::env::remove_var("LC_CTYPE");
 
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     let workdir = tempfile::tempdir().expect("tempdir");
     let workdir_path = workdir.path().canonicalize().expect("canonicalize");
@@ -322,7 +314,6 @@ fn capture_reports_pane_state_under_a_non_utf8_locale() {
     db.upsert_session(&row).expect("persist");
 
     let plain = capture_when_ready(&db, id, false);
-    tmux(&["kill-server"]);
 
     assert_eq!(
         plain["cursor_row"].as_u64(),

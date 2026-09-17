@@ -184,12 +184,17 @@ process. A `static` holds it and `atexit` removes it.
 both by re-running the tests that create them in a child process and checking what
 survived it.
 
-A test that starts a **tmux server owns its removal too**, and that takes three
-things, not one — `tests/tmux_server_leak.rs` is the worked example and the gate:
+A test that starts a **tmux server does not own its removal** — a guard does.
+`tests/support/tmux_server.rs`'s `TmuxServer` is that guard, every harness in
+`tests/` holds one, and `tests/tmux_server_leak.rs` is the worked example and
+the gate. Build one with `TmuxServer::pin(SOCKET)` (process-wide, which nextest
+makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
+child command, **hold it**, and it does three things no call site has to
+remember:
 
-1. **Pin the socket** (`agent::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
+1. **Pins the socket** (`agent::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
    name to kill.
-2. **Clear `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
+2. **Clears `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
    `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
    thurbox session inherits both. `agent::tmux::socket_for` drops an override
    tagged for another instance's data dir — correctly: a harness that isolated
@@ -197,21 +202,39 @@ things, not one — `tests/tmux_server_leak.rs` is the worked example and the ga
    tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in
    place lands on a *derived* socket, and its `kill-server` kills a name nothing
    created. One orphan server, agents and all, per run.
-3. **Point `TMUX_TMPDIR` at a directory of its own**, and let it go away with the
-   test. tmux never unlinks a socket, so even a server killed correctly leaves a
-   dead socket file behind — in the shared directory that is one more file per
-   run, for good.
+3. **Points `TMUX_TMPDIR` at a directory of its own** — the guard's own, not the
+   harness's tempdir. tmux never unlinks a socket, so even a server killed
+   correctly leaves a dead socket file behind; and owning the directory is what
+   lets `Drop` kill the server *before* the socket goes, rather than after,
+   which is the ordering the old shape got wrong.
 
-`tests/tmux_server_leak::every_socket_a_harness_pins_is_scoped_where_it_is_pinned`
-reads (2) and (3) off the sources of every file in `tests/`, because a run that
-leaks still passes every assertion it makes: nothing else here would notice. It
-checks each **pin site**, not each file — `attach_by_name` scopes five times, and
-a file-wide check would let a sixth test that pinned a socket and forgot the rest
-sit behind the other five. Comments are stripped first, so a harness whose
-comment merely mentions the owner tag does not satisfy the rule.
+`Drop` is the point. Teardown used to be a `cleanup()` call written at each exit
+point — eleven of them in `spawn_command_resolution`, more in `create_e2e` — and
+a panic, a failed `.expect()` or a nextest `slow-timeout` termination reached
+none of them. The server survived with its socket file gone, so nothing could
+connect to reap it: one machine held 400 orphans, 1432 processes and 4.4 GiB
+RSS, with 4 sockets between 433 servers (issue #1175). A signal still runs no
+destructor, which is what `just reap-tmux`
+(`scripts/dev/reap-tmux-servers.sh`, Linux) sweeps up.
+
+Two tests hold the line, both in `tests/tmux_server_leak.rs`:
+`the_guard_scopes_every_socket_it_pins` reads (1)–(3) off the guard's own
+source, and `no_harness_pins_a_socket_outside_the_guard` reads every file in
+`tests/` and fails any that pins a socket by hand or builds a guard without
+binding it. That second one checks each **site**, not each file —
+`attach_by_name` scopes five times, and a file-wide check would let a sixth test
+that pinned its own socket sit behind the other five. Both strip comments first,
+so prose about the owner tag does not satisfy the rule; both are read off the
+sources because a run that leaks still passes every assertion it makes.
+`a_panicking_harness_still_reaps_its_tmux_server` is the behavioural half: it
+runs a child copy of the test binary that starts a server and panics, then asks
+the **process table** — not tmux, which cannot answer for a socketless server —
+what survived.
+
 `src/agent/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
-cannot do (3) — the lib's unit tests share a process and `TMUX_TMPDIR` is
-process-wide — so it removes the socket file by hand instead.
+cannot have a socket directory of its own — the lib's unit tests share a process
+and `TMUX_TMPDIR` is process-wide — so it removes the socket file by hand
+instead.
 
 > v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
 > test and `tests/v1_recordings.rs` were deleted with `src/app`. They are in the

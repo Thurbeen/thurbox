@@ -17,6 +17,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// Longer than the fallback's bound, whatever it is set to.
 const QUIET: u64 = 60_000;
 
@@ -239,14 +245,7 @@ fn an_agent_a_driver_started_is_seen_and_named_by_the_interface() {
         return;
     }
     let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, PROBE_SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(PROBE_SOCKET);
     let guard = thurbox::paths::TestPathGuard::new(home.path());
     let agents = thurbox::agent::agent_config::agents_config_path().expect("agents path");
     std::fs::create_dir_all(agents.parent().expect("config dir")).expect("mkdir");

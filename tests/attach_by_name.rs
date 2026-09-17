@@ -18,6 +18,12 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
 use thurbox::session::SessionState;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A socket of this test's own, so it can never see — or kill — a real session.
 const SOCKET: &str = "thurbox-attach-test";
 
@@ -87,17 +93,7 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    // Private socket directory as well as a private socket name: the sandbox
-    // pattern, so nothing here can reach a real thurbox server.
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    // Cleared, not merely overridden: thurbox tags an injected socket with the
-    // data dir it belongs to, so a suite run inside a thurbox pane inherits a
-    // tag naming the operator's instance. `socket_for` then reads the override
-    // above as inherited and derives a socket from this test's own data dir —
-    // a server no `kill-server` here names, left running for good.
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     // The window a session named `demo` produces: `tb-demo`.
@@ -129,7 +125,6 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
     // A name-resolved adoption is queued for the loop to persist, so this row
     // stops depending on its (non-unique) name after this first attach.
     let adopted = terminals.drain_adopted_panes();
-    tmux(&["kill-server"]);
 
     assert!(
         attached,
@@ -149,10 +144,7 @@ async fn a_window_that_appears_later_is_still_picked_up() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
 
@@ -179,7 +171,6 @@ async fn a_window_that_appears_later_is_still_picked_up() {
     while std::time::Instant::now() < deadline {
         terminals.sync(&rows, 24, 80);
         if terminals.is_attached("11111111-1111-1111-1111-111111111111") {
-            tmux(&["kill-server"]);
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -188,7 +179,6 @@ async fn a_window_that_appears_later_is_still_picked_up() {
         .failure("11111111-1111-1111-1111-111111111111")
         .unwrap_or_default()
         .to_string();
-    tmux(&["kill-server"]);
     panic!("the window appeared but was never attached: {failure}");
 }
 
@@ -221,10 +211,7 @@ async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     let pane_of =
@@ -271,7 +258,6 @@ async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
     }
     // Neither pane was resolved by name, so there is nothing to migrate.
     let adopted = terminals.drain_adopted_panes();
-    tmux(&["kill-server"]);
 
     assert!(
         both,
@@ -288,10 +274,7 @@ async fn two_windows_of_the_same_name_are_refused_rather_than_guessed() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     for _ in 0..2 {
@@ -308,7 +291,6 @@ async fn two_windows_of_the_same_name_are_refused_rather_than_guessed() {
     let mut terminals = Terminals::new();
     terminals.sync(&snapshot(vec![row("demo")]), 24, 80);
     let attached = terminals.is_attached("11111111-1111-1111-1111-111111111111");
-    tmux(&["kill-server"]);
     assert!(!attached, "an ambiguous window name must not be guessed at");
 }
 
@@ -331,10 +313,7 @@ async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let home = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", home.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
     tmux(&[
@@ -362,7 +341,6 @@ async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
         .failure("11111111-1111-1111-1111-111111111111")
         .unwrap_or_default()
         .to_string();
-    tmux(&["kill-server"]);
 
     assert!(
         attached,

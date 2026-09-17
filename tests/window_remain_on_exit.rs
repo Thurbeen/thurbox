@@ -25,6 +25,12 @@ use std::process::Command;
 
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 const SOCKET: &str = "thurbox-remain-on-exit-e2e";
 
 fn have_tmux() -> bool {
@@ -41,10 +47,6 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("run tmux")
-}
-
-fn cleanup() {
-    let _ = tmux(&["kill-server"]);
 }
 
 /// What `window-size` says for the window holding `pane`, or for the server when
@@ -90,12 +92,8 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     // The agent, through the headless spawn path — which creates the session and
     // applies its options on the way, exactly as a restart does. A long-lived
@@ -112,7 +110,6 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     let agent_pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            cleanup();
             // Not a skip. tmux is installed — that was checked above — so a
             // spawn that produced no pane is the spawn path being broken, which
             // is half of what this file is about. A skip here would report the
@@ -132,14 +129,12 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
         24,
         80,
     ) {
-        cleanup();
         panic!("the program pane could not be started: {e}");
     }
     let program_pane = pane_of("tbp-");
 
     let agent = remain_on_exit(&agent_pane);
     let program = program_pane.as_deref().map(remain_on_exit);
-    cleanup();
 
     assert_eq!(
         agent, "on",
@@ -174,22 +169,16 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
     let args = ["-c".to_string(), "sleep 300".to_string()];
     let mut first = Terminals::new();
     if let Err(e) = first.start_program(&key, "sh", &args, Some(dir.path()), 24, 80) {
-        cleanup();
         panic!("the program pane could not be started: {e}");
     }
     let Some(pane) = pane_of("tbp-") else {
-        cleanup();
         panic!("the program pane was started and tmux lists no window for it");
     };
 
@@ -207,7 +196,6 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     let mut second = Terminals::new();
     let started = second.start_program(&key, "sh", &args, Some(dir.path()), 24, 80);
     let after = remain_on_exit(&pane);
-    cleanup();
 
     assert!(started.is_ok(), "adoption failed: {started:?}");
     assert_eq!(
@@ -243,12 +231,8 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     let spawned = thurbox::agent::tmux::spawn_window(
         "22222222-2222-4222-8222-222222222222",
@@ -261,7 +245,6 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     let pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            cleanup();
             panic!("the agent window could not be spawned: {other:?}");
         }
     };
@@ -270,7 +253,6 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let listed = pane_of("tb-");
     let retention = remain_on_exit(&pane);
-    cleanup();
 
     assert_eq!(
         listed.as_deref(),
@@ -302,12 +284,8 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     // The older namesake, from the other session that shares the name. Spawned
     // through the same path, so it is a real one rather than a hand-made window.
@@ -320,7 +298,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         &HashMap::new(),
     );
     if !matches!(&first, Ok(pane) if !pane.is_empty()) {
-        cleanup();
         panic!("the first window could not be spawned: {first:?}");
     }
 
@@ -335,7 +312,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     let pane = match second {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            cleanup();
             panic!("the second window could not be spawned: {other:?}");
         }
     };
@@ -346,7 +322,6 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     let alive = String::from_utf8_lossy(&listed.stdout)
         .lines()
         .any(|line| line == pane);
-    cleanup();
 
     assert!(
         alive,
@@ -387,12 +362,8 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, SOCKET);
-    std::env::remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+    let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
-
-    cleanup();
 
     let spawned = thurbox::agent::tmux::spawn_window(
         "55555555-5555-4555-8555-555555555555",
@@ -405,14 +376,12 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     let pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
         other => {
-            cleanup();
             panic!("the agent window could not be spawned: {other:?}");
         }
     };
 
     let window = window_size(Some(&pane));
     let server = window_size(None);
-    cleanup();
 
     assert_eq!(
         window, "manual",

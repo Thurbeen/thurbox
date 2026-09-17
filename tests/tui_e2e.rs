@@ -35,6 +35,12 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// How long a frame is given to show something before the test gives up.
 /// Generous because a cold CI runner pays for the first paint with the Lua
 /// interface load and the SQLite open.
@@ -94,12 +100,10 @@ struct Profile {
     /// A directory at the front of `PATH`. Empty unless a scenario drops a
     /// stand-in for a binary the real one resolves there — see `fake_ssh`.
     bin: PathBuf,
-    /// `TMUX_TMPDIR`. An AF_UNIX socket path is limited to ~104 bytes and a
-    /// tempdir under a long `TMPDIR` blows through it with "File name too
-    /// long", so this is its own short directory — `$XDG_RUNTIME_DIR` where
-    /// there is one, the same rule `scripts/dev/lib/sandbox-env.sh` applies.
-    sockets: PathBuf,
-    socket: String,
+    /// The scenario's own multiplexer server. A guard: whatever the scenario
+    /// does — return, assert, panic on a pty that stopped answering — dropping
+    /// it kills the server and takes its socket directory with it.
+    server: TmuxServer,
 }
 
 impl Profile {
@@ -108,13 +112,6 @@ impl Profile {
         for sub in ["home", "config", "data", "bin"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        let socket = private_socket();
-        let sockets = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_dir())
-            .unwrap_or_else(std::env::temp_dir)
-            .join(&socket);
-        std::fs::create_dir_all(&sockets).expect("mkdir sockets");
         // No update check, no version check (both reach the network), and no
         // automation heartbeat (it would arm a tmux keeper window on startup).
         std::fs::write(
@@ -126,8 +123,7 @@ impl Profile {
         Self {
             root,
             bin,
-            sockets,
-            socket,
+            server: TmuxServer::private(&private_socket()),
         }
     }
 
@@ -142,12 +138,11 @@ impl Profile {
         cmd.env("HOME", self.path("home"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        cmd.env("TMUX_TMPDIR", &self.sockets);
-        cmd.env(thurbox::agent::tmux::SOCKET_OVERRIDE_ENV, &self.socket);
-        // Run from inside a thurbox pane, an inherited owner makes the override
-        // above read as inherited, and the server lands on a derived socket that
-        // `Drop` never kills.
-        cmd.env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV);
+        // Pinned socket, cleared owner tag, private socket directory. Run from
+        // inside a thurbox pane, an inherited owner would make the pin read as
+        // inherited and put the server on a derived socket the guard never
+        // names.
+        self.server.scope(cmd);
         // `bin` first, so a stand-in dropped there shadows the real binary for
         // every process this profile launches — the TUI and `thurbox-cli` both,
         // which is what a scenario that stubs `ssh` needs (the session is
@@ -181,17 +176,6 @@ impl Profile {
             "thurbox-cli {args:?} failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-}
-
-impl Drop for Profile {
-    fn drop(&mut self) {
-        // Best-effort: only a scenario that spawned a session started a server.
-        let _ = Command::new("tmux")
-            .env("TMUX_TMPDIR", &self.sockets)
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
-        let _ = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
@@ -2308,7 +2292,7 @@ fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
              socket = \"{socket}\"\n\
              share_sessions = false\n\
              worktrees_dir = \"{worktrees}\"\n",
-            socket = profile.socket,
+            socket = profile.server.socket(),
             worktrees = profile.path("worktrees").display(),
         ),
     )

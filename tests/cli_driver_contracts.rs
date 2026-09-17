@@ -14,19 +14,32 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 /// A throwaway thurbox instance: its own config, data, home and multiplexer
 /// socket, so no test here reads or writes the operator's.
 struct Env {
     root: tempfile::TempDir,
+    /// Named outright and reaped structurally: a relocated data dir derives a
+    /// socket of its own, nothing here may reach the operator's server even by
+    /// accident, and a server started here by mistake goes with this `Env`.
+    server: TmuxServer,
 }
 
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data", "work", "tmux"] {
+        for sub in ["home", "config", "data", "work"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        Self { root }
+        Self {
+            root,
+            server: TmuxServer::private("thurbox-driver-contract-test"),
+        }
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -51,18 +64,7 @@ impl Env {
         cmd.env("USERPROFILE", self.path("home"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        // Named outright: a relocated data dir derives a socket of its own, and
-        // the pane verbs must never reach the operator's server.
-        cmd.env("THURBOX_SOCKET", "thurbox-driver-contract-test");
-        // …and cleared of the tag that would disarm it: thurbox pairs an
-        // injected socket with the data dir it belongs to, so a suite run
-        // inside a thurbox pane inherits one naming the operator's instance,
-        // and `socket_for` then drops the name above as inherited.
-        cmd.env_remove("THURBOX_SOCKET_FOR");
-        // A socket directory of this instance's own, so a server started here
-        // by mistake is visibly this test's rather than a stray in the shared
-        // one everybody's tmux uses.
-        cmd.env("TMUX_TMPDIR", self.path("tmux"));
+        self.server.scope(&mut cmd);
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
         cmd

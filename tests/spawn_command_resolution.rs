@@ -32,7 +32,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use thurbox::agent::backend::SessionBackend;
-use thurbox::agent::tmux::{TmuxBackend, SOCKET_OVERRIDE_ENV, SOCKET_OWNER_ENV};
+use thurbox::agent::tmux::TmuxBackend;
+
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
 
 /// A throwaway socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-spawn-cmd-e2e";
@@ -43,12 +49,6 @@ fn have_tmux() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-}
-
-fn cleanup() {
-    let _ = Command::new("tmux")
-        .args(["-L", SOCKET, "kill-server"])
-        .output();
 }
 
 /// The `GIT_*` location variables, scrubbed from every `git` call below: git
@@ -97,35 +97,32 @@ fn repo(at: &Path) {
 /// That is the shape of a shared-sessions host (ADR-24), where the TUI invokes
 /// the host's CLI at an absolute path over ssh and sshd hands the command its
 /// own stripped `PATH`.
-fn create_session(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["session", "create"])
+fn create_session(server: &TmuxServer, root: &Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    cmd.args(["session", "create"])
         .args(args)
         .arg("--json")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("THURBOX_CONFIG_DIR", root.join("config"))
         .env("THURBOX_DATA_DIR", root.join("data"))
-        .env("TMUX_TMPDIR", root)
-        .env(SOCKET_OVERRIDE_ENV, SOCKET)
-        // An injected socket is ruled inherited when its paired data dir is not
-        // this one's (see `socket_for`); this test is somebody typing it.
-        .env_remove(SOCKET_OWNER_ENV)
         .env_remove("THURBOX_SESSION")
-        .env_remove("THURBOX_SESSION_ID")
-        .output()
-        .expect("run thurbox-cli session create")
+        .env_remove("THURBOX_SESSION_ID");
+    server.scope(&mut cmd);
+    cmd.output().expect("run thurbox-cli session create")
 }
 
-/// A scratch instance: its own config, data and git repository.
-fn instance() -> (tempfile::TempDir, PathBuf) {
+/// A scratch instance: its own config, data, git repository and tmux server.
+///
+/// The server is a guard: whatever this test does next, dropping it reaps.
+fn instance() -> (tempfile::TempDir, PathBuf, TmuxServer) {
     let root = tempfile::tempdir().expect("tempdir");
     for sub in ["home", "config", "data"] {
         std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
     }
     let checkout = root.path().join("repo");
     repo(&checkout);
-    (root, checkout)
+    (root, checkout, TmuxServer::private(SOCKET))
 }
 
 /// Wait for `path` to appear, so an assertion reads what the pane wrote rather
@@ -162,15 +159,9 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
 
-    // nextest runs one process per test, so process-wide env is safe here.
-    std::env::set_var("TMUX_TMPDIR", dir.path());
-    std::env::set_var(SOCKET_OVERRIDE_ENV, SOCKET);
-    // The override is dropped when it was injected for someone else's data dir
-    // (see `socket_for`); this test *is* somebody typing it.
-    std::env::remove_var(SOCKET_OWNER_ENV);
+    let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    cleanup();
     // The server starts without the agent's directory on `PATH` — the shape a
     // fish user's machine is in whenever the server was started by anything
     // that is not fish.
@@ -188,11 +179,10 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
             "24",
         ])
         .env("PATH", "/usr/bin:/bin")
-        .env("TMUX_TMPDIR", dir.path())
+        .env("TMUX_TMPDIR", server.tmpdir())
         .output()
         .expect("run tmux");
     if !started.status.success() {
-        cleanup();
         eprintln!(
             "skipping: tmux would not start a server: {}",
             String::from_utf8_lossy(&started.stderr).trim()
@@ -211,7 +201,6 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
 
     let backend = TmuxBackend::local();
     if let Err(e) = backend.ensure_ready() {
-        cleanup();
         eprintln!("skipping: tmux control mode would not start: {e:#}");
         return;
     }
@@ -227,7 +216,6 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     let spawned = match spawned {
         Ok(s) => s,
         Err(e) => {
-            cleanup();
             panic!("the spawn itself failed: {e:#}");
         }
     };
@@ -238,7 +226,6 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     }
     let ran = marker.exists();
     drop(spawned);
-    cleanup();
 
     assert!(
         ran,
@@ -265,7 +252,7 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let (root, checkout) = instance();
+    let (root, checkout, server) = instance();
     let seen = root.path().join("cli-seen");
 
     // The agent reports what the pane's own `PATH` finds — exactly the lookup
@@ -280,8 +267,8 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
     )
     .expect("write agents.toml");
 
-    cleanup();
     let out = create_session(
+        &server,
         root.path(),
         &[
             "--name",
@@ -297,7 +284,6 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
         ],
     );
     if !out.status.success() {
-        cleanup();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if stderr.contains("tmux") || stderr.contains("multiplexer") {
             eprintln!("skipping: tmux would not spawn a window: {stderr}");
@@ -308,7 +294,6 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
 
     wait_for(&seen);
     let found = std::fs::read_to_string(&seen);
-    cleanup();
 
     // Separated from the lookup below so a pane that never ran the agent at all
     // cannot read as a pane whose `PATH` came up empty.
@@ -338,11 +323,11 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let (root, checkout) = instance();
+    let (root, checkout, server) = instance();
     let seen = root.path().join("cli-seen");
 
-    cleanup();
     let out = create_session(
+        &server,
         root.path(),
         &[
             "--name",
@@ -359,7 +344,6 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
         ],
     );
     if !out.status.success() {
-        cleanup();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if stderr.contains("tmux") || stderr.contains("multiplexer") {
             eprintln!("skipping: tmux would not spawn a window: {stderr}");
@@ -370,7 +354,6 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
 
     wait_for(&seen);
     let found = std::fs::read_to_string(&seen);
-    cleanup();
 
     let found = found.expect(
         "the command ran: a pane that died on `execvp` of the whole string \
