@@ -283,81 +283,109 @@ fn code_of(src: &str) -> String {
         .join("\n")
 }
 
-/// Every harness that pins a tmux socket clears the inherited owner tag and
-/// gives itself a private socket directory.
+/// Every *place* a harness pins a tmux socket also clears the inherited owner
+/// tag and points `TMUX_TMPDIR` somewhere of its own.
+///
+/// Per pin site, not per file. A file-wide check is satisfied by one correctly
+/// scoped test while a sibling beside it leaks: `attach_by_name` scopes five
+/// times, and a sixth test that pinned a socket and forgot the rest would sit
+/// behind the other five and leak a server on every run. Both halves are
+/// required within [`WINDOW`] lines of the pin, which is what "accompanied by"
+/// means when the check cannot read intent.
 ///
 /// Read off the sources rather than by running them: the leak only shows up on
 /// a machine where the suite runs inside a thurbox pane, and a run that does
-/// leak still passes every assertion it makes. The two things checked are the
-/// two halves of "a server this harness starts is one this harness can find
-/// again" — the name it goes by, and the directory it lives in.
-///
-/// Comments are stripped before anything is matched, the way
-/// `tests/architecture_rules.rs` strips them before extracting references. A
-/// rule read off raw text is satisfied by *prose*: a harness that pins a socket
-/// and says "the owner tag is cleared by the helper above" in a comment — true
-/// when written, false once the helper moves — would pass this gate while
-/// leaking a server on every run, which is the one thing it exists to catch.
+/// leak still passes every assertion it makes. Comments are stripped first, the
+/// way `tests/architecture_rules.rs` strips them before extracting references —
+/// a rule read off raw text is satisfied by prose, and a harness whose comment
+/// merely *mentions* the owner tag would pass while leaking.
 #[test]
-fn every_harness_that_pins_a_socket_scopes_it_completely() {
-    // A *pin* is a set, so lines that remove the variable are dropped first: a
-    // harness that clears `THURBOX_SOCKET` outright is already scoped by the
-    // derivation and has nothing to disarm. Both spellings are looked for —
-    // some harnesses reach for the constant, others set the literal name on a
-    // child `Command`.
-    const PINS: [&str; 2] = ["SOCKET_OVERRIDE_ENV", "\"THURBOX_SOCKET\""];
-    // Spelled as calls, not as bare names: what counts is clearing the variable,
-    // and `remove_var(SOCKET_OWNER_ENV)` or `env_remove("THURBOX_SOCKET_FOR")`
-    // is the only shape that does it.
-    const CLEARS: [&str; 4] = [
-        "remove_var(SOCKET_OWNER_ENV",
-        "remove_var(thurbox::agent::tmux::SOCKET_OWNER_ENV",
-        "env_remove(thurbox::agent::tmux::SOCKET_OWNER_ENV",
-        "env_remove(\"THURBOX_SOCKET_FOR\"",
-    ];
+fn every_socket_a_harness_pins_is_scoped_where_it_is_pinned() {
+    /// How far from the pin the other two may sit. The widest real gap is nine
+    /// lines, so this is headroom rather than latitude: the point is that they
+    /// are part of the same setup, not somewhere else in the file.
+    const WINDOW: usize = 15;
 
     // The one file that is *about* the resolution, sets the pair on purpose,
     // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
 
+    /// Whether `line` sets or clears the variable spelled `literal`, whose
+    /// crate constant — where it has one — is `konst`.
+    ///
+    /// The constant counts on its own, because the multi-line form
+    /// `set_var(\n  SOCKET_OVERRIDE_ENV,\n  …)` puts the verb and the name on
+    /// different lines; an import naming the same constant is not a use of it.
+    /// A bare literal needs the verb beside it, or every mention would count.
+    fn touches(line: &str, konst: Option<&str>, literal: &str, verbs: &[&str]) -> bool {
+        let line = line.trim_start();
+        if line.starts_with("use ") {
+            return false;
+        }
+        // A real use of the constant, not this file's own description of one:
+        // `mark(Some("SOCKET_OVERRIDE_ENV"), …)` names it inside a string, and a
+        // use never is.
+        if konst.is_some_and(|k| {
+            line.match_indices(k)
+                .any(|(at, _)| at == 0 || !line[..at].ends_with('"'))
+        }) {
+            return true;
+        }
+        line.contains(literal) && verbs.iter().any(|v| line.contains(v))
+    }
+
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut offenders = Vec::new();
-    let mut checked = 0usize;
+    let mut pins = 0usize;
     for entry in std::fs::read_dir(&dir).expect("read tests/").flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".rs") || EXEMPT.contains(&name.as_str()) {
             continue;
         }
-        let src = code_of(&std::fs::read_to_string(entry.path()).expect("read test source"));
-        let pinned: String = src
-            .lines()
-            .filter(|line| !line.contains("remove"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !PINS.iter().any(|p| pinned.contains(p)) {
-            continue;
-        }
-        checked += 1;
-        let mut missing = Vec::new();
-        if !CLEARS.iter().any(|c| src.contains(c)) {
-            missing.push("clear THURBOX_SOCKET_FOR");
-        }
-        if !src.contains("TMUX_TMPDIR") {
-            missing.push("set TMUX_TMPDIR to a directory of its own");
-        }
-        if !missing.is_empty() {
-            offenders.push(format!("{name}: must {}", missing.join(" and ")));
+        let src = std::fs::read_to_string(entry.path()).expect("read test source");
+        let code = code_of(&src);
+        let lines: Vec<&str> = code.lines().map(str::trim_end).collect();
+
+        let mark = |konst: Option<&str>, literal: &str, verbs: &[&str]| -> Vec<usize> {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| touches(l, konst, literal, verbs))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let set = ["set_var(", ".env("];
+        let clear = ["remove_var(", "env_remove("];
+        let pinned = mark(Some("SOCKET_OVERRIDE_ENV"), "\"THURBOX_SOCKET\"", &set);
+        let cleared = mark(Some("SOCKET_OWNER_ENV"), "\"THURBOX_SOCKET_FOR\"", &clear);
+        // No crate constant for this one: tmux's own variable, set by name.
+        let scoped = mark(None, "\"TMUX_TMPDIR\"", &set);
+
+        for at in pinned {
+            pins += 1;
+            let near = |xs: &[usize]| xs.iter().any(|x| x.abs_diff(at) <= WINDOW);
+            let mut missing = Vec::new();
+            if !near(&cleared) {
+                missing.push("clear THURBOX_SOCKET_FOR");
+            }
+            if !near(&scoped) {
+                missing.push("set TMUX_TMPDIR to a directory of its own");
+            }
+            if !missing.is_empty() {
+                offenders.push(format!("{name}:{} must {}", at + 1, missing.join(" and ")));
+            }
         }
     }
 
     assert!(
-        checked > 0,
+        pins > 0,
         "no harness pins a socket — this gate has stopped looking at anything"
     );
+    offenders.sort();
     assert!(
         offenders.is_empty(),
-        "these harnesses leak a tmux server when the suite runs inside a \
-         thurbox pane:\n  {}",
+        "these pins leak a tmux server when the suite runs inside a thurbox \
+         pane:\n  {}",
         offenders.join("\n  ")
     );
 }

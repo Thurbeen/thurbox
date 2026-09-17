@@ -190,9 +190,13 @@ things, not one — `tests/tmux_server_leak.rs` is the worked example and the ga
    dead socket file behind — in the shared directory that is one more file per
    run, for good.
 
-`tests/tmux_server_leak::every_harness_that_pins_a_socket_scopes_it_completely`
+`tests/tmux_server_leak::every_socket_a_harness_pins_is_scoped_where_it_is_pinned`
 reads (2) and (3) off the sources of every file in `tests/`, because a run that
-leaks still passes every assertion it makes: nothing else here would notice.
+leaks still passes every assertion it makes: nothing else here would notice. It
+checks each **pin site**, not each file — `attach_by_name` scopes five times, and
+a file-wide check would let a sixth test that pinned a socket and forgot the rest
+sit behind the other five. Comments are stripped first, so a harness whose
+comment merely mentions the owner tag does not satisfy the rule.
 `src/agent/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
 cannot do (3) — the lib's unit tests share a process and `TMUX_TMPDIR` is
 process-wide — so it removes the socket file by hand instead.
