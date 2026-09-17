@@ -337,8 +337,13 @@ not applicable.
    finds is written back to the bookmark rows — which is what the
    folder still shows across a restart and while the host is
    unreachable. A scan that *fails* changes nothing: an unreachable
-   host, or a local folder on a drive that isn't mounted, leaves the
-   folder holding what it last held rather than emptying it.
+   host, or a folder that can't be read, leaves it holding what it
+   last held rather than emptying it. A folder that reads as *empty*
+   is empty — the same answer as deleting the last repository in it,
+   which is half of what the rescan is for. So a folder imported from
+   a mount point goes empty while its drive is unmounted (an unmounted
+   mount point is a readable empty directory) and refills when it
+   comes back.
 
    **Worktrees the repo already has** appear as `↳` child rows under
    whichever repo the cursor is resting on, each showing its directory

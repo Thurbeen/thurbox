@@ -139,6 +139,13 @@ impl Database {
     /// Replace rather than merge, and that is the point: this is called with the
     /// result of a scan, at import and on every re-scan, so a repository deleted
     /// on the host stops being offered instead of outliving it.
+    ///
+    /// A parent that is **no longer remembered** takes no children: a rescan is
+    /// an ssh round trip, so the folder can be forgotten while one is in flight,
+    /// and inserting then would file children under a header that no longer
+    /// exists — which `flatten` offers as standalone bookmarks, one loose row
+    /// per repository the user just forgot. The check is inside the transaction
+    /// so a delete committing between it and the insert cannot slip through.
     pub fn replace_parent_children(
         &self,
         host: &str,
@@ -147,31 +154,41 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let parent_str = parent.to_string_lossy().to_string();
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| {
-            self.conn.execute(
-                "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
-                params![host, parent_str],
-            )?;
-            for child in children {
-                let child_str = child.to_string_lossy().to_string();
-                self.conn.execute(
-                    "INSERT INTO repo_bookmarks \
-                         (host, repo_path, last_used_at, use_count, is_git, parent_path) \
-                     VALUES (?1, ?2, ?3, 1, 1, ?4) \
-                     ON CONFLICT(host, repo_path) DO UPDATE SET \
-                         is_git = 1, \
-                         parent_path = excluded.parent_path",
-                    params![host, child_str, now, parent_str],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => self.conn.execute_batch("COMMIT")?,
-            Err(_) => self.conn.execute_batch("ROLLBACK")?,
+        // `BEGIN IMMEDIATE` (see `Database::write_transaction`): this reads
+        // before it writes, and a deferred transaction that upgrades mid-flight
+        // fails with `SQLITE_BUSY` without consulting `busy_timeout`.
+        let tx = self.write_transaction()?;
+        let remembered = tx.query_row(
+            "SELECT 1 FROM repo_bookmarks \
+             WHERE host = ?1 AND repo_path = ?2 AND is_parent = 1",
+            params![host, parent_str],
+            |_| Ok(()),
+        );
+        match remembered {
+            Ok(()) => {}
+            // Forgotten while this scan was on its way. Its members went with it
+            // (`delete_repo_bookmark` takes them), so there is nothing to clean
+            // up and nothing to write.
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
         }
-        result
+        tx.execute(
+            "DELETE FROM repo_bookmarks WHERE host = ?1 AND parent_path = ?2",
+            params![host, parent_str],
+        )?;
+        for child in children {
+            let child_str = child.to_string_lossy().to_string();
+            tx.execute(
+                "INSERT INTO repo_bookmarks \
+                     (host, repo_path, last_used_at, use_count, is_git, parent_path) \
+                 VALUES (?1, ?2, ?3, 1, 1, ?4) \
+                 ON CONFLICT(host, repo_path) DO UPDATE SET \
+                     is_git = 1, \
+                     parent_path = excluded.parent_path",
+                params![host, child_str, now, parent_str],
+            )?;
+        }
+        tx.commit()
     }
 
     /// Delete a host's repo bookmark. Returns true if it existed. Deleting a
@@ -195,18 +212,50 @@ impl Database {
 mod tests {
     use super::*;
 
+    /// A rescan that lands after its folder was forgotten must write nothing.
+    ///
+    /// Reachable since a remote folder is rescanned in the background: the scan
+    /// is an ssh round trip, and `d` on the folder header during it deletes the
+    /// parent and its members. The worker then wrote its children back anyway —
+    /// and with no parent row left to file them under, `flatten` offers each one
+    /// as a standalone bookmark, so forgetting a folder of eight repositories
+    /// left eight loose rows to delete by hand.
+    #[test]
+    fn a_rescan_that_lands_after_its_folder_was_forgotten_writes_nothing() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_repo_bookmark_kind("ssh:box", Path::new("/srv"), true)
+            .unwrap();
+        db.replace_parent_children("ssh:box", Path::new("/srv"), &[PathBuf::from("/srv/one")])
+            .unwrap();
+
+        assert!(db
+            .delete_repo_bookmark("ssh:box", Path::new("/srv"))
+            .unwrap());
+        db.replace_parent_children(
+            "ssh:box",
+            Path::new("/srv"),
+            &[PathBuf::from("/srv/one"), PathBuf::from("/srv/two")],
+        )
+        .unwrap();
+
+        assert!(
+            db.list_repo_bookmarks("ssh:box").unwrap().is_empty(),
+            "a forgotten folder's members must not come back as rows of their own"
+        );
+    }
+
     /// Two folders rescanning at once must not drop one of the two answers.
     ///
     /// Concurrent callers are new here: this used to run only from the `Alt+P`
     /// import, one keypress at a time, and now also runs from every remote
     /// folder's rescan — so two folder bookmarks on one host come due together
     /// and write from two workers on two connections. What makes that safe is
-    /// that the transaction's *first* statement is the DELETE, so it takes the
-    /// write lock up front and waits out a peer on `busy_timeout` instead of
-    /// upgrading a read snapshot the peer has superseded, which is the
-    /// interleaving WAL refuses outright (`storage::mod`'s twin of this test
-    /// carries that rule and the defect that wrote it). Reordering a read in
-    /// front of that DELETE would break this.
+    /// that the write takes the lock at `BEGIN IMMEDIATE` and so waits out a
+    /// peer on `busy_timeout`, instead of upgrading a read snapshot the peer has
+    /// superseded — the interleaving WAL refuses outright, whatever the timeout
+    /// says (`storage::mod`'s twin of this test carries that rule and the defect
+    /// that wrote it). It matters here because the parent-still-remembered check
+    /// reads before the DELETE writes.
     ///
     /// Staged rather than raced, for the reason that twin gives: the peer takes
     /// the lock before the write starts and commits only once the call is

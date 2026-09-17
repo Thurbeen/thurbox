@@ -482,10 +482,15 @@ fn a_folder_stops_offering_a_repository_that_has_gone() {
 /// Put a stand-in for `ssh` at the front of `PATH`, so a "remote" host in this
 /// test is this machine.
 ///
+/// `cfg(unix)` like the test it serves: it writes a `#!/bin/sh` script and
+/// chmods it, and on Windows it would be dead code that `-D warnings` refuses
+/// to compile.
+///
 /// The remote scan is a `ssh <opts> <dest> sh -c <script>`, and what is being
 /// proved here is that the scan happens at all and that its answer replaces what
 /// was remembered — not that OpenSSH works. A container with a real sshd is what
 /// `scripts/dev/e2e/linux-container.sh` is for.
+#[cfg(unix)]
 fn stub_ssh(home: &Path) {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir");
@@ -514,6 +519,7 @@ fn stub_ssh(home: &Path) {
 }
 
 /// A registry holding one ssh host, reached through [`stub_ssh`].
+#[cfg(unix)]
 fn one_host() -> thurbox::session::HostRegistry {
     thurbox::session::HostRegistry {
         hosts: vec![thurbox::session::HostDef {

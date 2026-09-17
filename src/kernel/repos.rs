@@ -869,12 +869,19 @@ fn push_folder(
 
 /// The git repositories directly under each folder bookmark, scanned now.
 ///
-/// A folder that cannot be read at all — unmounted, deleted, permission denied —
-/// is **left out** rather than reported empty, and the difference is the whole
-/// contract of the map: a key means a scan succeeded and is authoritative, its
-/// absence means there is no scan and what was persisted stands in. Without that,
-/// unplugging the drive a folder lives on would empty it instead of leaving it as
-/// it was last seen.
+/// A folder that cannot be **read** — deleted, permission denied, a path that is
+/// not a directory — is left out rather than reported empty, and the difference
+/// is the whole contract of the map: a key means a scan succeeded and is
+/// authoritative, its absence means there is no scan and what was persisted
+/// stands in.
+///
+/// A folder that reads as empty is empty, and that is deliberate — it is the
+/// same answer as "you deleted the last repository in it", which is half of what
+/// a rescan is for. The consequence is worth knowing: a mount point whose drive
+/// is not mounted is usually a readable empty directory, so a folder imported
+/// from one goes empty until it is mounted again, rather than holding its last
+/// contents. Nothing in a directory listing distinguishes the two, and guessing
+/// from "it used to have members" would keep a folder you really did empty.
 fn scan_parents(bookmarks: &[Bookmark]) -> HashMap<PathBuf, Vec<PathBuf>> {
     bookmarks
         .iter()
