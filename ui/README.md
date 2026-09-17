@@ -342,8 +342,9 @@ These are the ones that cost real time.
   Keyed by action, so only the buttons you moved are listed and deleting an entry
   gives the plugin's own number back. It is read at startup, and it moves a pill
   rather than making one: an entry naming an action no pill declares is ignored. A
-  value that is not a whole number is dropped, and `thurbox-cli config validate` is
-  what names it.
+  value that is not a whole number is refused — that pill keeps the number its
+  plugin declared — but the line stays in your file, and
+  `thurbox-cli config validate` names it.
 - **Give that pane one key that both enters and leaves it**, with `toggle`:
 
   ```lua

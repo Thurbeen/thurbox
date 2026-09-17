@@ -206,7 +206,14 @@ pub struct Registry {
     /// somebody else's file. No default is kept beside it: `declare_all`
     /// replaces the pill list, so the declared number is simply what is there
     /// when no entry names the action.
-    pill_overrides: BTreeMap<String, i64>,
+    ///
+    /// Held as the JSON the file carried rather than as an `i64`, so a value of
+    /// the wrong shape is *kept* and refused at apply time — which is what
+    /// `setting_overrides` does, and it matters more here. `persist` rewrites
+    /// `ui.json` from these maps on any unrelated change, so an entry dropped at
+    /// read time would take the user's own typo out of their file before they
+    /// ever ran `thurbox-cli config validate` over it, leaving nothing to find.
+    pill_overrides: BTreeMap<String, serde_json::Value>,
     /// Plugins the user turned off: absolute paths, present on disk and not
     /// loaded.
     ///
@@ -388,8 +395,16 @@ impl Registry {
             // override because a bound command becomes a key, but a pill has no
             // such source, and a chip that does nothing when pressed is what
             // `bands::entries` already drops declared entries to avoid.
-            if let Some(priority) = self.pill_overrides.get(&pill.action) {
-                pill.priority = *priority;
+            //
+            // A priority is a whole number, so `"75"` or `75.5` is refused here
+            // rather than coerced — the same check the settings loop above makes
+            // against a declared default.
+            let overridden = self
+                .pill_overrides
+                .get(&pill.action)
+                .and_then(serde_json::Value::as_i64);
+            if let Some(priority) = overridden {
+                pill.priority = priority;
             }
         }
     }
@@ -918,7 +933,7 @@ fn overrides_path() -> Option<PathBuf> {
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
-    BTreeMap<String, i64>,
+    BTreeMap<String, serde_json::Value>,
     BTreeMap<String, Granted>,
     BTreeSet<String>,
     Vec<String>,
@@ -1012,20 +1027,19 @@ fn read_settings(parsed: &serde_json::Value) -> BTreeMap<String, Value> {
 
 /// The `pills` half of `ui.json`: a pill's action → the priority it is given.
 ///
-/// A priority is a whole number, so `"75"` or `75.5` is dropped rather than
-/// coerced — and *reported*, as `read_trusted` reports a malformed grant.
-/// Dropping is what a setting of the wrong shape gets too, but not silently:
-/// unlike a setting, which `read_settings` keeps and `apply_overrides` then
-/// declines to use, an entry dropped here is gone from the map `persist` writes
-/// back, so the next unrelated write takes the mistyped line out of the file
-/// and the typo with it. The warning is what survives that, through
-/// `validate_overrides` — `thurbox-cli config validate`, the gate `docs/CONFIG.md`
-/// points dotfiles CI at.
+/// Every entry is kept, whatever shape it has, because `persist` writes this map
+/// back over the user's file — see [`Registry::pill_overrides`]. `apply_overrides`
+/// is what refuses one that is not a whole number; here it is only *reported*, as
+/// `read_trusted` reports a malformed grant, so `thurbox-cli config validate`
+/// names the typo on every run rather than once.
 ///
-/// The section itself is checked for the same reason: `"pills": []` is as easy
-/// to write as `[]` is right for the neighbouring `disabled`, and losing the
-/// whole section quietly is the larger half of the same mistake.
-fn read_pills(parsed: &serde_json::Value, warnings: &mut Vec<String>) -> BTreeMap<String, i64> {
+/// The section itself cannot be kept that way, since a map is not an array:
+/// `"pills": []` is as easy to write as `[]` is right for the neighbouring
+/// `disabled`, so that one is reported and the section ignored.
+fn read_pills(
+    parsed: &serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, serde_json::Value> {
     let mut pills = BTreeMap::new();
     let Some(section) = parsed.get("pills") else {
         return pills;
@@ -1035,14 +1049,12 @@ fn read_pills(parsed: &serde_json::Value, warnings: &mut Vec<String>) -> BTreeMa
         return pills;
     };
     for (action, priority) in map {
-        match priority.as_i64() {
-            Some(priority) => {
-                pills.insert(action.clone(), priority);
-            }
-            None => warnings.push(format!(
+        if priority.as_i64().is_none() {
+            warnings.push(format!(
                 "ui.json: pills[{action}] is not a whole number; ignoring it"
-            )),
+            ));
         }
+        pills.insert(action.clone(), priority.clone());
     }
     pills
 }
@@ -1797,13 +1809,13 @@ mod tests {
         assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
     }
 
-    /// A priority is a whole number. A string or a fraction is ignored rather
-    /// than coerced — and said out loud, because the entry is dropped before
-    /// `persist` can write it back, so the mistyped line goes on the next
-    /// unrelated write and `thurbox-cli config validate` is the only place left
-    /// that can name the typo.
+    /// A priority is a whole number. A string or a fraction is refused rather
+    /// than coerced, reported so `thurbox-cli config validate` can name it —
+    /// and **kept in the file**. Deleting it at read time would have `persist`
+    /// erase the user's own typo on the next unrelated write, leaving a clean
+    /// file, no warning and nothing to find.
     #[test]
-    fn a_pill_priority_of_the_wrong_shape_is_ignored_and_reported() {
+    fn a_pill_priority_of_the_wrong_shape_is_refused_and_kept() {
         let home = tempfile::TempDir::new().expect("tempdir");
         let _guard = crate::paths::TestPathGuard::new(home.path());
         write_overrides(
@@ -1817,13 +1829,26 @@ mod tests {
 
         assert_eq!(band_labels(&registry), vec!["Settings", "Fleet"]);
         let warnings = registry.warnings();
-        assert_eq!(warnings.len(), 2, "one per rejected entry: {warnings:?}");
+        assert_eq!(warnings.len(), 2, "one per refused entry: {warnings:?}");
         for action in ["fleetqueue.toggle", "kernel.settings"] {
             assert!(
                 warnings.iter().any(|w| w.contains(action)),
-                "{action} was dropped without saying so: {warnings:?}"
+                "{action} was refused without saying so: {warnings:?}"
             );
         }
+
+        // The write that used to take the evidence with it.
+        registry
+            .trust("/ui/plugins/mine.lua", "return {}")
+            .expect("trust");
+        let written = std::fs::read_to_string(home.path().join("ui.json")).expect("read back");
+        assert!(written.contains("\"75\""), "{written}");
+        assert!(written.contains("12.5"), "{written}");
+        assert_eq!(
+            Registry::load().warnings().len(),
+            2,
+            "the typo must still be there to be reported on the next run"
+        );
     }
 
     /// `disabled` beside it is a list, so `"pills": []` is the plausible typo,
