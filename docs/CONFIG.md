@@ -478,8 +478,9 @@ Two things keep that from scaling with the session list, and neither needs
 configuring: an answer that comes back **unchanged** stretches that session's
 own interval — doubling each time, up to 12× `git_poll_secs` — and the first
 change resets it, so a dormant session is re-statted a twelfth as often; and
-the merge check's answer is remembered against the commit it was computed for,
-rechecked at most once a minute.
+the merge check's answer is remembered against the commit it was computed for
+and rechecked on the first poll at least a minute later — so its age is bounded
+by a minute or by that session's own interval, whichever is longer.
 
 Raise `git_poll_secs` on an instance holding many sessions, and set it to `0`
 where a process launch is expensive for reasons outside thurbox — **Microsoft

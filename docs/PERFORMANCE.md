@@ -1782,9 +1782,13 @@ than ahead of it.
   answer "has this branch landed upstream".
 
 **Consequences**: a diffstat can lag. An untouched session's is up to
-`12 × git_poll_secs` old (a minute at the default) and a merged badge up to a
-minute; the first change anywhere in the answer puts that session back on the
-base cadence, so the session an agent is working in never leaves it. At
+`12 × git_poll_secs` old — a minute at the default — and a merged badge as much,
+`MERGE_RECHECK` being a floor on the recheck's cadence rather than a deadline:
+it rides on a poll, so the age it really bounds is a minute *or* that session's
+interval, whichever is longer. At `git_poll_secs = 30` that is six minutes for
+both, which is what raising the knob asks for. The first change anywhere in the
+answer puts a session back on the base cadence, so the one an agent is working
+in never leaves it. At
 `git_poll_secs = 0` the session list shows no diffstat at all and every delete
 asks for confirmation — `at_risk` reads the stat, and a state that could not be
 read is a reason to ask rather than an assumption of clean, which is the

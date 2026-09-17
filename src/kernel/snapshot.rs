@@ -360,6 +360,14 @@ const GIT_STAT_BACKOFF: u32 = 12;
 /// check is seven subprocesses, it is the dominant cost of a session with an
 /// open pull request, and nothing acts on the answer faster than a person can
 /// read it — `at_risk` warns before a delete.
+///
+/// A floor on the cadence, not a deadline. The recheck rides on a poll, so what
+/// actually bounds the answer's age is this **or the session's own interval,
+/// whichever is longer** — the same thing at the default, where the backoff
+/// caps at a minute, and `12 × git_poll_secs` for an operator who raised it.
+/// Deliberately so: raising that knob is asking for fewer subprocesses across
+/// the board, and a recheck forced ahead of the interval would spend the ones
+/// it was raised to save.
 const MERGE_RECHECK: Duration = Duration::from_secs(60);
 
 /// A [`crate::git::merged_into_default`] answer, the commit it was computed
@@ -1808,6 +1816,53 @@ mod tests {
         assert!(
             git.inflight.contains("s1"),
             "past its own interval it is asked again"
+        );
+    }
+
+    #[test]
+    fn the_merge_recheck_rides_on_a_poll_rather_than_outpacing_it() {
+        // Deliberate, and asserted so that a later reading of `MERGE_RECHECK`
+        // as a deadline does not "fix" it: the recheck happens on the first
+        // poll that finds the answer stale, so a session polled every six
+        // minutes rechecks every six minutes. An operator who raised
+        // `git_poll_secs` asked for fewer subprocesses, and a recheck forced
+        // ahead of their interval would spend exactly the ones they saved.
+        let base = Duration::from_secs(30);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut git = GitStats::new(Some(base));
+        let aged = |age: Duration| Stat {
+            state: Some(git_state(1)),
+            at: Instant::now().checked_sub(age).expect("recent enough"),
+            merge: Some(MergeAnswer {
+                head: "0f00".to_string(),
+                merged: false,
+                at: Instant::now().checked_sub(age).expect("recent enough"),
+            }),
+            interval: base * GIT_STAT_BACKOFF,
+        };
+
+        // Well past MERGE_RECHECK, nowhere near this session's own interval.
+        git.known.insert("s1".to_string(), aged(MERGE_RECHECK * 2));
+        git.request("s1", dir.path().to_path_buf());
+        assert!(
+            git.inflight.is_empty(),
+            "an overdue merge answer must not pull the whole stat forward"
+        );
+
+        // And on the poll that is due, the answer is withheld from the worker —
+        // which is the recheck being issued, and is stamped as such.
+        git.known
+            .insert("s1".to_string(), aged(base * GIT_STAT_BACKOFF * 2));
+        git.request("s1", dir.path().to_path_buf());
+        assert!(git.inflight.contains("s1"), "the poll itself is due");
+        let stamp = git.known["s1"]
+            .merge
+            .as_ref()
+            .expect("the answer is still held")
+            .at;
+        assert!(
+            stamp.elapsed() < Duration::from_secs(5),
+            "withholding the answer is the recheck, so it is stamped now"
         );
     }
 
