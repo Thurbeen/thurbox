@@ -570,27 +570,37 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     else {
         return HookCli::Unread(cli_on_path.map(str::to_owned));
     };
-    match resolve_cli_on(&path) {
+    match resolve_cli_on(std::ffi::OsStr::new(&path)) {
         Some(found) => HookCli::OnPanePath(found),
         None => HookCli::NotOnPanePath,
     }
 }
 
-/// The `thurbox-cli` a hook command would run, found the way the hook finds it:
-/// by name, on `PATH`.
+/// What **this command's** `PATH` resolves `thurbox-cli` to — the fallback
+/// [`hook_cli`] reports when a pane's own `PATH` cannot be read, and never the
+/// first answer: a hook runs in the pane, so the pane's `PATH` is the one that
+/// decides, and answering with this one is the confusion the `cli` check was
+/// built on.
 ///
 /// Deliberately not [`crate::agent::tmux::resolve_cli_binary`], which prefers
 /// the sibling of the running executable — a hook command carries the bare name
 /// and gets whatever `PATH` gives it, which is precisely the failure being
 /// looked for.
+///
+/// Resolved once for the whole run: the same answer for every session, and each
+/// probe is a directory walk.
 fn thurbox_cli_on_path() -> Option<String> {
-    std::env::var_os("PATH").and_then(|path| resolve_cli_on(&path.to_string_lossy()))
+    resolve_cli_on(&std::env::var_os("PATH")?)
 }
 
 /// `thurbox-cli` on `path`, spelled the way a `PATH` lookup spells it. Shared
 /// by the pane's `PATH` and this process's, so the two cannot disagree about
 /// what counts as finding one.
-fn resolve_cli_on(path: &str) -> Option<String> {
+///
+/// Takes an `OsStr` because a `PATH` is not required to be UTF-8 on Unix, and
+/// going through `to_string_lossy` first would replace the offending bytes and
+/// then fail to find a binary that is sitting right there.
+fn resolve_cli_on(path: &std::ffi::OsStr) -> Option<String> {
     let name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
     std::env::split_paths(path)
         .map(|dir| dir.join(&name))

@@ -3352,11 +3352,6 @@ fn push_window_program(
     for (k, v) in env {
         tmux.args(["-e", &format!("{k}={v}")]);
     }
-    // `PATH` is the one variable `-e` cannot carry, so the CLI's directory
-    // rides in the command instead (see `path_prefix_args`).
-    for arg in path_prefix_args() {
-        tmux.arg(arg);
-    }
     // Pass the command + args as a single argv list. tmux treats trailing args
     // as the command to run inside the window. Resolved here for the same
     // reason the control-mode path resolves it (see `resolve_local_program`):
@@ -3365,7 +3360,43 @@ fn push_window_program(
     // of the two created it — a session created here and later restarted
     // through control mode would otherwise resolve against two different
     // environments.
-    tmux.arg(resolve_local_program(command));
+    let program = resolve_local_program(command);
+    // `PATH` is the one variable `-e` cannot carry, so the CLI's directory
+    // rides in the command instead (see `path_prefix_args`) — but **how many
+    // arguments** that leaves is itself load-bearing, so the prefix is spelled
+    // to keep the count tmux would have seen.
+    //
+    // tmux runs a **one-argument** window command through its `default-shell`
+    // and a multi-argument one through `execvp` (`spawn.c`). A command session
+    // with no args is the one-argument case, and `--command "sleep 300"` only
+    // ever worked because that shell split it. Pushing the prefix as two more
+    // argv entries moved it to `execvp`, which has no splitting to do: the pane
+    // died instantly with status 127 and a `sleep 300: No such file` from
+    // `env`. So with no args the prefix joins the same single token and the
+    // shell still does the splitting it always did.
+    let prefix = path_prefix_args();
+    match (prefix.as_slice(), args.is_empty()) {
+        ([], _) => {
+            tmux.arg(program);
+        }
+        (prefix, true) => {
+            let mut token = prefix
+                .iter()
+                .map(|a| control_mode::shell_escape(a))
+                .collect::<Vec<_>>();
+            // The program itself is **not** escaped: it is what the shell was
+            // already splitting, and escaping it now would break the very
+            // commands this branch exists to keep working.
+            token.push(program);
+            tmux.arg(token.join(" "));
+        }
+        (prefix, false) => {
+            for arg in prefix {
+                tmux.arg(arg);
+            }
+            tmux.arg(program);
+        }
+    }
     for a in args {
         tmux.arg(a);
     }
