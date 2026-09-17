@@ -3485,7 +3485,6 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
 /// UTF-8 — which the callers take as "no prefix", never as a mangled one. Also
 /// `None` when there was no prefix to begin with, since an empty one and an
 /// unspellable one lead to the same command.
-#[cfg(not(windows))]
 fn shell_prefix_tokens() -> Option<Vec<String>> {
     let args = path_prefix_args();
     if args.is_empty() {
