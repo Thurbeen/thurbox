@@ -529,18 +529,18 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// a host that is unconfigured or unreachable, which reads as "owns nothing" —
 /// the conservative answer a teardown gate wants.
 ///
-/// A host that could not be listed is then left alone for a while
-/// ([`may_list`]) instead of being asked again on the next pass. The sweep runs
-/// every five seconds, and a row whose host cannot be resolved is never reaped,
-/// so without this one such row re-probed its host at that rate for the life of
-/// the process — spawning `wsl.exe` from the interface's own loop and writing
-/// 3.9 MB of log in a day (issue #1182).
+/// Asking is claimed rather than merely permitted (`claim_listing`), so a host
+/// that could not be listed is left alone for a while instead of being asked
+/// again on the next pass. The sweep runs every five seconds, and a row whose
+/// host cannot be resolved is never reaped, so without this one such row
+/// re-probed its host at that rate for the life of the process — spawning
+/// `wsl.exe` from the interface's own loop and writing 3.9 MB of log in a day
+/// (issue #1182).
 fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
     if !crate::session::is_remote_backend(backend_type) {
         return crate::agent::tmux::local_window_index().unwrap_or_default();
     }
-    let now = std::time::Instant::now();
-    if !may_list(backend_type, now) {
+    if !claim_listing(backend_type, std::time::Instant::now()) {
         return crate::agent::tmux::WindowIndex::default();
     }
     let Some(host) = super::resolve_host(backend_type).flatten() else {
@@ -565,12 +565,13 @@ fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
     }
 }
 
-/// A host's backoff state: when its listing last failed, and how many times in
-/// a row it has now failed — which is what sets the next attempt's distance.
+/// A host's backoff state: when its listing was last attempted, and how many
+/// times in a row it has failed — which is what sets the next attempt's
+/// distance.
 type ListingFailure = (std::time::Instant, u32);
 
-/// The backoff state of every host whose windows could not be listed, keyed by
-/// backend type.
+/// The backoff state of every host the sweep has asked for its windows and not
+/// been answered by, keyed by backend type.
 ///
 /// Process-wide, like the host-usability probe's verdict cache it borrows its
 /// curve from: the sweep has no state of its own between passes.
@@ -582,22 +583,42 @@ fn unlistable_hosts() -> &'static std::sync::Mutex<std::collections::HashMap<Str
     HOSTS.get_or_init(Default::default)
 }
 
-/// Whether the sweep may ask `backend_type` for its windows at `now`.
+/// Take the right to ask `backend_type` for its windows at `now`, or refuse:
+/// the host is asked only when its last attempt is
+/// [`host_cli::retry_after`](super::host_cli) old — one minute, doubling
+/// towards fifteen, the curve the usability probe beside it climbs.
 ///
-/// The interval after a failure is
-/// [`host_cli::retry_after`](super::host_cli) — one minute, doubling towards
-/// fifteen — so an unreachable host costs the sweep the same as it costs the
-/// usability probe beside it. A poisoned lock asks: the gate exists to spare
-/// work, and skipping a teardown because of it would be the worse failure.
-fn may_list(backend_type: &str, now: std::time::Instant) -> bool {
-    let Ok(cache) = unlistable_hosts().lock() else {
+/// Claiming **stamps the attempt before it is made**, and that is the whole
+/// reason this is one operation rather than a read followed by a write.
+/// `Command::Reap` spawns a fresh thread every five seconds and waits for no
+/// previous one, so a listing blocked on an ssh connect timeout has several
+/// sweeps running inside it at once; a gate that consulted only the last
+/// recorded *failure* would let every one of them through, and the host would
+/// still get a process per pass. The stamp is what the others collide with.
+///
+/// A poisoned lock claims: the gate exists to spare work, and skipping a
+/// teardown because of it would be the worse failure.
+fn claim_listing(backend_type: &str, now: std::time::Instant) -> bool {
+    use std::collections::hash_map::Entry;
+
+    let Ok(mut cache) = unlistable_hosts().lock() else {
         return true;
     };
-    match cache.get(backend_type) {
-        Some((at, failures)) => {
-            now.saturating_duration_since(*at) >= super::host_cli::retry_after(*failures)
+    match cache.entry(backend_type.to_string()) {
+        Entry::Occupied(mut slot) => {
+            let (at, failures) = *slot.get();
+            if now.saturating_duration_since(at) < super::host_cli::retry_after(failures) {
+                return false;
+            }
+            // The count is carried, not reset: a host that keeps failing keeps
+            // backing off rather than starting over at a minute each time.
+            slot.insert((now, failures));
+            true
         }
-        None => true,
+        Entry::Vacant(slot) => {
+            slot.insert((now, 0));
+            true
+        }
     }
 }
 
@@ -948,26 +969,38 @@ mod tests {
         let backend = "ssh:no-such-host-for-the-sweep-backoff-test";
 
         let asked_at = Instant::now();
-        assert!(may_list(backend, asked_at), "the first pass must ask");
         window_index_on(backend);
 
         // The sweep's own cadence, and every pass short of the first retry.
-        assert!(!may_list(backend, asked_at + Duration::from_secs(5)));
-        assert!(!may_list(backend, asked_at + Duration::from_secs(59)));
-        // Past it, the host is asked again — a machine that comes back is still
-        // picked up within the minute.
-        assert!(may_list(backend, asked_at + Duration::from_secs(61)));
+        assert!(!claim_listing(backend, asked_at + Duration::from_secs(5)));
+        assert!(!claim_listing(backend, asked_at + Duration::from_secs(59)));
+        // Past it, one sweep is let through — a machine that comes back is
+        // still picked up within the minute.
+        let past = asked_at + Duration::from_secs(61);
+        assert!(claim_listing(backend, past));
+        // And only one. The reap dispatches a fresh thread every five seconds
+        // without waiting for the last, so a listing still blocked on an
+        // unreachable host has the next sweep arriving inside it; the claim
+        // above is what that one collides with, rather than the failure this
+        // attempt has not recorded yet.
+        assert!(!claim_listing(backend, past + Duration::from_secs(5)));
 
-        // And a host that keeps failing is spaced out further still, on the
-        // same curve the usability probe beside it climbs.
+        // A host that keeps failing is spaced out further still, on the same
+        // curve the usability probe beside it climbs.
         let failed_again = Instant::now();
         listing_failed(backend, failed_again);
-        assert!(!may_list(backend, failed_again + Duration::from_secs(61)));
-        assert!(may_list(backend, failed_again + Duration::from_secs(121)));
+        assert!(!claim_listing(
+            backend,
+            failed_again + Duration::from_secs(61)
+        ));
+        assert!(claim_listing(
+            backend,
+            failed_again + Duration::from_secs(121)
+        ));
 
         // An answer clears it, so the next outage starts over at one minute.
         listing_succeeded(backend);
-        assert!(may_list(backend, failed_again));
+        assert!(claim_listing(backend, failed_again));
     }
 
     fn insert_session(db: &Database, name: &str) -> SessionId {
