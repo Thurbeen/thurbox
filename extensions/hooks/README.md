@@ -70,14 +70,23 @@ below), do the same.
   `~/.codex/hooks.json`. We **JSON-merge** our entries in (a `[[config_merges]]`,
   guarded by `requires_dir`) so your own hooks are preserved; uninstall prunes
   exactly ours back out. Events: `SessionStart` → idle,
-  `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `PermissionRequest` →
-  blocked, `Stop` → done. The block edge is **structured** — codex has a real
-  approval event, so unlike claude/antigravity nothing is inferred from the text
-  of a notification — and `PostToolUse` is the edge back out once the approved
-  tool runs. `Stop` must print JSON on a zero exit (`echo '{}'`, the no-op
+  `UserPromptSubmit`/`PostToolUse` → working, `PermissionRequest` and
+  `PreToolUse` matching `request_user_input` → blocked, `Stop` → done. **Both**
+  block edges are **structured** — a real approval event and a real tool call,
+  so unlike claude/antigravity nothing is inferred from the text of a
+  notification — and `PostToolUse` is the edge back out of either. The second
+  one is the questions plan mode asks: codex fires no approval event for them,
+  the turn just sits inside the `request_user_input` tool until you answer.
+  `PreToolUse` is used for nothing else, because it fires *before*
+  `PermissionRequest` (so an unmatched `working` group never cleared a block)
+  and codex runs an event's hooks concurrently (so it could not be kept beside
+  the matched one without racing it). The matcher is matched against the whole
+  tool name, which is what keeps the non-blocking `request_user_input_async` out
+  of it. `Stop` must print JSON on a zero exit (`echo '{}'`, the no-op
   decision; its schema is `deny_unknown_fields` and takes only `decision`/`reason`
   plus the universal fields), or codex fails the turn. Verified against
-  codex-cli 0.154.0 over a real turn, approval prompt included. This replaced the
+  codex-cli 0.154.0 over real turns — approval prompt and question included, and
+  a bare `request_user` matcher confirmed not to fire. This replaced the
   old `-c notify=…` override (which only reported done); the trade is a
   reversible write into a separate `~/.codex/hooks.json`, never your
   `config.toml`.

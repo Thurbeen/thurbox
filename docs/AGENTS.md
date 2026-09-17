@@ -172,18 +172,29 @@ embedded hook assets live in
   shape the payload had when it wrote it. It still takes a user hook that calls
   `session signal` with it, in JSON; the TOML one passes over it.
   - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
-    UserPromptSubmit/PreToolUse/PostToolUse→working, PermissionRequest→blocked,
-    Stop→done). Its block edge is a **structured** approval event, like kimi's,
-    with PostToolUse as the edge back out. Two things are codex's alone: `Stop`
+    UserPromptSubmit/PostToolUse→working, PermissionRequest and
+    PreToolUse matching `request_user_input`→blocked, Stop→done). It has **two**
+    block edges and both are **structured**, like kimi's: a real approval event,
+    and the `request_user_input` tool call — the questions plan mode asks, which
+    fire no approval event, the turn simply sitting inside a tool call until you
+    answer. PostToolUse is the edge back out of either. `PreToolUse` is used for
+    nothing else: it fires *before* `PermissionRequest`, so an unmatched group
+    re-asserting `working` never cleared a block, and it could not be kept beside
+    the matched one anyway — codex runs an event's hooks concurrently, so two
+    groups signalling different states are a race. The matcher is matched against
+    the **whole** tool name, which is what keeps the non-blocking
+    `request_user_input_async` out of it. Two things are codex's alone: `Stop`
     must write JSON to stdout on a zero exit (`echo '{}'` — its schema is
     `deny_unknown_fields`, `decision`/`reason` plus the universal fields) or the
     turn fails with *"hook returned invalid stop hook JSON output"*, and every
     other event folds plain-text stdout into the model's context. Both are why
     every shipped hook command redirects its own output away — see
-    `tests/hook_stdout_contract.rs`. Verified against codex-cli 0.154.0 over a
-    real turn: every event fires, and an approval prompt reports `blocked` and
-    returns to `working` when granted. `codex exec` pins its approval policy to
-    `never`, so that edge only shows in an interactive session.
+    `tests/hook_stdout_contract.rs`. Verified against codex-cli 0.154.0 over
+    real turns: every event fires; an approval prompt reports `blocked` and
+    returns to `working` when granted; a `request_user_input` question reports
+    `blocked` until it is answered; and a bare `request_user` matcher registered
+    beside the anchored one never fires. `codex exec` pins its approval policy
+    to `never`, so the approval edge only shows in an interactive session.
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
     the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
     entry) rather than the JSON one; `toml_edit` keeps the user's comments and key

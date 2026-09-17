@@ -24,10 +24,11 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "^request_user_input$",
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
+            "command": "thurbox-cli session signal --state blocked >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]
