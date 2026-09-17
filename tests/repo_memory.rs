@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use thurbox::kernel::command::{Args, Command, CommandBus};
-use thurbox::kernel::repos::{Branches, RepoStore};
+use thurbox::kernel::repos::{BookmarkRow, Branches, RepoStore};
 
 /// Run a command through the bus and wait for it, so its effect is observable.
 ///
@@ -386,4 +386,190 @@ fn a_repository_with_no_remote_still_offers_its_branches() {
         }
     }
     panic!("the branch list never arrived");
+}
+
+// ── A folder's members are a scan, not a memory ────────────────────────────
+
+/// The rows the flow would render for `host`, polled until `want` holds.
+///
+/// Re-requesting each turn is what a loop does — the request is idempotent —
+/// and is what lets a rescan that lands after the first read be observed.
+fn wait_for_rows(
+    store: &mut RepoStore,
+    host: &str,
+    want: impl Fn(&[BookmarkRow]) -> bool,
+) -> Vec<BookmarkRow> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut last: Vec<BookmarkRow> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        store.request_bookmarks(host);
+        store.poll();
+        if let Some(rows) = store.bookmarks(host) {
+            last = rows.to_vec();
+            if want(&last) {
+                return last;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the rows never settled: {last:#?}");
+}
+
+/// The member names offered under `folder`, in row order.
+fn members(rows: &[BookmarkRow], folder: &Path) -> Vec<String> {
+    let folder = folder.to_string_lossy().to_string();
+    rows.iter()
+        .filter(|row| row.parent.as_deref() == Some(folder.as_str()))
+        .map(|row| row.name.clone())
+        .collect()
+}
+
+/// A folder holding `names` as repositories, imported as a parent bookmark.
+fn imported_folder(bus: &mut CommandBus, home: &Path, names: &[&str]) -> std::path::PathBuf {
+    let folder = home.join("src");
+    for name in names {
+        let inside = folder.join(name);
+        std::fs::create_dir_all(&inside).expect("mkdir");
+        repo(&inside);
+    }
+    assert_eq!(
+        run(bus, edit(&folder.display().to_string(), "parent")),
+        None
+    );
+    folder
+}
+
+#[test]
+fn a_folder_offers_a_repository_cloned_into_it_after_the_import() {
+    let home = isolate();
+    let mut bus = CommandBus::new();
+    let folder = imported_folder(&mut bus, home.path(), &["one"]);
+
+    // Cloned after the import, which is the whole point: nobody re-imports a
+    // folder every time they start a repository in it.
+    let later = folder.join("two");
+    std::fs::create_dir_all(&later).expect("mkdir");
+    repo(&later);
+
+    let mut store = RepoStore::with_hosts(Default::default());
+    let rows = wait_for_rows(&mut store, "", |rows| {
+        members(rows, &folder).contains(&"two".to_string())
+    });
+    assert_eq!(members(&rows, &folder), ["one", "two"]);
+}
+
+#[test]
+fn a_folder_stops_offering_a_repository_that_has_gone() {
+    let home = isolate();
+    let mut bus = CommandBus::new();
+    let folder = imported_folder(&mut bus, home.path(), &["one", "two"]);
+
+    std::fs::remove_dir_all(folder.join("two")).expect("rmdir");
+
+    let mut store = RepoStore::with_hosts(Default::default());
+    let rows = wait_for_rows(&mut store, "", |rows| members(rows, &folder).len() == 1);
+    assert_eq!(
+        members(&rows, &folder),
+        ["one"],
+        "a scan is the truth about a folder; the import is only how it started"
+    );
+    assert!(
+        !rows.iter().any(|row| row.name == "two"),
+        "and the deleted repository does not reappear as a row of its own: {rows:#?}"
+    );
+}
+
+/// Put a stand-in for `ssh` at the front of `PATH`, so a "remote" host in this
+/// test is this machine.
+///
+/// The remote scan is a `ssh <opts> <dest> sh -c <script>`, and what is being
+/// proved here is that the scan happens at all and that its answer replaces what
+/// was remembered — not that OpenSSH works. A container with a real sshd is what
+/// `scripts/dev/e2e/linux-container.sh` is for.
+fn stub_ssh(home: &Path) {
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        "#!/bin/sh\n\
+         while [ $# -gt 0 ]; do\n\
+         case \"$1\" in\n\
+         -o) shift 2 ;;\n\
+         -*) shift ;;\n\
+         *) break ;;\n\
+         esac\n\
+         done\n\
+         shift\n\
+         exec /bin/sh -c \"$*\"\n",
+    )
+    .expect("write ssh stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{path}", bin.display()));
+}
+
+/// A registry holding one ssh host, reached through [`stub_ssh`].
+fn one_host() -> thurbox::session::HostRegistry {
+    thurbox::session::HostRegistry {
+        hosts: vec![thurbox::session::HostDef {
+            name: "box".into(),
+            destination: "box".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_remote_folder_is_rescanned_rather_than_frozen_at_what_was_imported() {
+    // The asymmetry this covers: a local folder is scanned on every read, so it
+    // has always tracked the filesystem. A remote one was the rows written at
+    // import time and nothing else — a repository cloned on the host stayed
+    // invisible, and one deleted there stayed on offer, until the folder was
+    // imported again by hand.
+    let home = isolate();
+    stub_ssh(home.path());
+    let folder = home.path().join("srv");
+    for name in ["one", "two"] {
+        let inside = folder.join(name);
+        std::fs::create_dir_all(&inside).expect("mkdir");
+        repo(&inside);
+    }
+
+    // Memory as an import would have left it before `two` was cloned and while
+    // `gone` still existed.
+    let db = database();
+    db.upsert_repo_bookmark_kind("ssh:box", &folder, true)
+        .expect("remember folder");
+    db.replace_parent_children(
+        "ssh:box",
+        &folder,
+        &[folder.join("one"), folder.join("gone")],
+    )
+    .expect("remember members");
+
+    let mut store = RepoStore::with_hosts(one_host());
+    let rows = wait_for_rows(&mut store, "ssh:box", |rows| {
+        members(rows, &folder) == ["one", "two"]
+    });
+    assert!(
+        !rows.iter().any(|row| row.name == "gone"),
+        "and what the host no longer has is not offered anywhere: {rows:#?}"
+    );
+
+    // Written back, not merely rendered: the group has to survive a restart, and
+    // has to still be there when the host cannot be reached at all.
+    let remembered = database().list_repo_bookmarks("ssh:box").expect("list");
+    let members: Vec<_> = remembered
+        .iter()
+        .filter(|row| row.parent_path.as_deref() == Some(folder.as_path()))
+        .map(|row| row.repo_path.clone())
+        .collect();
+    assert_eq!(members, [folder.join("one"), folder.join("two")]);
 }

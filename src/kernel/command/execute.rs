@@ -380,6 +380,11 @@ fn bookmark_remove(db: &Database, host: &str, path: &str) -> Result<(), String> 
 }
 
 /// Import a folder of repositories: remember the folder, then its members.
+///
+/// The members are not fixed here. A local folder is re-scanned on every read of
+/// the bookmark list and a remote one on its own interval, so this is the first
+/// scan rather than the only one — nobody has to re-import a folder to see a
+/// repository they cloned into it.
 fn bookmark_parent(
     db: &Database,
     host: &str,
@@ -398,8 +403,10 @@ fn bookmark_parent(
     };
     db.upsert_repo_bookmark_kind(host, expanded, true)
         .map_err(|e| format!("remember folder: {e}"))?;
-    // Replace rather than merge: re-importing is how a folder is refreshed, so a
-    // repository that has since been deleted must stop being offered.
+    // Replace rather than merge: these members are a scan, and a scan is the
+    // whole truth about the folder, so a repository that has since been deleted
+    // must stop being offered. The same write is what a rescan makes later
+    // (`kernel::repos::rescan_folder`) — importing is only the first one.
     db.replace_parent_children(host, expanded, &children)
         .map_err(|e| format!("remember folder contents: {e}"))?;
     if children.is_empty() {

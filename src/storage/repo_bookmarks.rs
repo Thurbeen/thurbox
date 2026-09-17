@@ -15,15 +15,21 @@ pub struct RepoBookmark {
     pub label: Option<String>,
     pub last_used_at: u64,
     pub use_count: u64,
-    /// When true, `repo_path` is a *parent* folder: the repo picker re-scans its
-    /// immediate git sub-directories on each open instead of using the path
-    /// itself as a repo.
+    /// When true, `repo_path` is a *parent* folder: the repo picker offers its
+    /// immediate git sub-directories, re-scanned rather than remembered, instead
+    /// of using the path itself as a repo.
     pub is_parent: bool,
     /// Whether the path is a git repo (`None` = never checked). Gates the
     /// picker's worktree toggle; learned opportunistically for remote rows.
     pub is_git: Option<bool>,
-    /// Set on a *persisted child* of a remote parent bookmark: the parent
-    /// folder it was imported under. Local parents scan live instead.
+    /// Set on a *persisted child* of a remote parent bookmark: the parent folder
+    /// it was imported under.
+    ///
+    /// Remote only, because the two sides persist differently rather than
+    /// refresh differently: a local folder is scanned on every read, so there is
+    /// nothing worth writing down, while a remote one is scanned on an interval
+    /// (`kernel::repos::REMOTE_RESCAN_TTL`) and each scan is written back here —
+    /// which is what the folder still shows when the host cannot be reached.
     pub parent_path: Option<PathBuf>,
 }
 
@@ -129,6 +135,10 @@ impl Database {
     /// Replace the persisted children of a remote parent bookmark: delete every
     /// row filed under `parent`, then insert `children` as git repos tagged with
     /// it. Transactional so a failed insert never leaves the parent half-empty.
+    ///
+    /// Replace rather than merge, and that is the point: this is called with the
+    /// result of a scan, at import and on every re-scan, so a repository deleted
+    /// on the host stops being offered instead of outliving it.
     pub fn replace_parent_children(
         &self,
         host: &str,
