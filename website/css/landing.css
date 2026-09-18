@@ -1,12 +1,13 @@
 /* ---- Hero ---- */
 
-/* --hero-copy is one descending scale for the three copy lines: the lede sets
-   it, the thesis and the setup line step down from it, so every block is
-   smaller than the one above it at every viewport. Its 1rem floor is what
-   makes that possible at the narrow end - 18.4px of body text on a 320px
-   phone cannot be led by a headline that same phone can hold. */
+/* --hero-copy is one descending scale for the three copy lines: the lede is
+   --hero-copy, the thesis one step down and the setup line two, so every block
+   is smaller than the one above it at every viewport. The 1rem floor is what
+   makes that possible at the narrow end - 18.4px of body text on a 320px phone
+   cannot be led by a headline that same phone can hold. */
 .hero {
   --hero-copy: clamp(1rem, 3.2vw, 1.15rem);
+  --hero-copy-step: 0.93;
 
   position: relative;
   padding-top: calc(var(--nav-height) + var(--space-3xl));
@@ -84,11 +85,12 @@
    The floor is set by the copy, not by the container. The old 0.875rem was the
    largest that fits 320px on ONE line - and it put a 14.1px headline over an
    18.4px paragraph, so under a 418px viewport the headline was smaller than
-   the sentence it leads. 1.4rem clears --hero-copy's 1rem floor at every
-   width instead, and 19.19em of it wants 430px of line: 320px has 272px of
-   content, and even a 480px phone's 432px is that line flush to both container
-   edges. So below 640px the headline takes two lines rather than shrink back
-   under its own copy; the break is placed on .hero-h1__phrase.
+   the sentence it leads. 1.4rem clears --hero-copy's 1rem floor at every width
+   instead, and 19.19em of it is 430px of line at that floor (422px measured):
+   a 320px phone has 272px of content, and even a 480px one has 432px, which is
+   that line flush to both container edges. So below 640px the headline takes
+   two lines rather than shrink back under its own copy; the break is placed on
+   .hero-headline-phrase.
 
    From 640px up the vw term keeps the single line inside the container: 4.4vw
    fits (4.5vw wrapped at 340px, by 1.6px), the 48px of container padding being
@@ -107,14 +109,15 @@
   animation: flicker 4.5s infinite steps(1);
 }
 
-/* The headline's second phrase carries no colour of its own: the display face,
-   the size and the red glow are what set the headline apart, and a green word
-   inside it made three green accents out of four hero lines. The span stays
-   because it is where the headline breaks, and that break is placed rather
-   than left to the browser - left to itself the browser wraps after "AT"
-   between 390px and 414px. */
+/* The headline's second phrase, and where the headline breaks: below 640px it
+   does not fit one line (see .hero h1), and the break is placed rather than
+   left to the browser, which wraps after "AT" between 390px and 414px.
+
+   The span carries no colour of its own. The display face, the size and the
+   red glow are what set the headline apart, and a green word inside it made
+   three green accents out of four hero lines. */
 @media (max-width: 639px) {
-  .hero h1 .hero-h1__phrase {
+  .hero-headline-phrase {
     display: block;
   }
 }
@@ -150,7 +153,7 @@
    the scale is what weights it below the lede. It used to carry a rule down
    its left edge, which in a centre-aligned hero aligned to nothing. */
 .hero .subtitle--thesis {
-  font-size: calc(var(--hero-copy) * 0.93);
+  font-size: calc(var(--hero-copy) * var(--hero-copy-step));
 }
 
 /* The one emphasis colour in the hero copy, and the only place it appears. No
@@ -165,7 +168,7 @@
 .hero-stability {
   max-width: 600px;
   margin: 0 auto var(--space-xl);
-  font-size: calc(var(--hero-copy) * 0.86);
+  font-size: calc(var(--hero-copy) * var(--hero-copy-step) * var(--hero-copy-step));
   color: var(--text-secondary);
 }
 
