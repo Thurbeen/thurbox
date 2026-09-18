@@ -247,7 +247,7 @@ fn advertise_cli_in(dir: &std::path::Path, target: &std::path::Path) {
     // binary sits at it — and writing one anyway removed that binary and
     // pointed the path at itself. This has to return *before* the removal
     // below, not merely before the symlink.
-    if target == link {
+    if same_path(target, &link) {
         return;
     }
     if !target.is_absolute() || !target.exists() {
@@ -261,6 +261,38 @@ fn advertise_cli_in(dir: &std::path::Path, target: &std::path::Path) {
     }
 }
 
+/// Whether two paths name the same file, decided without following either.
+///
+/// Spelling equality is not enough, and the two sides here are drawn from
+/// different places: `resolve_cli_binary` answers from `current_exe`, which the
+/// kernel hands back fully resolved, while the advertised directory is built
+/// from `THURBOX_DATA_DIR` or `$HOME` and may be relative or reached through a
+/// symlinked home. One file spelled two ways reads as two files, and relinking
+/// one to the other is exactly the loop (issue #1193).
+///
+/// The *parents* are resolved rather than the paths: a path being compared here
+/// is either the loop, which `canonicalize` refuses outright, or a link this
+/// function wrote, which it would resolve to the wrong side of the question.
+/// The directories holding them are ordinary directories either way. A parent
+/// that cannot be resolved — the advertising directory on a first run does not
+/// exist yet — answers "not the same", which advertises rather than skips.
+#[cfg(unix)]
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.file_name() != b.file_name() {
+        return false;
+    }
+    match (a.parent(), b.parent()) {
+        (Some(a), Some(b)) => match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Remove `link` when it is a symlink to its own path — `ELOOP` on every use,
 /// and never correct however it got there.
 ///
@@ -268,11 +300,12 @@ fn advertise_cli_in(dir: &std::path::Path, target: &std::path::Path) {
 /// is the one call that answers what it was pointed at. The target is joined
 /// onto the parent so a relative spelling of the same mistake is caught too;
 /// `Path::join` leaves an absolute one alone, which is the spelling actually
-/// measured.
+/// measured. [`same_path`] then settles it, so a loop written under one
+/// spelling of the directory is removed when it is reached by another.
 #[cfg(unix)]
 fn heal_self_link(link: &std::path::Path) {
     let Some(dir) = link.parent() else { return };
-    if !std::fs::read_link(link).is_ok_and(|to| dir.join(to) == *link) {
+    if !std::fs::read_link(link).is_ok_and(|to| same_path(&dir.join(to), link)) {
         return;
     }
     if let Err(e) = std::fs::remove_file(link) {
@@ -1279,5 +1312,61 @@ mod tests {
         advertise_cli_in(&bin, &target);
 
         assert_eq!(std::fs::read(&installed).unwrap(), b"#!/bin/sh\nexit 0\n");
+    }
+
+    /// A `<root>/bin` reached two ways: as itself, and through a symlinked
+    /// parent. That is the ordinary shape of the two sides here —
+    /// `resolve_cli_binary` answers from `current_exe`, which the kernel hands
+    /// back fully resolved, while the advertised directory is built from
+    /// `$HOME` / `THURBOX_DATA_DIR` and may be relative or reached through a
+    /// symlinked home.
+    #[cfg(unix)]
+    fn aliased_bin_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let real = root.join("real");
+        let bin = real.join(HOST_BIN_DIR);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("home")).unwrap();
+        (bin, root.join("home").join(HOST_BIN_DIR))
+    }
+
+    /// Compared as strings, two spellings of one path read as two paths — so
+    /// the guard misses, the link is replaced, and `symlink(target, link)`
+    /// points it at itself all over again. The comparison resolves the parent
+    /// directories, which are real, rather than the link, which may be the loop.
+    #[cfg(unix)]
+    #[test]
+    fn an_aliased_spelling_of_the_advertised_path_never_becomes_a_loop() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (bin, aliased) = aliased_bin_dirs(root.path());
+        // A true advertisement already there, which the function is entitled to
+        // replace — so only the target comparison can stop it.
+        let elsewhere = root.path().join("thurbox-cli");
+        std::fs::write(&elsewhere, b"#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, aliased.join("thurbox-cli")).unwrap();
+
+        advertise_cli_in(&aliased, &bin.join("thurbox-cli"));
+
+        assert_eq!(
+            std::fs::read_link(bin.join("thurbox-cli")).unwrap(),
+            elsewhere,
+            "the running CLI and the advertised path are one file under two \
+             names; relinking one to the other is the loop"
+        );
+    }
+
+    /// And the heal reads the same way round: a loop written under one
+    /// spelling must be removed when the directory is reached by the other,
+    /// since nothing else on that machine ever repairs it.
+    #[cfg(unix)]
+    #[test]
+    fn an_aliased_self_referential_link_is_still_removed() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (bin, aliased) = aliased_bin_dirs(root.path());
+        let link = bin.join("thurbox-cli");
+        std::os::unix::fs::symlink(&link, &link).unwrap();
+
+        advertise_cli_in(&aliased, &std::path::PathBuf::from("thurbox-cli"));
+
+        assert!(std::fs::symlink_metadata(&link).is_err());
     }
 }
