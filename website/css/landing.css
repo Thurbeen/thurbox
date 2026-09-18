@@ -71,9 +71,14 @@
 
 /* Press Start 2P is 1em per character, so headline width is character count,
    not font size guesswork: the headline is 19 characters = 19.19em with the
-   tracking below. That is short enough to hold ONE line at every width down to
-   ~340px, which is why the vw term is 4.5 and not larger - 4.6vw would wrap it
-   at 390px, where the 48px of container padding costs proportionally most.
+   tracking below. That is short enough to hold ONE line at every width a phone
+   actually has, down to 320px, and the vw term and the floor are both set by
+   that rather than by eye: 4.4vw keeps it inside the container from 320px up
+   (4.5vw wrapped at 340px, by 1.6px), and the 0.875rem floor is the largest
+   that still fits 320px's 272px of content. The 48px of container padding is
+   what bites here - it is a fifth of the width at 320px and a twentieth at
+   1200px, so the narrow end is always the binding case.
+
    A longer headline needs this cap lowered rather than the wrap accepted: two
    lines of Press Start 2P push the install block off the fold.
 
@@ -81,7 +86,7 @@
    pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
    glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(0.95rem, 4.5vw, 3.2rem);
+  font-size: clamp(0.875rem, 4.4vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
