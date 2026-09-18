@@ -70,36 +70,38 @@
 }
 
 /* Press Start 2P is 1em per character, so headline width is character count,
-   not font size guesswork: the longer of the two sentences is 31 characters =
-   31.31em with the tracking below. The cap keeps that inside the 1200px
-   container's 1152px of content, which is what holds each sentence to one line
-   from ~640px up; below that they wrap to two lines each and the floor keeps
-   them legible rather than shrinking to fit. The cap is set for a 35-character
-   sentence, so there is room for a longer line than either of these. */
+   not font size guesswork: the headline is 31 characters = 31.31em with the
+   tracking below. The cap keeps that inside the 1200px container's 1152px of
+   content, which is what holds it to one line from ~625px up; below that it
+   wraps to two and the floor keeps it legible rather than shrinking to fit.
+   A longer headline needs this cap lowered, not the wrap accepted: two lines
+   of Press Start 2P push the install block off the fold.
+
+   The bloom is smaller than the tokens' --glow-red alone would give. This is a
+   pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
+   glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(1.15rem, 2.4vw, 1.9rem);
+  font-size: clamp(1.25rem, 2.9vw, 2.25rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
     var(--glow-red),
-    0 0 24px rgb(232, 24, 11, 0.55);
+    0 0 16px rgb(232, 24, 11, 0.38);
   animation: flicker 4.5s infinite steps(1);
 }
 
-/* The headline is two sentences: the claim, then the thing that makes it true.
-   Blocking the second keeps that break at every width instead of letting it
-   wrap mid-sentence. */
+/* One word inside the sentence, so it stays inline - `display: block` here
+   would split the headline mid-clause. */
 .hero h1 .accent {
-  display: block;
   color: var(--green);
   text-shadow: var(--glow-green);
 }
 
-/* Paired with the container's own 1440px step: 1392px of content takes a
-   35em sentence at 2.3rem with room to spare. */
+/* Paired with the container's own 1440px step: 1392px of content takes the
+   31.31em headline at 2.6rem with room to spare. */
 @media (min-width: 1440px) {
   .hero h1 {
-    font-size: 2.3rem;
+    font-size: 2.6rem;
   }
 }
 
@@ -109,11 +111,15 @@
   }
 }
 
+/* Both hero subtitles carry a claim rather than a caption, so they read at
+   --text-primary: 14.1:1 on --bg-primary against --text-secondary's 7.1:1. The
+   hierarchy under the headline is carried by size and by the thesis rule below,
+   not by dimming the two sentences a first-time reader is here to read. */
 .hero .subtitle {
   font-size: 1.15rem;
   max-width: 600px;
   margin: 0 auto var(--space-xl);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 /* Stability notice under the hero copy. Sized and centred like .subtitle above
@@ -180,7 +186,10 @@
   font-size: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  color: var(--text-muted);
+
+  /* Was --text-muted: 5.5:1 at 12.8px, the weakest text in the fold. Inherits
+     --text-secondary from .agent-support now, like the rest of this block. */
+  color: inherit;
 }
 
 .agent-support .agent-support__label:hover {
@@ -1175,16 +1184,19 @@ main {
   }
 }
 
-/* The hero's second claim: what the product is, after what it runs. Weighted
-   below the first subtitle so the pair reads as lede-then-thesis. */
+/* The hero's second claim: how it behaves, after what it runs. The rule down
+   the left is what weights it below the first subtitle - it used to be a dimmer
+   grey, which cost contrast on a sentence that is not a caption. */
 .subtitle--thesis {
   border-left: 2px solid var(--accent);
-  color: var(--text-secondary);
   padding-left: 0.85rem;
 }
 
+/* Now that the paragraph is --text-primary, the emphasis needs its own colour
+   rather than a step up in brightness it no longer has. */
 .subtitle--thesis strong {
-  color: var(--text-primary);
+  color: var(--green);
+  text-shadow: var(--glow-green);
 }
 
 /* Feature bands.
