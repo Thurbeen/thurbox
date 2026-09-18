@@ -70,18 +70,18 @@
 }
 
 /* Press Start 2P is 1em per character, so headline width is character count,
-   not font size guesswork: the headline is 31 characters = 31.31em with the
-   tracking below. The cap keeps that inside the 1200px container's 1152px of
-   content, which is what holds it to one line from ~625px up; below that it
-   wraps to two and the floor keeps it legible rather than shrinking to fit.
-   A longer headline needs this cap lowered, not the wrap accepted: two lines
-   of Press Start 2P push the install block off the fold.
+   not font size guesswork: the headline is 19 characters = 19.19em with the
+   tracking below. That is short enough to hold ONE line at every width down to
+   ~340px, which is why the vw term is 4.5 and not larger - 4.6vw would wrap it
+   at 390px, where the 48px of container padding costs proportionally most.
+   A longer headline needs this cap lowered rather than the wrap accepted: two
+   lines of Press Start 2P push the install block off the fold.
 
    The bloom is smaller than the tokens' --glow-red alone would give. This is a
    pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
    glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(1.25rem, 2.9vw, 2.25rem);
+  font-size: clamp(0.95rem, 4.5vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
@@ -98,10 +98,10 @@
 }
 
 /* Paired with the container's own 1440px step: 1392px of content takes the
-   31.31em headline at 2.6rem with room to spare. */
+   19.19em headline at 3.8rem with room to spare. */
 @media (min-width: 1440px) {
   .hero h1 {
-    font-size: 2.6rem;
+    font-size: 3.8rem;
   }
 }
 
