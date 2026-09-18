@@ -1240,6 +1240,28 @@ main {
   box-shadow: -2px 0 12px -6px var(--accent);
 }
 
+/* The container's 1440px step takes .grid-3 to five columns, which is chosen
+   for band 1's ten cards (a clean 5+5). Band 2 holds six, which that step lays
+   out as five and a lone sixth on a row of its own. Three divides six at every
+   width, so this band stops at three. */
+@media (min-width: 1440px) {
+  .feature-band--yours .grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Ten cards divide by two and by five, not by three, so the three-column step
+   is the one width where band 1 ends on a single card with two empty columns
+   beside it. The orphan takes the whole row instead. The selector says exactly
+   that and nothing more - a last child that is also first in its row - so band
+   2's six cards never match it, and the bounds keep it off the five-column
+   step, where the tenth card is first in its row and its row is full. */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  .feature-band .grid-3 > :last-child:nth-child(3n + 1) {
+    grid-column: span 3;
+  }
+}
+
 .feature-band__head {
   margin-bottom: 1.5rem;
   max-width: 62ch;

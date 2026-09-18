@@ -16,8 +16,7 @@ footer: true
               <span class="hero-headline-phrase">agents</span>
             </h1>
             <p class="subtitle">
-              Thurbox runs any CLI you define &mdash; Claude Code, Codex, aider &mdash; side by
-              side in persistent tmux panes.
+              Thurbox runs any CLI agent you define, side by side in persistent tmux panes.
             </p>
             <p class="subtitle subtitle--thesis">
               <strong>The agents keep running</strong> after you quit thurbox.
@@ -475,21 +474,12 @@ cargo build --release</code></pre>
 
         <p class="ui-lab__foot">
           That last one is not shipped. <code>thurbox-cli plugin new git-status</code> writes a file
-          that already loads, and it is a pane the moment you save it. A plugin gets no filesystem
-          and no network &mdash; it draws, and the kernel does the rest. Adding or removing a pane is
+          that already loads, and it is a pane the moment you save it. Adding or removing a pane is
           two edits, as it is above: the plugin, and the slot in
           <code>ui/layout.lua</code> that says where it goes.
         </p>
         <p class="section-lede">
-          A plugin is a table, not a config format: it names a slot, declares the chords it wants,
-          and returns what it drew. There are only ever
-          <strong>four node kinds</strong>
-          (<code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>) &mdash;
-          lists, panels and tables are not kinds, they compose from those in
-          <code>ui/lib/</code>. And declaring a capability is not being granted it: until you trust
-          the file, the global it asked for is
-          <em>absent</em>
-          rather than blocked.
+          A pane is a short Lua file, and it only ever gets what you have trusted it with.
           <a href="docs/interface.html">Writing a pane &rarr;</a>
         </p>
 
@@ -508,29 +498,11 @@ cargo build --release</code></pre>
 thurbox-cli plugin install top
 cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
           <p class="ui-lab__demo-note">
-            Each install records itself in
-            <code>plugins.toml</code>
-            beside your panes and prints the
-            <code>layout.lua</code>
-            line the new pane needs &mdash; because a pane whose slot nothing places loads perfectly
-            and draws nothing, and
-            <code>thurbox-cli plugin check</code>
-            is what fails on it. The arrangement is copied rather than installed on purpose: the
-            manager never writes that file.
-          </p>
-          <p class="ui-lab__demo-note">
-            The tasks pane needs no permission &mdash; it reads the same records
-            <code>thurbox-cli task</code>
-            does and writes back as commands. The
+            The
             <code>top</code>
-            one asks to
-            <strong>run a program</strong>
-            , so it draws nothing until you trust the file (settings &rarr; Interface &rarr;
-            <code>t</code>
-            ). It then reads the machine
-            <em>the selected session runs on</em>
-            , which means picking a session over SSH shows you that host's load &mdash; without the
-            plugin knowing what SSH is.
+            pane asks to run a program, so it draws nothing until you trust it &mdash; and it then
+            reads whichever machine the selected session runs on.
+            <a href="docs/interface.html#running-programs">What a pane may do &rarr;</a>
           </p>
         </div>
 
@@ -555,14 +527,8 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
             <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
           </ul>
           <p class="ui-lab__demo-note">
-            It works because the directory ships an
-            <code>AGENTS.md</code>
-            that any coding CLI loads as context without being asked &mdash; so
-            &ldquo;install a plugin&rdquo; is read as
-            <code>thurbox-cli plugin install</code>
-            rather than an npm request, and the agent knows
-            <code>thurbox-cli plugin check</code>
-            is how it verifies its own work. Press
+            The directory tells the agent how to work on itself, so these read as thurbox commands
+            rather than as guesses. Press
             <kbd>F10</kbd>
             and the change is on your screen.
             <a href="docs/interface.html#ask-the-agent">The worked example &rarr;</a>
@@ -770,9 +736,7 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
                 command, and Thurbox keeps its session and automation
                 <strong>self-healed</strong>
                 . Two ship built in;
-                <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener"
-                  >fleet</a
-                >
+                <code>fleet</code>
                 is the worked example of one you install yourself.
               </p>
             </div>
