@@ -1649,10 +1649,7 @@ fn read_hosts() -> Vec<HostRow> {
 
 /// A remote session's bare host name, read off its backend name.
 fn remote_host_of(backend: &str) -> Option<String> {
-    backend
-        .strip_prefix("ssh:")
-        .or_else(|| backend.strip_prefix("wsl:"))
-        .map(str::to_string)
+    crate::session::host_name_of(backend).map(str::to_string)
 }
 
 /// Best-effort repo label: the worktree's repo directory name, else the cwd's.

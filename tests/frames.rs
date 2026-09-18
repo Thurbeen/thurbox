@@ -160,6 +160,16 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
     }
 }
 
+/// The same row, running on a remote host — the one fact the host grouping
+/// reads. `backend` and `remote_host` are set together because the interface
+/// derives reachability from the former and the group label from the latter.
+fn remote_row(name: &str, repo: &str, status: &str, host: &str) -> SessionRow {
+    let mut row = row(name, repo, status);
+    row.backend = format!("ssh:{host}");
+    row.remote_host = Some(host.to_string());
+    row
+}
+
 fn snapshot(rows: Vec<SessionRow>) -> Snapshot {
     Snapshot {
         sessions: rows,
@@ -325,6 +335,110 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
             "│── website ───────────────────────────│",
             "│ ○ ⑂ update-deps                      │",
             "│                                      │",
+            "│                                      │",
+            "│                                      │",
+            "╰──────────────────────────────────────╯",
+        ],
+    );
+}
+
+#[test]
+fn the_session_list_groups_by_host_when_sessions_span_machines() {
+    // The host is the OUTER axis: every local group first, then each remote
+    // host's, and the repo grouping survives inside one. Without it the remote
+    // row sits under `── thurbox ──` between two local sessions and only the
+    // `⇅` mark says it is somewhere else.
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            row("fix-osc52", "thurbox", "working"),
+            row("perf-cache", "thurbox", "done"),
+            row("update-deps", "website", "idle"),
+            remote_row("remote-build", "thurbox", "idle", "buildbox"),
+        ]),
+    );
+    assert_frame(
+        &text(&paint(&host, "sessions", 40, 12, true)),
+        &[
+            "╭ Sessions ────────────────────────⠇●○○╮",
+            "│── local · thurbox ───────────────────│",
+            "│ ⠇ ⑂ fix-osc52                        │",
+            "│ ● ⑂ perf-cache                       │",
+            "│── local · website ───────────────────│",
+            "│ ○ ⑂ update-deps                      │",
+            "│── buildbox · thurbox ────────────────│",
+            "│ ○ ⇅ ⑂ remote-build                   │",
+            "│                                      │",
+            "│                                      │",
+            "│                                      │",
+            "╰──────────────────────────────────────╯",
+        ],
+    );
+}
+
+#[test]
+fn one_host_keeps_the_headers_it_has_always_had() {
+    // The case a second axis is most likely to make worse: every session on
+    // ONE host — a laptop with no remote sessions, and equally a machine whose
+    // every session is on the same remote box. Both name one machine, so
+    // naming it in every header is noise, and the frame is the repo grouping's
+    // alone.
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            remote_row("fix-osc52", "thurbox", "working", "buildbox"),
+            remote_row("perf-cache", "thurbox", "done", "buildbox"),
+            remote_row("update-deps", "website", "idle", "buildbox"),
+        ]),
+    );
+    assert_frame(
+        &text(&paint(&host, "sessions", 40, 10, true)),
+        &[
+            "╭ Sessions ─────────────────────────⠇●○╮",
+            "│── thurbox ───────────────────────────│",
+            "│ ⠇ ⇅ ⑂ fix-osc52                      │",
+            "│ ● ⇅ ⑂ perf-cache                     │",
+            "│── website ───────────────────────────│",
+            "│ ○ ⇅ ⑂ update-deps                    │",
+            "│                                      │",
+            "│                                      │",
+            "│                                      │",
+            "╰──────────────────────────────────────╯",
+        ],
+    );
+}
+
+#[test]
+fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
+    // The host axis keys this machine by a sentinel a host name cannot spell.
+    // Keyed by the bare word, a host somebody called `local` merged into this
+    // machine's group -- and since the move algebra decides a host boundary by
+    // comparing those keys, the refusal that keeps a group on its own machine
+    // went with it.
+    //
+    // What this frame pins is that they are TWO groups. That both headers read
+    // `local` is a known cosmetic limit of naming this machine after a word a
+    // host could also be called, and not what the test is for: the keys differ,
+    // so the grouping and the boundary are right and only the label is
+    // ambiguous.
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            row("fix-osc52", "thurbox", "working"),
+            remote_row("remote-build", "thurbox", "idle", "local"),
+        ]),
+    );
+    assert_frame(
+        &text(&paint(&host, "sessions", 40, 8, true)),
+        &[
+            "╭ Sessions ──────────────────────────⠇○╮",
+            "│── local · thurbox ───────────────────│",
+            "│ ⠇ ⑂ fix-osc52                        │",
+            "│── local · thurbox ───────────────────│",
+            "│ ○ ⇅ ⑂ remote-build                   │",
             "│                                      │",
             "│                                      │",
             "╰──────────────────────────────────────╯",

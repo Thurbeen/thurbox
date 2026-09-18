@@ -522,6 +522,32 @@ impl Command {
         }
     }
 
+    /// The machine this command's session will land on, when it names one and
+    /// no session exists yet to be asked.
+    ///
+    /// The counterpart to [`Self::subject`], and published for the same reason:
+    /// with the session list grouped by host, the placeholder has to be drawn
+    /// under the machine the session is actually being created on. Without it
+    /// the list can only guess, and a guess there is a row that says the wrong
+    /// machine and then jumps when the real one lands.
+    pub fn host(&self) -> Option<String> {
+        match self {
+            // Bare, because that is how a session's machine is published and
+            // the two are compared. A create carries whichever spelling its
+            // caller had — the interface's host picker passes the prefixed
+            // backend name (`ssh:devbox`), `thurbox-cli --host` the bare one —
+            // and `resolve_host` takes either, so only this side needs to
+            // settle on one. Left prefixed, the session list drew a creation
+            // under a machine named `ssh:devbox` beside the real `devbox`.
+            Command::Create { host, .. } => host.as_deref().map(|name| {
+                crate::session::host_name_of(name)
+                    .unwrap_or(name)
+                    .to_string()
+            }),
+            _ => None,
+        }
+    }
+
     /// Build from the `(kind, options)` pair a plugin passes.
     ///
     /// Rejected rather than guessed: an unknown kind or a missing field is a
@@ -881,6 +907,45 @@ pub struct Args {
 
 #[cfg(test)]
 mod tests {
+    /// The host picker passes the backend name, `thurbox-cli --host` the bare
+    /// one, and `resolve_host` takes either — so the only place the two have to
+    /// become one spelling is here, where the interface reads it back and
+    /// compares it against a session's own (bare) machine.
+    #[test]
+    fn a_creations_host_is_the_bare_machine_whichever_spelling_it_arrived_in() {
+        let asked = |host: &str| {
+            Command::parse(
+                "create",
+                Args {
+                    repo: Some("/srv/repo".into()),
+                    host: Some(host.into()),
+                    ..Default::default()
+                },
+            )
+            .expect("parse")
+            .host()
+        };
+        assert_eq!(asked("ssh:devbox").as_deref(), Some("devbox"));
+        assert_eq!(asked("wsl:Ubuntu").as_deref(), Some("Ubuntu"));
+        // Already bare, and left alone.
+        assert_eq!(asked("devbox").as_deref(), Some("devbox"));
+        // Nothing to name: this machine.
+        assert_eq!(
+            Command::parse(
+                "create",
+                Args {
+                    repo: Some("/srv/repo".into()),
+                    ..Default::default()
+                }
+            )
+            .expect("parse")
+            .host(),
+            None
+        );
+        // And no other command answers with one.
+        assert_eq!(Command::Reap.host(), None);
+    }
+
     #[test]
     fn a_create_can_name_a_worktree_to_open() {
         let args = Args {
@@ -1786,6 +1851,7 @@ mod tests {
             kind: "delete",
             session: "s1".into(),
             subject: None,
+            host: None,
             phase: Phase::Failed,
             error: Some("bad session id".into()),
         };

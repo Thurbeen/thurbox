@@ -955,7 +955,7 @@ and their effect appears in a later snapshot. Work in flight is readable at
 
 ```lua
 for _, item in ipairs(thurbox.commands) do
-  -- item.kind, item.session, item.subject, item.phase, item.error
+  -- item.kind, item.session, item.subject, item.host, item.phase, item.error
 end
 ```
 

@@ -10,6 +10,9 @@
 -- Deliberately free of theme and widgets: nothing here is text yet. The one
 -- dependency is `lib.settings`, because whether the list groups by repo is a
 -- knob the model has to answer for every consumer at once.
+--
+-- Two axes, one group: the repo set a session spans, and — only when the rows
+-- span more than one machine — the host it runs on, which is the outer one.
 
 local plugin_settings = require("lib.settings")
 
@@ -21,6 +24,78 @@ local NO_REPO = "(no repo)"
 --- name — the same property `group_key` relies on — so it can never collide
 --- with a real repo set.
 local FLAT_KEY = "\0flat"
+
+--- What the host axis calls a session running on this machine — the grouping
+--- KEY, and separately the word a header shows for it. A local row has no host
+--- name to show and its group still has to name the machine the remote ones are
+--- named against, so the word stands in for one.
+---
+--- The key is `\0`-prefixed, like `FLAT_KEY` and for the same reason: a host
+--- name cannot contain `\0`, so a host somebody actually called `local` is a
+--- second machine here rather than one merged into this one's group. Spelling
+--- the key as the bare word merged the two silently, and — because `lib.order`
+--- decides a host boundary by comparing these keys — it also turned off the
+--- refusal that keeps a group from being moved onto another machine.
+local LOCAL_HOST_KEY = "\0local"
+local LOCAL_HOST_LABEL = "local"
+
+--- A group's identity across the two axes, for the lookups below that have to
+--- ask "does THIS machine already have a group for that repo?".
+local function group_slot(host, label)
+  return (host or "") .. "\1" .. label
+end
+
+--- The two axes in one header line, so a group names its machine and its repos
+--- at once. Two header LEVELS would be a second thing `lib/order`'s move and
+--- sort algebra has to understand — it finds a group's edges by looking for the
+--- single row that carries a header — and the nesting would have to be taught
+--- to the click targets and the border dots as well. A qualified label is the
+--- same information in the shape everything downstream already reads.
+local HOST_SEPARATOR = " · "
+
+--- Which machine a session runs on. `session.host` is the bare remote host name
+--- and nil when the session is local, so this is the one place the two are one
+--- vocabulary.
+local function host_of(session)
+  return session.host or LOCAL_HOST_KEY
+end
+
+--- Does this list span more than one machine?
+---
+--- The whole gate on the host axis. One machine — a laptop with no remote
+--- sessions, and equally a list whose every session is on the same remote box —
+--- means the keys, the labels and the order below are what they were before this
+--- axis existed. A header naming the only machine on screen is noise, which is
+--- also why this is derived rather than a setting: a switch defaulting to on
+--- would be the same behaviour with one more thing to explain.
+---
+--- A creation in flight counts, and it has to: creating your FIRST session on a
+--- host is a list whose rows are all local and whose next row is not. Counting
+--- rows alone, the axis stayed off, the machine the creation named was dropped,
+--- and the placeholder sat under a header that named no machine until the row
+--- landed and the whole list regrouped underneath it.
+local function spans_hosts(rows, creations)
+  local seen, count = {}, 0
+  local function note(host)
+    if seen[host] then
+      return false
+    end
+    seen[host] = true
+    count = count + 1
+    return count > 1
+  end
+  for _, session in ipairs(rows) do
+    if note(host_of(session)) then
+      return true
+    end
+  end
+  for _, item in ipairs(creations) do
+    if note(item.host or LOCAL_HOST_KEY) then
+      return true
+    end
+  end
+  return false
+end
 
 --- In-flight commands, keyed by the session they concern.
 ---
@@ -68,25 +143,54 @@ local function live_sessions(rows)
   return live
 end
 
---- Creations in flight, keyed by the repo they will land in, and the same
---- commands as one list in publication order.
+--- Every creation in flight, in publication order.
 ---
---- A create names no session yet, so it cannot be matched to a row. The command
---- carries its subject — the repo — which is exactly enough to draw the
---- placeholder where the session will actually appear rather than in a limbo of
---- its own. v1 needed a bespoke slot in its ordering code for this. The flat
---- list is what an ungrouped list uses: there are no repo groups to place a
---- placeholder in, and `pairs` over the map would order them arbitrarily.
-local function pending_creations()
-  local by_repo, all = {}, {}
+--- Read before the host axis is decided, because deciding it counts the machines
+--- these name as well as the machines the rows are on.
+---
+--- A FAILED create is kept, unlike the failed delete `live_sessions` drops: the
+--- row it would have made does not exist, so its placeholder is the only thing
+--- that says the creation happened at all, and it stays for the few seconds the
+--- bus holds a failure. It therefore also holds the host axis on for that long,
+--- which is the point rather than a side effect — the failure is reported under
+--- the machine it was asked for.
+local function creations()
+  local all = {}
   for _, item in ipairs(thurbox and thurbox.commands or {}) do
     if item.kind == "create" and item.subject then
-      by_repo[item.subject] = by_repo[item.subject] or {}
-      table.insert(by_repo[item.subject], item)
       all[#all + 1] = item
     end
   end
-  return by_repo, all
+  return all
+end
+
+--- Those creations bucketed by the group each will land in, and the buckets in
+--- publication order.
+---
+--- A create names no session yet, so it cannot be matched to a row. It carries
+--- the two facts that identify its group instead: its subject — the repo — and,
+--- once the host axis is on, the machine it was asked for. v1 needed a bespoke
+--- slot in its ordering code for this.
+---
+--- `item.host` is nil for a creation on this machine, which is the same thing
+--- `session.host` says about a local row, so the two axes read the same either
+--- side of a session existing. The bucket list is ordered because `pairs` over
+--- the map is not: two fresh repos created at once would otherwise swap headers
+--- between runs.
+local function pending_creations(all, by_host)
+  local by_slot, buckets = {}, {}
+  for _, item in ipairs(all) do
+    local host = by_host and (item.host or LOCAL_HOST_KEY) or nil
+    local slot = group_slot(host, item.subject)
+    local bucket = by_slot[slot]
+    if not bucket then
+      bucket = { host = host, repo = item.subject, items = {} }
+      by_slot[slot] = bucket
+      buckets[#buckets + 1] = bucket
+    end
+    table.insert(bucket.items, item)
+  end
+  return by_slot, buckets
 end
 
 --- The repos a session spans, de-duplicated, in its own member order — primary
@@ -140,7 +244,11 @@ end
 --- With `grouping` off there is exactly one group holding every row, so the
 --- manual order is the whole order. See `grouped()` for why off has to mean
 --- that rather than the same clustering with its headers hidden.
-local function ordered_groups(rows, grouping)
+---
+--- `by_host` splits each of those groups per machine. It only qualifies the KEY
+--- here; clustering the machines together is `by_host_first`, so the order
+--- above stays the one v1 computes and the host is layered over it.
+local function ordered_groups(rows, grouping, by_host)
   local groups, by_key = {}, {}
   for index, session in ipairs(rows) do
     local key, label
@@ -150,9 +258,21 @@ local function ordered_groups(rows, grouping)
     else
       key, label = FLAT_KEY, NO_REPO
     end
+    -- `\1` rather than the `\0` the repo-set key already separates with: a
+    -- host prefixed with the same byte would read as one more repo in the set,
+    -- and a host and a repo sharing a name would then collide.
+    local repo_key = key
+    local host = by_host and host_of(session) or nil
+    if host then
+      key = host .. "\1" .. key
+    end
     local group = by_key[key]
     if not group then
-      group = { label = label, members = {} }
+      -- `repo_key` and not `label`: a session spanning `a` and `b` is labelled
+      -- `a + b`, and so is a session in a repo directory literally called
+      -- `a + b`. Their keys differ, and a creation names a repo, so matching a
+      -- placeholder on the key puts it in the group it is actually for.
+      group = { label = label, repo_key = repo_key, host = host, members = {} }
       by_key[key] = group
       groups[#groups + 1] = group
     end
@@ -182,9 +302,58 @@ local function ordered_groups(rows, grouping)
     if a.order ~= b.order then
       return a.order < b.order
     end
-    return a.label < b.label
+    -- Two machines running the same repos give two groups one label, and
+    -- `table.sort` is not stable — so without the host they would swap places
+    -- between builds. Both hosts are nil when the axis is off, and the
+    -- comparison then answers exactly what the label alone answered.
+    if a.label ~= b.label then
+      return a.label < b.label
+    end
+    return (a.host or "") < (b.host or "")
   end)
-  return groups, by_key
+  return groups
+end
+
+--- The same groups, re-clustered so every group of one machine is adjacent:
+--- this machine first, then each remote host by name. Stable within a host, so
+--- the manual order this function is handed survives inside it.
+---
+--- Applied only when the rows span more than one machine, which is what keeps a
+--- single-host list byte-for-byte what it was.
+local function by_host_first(groups)
+  local position = {}
+  for index, group in ipairs(groups) do
+    position[group] = index
+  end
+  table.sort(groups, function(a, b)
+    if a.host ~= b.host then
+      -- This machine first: it is the one you are sitting at, and on a list
+      -- that is mostly local it is the one you are mostly reading.
+      local a_remote = a.host ~= LOCAL_HOST_KEY
+      local b_remote = b.host ~= LOCAL_HOST_KEY
+      if a_remote ~= b_remote then
+        return b_remote
+      end
+      return a.host < b.host
+    end
+    return position[a] < position[b]
+  end)
+  return groups
+end
+
+--- What a group's header says: the repos, the machine, or both.
+local function header_label(group, grouping, by_host)
+  if not by_host then
+    return group.label
+  end
+  local machine = group.host
+  if machine == LOCAL_HOST_KEY then
+    machine = LOCAL_HOST_LABEL
+  end
+  if not grouping then
+    return machine
+  end
+  return machine .. HOST_SEPARATOR .. group.label
 end
 
 --- Whether the list groups by repo.
@@ -216,6 +385,12 @@ local function commands_digest()
       .. "\1"
       .. (item.subject or "")
       .. "\1"
+      -- The machine a creation names is read by the model, so two creations
+      -- differing only in it are two different lists. A create's `session` is
+      -- always empty, so without this they digest the same and the second one
+      -- is drawn with the first one's grouping.
+      .. (item.host or "")
+      .. "\1"
       .. (item.phase or "")
   end
   return table.concat(parts, "\2")
@@ -246,23 +421,79 @@ function session_model.build(rows)
   local all_rows = rows
   rows = live_sessions(rows)
 
-  local groups, by_key = ordered_groups(rows, grouping)
-  local creating, all_creating = pending_creations()
+  local all_creating = creations()
+  local by_host = spans_hosts(rows, all_creating)
+  local groups = ordered_groups(rows, grouping, by_host)
+  local creating, creating_buckets = pending_creations(all_creating, by_host)
 
+  -- A creation has no row yet, so the group that draws it is built for it when
+  -- nothing on screen is already that group: the repo it names, on the machine
+  -- it was asked for. Both halves matter — keyed by the repo alone, a creation
+  -- into a repo only a remote host holds drew its placeholder over there and
+  -- said the session was being spun up on that box.
   if grouping then
-    -- A repo that has no sessions yet still needs its header, or a creation into
-    -- a fresh repo would have nowhere to draw.
-    for repo in pairs(creating) do
-      if not by_key[repo] then
-        local group = { label = repo, members = {}, order = math.huge }
-        by_key[repo] = group
-        groups[#groups + 1] = group
+    local have = {}
+    for _, group in ipairs(groups) do
+      have[group_slot(group.host, group.repo_key)] = true
+    end
+    for _, bucket in ipairs(creating_buckets) do
+      local slot = group_slot(bucket.host, bucket.repo)
+      if not have[slot] then
+        have[slot] = true
+        groups[#groups + 1] = {
+          label = bucket.repo,
+          repo_key = bucket.repo,
+          host = bucket.host,
+          members = {},
+          order = math.huge,
+        }
       end
     end
-  elseif #groups == 0 and #all_creating > 0 then
-    -- Ungrouped and nothing to draw yet: the one flat group still has to exist
-    -- for the placeholder to sit at the end of.
-    groups[1] = { label = NO_REPO, members = {}, order = math.huge }
+  elseif #all_creating > 0 then
+    -- Ungrouped: one flat group per machine, and a creation still needs its
+    -- machine's — which may hold no session at all, and on a list with nothing
+    -- on it yet is the only group there is.
+    local have = {}
+    for _, group in ipairs(groups) do
+      have[group.host or ""] = true
+    end
+    for _, bucket in ipairs(creating_buckets) do
+      if not have[bucket.host or ""] then
+        have[bucket.host or ""] = true
+        groups[#groups + 1] = {
+          label = NO_REPO,
+          repo_key = FLAT_KEY,
+          host = bucket.host,
+          members = {},
+          order = math.huge,
+        }
+      end
+    end
+  end
+
+  if by_host then
+    by_host_first(groups)
+  end
+
+  -- Handed to the group built for it above. No claiming: a bucket is keyed by
+  -- (machine, repo key) and so is a group, and every bucket either matched a
+  -- group or had one built, so each creation reaches exactly one.
+  for _, group in ipairs(groups) do
+    if grouping then
+      local bucket = creating[group_slot(group.host, group.repo_key)]
+      group.placeholders = bucket and bucket.items or nil
+    else
+      -- One group per machine, so it takes every creation for that machine,
+      -- in publication order.
+      local mine = {}
+      for _, item in ipairs(all_creating) do
+        local host = by_host and (item.host or LOCAL_HOST_KEY) or nil
+        if host == group.host then
+          mine[#mine + 1] = item
+        end
+      end
+      group.placeholders = mine
+    end
   end
 
   -- Every rendered session, for the cross-group child mark: v1 only marks a
@@ -273,13 +504,15 @@ function session_model.build(rows)
   end
 
   for _, group in ipairs(groups) do
-    -- Grouped, a placeholder belongs to the repo it names; ungrouped there is
-    -- one list, so every creation in flight lands at the end of it. Not an
-    -- `and/or` chain: a grouped repo with no creation of its own is a nil
-    -- middle term, and the chain would fall through to the whole flat list.
-    local placeholders = all_creating
-    if grouping then
-      placeholders = creating[group.label] or {}
+    -- Claimed above: grouped, a placeholder belongs to the repo it names;
+    -- ungrouped there is one list per machine and it lands at the end of the
+    -- first.
+    local placeholders = group.placeholders or {}
+    -- Composed once per group rather than per row: `first` decides WHETHER a
+    -- row carries it, this decides what it says.
+    local group_header = nil
+    if grouping or by_host then
+      group_header = header_label(group, grouping, by_host)
     end
 
     local in_group = {}
@@ -330,7 +563,11 @@ function session_model.build(rows)
           and parent ~= nil
           and parent ~= session.id
           and visible[parent] == true,
-        header = (first and grouping) and group.label or nil,
+        header = first and group_header or nil,
+        -- Which machine this row is on, or nil while the host axis is off.
+        -- `lib.order` reads it to refuse a move that would carry a group
+        -- past a host boundary.
+        host = group.host,
         target = session.id,
       }
       first = false
@@ -343,10 +580,14 @@ function session_model.build(rows)
         command = item,
         -- A placeholder sits at group level, like the row it will become. Stated
         -- rather than left nil because every ordering helper compares `depth`
-        -- numerically, and `nil` there is not a shallow row -- it is an error that
-        -- takes the pane down on Shift+J/K/S while a session is being created.
+        -- numerically, and `nil` there is not a shallow row -- it is an error
+        -- that takes the pane down on Shift+J/K while a session is being
+        -- created. Shift+S is NOT covered by it and still fails on a
+        -- placeholder's absent `session`, which is its own bug rather than this
+        -- one: `lib.order`'s sort reads a name off every block it compares.
         depth = 0,
-        header = (first and grouping) and group.label or nil,
+        header = first and group_header or nil,
+        host = group.host,
         target = false,
       }
       first = false

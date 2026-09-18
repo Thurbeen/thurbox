@@ -469,6 +469,7 @@
 ---@field session string
 ---@field phase string
 ---@field subject? string
+---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 
 ---@class (exact) thurbox.DiffFile
