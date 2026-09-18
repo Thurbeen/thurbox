@@ -138,6 +138,12 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 `plugin check` warns about a pane in that state and `plugin install` says it when you
 install one — neither fails, because you may have meant it.
 
+The third thing it warns about is a **chord somebody else already claimed**. Two
+global claims on one key both load and both are placed; the earlier declaration
+keeps the key, or a user's rebinding does, and the other simply never fires. The
+warning names both claimants and which one wins, the kernel's own chords included —
+so a pane taking `F1` is told, rather than quietly displacing help.
+
 ## Make the pane cost what changed, not what exists
 
 `render` runs on the UI thread up to thirty times a second. Three habits keep a

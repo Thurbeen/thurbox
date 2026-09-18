@@ -1015,3 +1015,44 @@ fn a_plugin_taking_a_kernel_chord_is_reported_against_the_kernel() {
         "the claim with no file behind it is named for its owner: {warnings}"
     );
 }
+
+/// Two files answering to one name must not be reported as one file.
+///
+/// A plugin's name defaults to its filename with the ordering prefix stripped, and
+/// nothing rejects two files that land on the same one. A conflict carries the name
+/// each claim was declared under, so resolving that to a file by first match named
+/// the same file twice: the row said a file clashed with itself, and whichever author
+/// owned the other copy was sent to edit the wrong one.
+#[test]
+fn a_name_two_files_answer_to_names_both_of_them() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    // No `name`, so both take `notes` from the filename — the way a user ends up
+    // with two of them without ever typing the name at all.
+    for file in ["90_notes.lua", "91_notes.lua"] {
+        std::fs::write(
+            ui.join("plugins").join(file),
+            "return {\n  \
+               slot = \"center\",\n  \
+               keys = { { key = \"f7\", action = \"notes.toggle\", scope = \"global\", \
+                 desc = \"toggle\" } },\n  \
+               pills = { { action = \"notes.toggle\", label = \"Notes\", priority = 10 } },\n  \
+               render = function() return { type = \"text\", text = \"hi\" } end,\n\
+             }\n",
+        )
+        .expect("write");
+    }
+
+    let output = run(Action::Check).expect("check runs");
+    let warnings = output.json["warnings"].to_string();
+    for file in ["90_notes.lua", "91_notes.lua"] {
+        assert!(
+            warnings.contains(file),
+            "an ambiguous name names every file that answers to it — {file} missing \
+             from {warnings}"
+        );
+    }
+}

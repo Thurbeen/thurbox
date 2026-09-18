@@ -245,11 +245,25 @@ fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
 
 /// The file a claimant was declared in, or its own name when no file backs it —
 /// the kernel's modal and clipboard chords are declared in Rust.
+///
+/// A conflict carries the *name* each claim was declared under, and a name need not
+/// be unique: it defaults to the filename with the ordering prefix stripped, so
+/// `90_notes.lua` and `91_notes.lua` both answer to `notes` and nothing rejects the
+/// pair. Resolving by first match then named one file twice — a row saying a file
+/// clashed with itself, with the other author's file absent. Every file that answers
+/// to the name is named instead: less precise than a lie, and the reader can see
+/// which two to open.
 fn file_of(host: &crate::kernel::host::LuaHost, plugin: &str) -> String {
-    host.plugins
+    let files: Vec<&str> = host
+        .plugins
         .iter()
-        .find(|loaded| loaded.name == plugin)
-        .map_or_else(|| plugin.to_string(), |loaded| loaded.path.clone())
+        .filter(|loaded| loaded.name == plugin)
+        .map(|loaded| loaded.path.as_str())
+        .collect();
+    match files.is_empty() {
+        true => plugin.to_string(),
+        false => files.join(", "),
+    }
 }
 
 fn check() -> Result<CommandOutput, String> {
