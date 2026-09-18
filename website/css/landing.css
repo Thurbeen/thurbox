@@ -90,8 +90,8 @@
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
-    var(--glow-red),
-    0 0 16px rgb(232, 24, 11, 0.38);
+    var(--glow-red-type),
+    0 0 14px rgb(232, 24, 11, 0.3);
   animation: flicker 4.5s infinite steps(1);
 }
 

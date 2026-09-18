@@ -63,6 +63,13 @@
 
   /* Retro neon glows (used sparingly, as a wink to Doom) */
   --glow-red: 0 0 5px rgb(255, 92, 84, 0.7), 0 0 12px rgb(255, 59, 48, 0.4);
+
+  /* The same wink, sized for TYPE rather than chrome. Press Start 2P draws on a
+     0.1em pixel grid, so one glyph-pixel is 2.2px at an h2's 22px and 5.1px at
+     the hero's 51px - and --glow-red's outer 12px blur bleeds across five glyph
+     pixels of an h2, filling the 1px gaps the letterforms are made of. A single
+     tight blur keeps the wink without dissolving the edges it sits on. */
+  --glow-red-type: 0 0 4px rgb(255, 92, 84, 0.4);
   --glow-green: 0 0 5px rgb(110, 255, 110, 0.7), 0 0 12px rgb(110, 255, 110, 0.4);
   --glow-cyan: 0 0 5px rgb(0, 217, 255, 0.7), 0 0 12px rgb(0, 217, 255, 0.4);
   --scanline: rgb(0, 0, 0, 0.2);

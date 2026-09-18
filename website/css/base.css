@@ -84,7 +84,7 @@ h2 {
   text-transform: uppercase;
   letter-spacing: 0.02em;
   color: var(--cyan);
-  text-shadow: var(--glow-red);
+  text-shadow: var(--glow-red-type);
 }
 
 h1 {
@@ -106,6 +106,25 @@ a {
   transition:
     color var(--transition),
     text-shadow var(--transition);
+}
+
+/* WCAG 1.4.1. The link green and the body grey are 1.02:1 against EACH OTHER -
+   near-identical luminance - so inside a paragraph colour is not merely the
+   primary cue, it is the only one, and a red-green deficient reader sees plain
+   body text. Underline the links that sit in prose. The block links are excluded
+   by :not([class]): .feature-link and .feature-row-link wrap or replace a whole
+   card, where position already says "link". */
+p a:not([class]),
+li a:not([class]) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  text-decoration-color: rgb(110, 255, 110, 0.5);
+}
+
+p a:not([class]):hover,
+li a:not([class]):hover {
+  text-decoration-color: currentcolor;
 }
 
 a:hover {
