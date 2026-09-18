@@ -589,7 +589,8 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
         <p class="section-lede">
           The interface is Lua, and a frame runs your panes. That only stays cheap if the loop
           refuses to redo work nothing asked for &mdash; so every published source carries a
-          version, and a pane whose inputs did not move is neither re-run nor re-converted.
+          version, and the tables a pane reads are rebuilt only when the thing behind them
+          actually moved.
         </p>
 
         <div class="grid grid-2">
@@ -605,11 +606,13 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
           </div>
           <div class="card">
             <div class="card-icon" aria-hidden="true">&#x25A4;</div>
-            <h3>Unchanged panes are not re-run</h3>
+            <h3>Rebuilt only when the source moved</h3>
             <p>
-              Under load the session list produced a byte-identical tree on 200 of 200 renders. The
-              loop used to prove that work wasted only after paying for it; now a change signal
-              gates it, and the pane is served from its own memo.
+              Under load the session list produced a byte-identical tree on 200 of 200 renders &mdash;
+              the loop was proving that work wasted only after paying for it. A change signal gates
+              the rebuild now, and a pane that declares itself
+              <code>pure</code>
+              can have its whole tree reused rather than re-run.
             </p>
           </div>
           <div class="card">
@@ -675,8 +678,9 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
               <div class="card-icon" aria-hidden="true">&#x25D3;</div>
               <h3>Demand-driven rendering</h3>
               <p>
-                An idle screen paints four frames a second, not a hundred, and a pane whose inputs
-                did not change is served from a memo. Per-pane cost is a report, not a guess.
+                An idle screen paints four frames a second, not a hundred, and the published
+                tables are rebuilt only when their source changes. Per-pane cost is a report, not
+                a guess.
               </p>
             </div>
           </a>
