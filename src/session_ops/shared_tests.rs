@@ -306,6 +306,35 @@ fn a_restore_is_performed_by_the_host_and_the_row_returns() {
     assert!(rig.db.get_deleted_session_by_id(id).unwrap().is_none());
 }
 
+/// A mirror is a snapshot, so a namesake it still lists may already be gone on
+/// the host. The local name guard is therefore asked of local rows only, and a
+/// remote restore is delegated so the host decides it against the rows that
+/// author it — `restore_refusal` conditions its worktree check on the same
+/// thing for the same reason.
+#[test]
+fn a_remote_restore_is_not_refused_by_a_namesake_in_the_local_mirror() {
+    let rig = rig();
+    let stale = SessionId::default();
+    let mut namesake = host_session(stale, "back");
+    namesake.backend_type = BACKEND.into();
+    rig.db.upsert_session(&namesake).unwrap();
+
+    let id = SessionId::default();
+    let mut row = host_session(id, "back");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.soft_delete_session(id).unwrap();
+    rig.host.borrow_mut().deleted.push((id, false));
+
+    let report = super::restore_session_headless(&rig.db, id, true).unwrap();
+    assert_eq!(report.name, "back");
+    assert_eq!(
+        fake::calls()[0],
+        vec!["session", "restore", &id.to_string(), "--best-effort"],
+        "the host is what decides a name in its own namespace"
+    );
+}
+
 #[test]
 fn a_restore_on_a_remote_host_that_cannot_be_delegated_to_is_still_refused() {
     let rig = rig();

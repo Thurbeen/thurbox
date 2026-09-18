@@ -1315,7 +1315,19 @@ sessions are adopted normally) and at the top of the headless **`automation
 tick`** (`cli/automations.rs`, so healing works with the TUI closed via the
 heartbeat keeper). Consequence: while an extension is active, deleting its
 session/automation is a no-op — they're recreated (a startup toast says so);
-`extension deactivate` is the real off-switch. Headless healing requires
+`extension deactivate` is the real off-switch. A declared session is recreated
+only when its **name is free on the local backend** — the question
+`--on-existing` asks of a `session create`, asked here through the shared
+`session_ops::names` and answered by refusing. The pass reuses a live namesake,
+declines while a soft delete's undo window is still open (the delete can still
+be taken back, and a creation inside it is a pair the moment it is), and holds an
+expiring claim across the spawn so a second healer — TUI startup beside the
+keeper's tick — cannot look, miss and create alongside the first; `session
+restore` holds and asks the same three, on local rows only. Each refusal is
+reported the way a repair is; the lookup used to span every backend and be taken
+into a snapshot before a spawn that runs for tens of seconds, which put two
+sessions of one name on one backend and let a namesake on another machine answer
+for the local one. Headless healing requires
 `[features] automations = true` (the heartbeat); with it off, healing happens only
 at TUI startup. An extension's own installer delegates its bootstrap to
 `extension activate <name>` rather than reimplementing it.

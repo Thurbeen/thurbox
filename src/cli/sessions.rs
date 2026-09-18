@@ -1805,7 +1805,10 @@ enum Existing {
 /// legitimately each have a session called `build`. Matching across all of them
 /// made `replace` force-delete a session on another host, `fail` refuse a local
 /// create because of a remote namesake, and `adopt` hand back an id whose pane
-/// is not on this machine.
+/// is not on this machine. The lookup itself is
+/// [`session_ops::names::live_namesakes`](crate::session_ops::names::live_namesakes),
+/// shared with the two creators that reach no `OnExisting` at all — extension
+/// self-heal and `session restore`.
 ///
 /// Ambiguity blocks `adopt` and `replace` but not `allow`: adopting one of two
 /// same-named sessions, or destroying one of them, is a guess about which was
@@ -1825,12 +1828,7 @@ fn resolve_existing(
     if mode == OnExisting::Allow {
         return Ok(Existing::None);
     }
-    let found: Vec<SharedSession> = db
-        .find_sessions_by_name(name)
-        .map_err(|e| format!("find_sessions_by_name: {e}"))?
-        .into_iter()
-        .filter(|s| s.backend_type == backend)
-        .collect();
+    let found: Vec<SharedSession> = crate::session_ops::names::live_namesakes(db, name, backend)?;
     match (mode, found.len()) {
         (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
         (OnExisting::Fail, _) => Err(format!(

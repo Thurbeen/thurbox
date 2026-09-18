@@ -13,6 +13,7 @@ pub mod extensions;
 pub mod host_cli;
 pub mod lifecycle_hooks;
 pub mod mirror;
+pub mod names;
 pub mod remote_hooks;
 pub mod rename;
 pub mod restart;

@@ -148,6 +148,16 @@ while an extension is active, deleting its session/automation is a **no-op** —
 they are recreated. `extension deactivate` is the real off-switch, and headless
 healing needs `[features] automations = true`.
 
+A declared session is recreated only when its name is free **on the local
+backend**, asked through `session_ops::names` — the same rule `session create
+--on-existing` applies. Three things hold a name: a live session (reused), a
+soft delete whose undo window is still open (declined — it can still be taken
+back), and another creator mid-spawn (an expiring claim, held across the spawn).
+Each refusal lands in `EnsureReport::sessions_blocked` and is reported beside the
+"Repaired …" message — including on the auto-update path, which returns early.
+`session restore` holds and asks the same three questions, for the other end of
+the same sequence, on local rows only.
+
 **Installer resolution order, payload flags, versioning/staleness
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**
