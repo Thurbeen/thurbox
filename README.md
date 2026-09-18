@@ -16,8 +16,8 @@
   Antigravity, opencode, aider, or any CLI you describe yourself.
 - **A tmux session behind every agent** — they survive crashes, restarts and reboots, so quit
   thurbox and every agent keeps working.
-- **One session, several repos** — each on its own git worktree of a shared branch, so agents
-  never fight over your checkout.
+- **One session, several repos** — put any of them on its own git worktree of a shared branch,
+  so agents never fight over your checkout.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
   model, prompts or tools, so new agent features arrive the day that CLI ships them.
 - **An interface that is not compiled in** — every pane, the session list included, is a Lua
