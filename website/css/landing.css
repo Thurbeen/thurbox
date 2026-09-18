@@ -79,22 +79,21 @@
 }
 
 /* Press Start 2P is 1em per character, so headline width is character count,
-   not font size guesswork: the headline is 19 characters = 19.19em with the
-   tracking below.
+   not font size guesswork: the headline is 18 characters = 18.18em with the
+   tracking below, and one line of it measures 400px at the floor.
 
    The floor is set by the copy, not by the container. The old 0.875rem was the
-   largest that fits 320px on ONE line - and it put a 14.1px headline over an
-   18.4px paragraph, so under a 418px viewport the headline was smaller than
-   the sentence it leads. 1.4rem clears --hero-copy's 1rem floor at every width
-   instead, and 19.19em of it is 430px of line at that floor (422px measured):
-   a 320px phone has 272px of content, and even a 480px one has 432px, which is
-   that line flush to both container edges. So below 640px the headline takes
-   two lines rather than shrink back under its own copy; the break is placed on
-   .hero-headline-phrase.
+   largest that fits a headline on ONE line at 320px - and it put a 14.1px
+   headline over an 18.4px paragraph, so under a 418px viewport the headline
+   was smaller than the sentence it leads. 1.4rem clears --hero-copy's 1rem
+   floor at every width instead. That single line then wants 400px of the 432px
+   a 480px phone has, which is a headline touching both gutters, so below 640px
+   it takes two lines instead; the break is placed on .hero-headline-phrase.
 
-   From 640px up the vw term keeps the single line inside the container: 4.4vw
-   fits (4.5vw wrapped at 340px, by 1.6px), the 48px of container padding being
-   what bites - a fifth of the width at 320px, a twentieth at 1200px.
+   From 640px up the single line has room - 509px inside 592px at the step
+   itself, and the 4.4vw term holds that ratio upward. The 48px of container
+   padding is what bites at the narrow end: a fifth of the width at 320px, a
+   twentieth at 1200px.
 
    The bloom is smaller than the tokens' --glow-red alone would give. This is a
    pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
@@ -109,9 +108,19 @@
   animation: flicker 4.5s infinite steps(1);
 }
 
-/* The headline's second phrase, and where the headline breaks: below 640px it
-   does not fit one line (see .hero h1), and the break is placed rather than
-   left to the browser, which wraps after "AT" between 390px and 414px.
+/* The headline's second phrase: green against the headline's red, and the only
+   accent colour anywhere in the hero. It was one of three greens in four lines
+   before - the badge on the setup line and the emphasis in the thesis were the
+   others - and both of those are gone, so this one reads as an accent again
+   rather than as the hero's default colour. */
+.hero-headline-phrase {
+  color: var(--green);
+  text-shadow: var(--glow-green);
+}
+
+/* It is also where the headline breaks: below 640px one line does not fit (see
+   .hero h1), and the break is placed rather than left to the browser, which
+   would split the two words at whatever width ran out first.
 
    39.9375em is the ladder's 640px step, and the one media query in this file
    spelled in em rather than px. It has to be: what it guards is a rem-sized
@@ -119,11 +128,7 @@
    a px breakpoint hands a 2x-sized headline back to the browser's greedy wrap
    at exactly the widths this rule exists for. Media-query em resolves against
    the reader's own default font size - the same thing rem here scales with -
-   so the two move together. At the default 16px they are the same 639px.
-
-   The span carries no colour of its own. The display face, the size and the
-   red glow are what set the headline apart, and a green word inside it made
-   three green accents out of four hero lines. */
+   so the two move together. At the default 16px they are the same 639px. */
 @media (max-width: 39.9375em) {
   .hero-headline-phrase {
     display: block;
@@ -164,15 +169,10 @@
   font-size: calc(var(--hero-copy) * var(--hero-copy-step));
 }
 
-/* The one emphasis colour in the hero copy, and the only place it appears. No
-   glow with it: --glow-green is sized for chrome, not for a 16px sentence. */
-.hero .subtitle--thesis strong {
-  color: var(--green);
-}
-
 /* Setup line: the quietest of the three, in size and in colour. Centred like
    the subtitles above it rather than boxed, for the same reason, and no badge
-   - "one command" is the sentence's own subject now. */
+   - "one command" is the sentence's own subject now, and the badge was one
+   green too many. */
 .hero-stability {
   max-width: 600px;
   margin: 0 auto var(--space-xl);
