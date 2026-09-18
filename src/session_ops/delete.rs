@@ -491,13 +491,15 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// and a host that cannot answer is then backed off rather than re-asked every
 /// pass (`window_index_on`).
 ///
-/// A row whose reap does not come off is backed off rather than re-attempted
-/// on this cadence. Ownership is the sweep's only idempotence proxy, so a row
-/// whose windows are still standing is overdue again on the very next pass:
-/// one session on a host whose own `thurbox-cli` would not run had its reap —
-/// and the remote round trip it makes — repeated every five seconds for the
-/// life of the process (issue #1193). The curve is the host probe's, the same
-/// one the ownership gate's own host backoff climbs.
+/// A row whose reap *reports* that it did not come off is backed off rather
+/// than re-attempted on this cadence. Ownership is the sweep's only idempotence
+/// proxy, so a row whose windows are still standing is overdue again on the
+/// very next pass: one session on a host whose own `thurbox-cli` would not run
+/// had its reap — and the remote round trip it makes — repeated every five
+/// seconds for the life of the process (issue #1193). The curve is the host
+/// probe's, the same one the ownership gate's own host backoff climbs. The
+/// local branch reports nothing to back off on, deliberately: a `kill-window`
+/// that finds no window is the ordinary success, not a failure to space out.
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -807,9 +809,9 @@ pub fn owned_windows_in(
 fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
     let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
         return Err(format!(
-            "'{}' was soft-deleted on {}, which is not in hosts.toml; \
-             its windows are left running there",
-            row.name, row.backend_type
+            "host {} is not in hosts.toml; \
+             the session's windows are left running there",
+            row.backend_type
         ));
     };
     if let Some(cli) = super::host_cli::delegated(&host) {
@@ -822,7 +824,7 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
             Err(e) if e.contains("not found") => {
                 tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
             }
-            Err(e) => return Err(format!("on '{}': {e}", host.name)),
+            Err(e) => return Err(format!("host '{}': {e}", host.name)),
         }
     }
     let panes = crate::agent::tmux::SessionPanes {
@@ -831,7 +833,7 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
     };
     crate::agent::tmux::kill_remote_windows(&host, &row.id.to_string(), &row.name, panes)
         .map(|_| ())
-        .map_err(|e| format!("on '{}': {e:#}", host.name))
+        .map_err(|e| format!("host '{}': {e:#}", host.name))
 }
 
 /// Kill the session's window on the local tmux server, reaping the pane's child
@@ -1373,6 +1375,28 @@ mod tests {
             "the mark did not survive the restore"
         );
         assert!(db.list_owed_teardowns().unwrap().is_empty());
+    }
+
+    /// The reap backoff belongs to one delete, not to the session. A row whose
+    /// host was down long enough to earn the fifteen-minute interval, then
+    /// restored and deleted again, would otherwise keep its agent running that
+    /// much past the undo window with the host perfectly reachable.
+    #[test]
+    fn restoring_a_row_clears_the_reap_backoff_its_outage_earned() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        db.soft_delete_session(id).unwrap();
+        let failed_at = crate::sync::current_time_millis();
+        reap_failed(&db, id, failed_at);
+        assert!(!claim_reap(&db, id, failed_at + 5_000));
+
+        db.restore_session(id).unwrap();
+        db.soft_delete_session(id).unwrap();
+
+        assert!(
+            claim_reap(&db, id, failed_at + 5_000),
+            "the backoff did not survive the restore"
+        );
     }
 
     #[test]

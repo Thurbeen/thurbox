@@ -366,6 +366,12 @@ impl Database {
              updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
             params![now, id_str],
         )?;
+        // And the reap backoff, for the same reason: it belongs to the delete
+        // that earned it, not to the session. Kept, it would defer the reap of
+        // a *later* delete of this row by the interval an outage that is over
+        // bought — up to fifteen minutes of an agent running on past its undo
+        // window.
+        self.clear_session_reap_backoff(id)?;
 
         self.log_audit(
             EntityType::Session,
