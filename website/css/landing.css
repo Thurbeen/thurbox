@@ -1039,8 +1039,27 @@ main {
   margin-top: 2rem;
 }
 
+/* The mockup depicts thurbox's `doom` preset, not the `default` one: doom's
+   slots ARE this site's palette (#ff5c54, #6eff6e, #00d9ff, #e0e0e0 are the
+   same values in both), so one theme is both accurate and on-brand. Every
+   value below is read off `doom_palette()` in
+   src/session/theme_config/palettes.rs, and the structure off the frames
+   pinned in tests/frames.rs — the border glyphs, the title in the top edge,
+   the status cluster, the repo separators and the selection band are what the
+   panes actually paint. The four colours the site has no token for are spelled
+   out; the rest reference the tokens they already share.
+
+   It is a depiction, not a screenshot: a 1px CSS border stands in for the
+   ╭─╮│╰─╯ run, because the panes animate between rects and box-drawing glyphs
+   cannot be resized. The title chip and the status cluster sit ON that border,
+   which is where the terminal draws them. */
 .ui-lab__screen {
-  background: var(--bg-code);
+  --tui-bg: #1a080a;
+  --tui-selection: #40151e;
+  --tui-muted: #606060;
+  --tui-working: #ffa500;
+
+  background: var(--tui-bg);
   contain: layout paint;
   height: 22rem;
   overflow: hidden;
@@ -1048,7 +1067,7 @@ main {
 }
 
 .ui-pane {
-  border: 1px solid var(--border);
+  border: 1px solid var(--green);
 
   /* Keep a pane's reflow inside the pane. The rect changes are layout, not
      transform, so containment is what stops four simultaneous size changes from
@@ -1056,9 +1075,10 @@ main {
   contain: layout paint;
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.1rem;
+  font-family: var(--font-mono);
   overflow: hidden;
-  padding: 0.5rem 0.6rem;
+  padding: 0.6rem 0.45rem 0.4rem;
   position: absolute;
   transition:
     left 480ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -1075,57 +1095,204 @@ main {
   pointer-events: none;
 }
 
-.ui-pane__title {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+/* The title row. The terminal writes it into the top border itself; here it is
+   the first row inside that border instead, because a pane contains its own
+   paint (above) and anything hung outside the box is clipped rather than drawn.
+   One row down is the whole difference. */
+.ui-pane__chrome {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+  margin-bottom: 0.2rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.ui-pane__row {
-  color: var(--text-primary);
-  font-size: 0.78rem;
+.ui-pane__title,
+.ui-pane__session {
+  background: var(--accent);
+  color: var(--tui-bg);
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0 0.3rem;
+}
+
+/* The session the centre pane is showing, named in its own border. Last in the
+   row and the first thing allowed to lose characters, which is what the pane
+   does with it too - it ellipsises the branch before anything else. */
+.ui-pane__session {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ui-pane__row.mono {
-  font-family: var(--font-mono);
+/* The search strip is its own accent in every preset — `search_bar`, not the
+   border role — so it keeps the border and the title in that colour. */
+.ui-pane[data-pane='search'] {
+  border-color: var(--accent);
+}
+
+.ui-pane[data-pane='search'] .ui-pane__title {
+  background: none;
+  color: var(--accent);
+}
+
+/* The left-hand run of the agent pane's title: a key hint, not a label. */
+.ui-pane__hint {
+  background: var(--tui-bg);
+  color: var(--tui-muted);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  padding: 0 0.2rem;
+}
+
+.ui-pane__hint b {
+  color: var(--accent);
+  font-weight: 400;
+}
+
+/* The focused tab inside the agent title — the selection colours, because that
+   is what marks the live half of a split. */
+.ui-pane__tab {
+  background: var(--tui-selection);
+  color: var(--green);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0 0.25rem;
+}
+
+/* One dot per session, in the title row, in session order. */
+.ui-pane__dots {
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  gap: 0.1rem;
+  margin-left: auto;
+}
+
+/* A repo group header: a label between two rules, drawn in the muted role. */
+.ui-pane__group {
+  align-items: center;
+  color: var(--tui-muted);
+  display: flex;
+  font-size: 0.62rem;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.ui-pane__group::before {
+  content: '──';
+}
+
+.ui-pane__group::after {
+  border-top: 1px solid currentcolor;
+  content: '';
+  flex: 1;
+  opacity: 0.6;
+}
+
+/* flex: 0 0 auto, not the default: a row that may shrink is a row that gets
+   squeezed to a few pixels of nothing when the pane is a short one, rather
+   than a row the pane clips. A terminal clips. */
+.ui-pane__row {
+  align-items: center;
+  color: var(--text-primary);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  gap: 0.3rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The selection is a band across the whole row, not a marker on it. */
+.ui-pane__row.is-selected {
+  background: var(--tui-selection);
+  color: var(--green);
+  font-weight: 700;
+  margin: 0 -0.45rem;
+  padding: 0 0.45rem;
 }
 
 .ui-pane__row.dim {
-  color: var(--text-muted);
+  color: var(--tui-muted);
 }
 
-.ui-pane__row .dot {
-  border-radius: 50%;
-  display: inline-block;
-  height: 0.45rem;
-  margin-right: 0.4rem;
-  width: 0.45rem;
+/* The status glyph vocabulary, one per SessionState, coloured by the status_*
+   slots. Glyphs rather than CSS circles: these are the characters the pane
+   paints, and their shapes are how the states differ at a glance. */
+.tui-dot {
+  font-style: normal;
 }
 
-.ui-pane__row .dot.working {
-  background: #d9a531;
+.tui-dot.working {
+  color: var(--tui-working);
 }
 
-.ui-pane__row .dot.done {
-  background: #4f8ed6;
+.tui-dot.idle {
+  color: var(--green);
 }
 
-.ui-pane__row .dot.idle {
-  background: #5fa77a;
+.tui-dot.blocked {
+  color: var(--red);
 }
 
-/* The point of the whole section: the pane tells you which file drew it. */
+.tui-dot.done {
+  color: var(--blue);
+}
+
+/* `branch_name`, and the mark the pane puts before every session name. Drawn
+   rather than typed: the pane paints U+2442 and the site's Latin-subset fonts
+   have no glyph for it, so a character here is a tofu box. Same reason the
+   borders above are CSS and not the ╭─╮ run the terminal writes. */
+.tui-branch {
+  color: var(--green);
+  flex: 0 0 auto;
+  height: 0.62rem;
+  width: 0.5rem;
+}
+
+/* The child prefix, U+2514, missing from those fonts for the same reason: an
+   L-shaped rule is the glyph. */
+.tui-tree {
+  border-bottom: 1px solid var(--tui-muted);
+  border-left: 1px solid var(--tui-muted);
+  flex: 0 0 auto;
+  height: 0.42rem;
+  margin-bottom: 0.18rem;
+  width: 0.32rem;
+}
+
+/* The inline state word a row carries when it is not idle. */
+.tui-state {
+  font-style: normal;
+  margin-left: auto;
+}
+
+.tui-state.blocked {
+  color: var(--red);
+}
+
+.tui-count {
+  color: var(--tui-muted);
+  font-style: normal;
+  margin-left: auto;
+}
+
+/* The point of the whole section: the pane tells you which file drew it. This
+   one annotation is the website's, not the terminal's. */
 .ui-pane__file {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
+  color: var(--tui-muted);
+  font-size: 0.6rem;
   margin-top: auto;
-  opacity: 0.75;
+  opacity: 0.8;
+  padding-top: 0.2rem;
 }
 
 .ui-lab__controls {

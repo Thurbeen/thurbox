@@ -651,7 +651,10 @@
 
     var COLUMNS = ['sessions', 'agent', 'yours'];
     var WEIGHT = { sessions: 1, agent: 2.4, yours: 1 };
-    var FOOTER = 18;
+    // The real strip is three rows of a thirty-row screen. It gets a little
+    // more here because this mockup adds a row the terminal does not draw: the
+    // name of the file that painted the pane.
+    var FOOTER = 22;
 
     // The `stacked right` arrangement, mirroring examples/lua/layout.lua's own
     // numbers so the widget and the file it advertises cannot drift: a 30%-wide
