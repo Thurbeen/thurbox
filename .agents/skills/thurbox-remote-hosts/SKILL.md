@@ -220,7 +220,11 @@ session), never on the loop, ADR-P12).
   the host **advertises its own CLI** there first (`host_cli::
   advertise_running_cli`, a symlink refreshed at TUI boot and on every CLI
   call), which is how a host running a dev checkout is shareable without any
-  provisioning. `version --json` reports the
+  provisioning. That advertiser only ever manages a symlink of its own: it
+  returns when the running CLI *is* the path it advertises into — which on a
+  provisioned host it is, `resolve_cli_binary` answering with a sibling of the
+  running exe — leaves a regular file there alone, and removes an existing
+  self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
   host CLI's `tmux_socket`, which the backend adopts (`agent::tmux::
   learn_host_socket`) so a dev laptop attaches to a release host's server.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
@@ -345,7 +349,12 @@ session), never on the loop, ADR-P12).
   every minute, so an in-memory gate is overtaken by the first and forgotten by
   the second. Issue #1182 is what that cost on native Windows: one WSL
   row, `wsl.exe` spawned from the interface's own `Command::Reap` every five
-  seconds, and 3.9 MB of log in a day.
+  seconds, and 3.9 MB of log in a day. The **reap** is claimed the same way and
+  per row (`session_reap_backoff:<session id>`), because a host can answer
+  `list-windows` while its own `thurbox-cli` will not run: the listing succeeds,
+  the row keeps owning its windows, and only the reap fails (issue #1193). That
+  is why `reap_remote` returns a `Result` rather than logging — "still owns
+  windows" cannot tell a reap that has not run from one that failed.
 - **"The host holds nothing" and "the host did not answer" are different
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,

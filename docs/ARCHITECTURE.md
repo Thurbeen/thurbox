@@ -1788,6 +1788,18 @@ issue #1182: a single soft-deleted WSL row spawning `wsl.exe` from
 `Command::Reap` every five seconds, stalling the interface and writing 3.9 MB of
 log in a day.
 
+The **reap itself** is claimed the same way, per row
+(`session_reap_backoff:<session id>`). Listing the host and reaping on it are
+different questions and a host can answer one and not the other: a WSL distro
+whose `thurbox-cli` was an `ELOOP` symlink answered `list-windows` perfectly, so
+the listing never backed off, the row kept owning its windows, and the reap —
+and the remote round trip it makes — was repeated on the sweep's own cadence
+for the life of the process (issue #1193). Ownership is the sweep's only
+idempotence proxy, so "still owns windows" cannot distinguish a reap that has
+not run from one that failed; `reap_remote` therefore *reports* its failure
+instead of logging it, and the sweep spaces that row out on `retry_after` its
+consecutive failures and drops the stamp the moment the reap comes off.
+
 **Why**: there were two reapers answering different questions.
 `kernel::reaper::Reaper` fired on *"the id left the snapshot ten seconds ago"*,
 which is a proxy for deletion that anything else emptying the snapshot also

@@ -210,6 +210,10 @@ pub fn sharing_off_note(host: &HostDef, reason: &str) -> String {
 /// one behind. Refreshed at TUI start and on every CLI invocation; a cheap
 /// `readlink` compare when nothing changed. Unix only — Windows symlinks need
 /// a privilege, and `install.ps1`'s directory is already a probe candidate.
+///
+/// It only ever manages a symlink of its own: a real file at that path is the
+/// advertisement already (a provisioned host's own CLI lands exactly there),
+/// and is left alone.
 pub fn advertise_running_cli() {
     #[cfg(unix)]
     {
@@ -218,25 +222,93 @@ pub fn advertise_running_cli() {
         else {
             return;
         };
-        let target = crate::agent::tmux::resolve_cli_binary();
-        if !target.is_absolute() || !target.exists() {
-            return;
-        }
-        let link = dir.join("thurbox-cli");
-        if std::fs::read_link(&link).is_ok_and(|current| current == target) {
-            return;
-        }
-        if let Err(e) = std::fs::create_dir_all(&dir)
-            .and_then(|()| match std::fs::symlink_metadata(&link) {
-                Ok(_) => std::fs::remove_file(&link),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e),
-            })
-            .and_then(|()| std::os::unix::fs::symlink(&target, &link))
-        {
-            tracing::debug!("could not advertise thurbox-cli at {}: {e}", link.display());
-        }
+        advertise_cli_in(&dir, &crate::agent::tmux::resolve_cli_binary());
     }
+}
+
+/// [`advertise_running_cli`] with the directory and the running CLI handed in
+/// — all of its logic, and the seam its tests drive: nothing in-process can
+/// choose what `resolve_cli_binary` answers, and every case worth pinning is a
+/// relation between those two paths.
+#[cfg(unix)]
+fn advertise_cli_in(dir: &std::path::Path, target: &std::path::Path) {
+    let link = dir.join("thurbox-cli");
+    // Healed before anything is read, because no guard below can see past a
+    // loop: `resolve_cli_binary` looks for a sibling that `exists()`, and a
+    // self-link does not, so `target` is then the bare name and the
+    // `is_absolute` guard returns with the loop still in place. No migration
+    // reaches a WSL distro, so this read side is the only thing that ever
+    // repairs a machine already carrying one (issue #1193).
+    heal_self_link(&link);
+    // The running CLI *is* the path being advertised. That is the ordinary
+    // shape on a provisioned host: `resolve_cli_binary` answers with a sibling
+    // of the running exe, and there the exe is `<data dir>/bin/thurbox`, so the
+    // sibling is this very link. The advertisement is already true — a real
+    // binary sits at it — and writing one anyway removed that binary and
+    // pointed the path at itself. This has to return *before* the removal
+    // below, not merely before the symlink.
+    if target == link {
+        return;
+    }
+    if !target.is_absolute() || !target.exists() {
+        return;
+    }
+    if std::fs::read_link(&link).is_ok_and(|current| current == *target) {
+        return;
+    }
+    if let Err(e) = link_cli(dir, &link, target) {
+        tracing::debug!("could not advertise thurbox-cli at {}: {e}", link.display());
+    }
+}
+
+/// Remove `link` when it is a symlink to its own path — `ELOOP` on every use,
+/// and never correct however it got there.
+///
+/// Read back rather than resolved: a loop has no `metadata`, and `read_link`
+/// is the one call that answers what it was pointed at. The target is joined
+/// onto the parent so a relative spelling of the same mistake is caught too;
+/// `Path::join` leaves an absolute one alone, which is the spelling actually
+/// measured.
+#[cfg(unix)]
+fn heal_self_link(link: &std::path::Path) {
+    let Some(dir) = link.parent() else { return };
+    if !std::fs::read_link(link).is_ok_and(|to| dir.join(to) == *link) {
+        return;
+    }
+    if let Err(e) = std::fs::remove_file(link) {
+        tracing::debug!(
+            "could not remove the self-referential thurbox-cli at {}: {e}",
+            link.display()
+        );
+    }
+}
+
+/// Point `link` at `target`, replacing an advertisement of this function's own
+/// making.
+///
+/// Only ever a symlink is replaced. A regular file there is somebody else's —
+/// the CLI a provisioner just extracted, or an installer wrote — and removing
+/// it is what destroyed a freshly provisioned host, so it is left and the
+/// advertisement is skipped.
+#[cfg(unix)]
+fn link_cli(
+    dir: &std::path::Path,
+    link: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    match std::fs::symlink_metadata(link) {
+        Ok(meta) if !meta.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "a file that is not ours is already there",
+            ))
+        }
+        Ok(_) => std::fs::remove_file(link)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::os::unix::fs::symlink(target, link)
 }
 
 fn establish(host: &HostDef) -> Usable {
@@ -1088,5 +1160,124 @@ mod tests {
         assert_eq!(reported_error(b"command not found"), None);
         assert_eq!(reported_error(br#"{"ok":true}"#), None);
         assert_eq!(reported_error(br#"{"error":"  "}"#), None);
+    }
+
+    /// The advertiser's directory, with the CLI the provisioner extracts into
+    /// it — a real file at the very path the advertisement is written to.
+    #[cfg(unix)]
+    fn provisioned_bin_dir(root: &std::path::Path) -> std::path::PathBuf {
+        let bin = root.join(HOST_BIN_DIR);
+        std::fs::create_dir_all(&bin).unwrap();
+        bin
+    }
+
+    /// On a provisioned host the running CLI *is* the path being advertised:
+    /// `resolve_cli_binary` answers with a sibling of the running exe, and
+    /// inside a WSL distro that exe is `<data dir>/bin/thurbox`, so the sibling
+    /// is `<data dir>/bin/thurbox-cli` — the link's own path.
+    ///
+    /// Advertising that removed the freshly extracted 12.5 MB binary and put a
+    /// symlink to itself in its place, which is `ELOOP` on every use (issue
+    /// #1193). Both halves are pinned here: the real file survives, and no
+    /// symlink is written over it.
+    #[cfg(unix)]
+    #[test]
+    fn the_cli_is_never_advertised_as_a_link_to_its_own_path() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = provisioned_bin_dir(root.path());
+        let cli = bin.join("thurbox-cli");
+        std::fs::write(&cli, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        advertise_cli_in(&bin, &cli);
+
+        let kind = std::fs::symlink_metadata(&cli).unwrap().file_type();
+        assert!(
+            kind.is_file(),
+            "the provisioned CLI is the advertisement; it must be left as the \
+             real file it is rather than replaced by a link to itself"
+        );
+        assert_eq!(std::fs::read(&cli).unwrap(), b"#!/bin/sh\nexit 0\n");
+    }
+
+    /// A machine already carrying the self-link is only ever fixed by thurbox
+    /// noticing — no migration reaches a WSL distro — and every exit the
+    /// function had preserved it instead: `read_link` reads the loop back as
+    /// the target it wanted, and `resolve_cli_binary` cannot even see past it
+    /// (it looks for a sibling that *exists*, and a loop does not), so the
+    /// `is_absolute` guard returns with the loop still in place.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_self_referential_link_is_removed_rather_than_kept() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = provisioned_bin_dir(root.path());
+        let link = bin.join("thurbox-cli");
+        std::os::unix::fs::symlink(&link, &link).unwrap();
+        // What `resolve_cli_binary` answers once the loop is there: the sibling
+        // does not `exists()`, so it falls back to the bare name.
+        let target = std::path::PathBuf::from("thurbox-cli");
+
+        advertise_cli_in(&bin, &target);
+
+        assert!(
+            std::fs::symlink_metadata(&link).is_err(),
+            "a link whose target is its own path is never correct, however it \
+             got there, and leaving it is what made the break permanent"
+        );
+    }
+
+    /// The case the function exists for, unchanged: a checkout's
+    /// `target/debug/thurbox-cli` is on nobody's PATH, so a peer probing this
+    /// machine needs the advertisement to find it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dev_checkout_is_still_advertised() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = provisioned_bin_dir(root.path());
+        let debug = root.path().join("target/debug");
+        std::fs::create_dir_all(&debug).unwrap();
+        let target = debug.join("thurbox-cli");
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+
+        advertise_cli_in(&bin, &target);
+
+        assert_eq!(std::fs::read_link(bin.join("thurbox-cli")).unwrap(), target);
+    }
+
+    /// And a stale advertisement is still replaced — the reason the link is
+    /// refreshed on every start rather than written once.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_advertisement_is_replaced() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = provisioned_bin_dir(root.path());
+        let link = bin.join("thurbox-cli");
+        std::os::unix::fs::symlink(root.path().join("gone/thurbox-cli"), &link).unwrap();
+        let target = root.path().join("thurbox-cli");
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+
+        advertise_cli_in(&bin, &target);
+
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    }
+
+    /// The other half of the same rule, for the case where the paths differ: a
+    /// real file at the advertised path is somebody else's — a provisioner's,
+    /// an installer's — and this function manages only a symlink of its own
+    /// making. Removing one is what destroyed the binary on a freshly
+    /// provisioned host, so it is left and nothing is advertised.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_file_at_the_advertised_path_is_never_removed() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = provisioned_bin_dir(root.path());
+        let installed = bin.join("thurbox-cli");
+        std::fs::write(&installed, b"#!/bin/sh\nexit 0\n").unwrap();
+        let target = root.path().join("checkout/thurbox-cli");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+
+        advertise_cli_in(&bin, &target);
+
+        assert_eq!(std::fs::read(&installed).unwrap(), b"#!/bin/sh\nexit 0\n");
     }
 }
