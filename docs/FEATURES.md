@@ -235,6 +235,27 @@ moved fall back to creation order:
   (`webapp + infra`) rather than being filed arbitrarily under one repo;
   sessions touching the same set cluster together. Sessions with no repo share a
   `(no repo)` group.
+- When the list spans **more than one machine** — the live sessions, or a
+  creation in flight naming a host — the host becomes the **outer** axis: this
+  machine's groups first, then each remote host's by name, and a header names
+  both (`buildbox · webapp`). Repo grouping keeps working
+  inside a host, and with `group_by_repo` off the flat list is one flat list per
+  host. A single-machine list — a laptop with no remote sessions, and equally a
+  machine whose every session is on the same remote box — renders exactly what
+  it rendered before the axis existed, until something on it names a second
+  machine.
+
+**Why the host is derived and not a setting.** The axis turns on by counting the
+machines on screen — and a creation in flight counts, because creating your
+*first* session on a host is a list whose rows are all local and whose next row
+is not. Counting rows alone, the placeholder sat under a header naming no
+machine until the session landed and the list regrouped underneath it. A header
+naming the only machine there is noise, and a switch defaulting to on is that
+same behaviour with one more thing to explain. It is a
+second header *axis*, not a second header *level*: `ui/lib/order.lua` finds a
+group's edges by the single row that carries a header, and two levels would have
+to be taught to the move algebra, the click targets and the border dots as well
+for an axis most users never see.
 
 **Why group by repo?** With several parallel agents the dominant question
 is "which project is this?" — clustering same-repo sessions answers it at a
@@ -266,6 +287,14 @@ group** swaps past a group edge, and nested children move among their
 siblings only. `Shift+S` (rebindable `SessionListSortAlphabetically`)
 sorts every group's sessions alphabetically by name in one shot,
 preserving group order and parent/child nesting.
+
+**A group never moves onto another machine.** With the host axis on, the group
+below the last of one host's belongs to the next host, and `Shift+J` there is
+refused rather than swapping them. The swap would be accepted, persisted, and
+then undone by the next build re-clustering each group under its own host —
+the same shape as the `group_by_repo` mistake below. Here it cannot be argued
+for either way: which machine a session runs on is `backend_type`, grouping is
+a view, and a view never moves a session between them.
 
 **With grouping off there are no group edges.** The session list's
 `group_by_repo` setting (settings → Sessions) is not a label switch: off

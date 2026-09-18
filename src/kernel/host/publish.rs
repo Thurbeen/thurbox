@@ -1001,6 +1001,10 @@ fn build_commands(lua: &Lua, inflight: &[InFlight]) -> Result<Value, String> {
             "subject",
             opt_lua_string(lua, entry.subject.as_deref())?,
         )?;
+        // The machine a creation will land on, so a list grouped by host draws
+        // the placeholder under it rather than under whichever group happens
+        // to hold that repository.
+        set(&item, "host", opt_lua_string(lua, entry.host.as_deref())?)?;
         set(&item, "error", opt_lua_string(lua, entry.error.as_deref())?)?;
         commands
             .raw_set(index + 1, item)

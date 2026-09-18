@@ -719,6 +719,18 @@ shot, preserving group order (still by lowest `display_order`) and parent/child
 nesting, and issues the same `Order` command (v1's
 `sort_alphabetically_within_groups`).
 
+When the list spans **more than one machine** — the live sessions, or a creation
+in flight naming a host — the host is the outer grouping axis: this machine's groups first, then each remote host's by name, and
+a group header names both (`buildbox · webapp`). It is derived, not a setting — one
+machine renders exactly what it rendered before the axis existed, and a creation
+counts towards the tally so the first session on a host names its machine while
+it is still being made. A group edge is therefore a host+repo edge, and a `Shift+J` that would
+carry a group onto another machine is refused: the swap would be persisted and
+then undone by the next build re-clustering the group under its own host.
+`thurbox-cli session list` grows nothing for this — it already carries
+`backend_type` per row, and grouping is a view decision that would only cost the
+scripts piping it through `jq`.
+
 All of that is the **grouped** shape. With the pane's `group_by_repo` setting
 off there are no group edges to swap past: `ui/lib/session_model.lua` builds one
 flat group ordered by `display_order` alone, so `Shift+J`/`Shift+K` move a row

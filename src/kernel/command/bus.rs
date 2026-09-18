@@ -44,6 +44,9 @@ pub struct InFlight {
     /// a creation is for, so a pending row can be grouped where the session
     /// will actually land.
     pub subject: Option<String>,
+    /// The host a creation is for, when it names one — `None` for this machine
+    /// and for every command that already names a session.
+    pub host: Option<String>,
     pub phase: Phase,
     /// Set once the command has failed; retained briefly so a plugin can show
     /// it, then swept.
@@ -118,6 +121,7 @@ impl CommandBus {
             kind: command.kind(),
             session: command.session().to_string(),
             subject: command.subject(),
+            host: command.host(),
             phase: Phase::Queued,
             error: None,
         };

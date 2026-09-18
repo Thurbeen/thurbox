@@ -48,6 +48,26 @@ pub fn is_remote_backend(backend_name: &str) -> bool {
     is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
 }
 
+/// The bare host name inside a backend name — `ssh:devbox` → `devbox` — or
+/// `None` for a local backend.
+///
+/// The one place the prefix is stripped. A session's machine is published to
+/// the interface bare while the host picker carries the prefixed backend name,
+/// and the two have to answer as one vocabulary: the session list groups rows
+/// by the former and creations-in-flight by the latter, so a second spelling
+/// put a creation under a machine that did not exist.
+pub fn host_name_of(backend_name: &str) -> Option<&str> {
+    backend_name
+        .strip_prefix(SSH_BACKEND_PREFIX)
+        .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))
+        // A bare `ssh:` names no machine. Nothing builds one today — the
+        // picker appends a name and an empty `--host` is dropped at parse —
+        // but `Some("")` is a machine whose name is the empty string, and the
+        // session list would group by it and head the group with a separator
+        // and nothing else.
+        .filter(|bare| !bare.is_empty())
+}
+
 /// The environment variable every WSL2 distro's init sets to that distro's own
 /// name. Present only *inside* a distro — not on Windows, not on a plain Linux
 /// or macOS host.

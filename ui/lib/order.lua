@@ -4,13 +4,14 @@
 -- The kernel cannot compute it: only the pane knows the repo grouping and the
 -- parent/child nesting, and therefore what a move actually swaps — a root row
 -- drags its whole subtree, a root row at its group's edge moves the WHOLE
--- GROUP past the neighbouring one, and a nested child moves among its
--- siblings only. Ported from v1's `move_in_order` and
+-- GROUP past the neighbouring one on the same machine, and a nested child moves
+-- among its siblings only. Ported from v1's `move_in_order` and
 -- `sort_alphabetically_within_groups`.
 --
 -- Pure functions over the item list `session_model.build` returns: an item
--- carries `depth` (nesting), `header` (only on a group's first row) and, for a
--- session, `session.name`. Nothing here reads the snapshot or the theme.
+-- carries `depth` (nesting), `header` (only on a group's first row), `host`
+-- (only while the host axis is on) and, for a session, `session.name`. Nothing
+-- here reads the snapshot or the theme.
 
 local order = {}
 
@@ -51,8 +52,21 @@ local function group_end(items, at)
   return #items + 1
 end
 
+--- Are these two groups on the same machine?
+---
+--- A whole-group swap across a host boundary would be accepted and persisted,
+--- and then undone by the next build re-clustering the group under its own host
+--- -- the exact failure the `group_by_repo` setting was reshaped to avoid. The
+--- host is not a position the user can move a group to: it is what the session
+--- runs on, and grouping is a view. Both sides are nil while the host axis is
+--- off, so nothing is refused that was allowed before it existed.
+local function same_host(items, a, b)
+  return items[a].host == items[b].host
+end
+
 --- The two adjacent ranges a root move swaps: the neighbouring root block in
---- the same group, or — at a group edge — this whole group with its neighbour.
+--- the same group, or — at a group edge — this whole group with its neighbour
+--- on the same machine.
 local function root_ranges(items, at, down)
   local last = #items
   local finish = block_end(items, at)
@@ -65,7 +79,7 @@ local function root_ranges(items, at, down)
   if down then
     if finish < ge then
       return at, finish, finish, block_end(items, finish)
-    elseif ge <= last then
+    elseif ge <= last and same_host(items, gs, ge) then
       return gs, ge, ge, group_end(items, ge)
     end
     return nil
@@ -80,7 +94,7 @@ local function root_ranges(items, at, down)
   end
   if gs > 1 then
     local previous = group_start(items, gs - 1)
-    if previous then
+    if previous and same_host(items, previous, gs) then
       return previous, gs, gs, ge
     end
   end

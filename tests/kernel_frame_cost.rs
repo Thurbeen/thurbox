@@ -590,6 +590,7 @@ fn accepting_a_command_must_move_the_epoch_to_reach_a_pure_pane() {
         kind: "delete",
         session: "aaa".to_string(),
         subject: None,
+        host: None,
         phase: thurbox::kernel::command::Phase::Running,
         error: None,
     }];

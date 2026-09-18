@@ -1122,6 +1122,49 @@ fn shift_s_sorts_within_each_repo_group() {
 }
 
 #[test]
+fn a_group_cannot_be_moved_onto_another_machine() {
+    // The host axis is the outer one, so the group below the last local group
+    // belongs to another machine. Swapping the two would be accepted,
+    // persisted, and then undone by the next build re-clustering each group
+    // under its own host -- the failure the `group_by_repo` setting was
+    // reshaped to avoid, and here it cannot even be argued for: a session's
+    // machine is what it runs on, and grouping is only a view.
+    let host = host();
+    let mut remote = row("remote-build", "thurbox", "idle");
+    remote.backend = "ssh:buildbox".to_string();
+    remote.remote_host = Some("buildbox".to_string());
+    publish(
+        &host,
+        &snapshot(vec![
+            row("fix-osc52", "thurbox", "working"),
+            row("update-deps", "website", "idle"),
+            remote,
+        ]),
+    );
+    host.render(index_of(&host, "sessions"), ctx(40, 12, true))
+        .expect("render");
+
+    // Onto the second of this machine's two groups, which is the last one
+    // before the boundary.
+    press_key(&host, "sessions", 'j');
+    host.drain_commands();
+
+    // Down from there is the boundary: nothing at all is issued, exactly as at
+    // the end of the list.
+    let issued = keys_to_commands(&host, "sessions", 'J');
+    assert!(
+        issued.is_empty(),
+        "a group may not be moved onto another machine, got {issued:?}"
+    );
+
+    // Up from the same row still swaps, so the refusal is the host boundary
+    // and not a group edge having stopped working.
+    let issued = keys_to_commands(&host, "sessions", 'K');
+    assert_eq!(issued.len(), 1, "expected a reorder, got {issued:?}");
+    assert_eq!(issued[0].kind(), "order");
+}
+
+#[test]
 fn the_top_row_cannot_move_up() {
     // Not an error and not a no-op command: nothing is issued at all, so an
     // order is never persisted for a move that did not happen.
@@ -1228,6 +1271,7 @@ fn work_in_flight_is_drawn_instead_of_the_status() {
         kind: "restart",
         session: target,
         subject: None,
+        host: None,
         phase: Phase::Running,
         error: None,
     }];
@@ -1247,6 +1291,7 @@ fn a_failed_command_is_drawn_as_failed() {
         kind: "delete",
         session: target,
         subject: None,
+        host: None,
         phase: Phase::Failed,
         error: Some("session not found".to_string()),
     }];
@@ -1814,6 +1859,7 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
         kind: "create",
         session: String::new(),
         subject: Some("thurbox".to_string()),
+        host: None,
         phase: Phase::Running,
         error: None,
     }];
@@ -1839,6 +1885,138 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
 }
 
 #[test]
+fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
+    // A create carries no session yet, so the group it draws in comes from the
+    // two facts it does carry: the repo, and the host the flow picked.
+    //
+    // The host arrives as the picker spells it -- the BACKEND name, `ssh:<x>`
+    // -- while a session's machine is published bare. Compared as they came,
+    // the two never matched: a creation on `devbox` built a third group headed
+    // `ssh:devbox` beside the real `devbox`, naming a machine that does not
+    // exist, and the row still jumped when it landed.
+    let host = host();
+    let mut remote = row("remote-docs", "website", "idle");
+    remote.backend = "ssh:buildbox".to_string();
+    remote.remote_host = Some("buildbox".to_string());
+    let world = snapshot(vec![row("fix-osc52", "thurbox", "working"), remote]);
+
+    // Built the way the bus builds it, from a real command: `Command::host()`
+    // is where the picker's spelling is settled, so an `InFlight` filled in by
+    // hand here would test the interface against a value nothing produces.
+    let create = |subject: &str, on: Option<&str>| {
+        let command = Command::parse(
+            "create",
+            thurbox::kernel::command::Args {
+                repo: Some(format!("/src/{subject}")),
+                host: on.map(str::to_string),
+                ..Default::default()
+            },
+        )
+        .expect("parse a create");
+        vec![InFlight {
+            id: 1,
+            kind: "create",
+            session: String::new(),
+            subject: command.subject(),
+            host: command.host(),
+            phase: Phase::Running,
+            error: None,
+        }]
+    };
+    let screen_for = |inflight: &[InFlight]| {
+        publish_with(&host, &world, &Default::default(), inflight);
+        paint(&host, index_of(&host, "sessions"), 46, 14).join("\n")
+    };
+    let line_of = |screen: &str, needle: &str| {
+        screen
+            .lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in:\n{screen}"))
+    };
+
+    // Asked for on the remote host, in the spelling the host picker carries.
+    let screen = screen_for(&create("website", Some("ssh:buildbox")));
+    assert!(
+        !screen.contains("ssh:buildbox"),
+        "a backend name is not a machine the list can group by:\n{screen}"
+    );
+    assert_eq!(
+        screen.matches("buildbox · website").count(),
+        1,
+        "the creation joins the host's own group rather than building a \
+         second one beside it:\n{screen}"
+    );
+    assert!(
+        line_of(&screen, "creating") > line_of(&screen, "buildbox · website"),
+        "and draws inside it:\n{screen}"
+    );
+
+    // The same repo, asked for here: a `local · website` group is built for it
+    // even though this machine holds no session of that repo.
+    let screen = screen_for(&create("website", None));
+    assert!(
+        line_of(&screen, "creating") > line_of(&screen, "local · website"),
+        "a creation on this machine draws under this machine:\n{screen}"
+    );
+    assert!(
+        line_of(&screen, "creating") < line_of(&screen, "buildbox · website"),
+        "and not under the host that happens to hold that repo:\n{screen}"
+    );
+}
+
+#[test]
+fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
+    // Every row is local, so counting rows alone left the host axis off: the
+    // machine the creation named was dropped, the placeholder sat under a
+    // header naming no machine, and the row jumped the moment it landed and
+    // the whole list regrouped under it. Creating your first remote session is
+    // the ordinary way to reach that, not a corner.
+    let host = host();
+    let command = Command::parse(
+        "create",
+        thurbox::kernel::command::Args {
+            repo: Some("/src/thurbox".into()),
+            host: Some("ssh:buildbox".into()),
+            ..Default::default()
+        },
+    )
+    .expect("parse a create");
+    let inflight = vec![InFlight {
+        id: 1,
+        kind: "create",
+        session: String::new(),
+        subject: command.subject(),
+        host: command.host(),
+        phase: Phase::Running,
+        error: None,
+    }];
+    publish_with(
+        &host,
+        &snapshot(vec![row("fix-osc52", "thurbox", "working")]),
+        &Default::default(),
+        &inflight,
+    );
+
+    let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
+    assert!(
+        screen.contains("local · thurbox"),
+        "the existing row's machine is named:\n{screen}"
+    );
+    let creating = screen
+        .lines()
+        .position(|l| l.contains("creating"))
+        .unwrap_or_else(|| panic!("no placeholder in:\n{screen}"));
+    let header = screen
+        .lines()
+        .position(|l| l.contains("buildbox · thurbox"))
+        .unwrap_or_else(|| panic!("no group for the machine asked for in:\n{screen}"));
+    assert!(
+        creating > header,
+        "the placeholder names the machine it is being created on:\n{screen}"
+    );
+}
+
+#[test]
 fn a_session_being_deleted_leaves_the_list_at_once() {
     // The row is the delete's subject, so annotating it kept showing the very
     // session you had just removed for as long as the worker took. It goes on
@@ -1858,6 +2036,7 @@ fn a_session_being_deleted_leaves_the_list_at_once() {
         kind: "delete",
         session: doomed,
         subject: None,
+        host: None,
         phase: Phase::Running,
         error: None,
     }];
@@ -1884,6 +2063,7 @@ fn a_creation_into_a_fresh_repo_brings_its_own_header() {
         kind: "create",
         session: String::new(),
         subject: Some("brand-new".to_string()),
+        host: None,
         phase: Phase::Queued,
         error: None,
     }];
@@ -2378,6 +2558,7 @@ fn a_stage_name_reaches_the_pending_row() {
         kind: "create",
         session: String::new(),
         subject: Some("thurbox".to_string()),
+        host: None,
         phase: thurbox::kernel::command::Phase::Stage("worktrees".to_string()),
         error: None,
     }];
