@@ -4,18 +4,6 @@
   <img src="./website/assets/logo.svg" alt="thurbox" width="340">
 </div>
 
-Run several coding agents at once — Claude Code, Codex, Antigravity, opencode,
-aider, or any CLI you describe yourself — side by side in one terminal. Each
-gets its own persistent tmux session and its own git worktree, so they never
-fight over your checkout, and they survive crashes, restarts and reboots. Quit
-thurbox and every agent keeps working; relaunch and they are all still there.
-
-Thurbox is agent-neutral. It launches the vendor CLI unmodified and knows
-nothing about its model, prompts or tools, so you get new agent features the day
-the CLI ships them. And the interface is not compiled in: every pane you see,
-the session list included, is a Lua file in a directory you own — move it, turn
-it off, rewrite it, or install one somebody else wrote.
-
 [![CI](https://github.com/Thurbeen/thurbox/workflows/CI/badge.svg)](https://github.com/Thurbeen/thurbox/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Website](https://img.shields.io/badge/Website-thurbox.thurbeen.eu-blue)](https://thurbox.thurbeen.eu/)
@@ -23,6 +11,17 @@ it off, rewrite it, or install one somebody else wrote.
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
 ![Thurbox Demo](./media/thurbox-demo.gif)
+
+- **Several coding agents at once**, side by side in one terminal — Claude Code, Codex,
+  Antigravity, opencode, aider, or any CLI you describe yourself.
+- **One tmux session and one git worktree per agent**, so they never fight over your checkout.
+- **Sessions that survive crashes, restarts and reboots** — quit thurbox and every agent keeps
+  working.
+- **Agent-neutral** — it launches the vendor CLI unmodified and knows nothing about its model,
+  prompts or tools, so new agent features arrive the day that CLI ships them.
+- **An interface that is not compiled in** — every pane, the session list included, is a Lua
+  file in a directory you own; move it, turn it off, rewrite it, or install one somebody else
+  wrote.
 
 ## Installation
 
