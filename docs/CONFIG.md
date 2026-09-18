@@ -964,6 +964,7 @@ Live in the `metadata` table and apply immediately (no restart):
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
 | `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
+| `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked

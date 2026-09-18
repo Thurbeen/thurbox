@@ -338,7 +338,12 @@ session), never on the loop, ADR-P12).
   the process. `window_index_on` now records the failure and leaves the host
   alone for `host_cli::retry_after` its consecutive failure count, the same
   minute-doubling-to-fifteen curve the usability probe climbs; an answer
-  clears the count. Issue #1182 is what that cost on native Windows: one WSL
+  clears the count. The state is a durable `metadata` row
+  (`host_probe_backoff:<backend>`) claimed under one `BEGIN IMMEDIATE`, not a
+  process-local map: the interface reaps on a fresh thread every five seconds
+  without waiting for the last, and the heartbeat reaps in a **new process**
+  every minute, so an in-memory gate is overtaken by the first and forgotten by
+  the second. Issue #1182 is what that cost on native Windows: one WSL
   row, `wsl.exe` spawned from the interface's own `Command::Reap` every five
   seconds, and 3.9 MB of log in a day.
 - **"The host holds nothing" and "the host did not answer" are different

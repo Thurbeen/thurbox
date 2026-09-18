@@ -20,6 +20,19 @@ const AUTO_UPDATE_OFF_BY_GATE_KEY: &str = "auto_update_disabled_by_consent_gate"
 const ACTIVE_EXTENSIONS_KEY: &str = "active_extensions";
 const PERF_SNAPSHOT_KEY: &str = "perf_snapshot";
 
+/// Metadata key holding the teardown sweep's backoff for one host, as
+/// `<attempted_at_millis>:<consecutive failures>`.
+///
+/// Durable rather than process-local because the sweep has two drivers and one
+/// of them is not a long-lived process: the interface's `Command::Reap` runs
+/// for as long as thurbox does, but `thurbox-cli automation tick` is started
+/// afresh by the heartbeat every minute, and a backoff held in memory is
+/// forgotten by every one of those ticks. Only a host that failed has a row,
+/// and its first answer deletes it.
+fn host_probe_backoff_key(backend_type: &str) -> String {
+    format!("host_probe_backoff:{backend_type}")
+}
+
 /// Metadata key recording an opt-out of the built-in extension `name`. The
 /// format is load-bearing rather than cosmetic: `hooks` must keep producing
 /// `builtin_hooks_optout`, the key written before there was more than one
@@ -341,10 +354,178 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Claim the right to probe `backend_type` at `now_ms`, or refuse because
+    /// its last attempt is too recent to repeat.
+    ///
+    /// One `BEGIN IMMEDIATE` around the read and the write, which is what makes
+    /// this a claim rather than a check somebody else can overtake: the sweep
+    /// runs on a fresh thread every few seconds in the interface and in a fresh
+    /// process every minute headlessly, so several of them are inside one slow
+    /// listing at a time. The stamp is written **before** the probe is made, so
+    /// the rest collide with it instead of each starting a process of their own.
+    ///
+    /// `retry_after_ms` is asked how long a host with that many consecutive
+    /// failures is left alone. The curve is the caller's — `storage` owns the
+    /// atomicity and the row, not the policy.
+    pub fn claim_host_probe(
+        &self,
+        backend_type: &str,
+        now_ms: u64,
+        retry_after_ms: impl Fn(u32) -> u64,
+    ) -> rusqlite::Result<bool> {
+        let key = host_probe_backoff_key(backend_type);
+        let tx = self.write_transaction()?;
+        let recorded: Option<String> = tx
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        // The count is carried through a claim, not reset: a host that keeps
+        // failing keeps backing off rather than starting over at the first
+        // interval every time it is let through.
+        let failures = match recorded.as_deref().and_then(parse_host_probe_backoff) {
+            Some((at, failures)) => {
+                if now_ms.saturating_sub(at) < retry_after_ms(failures) {
+                    return Ok(false);
+                }
+                failures
+            }
+            None => 0,
+        };
+        tx.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, format!("{now_ms}:{failures}")],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Record that probing `backend_type` failed at `now_ms`, which spaces the
+    /// next attempt further out than the last.
+    pub fn note_host_probe_failed(&self, backend_type: &str, now_ms: u64) -> rusqlite::Result<()> {
+        let key = host_probe_backoff_key(backend_type);
+        let tx = self.write_transaction()?;
+        let recorded: Option<String> = tx
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let failures = recorded
+            .as_deref()
+            .and_then(parse_host_probe_backoff)
+            .map_or(0, |(_, failures)| failures)
+            .saturating_add(1);
+        tx.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, format!("{now_ms}:{failures}")],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forget `backend_type`'s backoff, so a host that has answered is asked at
+    /// the base cadence again rather than at the interval its outage earned.
+    pub fn clear_host_probe_backoff(&self, backend_type: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            params![host_probe_backoff_key(backend_type)],
+        )?;
+        Ok(())
+    }
+}
+
+/// The `<attempted_at_millis>:<failures>` a backoff row holds, or `None` for a
+/// value this build did not write — which is read as "never asked" rather than
+/// as an error, so a row hand-edited or left by a future format costs one extra
+/// probe instead of failing a teardown.
+fn parse_host_probe_backoff(value: &str) -> Option<(u64, u32)> {
+    let (at, failures) = value.split_once(':')?;
+    Some((at.parse().ok()?, failures.parse().ok()?))
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// The teardown sweep's host backoff has to outlive the process that
+    /// recorded it: the headless heartbeat runs `automation tick` as a fresh
+    /// process every minute, so a backoff kept in memory is forgotten on every
+    /// tick and an unreachable host is probed again regardless of what the
+    /// last one learned. It lives in `metadata`, the store both drivers of the
+    /// sweep already share.
+    #[test]
+    fn a_host_probe_backoff_outlives_the_process_that_recorded_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        // One minute flat, which is what the sweep's own curve starts at.
+        let retry = |_failures: u32| 60_000_u64;
+        let backend = "ssh:unreachable";
+        let now = 1_700_000_000_000_u64;
+
+        let first = Database::open(&path).unwrap();
+        assert!(
+            first.claim_host_probe(backend, now, retry).unwrap(),
+            "a host nobody has asked about is asked"
+        );
+        first.note_host_probe_failed(backend, now).unwrap();
+        drop(first);
+
+        // A second connection stands in for the next `automation tick`.
+        let second = Database::open(&path).unwrap();
+        assert!(
+            !second
+                .claim_host_probe(backend, now + 5_000, retry)
+                .unwrap(),
+            "the next tick must be held to the backoff the last one recorded"
+        );
+        assert!(
+            second
+                .claim_host_probe(backend, now + 61_000, retry)
+                .unwrap(),
+            "and let through once it has run out"
+        );
+        // An answer clears it, so a host that comes back is asked at once.
+        second.clear_host_probe_backoff(backend).unwrap();
+        assert!(second
+            .claim_host_probe(backend, now + 61_000, retry)
+            .unwrap());
+    }
+
+    /// Consecutive failures are what the caller's curve is asked about, so the
+    /// count has to survive the same way the stamp does.
+    #[test]
+    fn consecutive_host_probe_failures_are_counted_across_connections() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let backend = "wsl:ubuntu";
+        let seen = std::sync::Mutex::new(Vec::new());
+        let retry = |failures: u32| {
+            seen.lock().unwrap().push(failures);
+            60_000_u64
+        };
+
+        let now = 1_700_000_000_000_u64;
+        let db = Database::open(&path).unwrap();
+        db.claim_host_probe(backend, now, retry).unwrap();
+        db.note_host_probe_failed(backend, now).unwrap();
+        db.note_host_probe_failed(backend, now).unwrap();
+        drop(db);
+
+        let next = Database::open(&path).unwrap();
+        next.claim_host_probe(backend, now + 1_000, retry).unwrap();
+        assert_eq!(
+            seen.lock().unwrap().last().copied(),
+            Some(2),
+            "the curve is asked about both failures, not a count reset by the \
+             new connection"
+        );
+    }
     use super::*;
 
     #[test]
