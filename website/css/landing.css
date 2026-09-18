@@ -1269,8 +1269,24 @@ main {
   width: 0.32rem;
 }
 
+/* The session name, and the only part of a row allowed to lose characters -
+   which is what the pane does too. It needs its own box because a bare text
+   node inside a flex row cannot ellipsise, and sheared mid-word instead. */
+.tui-name {
+  flex: 1 1 auto;
+
+  /* Never nothing. Without a floor the state word below wins the row outright
+     at a phone's column width and the name disappears, where the pane would
+     keep the name and run the state off the edge. */
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The inline state word a row carries when it is not idle. */
 .tui-state {
+  flex: 0 0 auto;
   font-style: normal;
   margin-left: auto;
 }
