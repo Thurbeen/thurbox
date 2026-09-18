@@ -158,6 +158,29 @@ pub struct Conflict {
     pub chord: String,
     pub kept: String,
     pub shadowed: String,
+    /// Who declared the claim that fires, and who declared the one that does not
+    /// — the names [`Binding::plugin`] carries.
+    ///
+    /// The action ids do not identify a claimant on their own: nothing stops two
+    /// plugins both declaring `toggle`, and a report naming only the actions
+    /// leaves a reader unable to tell which file to open.
+    pub kept_plugin: String,
+    pub shadowed_plugin: String,
+}
+
+impl Conflict {
+    /// One clash, in words: both claimants and the one that fires.
+    ///
+    /// Spelled here rather than at each reporting surface so `warnings()` and
+    /// `thurbox-cli plugin check` cannot come to describe the same clash
+    /// differently — the check is a plugin author's pre-flight for exactly the
+    /// diagnostic the running interface collects.
+    pub fn message(&self) -> String {
+        format!(
+            "{} is claimed by both {} and {}; {} wins",
+            self.chord, self.kept, self.shadowed, self.kept
+        )
+    }
 }
 
 /// The chord that quits, spelled once.
@@ -465,6 +488,8 @@ impl Registry {
                     chord: binding.chord.clone(),
                     kept: kept.action.clone(),
                     shadowed: shadowed.action.clone(),
+                    kept_plugin: kept.plugin.clone(),
+                    shadowed_plugin: shadowed.plugin.clone(),
                 });
                 continue;
             }
@@ -481,12 +506,7 @@ impl Registry {
     /// conflict behind, for the life of the process.
     pub fn warnings(&self) -> Vec<String> {
         let mut all = self.load_warnings.clone();
-        all.extend(self.conflicts.iter().map(|conflict| {
-            format!(
-                "{} is claimed by both {} and {}; {} wins",
-                conflict.chord, conflict.kept, conflict.shadowed, conflict.kept
-            )
-        }));
+        all.extend(self.conflicts.iter().map(Conflict::message));
         all
     }
 

@@ -859,3 +859,117 @@ fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
         "both of them: {human}"
     );
 }
+
+// ── the chord somebody else already spent ──────────────────────────────────
+
+/// Two plugins claiming one global chord: both load, both are placed, and one
+/// of them simply never fires.
+///
+/// The registry has found this for as long as it has existed — `detect_conflicts`
+/// walks every declaration and `warnings()` renders each clash — but `check` built
+/// its warnings from the undiscoverable set alone and declared nothing into a
+/// registry, so the one pre-flight tool a plugin author has answered `warnings: []`
+/// for the single thing they cannot foresee: which keys their users already spent.
+/// A conflict inside your own interface is yours to see; a published plugin's is
+/// not.
+#[test]
+fn two_plugins_claiming_one_global_chord_are_both_named() {
+    let home = tempfile::tempdir().expect("tempdir");
+    // The overrides decide who wins a clash, so the check is run against a config
+    // directory of this test's own rather than whatever the machine has rebound.
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    // Pills so the only thing left to report is the chord: both take the `center`
+    // switch slot, and an alternate with no pill earns a warning of its own.
+    for (file, name) in [("90_notes.lua", "notes"), ("91_scratch.lua", "scratch")] {
+        std::fs::write(
+            ui.join("plugins").join(file),
+            format!(
+                "return {{\n  \
+                   name = {name:?},\n  \
+                   slot = \"center\",\n  \
+                   keys = {{ {{ key = \"f7\", action = \"{name}.toggle\", \
+                     scope = \"global\", desc = \"toggle\" }} }},\n  \
+                   pills = {{ {{ action = \"{name}.toggle\", label = {name:?}, \
+                     priority = 10 }} }},\n  \
+                   render = function() return {{ type = \"text\", text = \"hi\" }} end,\n\
+                 }}\n"
+            ),
+        )
+        .expect("write");
+    }
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(
+        output.failure.is_none(),
+        "a chord two authors both wanted is a judgement call, like a missing pill — \
+         failing the exit on it would make the check unusable as a gate: {:?}",
+        output.json
+    );
+    let warnings = output.json["warnings"].to_string();
+    assert!(warnings.contains("f7"), "names the chord: {warnings}");
+    for both in [
+        "90_notes.lua",
+        "91_scratch.lua",
+        "notes.toggle",
+        "scratch.toggle",
+    ] {
+        assert!(
+            warnings.contains(both),
+            "names both claimants — {both} missing from {warnings}"
+        );
+    }
+    // Which one fires is the whole question the author is asking, and the registry
+    // answers it the same way `resolve` does: between two equals the earlier
+    // declaration wins, and files load in name order.
+    assert!(
+        warnings.contains("notes.toggle wins"),
+        "and says which one fires: {warnings}"
+    );
+    let human = output.human.clone();
+    assert!(
+        human.contains("f7") && human.contains("notes.toggle wins"),
+        "and a human reading the output sees it: {human}"
+    );
+}
+
+/// A chord two panes claim in their own scopes is not a conflict.
+///
+/// Focus decides between them, which is the whole point of a plugin-scoped key —
+/// the shipped interface binds `j` in three panes. Reporting it would make the
+/// warning meaningless by the second plugin an author installs.
+#[test]
+fn the_same_chord_in_two_plugin_scopes_is_not_reported() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    for (file, name) in [("90_notes.lua", "notes"), ("91_scratch.lua", "scratch")] {
+        std::fs::write(
+            ui.join("plugins").join(file),
+            format!(
+                "return {{\n  \
+                   name = {name:?},\n  \
+                   slot = \"center\",\n  \
+                   keys = {{ {{ key = \"f7\", action = \"{name}.toggle\", \
+                     desc = \"toggle\" }} }},\n  \
+                   pills = {{ {{ action = \"{name}.toggle\", label = {name:?}, \
+                     priority = 10 }} }},\n  \
+                   render = function() return {{ type = \"text\", text = \"hi\" }} end,\n\
+                 }}\n"
+            ),
+        )
+        .expect("write");
+    }
+
+    let output = run(Action::Check).expect("check runs");
+    assert_eq!(
+        output.json["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "focus decides between two plugin-scoped claims: {:?}",
+        output.json
+    );
+}
