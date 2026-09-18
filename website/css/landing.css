@@ -113,10 +113,18 @@
    does not fit one line (see .hero h1), and the break is placed rather than
    left to the browser, which wraps after "AT" between 390px and 414px.
 
+   39.9375em is the ladder's 640px step, and the one media query in this file
+   spelled in em rather than px. It has to be: what it guards is a rem-sized
+   headline, and under text-only zoom rem grows while the viewport does not, so
+   a px breakpoint hands a 2x-sized headline back to the browser's greedy wrap
+   at exactly the widths this rule exists for. Media-query em resolves against
+   the reader's own default font size - the same thing rem here scales with -
+   so the two move together. At the default 16px they are the same 639px.
+
    The span carries no colour of its own. The display face, the size and the
    red glow are what set the headline apart, and a green word inside it made
    three green accents out of four hero lines. */
-@media (max-width: 639px) {
+@media (max-width: 39.9375em) {
   .hero-headline-phrase {
     display: block;
   }
