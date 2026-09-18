@@ -14,11 +14,12 @@
 
 - **Several coding agents at once**, side by side in one terminal — Claude Code, Codex,
   Antigravity, opencode, aider, or any CLI you describe yourself.
-- **One tmux session and one git worktree per agent**, so they never fight over your checkout.
-- **Sessions that survive crashes, restarts and reboots** — quit thurbox and every agent keeps
-  working.
-- **Agent-neutral** — it launches the vendor CLI unmodified and knows nothing about its model,
-  prompts or tools, so new agent features arrive the day that CLI ships them.
+- **A tmux session behind every agent** — they survive crashes, restarts and reboots, so quit
+  thurbox and every agent keeps working.
+- **One session, several repos** — each on its own git worktree of a shared branch, so agents
+  never fight over your checkout.
+- **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
+  model, prompts or tools, so new agent features arrive the day that CLI ships them.
 - **An interface that is not compiled in** — every pane, the session list included, is a Lua
   file in a directory you own; move it, turn it off, rewrite it, or install one somebody else
   wrote.
