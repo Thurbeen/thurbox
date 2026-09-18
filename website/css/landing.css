@@ -73,7 +73,7 @@
    not font size guesswork: the longer of the two sentences is 35 characters =
    35.35em with the tracking below. The cap keeps that inside the 1200px
    container's 1152px of content, which is what holds each sentence to one line
-   from ~770px up; below that they wrap to two lines each and the floor keeps
+   from ~700px up; below that they wrap to two lines each and the floor keeps
    them legible rather than shrinking to fit. */
 .hero h1 {
   font-size: clamp(1.15rem, 2.4vw, 1.9rem);
@@ -715,9 +715,9 @@ body {
    attract-mode line rather than a control.
 
    It leads to the easter egg, not to the product, so it is deliberately the
-   quietest of the three things in the fold: muted text, no glow, and a slower
-   pulse than it once had. `Get Started` is the primary action and this must not
-   out-shout it. Hover and focus give the weight back. */
+   quietest of the three things in the fold: secondary text, no glow, smaller,
+   and a slower, shallower pulse than it once had. `Get Started` is the primary
+   action and this must not out-shout it. Hover and focus give the weight back. */
 .hero-press-start {
   display: inline-flex;
   align-items: center;
@@ -728,11 +728,27 @@ body {
   line-height: 1;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   background: none;
   border: 2px solid transparent;
   cursor: pointer;
-  animation: doom-blink 3.6s ease-in-out infinite;
+  animation: press-start-pulse 3.6s ease-in-out infinite;
+}
+
+/* Its own pulse rather than the LEDs' doom-blink below: this is 8.8px text, and
+   at that size the trough is what has to stay readable. Fading --text-secondary
+   to 0.8 over #15120f bottoms out at 4.96:1, still past AA for small text; the
+   LEDs' 0.55 trough would put it at 2.98:1. Shallower also reads as quieter,
+   which is the point. */
+@keyframes press-start-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
 }
 
 .hero-press-start .arrow {
@@ -767,11 +783,10 @@ body {
   }
 }
 
-/* Softened arcade pulse. Was 1.1s steps(1) 1 → 0.12: a ~0.9Hz hard strobe at
-   ~8:1 contrast, which is a flash-sensitivity risk. Now an interpolated fade at
-   ~1.8:1, well under a flash threshold at any of the durations below. Each user
-   sets its own: 3.6s on the press-start prompt, quicker on .hud-bar__live and
-   the REC LED, which should read as a heartbeat. */
+/* Softened arcade pulse, now the LED blink: .hud-bar__live and the REC LED, both
+   at 1.6s so they read as a heartbeat. Was 1.1s steps(1) 1 → 0.12 on the
+   press-start prompt: a ~0.9Hz hard strobe at ~8:1 contrast, which is a
+   flash-sensitivity risk. An interpolated fade at ~1.8:1 instead. */
 @keyframes doom-blink {
   0%,
   100% {
