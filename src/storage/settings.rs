@@ -388,7 +388,12 @@ impl Database {
         // interval every time it is let through.
         let failures = match recorded.as_deref().and_then(parse_host_probe_backoff) {
             Some((at, failures)) => {
-                if now_ms.saturating_sub(at) < retry_after_ms(failures) {
+                // A stamp in the future is a wall clock that moved backwards
+                // under us — an NTP correction, or one made by hand. Elapsed
+                // time would read as zero until the clock caught up, which is
+                // an unbounded backoff rather than the one that was asked for,
+                // so such a stamp is stale and the host is asked.
+                if at <= now_ms && now_ms - at < retry_after_ms(failures) {
                     return Ok(false);
                 }
                 failures
@@ -495,6 +500,26 @@ mod tests {
         assert!(second
             .claim_host_probe(backend, now + 61_000, retry)
             .unwrap());
+    }
+
+    /// A wall clock that moves backwards must not strand a host: elapsed time
+    /// then reads as zero, and a backoff computed from it would last until the
+    /// clock caught up rather than the interval it was given.
+    #[test]
+    fn a_backoff_stamped_in_the_future_is_not_honoured() {
+        let db = Database::open_in_memory().unwrap();
+        let retry = |_failures: u32| 60_000_u64;
+        let backend = "ssh:devbox";
+        let stamped = 1_700_000_000_000_u64;
+
+        assert!(db.claim_host_probe(backend, stamped, retry).unwrap());
+        db.note_host_probe_failed(backend, stamped).unwrap();
+        // The clock jumps an hour back, so every stamp is now in the future.
+        let after_rollback = stamped - 3_600_000;
+        assert!(
+            db.claim_host_probe(backend, after_rollback, retry).unwrap(),
+            "a host must not be held until the clock catches up"
+        );
     }
 
     /// Consecutive failures are what the caller's curve is asked about, so the
