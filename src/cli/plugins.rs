@@ -355,12 +355,40 @@ fn check() -> Result<CommandOutput, String> {
             warnings.push(json!({ "file": plugin.path, "warning": reason }));
         }
     }
+    // The other declaration with no symptom on screen. A pill whose action no
+    // chord resolves for is dropped by the action band — deliberately, so a chip
+    // never lights and then does nothing — and the two ways to earn that drop, a
+    // palette-only action and a misspelt one, look identical from the outside.
+    // Reported rather than failed: the pane still loads and still draws, and what
+    // is missing is one button.
+    let registry = declared(&host);
+    let mut dropped = Vec::new();
+    for plugin in &host.plugins {
+        for (pill, reason) in crate::kernel::bands::dropped(&plugin.pills, &registry) {
+            dropped.push(json!({
+                "file": plugin.path,
+                "label": pill.label,
+                "action": pill.action,
+                "reason": reason.as_str(),
+                "detail": reason.explain(&pill.action),
+            }));
+        }
+    }
+
     let mut human = loads;
     for warning in &warnings {
         human.push_str(&format!(
             "\n  ! {} — {}",
             warning["file"].as_str().unwrap_or_default(),
             warning["warning"].as_str().unwrap_or_default()
+        ));
+    }
+    for pill in &dropped {
+        human.push_str(&format!(
+            "\n  ! {} — pill {} is not drawn: {}",
+            pill["file"].as_str().unwrap_or_default(),
+            pill["label"],
+            pill["detail"].as_str().unwrap_or_default()
         ));
     }
 
@@ -370,10 +398,23 @@ fn check() -> Result<CommandOutput, String> {
             "ok": true,
             "loaded": loaded,
             "warnings": warnings,
+            "dropped_pills": dropped,
             "checked_at": size,
         }),
         human,
     ))
+}
+
+/// The registry the running interface would hold for this host.
+///
+/// `Registry::load` first, because the user's own decisions are part of the
+/// answer: a chord they bound to a chord-less command makes the pill that names
+/// it draw, and a check that read only the declarations would report a button
+/// that is on their screen as dropped.
+fn declared(host: &crate::kernel::host::LuaHost) -> crate::kernel::registry::Registry {
+    let mut registry = crate::kernel::registry::Registry::load();
+    crate::kernel::declare_interface(&mut registry, host);
+    registry
 }
 
 fn list() -> Result<CommandOutput, String> {

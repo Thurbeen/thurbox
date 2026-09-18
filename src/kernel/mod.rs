@@ -36,3 +36,22 @@ pub mod terminal;
 pub mod theme;
 pub mod updates;
 pub mod watch;
+
+/// Hand `registry` everything the interface declares: every loaded plugin's
+/// keys, settings, pills and chord-less commands, plus the kernel's own chords
+/// and action-band entries.
+///
+/// One function because two readers must agree on what "declared" means. The
+/// loop publishes from it, and `thurbox-cli plugin check` builds the same
+/// registry to ask why a pill was dropped — and a registry missing the kernel's
+/// own bindings would report a plugin's pill for `help.open` as naming an
+/// action nothing declares, which is the diagnostic wrong in exactly the case
+/// it exists for.
+pub fn declare_interface(registry: &mut registry::Registry, host: &host::LuaHost) {
+    let (mut bindings, settings, mut pills) = host.all_declarations();
+    bindings.extend(modals::bindings());
+    bindings.extend(clipboard::bindings());
+    pills.extend(modals::pills());
+    registry.declare_all(bindings, settings, pills);
+    registry.declare_commands(host.commands());
+}
