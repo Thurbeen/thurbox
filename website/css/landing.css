@@ -1,5 +1,13 @@
 /* ---- Hero ---- */
+
+/* --hero-copy is one descending scale for the three copy lines: the lede sets
+   it, the thesis and the setup line step down from it, so every block is
+   smaller than the one above it at every viewport. Its 1rem floor is what
+   makes that possible at the narrow end - 18.4px of body text on a 320px
+   phone cannot be led by a headline that same phone can hold. */
 .hero {
+  --hero-copy: clamp(1rem, 3.2vw, 1.15rem);
+
   position: relative;
   padding-top: calc(var(--nav-height) + var(--space-3xl));
   padding-bottom: var(--space-3xl);
@@ -71,22 +79,26 @@
 
 /* Press Start 2P is 1em per character, so headline width is character count,
    not font size guesswork: the headline is 19 characters = 19.19em with the
-   tracking below. That is short enough to hold ONE line at every width a phone
-   actually has, down to 320px, and the vw term and the floor are both set by
-   that rather than by eye: 4.4vw keeps it inside the container from 320px up
-   (4.5vw wrapped at 340px, by 1.6px), and the 0.875rem floor is the largest
-   that still fits 320px's 272px of content. The 48px of container padding is
-   what bites here - it is a fifth of the width at 320px and a twentieth at
-   1200px, so the narrow end is always the binding case.
+   tracking below.
 
-   A longer headline needs this cap lowered rather than the wrap accepted: two
-   lines of Press Start 2P push the install block off the fold.
+   The floor is set by the copy, not by the container. The old 0.875rem was the
+   largest that fits 320px on ONE line - and it put a 14.1px headline over an
+   18.4px paragraph, so under a 418px viewport the headline was smaller than
+   the sentence it leads. 1.4rem clears --hero-copy's 1rem floor at every
+   width instead, and 19.19em of it wants 430px of line: 320px has 272px of
+   content, and even a 480px phone's 432px is that line flush to both container
+   edges. So below 640px the headline takes two lines rather than shrink back
+   under its own copy; the break is placed on .hero-h1__phrase.
+
+   From 640px up the vw term keeps the single line inside the container: 4.4vw
+   fits (4.5vw wrapped at 340px, by 1.6px), the 48px of container padding being
+   what bites - a fifth of the width at 320px, a twentieth at 1200px.
 
    The bloom is smaller than the tokens' --glow-red alone would give. This is a
    pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
    glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(0.875rem, 4.4vw, 3.2rem);
+  font-size: clamp(1.4rem, 4.4vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
@@ -95,11 +107,16 @@
   animation: flicker 4.5s infinite steps(1);
 }
 
-/* One word inside the sentence, so it stays inline - `display: block` here
-   would split the headline mid-clause. */
-.hero h1 .accent {
-  color: var(--green);
-  text-shadow: var(--glow-green);
+/* The headline's second phrase carries no colour of its own: the display face,
+   the size and the red glow are what set the headline apart, and a green word
+   inside it made three green accents out of four hero lines. The span stays
+   because it is where the headline breaks, and that break is placed rather
+   than left to the browser - left to itself the browser wraps after "AT"
+   between 390px and 414px. */
+@media (max-width: 639px) {
+  .hero h1 .hero-h1__phrase {
+    display: block;
+  }
 }
 
 /* Paired with the container's own 1440px step: 1392px of content takes the
@@ -118,31 +135,38 @@
 
 /* Both hero subtitles carry a claim rather than a caption, so they read at
    --text-primary: 14.1:1 on --bg-primary against --text-secondary's 7.1:1. The
-   hierarchy under the headline is carried by size and by the thesis rule below,
-   not by dimming the two sentences a first-time reader is here to read. */
+   hierarchy under the headline is carried by the scale, not by dimming the two
+   sentences a first-time reader is here to read. The gap tightens to
+   --space-md so the three lines group as one block and the CTAs below still
+   read as the next thing. */
 .hero .subtitle {
-  font-size: 1.15rem;
+  font-size: var(--hero-copy);
   max-width: 600px;
-  margin: 0 auto var(--space-xl);
+  margin: 0 auto var(--space-md);
   color: var(--text-primary);
 }
 
-/* Stability notice under the hero copy. Sized and centred like .subtitle above
-   it rather than boxed: the hero is centre-aligned, so a rule down one side has
-   nothing to align to. The yellow badge carries the signal. */
+/* The hero's second claim: how it behaves, after what it runs. One step down
+   the scale is what weights it below the lede. It used to carry a rule down
+   its left edge, which in a centre-aligned hero aligned to nothing. */
+.hero .subtitle--thesis {
+  font-size: calc(var(--hero-copy) * 0.93);
+}
+
+/* The one emphasis colour in the hero copy, and the only place it appears. No
+   glow with it: --glow-green is sized for chrome, not for a 16px sentence. */
+.hero .subtitle--thesis strong {
+  color: var(--green);
+}
+
+/* Setup line: the quietest of the three, in size and in colour. Centred like
+   the subtitles above it rather than boxed, for the same reason, and no badge
+   - "one command" is the sentence's own subject now. */
 .hero-stability {
   max-width: 600px;
   margin: 0 auto var(--space-xl);
-  font-size: 0.9rem;
+  font-size: calc(var(--hero-copy) * 0.86);
   color: var(--text-secondary);
-}
-
-.hero-stability .badge {
-  margin-right: var(--space-sm);
-}
-
-.hero-stability strong {
-  color: var(--text-primary);
 }
 
 .agent-support {
@@ -1187,21 +1211,6 @@ main {
   .ui-pane {
     transition: opacity 1ms linear;
   }
-}
-
-/* The hero's second claim: how it behaves, after what it runs. The rule down
-   the left is what weights it below the first subtitle - it used to be a dimmer
-   grey, which cost contrast on a sentence that is not a caption. */
-.subtitle--thesis {
-  border-left: 2px solid var(--accent);
-  padding-left: 0.85rem;
-}
-
-/* Now that the paragraph is --text-primary, the emphasis needs its own colour
-   rather than a step up in brightness it no longer has. */
-.subtitle--thesis strong {
-  color: var(--green);
-  text-shadow: var(--glow-green);
 }
 
 /* Feature bands.
