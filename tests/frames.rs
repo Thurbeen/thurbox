@@ -18,6 +18,14 @@
 //! open through state a real interaction writes and are covered by their own
 //! interaction tests; and the arrangement as a whole, which is the binary's
 //! `draw` and is asserted on a real terminal in `tests/tui_e2e.rs`.
+//!
+//! One thing outside this repository's tests reads these frames: the landing
+//! page's interface mockup (`.ui-lab__screen` in `website/index.html`) is built
+//! to match them - the title in the top border, the status cluster beside it,
+//! the repo headers, the selection band, the agent border's tab run. It depicts
+//! the `doom` preset rather than `default`, because that preset's slots are the
+//! site's own palette. Nothing enforces the match, so a frame that changes on
+//! purpose here is a frame to check there too.
 
 use std::collections::HashMap;
 

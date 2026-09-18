@@ -1,6 +1,6 @@
 ---
 layout: base.njk
-title: 'Thurbox — Every coding agent at once'
+title: 'Thurbox — Orchestrate coding agents'
 description: 'Thurbox runs any coding-agent CLI (Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, Oh My Pi) in persistent tmux panes — with a fully customizable interface: every pane is a Lua file you can edit, move, turn off or replace.'
 root: '.'
 extraCss: ['landing.css']
@@ -12,21 +12,19 @@ footer: true
         <div class="hero-grid">
           <div class="hero-grid__intro">
             <h1>
-              Every agent
-              <span class="accent">at once</span>
+              Orchestrate
+              <span class="hero-headline-phrase">agents</span>
             </h1>
             <p class="subtitle">
-              Any CLI you define &mdash; Claude Code, Codex, aider &mdash; side by side in
-              persistent tmux panes.
+              Thurbox runs any CLI agent you define, side by side in persistent tmux panes.
             </p>
             <p class="subtitle subtitle--thesis">
-              Quit thurbox and <strong>the agents keep running</strong>.
+              <strong>The agents keep running</strong> after you quit thurbox.
             </p>
             <p class="hero-stability">
-              <span class="badge badge-green">One command</span>
-              Install it, then run
+              One command installs it, and
               <code>thurbox</code>
-              &mdash; that is the whole setup.
+              runs it &mdash; that is the whole setup.
             </p>
             <div class="hero-ctas">
               <a href="#installation" class="btn btn-primary">Get Started</a>
@@ -374,51 +372,123 @@ cargo build --release</code></pre>
                 <span class="terminal-title">thurbox</span>
               </div>
               <div class="ui-lab__screen" id="ui-lab-screen" aria-hidden="true">
+                <!-- prettier-ignore -->
+                <svg width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false"><symbol id="tui-branch-mark" viewBox="0 0 8 10"><path d="M2 1.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2zM2 3.8v4.4M6 6.2a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2zM2 6.2h4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></symbol></svg>
+                <!-- Each pane below is the frame the real plugin paints, as
+                     pinned in tests/frames.rs against the `doom` preset: the
+                     title sits in the top border, the session list carries one
+                     status glyph per state and a repo header per group, and the
+                     agent's border is its tab bar. The `.lua` footer is the
+                     one thing the terminal does not draw — it is this
+                     section's whole point. -->
                 <div class="ui-pane" data-pane="sessions">
-                  <span class="ui-pane__title">Sessions</span>
-                  <span class="ui-pane__row"><i class="dot working"></i>fix-osc52</span>
-                  <span class="ui-pane__row"><i class="dot done"></i>add-wsl-tests</span>
-                  <span class="ui-pane__row"><i class="dot idle"></i>docs-hooks</span>
-                  <span class="ui-pane__file">10_sessions.lua</span>
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__title">Sessions</span>
+                    <span class="ui-pane__dots">
+                      <i class="tui-dot working">&#x2807;</i>
+                      <i class="tui-dot idle">&#x25CB;</i>
+                      <i class="tui-dot blocked">&#x25C6;</i>
+                      <i class="tui-dot done">&#x25CF;</i>
+                      <i class="tui-dot idle">&#x25CB;</i>
+                    </span>
+                  </span>
+  <span class="ui-pane__body">
+                    <span class="ui-pane__group">thurbox</span>
+                    <span class="ui-pane__row is-selected">
+                      <i class="tui-dot working">&#x2807;</i>
+                      <svg class="tui-branch" aria-hidden="true" focusable="false"><use href="#tui-branch-mark" /></svg>
+                      <span class="tui-name">fix-osc52</span>
+                    </span>
+                    <span class="ui-pane__row">
+                      <i class="tui-dot idle">&#x25CB;</i>
+                      <i class="tui-tree"></i>
+                      <svg class="tui-branch" aria-hidden="true" focusable="false"><use href="#tui-branch-mark" /></svg>
+                      <span class="tui-name">fix-osc52-tests</span>
+                    </span>
+                    <span class="ui-pane__row">
+                      <i class="tui-dot blocked">&#x25C6;</i>
+                      <svg class="tui-branch" aria-hidden="true" focusable="false"><use href="#tui-branch-mark" /></svg>
+                      <span class="tui-name">add-wsl-tests</span>
+                      <em class="tui-state blocked">Blocked</em>
+                    </span>
+                    <span class="ui-pane__row">
+                      <i class="tui-dot done">&#x25CF;</i>
+                      <svg class="tui-branch" aria-hidden="true" focusable="false"><use href="#tui-branch-mark" /></svg>
+                      <span class="tui-name">perf-cache</span>
+                    </span>
+                    <span class="ui-pane__group">website</span>
+                    <span class="ui-pane__row">
+                      <i class="tui-dot idle">&#x25CB;</i>
+                      <svg class="tui-branch" aria-hidden="true" focusable="false"><use href="#tui-branch-mark" /></svg>
+                      <span class="tui-name">update-deps</span>
+                    </span>
+  </span>
+  <span class="ui-pane__file">10_sessions.lua</span>
                 </div>
                 <div class="ui-pane" data-pane="agent">
-                  <span class="ui-pane__title">Agent</span>
-                  <span class="ui-pane__row mono">$ claude</span>
-                  <span class="ui-pane__row mono dim">&gt; rebasing feat/osc52&hellip;</span>
-                  <span class="ui-pane__row mono dim">&nbsp;&nbsp;3 files changed</span>
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__hint"><b>&#x25C0;</b> F9</span>
+                    <span class="ui-pane__title">Agent</span>
+                    <span class="ui-pane__tab">Shell &middot; F8</span>
+                    <span class="ui-pane__session">fix-osc52 (claude)</span>
+                  </span>
+                  <span class="ui-pane__body">
+                    <span class="ui-pane__row">$ claude</span>
+                    <span class="ui-pane__row dim">&gt; rebasing feat/osc52&hellip;</span>
+                    <span class="ui-pane__row dim">&nbsp;&nbsp;3 files changed</span>
+                  </span>
                   <span class="ui-pane__file">20_agent.lua</span>
                 </div>
                 <div class="ui-pane" data-pane="yours">
-                  <span class="ui-pane__title">git status</span>
-                  <span class="ui-pane__row mono">M src/main.rs</span>
-                  <span class="ui-pane__row mono">M ui/layout.lua</span>
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__title">git status</span>
+                  </span>
+                  <span class="ui-pane__body">
+                    <span class="ui-pane__row">M src/main.rs</span>
+                    <span class="ui-pane__row">M ui/layout.lua</span>
+                  </span>
                   <span class="ui-pane__file">90_yours.lua</span>
                 </div>
                 <div class="ui-pane" data-pane="search">
-                  <span class="ui-pane__title">Search</span>
-                  <span class="ui-pane__row mono">/ osc</span>
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__title">&#x25B8; Search</span>
+                  </span>
+                  <span class="ui-pane__body">
+                    <span class="ui-pane__row">
+                      osc
+                      <em class="tui-count">[1/5]</em>
+                    </span>
+                  </span>
                   <span class="ui-pane__file">65_search.lua</span>
                 </div>
                 <div class="ui-pane" data-pane="tasks">
-                  <span class="ui-pane__title">Tasks</span>
-                  <span class="ui-pane__row">&#9744; rebase the wsl branch</span>
-                  <span class="ui-pane__row warn">&#9680; osc52 over ssh</span>
-                  <span class="ui-pane__row done">&#9745; ship the kernel</span>
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__title">Tasks</span>
+                  </span>
+                  <span class="ui-pane__body">
+                    <span class="ui-pane__row">&#9744; rebase the wsl branch</span>
+                    <span class="ui-pane__row warn">&#9680; osc52 over ssh</span>
+                    <span class="ui-pane__row done">&#9745; ship the kernel</span>
+                  </span>
                   <span class="ui-pane__file">80_tasks.lua</span>
                 </div>
                 <div class="ui-pane" data-pane="top">
-                  <span class="ui-pane__title">System</span>
-                  <span class="ui-pane__row mono">
-                    CPU
-                    <i class="bar"><i class="bar__fill" style="width: 38%"></i></i>
-                    38%
+                  <span class="ui-pane__chrome">
+                    <span class="ui-pane__title">System</span>
                   </span>
-                  <span class="ui-pane__row mono">
-                    MEM
-                    <i class="bar"><i class="bar__fill is-warn" style="width: 71%"></i></i>
-                    71%
+                  <span class="ui-pane__body">
+                    <span class="ui-pane__row">
+                      CPU
+                      <i class="bar"><i class="bar__fill" style="width: 38%"></i></i>
+                      38%
+                    </span>
+                    <span class="ui-pane__row">
+                      MEM
+                      <i class="bar"><i class="bar__fill is-warn" style="width: 71%"></i></i>
+                      71%
+                    </span>
+                    <span class="ui-pane__row dim">firefox&nbsp;&nbsp;&nbsp;81.0%</span>
                   </span>
-                  <span class="ui-pane__row mono dim">firefox&nbsp;&nbsp;&nbsp;81.0%</span>
                   <span class="ui-pane__file">85_top.lua</span>
                 </div>
               </div>
@@ -476,21 +546,12 @@ cargo build --release</code></pre>
 
         <p class="ui-lab__foot">
           That last one is not shipped. <code>thurbox-cli plugin new git-status</code> writes a file
-          that already loads, and it is a pane the moment you save it. A plugin gets no filesystem
-          and no network &mdash; it draws, and the kernel does the rest. Adding or removing a pane is
+          that already loads, and it is a pane the moment you save it. Adding or removing a pane is
           two edits, as it is above: the plugin, and the slot in
           <code>ui/layout.lua</code> that says where it goes.
         </p>
         <p class="section-lede">
-          A plugin is a table, not a config format: it names a slot, declares the chords it wants,
-          and returns what it drew. There are only ever
-          <strong>four node kinds</strong>
-          (<code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>) &mdash;
-          lists, panels and tables are not kinds, they compose from those in
-          <code>ui/lib/</code>. And declaring a capability is not being granted it: until you trust
-          the file, the global it asked for is
-          <em>absent</em>
-          rather than blocked.
+          A pane is a short Lua file, and it only ever gets what you have trusted it with.
           <a href="docs/interface.html">Writing a pane &rarr;</a>
         </p>
 
@@ -509,29 +570,11 @@ cargo build --release</code></pre>
 thurbox-cli plugin install top
 cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
           <p class="ui-lab__demo-note">
-            Each install records itself in
-            <code>plugins.toml</code>
-            beside your panes and prints the
-            <code>layout.lua</code>
-            line the new pane needs &mdash; because a pane whose slot nothing places loads perfectly
-            and draws nothing, and
-            <code>thurbox-cli plugin check</code>
-            is what fails on it. The arrangement is copied rather than installed on purpose: the
-            manager never writes that file.
-          </p>
-          <p class="ui-lab__demo-note">
-            The tasks pane needs no permission &mdash; it reads the same records
-            <code>thurbox-cli task</code>
-            does and writes back as commands. The
+            The
             <code>top</code>
-            one asks to
-            <strong>run a program</strong>
-            , so it draws nothing until you trust the file (settings &rarr; Interface &rarr;
-            <code>t</code>
-            ). It then reads the machine
-            <em>the selected session runs on</em>
-            , which means picking a session over SSH shows you that host's load &mdash; without the
-            plugin knowing what SSH is.
+            pane asks to run a program, so it draws nothing until you trust it &mdash; and it then
+            reads whichever machine the selected session runs on.
+            <a href="docs/interface.html#running-programs">What a pane may do &rarr;</a>
           </p>
         </div>
 
@@ -556,14 +599,8 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
             <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
           </ul>
           <p class="ui-lab__demo-note">
-            It works because the directory ships an
-            <code>AGENTS.md</code>
-            that any coding CLI loads as context without being asked &mdash; so
-            &ldquo;install a plugin&rdquo; is read as
-            <code>thurbox-cli plugin install</code>
-            rather than an npm request, and the agent knows
-            <code>thurbox-cli plugin check</code>
-            is how it verifies its own work. Press
+            The directory tells the agent how to work on itself, so these read as thurbox commands
+            rather than as guesses. Press
             <kbd>F10</kbd>
             and the change is on your screen.
             <a href="docs/interface.html#ask-the-agent">The worked example &rarr;</a>
@@ -771,9 +808,7 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
                 command, and Thurbox keeps its session and automation
                 <strong>self-healed</strong>
                 . Two ship built in;
-                <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener"
-                  >fleet</a
-                >
+                <code>fleet</code>
                 is the worked example of one you install yourself.
               </p>
             </div>
@@ -975,7 +1010,7 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
           otherwise script by hand are a sentence from inside any session.
         </p>
 
-        <div class="grid grid-2">
+        <div class="grid grid-2 grid--stretch">
           <div class="card ask-card">
             <div class="card-icon" aria-hidden="true">&#x2263;</div>
             <h3>Orchestrate sessions</h3>

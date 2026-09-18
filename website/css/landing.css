@@ -1,5 +1,14 @@
 /* ---- Hero ---- */
+
+/* --hero-copy is one descending scale for the three copy lines: the lede is
+   --hero-copy, the thesis one step down and the setup line two, so every block
+   is smaller than the one above it at every viewport. The 1rem floor is what
+   makes that possible at the narrow end - 18.4px of body text on a 320px phone
+   cannot be led by a headline that same phone can hold. */
 .hero {
+  --hero-copy: clamp(1rem, 3.2vw, 1.15rem);
+  --hero-copy-step: 0.93;
+
   position: relative;
   padding-top: calc(var(--nav-height) + var(--space-3xl));
   padding-bottom: var(--space-3xl);
@@ -70,23 +79,27 @@
 }
 
 /* Press Start 2P is 1em per character, so headline width is character count,
-   not font size guesswork: the headline is 19 characters = 19.19em with the
-   tracking below. That is short enough to hold ONE line at every width a phone
-   actually has, down to 320px, and the vw term and the floor are both set by
-   that rather than by eye: 4.4vw keeps it inside the container from 320px up
-   (4.5vw wrapped at 340px, by 1.6px), and the 0.875rem floor is the largest
-   that still fits 320px's 272px of content. The 48px of container padding is
-   what bites here - it is a fifth of the width at 320px and a twentieth at
-   1200px, so the narrow end is always the binding case.
+   not font size guesswork: the headline is 18 characters = 18.18em with the
+   tracking below, and one line of it measures 400px at the floor.
 
-   A longer headline needs this cap lowered rather than the wrap accepted: two
-   lines of Press Start 2P push the install block off the fold.
+   The floor is set by the copy, not by the container. The old 0.875rem was the
+   largest that fits a headline on ONE line at 320px - and it put a 14.1px
+   headline over an 18.4px paragraph, so under a 418px viewport the headline
+   was smaller than the sentence it leads. 1.4rem clears --hero-copy's 1rem
+   floor at every width instead. That single line then wants 400px of the 432px
+   a 480px phone has, which is a headline touching both gutters, so below 640px
+   it takes two lines instead; the break is placed on .hero-headline-phrase.
+
+   From 640px up the single line has room - 509px inside 592px at the step
+   itself, and the 4.4vw term holds that ratio upward. The 48px of container
+   padding is what bites at the narrow end: a fifth of the width at 320px, a
+   twentieth at 1200px.
 
    The bloom is smaller than the tokens' --glow-red alone would give. This is a
    pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
    glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(0.875rem, 4.4vw, 3.2rem);
+  font-size: clamp(1.4rem, 4.4vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
@@ -95,15 +108,35 @@
   animation: flicker 4.5s infinite steps(1);
 }
 
-/* One word inside the sentence, so it stays inline - `display: block` here
-   would split the headline mid-clause. */
-.hero h1 .accent {
+/* The headline's second phrase: green against the headline's red, and the only
+   accent colour anywhere in the hero. It was one of three greens in four lines
+   before - the badge on the setup line and the emphasis in the thesis were the
+   others - and both of those are gone, so this one reads as an accent again
+   rather than as the hero's default colour. */
+.hero-headline-phrase {
   color: var(--green);
   text-shadow: var(--glow-green);
 }
 
+/* It is also where the headline breaks: below 640px one line does not fit (see
+   .hero h1), and the break is placed rather than left to the browser, which
+   would split the two words at whatever width ran out first.
+
+   39.9375em is the ladder's 640px step, and the one media query in this file
+   spelled in em rather than px. It has to be: what it guards is a rem-sized
+   headline, and under text-only zoom rem grows while the viewport does not, so
+   a px breakpoint hands a 2x-sized headline back to the browser's greedy wrap
+   at exactly the widths this rule exists for. Media-query em resolves against
+   the reader's own default font size - the same thing rem here scales with -
+   so the two move together. At the default 16px they are the same 639px. */
+@media (max-width: 39.9375em) {
+  .hero-headline-phrase {
+    display: block;
+  }
+}
+
 /* Paired with the container's own 1440px step: 1392px of content takes the
-   19.19em headline at 3.8rem with room to spare. */
+   18.18em headline at 3.8rem with room to spare - 1109px of line, measured. */
 @media (min-width: 1440px) {
   .hero h1 {
     font-size: 3.8rem;
@@ -118,31 +151,33 @@
 
 /* Both hero subtitles carry a claim rather than a caption, so they read at
    --text-primary: 14.1:1 on --bg-primary against --text-secondary's 7.1:1. The
-   hierarchy under the headline is carried by size and by the thesis rule below,
-   not by dimming the two sentences a first-time reader is here to read. */
+   hierarchy under the headline is carried by the scale, not by dimming the two
+   sentences a first-time reader is here to read. The gap tightens to
+   --space-md so the three lines group as one block and the CTAs below still
+   read as the next thing. */
 .hero .subtitle {
-  font-size: 1.15rem;
+  font-size: var(--hero-copy);
   max-width: 600px;
-  margin: 0 auto var(--space-xl);
+  margin: 0 auto var(--space-md);
   color: var(--text-primary);
 }
 
-/* Stability notice under the hero copy. Sized and centred like .subtitle above
-   it rather than boxed: the hero is centre-aligned, so a rule down one side has
-   nothing to align to. The yellow badge carries the signal. */
+/* The hero's second claim: how it behaves, after what it runs. One step down
+   the scale is what weights it below the lede. It used to carry a rule down
+   its left edge, which in a centre-aligned hero aligned to nothing. */
+.hero .subtitle--thesis {
+  font-size: calc(var(--hero-copy) * var(--hero-copy-step));
+}
+
+/* Setup line: the quietest of the three, in size and in colour. Centred like
+   the subtitles above it rather than boxed, for the same reason, and no badge
+   - "one command" is the sentence's own subject now, and the badge was one
+   green too many. */
 .hero-stability {
   max-width: 600px;
   margin: 0 auto var(--space-xl);
-  font-size: 0.9rem;
+  font-size: calc(var(--hero-copy) * var(--hero-copy-step) * var(--hero-copy-step));
   color: var(--text-secondary);
-}
-
-.hero-stability .badge {
-  margin-right: var(--space-sm);
-}
-
-.hero-stability strong {
-  color: var(--text-primary);
 }
 
 .agent-support {
@@ -1004,8 +1039,27 @@ main {
   margin-top: 2rem;
 }
 
+/* The mockup depicts thurbox's `doom` preset, not the `default` one: doom's
+   slots ARE this site's palette (#ff5c54, #6eff6e, #00d9ff, #e0e0e0 are the
+   same values in both), so one theme is both accurate and on-brand. Every
+   value below is read off `doom_palette()` in
+   src/session/theme_config/palettes.rs, and the structure off the frames
+   pinned in tests/frames.rs — the border glyphs, the title in the top edge,
+   the status cluster, the repo separators and the selection band are what the
+   panes actually paint. The four colours the site has no token for are spelled
+   out; the rest reference the tokens they already share.
+
+   It is a depiction, not a screenshot: a 1px CSS border stands in for the
+   ╭─╮│╰─╯ run, because the panes animate between rects and box-drawing glyphs
+   cannot be resized. The title chip and the status cluster sit ON that border,
+   which is where the terminal draws them. */
 .ui-lab__screen {
-  background: var(--bg-code);
+  --tui-bg: #1a080a;
+  --tui-selection: #40151e;
+  --tui-muted: #606060;
+  --tui-working: #ffa500;
+
+  background: var(--tui-bg);
   contain: layout paint;
   height: 22rem;
   overflow: hidden;
@@ -1013,7 +1067,7 @@ main {
 }
 
 .ui-pane {
-  border: 1px solid var(--border);
+  border: 1px solid var(--green);
 
   /* Keep a pane's reflow inside the pane. The rect changes are layout, not
      transform, so containment is what stops four simultaneous size changes from
@@ -1021,9 +1075,10 @@ main {
   contain: layout paint;
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.1rem;
+  font-family: var(--font-mono);
   overflow: hidden;
-  padding: 0.5rem 0.6rem;
+  padding: 0.6rem 0.45rem 0.4rem;
   position: absolute;
   transition:
     left 480ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -1040,57 +1095,236 @@ main {
   pointer-events: none;
 }
 
-.ui-pane__title {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+/* The title row. The terminal writes it into the top border itself; here it is
+   the first row inside that border instead, because a pane contains its own
+   paint (above) and anything hung outside the box is clipped rather than drawn.
+   One row down is the whole difference. */
+.ui-pane__chrome {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+  margin-bottom: 0.2rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.ui-pane__row {
-  color: var(--text-primary);
-  font-size: 0.78rem;
+.ui-pane__title,
+.ui-pane__session {
+  background: var(--accent);
+  color: var(--tui-bg);
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0 0.3rem;
+}
+
+/* The session the centre pane is showing, named in its own border. Last in the
+   row and the first thing allowed to lose characters, which is what the pane
+   does with it too - it ellipsises the branch before anything else. */
+.ui-pane__session {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ui-pane__row.mono {
-  font-family: var(--font-mono);
+/* The search strip is its own accent in every preset — `search_bar`, not the
+   border role — so it keeps the border and the title in that colour. */
+.ui-pane[data-pane='search'] {
+  border-color: var(--accent);
+}
+
+.ui-pane[data-pane='search'] .ui-pane__title {
+  background: none;
+  color: var(--accent);
+}
+
+/* The left-hand run of the agent pane's title: a key hint, not a label. */
+.ui-pane__hint {
+  background: var(--tui-bg);
+  color: var(--tui-muted);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  padding: 0 0.2rem;
+}
+
+.ui-pane__hint b {
+  color: var(--accent);
+  font-weight: 400;
+}
+
+/* The focused tab inside the agent title — the selection colours, because that
+   is what marks the live half of a split. */
+.ui-pane__tab {
+  background: var(--tui-selection);
+  color: var(--green);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0 0.25rem;
+}
+
+/* One dot per session, in the title row, in session order. */
+.ui-pane__dots {
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  gap: 0.1rem;
+  margin-left: auto;
+}
+
+/* The pane's interior, and the reason it is a box of its own: the rows below
+   do not shrink, so in a short rect they have to go somewhere. They clip here,
+   which is what a terminal does - while the file annotation stays outside this
+   box and therefore stays on screen. Without it the `rows` arrangement gave
+   the session list 81px for 191px of content and the name of the file that
+   drew it was the first thing lost, which is the one thing this section is
+   for. */
+.ui-pane__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A repo group header: a label between two rules, drawn in the muted role. */
+.ui-pane__group {
+  align-items: center;
+  color: var(--tui-muted);
+  display: flex;
+  font-size: 0.62rem;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.ui-pane__group::before {
+  content: '──';
+}
+
+.ui-pane__group::after {
+  border-top: 1px solid currentcolor;
+  content: '';
+  flex: 1;
+  opacity: 0.6;
+}
+
+/* flex: 0 0 auto, not the default: a row that may shrink is a row that gets
+   squeezed to a few pixels of nothing when the pane is a short one, rather
+   than a row the pane clips. A terminal clips. */
+.ui-pane__row {
+  align-items: center;
+  color: var(--text-primary);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  gap: 0.3rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The selection is a band across the whole row, not a marker on it. */
+.ui-pane__row.is-selected {
+  background: var(--tui-selection);
+  color: var(--green);
+  font-weight: 700;
+  margin: 0 -0.45rem;
+  padding: 0 0.45rem;
 }
 
 .ui-pane__row.dim {
-  color: var(--text-muted);
+  color: var(--tui-muted);
 }
 
-.ui-pane__row .dot {
-  border-radius: 50%;
-  display: inline-block;
-  height: 0.45rem;
-  margin-right: 0.4rem;
-  width: 0.45rem;
+/* The status glyph vocabulary, one per SessionState, coloured by the status_*
+   slots. Glyphs rather than CSS circles: these are the characters the pane
+   paints, and their shapes are how the states differ at a glance. */
+.tui-dot {
+  font-style: normal;
 }
 
-.ui-pane__row .dot.working {
-  background: #d9a531;
+.tui-dot.working {
+  color: var(--tui-working);
 }
 
-.ui-pane__row .dot.done {
-  background: #4f8ed6;
+.tui-dot.idle {
+  color: var(--green);
 }
 
-.ui-pane__row .dot.idle {
-  background: #5fa77a;
+.tui-dot.blocked {
+  color: var(--red);
 }
 
-/* The point of the whole section: the pane tells you which file drew it. */
+.tui-dot.done {
+  color: var(--blue);
+}
+
+/* `branch_name`, and the mark the pane puts before every session name. Drawn
+   rather than typed: the pane paints U+2442 and the site's Latin-subset fonts
+   have no glyph for it, so a character here is a tofu box. Same reason the
+   borders above are CSS and not the ╭─╮ run the terminal writes. */
+.tui-branch {
+  color: var(--green);
+  flex: 0 0 auto;
+  height: 0.62rem;
+  width: 0.5rem;
+}
+
+/* The child prefix, U+2514, missing from those fonts for the same reason: an
+   L-shaped rule is the glyph. */
+.tui-tree {
+  border-bottom: 1px solid var(--tui-muted);
+  border-left: 1px solid var(--tui-muted);
+  flex: 0 0 auto;
+  height: 0.42rem;
+  margin-bottom: 0.18rem;
+  width: 0.32rem;
+}
+
+/* The session name, and the only part of a row allowed to lose characters -
+   which is what the pane does too. It needs its own box because a bare text
+   node inside a flex row cannot ellipsise, and sheared mid-word instead. */
+.tui-name {
+  flex: 1 1 auto;
+
+  /* Never nothing. Without a floor the state word below wins the row outright
+     at a phone's column width and the name disappears, where the pane would
+     keep the name and run the state off the edge. */
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The inline state word a row carries when it is not idle. */
+.tui-state {
+  flex: 0 0 auto;
+  font-style: normal;
+  margin-left: auto;
+}
+
+.tui-state.blocked {
+  color: var(--red);
+}
+
+.tui-count {
+  color: var(--tui-muted);
+  font-style: normal;
+  margin-left: auto;
+}
+
+/* The point of the whole section: the pane tells you which file drew it. This
+   one annotation is the website's, not the terminal's. */
 .ui-pane__file {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-  margin-top: auto;
-  opacity: 0.75;
+  color: var(--tui-muted);
+  flex: 0 0 auto;
+  font-size: 0.6rem;
+  opacity: 0.8;
+  padding-top: 0.2rem;
 }
 
 .ui-lab__controls {
@@ -1189,21 +1423,6 @@ main {
   }
 }
 
-/* The hero's second claim: how it behaves, after what it runs. The rule down
-   the left is what weights it below the first subtitle - it used to be a dimmer
-   grey, which cost contrast on a sentence that is not a caption. */
-.subtitle--thesis {
-  border-left: 2px solid var(--accent);
-  padding-left: 0.85rem;
-}
-
-/* Now that the paragraph is --text-primary, the emphasis needs its own colour
-   rather than a step up in brightness it no longer has. */
-.subtitle--thesis strong {
-  color: var(--green);
-  text-shadow: var(--glow-green);
-}
-
 /* Feature bands.
    The grid is split because the architecture is: band 1 is compiled and fixed,
    band 2 is Lua you own. The rule down the left is the whole encoding — muted
@@ -1218,6 +1437,28 @@ main {
 .feature-band--yours {
   border-left-color: var(--accent);
   box-shadow: -2px 0 12px -6px var(--accent);
+}
+
+/* The container's 1440px step takes .grid-3 to five columns, which is chosen
+   for band 1's ten cards (a clean 5+5). Band 2 holds six, which that step lays
+   out as five and a lone sixth on a row of its own. Three divides six at every
+   width, so this band stops at three. */
+@media (min-width: 1440px) {
+  .feature-band--yours .grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Ten cards divide by two and by five, not by three, so the three-column step
+   is the one width where band 1 ends on a single card with two empty columns
+   beside it. The orphan takes the whole row instead. The selector says exactly
+   that and nothing more - a last child that is also first in its row - so band
+   2's six cards never match it, and the bounds keep it off the five-column
+   step, where the tenth card is first in its row and its row is full. */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  .feature-band .grid-3 > :last-child:nth-child(3n + 1) {
+    grid-column: span 3;
+  }
 }
 
 .feature-band__head {
