@@ -101,6 +101,45 @@ fn cloning_over_something_that_exists_is_refused() {
     assert!(dest.join("mine.lua").is_file(), "and leaves it alone");
 }
 
+/// The two questions asked of a pin, and what each is for.
+///
+/// `names_a_commit` picks the route, and everything hex from git's own
+/// abbreviation up to a full **sha256** id takes the long one: a sha256 id is a
+/// commit like any other, and reading only sha1's length as one handed 64
+/// characters to `clone --branch` as a name that is not there.
+/// `abbreviated_object_id` picks the *explanation* for a failure — a shape, not a
+/// verdict, since `20240115` is both a plausible prefix and an ordinary tag.
+#[test]
+fn a_pin_is_routed_by_length_and_explained_by_shape() {
+    let sha1 = "0123456789abcdef0123456789abcdef01234567";
+    let sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    for id in [sha1, sha256] {
+        assert!(names_a_commit(id), "{id}");
+        assert!(!abbreviated_object_id(id), "{id}");
+    }
+
+    // A prefix of either hash takes the same route as the id it truncates — which
+    // is what lets the failure be explained as the prefix it is. The 41-to-63
+    // band is the one that used to fall through to `--branch`.
+    for prefix in [
+        &sha1[..7],
+        &sha1[..8],
+        &sha1[..39],
+        &sha256[..41],
+        &sha256[..63],
+    ] {
+        assert!(names_a_commit(prefix), "{prefix}");
+        assert!(abbreviated_object_id(prefix), "{prefix}");
+    }
+
+    // Names, all of them: a branch, a tag, a hex word shorter than git's own
+    // abbreviation, and a hex-looking string longer than any object id.
+    for name in ["main", "v1.2.3", "feature/x", "decade", &sha256.repeat(2)] {
+        assert!(!names_a_commit(name), "{name}");
+        assert!(!abbreviated_object_id(name), "{name}");
+    }
+}
+
 /// The property that makes git the right owner of "your edits are yours".
 #[test]
 fn an_edited_working_copy_reports_itself_dirty() {

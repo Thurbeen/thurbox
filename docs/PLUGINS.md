@@ -1578,7 +1578,7 @@ it is produced by the source rather than transcribed by hand.
 | *(none)* | the default branch's tip | follows it |
 | a branch | that branch's tip | follows that branch |
 | a tag | the tag | stays |
-| a commit | that commit | stays |
+| a commit — the **full** object id | that commit | stays |
 
 A pin is a pin: `update` on a tagged or committed entry reports `current` rather
 than moving it, so pinning is how you hold a plugin still. Pinning a commit is what
@@ -1586,6 +1586,14 @@ than moving it, so pinning is how you hold a plugin still. Pinning a commit is w
 clone --branch` cannot do it: a commit is fetched and checked out after the clone.
 You get one shallow round trip either way; a pin that cannot be obtained fails with
 git's own message and leaves nothing behind.
+
+Give that commit **in full** — 40 characters of sha1, or 64 of sha256. A remote
+serves branches, tags and whole objects and never a prefix of one, so the
+abbreviation `git log` prints reaches nothing, and the failure says so rather than
+blaming a rebase. A tag or branch whose *name* happens to be hex (`20240115`) is a
+name like any other and still installs — only the remote can tell the two apart —
+unless it is exactly an object id's length, where git reads the id it parses as
+and asks for that object rather than for the name.
 
 **Installing a plugin from a repository puts that repository's files on your disk,
 executable bits included.** That is what cloning anything does. What it does *not*
