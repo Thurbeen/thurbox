@@ -16,11 +16,14 @@
 //! [`decide_update`], [`crosses_major`], [`current_version`]) so dev builds
 //! (`0.0.0-dev`) never auto-update and **a new major is never installed
 //! automatically** — 2.x replaced v1's whole interface, so crossing that line is
-//! the user's decision, not a background download's. It mirrors
-//! `scripts/install.sh` exactly: the same release artifacts, target-triple
-//! mapping, and SHA256 verification. Like the rest of
-//! thurbox it adds no new crate dependency — downloads go through the
-//! `curl`/`wget` helpers and `tar` / `sha256sum`/`shasum` are shelled out to.
+//! the user's decision, not a background download's. It installs what
+//! `scripts/install.sh` installs — the same release artifacts, the same
+//! target-triple mapping, the same digest verified before anything is replaced.
+//! It does not reach for the same *tools*: downloads go through the
+//! `curl`/`wget` helpers and `tar` is shelled out to, but the checksum is
+//! computed in process, so verification does not depend on what the local
+//! machine has on `PATH` (the installer's `sha256sum`/`shasum` do not exist on
+//! native Windows — issue #1182).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -172,52 +175,41 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The digest out of one line of `sha256sum` / `shasum` **output**.
+/// `file`'s SHA-256, lowercase hex.
 ///
-/// Not for a published checksums file, which [`parse_checksum`] reads: the
-/// escaping below is the local tool's, and a release artifact's name never
-/// carries a backslash to trigger it.
-///
-/// Normally the first whitespace token, but **GNU coreutils escapes the whole
-/// line** when the file name holds a backslash or a newline: it prefixes the
-/// line with `\\` and escapes those characters inside the name. A Windows path
-/// handed to `sha256sum` inside WSL always contains backslashes, so the digest
-/// came back as `\\c5bd…` and compared unequal to an identical `c5bd…` — which
-/// marked an auto-discovered WSL host permanently unusable and put its probe in
-/// a retry loop that wrote a 4.9 MB log in a day (issue #1168).
-///
-/// Only the one leading marker is stripped: everything after it is the digest
-/// as the tool computed it, and a second `\\` would be part of no digest.
-fn digest_token(line: &str) -> &str {
-    let token = line.split_whitespace().next().unwrap_or("");
-    token.strip_prefix('\\').unwrap_or(token)
+/// Streamed through the hasher rather than read whole: a release archive is
+/// tens of megabytes and nothing here needs its bytes, only its digest.
+fn sha256_of(file: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut handle =
+        std::fs::File::open(file).map_err(|e| format!("open {} to hash: {e}", file.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut handle, &mut hasher)
+        .map_err(|e| format!("read {} to hash: {e}", file.display()))?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Verify `file`'s SHA256 against `expected`, shelling out to `sha256sum`
-/// (falling back to `shasum -a 256`) — same tools as `install.sh`.
+/// Verify `file`'s SHA256 against `expected`, case-insensitively.
+///
+/// Hashed **in process**. This shelled out to `sha256sum`, falling back to
+/// `shasum -a 256` — the tools `install.sh` uses — which made a checksum depend
+/// on what the *local* machine has on `PATH`. Native Windows has neither, so
+/// every verification there failed with `could not compute SHA256`, which
+/// skipped the WSL host mirror, left the host's socket unlearned, and put the
+/// teardown sweep in a 5-second re-probe loop for the life of the process
+/// (issue #1182). Hashing here answers identically on every platform, and
+/// leaves no tool output to parse — the escaped-line handling that #1168 needed
+/// went with it, because coreutils' escaping was the tool's, not the digest's.
 fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
-    let attempts: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
-    let mut errors = Vec::new();
-    for (bin, extra) in attempts {
-        let mut cmd = Command::new(bin);
-        cmd.args(extra).arg(file);
-        match cmd.output() {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let actual = digest_token(&stdout);
-                return if actual.eq_ignore_ascii_case(expected.trim()) {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "checksum mismatch (expected {expected}, got {actual})"
-                    ))
-                };
-            }
-            Ok(out) => errors.push(format!("{bin}: exit {}", out.status)),
-            Err(_) => errors.push(format!("{bin}: not found")),
-        }
+    let actual = sha256_of(file)?;
+    if actual.eq_ignore_ascii_case(expected.trim()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch (expected {expected}, got {actual})"
+        ))
     }
-    Err(format!("could not compute SHA256 ({})", errors.join("; ")))
 }
 
 /// A temp dir removed (best-effort) when dropped, so a failed/early-returned
@@ -521,19 +513,6 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         );
     }
 
-    /// coreutils escapes a line whose file name holds a backslash — which every
-    /// Windows path handed to `sha256sum` inside WSL does. Taking the raw first
-    /// token then compares `\\c5bd…` against `c5bd…` and calls an identical
-    /// digest a mismatch (issue #1168).
-    #[test]
-    fn a_coreutils_escaped_line_yields_the_digest_itself() {
-        let escaped = "\\c5bd00112233  C:\\Users\\me\\thurbox-cli.exe";
-        assert_eq!(digest_token(escaped), "c5bd00112233");
-        // The ordinary line is untouched, and so is an empty answer.
-        assert_eq!(digest_token("c5bd00112233  thurbox-cli"), "c5bd00112233");
-        assert_eq!(digest_token(""), "");
-    }
-
     #[test]
     fn parse_checksum_missing_entry_is_none() {
         let body = "aaaa1111  thurbox-v0.114.0-x86_64-apple-darwin.tar.gz\n";
@@ -600,30 +579,39 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         assert!(err.contains("missing"), "got: {err}");
     }
 
-    // Unix-only: `verify_sha256` shells out to `sha256sum`/`shasum` (like
-    // `install.sh`). On a native Windows runner those Unix coreutils behave
-    // inconsistently (a Git-for-Windows `sha256sum` mis-hashes a Windows path),
-    // so this exercises a Unix-tool path. Windows self-update is opt-in and
-    // shells the same Unix tooling — covered by the dockur VM, not this CI job.
-    #[cfg(unix)]
+    /// Hashing is in process, so an empty `PATH` — a machine with neither
+    /// `sha256sum` nor `shasum`, which is every native Windows one — must still
+    /// verify. Emptying `PATH` is how the platform that shipped issue #1182
+    /// gets reproduced on the platform CI runs, and it is why this test carries
+    /// no `cfg` gate: the version that did skipped the only platform it broke on.
     #[test]
-    fn verify_sha256_matches_and_detects_mismatch() {
+    fn verify_sha256_needs_no_tool_on_path() {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("empty");
         std::fs::write(&file, b"").unwrap();
         // SHA256 of empty input — the canonical value.
         let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        match verify_sha256(&file, empty) {
-            Ok(()) => {
-                // Compare is case-insensitive.
-                assert!(verify_sha256(&file, &empty.to_uppercase()).is_ok());
-                let err = verify_sha256(&file, &"0".repeat(64)).unwrap_err();
-                assert!(err.contains("mismatch"), "got: {err}");
-            }
-            // No sha256sum/shasum on this machine — only the tool-missing path
-            // is reachable, so assert that and stop.
-            Err(e) => assert!(e.contains("could not compute"), "unexpected: {e}"),
-        }
+        crate::paths::with_path("", || {
+            verify_sha256(&file, empty).expect("hashing must not depend on PATH");
+            // Compare is case-insensitive.
+            assert!(verify_sha256(&file, &empty.to_uppercase()).is_ok());
+            let err = verify_sha256(&file, &"0".repeat(64)).unwrap_err();
+            assert!(err.contains("mismatch"), "got: {err}");
+        });
+    }
+
+    /// A digest of real content, not just the empty one, so a wrong hasher
+    /// cannot pass by returning a constant.
+    #[test]
+    fn verify_sha256_hashes_the_file_contents() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("abc");
+        std::fs::write(&file, b"abc").unwrap();
+        verify_sha256(
+            &file,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
     }
 
     #[test]

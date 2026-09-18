@@ -46,7 +46,11 @@ pub const PROBE_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
 
 /// How long to leave a host alone after `failures` consecutive `No`s:
 /// [`PROBE_RETRY`] doubled once per failure, capped at [`PROBE_RETRY_MAX`].
-fn retry_after(failures: u32) -> Duration {
+///
+/// Shared with the teardown sweep's own host backoff
+/// ([`super::delete`]), so a host that cannot be reached is spaced out on one
+/// curve rather than on two that drift apart.
+pub(super) fn retry_after(failures: u32) -> Duration {
     // Capped before the shift rather than after: 20 doublings of a minute is
     // already far past the ceiling, and it keeps the shift in range.
     let doublings = failures.saturating_sub(1).min(20);

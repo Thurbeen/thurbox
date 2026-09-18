@@ -32,6 +32,15 @@ unicode-width = "0.2"
 # dependency tree transitively; pinned to the same resolved version)
 base64 = "0.23"
 
+# SHA-256 for release/artifact verification, computed in process rather than
+# shelled out to `sha256sum`/`shasum` — native Windows has neither, and a
+# checksum that depends on the local PATH is not one (issue #1182). Held at
+# 0.10 rather than the newer 0.11 on purpose: 0.10.9 is already resolved in the
+# tree for termwiz, pest_meta and wezterm-blob-leases, so this adds nothing to
+# build, while 0.11 is semver-incompatible with their requirement and would put
+# a second copy of the same hasher beside it.
+sha2 = "0.10"
+
 # v2 plugin kernel: the Lua runtime plugins are written in, and the filesystem
 # watch that reloads them on save. Lua 5.4 is vendored so no system Lua is
 # needed; the `send` feature is deliberately NOT enabled, which makes "plugins

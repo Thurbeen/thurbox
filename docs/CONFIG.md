@@ -580,7 +580,9 @@ launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
 that gate let the badge keep the cache "fresh" and starve the updater) it
 fetches the latest release tag; if a newer release exists it downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
-dependency), verifies the SHA256 (`sha256sum`/`shasum`), extracts it
+dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
+depend on the local `PATH` — shelling out to `sha256sum`/`shasum` made it
+impossible on native Windows, issue #1182), extracts it
 (`tar`), and atomically replaces the installed `thurbox`/`thurbox-cli`
 binaries in place — mirroring `scripts/install.sh`. The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
@@ -962,6 +964,7 @@ Live in the `metadata` table and apply immediately (no restart):
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
 | `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
+| `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked

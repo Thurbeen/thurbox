@@ -1764,6 +1764,30 @@ there is drawn, captioned and counted as activity (ADR-P22 in
 session row uses a targeted setter (`set_backend_id`, `set_session_shell`,
 `set_display_order`) rather than the full-row `upsert_session`.
 
+The sweep's ownership gate asks each remote host for its windows, and a host
+that cannot answer is **backed off** rather than asked again next pass: an
+unresolvable host reads as "owns nothing", which is the conservative answer for
+one pass but leaves the row unreaped forever, so the sweep kept re-probing at
+`REAP_INTERVAL` for the life of the process. `window_index_on` leaves such a
+host alone for `host_cli::retry_after` its consecutive failure count — the same
+curve the host-usability probe climbs, one minute doubling towards fifteen —
+and clears the count the moment the host answers.
+
+That backoff is **durable and claimed**, for the same reason the undo window
+itself is asked of the database: the sweep has two drivers and neither is a
+single long-lived caller. The interface dispatches `Command::Reap` onto a fresh
+thread every five seconds without waiting for the last, so several sweeps sit
+inside one listing that is blocked on an ssh connect timeout; and the heartbeat
+starts `thurbox-cli automation tick` as a **new process** every minute, which a
+backoff held in memory does not survive at all. So the state is a `metadata`
+row per host (`host_probe_backoff:<backend>`), and the eligibility check and the
+stamp are one `BEGIN IMMEDIATE` — a claim, written before the probe is made, so
+that the sweeps arriving behind it collide with the stamp rather than with a
+failure nobody has recorded yet. The cost of not doing this was
+issue #1182: a single soft-deleted WSL row spawning `wsl.exe` from
+`Command::Reap` every five seconds, stalling the interface and writing 3.9 MB of
+log in a day.
+
 **Why**: there were two reapers answering different questions.
 `kernel::reaper::Reaper` fired on *"the id left the snapshot ten seconds ago"*,
 which is a proxy for deletion that anything else emptying the snapshot also

@@ -487,7 +487,9 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// than this machine's: a session soft-deleted on a host has no interface there
 /// to collect it, and leaving it was how every headless delete of a remote
 /// session leaked its `tb-`/`tbs-` pair for good. That costs one
-/// `list-windows` per host, and only for a host with a row actually overdue.
+/// `list-windows` per host, and only for a host with a row actually overdue —
+/// and a host that cannot answer is then backed off rather than re-asked every
+/// pass (`window_index_on`).
 ///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
@@ -510,7 +512,7 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         }
         let index = windows
             .entry(row.backend_type.clone())
-            .or_insert_with(|| window_index_on(&row.backend_type));
+            .or_insert_with(|| window_index_on(db, &row.backend_type));
         if owned_windows_in(index, &row).is_empty() {
             continue;
         }
@@ -526,16 +528,86 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// Every thurbox window on the server `backend_type` names. An empty index for
 /// a host that is unconfigured or unreachable, which reads as "owns nothing" —
 /// the conservative answer a teardown gate wants.
-fn window_index_on(backend_type: &str) -> crate::agent::tmux::WindowIndex {
+///
+/// Asking is claimed rather than merely permitted, so a host that could not be
+/// listed is left alone for a while instead of being asked again on the next
+/// pass. The sweep runs every five seconds, and a row whose host cannot be
+/// resolved is never reaped, so without this one such row re-probed its host at
+/// that rate for the life of the process — spawning `wsl.exe` from the
+/// interface's own loop and writing 3.9 MB of log in a day (issue #1182).
+fn window_index_on(db: &Database, backend_type: &str) -> crate::agent::tmux::WindowIndex {
     if !crate::session::is_remote_backend(backend_type) {
         return crate::agent::tmux::local_window_index().unwrap_or_default();
     }
-    match super::resolve_host(backend_type).flatten() {
-        Some(host) => crate::agent::tmux::remote_window_index(&host).unwrap_or_else(|e| {
+    if !claim_listing(db, backend_type) {
+        return crate::agent::tmux::WindowIndex::default();
+    }
+    let Some(host) = super::resolve_host(backend_type).flatten() else {
+        listing_failed(db, backend_type);
+        return crate::agent::tmux::WindowIndex::default();
+    };
+    match crate::agent::tmux::remote_window_index(&host) {
+        Ok(index) => {
+            listing_succeeded(db, backend_type);
+            index
+        }
+        Err(e) => {
             tracing::debug!("could not list the windows of '{}': {e:#}", host.name);
+            // Stamped when the attempt *ended*, not when it began: a machine
+            // that is down answers by timing out, and an ssh connect timeout
+            // can outlast the interval itself — dating the failure from the
+            // start would leave it already expired the moment it was written,
+            // and the next pass five seconds later would probe again.
+            listing_failed(db, backend_type);
             crate::agent::tmux::WindowIndex::default()
-        }),
-        None => crate::agent::tmux::WindowIndex::default(),
+        }
+    }
+}
+
+/// How long a host whose windows could not be listed is left alone after
+/// `failures` consecutive failures, in milliseconds.
+///
+/// The host-usability probe's own curve ([`host_cli::retry_after`](super::host_cli)),
+/// reused rather than reinvented: one minute, doubling towards fifteen. The two
+/// back off the same unreachable machine, so they space it out the same way.
+fn listing_retry_after_ms(failures: u32) -> u64 {
+    super::host_cli::retry_after(failures).as_millis() as u64
+}
+
+/// Take the right to ask `backend_type` for its windows, or refuse because its
+/// last attempt is too recent.
+///
+/// Kept in the database rather than in this process, because the sweep has two
+/// drivers and neither is alone: the interface dispatches `Command::Reap` onto
+/// a fresh thread every five seconds without waiting for the last, and the
+/// heartbeat starts `thurbox-cli automation tick` as a **new process** every
+/// minute. A gate held in memory is overtaken by the first and forgotten
+/// wholesale by the second, and the host gets a probe per pass either way.
+///
+/// A database that will not answer claims: the gate exists to spare work, and
+/// skipping a teardown because of it would be the worse failure.
+fn claim_listing(db: &Database, backend_type: &str) -> bool {
+    db.claim_host_probe(
+        backend_type,
+        crate::sync::current_time_millis(),
+        listing_retry_after_ms,
+    )
+    .unwrap_or(true)
+}
+
+/// Record that `backend_type` could not be listed, spacing the next attempt
+/// further out than the last.
+fn listing_failed(db: &Database, backend_type: &str) {
+    if let Err(e) = db.note_host_probe_failed(backend_type, crate::sync::current_time_millis()) {
+        tracing::debug!("could not record the listing failure of '{backend_type}': {e}");
+    }
+}
+
+/// Record that `backend_type` answered, so a host that comes back is asked at
+/// the base cadence again rather than at the interval its outage earned.
+fn listing_succeeded(db: &Database, backend_type: &str) {
+    if let Err(e) = db.clear_host_probe_backoff(backend_type) {
+        tracing::debug!("could not clear the listing backoff of '{backend_type}': {e}");
     }
 }
 
@@ -852,6 +924,56 @@ mod tests {
     use super::*;
     use crate::session::SessionId;
     use crate::sync::SharedSession;
+
+    /// The sweep runs every five seconds, and a row on a host it cannot resolve
+    /// is never reaped — so without a backoff that host is re-probed at exactly
+    /// that rate forever, which is what held the interface and wrote 3.9 MB of
+    /// log in a day (issue #1182). The clock is carried forward here rather
+    /// than slept through.
+    #[test]
+    fn a_host_that_cannot_be_listed_is_not_re_asked_on_the_sweep_cadence() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        // No `hosts.toml` names this backend, so resolving it is the failure
+        // under test.
+        let backend = "ssh:no-such-host-for-the-sweep-backoff-test";
+
+        let asked_at = crate::sync::current_time_millis();
+        window_index_on(&db, backend);
+
+        // The sweep's own cadence, and every pass short of the first retry.
+        assert!(!claim_at(&db, backend, asked_at + 5_000));
+        assert!(!claim_at(&db, backend, asked_at + 59_000));
+        // Past it, one sweep is let through — a machine that comes back is
+        // still picked up within the minute.
+        let past = asked_at + 61_000;
+        assert!(claim_at(&db, backend, past));
+        // And only one. The reap dispatches a fresh thread every five seconds
+        // without waiting for the last, so a listing still blocked on an
+        // unreachable host has the next sweep arriving inside it; the claim
+        // above is what that one collides with, rather than the failure this
+        // attempt has not recorded yet.
+        assert!(!claim_at(&db, backend, past + 5_000));
+
+        // A host that keeps failing is spaced out further still, on the same
+        // curve the usability probe beside it climbs.
+        let failed_again = past + 61_000;
+        db.note_host_probe_failed(backend, failed_again).unwrap();
+        assert!(!claim_at(&db, backend, failed_again + 61_000));
+        assert!(claim_at(&db, backend, failed_again + 121_000));
+
+        // An answer clears it, so the next outage starts over at one minute.
+        listing_succeeded(&db, backend);
+        assert!(claim_at(&db, backend, failed_again));
+    }
+
+    /// `claim_listing` reads the wall clock; this is the same claim with the
+    /// clock supplied, which is what lets the test carry it forward.
+    fn claim_at(db: &Database, backend_type: &str, now_ms: u64) -> bool {
+        db.claim_host_probe(backend_type, now_ms, listing_retry_after_ms)
+            .unwrap()
+    }
 
     fn insert_session(db: &Database, name: &str) -> SessionId {
         insert_session_on(db, name, "local-tmux", "")
