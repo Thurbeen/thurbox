@@ -1195,8 +1195,6 @@ mod tests {
         assert_eq!(reported_error(br#"{"error":"  "}"#), None);
     }
 
-    /// The advertiser's directory, with the CLI the provisioner extracts into
-    /// it — a real file at the very path the advertisement is written to.
     #[cfg(unix)]
     fn provisioned_bin_dir(root: &std::path::Path) -> std::path::PathBuf {
         let bin = root.join(HOST_BIN_DIR);
@@ -1204,15 +1202,11 @@ mod tests {
         bin
     }
 
-    /// On a provisioned host the running CLI *is* the path being advertised:
+    /// On a provisioned host the running CLI *is* the path being advertised —
     /// `resolve_cli_binary` answers with a sibling of the running exe, and
-    /// inside a WSL distro that exe is `<data dir>/bin/thurbox`, so the sibling
-    /// is `<data dir>/bin/thurbox-cli` — the link's own path.
-    ///
-    /// Advertising that removed the freshly extracted 12.5 MB binary and put a
-    /// symlink to itself in its place, which is `ELOOP` on every use (issue
-    /// #1193). Both halves are pinned here: the real file survives, and no
-    /// symlink is written over it.
+    /// there that exe is `<data dir>/bin/thurbox`. Advertising over it removed
+    /// the binary the provisioner had just extracted and left an `ELOOP` in its
+    /// place (issue #1193).
     #[cfg(unix)]
     #[test]
     fn the_cli_is_never_advertised_as_a_link_to_its_own_path() {
@@ -1232,12 +1226,9 @@ mod tests {
         assert_eq!(std::fs::read(&cli).unwrap(), b"#!/bin/sh\nexit 0\n");
     }
 
-    /// A machine already carrying the self-link is only ever fixed by thurbox
+    /// A machine already carrying the loop is only ever fixed by thurbox
     /// noticing — no migration reaches a WSL distro — and every exit the
-    /// function had preserved it instead: `read_link` reads the loop back as
-    /// the target it wanted, and `resolve_cli_binary` cannot even see past it
-    /// (it looks for a sibling that *exists*, and a loop does not), so the
-    /// `is_absolute` guard returns with the loop still in place.
+    /// function had preserved it instead.
     #[cfg(unix)]
     #[test]
     fn an_existing_self_referential_link_is_removed_rather_than_kept() {
@@ -1245,8 +1236,9 @@ mod tests {
         let bin = provisioned_bin_dir(root.path());
         let link = bin.join("thurbox-cli");
         std::os::unix::fs::symlink(&link, &link).unwrap();
-        // What `resolve_cli_binary` answers once the loop is there: the sibling
-        // does not `exists()`, so it falls back to the bare name.
+        // What `resolve_cli_binary` answers once the loop is there: it looks
+        // for a sibling that `exists()`, and a loop does not, so it falls back
+        // to the bare name — which is why no guard below the heal can see it.
         let target = std::path::PathBuf::from("thurbox-cli");
 
         advertise_cli_in(&bin, &target);
@@ -1293,11 +1285,8 @@ mod tests {
         assert_eq!(std::fs::read_link(&link).unwrap(), target);
     }
 
-    /// The other half of the same rule, for the case where the paths differ: a
-    /// real file at the advertised path is somebody else's — a provisioner's,
-    /// an installer's — and this function manages only a symlink of its own
-    /// making. Removing one is what destroyed the binary on a freshly
-    /// provisioned host, so it is left and nothing is advertised.
+    /// The same rule where the two paths differ: a real file there is somebody
+    /// else's, and this function manages only a symlink of its own making.
     #[cfg(unix)]
     #[test]
     fn a_real_file_at_the_advertised_path_is_never_removed() {
@@ -1314,12 +1303,9 @@ mod tests {
         assert_eq!(std::fs::read(&installed).unwrap(), b"#!/bin/sh\nexit 0\n");
     }
 
-    /// A `<root>/bin` reached two ways: as itself, and through a symlinked
-    /// parent. That is the ordinary shape of the two sides here —
-    /// `resolve_cli_binary` answers from `current_exe`, which the kernel hands
-    /// back fully resolved, while the advertised directory is built from
-    /// `$HOME` / `THURBOX_DATA_DIR` and may be relative or reached through a
-    /// symlinked home.
+    /// One `bin` directory reached two ways, as itself and through a symlinked
+    /// parent — the shape a resolved `current_exe` and a `$HOME`-built data
+    /// directory are in on an ordinary machine.
     #[cfg(unix)]
     fn aliased_bin_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
         let real = root.join("real");
@@ -1329,17 +1315,15 @@ mod tests {
         (bin, root.join("home").join(HOST_BIN_DIR))
     }
 
-    /// Compared as strings, two spellings of one path read as two paths — so
-    /// the guard misses, the link is replaced, and `symlink(target, link)`
-    /// points it at itself all over again. The comparison resolves the parent
-    /// directories, which are real, rather than the link, which may be the loop.
+    /// Compared as strings, two spellings of one path read as two paths, and
+    /// `symlink(target, link)` writes the loop all over again.
     #[cfg(unix)]
     #[test]
     fn an_aliased_spelling_of_the_advertised_path_never_becomes_a_loop() {
         let root = tempfile::TempDir::new().unwrap();
         let (bin, aliased) = aliased_bin_dirs(root.path());
-        // A true advertisement already there, which the function is entitled to
-        // replace — so only the target comparison can stop it.
+        // A true advertisement already there, which the function is entitled
+        // to replace — so only the target comparison can stop it.
         let elsewhere = root.path().join("thurbox-cli");
         std::fs::write(&elsewhere, b"#!/bin/sh\n").unwrap();
         std::os::unix::fs::symlink(&elsewhere, aliased.join("thurbox-cli")).unwrap();
@@ -1354,9 +1338,7 @@ mod tests {
         );
     }
 
-    /// And the heal reads the same way round: a loop written under one
-    /// spelling must be removed when the directory is reached by the other,
-    /// since nothing else on that machine ever repairs it.
+    /// And the heal the same way round, since nothing else ever repairs one.
     #[cfg(unix)]
     #[test]
     fn an_aliased_self_referential_link_is_still_removed() {

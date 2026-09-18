@@ -1027,12 +1027,10 @@ mod tests {
         assert!(claim_at(&db, backend, failed_again));
     }
 
-    /// The reap's own half of the same problem. A host can answer
+    /// The reap's own half of the same problem: a host can answer
     /// `list-windows` while its own `thurbox-cli` will not run, so the listing
-    /// succeeds, the row owns its windows and only the reap fails — and a row
-    /// whose windows are still standing is overdue again on the very next
-    /// pass. That is what re-asked a host every five seconds for the life of
-    /// the process (issue #1193). The clock is carried forward rather than
+    /// never backs off and only the reap fails, every five seconds for the life
+    /// of the process (issue #1193). The clock is carried forward rather than
     /// slept through.
     #[test]
     fn a_row_that_cannot_be_reaped_is_not_retried_on_the_sweep_cadence() {
@@ -1910,10 +1908,8 @@ mod tests {
     }
 
     /// A remote reap that never reached its host has to say so. It used to log
-    /// and return, so the sweep read the attempt as a reap that worked — and a
-    /// row whose windows are still standing is overdue again on the very next
-    /// pass, which is how one soft-deleted session re-asked a host every five
-    /// seconds for the life of the process (issue #1193).
+    /// and return, so the sweep read the attempt as a reap that worked and had
+    /// nothing to back off on (issue #1193).
     #[test]
     fn a_reap_that_never_reached_its_host_is_reported_as_a_failure() {
         let temp = tempfile::TempDir::new().unwrap();
