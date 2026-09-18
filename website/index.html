@@ -23,8 +23,8 @@ footer: true
             <p class="subtitle subtitle--thesis">
               Quit thurbox and
               <strong>every agent keeps working</strong>
-              &mdash; tmux owns the processes, not the interface. The screen redraws when something
-              changes, not on a timer.
+              &mdash; tmux owns the processes, not the interface. Input and output repaint at once;
+              an idle screen paints four frames a second, not a hundred.
             </p>
             <p class="hero-stability">
               <span class="badge badge-green">One command</span>
@@ -486,6 +486,18 @@ cargo build --release</code></pre>
           two edits, as it is above: the plugin, and the slot in
           <code>ui/layout.lua</code> that says where it goes.
         </p>
+        <p class="section-lede">
+          A plugin is a table, not a config format: it names a slot, declares the chords it wants,
+          and returns what it drew. There are only ever
+          <strong>four node kinds</strong>
+          (<code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>) &mdash;
+          lists, panels and tables are not kinds, they compose from those in
+          <code>ui/lib/</code>. And declaring a capability is not being granted it: until you trust
+          the file, the global it asked for is
+          <em>absent</em>
+          rather than blocked.
+          <a href="docs/interface.html">Writing a pane &rarr;</a>
+        </p>
 
         <div class="ui-lab__demo">
           <p class="ui-lab__demo-lede">
@@ -565,126 +577,59 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
       </div>
     </section>
 
-    <!-- The claim above, made checkable: the file on the left is what draws the
-         pane on the right. Keep the two in step if either is edited. -->
-    <section class="section diptych-section" id="a-pane-is-a-file">
+    <!-- The engine's own cost. The page had no performance content at all while
+         two sections argued the Lua case; this is the other half of the Band 1 /
+         Band 2 split the features grid draws. Every number here is from
+         docs/PERFORMANCE.md - keep them in step, and do not add one that is not
+         recorded in an ADR there. -->
+    <section class="section" id="performance">
       <div class="container">
-        <p class="section-eyebrow">Not a config format</p>
-        <h2>This is the whole plugin</h2>
+        <p class="section-eyebrow">Measured, not asserted</p>
+        <h2>A frame costs what changed, not what exists</h2>
         <p class="section-lede">
-          A plugin is a table. It names a slot to occupy, declares the chords it wants, and returns
-          what it drew &mdash; and there are only ever
-          <strong>four node kinds</strong>
-          (<code>text</code>, <code>box</code>, <code>input</code>, <code>surface</code>). Lists,
-          panels and tables are not kinds; they compose from those, in Lua, in
-          <code>ui/lib/</code>.
+          The interface is Lua, and a frame runs your panes. That only stays cheap if the loop
+          refuses to redo work nothing asked for &mdash; so every published source carries a
+          version, and a pane whose inputs did not move is neither re-run nor re-converted.
         </p>
 
-        <div class="diptych">
-          <figure class="diptych__code">
-            <figcaption><code>ui/plugins/90_git.lua</code></figcaption>
-            <pre><code class="language-lua">local theme = require("lib.theme")
-local widgets = require("lib.widgets")
-
-return {
-  name  = "git",
-  slot  = "center",
-  order = 90,
-  focusable = true,
-
-  -- Declaring it is not being granted it: until you
-  -- trust this file, the `run` global is *absent*.
-  capabilities = { "run" },
-
-  keys = {
-    { key = "f8", action = "git.open",
-      desc = "repo at a glance", scope = "global" },
-  },
-
-  render = function(ctx)
-    -- `run` is nil until the file is trusted, so this
-    -- checks rather than assuming.
-    if not run then
-      return { type = "text", text = theme.dim("  not trusted") }
-    end
-
-    local id = store.selected
-    if not id then
-      return { type = "text", text = theme.dim("  no session") }
-    end
-
-    -- Asked every frame, on purpose. A worker answers;
-    -- a fresh answer is a map lookup, not a process.
-    run("status", "git status --porcelain",
-        { session = id, ttl = 2 })
-
-    local got  = thurbox.runs["status"]
-    local rows = {}
-
-    if got and got.ok then
-      for line in got.stdout:gmatch("[^\n]+") do
-        rows[#rows + 1] = { spans = { {
-          text  = "  " .. widgets.truncate(line, ctx.width - 4),
-          style = { fg = line:find("^%s*M") and theme.warn
-                        or theme.secondary },
-        } } }
-      end
-    end
-
-    return {
-      type  = "box",
-      frame = widgets.panel("git", ctx.focused),
-      children = {
-        widgets.list({ rows = rows, height = ctx.height - 2 }),
-      },
-    }
-  end,
-}</code></pre>
-          </figure>
-
-          <div class="diptych__result">
-            <p class="diptych__label">&rarr; and that is a pane</p>
-            <div class="terminal-frame">
-              <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
-                <span class="terminal-title">thurbox</span>
-              </div>
-              <div class="diptych__screen" aria-hidden="true">
-                <div class="diptych__pane is-muted">
-                  <span class="ui-pane__title">Sessions</span>
-                  <span class="ui-pane__row"><i class="dot working"></i>fix-osc52</span>
-                  <span class="ui-pane__row"><i class="dot idle"></i>docs-hooks</span>
-                </div>
-                <div class="diptych__pane is-live">
-                  <span class="ui-pane__title">git</span>
-                  <span class="ui-pane__row mono warn">&nbsp;M src/kernel/runs.rs</span>
-                  <span class="ui-pane__row mono warn">&nbsp;M ui/layout.lua</span>
-                  <span class="ui-pane__row mono">?? notes.md</span>
-                  <span class="diptych__pane-foot">ctrl+g</span>
-                </div>
-              </div>
-            </div>
-            <ul class="diptych__notes">
-              <li>
-                <strong>It never blocks.</strong>
-                <code>ctx.run</code>
-                asks; a worker answers next frame. Calling it every frame is the intended pattern,
-                because a fresh answer is a map lookup rather than a process.
-              </li>
-              <li>
-                <strong>It gets no more than it asked for.</strong>
-                No filesystem, no network, no
-                <code>os</code>
-                or
-                <code>io</code>
-                &mdash; those are
-                <em>absent</em>
-                from the sandbox, not blocked in it. Running a program is a capability, and it stays
-                inert until you trust the file.
-              </li>
-            </ul>
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-icon" aria-hidden="true">&#x25D3;</div>
+            <h3>An idle screen stops painting</h3>
+            <p>
+              A keypress or new agent output repaints immediately. With nothing happening the loop
+              falls to four frames a second instead of a hundred, and the expensive half &mdash;
+              layout, the terminal render, the panel rebuilds &mdash; is skipped rather than
+              repeated.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon" aria-hidden="true">&#x25A4;</div>
+            <h3>Unchanged panes are not re-run</h3>
+            <p>
+              Under load the session list produced a byte-identical tree on 200 of 200 renders. The
+              loop used to prove that work wasted only after paying for it; now a change signal
+              gates it, and the pane is served from its own memo.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon" aria-hidden="true">&#x25F3;</div>
+            <h3>You can see what each pane costs</h3>
+            <p>
+              <code>thurbox-cli perf --plugins</code>
+              ranks every pane by render time &mdash; p50, p95, max, and how often its cache was
+              reused. On an interface made of your own panes, that is the question actually worth
+              asking.
+            </p>
+          </div>
+          <div class="card">
+            <div class="card-icon" aria-hidden="true">&#x25A6;</div>
+            <h3>Regressions are counted, not timed</h3>
+            <p>
+              The gate counts frames painted, redraws skipped and cache rebuilds. A counter reads
+              the same on every machine, so a regression fails a test instead of being argued about
+              from a stopwatch.
+            </p>
           </div>
         </div>
       </div>
@@ -719,6 +664,16 @@ return {
               <p>
                 Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
                 persist across crashes, restarts, and multiple concurrent Thurbox instances.
+              </p>
+            </div>
+          </a>
+          <a href="#performance" class="feature-link">
+            <div class="card">
+              <div class="card-icon" aria-hidden="true">&#x25D3;</div>
+              <h3>Demand-driven rendering</h3>
+              <p>
+                An idle screen paints four frames a second, not a hundred, and a pane whose inputs
+                did not change is served from a memo. Per-pane cost is a report, not a guess.
               </p>
             </div>
           </a>
