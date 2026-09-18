@@ -616,10 +616,13 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
             <div class="card-icon" aria-hidden="true">&#x25F3;</div>
             <h3>You can see what each pane costs</h3>
             <p>
+              Turn timing on with the F12 HUD or
+              <code>THURBOX_PERF_LOG=1</code>
+              and
               <code>thurbox-cli perf --plugins</code>
-              ranks every pane by render time &mdash; p50, p95, max, and how often its cache was
-              reused. On an interface made of your own panes, that is the question actually worth
-              asking.
+              ranks every pane by what it cost &mdash; total, p95, max, its share of the frame, and
+              how often its cache was reused instead of re-run. On an interface made of your own
+              panes, that is the question actually worth asking.
             </p>
           </div>
           <div class="card">
