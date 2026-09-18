@@ -36,6 +36,14 @@
   align-items: start;
 }
 
+/* The opt-out, for a grid whose cards align something to their own bottom:
+   .ask-card puts its footer link at `margin-top: auto`, which needs a row
+   height to align to. Cards that align nothing are better off at their own
+   height - see .grid above. */
+.grid--stretch {
+  align-items: stretch;
+}
+
 .grid-2 {
   grid-template-columns: 1fr;
 }

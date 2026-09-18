@@ -1175,6 +1175,22 @@ main {
   margin-left: auto;
 }
 
+/* The pane's interior, and the reason it is a box of its own: the rows below
+   do not shrink, so in a short rect they have to go somewhere. They clip here,
+   which is what a terminal does - while the file annotation stays outside this
+   box and therefore stays on screen. Without it the `rows` arrangement gave
+   the session list 81px for 191px of content and the name of the file that
+   drew it was the first thing lost, which is the one thing this section is
+   for. */
+.ui-pane__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* A repo group header: a label between two rules, drawn in the muted role. */
 .ui-pane__group {
   align-items: center;
@@ -1305,8 +1321,8 @@ main {
    one annotation is the website's, not the terminal's. */
 .ui-pane__file {
   color: var(--tui-muted);
+  flex: 0 0 auto;
   font-size: 0.6rem;
-  margin-top: auto;
   opacity: 0.8;
   padding-top: 0.2rem;
 }
