@@ -973,3 +973,45 @@ fn the_same_chord_in_two_plugin_scopes_is_not_reported() {
         output.json
     );
 }
+
+/// The chord a plugin takes from the kernel is the same clash, reported the same way.
+///
+/// The kernel's modal and clipboard chords are bindings in the same registry with no
+/// Lua file behind them, so `check` has to declare them alongside the plugins' own or
+/// a pane taking `F1` reads as clean — and the runtime, which does declare them, would
+/// shadow the help modal the author never knew they had displaced. Pinned because
+/// dropping that one line from the collection breaks nothing else in this file.
+#[test]
+fn a_plugin_taking_a_kernel_chord_is_reported_against_the_kernel() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+
+    std::fs::write(
+        ui.join("plugins").join("90_notes.lua"),
+        "return {\n  \
+           name = \"notes\",\n  \
+           slot = \"center\",\n  \
+           keys = { { key = \"f1\", action = \"notes.help\", scope = \"global\", \
+             desc = \"my own help\" } },\n  \
+           pills = { { action = \"notes.help\", label = \"Notes\", priority = 10 } },\n  \
+           render = function() return { type = \"text\", text = \"hi\" } end,\n\
+         }\n",
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    let warnings = output.json["warnings"].to_string();
+    assert!(warnings.contains("f1"), "names the chord: {warnings}");
+    assert!(
+        warnings.contains("notes.help") && warnings.contains("help.open"),
+        "and both claimants, the kernel's by its action: {warnings}"
+    );
+    // Nothing on disk declares it, so the kernel is named by its owner rather than by
+    // a file — a row whose `file` were blank would read as a defect in the interface.
+    assert!(
+        warnings.contains("kernel"),
+        "the claim with no file behind it is named for its owner: {warnings}"
+    );
+}
