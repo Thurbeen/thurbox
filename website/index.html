@@ -588,9 +588,10 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
         <h2>A frame costs what changed, not what exists</h2>
         <p class="section-lede">
           The interface is Lua, and a frame runs your panes. That only stays cheap if the loop
-          refuses to redo work nothing asked for &mdash; so every published source carries a
-          version, and the tables a pane reads are rebuilt only when the thing behind them
-          actually moved.
+          refuses to redo the work nothing asked for &mdash; so the groups that cost something to
+          build are gated behind a version or a digest, and rebuilt only when their source moves.
+          The small ones are rebuilt every publish, because checking them costs more than building
+          them.
         </p>
 
         <div class="grid grid-2">
@@ -678,9 +679,9 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
               <div class="card-icon" aria-hidden="true">&#x25D3;</div>
               <h3>Demand-driven rendering</h3>
               <p>
-                An idle screen paints four frames a second, not a hundred, and the published
-                tables are rebuilt only when their source changes. Per-pane cost is a report, not
-                a guess.
+                An idle screen paints four frames a second, not a hundred, and the groups that
+                cost something to build are rebuilt only when their source changes. Per-pane cost
+                is a report, not a guess.
               </p>
             </div>
           </a>
