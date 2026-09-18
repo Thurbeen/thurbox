@@ -136,7 +136,7 @@
 }
 
 /* Paired with the container's own 1440px step: 1392px of content takes the
-   19.19em headline at 3.8rem with room to spare. */
+   18.18em headline at 3.8rem with room to spare - 1109px of line, measured. */
 @media (min-width: 1440px) {
   .hero h1 {
     font-size: 3.8rem;
