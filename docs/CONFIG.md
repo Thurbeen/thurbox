@@ -965,6 +965,7 @@ Live in the `metadata` table and apply immediately (no restart):
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
 | `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
 | `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
+| `session_reap_backoff:<session id>` | the teardown sweep, when a soft-deleted row's reap did not reach its host | `<attempted_at_millis>:<failures>` — the same curve, per row rather than per host, for a host that answers `list-windows` while its own `thurbox-cli` does not run (ADR-26). Not user-set; the row is deleted the moment the reap comes off, and by a restore, which ends the delete it belonged to |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked

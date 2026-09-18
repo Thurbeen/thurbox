@@ -491,6 +491,16 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// and a host that cannot answer is then backed off rather than re-asked every
 /// pass (`window_index_on`).
 ///
+/// A row whose reap *reports* that it did not come off is backed off rather
+/// than re-attempted on this cadence. Ownership is the sweep's only idempotence
+/// proxy, so a row whose windows are still standing is overdue again on the
+/// very next pass: one session on a host whose own `thurbox-cli` would not run
+/// had its reap — and the remote round trip it makes — repeated every five
+/// seconds for the life of the process (issue #1193). The curve is the host
+/// probe's, the same one the ownership gate's own host backoff climbs. The
+/// local branch reports nothing to back off on, deliberately: a `kill-window`
+/// that finds no window is the ordinary success, not a failure to space out.
+///
 /// Window ownership is the whole gate, so a row that owns none is skipped
 /// entirely and its metrics file and symlink workspace are left in place —
 /// artifacts [`reap_soft_deleted`] would otherwise release. Accepted rather
@@ -516,10 +526,19 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         if owned_windows_in(index, &row).is_empty() {
             continue;
         }
+        if !claim_reap(db, row.id, now) {
+            continue;
+        }
         match reap_soft_deleted(db, row.id) {
-            Ok(true) => reaped.push(row.id.to_string()),
-            Ok(false) => {}
-            Err(e) => tracing::warn!("reap of '{}': {e}", row.name),
+            Ok(true) => {
+                reap_succeeded(db, row.id);
+                reaped.push(row.id.to_string());
+            }
+            Ok(false) => reap_succeeded(db, row.id),
+            Err(e) => {
+                reap_failed(db, row.id, now);
+                tracing::warn!("reap of '{}': {e}", row.name);
+            }
         }
     }
     reaped
@@ -611,6 +630,44 @@ fn listing_succeeded(db: &Database, backend_type: &str) {
     }
 }
 
+/// How long a row whose reap failed `failures` times running is left alone, in
+/// milliseconds — [`listing_retry_after_ms`]'s curve, because the machine a
+/// reap is stuck on is usually the machine a listing is stuck on.
+///
+/// Keyed per row rather than per host because a host can answer `list-windows`
+/// while its own `thurbox-cli` does not run: the listing then succeeds, the
+/// row owns its windows, and only the reap fails.
+fn reap_retry_after_ms(failures: u32) -> u64 {
+    listing_retry_after_ms(failures)
+}
+
+/// Take the right to attempt `id`'s reap at `now_ms`, or refuse because its
+/// last attempt is too recent to repeat. [`claim_listing`]'s claim, on a row —
+/// durable and claimed rather than merely checked for the same two reasons.
+///
+/// A database that will not answer claims lets the reap through: the gate
+/// exists to spare work, and skipping a teardown because of it would be the
+/// worse failure.
+fn claim_reap(db: &Database, id: SessionId, now_ms: u64) -> bool {
+    db.claim_session_reap(id, now_ms, reap_retry_after_ms)
+        .unwrap_or(true)
+}
+
+/// Record that `id`'s reap failed at `now_ms`, spacing the next attempt out.
+fn reap_failed(db: &Database, id: SessionId, now_ms: u64) {
+    if let Err(e) = db.note_session_reap_failed(id, now_ms) {
+        tracing::debug!("could not record the failed reap of '{id}': {e}");
+    }
+}
+
+/// Drop `id`'s backoff once its reap has come off, so no stamp outlives the
+/// teardown it was spacing out.
+fn reap_succeeded(db: &Database, id: SessionId) {
+    if let Err(e) = db.clear_session_reap_backoff(id) {
+        tracing::debug!("could not clear the reap backoff of '{id}': {e}");
+    }
+}
+
 /// Release what a *soft*-deleted session is still holding: its agent, its
 /// companion shell, its metrics file and its symlink workspace.
 ///
@@ -633,6 +690,10 @@ fn listing_succeeded(db: &Database, backend_type: &str) {
 /// ordinary races rather than failures. It is not a claim that a window came
 /// down: a row that owns none (see [`owned_windows_in`]) still releases its
 /// derived artifacts and reports `true`.
+///
+/// `Err` is the remote reap that did not reach its host. Its windows are still
+/// standing there, so the row is overdue again on the next sweep, and the
+/// caller that runs on a timer backs it off on this answer.
 pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     let Some(row) = db
         .get_deleted_session_by_id(id)
@@ -650,8 +711,8 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     // Leaving them was the old answer, and it meant every soft delete of a
     // remote session leaked a `tb-`/`tbs-` pair forever — recreating the name
     // then put a second agent beside the first.
-    if crate::session::is_remote_backend(&row.backend_type) {
-        reap_remote(&row);
+    let remote = if crate::session::is_remote_backend(&row.backend_type) {
+        reap_remote(&row)
     } else {
         // Strict: kill only the windows this row still owns. A reap must not
         // resolve a pane id or a `tb-<name>` target another row answers to —
@@ -676,9 +737,12 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
                 tracing::debug!("kill_window_at({target}) during reap: {e}");
             }
         }
-    }
+        Ok(())
+    };
 
-    // Derived per-session artifacts, both rebuilt on restore.
+    // Derived per-session artifacts, both rebuilt on restore. Released even
+    // when the host could not be reached: they are this machine's, and nothing
+    // about a host that did not answer makes them worth keeping.
     if let Some(asid) = &row.agent_session_id {
         if let Some(dir) = crate::paths::metrics_directory() {
             let _ = std::fs::remove_file(dir.join(format!("{asid}.json")));
@@ -687,7 +751,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
             tracing::warn!("remove_workspace({asid}) during reap: {e}");
         }
     }
-    Ok(true)
+    remote.map(|()| true)
 }
 
 /// The windows a soft-deleted row still owns — its agent and its companion
@@ -738,43 +802,38 @@ pub fn owned_windows_in(
 /// mark it there. Otherwise the windows are killed from here, resolved by the
 /// stamp exactly as the local branch does.
 ///
-/// Best-effort and silent about the ordinary cases: an unreachable host is
-/// often *why* the session was deleted, and the reap runs on a timer.
-fn reap_remote(row: &DeletedSessionInfo) {
+/// `Err` names whatever stopped it, and the caller that runs on a timer backs
+/// the row off on that answer rather than asking again on its base cadence: a
+/// reap that did not reach its host left the windows standing, so the row is
+/// overdue again on the very next pass (issue #1193).
+fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
     let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
-        tracing::warn!(
-            "'{}' was soft-deleted on {}, which is not in hosts.toml; \
-             its windows are left running there",
-            row.name,
+        return Err(format!(
+            "host {} is not in hosts.toml; \
+             the session's windows are left running there",
             row.backend_type
-        );
-        return;
+        ));
     };
     if let Some(cli) = super::host_cli::delegated(&host) {
         let id = row.id.to_string();
         match super::host_cli::run(&host, &cli, &["session", "reap", &id]) {
-            Ok(_) => return,
+            Ok(_) => return Ok(()),
             // The host has no row to reap — the delete was taken here while it
             // was unreachable, and the mirror has not pushed it yet. Its
             // windows are still there, so they come down from here.
             Err(e) if e.contains("not found") => {
                 tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
             }
-            Err(e) => {
-                tracing::warn!("reap of '{}' on '{}': {e}", row.name, host.name);
-                return;
-            }
+            Err(e) => return Err(format!("host '{}': {e}", host.name)),
         }
     }
     let panes = crate::agent::tmux::SessionPanes {
         agent: &row.backend_id,
         shell: row.shell_backend_id.as_deref().unwrap_or_default(),
     };
-    if let Err(e) =
-        crate::agent::tmux::kill_remote_windows(&host, &row.id.to_string(), &row.name, panes)
-    {
-        tracing::warn!("reap of '{}' on '{}': {e}", row.name, host.name);
-    }
+    crate::agent::tmux::kill_remote_windows(&host, &row.id.to_string(), &row.name, panes)
+        .map(|_| ())
+        .map_err(|e| format!("host '{}': {e:#}", host.name))
 }
 
 /// Kill the session's window on the local tmux server, reaping the pane's child
@@ -966,6 +1025,45 @@ mod tests {
         // An answer clears it, so the next outage starts over at one minute.
         listing_succeeded(&db, backend);
         assert!(claim_at(&db, backend, failed_again));
+    }
+
+    /// The reap's own half of the same problem: a host can answer
+    /// `list-windows` while its own `thurbox-cli` will not run, so the listing
+    /// never backs off and only the reap fails, every five seconds for the life
+    /// of the process (issue #1193). The clock is carried forward rather than
+    /// slept through.
+    #[test]
+    fn a_row_that_cannot_be_reaped_is_not_retried_on_the_sweep_cadence() {
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+
+        let asked_at = crate::sync::current_time_millis();
+        assert!(
+            claim_reap(&db, id, asked_at),
+            "a row nothing has attempted yet is never held back"
+        );
+        reap_failed(&db, id, asked_at);
+
+        // The sweep's own cadence, and every pass short of the first retry.
+        assert!(!claim_reap(&db, id, asked_at + 5_000));
+        assert!(!claim_reap(&db, id, asked_at + 59_000));
+        let past = asked_at + 61_000;
+        assert!(claim_reap(&db, id, past));
+        // And only one: the interface dispatches a fresh reap thread every five
+        // seconds without waiting for the last, so the claim above is what the
+        // next one collides with rather than a failure not yet recorded.
+        assert!(!claim_reap(&db, id, past + 5_000));
+
+        // A row that keeps failing is spaced out further still, on the curve
+        // the host-usability probe beside it climbs.
+        reap_failed(&db, id, past);
+        assert!(!claim_reap(&db, id, past + 61_000));
+        assert!(claim_reap(&db, id, past + 121_000));
+
+        // And a reap that comes off leaves no stamp behind, so a row deleted
+        // again after a restore starts at the base cadence.
+        reap_succeeded(&db, id);
+        assert!(claim_reap(&db, id, past + 121_000));
     }
 
     /// `claim_listing` reads the wall clock; this is the same claim with the
@@ -1275,6 +1373,28 @@ mod tests {
             "the mark did not survive the restore"
         );
         assert!(db.list_owed_teardowns().unwrap().is_empty());
+    }
+
+    /// The reap backoff belongs to one delete, not to the session. A row whose
+    /// host was down long enough to earn the fifteen-minute interval, then
+    /// restored and deleted again, would otherwise keep its agent running that
+    /// much past the undo window with the host perfectly reachable.
+    #[test]
+    fn restoring_a_row_clears_the_reap_backoff_its_outage_earned() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        db.soft_delete_session(id).unwrap();
+        let failed_at = crate::sync::current_time_millis();
+        reap_failed(&db, id, failed_at);
+        assert!(!claim_reap(&db, id, failed_at + 5_000));
+
+        db.restore_session(id).unwrap();
+        db.soft_delete_session(id).unwrap();
+
+        assert!(
+            claim_reap(&db, id, failed_at + 5_000),
+            "the backoff did not survive the restore"
+        );
     }
 
     #[test]
@@ -1785,6 +1905,22 @@ mod tests {
              worktrees are coming down"
         );
         assert!(db.get_session_by_id(id).unwrap().is_none());
+    }
+
+    /// A remote reap that never reached its host has to say so. It used to log
+    /// and return, so the sweep read the attempt as a reap that worked and had
+    /// nothing to back off on (issue #1193).
+    #[test]
+    fn a_reap_that_never_reached_its_host_is_reported_as_a_failure() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        // No `hosts.toml` names this backend, so there is no machine to aim at.
+        let id = insert_session_on(&db, "stranded", "ssh:no-such-host-for-the-reap-test", "%1");
+        db.soft_delete_session(id).unwrap();
+
+        let err = reap_soft_deleted(&db, id).unwrap_err();
+        assert!(err.contains("hosts.toml"), "got {err}");
     }
 
     #[test]

@@ -33,6 +33,18 @@ fn host_probe_backoff_key(backend_type: &str) -> String {
     format!("host_probe_backoff:{backend_type}")
 }
 
+/// Metadata key holding the teardown sweep's backoff for one soft-deleted
+/// session, in the same `<attempted_at_millis>:<consecutive failures>` shape
+/// and durable for the same reason as [`host_probe_backoff_key`].
+///
+/// Keyed per row rather than per host because that is the granularity the
+/// retry has: a host answers `list-windows` while its own `thurbox-cli` does
+/// not run, so the row is overdue and still owns its windows on every pass
+/// while the host itself looks perfectly reachable (issue #1193).
+fn session_reap_backoff_key(id: SessionId) -> String {
+    format!("session_reap_backoff:{id}")
+}
+
 /// Metadata key recording an opt-out of the built-in extension `name`. The
 /// format is load-bearing rather than cosmetic: `hooks` must keep producing
 /// `builtin_hooks_optout`, the key written before there was more than one
@@ -374,7 +386,57 @@ impl Database {
         now_ms: u64,
         retry_after_ms: impl Fn(u32) -> u64,
     ) -> rusqlite::Result<bool> {
-        let key = host_probe_backoff_key(backend_type);
+        self.claim_backoff(
+            &host_probe_backoff_key(backend_type),
+            now_ms,
+            retry_after_ms,
+        )
+    }
+
+    /// Record that probing `backend_type` failed at `now_ms`, which spaces the
+    /// next attempt further out than the last.
+    pub fn note_host_probe_failed(&self, backend_type: &str, now_ms: u64) -> rusqlite::Result<()> {
+        self.note_backoff_failed(&host_probe_backoff_key(backend_type), now_ms)
+    }
+
+    /// Forget `backend_type`'s backoff, so a host that has answered is asked at
+    /// the base cadence again rather than at the interval its outage earned.
+    pub fn clear_host_probe_backoff(&self, backend_type: &str) -> rusqlite::Result<()> {
+        self.clear_backoff(&host_probe_backoff_key(backend_type))
+    }
+
+    /// Claim the right to attempt the reap of soft-deleted session `id` at
+    /// `now_ms`, or refuse because its last attempt is too recent to repeat.
+    /// [`Self::claim_host_probe`]'s claim, on a row rather than on a host.
+    pub fn claim_session_reap(
+        &self,
+        id: SessionId,
+        now_ms: u64,
+        retry_after_ms: impl Fn(u32) -> u64,
+    ) -> rusqlite::Result<bool> {
+        self.claim_backoff(&session_reap_backoff_key(id), now_ms, retry_after_ms)
+    }
+
+    /// Record that `id`'s reap failed at `now_ms`, spacing the next attempt
+    /// further out than the last.
+    pub fn note_session_reap_failed(&self, id: SessionId, now_ms: u64) -> rusqlite::Result<()> {
+        self.note_backoff_failed(&session_reap_backoff_key(id), now_ms)
+    }
+
+    /// Forget `id`'s reap backoff, once its reap has come good — so no stamp
+    /// outlives the row's teardown, and a session deleted again after a
+    /// restore starts at the base cadence.
+    pub fn clear_session_reap_backoff(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.clear_backoff(&session_reap_backoff_key(id))
+    }
+
+    /// The claim above, over whichever `metadata` key the caller names.
+    fn claim_backoff(
+        &self,
+        key: &str,
+        now_ms: u64,
+        retry_after_ms: impl Fn(u32) -> u64,
+    ) -> rusqlite::Result<bool> {
         let tx = self.write_transaction()?;
         let recorded: Option<String> = tx
             .query_row(
@@ -386,7 +448,7 @@ impl Database {
         // The count is carried through a claim, not reset: a host that keeps
         // failing keeps backing off rather than starting over at the first
         // interval every time it is let through.
-        let failures = match recorded.as_deref().and_then(parse_host_probe_backoff) {
+        let failures = match recorded.as_deref().and_then(parse_backoff) {
             Some((at, failures)) => {
                 // A stamp in the future is a wall clock that moved backwards
                 // under us — an NTP correction, or one made by hand. Elapsed
@@ -409,10 +471,9 @@ impl Database {
         Ok(true)
     }
 
-    /// Record that probing `backend_type` failed at `now_ms`, which spaces the
-    /// next attempt further out than the last.
-    pub fn note_host_probe_failed(&self, backend_type: &str, now_ms: u64) -> rusqlite::Result<()> {
-        let key = host_probe_backoff_key(backend_type);
+    /// The failure count above, bumped on whichever `metadata` key the caller
+    /// names.
+    fn note_backoff_failed(&self, key: &str, now_ms: u64) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
         let recorded: Option<String> = tx
             .query_row(
@@ -423,7 +484,7 @@ impl Database {
             .optional()?;
         let failures = recorded
             .as_deref()
-            .and_then(parse_host_probe_backoff)
+            .and_then(parse_backoff)
             .map_or(0, |(_, failures)| failures)
             .saturating_add(1);
         tx.execute(
@@ -435,13 +496,10 @@ impl Database {
         Ok(())
     }
 
-    /// Forget `backend_type`'s backoff, so a host that has answered is asked at
-    /// the base cadence again rather than at the interval its outage earned.
-    pub fn clear_host_probe_backoff(&self, backend_type: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM metadata WHERE key = ?1",
-            params![host_probe_backoff_key(backend_type)],
-        )?;
+    /// Drop whichever backoff `metadata` key the caller names.
+    fn clear_backoff(&self, key: &str) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM metadata WHERE key = ?1", params![key])?;
         Ok(())
     }
 }
@@ -450,7 +508,7 @@ impl Database {
 /// value this build did not write — which is read as "never asked" rather than
 /// as an error, so a row hand-edited or left by a future format costs one extra
 /// probe instead of failing a teardown.
-fn parse_host_probe_backoff(value: &str) -> Option<(u64, u32)> {
+fn parse_backoff(value: &str) -> Option<(u64, u32)> {
     let (at, failures) = value.split_once(':')?;
     Some((at.parse().ok()?, failures.parse().ok()?))
 }

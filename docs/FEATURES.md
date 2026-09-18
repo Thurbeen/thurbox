@@ -629,7 +629,9 @@ has the rationale; the shape:
   advertises (every thurbox links its own CLI at
   `<data dir>/bin/thurbox-cli` at start and on each CLI call, which is
   what makes a host running a **dev checkout** shareable at all: its
-  `target/debug/thurbox-cli` is on nobody's PATH), then PATH and
+  `target/debug/thurbox-cli` is on nobody's PATH — the link is only ever
+  written over a symlink of thurbox's own, and never when the running
+  CLI *is* that path, which on a provisioned host it is), then PATH and
   `~/.local/bin`. When
   there is none, it downloads the release archive of **its own
   version** for the host's platform, verifies it against the release
