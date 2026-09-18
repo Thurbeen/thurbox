@@ -69,19 +69,45 @@
   max-width: 100%;
 }
 
+/* Press Start 2P is 1em per character, so headline width is character count,
+   not font size guesswork: the headline is 19 characters = 19.19em with the
+   tracking below. That is short enough to hold ONE line at every width a phone
+   actually has, down to 320px, and the vw term and the floor are both set by
+   that rather than by eye: 4.4vw keeps it inside the container from 320px up
+   (4.5vw wrapped at 340px, by 1.6px), and the 0.875rem floor is the largest
+   that still fits 320px's 272px of content. The 48px of container padding is
+   what bites here - it is a fifth of the width at 320px and a twentieth at
+   1200px, so the narrow end is always the binding case.
+
+   A longer headline needs this cap lowered rather than the wrap accepted: two
+   lines of Press Start 2P push the install block off the fold.
+
+   The bloom is smaller than the tokens' --glow-red alone would give. This is a
+   pixel font at 36px+, where a wide red halo fills the 1px gaps inside the
+   glyphs and costs more edge definition than the arcade look is worth. */
 .hero h1 {
-  font-size: clamp(1.6rem, 5vw, 2.75rem);
+  font-size: clamp(0.875rem, 4.4vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   text-shadow:
-    var(--glow-red),
-    0 0 24px rgb(232, 24, 11, 0.55);
+    var(--glow-red-type),
+    0 0 14px rgb(232, 24, 11, 0.3);
   animation: flicker 4.5s infinite steps(1);
 }
 
+/* One word inside the sentence, so it stays inline - `display: block` here
+   would split the headline mid-clause. */
 .hero h1 .accent {
   color: var(--green);
   text-shadow: var(--glow-green);
+}
+
+/* Paired with the container's own 1440px step: 1392px of content takes the
+   19.19em headline at 3.8rem with room to spare. */
+@media (min-width: 1440px) {
+  .hero h1 {
+    font-size: 3.8rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -90,30 +116,15 @@
   }
 }
 
-.hero-eyebrow {
-  /* Arcade face for the title-screen strapline. Smaller + tighter than the mono
-     it replaced, since Press Start 2P runs much wider per character. */
-  font-family: var(--font-display);
-  font-size: 0.56rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-  color: var(--ember);
-  margin-bottom: var(--space-lg);
-  text-shadow: var(--glow-red);
-}
-
-.hero-eyebrow::before {
-  content: '\25CF\2002';
-  color: var(--green);
-  text-shadow: var(--glow-green);
-}
-
+/* Both hero subtitles carry a claim rather than a caption, so they read at
+   --text-primary: 14.1:1 on --bg-primary against --text-secondary's 7.1:1. The
+   hierarchy under the headline is carried by size and by the thesis rule below,
+   not by dimming the two sentences a first-time reader is here to read. */
 .hero .subtitle {
   font-size: 1.15rem;
   max-width: 600px;
   margin: 0 auto var(--space-xl);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 /* Stability notice under the hero copy. Sized and centred like .subtitle above
@@ -180,7 +191,10 @@
   font-size: inherit;
   letter-spacing: inherit;
   text-transform: inherit;
-  color: var(--text-muted);
+
+  /* Was --text-muted: 5.5:1 at 12.8px, the weakest text in the fold. Inherits
+     --text-secondary from .agent-support now, like the rest of this block. */
+  color: inherit;
 }
 
 .agent-support .agent-support__label:hover {
@@ -713,27 +727,47 @@ body {
 /* ---- Title-screen "PRESS START" prompt ----
    A real <button>: click, Enter/Space, and (via main.js) any printable key
    scroll to the demo. Button chrome is reset so it keeps reading as an arcade
-   attract-mode line rather than a control. */
+   attract-mode line rather than a control.
+
+   It leads to the easter egg, not to the product, so it is deliberately the
+   quietest of the three things in the fold: secondary text, no glow, smaller,
+   and a slower, shallower pulse than it once had. `Get Started` is the primary
+   action and this must not out-shout it. Hover and focus give the weight back. */
 .hero-press-start {
   display: inline-flex;
   align-items: center;
   gap: 0.5em;
   padding: 0.6rem 0.9rem;
   font-family: var(--font-display);
-  font-size: 0.62rem;
+  font-size: 0.55rem;
   line-height: 1;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   background: none;
   border: 2px solid transparent;
   cursor: pointer;
-  text-shadow: var(--glow-red);
-  animation: doom-blink 2.4s ease-in-out infinite;
+  animation: press-start-pulse 3.6s ease-in-out infinite;
+}
+
+/* Its own pulse rather than the LEDs' doom-blink below: this is 8.8px text, and
+   at that size the trough is what has to stay readable. Fading --text-secondary
+   to 0.8 over #15120f bottoms out at 4.96:1, still past AA for small text; the
+   LEDs' 0.55 trough would put it at 2.98:1. Shallower also reads as quieter,
+   which is the point. */
+@keyframes press-start-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
 }
 
 .hero-press-start .arrow {
-  color: var(--doom-red-bright);
+  color: var(--doom-red);
 }
 
 /* Hovering or focusing stops the pulse and frames it, so the label holds still
@@ -742,8 +776,14 @@ body {
 .hero-press-start:focus-visible {
   animation-play-state: paused;
   opacity: 1;
+  color: var(--text-primary);
   border-color: var(--doom-red);
   box-shadow: var(--bevel-glow-red);
+}
+
+.hero-press-start:hover .arrow,
+.hero-press-start:focus-visible .arrow {
+  color: var(--doom-red-bright);
 }
 
 /* Fired already — stop competing for attention. */
@@ -758,10 +798,10 @@ body {
   }
 }
 
-/* Softened arcade pulse. Was 1.1s steps(1) 1 → 0.12: a ~0.9Hz hard strobe at
-   ~8:1 contrast, which is a flash-sensitivity risk. Now a 0.42Hz interpolated
-   fade at ~1.8:1. Shared by .hud-bar__live and the REC LED, which override the
-   duration to keep a quicker blink. */
+/* Softened arcade pulse, now the LED blink: .hud-bar__live and the REC LED, both
+   at 1.6s so they read as a heartbeat. Was 1.1s steps(1) 1 → 0.12 on the
+   press-start prompt: a ~0.9Hz hard strobe at ~8:1 contrast, which is a
+   flash-sensitivity risk. An interpolated fade at ~1.8:1 instead. */
 @keyframes doom-blink {
   0%,
   100% {
@@ -1149,16 +1189,19 @@ main {
   }
 }
 
-/* The hero's second claim: what the product is, after what it runs. Weighted
-   below the first subtitle so the pair reads as lede-then-thesis. */
+/* The hero's second claim: how it behaves, after what it runs. The rule down
+   the left is what weights it below the first subtitle - it used to be a dimmer
+   grey, which cost contrast on a sentence that is not a caption. */
 .subtitle--thesis {
   border-left: 2px solid var(--accent);
-  color: var(--text-secondary);
   padding-left: 0.85rem;
 }
 
+/* Now that the paragraph is --text-primary, the emphasis needs its own colour
+   rather than a step up in brightness it no longer has. */
 .subtitle--thesis strong {
-  color: var(--text-primary);
+  color: var(--green);
+  text-shadow: var(--glow-green);
 }
 
 /* Feature bands.
@@ -1197,117 +1240,6 @@ main {
 .feature-band__lede {
   color: var(--text-secondary);
   margin: 0;
-}
-
-/* The diptych: the file on the left is what draws the pane on the right. */
-.diptych {
-  align-items: start;
-  display: grid;
-  gap: clamp(1.25rem, 3vw, 2.5rem);
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  margin-top: 2rem;
-}
-
-.diptych__code {
-  margin: 0;
-  min-width: 0;
-}
-
-.diptych__code figcaption {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  margin-bottom: 0.5rem;
-}
-
-.diptych__code pre {
-  margin: 0;
-  max-height: 34rem;
-  overflow: auto;
-}
-
-.diptych__code code {
-  font-size: 0.72rem;
-  line-height: 1.55;
-}
-
-.diptych__result {
-  min-width: 0;
-}
-
-.diptych__label {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  margin: 0 0 0.5rem;
-}
-
-/* Two panes side by side, sized in rows rather than absolutely: this one does
-   not animate, so it needs none of the lab's rect machinery. */
-.diptych__screen {
-  background: var(--bg-code);
-  display: grid;
-  gap: 1px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
-  min-height: 11rem;
-  padding: 1px;
-}
-
-.diptych__pane {
-  border: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  min-width: 0;
-  padding: 0.5rem 0.6rem;
-}
-
-.diptych__pane.is-muted {
-  opacity: 0.5;
-}
-
-.diptych__pane.is-live {
-  border-color: var(--accent);
-}
-
-.diptych__pane-foot {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  margin-top: auto;
-  text-align: right;
-}
-
-.diptych__pane .ui-pane__row.warn {
-  color: var(--yellow);
-}
-
-.diptych__notes {
-  list-style: none;
-  margin: 1.25rem 0 0;
-  padding: 0;
-}
-
-.diptych__notes li {
-  border-left: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 0.88rem;
-  margin-bottom: 0.85rem;
-  padding-left: 0.75rem;
-}
-
-.diptych__notes strong {
-  color: var(--text-primary);
-}
-
-@media (width <= 900px) {
-  .diptych {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .diptych__code pre {
-    max-height: 24rem;
-  }
 }
 
 /* The two demo panes in the lab (examples/panes/tasks and top). Their
