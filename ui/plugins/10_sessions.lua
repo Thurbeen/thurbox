@@ -462,6 +462,15 @@ return {
       desc = "Group sessions under a repo header",
       default = true,
     },
+    -- The other grouping axis, and a separate row because the two are
+    -- independent: every combination of the pair renders, from one flat list
+    -- to a header naming a machine and its repos. On by default, so a list
+    -- that already separates its machines keeps doing it.
+    {
+      id = "group_by_host",
+      desc = "Group sessions by machine when the list spans more than one",
+      default = true,
+    },
     {
       id = "focus_new_session",
       desc = "Select and open a session when you create or fork it",
