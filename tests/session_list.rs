@@ -580,14 +580,6 @@ fn sessions_tree(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight]) -> 
     format!("{:?}", rendered.node)
 }
 
-/// How far into that tree a name first occurs — the list is built top row
-/// first, so this orders two rows against each other without pinning the frame
-/// (that is `tests/frames.rs`'s job).
-fn drawn_at(tree: &str, needle: &str) -> usize {
-    tree.find(needle)
-        .unwrap_or_else(|| panic!("{needle} is not on screen:\n{tree}"))
-}
-
 #[test]
 fn shift_s_sorts_each_group_by_name() {
     // The baseline the fix below must not move: with nothing in flight, the
@@ -634,9 +626,11 @@ fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
 
 #[test]
 fn a_sort_leaves_the_placeholder_at_its_groups_end() {
-    // What the pane shows mid-creation — the other half of the fix. Surviving
-    // the keystroke is not enough: the placeholder still belongs at the end of
-    // its group, not pulled above the sessions by a name it does not have.
+    // Surviving the keystroke is half the fix; this is the half the user sees.
+    // The placeholder's place in the list is its group's end — where the
+    // session it stands for will appear — and a sort does not move it there or
+    // anywhere else. The list is built top row first, so a row drawn later in
+    // the tree is a row drawn lower down.
     let host = host();
     let snapshot = snapshot();
     let inflight = [creating("thurbox")];
@@ -644,9 +638,13 @@ fn a_sort_leaves_the_placeholder_at_its_groups_end() {
     render_in(&host, &snapshot);
     press_inflight(&host, &snapshot, &inflight, "S");
 
+    // By the classes the rows carry, not the words they show: "creating…" is
+    // display copy and may be reworded, while the class is the row's kind.
     let tree = sessions_tree(&host, &snapshot, &inflight);
+    let placeholder = tree.find("pending-row").expect("no placeholder drawn");
+    let last_session = tree.rfind("session-row").expect("no session drawn");
     assert!(
-        drawn_at(&tree, "creating") > drawn_at(&tree, "second"),
+        placeholder > last_session,
         "the placeholder belongs below every session in its group:\n{tree}"
     );
 }
