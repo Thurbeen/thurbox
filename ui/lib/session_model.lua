@@ -609,9 +609,10 @@ function session_model.build(rows)
         -- rather than left nil because every ordering helper compares `depth`
         -- numerically, and `nil` there is not a shallow row -- it is an error
         -- that takes the pane down on Shift+J/K while a session is being
-        -- created. Shift+S is NOT covered by it and still fails on a
-        -- placeholder's absent `session`, which is its own bug rather than this
-        -- one: `lib.order`'s sort reads a name off every block it compares.
+        -- created. The `session` this row does NOT carry is the other half of
+        -- the same contract: `lib.order`'s sort (see its `block_name`) holds a
+        -- nameless block out of the comparison and puts it back at the group's
+        -- end, so the placeholder stays here, where its session will appear.
         depth = 0,
         header = first and group_header or nil,
         host = group.host,

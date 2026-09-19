@@ -156,9 +156,37 @@ function order.move_block(items, at, down)
   return moved
 end
 
+--- The name a root block sorts under, lowercased, or nil when it has none.
+---
+--- A creation in flight is a row whose session does not exist yet: it carries
+--- the `command` that will make one, not a `session`, and it is its own root
+--- block. So it has no name to be alphabetical about, and reading one off it is
+--- what took the sessions pane down on Shift+S (issue #1200) as soon as a group
+--- held a second block for the comparator to be called on at all.
+---
+--- Nil rather than `""`, because an empty name is not the same answer: it would
+--- sort the placeholder to the TOP of its group, and the group's end is where
+--- `session_model.build` draws it -- the spot its session will occupy once the
+--- creation lands.
+local function block_name(block)
+  local session = block[1].session
+  return session and (session.name or ""):lower() or nil
+end
+
+--- Append every block's rows to `out`, blocks in order and rows within a block
+--- in theirs -- so a root keeps its subtree.
+local function emit_blocks(out, blocks)
+  for _, block in ipairs(blocks) do
+    for _, item in ipairs(block) do
+      out[#out + 1] = item
+    end
+  end
+end
+
 --- Sort by name **within each repo group**, preserving group order and the
 --- parent/child nesting: roots sort among themselves, each parent's children
---- among theirs. v1's `sort_alphabetically_within_groups`.
+--- among theirs. A block with no session behind it yet keeps its group's end.
+--- v1's `sort_alphabetically_within_groups`.
 function order.sorted_within_groups(items)
   local out = {}
   local at = 1
@@ -177,23 +205,29 @@ function order.sorted_within_groups(items)
       index = finish
     end
     -- Case-insensitive, like v1, and stable on a tie so equal names keep their
-    -- existing relative order.
+    -- existing relative order. A block with no name to sort by is held out
+    -- rather than compared: see `block_name`.
+    local named, nameless = {}, {}
     for position, block in ipairs(blocks) do
       block.position = position
+      block.name = block_name(block)
+      if block.name then
+        named[#named + 1] = block
+      else
+        nameless[#nameless + 1] = block
+      end
     end
-    table.sort(blocks, function(a, b)
-      local left = (a[1].session.name or ""):lower()
-      local right = (b[1].session.name or ""):lower()
-      if left == right then
+    table.sort(named, function(a, b)
+      if a.name == b.name then
         return a.position < b.position
       end
-      return left < right
+      return a.name < b.name
     end)
-    for _, block in ipairs(blocks) do
-      for _, item in ipairs(block) do
-        out[#out + 1] = item
-      end
-    end
+    emit_blocks(out, named)
+    -- The nameless ones at the group's end, in the order they arrived -- which
+    -- is where `session_model.build` draws them and where their sessions will
+    -- appear.
+    emit_blocks(out, nameless)
     at = group_last + 1
   end
   return out

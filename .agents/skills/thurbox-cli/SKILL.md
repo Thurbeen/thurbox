@@ -717,7 +717,11 @@ sessions append to their group). **`Shift+S`** (rebindable
 `SessionListSortAlphabetically`) sorts by name **within each repo group** in one
 shot, preserving group order (still by lowest `display_order`) and parent/child
 nesting, and issues the same `Order` command (v1's
-`sort_alphabetically_within_groups`).
+`sort_alphabetically_within_groups`). A **creation in flight** is a row with no
+session behind it yet, so it has no name to sort by: `sorted_within_groups`
+holds it out of the comparison and returns it at its group's end, where the pane
+draws it and where its session will land. Reading a name off it is what took the
+pane down the moment a group held both a session and a placeholder (#1200).
 
 When the list spans **more than one machine** — the live sessions, or a creation
 in flight naming a host — and the pane's `group_by_host` setting is on (the
