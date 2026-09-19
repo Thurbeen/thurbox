@@ -110,6 +110,10 @@ RS
 @test "an open gate over a psmux that implements both halves passes" {
   drive psmux_gate_verdict open yes yes
   [ "${lines[-1]}" = "rc=0 FAILS=0" ]
+  # What holds is the mailbox. No branch reports `ok` for the gate itself,
+  # because the harness cannot measure every condition the gate rests on.
+  [[ "${lines[0]}" == *"mailbox"* ]]
+  [[ "${lines[0]}" != *"gate: both"* ]]
 }
 
 @test "a holding mailbox never reads as the whole gate being proven" {

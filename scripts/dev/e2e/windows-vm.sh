@@ -351,16 +351,16 @@ EOF
 #   either, unmeasured       the probe learned nothing, which is the
 #                            defect it exists not to have              FAIL
 #
-# Every verdict here is about the mailbox, never about the whole gate: a pair
-# that holds says the gate may be reconsidered, never that it may be opened,
-# and whenever the pair holds the unprobed condition is named alongside it so
-# no reader takes the `ok` for the gate's proof.
+# Nothing here ever reports `ok` for the gate — only for the mailbox, which is
+# what it measures. A pair that holds says the gate may be reconsidered, never
+# that it may be opened, and the unprobed condition is named alongside it, so
+# no output of this harness is an approval to flip the switch.
 psmux_gate_verdict() {
   local gate="$1" a="$2" b="$3"
   if [ "$a" = unknown ] || [ "$b" = unknown ]; then
     bad "psmux hook gate: nothing measured (A=$a B=$b) — the probes prove nothing either way"
   elif [ "$gate" = open ] && [ "$a$b" = yesyes ]; then
-    ok "psmux hook gate: both mailbox halves hold, per pane, and the gate is open"
+    ok "psmux pane-option mailbox: both halves hold, per pane, with the hook gate open"
   elif [ "$gate" = open ]; then
     bad "psmux hook gate: psmux_hook_rewrite_supported() is true but a half is missing (A=$a B=$b) — remote hook state is written into a mailbox psmux drops (#1170)"
   elif [ "$a$b" = yesyes ]; then
