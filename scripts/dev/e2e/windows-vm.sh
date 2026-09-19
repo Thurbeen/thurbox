@@ -283,6 +283,14 @@ cmd_ssh() {
 # report `ok`/`--` and never fail, which is how psmux dropping the option
 # entirely sat unseen (issue #1170): a probe that passes on its own `ok` branch
 # whichever way the measurement went is evidence of nothing.
+#
+# Those two are the mailbox, and the mailbox is not the whole gate: it also
+# rests on claude accepting the forward-slash `--settings` path thurbox
+# generates on Windows, which needs a real agent launch rather than a psmux
+# capability check and is measured nowhere in this harness. It is named here so
+# the verdict can say what it does not know, and so that giving it a probe is a
+# change to one line.
+PSMUX_GATE_UNPROBED="claude's forward-slash --settings path on Windows"
 
 # psmux_hook_gate [SRC] — "open" or "closed", read out of the gate function's
 # body in src/session/mod.rs. Read rather than restated, so there is one record
@@ -343,10 +351,10 @@ EOF
 #   either, unmeasured       the probe learned nothing, which is the
 #                            defect it exists not to have              FAIL
 #
-# The `ok` is about the mailbox, not about the whole gate: that also rests on
-# claude accepting a forward-slash `--settings` path on Windows, which nothing
-# here probes. So a passing pair says the gate may be reconsidered, never that
-# it may be opened — the messages below are worded for that.
+# Every verdict here is about the mailbox, never about the whole gate: a pair
+# that holds says the gate may be reconsidered, never that it may be opened,
+# and whenever the pair holds the unprobed condition is named alongside it so
+# no reader takes the `ok` for the gate's proof.
 psmux_gate_verdict() {
   local gate="$1" a="$2" b="$3"
   if [ "$a" = unknown ] || [ "$b" = unknown ]; then
@@ -360,6 +368,13 @@ psmux_gate_verdict() {
   else
     info "psmux hook gate stays closed, as recorded: A=$a B=$b — the transport is deferred (#1170)"
   fi
+  # Said whenever the mailbox holds, which is the only time anyone would act on
+  # it: what is proven then is the mailbox, and the gate needs one thing more
+  # that nothing here has measured.
+  if [ "$a$b" = yesyes ]; then
+    info "psmux hook gate: $PSMUX_GATE_UNPROBED is not probed here — the mailbox holding is not the gate being proven"
+  fi
+  return 0
 }
 
 # smoke_verdict SESSIONS FAILS — the harness's single verdict. The session

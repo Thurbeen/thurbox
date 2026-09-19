@@ -112,6 +112,21 @@ RS
   [ "${lines[-1]}" = "rc=0 FAILS=0" ]
 }
 
+@test "a holding mailbox never reads as the whole gate being proven" {
+  # The gate's third condition — claude's --settings path on Windows — has no
+  # probe here, so neither verdict over a holding pair may pass in silence.
+  drive psmux_gate_verdict open yes yes
+  [[ "$output" == *"--settings"* ]]
+  [[ "$output" == *"not probed here"* ]]
+  drive psmux_gate_verdict closed yes yes
+  [[ "$output" == *"--settings"* ]]
+}
+
+@test "a pair that does not hold says nothing about the unprobed condition" {
+  drive psmux_gate_verdict closed no no
+  [[ "$output" != *"--settings"* ]]
+}
+
 @test "a probe that could not be measured fails rather than passing quietly" {
   drive psmux_gate_verdict closed unknown no
   [ "${lines[-1]}" = "rc=0 FAILS=1" ]
