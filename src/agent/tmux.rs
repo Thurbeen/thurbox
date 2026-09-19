@@ -764,6 +764,106 @@ impl WindowIndex {
     }
 }
 
+/// The `list-windows` format [`retire_duplicate_windows`] reads: the window to
+/// act on, and the stamp saying whose it is.
+///
+/// A listing of its own rather than [`DISCOVER_FORMAT`]'s, because the key the
+/// retirement decides by is the one thing a [`WindowIndex`] does not carry.
+/// `#{window_id}` is what tmux issued the window, and the order it issued them
+/// in; the pane a `WindowIndex` holds is the window's *active* one, which a
+/// split would move.
+const RETIRE_FORMAT: &str = "#{window_id}|#{@thurbox_session}|#{@thurbox_role}";
+
+/// The windows a listing puts `session_id`'s `role` stamp on, oldest first.
+///
+/// Ordered by the number in `@N`, and a window id that does not parse is left
+/// out entirely: the whole point of the order is to decide which window is
+/// killed, and an id nothing can place is not one to decide that about.
+fn stamped_windows_in(listing: &str, session_id: &str, role: WindowRole) -> Vec<String> {
+    let mut found: Vec<(u64, String)> = listing
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            let window = parts.next()?;
+            let stamp = parts.next()?;
+            let stamped_role = parts.next()?;
+            if stamp != session_id || stamped_role != role.as_str() {
+                return None;
+            }
+            Some((window.strip_prefix('@')?.parse().ok()?, window.to_string()))
+        })
+        .collect();
+    found.sort_unstable();
+    found.into_iter().map(|(_, window)| window).collect()
+}
+
+/// Leave one window carrying `session_id`'s `role` stamp, and say which one
+/// kept it — or `None` when there was never more than one to choose between.
+///
+/// ADR-25 gives a stamp its meaning under one invariant: one session, one
+/// window per role. Two windows carrying it is not a weaker answer but no
+/// answer at all — [`WindowIndex::stamped_match`] returns [`Located::Unknown`]
+/// by design, and from then on the session cannot be sent to, killed, captured
+/// or renamed. A restart is kill-then-spawn and a repairer relaunches anything
+/// a listing says is gone, so the two overlapping put one stamp on two windows
+/// and the session was lost for good (issue #1207).
+///
+/// **The highest window id keeps the identity.** The rule is that rather than
+/// "the window I just stamped" because both racers run this: "mine wins" has
+/// each of them retire the other's and can leave the session no window at all,
+/// while a key tmux issues in order and never reissues while the server lives
+/// makes every sweep reach the same verdict from any listing that sees both.
+/// That is also what closes the gap a window opens between being created and
+/// being stamped — the sweep runs *after* each stamp, so the last stamp to land
+/// is followed by a listing that sees every earlier one, whichever order the
+/// windows were created in.
+///
+/// It is the right half to keep, too. The newest window is the one the most
+/// recent restart asked for, and where both panes resume one conversation it is
+/// the connection that displaced the other — the loser is the pane that printed
+/// "another connection took over this session".
+///
+/// Liveness is deliberately **not** the key. It changes between two listings
+/// taken a moment apart, so two sweeps could each keep what the other retired,
+/// and a session with no window at all is the one outcome worse than the pair.
+/// A newest window whose pane has already exited is kept and stays on screen
+/// (`remain-on-exit`), which is how the operator gets to see why it exited.
+///
+/// Local tmux only. psmux keeps `@` options in one server-global map and hands
+/// the same value back for every window (ADR-13), so every window there would
+/// read as stamped for whoever was stamped last; the stamp is withheld at both
+/// ends for that reason (issue #1168) and this must not be the one place that
+/// believes it.
+fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String> {
+    if local_mux_is_psmux() || session_id.is_empty() {
+        return None;
+    }
+    let output = local_mux_command(&["list-windows", "-t", TMUX_SESSION, "-F", RETIRE_FORMAT])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let windows = stamped_windows_in(&listing, session_id, role);
+    let (keep, retire) = windows.split_last()?;
+    let mut retired = false;
+    for window in retire {
+        match kill_window_at(window) {
+            Ok(()) => {
+                retired = true;
+                warn!(
+                    "retired {window}: it carried session {session_id}'s {} stamp, which \
+                     {keep} now holds alone",
+                    role.as_str()
+                );
+            }
+            Err(e) => warn!("could not retire {window}, stamped for session {session_id}: {e:#}"),
+        }
+    }
+    retired.then(|| keep.clone())
+}
+
 /// Stamp a window on the local server with the identity every reconciler
 /// resolves it by.
 ///
@@ -796,6 +896,10 @@ pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
             Err(e) => debug!("could not stamp {target} with {option}: {e}"),
         }
     }
+    // The invariant the stamp is only meaningful under, enforced where the
+    // stamp is written rather than left to a resolver that is required to
+    // refuse the pair — see `retire_duplicate_windows`.
+    let _ = retire_duplicate_windows(session_id, role);
 }
 
 /// Every thurbox window on the local server, indexed.
@@ -918,18 +1022,37 @@ fn agent_target(session_id: &str, session_name: &str) -> Option<String> {
 /// [`agent_target`] for any of a session's windows — its agent, or the
 /// companion shell a teardown has to take down with it.
 fn owned_target(session_id: &str, session_name: &str, role: WindowRole) -> Option<String> {
-    let located = match local_window_index() {
+    match locate_local(session_id, session_name, role) {
+        Located::At(pane) => Some(pane),
+        Located::Absent => None,
+        // One stamp on two windows is repairable, and here is where repairing
+        // it matters: `stamped_match` refuses the pair by design, so without
+        // this nothing would ever look again and the session stayed
+        // unaddressable for good (issue #1207). The refusal itself is
+        // untouched — the choice is made by *retiring* a window, which is a
+        // write, and never by reading one of two as the answer. A name that is
+        // ambiguous rather than a stamp retires nothing and falls through
+        // exactly as before.
+        Located::Unknown => match retire_duplicate_windows(session_id, role) {
+            Some(_) => match locate_local(session_id, session_name, role) {
+                Located::At(pane) => Some(pane),
+                _ => None,
+            },
+            None => {
+                local_mux_is_psmux().then(|| window_target(&window_name_for(role, session_name)))
+            }
+        },
+    }
+}
+
+/// One listing of the local server, resolved. [`Located::Unknown`] is also what
+/// a listing that could not be taken answers: not knowing is not absence.
+fn locate_local(session_id: &str, session_name: &str, role: WindowRole) -> Located {
+    match local_window_index() {
         Ok(index) => index.locate(session_id, session_name, role, false),
         Err(e) => {
             debug!("could not list windows to resolve '{session_name}': {e:#}");
             Located::Unknown
-        }
-    };
-    match located {
-        Located::At(pane) => Some(pane),
-        Located::Absent => None,
-        Located::Unknown => {
-            local_mux_is_psmux().then(|| window_target(&window_name_for(role, session_name)))
         }
     }
 }
@@ -2242,6 +2365,13 @@ impl SessionBackend for TmuxBackend {
             "set-option -w -t {backend_id} {WINDOW_ROLE_OPTION} {}",
             role.as_str()
         ))?;
+        // As in `stamp_local_window`, and for the same reason: this is the
+        // other half of the paths that write a stamp (the interface's own
+        // spawn, and an adopt-by-name). The sweep is a local one-shot, so a
+        // host's server is left to the teardown that can reach it.
+        if !self.transport.is_remote() {
+            let _ = retire_duplicate_windows(session_id, role);
+        }
         Ok(())
     }
 
@@ -5042,6 +5172,47 @@ mod tests {
     fn the_discover_format_reads_both_stamps() {
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_SESSION_OPTION}}}")));
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_ROLE_OPTION}}}")));
+    }
+
+    /// The retirement reads its own listing, so its format is pinned the same
+    /// way — and in the order `stamped_windows_in` splits on.
+    #[test]
+    fn the_retire_format_reads_the_window_and_both_stamps() {
+        assert_eq!(
+            RETIRE_FORMAT,
+            format!("#{{window_id}}|#{{{WINDOW_SESSION_OPTION}}}|#{{{WINDOW_ROLE_OPTION}}}")
+        );
+    }
+
+    /// The whole rule, on the listing the sweep actually parses. Oldest first,
+    /// so the keeper is the last entry — and only this session's `role` windows
+    /// are in it at all.
+    #[test]
+    fn a_listing_orders_one_sessions_windows_by_the_id_tmux_issued() {
+        let listing =
+            format!("@10|{ONE}|agent\n@2|{ONE}|agent\n@3|{TWO}|agent\n@4|{ONE}|shell\n@5||\n");
+        assert_eq!(
+            stamped_windows_in(&listing, ONE, WindowRole::Agent),
+            vec!["@2".to_string(), "@10".to_string()],
+            "ordered by the number, not by the text, and nobody else's window is in it"
+        );
+        assert_eq!(
+            stamped_windows_in(&listing, ONE, WindowRole::Shell),
+            vec!["@4".to_string()],
+            "a session owns one window per role, so the roles are counted apart"
+        );
+    }
+
+    /// A window nothing can place in the order is not one to decide a kill
+    /// about — which is also what keeps a multiplexer that hands the format
+    /// string back rather than expanding it from being read as a listing.
+    #[test]
+    fn a_window_id_that_does_not_parse_is_left_out_of_the_order() {
+        let listing = format!("#{{window_id}}|{ONE}|agent\n@7|{ONE}|agent\n");
+        assert_eq!(
+            stamped_windows_in(&listing, ONE, WindowRole::Agent),
+            vec!["@7".to_string()]
+        );
     }
 
     /// A pane learns of its own ending only through the window it is in, and
