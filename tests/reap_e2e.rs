@@ -652,16 +652,21 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     );
 }
 
-/// Restoring a session must not adopt a live namesake's window.
+/// Restoring a session must not put a second row on a live namesake's name.
 ///
-/// `respawn` asks "is the window still alive? then adopt it rather than
-/// launching a second agent" — a real case, since a soft-deleted row keeps its
-/// agent until the reaper lets it go. Resolved by name, that adopted whichever
-/// `tb-<name>` was there, putting two rows on one pane: the next kill by id
-/// then destroys the other session's agent. Extension self-heal sets this up
-/// routinely, since it matches its declared sessions by name.
+/// This was the weaker half of the contract. `respawn` asks "is the window
+/// still alive? then adopt it rather than launching a second agent" — a real
+/// case, since a soft-deleted row keeps its agent until the reaper lets it go.
+/// Resolved by name, that adopted whichever `tb-<name>` was there, putting two
+/// rows on one pane; the stamp (ADR-25) settled that, and the restore then
+/// spawned an agent of its own beside the namesake. Two live rows of one name
+/// on one backend is the state that breaks by-name addressing for both, so the
+/// restore is now refused outright before it reaches `respawn` (issue #1192) —
+/// which is why this asserts the refusal rather than the spawn. `respawn`'s own
+/// ownership gate is still walked, by `restart` in
+/// [`force_delete_stop_and_restart_all_spare_a_live_namesakes_window`].
 #[test]
-fn restoring_a_session_never_adopts_a_live_namesakes_window() {
+fn restoring_a_session_never_joins_a_live_namesake_on_its_name() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
@@ -684,22 +689,22 @@ fn restoring_a_session_never_adopts_a_live_namesakes_window() {
         return;
     };
 
-    let restored = thurbox::session_ops::restore_session_headless(&db, stale.session_id, false);
-    let adopted = db
-        .get_session_by_id(stale.session_id)
-        .expect("query")
-        .map(|row| row.backend_id);
+    // `--best-effort` too: that flag says the caller accepts a lossy recovery,
+    // and a name two rows would answer to is not about loss.
+    let restored = thurbox::session_ops::restore_session_headless(&db, stale.session_id, true);
+    let back = db.get_session_by_id(stale.session_id).expect("query");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
 
-    assert!(restored.is_ok(), "restore: {restored:?}");
-    assert!(survived, "the live namesake's pane must still be running");
-    assert_ne!(
-        adopted.as_deref(),
-        Some(live.backend_id.as_str()),
-        "the restore adopted the live namesake's pane {} instead of spawning \
-         its own agent; windows left: {windows_after:?}",
-        live.backend_id
+    let refused = restored.expect_err("the name is taken; the restore must say so");
+    assert!(
+        refused.contains("fleet") && refused.contains(&live.session_id.to_string()),
+        "the refusal must name the session in the way: {refused}"
+    );
+    assert!(back.is_none(), "the refused restore left the row deleted");
+    assert!(
+        survived,
+        "the live namesake's pane must still be running; windows left: {windows_after:?}"
     );
 }
 

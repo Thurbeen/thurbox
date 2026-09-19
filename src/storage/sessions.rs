@@ -809,6 +809,21 @@ impl Database {
         self.query_deleted_sessions("s.deleted_at IS NOT NULL", [])
     }
 
+    /// Every deleted session carrying this exact name, most recently deleted
+    /// first — the deleted-row counterpart of
+    /// [`find_sessions_by_name`](Self::find_sessions_by_name).
+    ///
+    /// Filtered in SQL rather than by scanning
+    /// [`list_deleted_sessions`](Self::list_deleted_sessions): a caller asking
+    /// whether one name is free runs on the heartbeat tick, while the deleted
+    /// list grows for the life of the database and joins its worktrees.
+    pub fn find_deleted_sessions_by_name(
+        &self,
+        name: &str,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        self.query_deleted_sessions("s.deleted_at IS NOT NULL AND s.name = ?1", params![name])
+    }
+
     /// Get a single soft-deleted session by its ID.
     pub fn get_deleted_session_by_id(
         &self,

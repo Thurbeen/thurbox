@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 
 use crate::session::automation::parse_trigger;
-use crate::session::{Automation, AutomationAction, ExtensionAutomation, ExtensionDef, SessionId};
+use crate::session::{
+    Automation, AutomationAction, ExtensionAutomation, ExtensionDef, ExtensionSession, SessionId,
+};
 use crate::storage::automations::NewAutomation;
 use crate::storage::Database;
 use crate::sync::current_time_millis;
@@ -24,6 +26,11 @@ pub struct EnsureReport {
     /// Names of existing `Send` automations whose target session id was stale
     /// and got re-linked to the session's current id this pass.
     pub automations_relinked: Vec<String>,
+    /// One message per declared session this pass deliberately did **not**
+    /// (re)create, saying what holds its name. Self-heal runs unattended, so a
+    /// refusal nobody is told about is indistinguishable from a pass that found
+    /// nothing to do.
+    pub sessions_blocked: Vec<String>,
 }
 
 impl EnsureReport {
@@ -88,15 +95,12 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
 
-    // Snapshot existing rows once instead of re-listing per declared resource:
-    // self-heal runs this on every heartbeat tick. Declared names are unique, so
-    // a pre-loop snapshot is correct for the existence lookups below.
-    let existing_sessions: HashMap<String, SessionId> = db
-        .list_active_sessions()
-        .map_err(|e| format!("list_active_sessions: {e}"))?
-        .into_iter()
-        .map(|row| (row.name, row.id))
-        .collect();
+    // Automations are snapshotted once instead of re-listed per declared
+    // resource: self-heal runs this on every heartbeat tick, and declared names
+    // are unique, so a pre-loop snapshot is correct for the lookups below.
+    // Sessions deliberately are *not* — `ensure_session` re-reads each name
+    // under its own claim, because a snapshot taken before a spawn that runs
+    // for tens of seconds is exactly what let two healers both create one name.
     let existing_automations: HashMap<String, Automation> = db
         .list_automations()
         .map_err(|e| format!("list_automations: {e}"))?
@@ -105,23 +109,9 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
         .collect();
 
     for sess in &def.sessions {
-        let id = match existing_sessions.get(&sess.name) {
-            Some(id) => *id,
-            None => {
-                let result = crate::session_ops::spawn_session_headless(
-                    db,
-                    crate::session_ops::SpawnRequest {
-                        name: sess.name.clone(),
-                        repo_path: sess.repo_path.clone(),
-                        agent: Some(sess.agent.clone()),
-                        ..Default::default()
-                    },
-                )?;
-                report.sessions_created.push(sess.name.clone());
-                result.session_id
-            }
-        };
-        session_ids.insert(sess.name.clone(), id);
+        if let Some(id) = ensure_session(db, sess, &mut report)? {
+            session_ids.insert(sess.name.clone(), id);
+        }
     }
 
     for auto in &def.automations {
@@ -136,12 +126,20 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
                     auto.name
                 )
             })?;
-            Some(*session_ids.get(session_ref).ok_or_else(|| {
-                format!(
-                    "automation '{}' references unknown session '{session_ref}'",
-                    auto.name
-                )
-            })?)
+            match session_ids.get(session_ref) {
+                Some(id) => Some(*id),
+                // The session it sends to was not created this pass and its name
+                // is held by something else — already reported, and re-linking to
+                // a session that is not there is not an improvement. An existing
+                // automation keeps the target it had.
+                None if def.sessions.iter().any(|s| s.name == session_ref) => continue,
+                None => {
+                    return Err(format!(
+                        "automation '{}' references unknown session '{session_ref}'",
+                        auto.name
+                    ))
+                }
+            }
         };
         ensure_automation(
             db,
@@ -153,6 +151,110 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
     }
 
     Ok(report)
+}
+
+/// Ensure one declared session exists, reusing it when it does. Returns its id,
+/// or `None` when this pass must not create it — with the reason appended to
+/// `report.sessions_blocked`.
+///
+/// Self-heal is the one creator with nobody at the keyboard: it runs from the
+/// 60 s heartbeat tick, so "is this name free" has to be asked the way `session
+/// create --on-existing` asks it, and then *held* for the length of the spawn.
+/// Asking it once into a snapshot and creating afterwards is what put two
+/// sessions of one name on one backend (issue #1192) — by a delete that was
+/// undone underneath the spawn, and by a second healer inside the same window.
+///
+/// The live lookup is repeated outside the claim only as a fast path: the
+/// session is already there on almost every tick, and a pass that creates
+/// nothing should neither write to the database nor report a contended claim it
+/// never needed.
+///
+/// A manifest declares no host, so every declared session is local: `local-tmux`
+/// is the backend all of these questions are about.
+fn ensure_session(
+    db: &Database,
+    sess: &ExtensionSession,
+    report: &mut EnsureReport,
+) -> Result<Option<SessionId>, String> {
+    let backend = crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE;
+    if let Some(id) = live_session_named(db, &sess.name, backend)? {
+        return Ok(Some(id));
+    }
+    let Some(_held) = crate::session_ops::names::hold(db, &sess.name, backend)? else {
+        report.sessions_blocked.push(format!(
+            "session '{}' was not recreated: its name is held by a creation already in \
+             flight. A hold left behind by a creator that died mid-spawn lapses on its \
+             own, and the next pass takes the name then",
+            sess.name
+        ));
+        return Ok(None);
+    };
+    create_under_claim(db, sess, backend, report)
+}
+
+/// The id of the live session already answering to `name` on `backend`, if one
+/// does.
+///
+/// More than one is possible — thurbox enforces no uniqueness on the column —
+/// and the first is reused rather than refused: a pair already there is not this
+/// pass's doing, creating nothing is already the safe answer, and a message
+/// about it would be toasted every 60 s for as long as the pair lasted. Logged
+/// for whoever has to clean it up instead.
+fn live_session_named(
+    db: &Database,
+    name: &str,
+    backend: &str,
+) -> Result<Option<SessionId>, String> {
+    let live = crate::session_ops::names::live_namesakes(db, name, backend)?;
+    let Some(first) = live.first() else {
+        return Ok(None);
+    };
+    if live.len() > 1 {
+        tracing::warn!(
+            "'{name}' names {} live sessions on {backend}; reusing {}",
+            live.len(),
+            first.id
+        );
+    }
+    Ok(Some(first.id))
+}
+
+/// The creation itself, with the name claimed.
+///
+/// Every question that decides whether to create is asked **here**. Asked
+/// before the claim they are answers about a moment another creator could still
+/// overtake — which is the whole defect, only a few milliseconds narrower.
+fn create_under_claim(
+    db: &Database,
+    sess: &ExtensionSession,
+    backend: &str,
+    report: &mut EnsureReport,
+) -> Result<Option<SessionId>, String> {
+    if let Some(id) = live_session_named(db, &sess.name, backend)? {
+        return Ok(Some(id));
+    }
+    let now = current_time_millis();
+    if let Some(row) = crate::session_ops::names::undoable_namesake(db, &sess.name, backend, now)? {
+        report.sessions_blocked.push(format!(
+            "session '{}' was not recreated: it was just deleted ({}) and the undo is still \
+             on offer, so creating it now would leave two sessions of that name. Self-heal \
+             takes it up again once that window closes; `thurbox-cli session restore {}` \
+             brings the original back before then",
+            sess.name, row.id, row.id
+        ));
+        return Ok(None);
+    }
+    let result = crate::session_ops::spawn_session_headless(
+        db,
+        crate::session_ops::SpawnRequest {
+            name: sess.name.clone(),
+            repo_path: sess.repo_path.clone(),
+            agent: Some(sess.agent.clone()),
+            ..Default::default()
+        },
+    )?;
+    report.sessions_created.push(sess.name.clone());
+    Ok(Some(result.session_id))
 }
 
 /// Ensure a single declared automation exists and points at `target` (its
@@ -308,10 +410,17 @@ fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
         return;
     }
     match ensure_extension(db, &def) {
-        Ok(report) if report.created_anything() => {
-            messages.push(heal_recreated_message(&report, name));
+        Ok(report) => {
+            if report.created_anything() {
+                messages.push(heal_recreated_message(&report, name));
+            }
+            // A refusal is the half of the pass nobody would otherwise see: it
+            // is not a failure (the other resources were ensured) and it created
+            // nothing, so without this an unattended heal that declined to make
+            // a second session of one name looks exactly like one with nothing
+            // to do.
+            messages.extend(report.sessions_blocked);
         }
-        Ok(_) => {}
         Err(e) => messages.push(format!("extension '{name}' self-heal failed: {e}")),
     }
 }
@@ -354,6 +463,11 @@ pub(super) fn heal_version_drift(
                         report.install.version.as_deref().unwrap_or("?")
                     ));
                 }
+                // The update re-activated the extension, so its `ensure` pass
+                // already ran and the caller skips its own. Its refusals are
+                // reported here or nowhere — and "nowhere" on the auto-update
+                // path is the same silence the pass below was changed to break.
+                messages.extend(report.install.ensure.sessions_blocked);
                 return true;
             }
             // Fall back to the manual nudge so the user can still act; the caller

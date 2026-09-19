@@ -2068,6 +2068,38 @@ the teardown therefore **rolls back** — the replaced session is restored
 best-effort (its row, its branch and its agent), and the error says so.
 Uncommitted work went with the force delete and does not return.
 
+Two creators never reach an `--on-existing` at all, and they are the two with
+nobody at the keyboard to ask: **extension self-heal**, which recreates a
+declared session from the 60 s heartbeat tick, and **`session restore`**, which
+un-deletes a name rather than choosing one. Both ask the same question through
+`session_ops::names`, and both answer it by refusing. Three things can hold a
+name on a backend, and only the first is visible to a plain lookup: a live
+session; one soft-deleted whose **undo window is still open**, because the
+delete can still be taken back and a creation now is a pair the moment it is;
+and another creator **mid-spawn**, since a spawn runs for tens of seconds and
+"look, then create" is not a claim. Both take that claim — an atomic conditional write
+on `metadata`, expiring so a creator killed mid-spawn does not hold the name for
+the rest of the day, and sized against every lifecycle hook `hooks.toml`
+configures, whose `timeout_secs` has no cap — and hold it across the whole operation
+rather than across the lookups: a creation that has claimed a name has not
+written its row yet, so a lookup alone cannot see it.
+
+A restore refuses a name a live session now answers to, matched on the sanitised
+*window* name as `rename` matches it, since `deploy prod` and `deploy.prod` are
+two names and one `tb-deploy_prod`. The refusal is **not** waived by
+`--best-effort`: that flag says the caller accepts a lossy recovery, and this is
+not about loss. It is asked of **local** rows only — a remote session's names are
+arbitrated where its rows are authored, and the delegated `session restore` asks
+the same question there rather than of a mirror that can be a snapshot behind.
+Its message says how to free the name, and says `extension deactivate` rather
+than `rename` where self-heal would take the name straight back.
+
+Refusing is only half of it. Self-heal reports what it declined to create and
+why, in the same message stream as its "Repaired …" line, because a refusal
+nobody is told about is indistinguishable from a pass that found nothing to do —
+which is how the pair went unnoticed long enough to be filed as a session
+appearing from nowhere.
+
 ### Saying which agent a pane actually runs
 
 A `--command` session is named after the command's file stem, so a driver that
@@ -2197,6 +2229,12 @@ branch name) is saved in the database and reconstructed on restore.
   path can actually be looked for.
   `session_ops::restore::restore_refusal` decides both, so the TUI and
   `thurbox-cli session restore` cannot disagree about what is restorable.
+  A third refusal sits outside that pair and outside `--best-effort`: a local
+  restore whose window name a **live session on the same backend** now answers
+  to, or which a creation is holding, is refused outright — un-deleting it would
+  leave two, and neither could be addressed by name again. See "A name that is
+  already taken" for the rule it shares with `--on-existing` and with extension
+  self-heal.
   Either way the row **leaves the list on the keystroke** rather than sitting
   there tagged while the teardown runs: the session list drops any session whose `delete` is in flight
   (`live_sessions()` in `ui/plugins/10_sessions.lua`), so the cursor lands on

@@ -105,6 +105,69 @@ pub fn restore_refusal(
     ))
 }
 
+/// Hold the deleted session's name for the length of the restore, refusing when
+/// something else already answers to it or is in the middle of creating it.
+fn refuse_a_taken_name<'a>(
+    db: &'a Database,
+    deleted: &crate::storage::DeletedSessionInfo,
+) -> Result<super::names::HeldName<'a>, String> {
+    let Some(hold) = super::names::hold(db, &deleted.name, &deleted.backend_type)? else {
+        return Err(format!(
+            "'{}' is being created right now on {}; restoring this one would race that \
+             creation for the name. Try again once it has finished",
+            deleted.name, deleted.backend_type
+        ));
+    };
+    match super::names::window_namesakes(db, &deleted.name, &deleted.backend_type)?.first() {
+        Some(live) => Err(format!(
+            "'{}' is already the name of a live session on {} ('{}', {}); restoring this \
+             one would leave two, and neither could be addressed by name. {}",
+            deleted.name,
+            deleted.backend_type,
+            live.name,
+            live.id,
+            free_the_name_advice(db, &live.name, live.id)
+        )),
+        None => Ok(hold),
+    }
+}
+
+/// How to free a name a live session holds, told so that following it ends
+/// with the restore succeeding.
+///
+/// Renaming the live session is the non-destructive answer, and it is the whole
+/// answer only when nothing recreates the name behind the user's back. A session
+/// an **active extension declares** is exactly that: self-heal takes the name
+/// again on the next heartbeat tick, so a user who renames and then restores
+/// loses the race and is one renamed orphan worse off. For that one the
+/// extension has to be deactivated first, and saying so is what makes the advice
+/// terminate.
+fn free_the_name_advice(db: &Database, live_name: &str, live_id: SessionId) -> String {
+    match declaring_extension(db, live_name) {
+        Some(ext) => format!(
+            "'{live_name}' is a session the active extension '{ext}' declares, so self-heal \
+             recreates it within a minute of any rename — `thurbox-cli extension deactivate \
+             {ext}` first, then restore this one"
+        ),
+        None => format!(
+            "`thurbox-cli session rename {live_id} <other-name>` frees the name without \
+             destroying anything, and this one can then be restored"
+        ),
+    }
+}
+
+/// The active extension declaring a session called `name`, if one does.
+///
+/// Fully-qualified `agent` reference (no `use`) per the session_ops → agent
+/// path-only architecture rule. Asked only on the refusal path, so a manifest
+/// read costs a restore that was never going to happen.
+fn declaring_extension(db: &Database, name: &str) -> Option<String> {
+    db.get_active_extensions().ok()?.into_iter().find(|ext| {
+        crate::agent::extension_config::load_manifest(ext)
+            .is_some_and(|def| def.sessions.iter().any(|s| s.name == name))
+    })
+}
+
 pub fn restore_session_headless(
     db: &Database,
     id: SessionId,
@@ -148,7 +211,32 @@ pub fn restore_session_headless(
         ));
     }
 
-    // The user's say, with both refusals above already made and the row still
+    // Not part of `restore_refusal`, and so not waived by `--best-effort`: that
+    // flag says "I accept a lossy recovery", and this is not about loss.
+    // Un-deleting a name something else now answers to is the other end of the
+    // sequence that made a pair (issue #1192) — self-heal recreates the
+    // extension's session once the undo window has closed, and a restore of the
+    // original afterwards used to put both on the backend at once, where
+    // neither can be addressed by name again.
+    //
+    // Local rows only, and below the delegation above rather than before it: a
+    // remote session's names are arbitrated where its rows are authored. Asked
+    // here it would be asked of a mirror, which is a snapshot — a namesake
+    // deleted on the host but not yet mirrored would refuse a restore the host
+    // itself would allow. The delegated `session restore` asks this same
+    // question there, against the rows that decide it. `restore_refusal`
+    // conditions its worktree check on the same thing for the same reason.
+    //
+    // `_hold` outlives the restore rather than the check: a creation that has
+    // claimed the name has not written its row yet, so the lookup below cannot
+    // see it, and holding the name is what stops one starting underneath.
+    let _hold = if crate::session::is_remote_backend(&deleted.backend_type) {
+        None
+    } else {
+        Some(refuse_a_taken_name(db, &deleted)?)
+    };
+
+    // The user's say, with every refusal above already made and the row still
     // deleted: a refusal here changes nothing.
     let primary = deleted.worktrees.first();
     let mut hook_ctx = crate::session::HookContext {
@@ -481,6 +569,50 @@ mod tests {
         let reason = restore_refusal("mine", true, LOCAL, &[worktree(true)])
             .expect("a lossy force-delete is a refusal");
         assert!(reason.contains("uncommitted"), "{reason}");
+    }
+
+    /// A creation that has claimed the name has not written its row yet, so a
+    /// guard that only looked for a live namesake would un-delete straight into
+    /// it and the spawn would land beside the restored row — the pair, from the
+    /// one side the lookup cannot see.
+    #[test]
+    fn a_restore_waits_for_a_creation_that_is_holding_the_name() {
+        let db = crate::storage::Database::open_in_memory().expect("db");
+        let id = SessionId::default();
+        db.upsert_session(&crate::sync::SharedSession {
+            id,
+            name: "build".into(),
+            agent: "shell".into(),
+            backend_id: String::new(),
+            backend_type: LOCAL.into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        })
+        .expect("upsert");
+        db.soft_delete_session(id).expect("soft delete");
+
+        let held = super::super::names::hold(&db, "build", LOCAL)
+            .expect("hold")
+            .expect("nothing holds it yet");
+        let err = restore_session_headless(&db, id, true)
+            .expect_err("a creation holds the name; the restore must say so");
+        assert!(err.contains("being created right now"), "{err}");
+
+        drop(held);
+        // And the hold ending is all it was waiting on: no namesake is live.
+        assert!(
+            super::super::names::hold(&db, "build", LOCAL)
+                .expect("hold")
+                .is_some(),
+            "the refused restore gave the name back"
+        );
     }
 
     #[test]

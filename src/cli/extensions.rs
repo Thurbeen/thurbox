@@ -237,8 +237,23 @@ fn reinstall_extension(db: &Database, name: String, purge: bool) -> Result<Comma
         "files_written": report.install.files_written,
         "agents_added": report.install.agents_added,
         "sessions_created": report.install.ensure.sessions_created,
+        "sessions_blocked": report.install.ensure.sessions_blocked,
         "automations_created": report.install.ensure.automations_created,
     })))
+}
+
+/// Append what a pass declined to create to its one-line summary.
+///
+/// A declared session whose name is held is not an error and not a creation, so
+/// a count-only line reports it as "0 session(s)" and says nothing — the same
+/// silence self-heal was changed to break, on the more visible of the two
+/// surfaces.
+fn with_blocked(mut summary: String, blocked: &[String]) -> String {
+    for reason in blocked {
+        summary.push_str("\n  ");
+        summary.push_str(reason);
+    }
+    summary
 }
 
 /// Handle `extension activate`.
@@ -265,14 +280,20 @@ fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, Stri
     arm_heartbeat();
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
-        "summary": format!(
-            "Activated '{}' ({} session(s), {} automation(s))",
-            def.name,
-            report.sessions_created.len(),
-            report.automations_created.len(),
+        "summary": with_blocked(
+            format!(
+                "Activated '{}' ({} session(s), {} automation(s))",
+                def.name,
+                report.sessions_created.len(),
+                report.automations_created.len(),
+            ),
+            &report.sessions_blocked,
         ),
         "activated": def.name,
         "sessions_created": report.sessions_created,
+        // Empty on the ordinary activate; non-empty says which declared session
+        // was left alone because something else already answers to its name.
+        "sessions_blocked": report.sessions_blocked,
         "automations_created": report.automations_created,
         "health": health_to_json(&crate::session_ops::extension_health(db, &def)?),
     })))
@@ -545,15 +566,18 @@ fn install_report_to_json(report: &crate::session_ops::InstallReport) -> Value {
     } else {
         format!(", {} agent file(s)", report.external_files_written.len())
     };
-    let summary = format!(
-        "Installed '{}' {} → {} ({} file(s){}, {} session(s), {} automation(s))",
-        report.name,
-        version,
-        report.home,
-        report.files_written.len(),
-        external,
-        report.ensure.sessions_created.len(),
-        report.ensure.automations_created.len(),
+    let summary = with_blocked(
+        format!(
+            "Installed '{}' {} → {} ({} file(s){}, {} session(s), {} automation(s))",
+            report.name,
+            version,
+            report.home,
+            report.files_written.len(),
+            external,
+            report.ensure.sessions_created.len(),
+            report.ensure.automations_created.len(),
+        ),
+        &report.ensure.sessions_blocked,
     );
     json!({
         "ok": true,
@@ -571,6 +595,7 @@ fn install_report_to_json(report: &crate::session_ops::InstallReport) -> Value {
         "symlinks_skipped": report.symlinks_skipped,
         "agents_added": report.agents_added,
         "sessions_created": report.ensure.sessions_created,
+        "sessions_blocked": report.ensure.sessions_blocked,
         "automations_created": report.ensure.automations_created,
     })
 }
@@ -592,7 +617,7 @@ fn update_report_to_json(report: &crate::session_ops::UpdateReport) -> Value {
     };
     json!({
         "ok": true,
-        "summary": summary,
+        "summary": with_blocked(summary, &report.install.ensure.sessions_blocked),
         "updated": report.name,
         "changed": report.changed,
         "previous_version": report.install.previous_version,
@@ -600,6 +625,11 @@ fn update_report_to_json(report: &crate::session_ops::UpdateReport) -> Value {
         "compat_warning": report.install.compat_warning,
         "files_written": report.install.files_written,
         "files_skipped": report.install.files_skipped,
+        // `update` re-runs the install, so it ensures the declared resources
+        // too — and a declared session it could not recreate is the one thing
+        // here a caller cannot see from the version fields.
+        "sessions_created": report.install.ensure.sessions_created,
+        "sessions_blocked": report.install.ensure.sessions_blocked,
         "home": report.install.home,
     })
 }

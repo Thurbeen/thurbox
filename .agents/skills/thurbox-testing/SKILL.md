@@ -109,8 +109,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   own, so one test walks all three against their own live namesake, plus one
   asserting force delete still kills the row's own window. Two more cover
   the stamp itself: a row with no pane id at all (the psmux shape) still
-  resolves its own window, and restore refuses to adopt a live namesake's
-  window rather than putting two rows on one pane. The last three cover the
+  resolves its own window, and a restore whose name a live session now answers
+  to is refused outright (issue #1192) rather than joining it on the backend —
+  `respawn`'s own ownership gate is walked by `restart` in the three-path test
+  above. The last three cover the
   companion shell and the no-server guarantee (ADR-24/25's remote teardown):
   force delete and reap both collect the companion shell alongside the agent's
   window, a teardown spares a live namesake's companion shell, and a teardown
