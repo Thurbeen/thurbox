@@ -304,6 +304,16 @@ siblings only. `Shift+S` (rebindable `SessionListSortAlphabetically`)
 sorts every group's sessions alphabetically by name in one shot,
 preserving group order and parent/child nesting.
 
+**A session being created is a row with no name to sort by.** The
+placeholder the list draws while a creation is in flight is its own root
+block carrying the command, not a session, so `Shift+S` holds it out of
+the comparison and puts it back at its group's end — where the list
+already draws it, and where the real row appears once the creation
+lands. Ordering it under an empty name instead would pull it above every
+session it is queued behind, and reading a name off it at all is what
+crashed the pane the moment a group held both a session and a
+placeholder (issue #1200).
+
 **A group never moves onto another machine.** With the host axis on, the group
 below the last of one host's belongs to the next host, and `Shift+J` there is
 refused rather than swapping them. The swap would be accepted, persisted, and

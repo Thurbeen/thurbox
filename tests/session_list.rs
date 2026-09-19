@@ -6,7 +6,7 @@
 //! than being overwritten on the next frame. v1 has one `App::select_session` for
 //! that; here it is a value two plugins share, so the rule has to be asserted.
 
-use thurbox::kernel::command::Command;
+use thurbox::kernel::command::{Command, InFlight, Phase};
 use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::{Registry, Value};
@@ -62,6 +62,20 @@ fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &registry_for(host));
 }
 
+/// A `create` the kernel has accepted and no snapshot has answered yet: it
+/// names no session, only the repo its row will land in.
+fn creating(repo: &str) -> InFlight {
+    InFlight {
+        id: 1,
+        kind: "create",
+        session: String::new(),
+        subject: Some(repo.into()),
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    }
+}
+
 /// The registry the kernel would build from what the bundled plugins declare —
 /// separate so a test can override a setting before publishing it.
 fn registry_for(host: &LuaHost) -> Registry {
@@ -72,6 +86,15 @@ fn registry_for(host: &LuaHost) -> Registry {
 }
 
 fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
+    publish_inflight(host, snapshot, registry, &[]);
+}
+
+fn publish_inflight(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    registry: &Registry,
+    inflight: &[InFlight],
+) {
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
@@ -79,7 +102,7 @@ fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight,
         themes: &themes,
         registry,
         diffs: &diffs,
@@ -132,7 +155,11 @@ fn press(host: &LuaHost, chord: &str) {
 }
 
 fn press_in(host: &LuaHost, snapshot: &Snapshot, chord: &str) {
-    publish_in(host, snapshot);
+    press_inflight(host, snapshot, &[], chord);
+}
+
+fn press_inflight(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight], chord: &str) {
+    publish_inflight(host, snapshot, &registry_for(host), inflight);
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     let mut key = KeyPress {
         name: chord.to_string(),
@@ -531,4 +558,95 @@ fn force_deleting_an_unmerged_branch_still_asks() {
             "merged={merged:?}: {tree}"
         );
     }
+}
+
+/// The sessions pane's own tree, as `confirm_tree` does for the confirmation:
+/// what the list drew, in one string a test can ask questions of.
+fn sessions_tree(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight]) -> String {
+    publish_inflight(host, snapshot, &registry_for(host), inflight);
+    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    let rendered = host
+        .render(
+            index,
+            RenderContext {
+                width: 40,
+                height: 12,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render the list");
+    format!("{:?}", rendered.node)
+}
+
+/// How far into that tree a name first occurs — the list is built top row
+/// first, so this orders two rows against each other without pinning the frame
+/// (that is `tests/frames.rs`'s job).
+fn drawn_at(tree: &str, needle: &str) -> usize {
+    tree.find(needle)
+        .unwrap_or_else(|| panic!("{needle} is not on screen:\n{tree}"))
+}
+
+#[test]
+fn shift_s_sorts_each_group_by_name() {
+    // The baseline the fix below must not move: with nothing in flight, the
+    // group's sessions are persisted in name order, case-insensitively.
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("aaa", "Zulu"), row("bbb", "alpha")],
+        ..Snapshot::default()
+    };
+
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "S");
+
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Order {
+            list: vec!["bbb".into(), "aaa".into()],
+        }]
+    );
+}
+
+/// Issue #1200: `Shift+S` took the pane down whenever a creation was in flight
+/// in a group that already held a session. A placeholder is its own root block
+/// with no `session` behind it, and a group of two blocks is the first one that
+/// invokes the comparator at all — which is why one session was never enough.
+#[test]
+fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
+    let host = host();
+    let snapshot = snapshot();
+    let inflight = [creating("thurbox")];
+
+    render_in(&host, &snapshot);
+    press_inflight(&host, &snapshot, &inflight, "S");
+
+    // The sort still happens, over the sessions that have one: a placeholder
+    // carries no session id, so there is nothing of it to persist an order for.
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Order {
+            list: vec!["aaa".into(), "bbb".into()],
+        }]
+    );
+}
+
+#[test]
+fn a_sort_leaves_the_placeholder_at_its_groups_end() {
+    // What the pane shows mid-creation — the other half of the fix. Surviving
+    // the keystroke is not enough: the placeholder still belongs at the end of
+    // its group, not pulled above the sessions by a name it does not have.
+    let host = host();
+    let snapshot = snapshot();
+    let inflight = [creating("thurbox")];
+
+    render_in(&host, &snapshot);
+    press_inflight(&host, &snapshot, &inflight, "S");
+
+    let tree = sessions_tree(&host, &snapshot, &inflight);
+    assert!(
+        drawn_at(&tree, "creating") > drawn_at(&tree, "second"),
+        "the placeholder belongs below every session in its group:\n{tree}"
+    );
 }
