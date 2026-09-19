@@ -1459,7 +1459,7 @@ $ thurbox-cli plugin check
 A warning rather than a failure, like the switch-slot case above: the pane still loads
 and still draws, and what is missing is one button.
 
-**The other quiet one: a chord somebody else already spent.** Two global claims on
+**Quieter still: a chord somebody else already spent.** Two global claims on
 one chord both load and both are placed, and one of them simply never fires — the
 earlier declaration keeps the key, or a user's rebinding does. Inside your own
 interface that is yours to notice; a *published* pane cannot know which keys its

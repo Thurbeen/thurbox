@@ -977,10 +977,10 @@ fn the_same_chord_in_two_plugin_scopes_is_not_reported() {
 /// The chord a plugin takes from the kernel is the same clash, reported the same way.
 ///
 /// The kernel's modal and clipboard chords are bindings in the same registry with no
-/// Lua file behind them, so `check` has to declare them alongside the plugins' own or
-/// a pane taking `F1` reads as clean — and the runtime, which does declare them, would
-/// shadow the help modal the author never knew they had displaced. Pinned because
-/// dropping that one line from the collection breaks nothing else in this file.
+/// Lua file behind them, and `kernel::declare_interface` is where both `check` and the
+/// running loop pick them up. Drop them from it and a pane taking `F1` reads as clean
+/// here while the loop shadows the help modal its author never knew they had
+/// displaced — nothing else in this file notices.
 #[test]
 fn a_plugin_taking_a_kernel_chord_is_reported_against_the_kernel() {
     let home = tempfile::tempdir().expect("tempdir");
