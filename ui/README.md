@@ -160,7 +160,7 @@ to `widgets` for the piece it does not cover.
 |---|---|
 | `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention. Focus is a brighter border and a title badge, never a marker glyph |
 | `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list. Variable row heights (`header` glues a group heading to its first row), the selection bar, hover, and the window arithmetic |
-| `ui.cursor(key, items, opts)` | `{index, offset, follow}` over a list, with `move`/`select`/`select_by_id`/`follow`. `opts.steer` is the `store` key another pane moves this list with; `opts.request` a one-shot "go to this row" |
+| `ui.cursor(key, items, opts)` | the selection over a list, with `move`/`select`/`select_by_id`/`follow`. It remembers the selected **item**, not its row, so a list reordered between two builds keeps the cursor where it was; the row number answers only once that item has gone. `opts.steer` is the `store` key another pane moves this list with; `opts.request` a one-shot "go to this row" |
 | `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match` (search hits), `:trailing` (a note budgeted against what is left), `:spans_list` |
 | `ui.empty{title, width, hint, hint_action}` | the one empty state — a blank line, the sentence centred, and the chord that fixes it, shown only while something is bound to it |
 | `ui.modal{title, cols, children, crumbs, border}` | a float sized from what is in it |

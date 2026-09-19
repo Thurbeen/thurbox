@@ -1,14 +1,25 @@
 //! The session list's contract with the rest of the interface.
 //!
-//! Two things every other pane depends on and neither of which is visible in what
-//! the list draws: `Enter` goes to the session you picked, and the selection is
+//! Three things every other pane depends on and none of which is visible in what
+//! the list draws: `Enter` goes to the session you picked; the selection is
 //! **steerable** — a pane that writes `store.selected` moves the cursor rather
-//! than being overwritten on the next frame. v1 has one `App::select_session` for
-//! that; here it is a value two plugins share, so the rule has to be asserted.
+//! than being overwritten on the next frame; and the selection is a **session**
+//! rather than a row, so a snapshot that opens or closes a session above the
+//! cursor leaves the highlight where it was. v1 has one `App::select_session` for
+//! the first two; here it is a value two plugins share, so the rule has to be
+//! asserted. The third is issue #1211, and the assertion that catches it has to
+//! be the painted frame: the list published the right value to `store.selected`
+//! after a steer and after a create all along, and still moved the bar on an
+//! ordinary rebuild.
+
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::Terminal;
 
 use thurbox::kernel::command::Command;
 use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::paint::{render as paint_node, PlaceholderSurfaces};
 use thurbox::kernel::registry::{Registry, Value};
 use thurbox::kernel::snapshot::{GitState, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
@@ -228,6 +239,225 @@ fn a_session_that_went_away_does_not_freeze_the_selection() {
         host.shared_string("selected").as_deref(),
         Some("aaa"),
         "the cursor stayed on a row that exists"
+    );
+}
+
+// --- the selection is a session, not the row it happens to sit on -----------
+
+/// Three rows in one repo, so the rendered order is the snapshot's order and a
+/// row prepended to that lands ABOVE the cursor.
+fn three() -> Snapshot {
+    Snapshot {
+        sessions: vec![
+            row("aaa", "first"),
+            row("bbb", "second"),
+            row("ccc", "third"),
+        ],
+        ..Snapshot::default()
+    }
+}
+
+/// The same list with one more session above it — a create this interface did
+/// not perform, so no `session.post_create`, no follow, nothing but a snapshot
+/// carrying one more row.
+fn and_one_above(world: &Snapshot) -> Snapshot {
+    let mut sessions = vec![row("000", "newcomer")];
+    sessions.extend(world.sessions.iter().cloned());
+    Snapshot {
+        sessions,
+        ..world.clone()
+    }
+}
+
+/// The same list with one session gone — a delete this interface did not
+/// perform either.
+fn without(world: &Snapshot, id: &str) -> Snapshot {
+    Snapshot {
+        sessions: world
+            .sessions
+            .iter()
+            .filter(|session| session.id != id)
+            .cloned()
+            .collect(),
+        ..world.clone()
+    }
+}
+
+/// The painted frame is the only evidence that catches this file's selection
+/// bug: the list published the right `store.selected` after a steer and after a
+/// create all along, so a test reading that value alone stays green whether or
+/// not a plain rebuild keeps the cursor where it was.
+fn paint(host: &LuaHost, plugin: &str, width: u16, height: u16) -> Buffer {
+    let node = host
+        .render(
+            host.index_of(plugin)
+                .unwrap_or_else(|| panic!("no plugin named {plugin}")),
+            RenderContext {
+                width,
+                height,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .unwrap_or_else(|e| panic!("{plugin} should render: {e}"))
+        .node;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| paint_node(frame, frame.area(), &node, &PlaceholderSurfaces))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+/// The text of the row wearing the selection bar. The selection is a full-width
+/// background rather than a marker glyph, so the row carrying one is the body row
+/// whose first *inner* cell stops sharing the background of the border cell
+/// beside it. Read as a difference rather than against a literal colour, so the
+/// assertion holds under any preset; the border rows are skipped because a
+/// focused pane's title wears a highlight of its own.
+fn selection_bar(buffer: &Buffer) -> Option<String> {
+    (1..buffer.area.height.saturating_sub(1))
+        .find(|&y| buffer[(1, y)].bg != buffer[(0, y)].bg)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+}
+
+/// A pane's top border, which is where a title is drawn.
+fn title(buffer: &Buffer) -> String {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, 0)].symbol())
+        .collect()
+}
+
+/// The three readings of the selection must name the same session: the value the
+/// list published, the bar it painted, and the title of the agent pane that
+/// draws whatever was published. One write moved all three, so one assertion
+/// reads all three — and the list is painted first, because painting it is what
+/// publishes.
+#[track_caller]
+fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
+    let highlighted = selection_bar(&paint(host, PLUGIN, 40, 12));
+    let title = title(&paint(host, "agent", 60, 6));
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some(id),
+        "the list published a different session"
+    );
+    assert!(
+        highlighted.as_deref().is_some_and(|row| row.contains(name)),
+        "the painted bar is on a different session: {highlighted:?}"
+    );
+    assert!(
+        title.contains(&format!("{name} (claude)")),
+        "the agent pane is on a different session: {title:?}"
+    );
+}
+
+/// Put the cursor on the middle row and leave it there, with nothing chasing
+/// it: no follow, no foreign `store.selected`, no `session.post_create`. This is
+/// the state the bug needs — a plain cursor over a plain list.
+fn on_the_middle_row(host: &LuaHost, world: &Snapshot) {
+    render_in(host, world);
+    press_in(host, world, "j");
+    render_in(host, world);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("bbb"),
+        "the middle row is where this starts"
+    );
+    host.drain_commands();
+}
+
+#[test]
+fn a_session_opening_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane() {
+    // The whole of issue #1211: the cursor was an index restored from `state`,
+    // so a row appearing above it slid a different session under the highlight —
+    // and under the agent pane, which draws whatever the list published, while
+    // the keyboard stayed where it was.
+    let host = host();
+    let world = three();
+    on_the_middle_row(&host, &world);
+
+    publish_in(&host, &and_one_above(&world));
+    assert_every_reading_names(&host, "bbb", "second");
+    assert!(
+        host.drain_commands().is_empty(),
+        "and the keyboard was not moved to make the three of them agree"
+    );
+}
+
+#[test]
+fn a_session_closing_above_the_cursor_moves_neither_the_bar_nor_the_agent_pane() {
+    // The other half of the same write: a row *leaving* above the cursor shifts
+    // every later row up by one, so an index-based cursor lands one row further
+    // down the list.
+    let host = host();
+    let world = three();
+    on_the_middle_row(&host, &world);
+
+    publish_in(&host, &without(&world, "aaa"));
+    assert_every_reading_names(&host, "bbb", "second");
+}
+
+#[test]
+fn the_selected_session_going_away_hands_the_selection_to_the_row_below_it() {
+    // The branch that decides what "follow the session" means when there is no
+    // session left to follow: the row that has taken its place. Never the top,
+    // which is a second theft, and never nothing, which would blank the agent
+    // pane over a session the operator never closed.
+    let host = host();
+    let world = three();
+    on_the_middle_row(&host, &world);
+
+    publish_in(&host, &without(&world, "bbb"));
+    assert_every_reading_names(&host, "ccc", "third");
+}
+
+#[test]
+fn the_last_session_going_away_clamps_to_the_new_last_row() {
+    // The same rule at the end of the list, where there is no row below: the
+    // list shortened under the cursor, so the cursor lands on its last row.
+    let host = host();
+    let world = three();
+    render_in(&host, &world);
+    press_in(&host, &world, "j");
+    press_in(&host, &world, "j");
+    render_in(&host, &world);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("ccc"));
+
+    let shrunk = without(&world, "ccc");
+    render_in(&host, &shrunk);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("bbb"),
+        "the list's last row, not its first"
+    );
+}
+
+#[test]
+fn the_last_session_of_all_going_away_publishes_nothing_rather_than_a_dead_id() {
+    // The end of the removal branch. Re-deriving the row from a session id says
+    // nothing about a list with no sessions left in it, so what is pinned here is
+    // that the list publishes *nothing* and the agent pane falls back to its own
+    // empty frame — rather than the last id it saw being held on out of caution,
+    // which would leave that pane titled after a session that is gone.
+    let host = host();
+    let world = three();
+    on_the_middle_row(&host, &world);
+
+    let empty = Snapshot::default();
+    render_in(&host, &empty);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        None,
+        "nothing is selected when there is nothing to select"
+    );
+    assert!(
+        title(&paint(&host, "agent", 60, 6)).contains("No Session"),
+        "the agent pane kept a session the list no longer has"
     );
 }
 

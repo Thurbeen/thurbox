@@ -619,10 +619,18 @@ return {
     local query = search_query()
     local search = query and { text = query, needle = fuzzy.compile(query) } or nil
 
-    -- The cursor follows the SESSION it was on rather than a row number, is
-    -- steered by another pane writing `store.selected`, and answers a focus
-    -- request from outside the interface — all three written once in `ui.cursor`
-    -- and shared with the two handlers below.
+    -- The cursor is re-derived from the SESSION it was on rather than restored
+    -- as a row number, is steered by another pane writing `store.selected`, and
+    -- answers a focus request from outside the interface — all three written
+    -- once in `ui.cursor` and shared with the two handlers below.
+    --
+    -- The first clause used to be this comment's claim rather than
+    -- `ui.cursor`'s behaviour: only a follow, a foreign steer or a focus request
+    -- remapped the index onto an id, so a plain rebuild kept the number and a
+    -- session opening or closing above the cursor slid a different session under
+    -- the highlight — and into the agent pane, which draws `store.selected`
+    -- (issue #1211). A comment stating the intent instead of the code is what
+    -- let that survive: the bug was reported, not noticed here.
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS_WITH_REQUEST)
 
     return ui.panel({

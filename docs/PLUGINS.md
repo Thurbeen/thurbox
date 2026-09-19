@@ -437,7 +437,7 @@ ui.modal({ title = "Pick one", cols = 60, children = { body, ui.footer({ … }) 
 |---|---|
 | `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention — a brighter border and a title badge, never a marker glyph |
 | `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list: variable row heights, the sticky window, the selection bar, hover, and overflow either as marker rows or as `▲ N`/`▼ N` on the frame |
-| `ui.cursor(key, items, opts)` | `{index, offset, follow}` with `move`/`select`/`select_by_id`/`follow`. `opts.steer` names the `store` key another pane moves this list with — and the protocol that tells a foreign write from this list's own echo |
+| `ui.cursor(key, items, opts)` | the selection over a list, with `move`/`select`/`select_by_id`/`follow`. What it remembers is the selected **item**, and the row is re-derived from it on every build, so a list reordered underneath keeps the cursor on the same thing; the remembered row number answers only once that item has gone, and then it names whatever took its place. `opts.steer` names the `store` key another pane moves this list with — and the protocol that tells a foreign write from this list's own echo |
 | `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match`, `:trailing`, `:spans_list` |
 | `ui.empty{title, width, hint, hint_action}` | the one empty state, its chord shown only while something is bound to it |
 | `ui.modal{title, cols, children}` / `ui.footer{actions, primary, cancel}` | a float sized from its children, and hints resolved from the key registry |

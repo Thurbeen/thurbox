@@ -10,8 +10,8 @@ what you can read and write. This file is the part that is easy to get wrong.
 The first habit: **start from `lib/ui.lua`**, the component layer, not from raw
 nodes. `ui.panel` is a framed pane in the one focus convention this interface
 has, `ui.list` is a scrolling list with the window arithmetic and the selection
-bar already in it, `ui.cursor` is the "where am I, and did somebody else steer
-me" state every pane with a list grows, `ui.row` is a span builder that knows
+bar already in it, `ui.cursor` is the "which item am I on, and did somebody
+else steer me" state every pane with a list grows, `ui.row` is a span builder that knows
 how wide the row is, and `ui.empty`/`ui.footer` are the one empty state and the
 one footer — with hints resolved from the key registry, so a rebind moves them.
 `10_sessions.lua` and `80_restore.lua` are the worked examples. `lib/widgets.lua`
