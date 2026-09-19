@@ -20,8 +20,11 @@ setup() {
 
 # Run one of the harness's helpers without provisioning a VM: windows-vm.sh
 # dispatches a subcommand only when executed, so sourcing it hands back the
-# helpers alone. Every assertion below is on `rc` and on FAILS — the counter
-# `bad` bumps and the suite's verdict reads — never on the wording of a line.
+# helpers alone. What the helper printed is `${lines[0]}`; the last line is
+# always `rc=<status> FAILS=<count>` — the exit status and the counter `bad`
+# bumps, which is what the suite's verdict reads. Both are matched whole: the
+# words at stake share substrings ("unknown" contains "no", "FAILS" contains
+# "FAIL"), so a loose glob here would report safety these tests do not have.
 drive() {
   run bash -c '
     . "$1" || exit 99
@@ -34,10 +37,13 @@ drive() {
 }
 
 # A stand-in for src/session/mod.rs holding the gate at $1 ("true"/"false").
+# The doc comment names the function, the way this codebase's cross-references
+# do, so the read has to be anchored on the definition rather than on the name.
 gate_source() {
   local path="${BATS_TEST_TMPDIR}/mod-$1.rs"
   cat >"$path" <<RS
-/// Doc comment, which must not be mistaken for the body.
+/// See [\`psmux_hook_rewrite_supported\`], which this line is not.
+///     true
 pub fn psmux_hook_rewrite_supported() -> bool {
     $1
 }
@@ -47,77 +53,77 @@ RS
 
 @test "the gate is read from thurbox's own switch, not restated in the harness" {
   drive psmux_hook_gate "$(gate_source false)"
-  [[ "$output" == *closed* ]]
+  [ "${lines[0]}" = closed ]
   drive psmux_hook_gate "$(gate_source true)"
-  [[ "$output" == *open* ]]
+  [ "${lines[0]}" = open ]
 }
 
 @test "a gate the harness cannot read is an error, not an assumption" {
   drive psmux_hook_gate "${BATS_TEST_TMPDIR}/no-such-file.rs"
-  [[ "$output" == *"rc=1"* ]]
+  [ "${lines[-1]}" = "rc=1 FAILS=0" ]
 }
 
 @test "the gate probes are wired to the real source tree" {
   drive psmux_hook_gate
-  [[ "$output" == *closed* || "$output" == *open* ]]
+  [[ "${lines[0]}" = closed || "${lines[0]}" = open ]]
 }
 
 @test "the psmux 3.3.6 answer reads as unsupported, not as a pass" {
   drive pane_option_measured '%3 working' "$PSMUX_336"
-  [[ "$output" == *no* ]]
+  [ "${lines[0]}" = no ]
 }
 
 @test "a round-tripped option reads as supported" {
   drive pane_option_measured '%3 working' "$ROUND_TRIPPED"
-  [[ "$output" == *yes* ]]
+  [ "${lines[0]}" = yes ]
 }
 
 @test "nothing at all is unknown rather than unsupported" {
   drive pane_option_measured '%3 working' ""
-  [[ "$output" == *unknown* ]]
+  [ "${lines[0]}" = unknown ]
 }
 
 @test "an open gate over an option psmux drops fails the suite" {
   drive psmux_gate_verdict open no yes
-  [[ "$output" == *"FAILS=1"* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=1" ]
 }
 
 @test "a closed gate over an option psmux drops is recorded, not failed" {
   drive psmux_gate_verdict closed no no
-  [[ "$output" == *"FAILS=0"* ]]
-  [[ "$output" == *1170* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=0" ]
+  [[ "${lines[0]}" == *1170* ]]
 }
 
 @test "a closed gate over a psmux that implements both halves fails as stale" {
   drive psmux_gate_verdict closed yes yes
-  [[ "$output" == *"FAILS=1"* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=1" ]
 }
 
 @test "an open gate over a psmux that implements both halves passes" {
   drive psmux_gate_verdict open yes yes
-  [[ "$output" == *"FAILS=0"* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=0" ]
 }
 
 @test "a probe that could not be measured fails rather than passing quietly" {
   drive psmux_gate_verdict closed unknown no
-  [[ "$output" == *"FAILS=1"* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=1" ]
   drive psmux_gate_verdict open yes unknown
-  [[ "$output" == *"FAILS=1"* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=1" ]
 }
 
 @test "a failed gate probe fails the whole smoke test" {
   drive smoke_verdict smoke 1
-  [[ "$output" == *"rc=1"* ]]
-  [[ "$output" == *FAIL* ]]
+  [ "${lines[-1]}" = "rc=1 FAILS=0" ]
+  [[ "${lines[0]}" == *FAIL* ]]
 }
 
 @test "the smoke test still passes when every probe agrees with the gate" {
   drive smoke_verdict smoke 0
-  [[ "$output" == *"rc=0"* ]]
-  [[ "$output" == *PASS* ]]
+  [ "${lines[-1]}" = "rc=0 FAILS=0" ]
+  [[ "${lines[0]}" == *PASS* ]]
 }
 
 @test "a session that did not round-trip still fails, gate probes aside" {
   drive smoke_verdict "" 0
-  [[ "$output" == *"rc=1"* ]]
+  [ "${lines[-1]}" = "rc=1 FAILS=0" ]
 }
