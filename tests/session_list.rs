@@ -283,8 +283,10 @@ fn without(world: &Snapshot, id: &str) -> Snapshot {
     }
 }
 
-/// Render one pane and paint it, so an assertion can read what the operator
-/// sees rather than only what the pane published.
+/// The painted frame is the only evidence that catches this file's selection
+/// bug: the list published the right `store.selected` after a steer and after a
+/// create all along, so a test reading that value alone stays green whether or
+/// not a plain rebuild keeps the cursor where it was.
 fn paint(host: &LuaHost, plugin: &str, width: u16, height: u16) -> Buffer {
     let node = host
         .render(
