@@ -251,3 +251,23 @@ sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
 `python3`), the `[[hosts]]` emitter, and the `session create → get → assert` core.
 `scripts/dev/README.md` is the newcomer index and carries the old→new path map.
 
+`windows-vm.sh test` additionally holds thurbox's psmux hook-status gate
+(`session::psmux_hook_rewrite_supported`) against psmux itself: it reads which
+way the gate is set out of that function's body and **fails** the harness when
+the two disagree — a gate open over a mailbox psmux drops, or a psmux that has
+grown the scope while the gate is still closed. Before that the probe reported
+on its own `ok` branch whichever way the measurement went, which is why psmux
+implementing no pane user options at all sat unseen (issue #1170).
+The verdict is about the **mailbox**, not the whole gate: that also rests on
+claude accepting the forward-slash `--settings` path on Windows, which needs a
+real agent launch and is measured nowhere in the harness, so a holding pair
+prints that condition beside itself and says the gate may be reconsidered
+rather than opened. A half counts as present only when the option comes back on
+the pane it was set on and on **no other** — the poller maps one pane to one session, so an option
+stored at window or server scope would attribute one session's state to
+another, and the probe splits a second pane so that difference is observable.
+`scripts/dev/e2e/windows-vm.bats` drives those helpers — the gate read, each
+half's measurement including the leak case, the verdict table and that a failed
+probe reaches the exit status — with no VM to provision, so the failing branch
+is covered in CI and by `just test-scripts`.
+

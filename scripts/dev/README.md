@@ -15,8 +15,15 @@ emitter, and the create → get → assert core).
 | Script | Target host | Ephemeral? | Deps | In CI? |
 |---|---|---|---|---|
 | `e2e/linux-container.sh` | throwaway Podman/Linux SSH container | yes | podman, ssh, cargo | no (manual) |
-| `e2e/windows-vm.sh` | throwaway dockur/Windows psmux VM | yes (KVM) | podman+kvm, ssh, curl | no (manual; the native `windows` CI job mirrors it) |
+| `e2e/windows-vm.sh` | throwaway dockur/Windows psmux VM | yes (KVM) | podman+kvm, ssh, curl | the VM run is manual (the native `windows` CI job mirrors it); its gate probes are unit-tested by `e2e/windows-vm.bats` |
 | `e2e/real-host.sh` | a real Linux/Windows/WSL machine you own | no | ssh, cargo | no (manual) |
+
+`e2e/windows-vm.sh test` also decides whether thurbox's psmux hook-status gate
+(`session::psmux_hook_rewrite_supported`) still matches what psmux does, and
+**fails** when the two disagree either way round — see issue #1170, where the
+probe reported on its own `ok` branch whichever way the measurement went.
+`e2e/windows-vm.bats` drives those helpers with no VM, so the failing branch is
+exercised in CI (`just test-scripts`).
 
 Shared verbs across the trio: `up` (provision) · `test` (headless e2e) · `ssh`
 (shell) · `hosts` (print the `hosts.toml` block) · `clean` / `down` (teardown).

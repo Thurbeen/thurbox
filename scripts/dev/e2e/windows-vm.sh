@@ -45,7 +45,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=scripts/dev/e2e/lib/e2e-common.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/dev/e2e/lib/e2e-common.sh"
@@ -270,8 +270,133 @@ cmd_ssh() {
   if [ "$#" -gt 0 ]; then ssh_vm "$@"; else ssh_vm; fi
 }
 
+# --- the psmux hook-status gate, and the probes that hold it to psmux -------
+#
+# Remote hooks-driven status on a psmux host is gated off in the binary
+# (`psmux_hook_rewrite_supported` in src/session/mod.rs) until psmux is proven
+# to do two things: (A) pane **user options** settable with `set-option -p -t`
+# and expanded by `#{@opt}` in `list-panes -F` — the mailbox the status poller
+# reads; and (B) an **id-less** in-pane `set-option -p` landing on the calling
+# pane — what the rewritten hook command runs.
+#
+# The probes measure both halves and hold them against that gate. They used to
+# report `ok`/`--` and never fail, which is how psmux dropping the option
+# entirely sat unseen (issue #1170): a probe that passes on its own `ok` branch
+# whichever way the measurement went is evidence of nothing.
+#
+# Those two are the mailbox, and the mailbox is not the whole gate: it also
+# rests on claude accepting the forward-slash `--settings` path thurbox
+# generates on Windows, which needs a real agent launch rather than a psmux
+# capability check and is measured nowhere in this harness. It is named here so
+# the verdict can say what it does not know, and so that giving it a probe is a
+# change to one line.
+PSMUX_GATE_UNPROBED="claude's forward-slash --settings path on Windows"
+
+# psmux_hook_gate [SRC] — "open" or "closed", read out of the gate function's
+# body in src/session/mod.rs. Read rather than restated, so there is one record
+# of what thurbox believes: a gate flipped without this evidence then fails the
+# verdict below, which a second copy kept here could only do until the two
+# drifted. Non-zero if the body is no longer a bare `true`/`false` — a gate the
+# harness cannot read is an error, not an assumption.
+# shellcheck disable=SC2120 # SRC defaults; windows-vm.bats passes a stand-in
+psmux_hook_gate() {
+  local src="${1:-$REPO_ROOT/src/session/mod.rs}" body
+  body="$(grep -A1 '^pub fn psmux_hook_rewrite_supported' "$src" 2>/dev/null \
+    | sed -n '2s/[[:space:]]//gp')"
+  case "$body" in
+    true)  printf 'open\n' ;;
+    false) printf 'closed\n' ;;
+    *)     return 1 ;;
+  esac
+}
+
+# pane_option_measured PANE VALUE OUTPUT — what one half measured, from the
+# whole `list-panes -s -F '#{pane_id} #{@opt}'` output:
+#
+#   yes      VALUE came back on PANE and on no other pane
+#   no       it did not come back (psmux 3.3.6's answer, an empty expansion),
+#            or it came back on another pane too
+#   unknown  the host said nothing at all, so nothing was measured
+#
+# The mailbox has to be **per pane**, not merely writable: the poller maps one
+# pane to one session, so an option stored at window or server scope would
+# expand on every pane and attribute one session's state to another. A value
+# that leaks to a second pane is therefore not the capability, and reads `no`;
+# the caller prints the raw output beside it, which is where the difference
+# between "empty" and "on every pane" is visible.
+pane_option_measured() {
+  local pane="$1" value="$2" out="$3" line found=no
+  [ -n "$out" ] || { printf 'unknown\n'; return 0; }
+  while IFS= read -r line; do
+    case "$line" in
+      "$pane $value") found=yes ;;
+      *" $value")     printf 'no\n'; return 0 ;;
+    esac
+  done <<EOF
+$out
+EOF
+  printf '%s\n' "$found"
+}
+
+# psmux_gate_verdict GATE A B — the two measurements against the gate. The pair
+# is judged together because the gate needs both halves: one of them arriving
+# is not a reason to call the gate stale.
+#
+#   closed, a half missing   the gate is earning its keep (#1170)      --
+#   closed, both present     psmux grew the scope: the reason the gate
+#                            is closed no longer holds                 FAIL
+#   open,   both present     the mailbox is proven                     ok
+#   open,   a half missing   hook state goes into a mailbox psmux
+#                            drops — #1170 itself                      FAIL
+#   either, unmeasured       the probe learned nothing, which is the
+#                            defect it exists not to have              FAIL
+#
+# Nothing here ever reports `ok` for the gate — only for the mailbox, which is
+# what it measures. A pair that holds says the gate may be reconsidered, never
+# that it may be opened, and the unprobed condition is named alongside it, so
+# no output of this harness is an approval to flip the switch.
+psmux_gate_verdict() {
+  local gate="$1" a="$2" b="$3"
+  if [ "$a" = unknown ] || [ "$b" = unknown ]; then
+    bad "psmux hook gate: nothing measured (A=$a B=$b) — the probes prove nothing either way"
+  elif [ "$gate" = open ] && [ "$a$b" = yesyes ]; then
+    ok "psmux pane-option mailbox: both halves hold, per pane, with the hook gate open"
+  elif [ "$gate" = open ]; then
+    bad "psmux hook gate: psmux_hook_rewrite_supported() is true but a half is missing (A=$a B=$b) — remote hook state is written into a mailbox psmux drops (#1170)"
+  elif [ "$a$b" = yesyes ]; then
+    bad "psmux hook gate: psmux implements both mailbox halves now, per pane, but psmux_hook_rewrite_supported() is still false — reconsider the gate; its remaining condition (claude's forward-slash --settings path on Windows) is not probed here (#1170)"
+  else
+    info "psmux hook gate stays closed, as recorded: A=$a B=$b — the transport is deferred (#1170)"
+  fi
+  # Said whenever the mailbox holds, which is the only time anyone would act on
+  # it: what is proven then is the mailbox, and the gate needs one thing more
+  # that nothing here has measured.
+  if [ "$a$b" = yesyes ]; then
+    info "psmux hook gate: $PSMUX_GATE_UNPROBED is not probed here — the mailbox holding is not the gate being proven"
+  fi
+  return 0
+}
+
+# smoke_verdict SESSIONS FAILS — the harness's single verdict. The session
+# round-trip is the smoke test; FAILS is what the gate probes recorded through
+# `bad`, and it counts toward the exit status. That it counts is the whole of
+# the #1170 fix: a probe the suite does not act on is not a probe.
+smoke_verdict() {
+  local sessions="$1" fails="$2"
+  if ! printf '%s\n' "$sessions" | grep -qx smoke; then
+    fail "could not create/list a psmux session (got: ${sessions:-<none>})"
+  elif [ "$fails" -gt 0 ]; then
+    fail "psmux session round-tripped, but $fails probe check(s) disagree with thurbox's own psmux gate — see the miss lines above"
+  else
+    pass "psmux is installed and a -L $SOCKET session round-tripped"
+  fi
+}
+
 cmd_test() {
   ssh_vm 'echo ok' >/dev/null 2>&1 || die "VM not reachable over SSH — run '$0 wait' first"
+
+  # Owned here, bumped by `bad` in every probe below, and read by the verdict.
+  local FAILS=0
 
   log "checking psmux is installed and control-mode capable"
   local ver sessions
@@ -290,35 +415,34 @@ cmd_test() {
   sessions="$(ssh_vm "psmux -L $SOCKET list-sessions -F '#{session_name}'" 2>/dev/null | tr -d '\r')"
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
-  # --- psmux hook-status gate probes (evidence, not verdict) ----------------
-  # Remote hooks-driven status on a psmux host is gated off in the binary
-  # (`psmux_hook_rewrite_supported` in src/session/mod.rs) until these
-  # behaviors are proven against the pinned psmux: (A) pane **user options**
-  # settable via `set-option -p -t` and expanded by `#{@opt}` in
-  # `list-panes -F` (what the status poller reads); (B) an **id-less** in-pane
-  # `set-option -p` landing on the calling pane (what the rewritten hook
-  # command runs). Probes report ok/-- but never fail this smoke test.
-  log "probing psmux pane-user-option support (hook-status gate evidence)"
-  local pane opt inpane
+  # --- psmux hook-status gate probes (verdict; see psmux_gate_verdict) ------
+  # A and B are the two halves of the mailbox the gate rests on. Each one only
+  # measures; the verdict is on the pair, against the gate itself.
+  log "probing psmux pane-user-option support (hook-status gate)"
+  local gate pane opt inpane measured_a=unknown measured_b=unknown
+  gate="$(psmux_hook_gate)" \
+    || die "could not read psmux_hook_rewrite_supported() out of src/session/mod.rs — the gate probes have nothing to check against"
   ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true
   pane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
+  # A second pane is what makes the per-pane half observable: with one pane an
+  # option stored at window or server scope is indistinguishable from a
+  # per-pane one. Best-effort — a psmux that refuses the split leaves the
+  # isolation check with nothing to see rather than failing the probe.
+  ssh_vm "psmux -L $SOCKET split-window -d -t probe" >/dev/null 2>&1 || true
   if [ -n "$pane" ]; then
     ssh_vm "psmux -L $SOCKET set-option -p -t $pane @thurboxprobe working" >/dev/null 2>&1 || true
     opt="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id} #{@thurboxprobe}'" 2>/dev/null | tr -d '\r')"
-    case "$opt" in
-      *"$pane working"*) ok "probe A: set-option -p + #{@opt} list-panes -F expansion works" ;;
-      *) info "probe A: pane user options / -F expansion unsupported (got: ${opt:-<none>})" ;;
-    esac
+    measured_a="$(pane_option_measured "$pane" 'working' "$opt")"
+    info "probe A (set-option -p, then #{@opt} in list-panes -F): $measured_a (got: ${opt:-<none>})"
     ssh_vm "psmux -L $SOCKET send-keys -t $pane 'psmux -L $SOCKET set-option -p @thurboxinpane done' Enter" >/dev/null 2>&1 || true
     sleep 2
     inpane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id} #{@thurboxinpane}'" 2>/dev/null | tr -d '\r')"
-    case "$inpane" in
-      *"$pane done"*) ok "probe B: id-less in-pane set-option -p lands on the calling pane" ;;
-      *) info "probe B: id-less in-pane set-option unsupported (got: ${inpane:-<none>})" ;;
-    esac
+    measured_b="$(pane_option_measured "$pane" 'done' "$inpane")"
+    info "probe B (id-less in-pane set-option -p on the calling pane): $measured_b (got: ${inpane:-<none>})"
   else
-    info "gate probes skipped: could not resolve a probe pane id"
+    info "probes A and B: could not resolve a probe pane id"
   fi
+  psmux_gate_verdict "$gate" "$measured_a" "$measured_b"
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
 
   # --- paste-delivery probe (evidence, not verdict) -------------------------
@@ -404,11 +528,7 @@ cmd_test() {
   esac
 
   echo
-  if printf '%s\n' "$sessions" | grep -qx smoke; then
-    pass "psmux is installed and a -L $SOCKET session round-tripped"
-  else
-    fail "could not create/list a psmux session (got: ${sessions:-<none>})"
-  fi
+  smoke_verdict "$sessions" "$FAILS"
 }
 
 # Cross-build the Windows binaries and drop them in the VM for a real run.
@@ -494,6 +614,10 @@ cmd_clean() {
   rm -rf "$WORKDIR"
   log "removed $WORKDIR (keypair, psmux cache, VM disk image)"
 }
+
+# Sourced rather than executed (windows-vm.bats drives the gate helpers above
+# without a VM to provision): hand back the functions and dispatch nothing.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case "${1:-}" in
   up)     cmd_up ;;
