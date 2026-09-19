@@ -12,15 +12,54 @@ use anyhow::{Context, Result};
 
 use super::{git_command, git_program, non_interactive, reportable_stderr, run_git};
 
+/// The length of a **full** object id in each of git's two hashes. Both are
+/// recognised rather than only the one this machine's repositories happen to use:
+/// the hash belongs to the repository being pinned, not to us.
+const SHA1_ID: usize = 40;
+const SHA256_ID: usize = 64;
+
+/// The shortest prefix read as an abbreviated object id rather than as a name.
+/// git's own default abbreviation, and below it a hex word (`feed`, `decade`) is
+/// likelier to be somebody's branch than a truncated id.
+const SHORTEST_ABBREVIATION: usize = 7;
+
+fn is_hex(git_ref: &str) -> bool {
+    git_ref.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Does this ref name a commit rather than a branch or a tag?
 ///
 /// The distinction is forced on us by git: `clone --branch` accepts a branch or a
 /// tag and **rejects a commit id**, so a pin that is one has to be obtained the
-/// long way round. Ambiguity resolves toward the commit — a branch could be named
-/// `deadbeef` and would be read as one — because a hex-looking branch name is a
-/// curiosity and pinning a commit is the whole point of a lock.
+/// long way round — clone the tip, fetch the ref, check out what came back.
+/// Ambiguity resolves toward the commit, and costs almost nothing: the long way
+/// round serves a tag or branch called `deadbeef` just as well, while `--branch`
+/// could never have served a commit. Almost, because git reads a refspec that
+/// parses as a full object id *for that repository's hash* as the object it is —
+/// so a ref named exactly 40 (or, in a sha256 repository, 64) hex characters is
+/// asked for as an id and not found as a name. `--branch` would have found it;
+/// that is the whole of what this route gives up, and a branch named after a
+/// complete object id is a curiosity beside pinning one.
+///
+/// Up to a full **sha256** id, not just sha1's length: a sha256 id is a commit
+/// like any other, and reading only 40 characters as one handed 64 to `--branch`,
+/// where it failed as a name that is not there.
 pub(super) fn names_a_commit(git_ref: &str) -> bool {
-    (7..=40).contains(&git_ref.len()) && git_ref.chars().all(|c| c.is_ascii_hexdigit())
+    (SHORTEST_ABBREVIATION..=SHA256_ID).contains(&git_ref.len()) && is_hex(git_ref)
+}
+
+/// Does this ref read as an **abbreviated** object id — hex, but neither of the
+/// full lengths?
+///
+/// Only the shape, which is all there is to go on: the same characters are a legal
+/// ref name, so a tag called `20240115` is indistinguishable from a truncated id
+/// until the remote answers. That is why this decides what to *say* about a
+/// failure rather than whether to try — a remote serves branches, tags and whole
+/// objects and never a prefix of one, so a ref of this shape that the remote has
+/// nothing under was a prefix, not a branch someone rebased away.
+pub(super) fn abbreviated_object_id(git_ref: &str) -> bool {
+    let len = git_ref.len();
+    (SHORTEST_ABBREVIATION..SHA256_ID).contains(&len) && len != SHA1_ID && is_hex(git_ref)
 }
 
 /// Clone `url` into `dest`, shallow, optionally at `git_ref`.
@@ -52,11 +91,34 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
     run_git(cmd, "git clone")?;
 
     if let Some(commit) = commit {
-        let obtained = fetch_ref(dest, commit).and_then(|()| checkout_plugin(dest, commit));
+        let fetched = fetch_ref(dest, commit);
+        // A fetch that failed on a ref shaped like a prefix is offered the reading
+        // the shape suggests, rather than the one below. The clone succeeded a
+        // moment ago, so an unreachable remote is the unlikely half — but it is
+        // not impossible, which is why the message says "unless git's own reason
+        // is a different one" and leaves git's in the chain to compare.
+        let prefix = fetched.is_err() && abbreviated_object_id(commit);
+        // `FETCH_HEAD`, not the ref's own name: a shallow fetch writes no local
+        // ref, so a *name* the remote did serve still resolves to nothing here —
+        // and the object it handed over is `FETCH_HEAD` whichever the ref was.
+        // `converge_repository` checks the same thing out, for the same reason.
+        let obtained = fetched.and_then(|()| checkout_plugin(dest, "FETCH_HEAD"));
         if let Err(e) = obtained {
             // Clone succeeded, the pin did not: this working copy is at the wrong
             // revision and nobody asked for that one.
             let _ = std::fs::remove_dir_all(dest);
+            if prefix {
+                return Err(e).with_context(|| {
+                    format!(
+                        "the repository cloned, but {commit} could not be fetched from \
+                         it — and it reads as an abbreviated commit id, which no remote \
+                         can serve: one answers with branches, tags and whole object \
+                         ids, never a prefix of one. So unless git's own reason below \
+                         is a different one, pin the full id, or the branch or tag that \
+                         carries it"
+                    )
+                });
+            }
             // Said distinctly from a failed clone, because the two have different
             // fixes and the common cause is invisible: a rebase or squash merge
             // *replaces* commits, so a pin taken from a pull request that has since

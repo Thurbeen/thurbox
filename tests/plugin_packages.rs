@@ -517,6 +517,12 @@ fn removing_works_without_the_source_and_refuses_an_unknown_name() {
 /// Build a throwaway plugin **repository**: a pane in a nested directory, a module
 /// beside it, and a payload no text path could carry.
 fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
+    plugin_repo_in(root, marker, "sha1")
+}
+
+/// [`plugin_repo`] on a named object format (`sha1` or `sha256`), so a repository
+/// whose object ids are 64 characters rather than 40 can be installed from too.
+fn plugin_repo_in(root: &Path, marker: &str, object_format: &str) -> PathBuf {
     let repo = root.join("thurbox-widget");
     std::fs::create_dir_all(repo.join("plugins")).expect("mkdir");
     std::fs::create_dir_all(repo.join("lib")).expect("mkdir");
@@ -558,13 +564,34 @@ fn plugin_repo(root: &Path, marker: &str) -> PathBuf {
             .expect("git");
         assert!(status.success(), "git {args:?}");
     };
-    git(&["init", "--initial-branch=main"]);
+    git(&[
+        "init",
+        "--initial-branch=main",
+        &format!("--object-format={object_format}"),
+    ]);
     git(&["config", "user.email", "t@example.com"]);
     git(&["config", "user.name", "T"]);
     git(&["config", "commit.gpgsign", "false"]);
+    // Insulated from the machine's own config for the same reason as the line
+    // above: a developer who signs their tags would otherwise get an annotated
+    // tag demanding a message where the test asks for a lightweight one.
+    git(&["config", "tag.gpgsign", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-m", "seed"]);
     repo
+}
+
+/// A `file://` URL for `repo`, which is what makes `--depth 1` mean anything: git
+/// ignores the depth for a plain local path and hands over the whole history, tags
+/// and all, so a defect that only shows in a shallow clone cannot be reproduced
+/// from one. A Windows path starts at a drive letter rather than a slash, and the
+/// URL needs the empty authority's slash in front of it.
+fn file_url(repo: &Path) -> String {
+    let path = repo.display().to_string().replace('\\', "/");
+    match path.starts_with('/') {
+        true => format!("file://{path}"),
+        false => format!("file:///{path}"),
+    }
 }
 
 /// Run git in `repo`, scrubbing the location variables the pre-commit hook exports
@@ -634,6 +661,136 @@ fn installing_at_a_commit_pin_checks_out_that_commit() {
             .expect("recorded")
             .version,
         pinned
+    );
+}
+
+/// A pin shorter than a full object id is the one shape that looks reproducible
+/// and cannot be served: `git fetch` answers with branches, tags and whole object
+/// ids, never a prefix of one. It failed under the context written for a
+/// *different* cause — a branch rebased, squashed or deleted away — which sends the
+/// author after a force-push that never happened.
+#[test]
+fn an_abbreviated_commit_pin_names_the_prefix_not_a_rebase() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    let short = git_in(&repo, &["rev-parse", "--short=8", "HEAD"]);
+
+    let error = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some(short.clone()),
+    })
+    .expect_err("an abbreviated id cannot be obtained");
+
+    assert!(
+        error.contains(&short) && error.contains("abbreviated"),
+        "the error names the pin and what is wrong with it: {error}"
+    );
+    assert!(
+        !error.contains("rebased"),
+        "and must not blame a rebase that did not happen: {error}"
+    );
+    assert!(
+        !ui.join("thurbox-widget").exists(),
+        "the clone it had to take back leaves nothing behind"
+    );
+    assert!(
+        !thurbox::kernel::packages::spec_path(&ui).exists()
+            && !thurbox::kernel::packages::lock_path(&ui).exists(),
+        "and nothing is recorded"
+    );
+}
+
+/// A ref name may be hex: `20240115` is a perfectly ordinary tag, and a remote
+/// serves it like any other. Nothing may read a pin's *shape* as a verdict — the
+/// characters that read as a truncated commit id are also a legal name, and only
+/// the remote can tell the two apart.
+///
+/// Installed **over `file://`**, so the clone is really shallow: a shallow fetch
+/// writes no local ref, which is what made checking the pin out by its own name
+/// fail here on everything but a local path.
+#[test]
+fn a_hex_named_tag_pin_still_installs() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    git_in(&repo, &["tag", "20240115"]);
+    let tagged = git_in(&repo, &["rev-parse", "HEAD"]);
+    commit_more(&repo, "second");
+
+    let report = run(Action::Install {
+        src: format!("git+{}", file_url(&repo)),
+        as_file: None,
+        pin: Some("20240115".to_string()),
+    })
+    .expect("a hex-looking tag is a tag");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(report.json["version"], tagged);
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "and the working copy is at the tag, not the tip"
+    );
+}
+
+/// A **tag** pin is one of the three shapes that work, and the only one no other
+/// test installs at: `clone --branch` takes a tag as readily as a branch, so the
+/// clone itself lands on it.
+#[test]
+fn installing_at_a_tag_pin_checks_out_the_tag() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "first");
+    git_in(&repo, &["tag", "v1"]);
+    let tagged = git_in(&repo, &["rev-parse", "HEAD"]);
+    // The branch moves past the tag, so checking out the tip would be visible.
+    commit_more(&repo, "second");
+
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some("v1".to_string()),
+    })
+    .expect("install");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(report.json["version"], tagged);
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "the working copy must be at the tag, not the tip"
+    );
+}
+
+/// A **sha256** repository's object id is 64 characters, and it is a commit id
+/// like any other. Reading "a commit" as one of the two lengths rather than as
+/// "a full object id" sent it to `clone --branch`, which takes a branch or a tag
+/// and fails on a commit — the same pin working or not depending on which hash
+/// the author's repository happens to use.
+#[test]
+fn installing_at_a_sha256_commit_pin_checks_out_that_commit() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let repo = plugin_repo_in(home.path(), "first", "sha256");
+    let pinned = git_in(&repo, &["rev-parse", "HEAD"]);
+    assert_eq!(pinned.len(), 64, "a sha256 object id: {pinned}");
+    commit_more(&repo, "second");
+
+    let report = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: Some(pinned.clone()),
+    })
+    .expect("install");
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(report.json["version"], pinned);
+    assert!(
+        std::fs::read_to_string(ui.join("thurbox-widget/lib/util.lua"))
+            .expect("module")
+            .contains("first"),
+        "the working copy must be at the pin, not the tip"
     );
 }
 
