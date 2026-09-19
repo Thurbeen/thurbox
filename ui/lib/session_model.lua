@@ -62,12 +62,13 @@ end
 
 --- Does this list span more than one machine?
 ---
---- The whole gate on the host axis. One machine — a laptop with no remote
---- sessions, and equally a list whose every session is on the same remote box —
---- means the keys, the labels and the order below are what they were before this
---- axis existed. A header naming the only machine on screen is noise, which is
---- also why this is derived rather than a setting: a switch defaulting to on
---- would be the same behaviour with one more thing to explain.
+--- Half the gate on the host axis, and the half that is not a preference: one
+--- machine — a laptop with no remote sessions, and equally a list whose every
+--- session is on the same remote box — means the keys, the labels and the order
+--- below are what they were before this axis existed. A header naming the only
+--- machine on screen is noise whatever the operator asked for, so it is asked
+--- even when the switch is on. The other half is that switch, which answers
+--- whether the operator wants their machines separated at all.
 ---
 --- A creation in flight counts, and it has to: creating your FIRST session on a
 --- host is a list whose rows are all local and whose next row is not. Counting
@@ -370,6 +371,23 @@ local function grouped()
   return plugin_settings.enabled("sessions", "group_by_repo", true)
 end
 
+--- Whether the list separates the machines it spans.
+---
+--- The second half of the host gate, beside `spans_hosts`. The axis shipped
+--- derived from the machine count alone, so an operator who wants the remote
+--- sessions in among the local ones -- one list, ordered by hand across the
+--- lot -- had no way to say so. On by default, so a list that already draws
+--- host headers keeps drawing them.
+---
+--- A second boolean rather than one `none / repo / host / host then repo` row
+--- because the settings modal has no choice type: a plugin's `Text` value is
+--- free text you type into, and a misspelt word there would silently mean
+--- "none". The two are independent anyway — all four combinations render, from
+--- one flat list to a header naming a machine and its repos.
+local function host_grouped()
+  return plugin_settings.enabled("sessions", "group_by_host", true)
+end
+
 --- Digest of the published in-flight commands, for the model memo below.
 ---
 --- `thurbox.sessions` is a gated group, so its table identity is a sound memo
@@ -405,11 +423,17 @@ function session_model.build(rows)
   -- returned items as read-only, which is what makes sharing the table safe.
   local digest = commands_digest()
   local grouping = grouped()
+  -- Both knobs in the key. `by_host` below is derived from the rows too, and
+  -- those are covered by the two entries above it -- but the switch is read
+  -- from the registry, which neither the row table nor the digest can see, so
+  -- without it flipping the row in the modal is answered from the cache.
+  local host_grouping = host_grouped()
   if
     model_cache.items ~= nil
     and rawequal(rows, model_cache.rows)
     and digest == model_cache.digest
     and grouping == model_cache.grouping
+    and host_grouping == model_cache.host_grouping
   then
     return model_cache.items
   end
@@ -422,7 +446,10 @@ function session_model.build(rows)
   rows = live_sessions(rows)
 
   local all_creating = creations()
-  local by_host = spans_hosts(rows, all_creating)
+  -- Short-circuited on the switch: with the axis off there is nothing for the
+  -- tally to decide, and every group below is built the way it was before the
+  -- axis existed.
+  local by_host = host_grouping and spans_hosts(rows, all_creating)
   local groups = ordered_groups(rows, grouping, by_host)
   local creating, creating_buckets = pending_creations(all_creating, by_host)
 
@@ -597,6 +624,7 @@ function session_model.build(rows)
   model_cache.rows = all_rows
   model_cache.digest = digest
   model_cache.grouping = grouping
+  model_cache.host_grouping = host_grouping
   model_cache.items = items
   return items
 end

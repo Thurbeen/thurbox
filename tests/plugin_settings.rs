@@ -55,6 +55,15 @@ fn ordered(mut row: SessionRow, position: i64) -> SessionRow {
     row
 }
 
+/// `row`, running on another machine. Both fields, as a real remote row
+/// carries them: the backend is how the session was started and `remote_host`
+/// is the bare name the session list is published and grouped by.
+fn on_host(mut row: SessionRow, machine: &str) -> SessionRow {
+    row.backend = format!("ssh:{machine}");
+    row.remote_host = Some(machine.into());
+    row
+}
+
 /// Where each of `names` lands in the rendered list, top to bottom.
 fn rendered_order<'a>(drawn: &str, names: &[&'a str]) -> Vec<&'a str> {
     let mut found: Vec<(usize, &str)> = names
@@ -252,4 +261,80 @@ fn grouping_off_means_ungrouped_and_not_merely_unlabelled() {
         vec!["alpha", "bravo", "charlie"],
         "ungrouped, the manual order is the whole order:\n{flat}"
     );
+}
+
+#[test]
+fn host_grouping_is_the_operators_choice() {
+    // The host axis shipped derived: a list spanning machines grouped by them
+    // and there was no way to say otherwise. The repo axis has been a knob
+    // since it shipped, and this is the row beside it.
+    let host = host();
+    let mut registry = registry_for(&host);
+    // One repo on two machines, so the repo axis alone cannot produce the
+    // second header and only the host axis can.
+    let across_machines = || {
+        vec![
+            row("one", "thurbox"),
+            on_host(row("two", "thurbox"), "buildbox"),
+        ]
+    };
+
+    // Two headers, because the two machines split one repo group in two. The
+    // repo name is only ever on a header here -- the sessions are `one` and
+    // `two` -- so counting it counts the groups.
+    let by_machine = session_list_of(&host, &registry, across_machines());
+    assert!(
+        by_machine.contains("buildbox"),
+        "the default is what the operator has today:\n{by_machine}"
+    );
+    assert_eq!(
+        by_machine.matches("thurbox").count(),
+        2,
+        "one per machine:\n{by_machine}"
+    );
+
+    registry
+        .set_setting("sessions", "group_by_host", Some(Value::Bool(false)))
+        .expect("set");
+    let merged = session_list_of(&host, &registry, across_machines());
+    assert!(
+        !merged.contains("buildbox") && !merged.contains("local"),
+        "off, no header names a machine:\n{merged}"
+    );
+    assert_eq!(
+        merged.matches("thurbox").count(),
+        1,
+        "the repo axis is its own knob, and its one group is now whole:\n{merged}"
+    );
+    assert_eq!(
+        rendered_order(&merged, &["one", "two"]),
+        vec!["one", "two"],
+        "and the two machines' sessions are one group:\n{merged}"
+    );
+}
+
+#[test]
+fn one_machine_draws_no_host_header_whatever_the_setting_says() {
+    // Grouping into a single group is noise, which is the axis's own gate and
+    // not the knob's: the knob decides whether the gate is asked at all. On,
+    // off, and never touched must therefore all render the same list here.
+    let host = host();
+    let mut registry = registry_for(&host);
+    let one_machine = || vec![row("one", "thurbox"), row("two", "website")];
+
+    let untouched = session_list_of(&host, &registry, one_machine());
+    for value in [Value::Bool(true), Value::Bool(false)] {
+        registry
+            .set_setting("sessions", "group_by_host", Some(value.clone()))
+            .expect("set");
+        let drawn = session_list_of(&host, &registry, one_machine());
+        assert!(
+            !drawn.contains("local"),
+            "one machine needs no header naming it, with the knob {value:?}:\n{drawn}"
+        );
+        assert_eq!(
+            drawn, untouched,
+            "and the whole list is what it was before the knob existed"
+        );
+    }
 }

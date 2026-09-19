@@ -720,13 +720,17 @@ nesting, and issues the same `Order` command (v1's
 `sort_alphabetically_within_groups`).
 
 When the list spans **more than one machine** — the live sessions, or a creation
-in flight naming a host — the host is the outer grouping axis: this machine's groups first, then each remote host's by name, and
-a group header names both (`buildbox · webapp`). It is derived, not a setting — one
-machine renders exactly what it rendered before the axis existed, and a creation
-counts towards the tally so the first session on a host names its machine while
+in flight naming a host — and the pane's `group_by_host` setting is on (the
+default), the host is the outer grouping axis: this machine's groups first, then each remote host's by name, and
+a group header names both (`buildbox · webapp`). The tally is the other half of
+the gate and is not a preference — one machine renders exactly what it rendered
+before the axis existed however the switch is set, and a creation
+counts towards it so the first session on a host names its machine while
 it is still being made. A group edge is therefore a host+repo edge, and a `Shift+J` that would
 carry a group onto another machine is refused: the swap would be persisted and
-then undone by the next build re-clustering the group under its own host.
+then undone by the next build re-clustering the group under its own host. With
+`group_by_host` off there are no host edges at all, the way `group_by_repo` off
+leaves no repo edges.
 `thurbox-cli session list` grows nothing for this — it already carries
 `backend_type` per row, and grouping is a view decision that would only cost the
 scripts piping it through `jq`.
