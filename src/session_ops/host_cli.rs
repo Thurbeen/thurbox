@@ -347,6 +347,23 @@ fn link_cli(
 fn establish(host: &HostDef) -> Usable {
     let found = match probe(host) {
         Ok(found) => found,
+        // The host answered, and what it answered with is broken. Returning
+        // `No` here is what made that permanent: the verdict is cached behind
+        // a doubling backoff, an unusable host's mirror pass is skipped, and
+        // that mirror is the only caller that ever reaches `provision` — so
+        // the corrupt binary disabled the one mechanism that would have
+        // replaced it, and the backoff made it quieter rather than better.
+        // Provisioning *is* the repair for this state, so fall through to it
+        // exactly as a host with no CLI at all does.
+        Err(e) if e.broken_cli => {
+            tracing::info!(
+                "host '{}' has a broken thurbox-cli ({e}); provisioning a replacement",
+                host.name
+            );
+            None
+        }
+        // A host that did not answer is the other state, and the only one
+        // waiting helps. It keeps its backoff untouched.
         Err(e) => return Usable::No(format!("host not answering: {e}")),
     };
     if let Some(cli) = &found {
@@ -361,19 +378,17 @@ fn establish(host: &HostDef) -> Usable {
             return Usable::Yes(cli.clone());
         }
     }
-    let path = match provision(host) {
-        Ok(path) => path,
-        Err(e) => return Usable::No(e),
-    };
-    match probe_at(host, &path) {
-        Ok(Some(cli)) => match compatible(&cli) {
+    // `provision` has already made the binary answer for itself, so what
+    // comes back is what the host's own CLI said about itself.
+    match provision(host) {
+        Ok(cli) => match compatible(&cli) {
             Ok(()) => Usable::Yes(cli),
-            Err(mismatch) => Usable::No(format!("provisioned thurbox-cli at {path} {mismatch}")),
+            Err(mismatch) => Usable::No(format!(
+                "provisioned thurbox-cli at {} {mismatch}",
+                cli.path
+            )),
         },
-        Ok(None) => Usable::No(format!("provisioned thurbox-cli at {path} does not run")),
-        Err(e) => Usable::No(format!(
-            "provisioned thurbox-cli at {path} failed to answer: {e}"
-        )),
+        Err(e) => Usable::No(e),
     }
 }
 
@@ -407,20 +422,38 @@ fn major_of(version: &str) -> u64 {
 }
 
 /// The shell script that looks for a `thurbox-cli` on the host and, finding
-/// one, prints `@cli <path>` followed by its `version --json`; `@none` when
-/// there is none. The provisioned copy of **this flavour** is looked at first
-/// — a dev build's lives under `thurbox-dev`, a release's under `thurbox` —
-/// so a dev laptop finds its own copy again on the next start rather than
-/// the release CLI on PATH (a different major) and a fresh provisioning.
-/// Then PATH, then the installer's default, which a non-interactive ssh
-/// shell rarely has on PATH.
+/// one, prints `@cli <path>`, then `@status <n>` — what that binary exited
+/// with — then its `version --json`; `@none` when there is none. The
+/// provisioned copy of **this flavour** is looked at first — a dev build's
+/// lives under `thurbox-dev`, a release's under `thurbox` — so a dev laptop
+/// finds its own copy again on the next start rather than the release CLI on
+/// PATH (a different major) and a fresh provisioning. Then PATH, then the
+/// installer's default, which a non-interactive ssh shell rarely has on PATH.
+///
+/// The status line is the whole reason a half-written binary can be told from
+/// a version mismatch. The script used to run the CLI as its own last
+/// command, so a segfault reached this side as nothing at all and read as
+/// "printed no JSON version" — which sends an operator to look at versions
+/// and protocols for a file that was 54% of itself. The output is captured
+/// and re-echoed rather than streamed so that the status can be read at all.
 pub(crate) fn probe_script_posix() -> String {
     let flavour = crate::paths::app_dir_name();
     format!(
         "for c in \"$HOME/.local/share/{flavour}/{HOST_BIN_DIR}/thurbox-cli\" thurbox-cli \
          \"$HOME/.local/bin/thurbox-cli\" /usr/local/bin/thurbox-cli; do \
          p=$(command -v \"$c\" 2>/dev/null) && [ -n \"$p\" ] && \
-         {{ echo \"@cli $p\"; \"$p\" version --json; exit 0; }}; done; echo @none"
+         {{ echo \"@cli $p\"; {run}; exit 0; }}; done; echo @none",
+        run = probe_run_posix("\"$p\"")
+    )
+}
+
+/// The `sh` fragment that runs one candidate and reports both halves of what
+/// it did: `@status <n>` then whatever it printed. `$?` is read off the
+/// assignment, so it is the CLI's own status and not the `echo`'s.
+fn probe_run_posix(cli: &str) -> String {
+    format!(
+        "v=$({cli} version --json 2>/dev/null); echo \"@status $?\"; \
+         if [ -n \"$v\" ]; then echo \"$v\"; fi"
     )
 }
 
@@ -433,63 +466,193 @@ pub(crate) fn probe_script_windows() -> String {
         "$c = @(\"$env:LOCALAPPDATA\\{flavour}\\{HOST_BIN_DIR}\\thurbox-cli.exe\", 'thurbox-cli', \
          \"$env:LOCALAPPDATA\\Programs\\thurbox\\thurbox-cli.exe\"); \
          foreach ($p in $c) {{ $g = Get-Command $p -ErrorAction SilentlyContinue; \
-         if ($g) {{ Write-Output \"@cli $($g.Source)\"; & $g.Source version --json; exit 0 }} }}; \
-         Write-Output '@none'"
+         if ($g) {{ Write-Output \"@cli $($g.Source)\"; {run}; exit 0 }} }}; \
+         Write-Output '@none'",
+        run = probe_run_windows("$g.Source")
     )
 }
 
+/// [`probe_run_posix`] in PowerShell. An unhandled exception on Windows lands
+/// in `$LASTEXITCODE` as its NTSTATUS (an access violation is `0xC0000005`),
+/// which [`describe_status`] reads back as a crash rather than an exit code.
+///
+/// The native command's stderr is left to flow to PowerShell's own, as it
+/// always did — `run_script_classified` reads that separately and ignores it
+/// on success, and `2>$null` on a native command is the redirection
+/// PowerShell handles least predictably across its versions.
+fn probe_run_windows(cli: &str) -> String {
+    format!(
+        "$v = & {cli} version --json; Write-Output \"@status $LASTEXITCODE\"; \
+         if ($v) {{ Write-Output $v }}"
+    )
+}
+
+/// Why a probe produced no usable CLI — and, the part that decides what
+/// happens next, whether the host answered at all.
+///
+/// The two are not degrees of the same failure. A host that is down is helped
+/// by waiting, and [`usable`] backs it off. A host that answered with a
+/// `thurbox-cli` that does not run is helped by nothing but replacing that
+/// binary, and waiting is how it stays broken: the cached `No` skips the
+/// mirror, and the mirror is the only caller that reaches [`provision`].
+#[derive(Debug, Clone)]
+pub struct ProbeFailure {
+    pub message: String,
+    /// The host ran the probe and the `thurbox-cli` it found there is broken.
+    pub broken_cli: bool,
+}
+
+impl ProbeFailure {
+    /// The probe itself did not come back in a shape this side can read — no
+    /// shell, no output, a line that is not the protocol. Nothing here says a
+    /// CLI was even found, so nothing here justifies re-provisioning.
+    fn unreadable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            broken_cli: false,
+        }
+    }
+
+    /// A `thurbox-cli` was found on the host and it does not work.
+    fn broken(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            broken_cli: true,
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Ask the host whether it has a `thurbox-cli`, and what version.
-pub fn probe(host: &HostDef) -> Result<Option<CliInfo>, String> {
+pub fn probe(host: &HostDef) -> Result<Option<CliInfo>, ProbeFailure> {
     let script = if host.is_windows() {
         probe_script_windows()
     } else {
         probe_script_posix()
     };
-    let stdout = run_script(host, &script, "thurbox-cli probe")?;
+    let stdout =
+        run_script(host, &script, "thurbox-cli probe").map_err(ProbeFailure::unreadable)?;
     parse_probe(&stdout)
 }
 
 /// [`probe`] for a known path — what a freshly provisioned copy is checked
 /// with, since PATH would not find it.
-fn probe_at(host: &HostDef, path: &str) -> Result<Option<CliInfo>, String> {
+fn probe_at(host: &HostDef, path: &str) -> Result<Option<CliInfo>, ProbeFailure> {
     let script = if host.is_windows() {
         format!(
-            "Write-Output \"@cli {path}\"; & {} version --json; exit $LASTEXITCODE",
-            crate::shell::powershell_quote(path)
+            "Write-Output \"@cli {path}\"; {run}",
+            run = probe_run_windows(&crate::shell::powershell_quote(path))
         )
     } else {
         format!(
-            "echo \"@cli {path}\"; {} version --json",
-            crate::shell::posix_quote(path)
+            "echo \"@cli {path}\"; {run}",
+            run = probe_run_posix(&crate::shell::posix_quote(path))
         )
     };
-    let stdout = run_script(host, &script, "thurbox-cli probe")?;
+    let stdout =
+        run_script(host, &script, "thurbox-cli probe").map_err(ProbeFailure::unreadable)?;
     parse_probe(&stdout)
 }
 
-/// Parse the probe's line protocol: `@cli <path>` then a JSON document, or
-/// `@none`.
-pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, String> {
+/// How the host's shell reported an exit, in the words an operator can act
+/// on.
+///
+/// A POSIX shell reports a signal death as `128 + n`, so `139` is `SIGSEGV` —
+/// which is what a truncated binary does, and what was being reported as
+/// "printed no JSON version". Windows has no such convention and instead
+/// hands back the NTSTATUS of an unhandled exception, which arrives here as a
+/// large negative number.
+fn describe_status(status: i64) -> String {
+    if (129..=192).contains(&status) {
+        let signal = status - 128;
+        return match signal_name(signal) {
+            Some(name) => format!("died on signal {signal} ({name})"),
+            None => format!("died on signal {signal}"),
+        };
+    }
+    if status < 0 {
+        return format!("crashed (0x{:08X})", status as i32 as u32);
+    }
+    format!("exited {status}")
+}
+
+/// The signals worth naming: the ones a broken or killed binary dies of.
+/// Anything else is reported by number, which is still the truth.
+fn signal_name(signal: i64) -> Option<&'static str> {
+    match signal {
+        4 => Some("SIGILL"),
+        6 => Some("SIGABRT"),
+        7 => Some("SIGBUS"),
+        8 => Some("SIGFPE"),
+        9 => Some("SIGKILL"),
+        11 => Some("SIGSEGV"),
+        15 => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
+/// Parse the probe's line protocol: `@cli <path>`, `@status <n>`, then a JSON
+/// document — or `@none`.
+///
+/// Three outcomes an operator must be able to tell apart, because each one
+/// asks for something different: no CLI on the host (`@none` — provision
+/// one), a CLI that died on a signal (replace the binary), and a CLI that ran
+/// and said something unreadable (look at what it is). They all used to read
+/// as the last one.
+pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure> {
     let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
     let Some(first) = lines.next() else {
-        return Err("probe printed nothing".to_string());
+        return Err(ProbeFailure::unreadable("probe printed nothing"));
     };
     if first == "@none" {
         return Ok(None);
     }
     let Some(path) = first.strip_prefix("@cli ") else {
-        return Err(format!("unexpected probe output: {first}"));
+        return Err(ProbeFailure::unreadable(format!(
+            "unexpected probe output: {first}"
+        )));
     };
-    let body: String = lines.collect::<Vec<_>>().join("\n");
-    let json: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("thurbox-cli at {path} printed no JSON version ({e})"))?;
+    let path = path.trim();
+    let mut rest: Vec<&str> = lines.collect();
+    // Written by every script above, and those ship with this parser, so its
+    // absence is a malformed answer rather than an older host. Read as a
+    // clean exit: the lines after it still decide.
+    let status = rest
+        .first()
+        .and_then(|line| line.strip_prefix("@status "))
+        .and_then(|code| code.trim().parse::<i64>().ok());
+    if status.is_some() {
+        rest.remove(0);
+    }
+    if let Some(status) = status.filter(|status| *status != 0) {
+        return Err(ProbeFailure::broken(format!(
+            "thurbox-cli at {path} {} instead of reporting a version",
+            describe_status(status)
+        )));
+    }
+    let body: String = rest.join("\n");
+    if body.is_empty() {
+        return Err(ProbeFailure::broken(format!(
+            "thurbox-cli at {path} ran and printed nothing"
+        )));
+    }
+    let json: Value = serde_json::from_str(&body).map_err(|e| {
+        ProbeFailure::broken(format!(
+            "thurbox-cli at {path} printed no JSON version ({e})"
+        ))
+    })?;
     let version = json
         .get("version")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("thurbox-cli at {path} reported no version"))?
+        .ok_or_else(|| ProbeFailure::broken(format!("thurbox-cli at {path} reported no version")))?
         .to_string();
     Ok(Some(CliInfo {
-        path: path.trim().to_string(),
+        path: path.to_string(),
         version,
         tmux_socket: json
             .get("tmux_socket")
@@ -648,6 +811,10 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
 /// `wsl.exe` runs on this machine, so "could not reach it" is a far narrower
 /// condition there than it is over a network.
 fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<String, RunFailure> {
+    #[cfg(test)]
+    if let Some(answer) = fake::script_override(host, script) {
+        return answer;
+    }
     let mut command = if host.is_windows() {
         crate::git::host_powershell_c(host, script)
     } else {
@@ -792,14 +959,63 @@ pub fn host_data_dir(host: &HostDef) -> Result<String, String> {
 }
 
 /// Put a `thurbox-cli` of this binary's version on the host, under
-/// `<data dir>/bin/`, and return its path.
+/// `<data dir>/bin/`, ask it what it is, and return that.
 ///
 /// A release build fetches the release archive for the host's platform,
 /// verified against the release checksums, and extracts it on the host. A dev
 /// build has no release: it ships its own sibling `thurbox-cli` when the host
 /// is the same platform, and refuses otherwise — the refusal is what
 /// `Sharing: off` shows, and the legacy path takes over.
-pub fn provision(host: &HostDef) -> Result<String, String> {
+///
+/// The installed binary is asked for its version before this returns, because
+/// a success nobody checked is what let a broken host hide: the archive is
+/// checksummed on this machine, nothing checksums what lands on the host, and
+/// a `thurbox-cli` that was 54% of itself was installed, logged as
+/// provisioned and left to segfault under every later probe.
+pub fn provision(host: &HostDef) -> Result<CliInfo, String> {
+    let dest = install(host)?;
+    let cli = verify_provisioned(host, &dest)?;
+    tracing::info!(
+        "provisioned thurbox-cli {} on '{}' at {dest}",
+        cli.version,
+        host.name
+    );
+    Ok(cli)
+}
+
+/// Ask the binary just installed at `dest` for its version, and refuse to
+/// call the provisioning a success when it will not answer.
+///
+/// `fetch_archive` verifies the download against the release checksums on
+/// **this** machine; nothing verified what landed on the host, and nothing
+/// asked the installed file whether it ran. Measured: a 6,815,232-byte
+/// `thurbox-cli` — 54% of itself, its ELF header still declaring section
+/// headers at 12,627,792 — installed, logged as `provisioned thurbox-cli
+/// <version>`, and segfaulting on every later probe.
+///
+/// Checking here rather than after the copy is deliberate: the measured file
+/// was written *two hours after* the extraction that wrote its siblings, so a
+/// checksum taken at install time would have passed and the binary would
+/// still have been broken. The question worth asking is not "did the bytes
+/// arrive" but "does the thing there work", and it is asked of whatever is
+/// there now.
+fn verify_provisioned(host: &HostDef, dest: &str) -> Result<CliInfo, String> {
+    match probe_at(host, dest) {
+        Ok(Some(cli)) => Ok(cli),
+        Ok(None) => Err(format!(
+            "the provisioned thurbox-cli at {dest} is not there"
+        )),
+        Err(e) => Err(format!("the provisioned {e}")),
+    }
+}
+
+/// Put the bytes on the host and answer with where they landed. Says nothing
+/// about whether what landed runs.
+fn install(host: &HostDef) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(dest) = fake::install_override(host) {
+        return dest;
+    }
     let (os, arch) = host_platform(host)?;
     let target = crate::agent::self_update::target_triple(&os, &arch)?;
     let bin_dir = format!("{}/{HOST_BIN_DIR}", host_data_dir(host)?);
@@ -829,10 +1045,6 @@ pub fn provision(host: &HostDef) -> Result<String, String> {
                 "chmod",
             )?;
         }
-        tracing::info!(
-            "shipped the development thurbox-cli to '{}' at {dest}",
-            host.name
-        );
         return Ok(dest);
     }
 
@@ -856,10 +1068,6 @@ pub fn provision(host: &HostDef) -> Result<String, String> {
         )
     };
     run_script(host, &extract, "thurbox-cli extraction")?;
-    tracing::info!(
-        "provisioned thurbox-cli {version} on '{}' at {dest}",
-        host.name
-    );
     Ok(dest)
 }
 
@@ -886,10 +1094,21 @@ pub(crate) mod fake {
 
     type Runner = Box<dyn Fn(&HostDef, &[String]) -> Result<Value, super::RunFailure>>;
 
+    /// Stands in for the host's shell: every script this module would have
+    /// sent over ssh or `wsl.exe` is handed here instead.
+    type ScriptRunner = Box<dyn Fn(&HostDef, &str) -> Result<String, super::RunFailure>>;
+
+    /// Stands in for the fetch-ship-extract half of [`super::provision`],
+    /// answering with the path the CLI landed at — so a test drives the half
+    /// that matters, the verification, against a binary it planted itself.
+    type Installer = Box<dyn Fn(&HostDef) -> Result<String, String>>;
+
     thread_local! {
         static USABLE: RefCell<Option<Usable>> = const { RefCell::new(None) };
         static RUNNER: RefCell<Option<Runner>> = const { RefCell::new(None) };
         static CALLS: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+        static SCRIPTS: RefCell<Option<ScriptRunner>> = const { RefCell::new(None) };
+        static INSTALLER: RefCell<Option<Installer>> = const { RefCell::new(None) };
     }
 
     pub fn force_usable(verdict: Usable) {
@@ -901,10 +1120,57 @@ pub(crate) mod fake {
         CALLS.with(|c| c.borrow_mut().clear());
     }
 
+    pub fn install_script_runner(runner: ScriptRunner) {
+        SCRIPTS.with(|s| *s.borrow_mut() = Some(runner));
+    }
+
+    pub fn install_installer(installer: Installer) {
+        INSTALLER.with(|i| *i.borrow_mut() = Some(installer));
+    }
+
     pub fn clear() {
         USABLE.with(|u| *u.borrow_mut() = None);
         RUNNER.with(|r| *r.borrow_mut() = None);
         CALLS.with(|c| c.borrow_mut().clear());
+        SCRIPTS.with(|s| *s.borrow_mut() = None);
+        INSTALLER.with(|i| *i.borrow_mut() = None);
+    }
+
+    pub(super) fn script_override(
+        host: &HostDef,
+        script: &str,
+    ) -> Option<Result<String, super::RunFailure>> {
+        SCRIPTS.with(|s| s.borrow().as_ref().map(|run| run(host, script)))
+    }
+
+    pub(super) fn install_override(host: &HostDef) -> Option<Result<String, String>> {
+        INSTALLER.with(|i| i.borrow().as_ref().map(|install| install(host)))
+    }
+
+    /// A script runner that runs the host's own script through **this**
+    /// machine's `sh`, with `home` standing in for the host's `$HOME` and a
+    /// `PATH` that resolves nothing — so the script text under test is the
+    /// script text that ships, and a binary the test planted is really
+    /// executed, really segfaults, and is really reported by a real shell.
+    #[cfg(unix)]
+    pub fn local_shell(home: &std::path::Path) -> ScriptRunner {
+        let home = home.to_path_buf();
+        Box::new(move |_host, script| {
+            let out = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(script)
+                .env("HOME", &home)
+                .env("PATH", home.join("no-path"))
+                .output()
+                .map_err(|e| super::RunFailure::new(e.to_string(), super::Reach::Unreached))?;
+            if !out.status.success() {
+                return Err(super::RunFailure::new(
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                    super::Reach::Undetermined,
+                ));
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        })
     }
 
     /// Every argument list the scripted runner was asked to run, in order.
@@ -1054,8 +1320,9 @@ mod tests {
     #[test]
     fn the_probe_protocol_round_trips() {
         let found = parse_probe(
-            "@cli /usr/local/bin/thurbox-cli\n{\"version\":\"1.4.0\",\"tmux_socket\":\"thurbox\",\
-             \"data_dir\":\"/home/me/.local/share/thurbox\",\"schema_version\":40}\n",
+            "@cli /usr/local/bin/thurbox-cli\n@status 0\n{\"version\":\"1.4.0\",\
+             \"tmux_socket\":\"thurbox\",\"data_dir\":\"/home/me/.local/share/thurbox\",\
+             \"schema_version\":40}\n",
         )
         .unwrap()
         .unwrap();
@@ -1064,13 +1331,52 @@ mod tests {
         assert_eq!(found.tmux_socket.as_deref(), Some("thurbox"));
         assert_eq!(found.schema_version, Some(40));
         assert_eq!(parse_probe("@none\n").unwrap(), None);
-        assert!(parse_probe("").is_err());
-        assert!(parse_probe("bash: no such thing\n").is_err());
+        // Neither of these says a CLI was found, so neither justifies
+        // re-provisioning; both are the host failing to answer the protocol.
+        for stdout in ["", "bash: no such thing\n"] {
+            let e = parse_probe(stdout).unwrap_err();
+            assert!(!e.broken_cli, "{}", e.message);
+        }
         // An old CLI prints only its version.
-        let old = parse_probe("@cli thurbox-cli\n{\"version\":\"1.1.0\"}")
+        let old = parse_probe("@cli thurbox-cli\n@status 0\n{\"version\":\"1.1.0\"}")
             .unwrap()
             .unwrap();
         assert_eq!(old.schema_version, None);
+    }
+
+    /// The three answers an operator has to be able to tell apart. Every one
+    /// of them used to read as the last: "printed no JSON version", which
+    /// sends them looking at versions and protocols for a file that was half
+    /// a binary.
+    #[test]
+    fn a_broken_host_cli_is_named_by_what_it_did() {
+        let died = parse_probe("@cli /x/thurbox-cli\n@status 139\n").unwrap_err();
+        assert_eq!(
+            died.message,
+            "thurbox-cli at /x/thurbox-cli died on signal 11 (SIGSEGV) \
+             instead of reporting a version"
+        );
+        assert!(died.broken_cli);
+        // Windows has no 128+n convention: an unhandled exception arrives as
+        // the NTSTATUS itself (0xC0000005 is an access violation).
+        let crashed = parse_probe("@cli C:/x/thurbox-cli.exe\n@status -1073741819\n").unwrap_err();
+        assert!(
+            crashed.message.contains("crashed (0xC0000005)"),
+            "{crashed}"
+        );
+        let silent = parse_probe("@cli /x/thurbox-cli\n@status 0\n").unwrap_err();
+        assert!(
+            silent.message.contains("ran and printed nothing"),
+            "{silent}"
+        );
+        let gibberish = parse_probe("@cli /x/thurbox-cli\n@status 0\nnot json\n").unwrap_err();
+        assert!(
+            gibberish.message.contains("printed no JSON version"),
+            "{gibberish}"
+        );
+        // And "there is none" stays its own answer, which provisioning
+        // already handled.
+        assert_eq!(parse_probe("@none\n").unwrap(), None);
     }
 
     #[test]
@@ -1335,6 +1641,151 @@ mod tests {
             elsewhere,
             "the running CLI and the advertised path are one file under two \
              names; relinking one to the other is the loop"
+        );
+    }
+
+    /// A `thurbox-cli` that dies the moment it is asked anything — the shape a
+    /// truncated delivery takes. Measured on a host as a 6,815,232-byte
+    /// executable whose ELF header declared its section headers at 12,627,792:
+    /// 54% of itself, and a segfault on every invocation.
+    #[cfg(unix)]
+    const SEGFAULTS: &str = "#!/bin/sh\nkill -SEGV $$\n";
+
+    /// A `thurbox-cli` this binary would accept: same major, same schema.
+    #[cfg(unix)]
+    fn working_cli() -> String {
+        format!(
+            "#!/bin/sh\necho '{{\"version\":\"{}\",\"tmux_socket\":\"thurbox\",\
+             \"schema_version\":{}}}'\n",
+            crate::agent::version_check::current_version(),
+            crate::storage::SCHEMA_VERSION
+        )
+    }
+
+    /// Write `body` as the host's provisioned CLI, at the path
+    /// [`probe_script_posix`] looks in first.
+    #[cfg(unix)]
+    fn plant_cli(home: &std::path::Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = home
+            .join(".local/share")
+            .join(crate::paths::app_dir_name())
+            .join(HOST_BIN_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cli = dir.join("thurbox-cli");
+        std::fs::write(&cli, body).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        cli.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    fn probe_host(name: &str) -> HostDef {
+        HostDef {
+            name: name.into(),
+            destination: format!("me@{name}"),
+            ..HostDef::default()
+        }
+    }
+
+    /// The thread-locals the fakes live in, cleared however the test ends.
+    #[cfg(unix)]
+    struct FakeGuard;
+
+    #[cfg(unix)]
+    impl Drop for FakeGuard {
+        fn drop(&mut self) {
+            fake::clear();
+        }
+    }
+
+    /// `provision` never asked the thing it had just installed whether it
+    /// worked: it fetched, shipped, extracted, logged `provisioned thurbox-cli
+    /// <version>` and returned `Ok`. `fetch_archive` checksums the download on
+    /// *this* machine, and nothing checksummed what landed on the host — so a
+    /// binary that segfaults was reported as a success, which is what let it
+    /// hide.
+    #[cfg(unix)]
+    #[test]
+    fn provisioning_a_binary_that_does_not_run_is_not_a_success() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().to_path_buf();
+        let _guard = FakeGuard;
+        fake::install_script_runner(fake::local_shell(&home));
+        fake::install_installer(Box::new(move |_| Ok(plant_cli(&home, SEGFAULTS))));
+
+        let err = provision(&probe_host("bad-install")).unwrap_err();
+
+        assert!(
+            err.contains("SIGSEGV"),
+            "the refusal must name what the binary actually did: {err}"
+        );
+    }
+
+    /// The deadlock, end to end. The corrupt CLI made the probe fail, the
+    /// failed probe marked the host unusable, an unusable host skips the
+    /// mirror, and the mirror is the only thing that reaches `provision` — so
+    /// the bad binary disabled the one mechanism that would have replaced it,
+    /// and the backoff only made it quieter. "Its CLI does not answer" is not
+    /// "the host is unreachable", and only the second is helped by waiting.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_whose_cli_segfaults_is_reprovisioned_rather_than_locked_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().to_path_buf();
+        plant_cli(&home, SEGFAULTS);
+        let _guard = FakeGuard;
+        fake::install_script_runner(fake::local_shell(&home));
+        let installs = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&installs);
+        fake::install_installer(Box::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(plant_cli(&home, &working_cli()))
+        }));
+        let host = probe_host("segfaulting-cli");
+        forget(&host);
+
+        let verdict = usable(&host);
+
+        assert_eq!(
+            installs.load(Ordering::SeqCst),
+            1,
+            "a host that answers with a broken CLI must be re-provisioned, not \
+             left to back off against the very binary that broke it"
+        );
+        match verdict {
+            Usable::Yes(cli) => {
+                assert_eq!(cli.version, crate::agent::version_check::current_version())
+            }
+            Usable::No(reason) => panic!("locked out by its own broken CLI: {reason}"),
+        }
+    }
+
+    /// And the message an operator reads has to name the cause. "printed no
+    /// JSON version" sends them to look at versions and protocols; the truth
+    /// was a signal death from a half-written file.
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_names_a_signal_death_rather_than_calling_it_bad_json() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().to_path_buf();
+        let cli = plant_cli(&home, SEGFAULTS);
+        let _guard = FakeGuard;
+        fake::install_script_runner(fake::local_shell(&home));
+
+        let err = probe(&probe_host("says-nothing")).unwrap_err();
+
+        assert!(err.message.contains(&cli), "{}", err.message);
+        assert!(
+            err.message.contains("signal 11 (SIGSEGV)"),
+            "a binary that dies on a signal is not a version mismatch: {}",
+            err.message
+        );
+        assert!(
+            err.broken_cli,
+            "the host answered; it is its CLI that is broken, and only that \
+             state is repaired by provisioning rather than by waiting"
         );
     }
 

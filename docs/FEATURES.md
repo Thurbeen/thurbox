@@ -691,6 +691,11 @@ has the rationale; the shape:
   host's database at the standard location, so a later full install
   finds every session already there. A dev build ships its own sibling
   binary when the host is the same platform and refuses otherwise.
+  However it got there, the binary is **asked for its version before
+  any of it is reported as provisioned**: the archive is checksummed
+  here, nothing checksums what lands on the host, and a `thurbox-cli`
+  that was 54% of itself was installed, logged as provisioned and left
+  to segfault.
 - **When it cannot.** No CLI and no artifact (a dev build on a foreign
   platform, no network, a schema mismatch), or `share_sessions =
   false`: the host is used exactly as before — worktree over ssh, the
@@ -705,6 +710,17 @@ has the rationale; the shape:
   archive download and a connection every minute. The first usable
   answer resets it, and so does `session sync`, since running it by
   hand usually means the host was just fixed.
+- **When the CLI on the host is broken.** A host that answers with a
+  `thurbox-cli` that does not run is a different state from a host
+  that is unreachable, and only the unreachable one is helped by
+  waiting. The probe asks the
+  host's shell what the binary it found exited with, so a death on a
+  signal, output it could not read, and no CLI at all are three
+  different answers — and a host that answered with a broken CLI is
+  re-provisioned rather than left to back off against the very binary
+  that broke it. Backing off was a deadlock: the failed probe marked
+  the host unusable, an unusable host's mirror pass is skipped, and
+  that mirror is the only caller that reaches provisioning.
 - **Status.** Hooks on a shared host call the host's own `thurbox-cli
   session signal`, which writes the host's database (mirrored at 10 s)
   **and** the pane option a remote observer's control-mode subscription

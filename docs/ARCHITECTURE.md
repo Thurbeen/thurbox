@@ -1497,7 +1497,12 @@ status — and performs every write there by running the host's own
 (`session_ops::host_cli`, `session_ops::mirror`). A host with no CLI is
 **provisioned** one: the release archive of this binary's version for the
 host's platform, checksum-verified by the code `thurbox-cli update` uses,
-placed under `~/.local/share/thurbox/bin/` on the host — never on PATH. A
+placed under `~/.local/share/thurbox/bin/` on the host — never on PATH — and
+then **asked for its version before the provisioning counts as one**. That
+checksum is taken on *this* machine and nothing checked what landed on the
+host, so a `thurbox-cli` that was 54% of itself was installed, logged as
+`provisioned thurbox-cli <version>` and left to segfault under every later
+probe. A
 host where that cannot be done (a dev build on a foreign platform, no
 network, a different schema) or with `share_sessions = false` is used exactly
 as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
@@ -1518,6 +1523,17 @@ paths (`git::stream_into_child`, killing it first when the write failed):
 `write_all` saw left one orphaned `ssh` per attempt. It also reports the
 peer's own stderr in preference to that `EPIPE`, which is the symptom of the
 remote dying and never the reason.
+
+**A host whose CLI does not run is not a host that is down**, and folding the
+two together is what made such a host permanently broken: the failed probe
+cached a `No`, an unusable host's mirror pass is skipped, and that mirror is
+the only caller that reaches provisioning — so the corrupt binary disabled the
+one mechanism that would have replaced it, while the backoff made the log
+quieter rather than the host better. The probe's line protocol therefore
+carries `@status <n>`, what the binary it found exited with, and
+`host_cli::ProbeFailure` says whether the host answered at all: a probe that
+found a broken CLI falls through to provisioning exactly as a host with no CLI
+does, and a host that genuinely did not answer still backs off as above.
 
 **Why**: two thurboxes already shared a host's tmux server — a laptop spawning
 on `ssh:devbox` and a thurbox on devbox both use `tmux -L thurbox` there —
