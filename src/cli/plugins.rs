@@ -243,6 +243,29 @@ fn host_at(dir: &std::path::Path) -> crate::kernel::host::LuaHost {
     host
 }
 
+/// The file a claimant was declared in, or its own name when no file backs it —
+/// the kernel's modal and clipboard chords are declared in Rust.
+///
+/// A conflict carries the *name* each claim was declared under, and a name need not
+/// be unique: it defaults to the filename with the ordering prefix stripped, so
+/// `90_notes.lua` and `91_notes.lua` both answer to `notes` and nothing rejects the
+/// pair. Resolving by first match then named one file twice — a row saying a file
+/// clashed with itself, with the other author's file absent. Every file that answers
+/// to the name is named instead: less precise than a lie, and the reader can see
+/// which two to open.
+fn file_of(host: &crate::kernel::host::LuaHost, plugin: &str) -> String {
+    let files: Vec<&str> = host
+        .plugins
+        .iter()
+        .filter(|loaded| loaded.name == plugin)
+        .map(|loaded| loaded.path.as_str())
+        .collect();
+    match files.is_empty() {
+        true => plugin.to_string(),
+        false => files.join(", "),
+    }
+}
+
 fn check() -> Result<CommandOutput, String> {
     let (dir, chosen) = resolve()?;
     if !dir.is_dir() {
@@ -375,6 +398,21 @@ fn check() -> Result<CommandOutput, String> {
         }
     }
 
+    // The same registry answers the other clash with no symptom on screen: a chord
+    // two overlapping declarations both claim. Both panes load and both are placed,
+    // and one of them simply never fires. `detect_conflicts` has found these since
+    // it was written; this is the surface that asks. The shadowed claim is the one
+    // with something wrong with it, so it is the row's `file`; the winner is named
+    // beside it, because a clash is not a thing either author can fix knowing only
+    // their own half.
+    for conflict in registry.conflicts() {
+        warnings.push(json!({
+            "file": file_of(&host, &conflict.shadowed_plugin),
+            "warning": conflict.message(),
+            "chord": conflict.chord,
+            "shadowed_by": file_of(&host, &conflict.kept_plugin),
+        }));
+    }
     let mut human = loads;
     for warning in &warnings {
         human.push_str(&format!(
@@ -382,6 +420,12 @@ fn check() -> Result<CommandOutput, String> {
             warning["file"].as_str().unwrap_or_default(),
             warning["warning"].as_str().unwrap_or_default()
         ));
+        // A clash names actions, and an action id is not a file. The other half
+        // is spelled out so the reader has both files without going and grepping
+        // for whoever declared the winning action.
+        if let Some(other) = warning["shadowed_by"].as_str() {
+            human.push_str(&format!(" (declared in {other})"));
+        }
     }
     for pill in &dropped {
         human.push_str(&format!(

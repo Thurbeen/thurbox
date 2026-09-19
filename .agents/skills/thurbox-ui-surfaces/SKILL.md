@@ -54,6 +54,12 @@ Two properties the registry holds and `tests/keymap.rs` asserts:
 - **A chord freed by a removed pane stays unbound** rather than being silently
   reused by whatever loads next.
 
+`Registry::detect_conflicts` finds every chord two overlapping scopes both claim,
+and `thurbox-cli plugin check` is where that set surfaces — as warnings, naming
+both claimants and which one wins. It is the only reporting surface the conflict
+set has, and it exists for the plugin author, who cannot know which keys their
+users have already spent.
+
 **Terminal passthrough.** thurbox's chords share the `Ctrl+<letter>` namespace with
 readline (`Ctrl+A`, `Ctrl+E`, `Ctrl+W`, `Ctrl+U`, `Ctrl+R`, `Ctrl+D`, …). While a
 session terminal is focused, a chord a plugin flags as passthrough reaches the agent

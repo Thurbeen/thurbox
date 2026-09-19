@@ -83,7 +83,7 @@ thurbox-cli plugin check
 ```
 
 It loads the interface exactly as thurbox does and **exits non-zero** on failure.
-Do not report an edit as done without it. It catches three things, and the two
+Do not report an edit as done without it. It catches four things, and the three
 after the first are the ones that look like success:
 
 - a file that will not load, named with its reason;
@@ -94,6 +94,11 @@ after the first are the ones that look like success:
   pane draws, the button does not, and `check` says which mistake it was: an
   action that exists only as a chord-less `commands` entry, or one nothing
   loaded declares at all. A warning, so it does not fail the exit.
+- a **chord somebody else already claimed**. Two global claims on one key both
+  load and both are placed; the earlier declaration keeps the key, or a user's
+  rebinding does, and the other never fires. `check` names both claimants and
+  which one wins, the kernel's own chords included, so a pane taking `F1` is
+  told rather than quietly displacing help. A warning too.
 
 `check` loads; it does not read names. The mistakes it cannot see are the quiet
 ones — a node prop the kernel drops, a command option no verb reads, a theme role

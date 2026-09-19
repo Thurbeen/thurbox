@@ -1459,6 +1459,27 @@ $ thurbox-cli plugin check
 A warning rather than a failure, like the switch-slot case above: the pane still loads
 and still draws, and what is missing is one button.
 
+**Quieter still: a chord somebody else already spent.** Two global claims on
+one chord both load and both are placed, and one of them simply never fires — the
+earlier declaration keeps the key, or a user's rebinding does. Inside your own
+interface that is yours to notice; a *published* pane cannot know which keys its
+users have spent — the code-review pane below takes `Ctrl+X` and `F7` because both
+are free in the interface thurbox ships, which says nothing about yours. So
+`plugin check` reports it, with both claimants and the one that wins:
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — sessions, agent, confirm, search, new_session, restore, notes, scratch
+  ! plugins/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in plugins/90_notes.lua)
+```
+
+A warning, like the missing pill and for the same reason — two authors wanting one
+chord is a judgement call, and the user can settle it by rebinding either action in
+the settings panel. The kernel's own chords are in the same registry, so a pane that
+takes `F1` is reported against `kernel` rather than against a file. A chord claimed
+in two *plugin* scopes is not a conflict at all: focus decides, which is why three
+bundled panes can each bind `j`.
+
 ## Panes that give a v1 surface back
 
 Two of the surfaces v2 dropped are maintained as panes, each in its own repository
