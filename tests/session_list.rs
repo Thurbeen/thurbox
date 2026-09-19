@@ -337,7 +337,7 @@ fn title(buffer: &Buffer) -> String {
 /// publishes.
 #[track_caller]
 fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
-    let bar = selection_bar(&paint(host, PLUGIN, 40, 12));
+    let highlighted = selection_bar(&paint(host, PLUGIN, 40, 12));
     let title = title(&paint(host, "agent", 60, 6));
     assert_eq!(
         host.shared_string("selected").as_deref(),
@@ -345,8 +345,8 @@ fn assert_every_reading_names(host: &LuaHost, id: &str, name: &str) {
         "the list published a different session"
     );
     assert!(
-        bar.as_deref().is_some_and(|bar| bar.contains(name)),
-        "the painted bar is on a different session: {bar:?}"
+        highlighted.as_deref().is_some_and(|row| row.contains(name)),
+        "the painted bar is on a different session: {highlighted:?}"
     );
     assert!(
         title.contains(&format!("{name} (claude)")),
@@ -432,6 +432,30 @@ fn the_last_session_going_away_clamps_to_the_new_last_row() {
         host.shared_string("selected").as_deref(),
         Some("bbb"),
         "the list's last row, not its first"
+    );
+}
+
+#[test]
+fn the_last_session_of_all_going_away_publishes_nothing_rather_than_a_dead_id() {
+    // The end of the removal branch. Re-deriving the row from a session id says
+    // nothing about a list with no sessions left in it, so what is pinned here is
+    // that the list publishes *nothing* and the agent pane falls back to its own
+    // empty frame — rather than the last id it saw being held on out of caution,
+    // which would leave that pane titled after a session that is gone.
+    let host = host();
+    let world = three();
+    on_the_middle_row(&host, &world);
+
+    let empty = Snapshot::default();
+    render_in(&host, &empty);
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        None,
+        "nothing is selected when there is nothing to select"
+    );
+    assert!(
+        title(&paint(&host, "agent", 60, 6)).contains("No Session"),
+        "the agent pane kept a session the list no longer has"
     );
 }
 
