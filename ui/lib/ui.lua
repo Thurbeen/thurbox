@@ -171,6 +171,19 @@ local function identity(item, id)
   return item[id or "id"]
 end
 
+--- The row carrying `wanted`, or nil when nothing in the list does.
+local function row_of(items, key_of, wanted)
+  if wanted == nil then
+    return nil
+  end
+  for index, item in ipairs(items) do
+    if identity(item, key_of) == wanted then
+      return index
+    end
+  end
+  return nil
+end
+
 local Cursor = {}
 Cursor.__index = Cursor
 
@@ -178,6 +191,12 @@ Cursor.__index = Cursor
 ---
 --- Publishing is what lets another pane read the selection; remembering what
 --- was published is what lets this one tell an outside write from its own echo.
+---
+--- Where the cursor is gets written down twice, and the pair is the point. The
+--- row number is where it sits *on screen*, and is what the next build falls
+--- back to. The identity is *what is selected*, and is what the next build
+--- restores from — the list can be reordered, grown or shortened between one
+--- build and the next, and a row number then names a different item.
 function Cursor:_settle()
   local count = #self.items
   self.index = widgets.clamp(self.index, count)
@@ -186,6 +205,7 @@ function Cursor:_settle()
   end
   state[self.prefix .. ".cursor"] = self.index
   local target = self:id()
+  state[self.prefix .. ".selected"] = target
   if self.steer then
     store[self.steer] = target
     state[self.prefix .. ".published"] = target
@@ -237,10 +257,9 @@ end
 
 --- Put the cursor on the row carrying `id`, if it is in the list.
 function Cursor:select_by_id(id)
-  for index, item in ipairs(self.items) do
-    if identity(item, self.key_of) == id then
-      return self:select(index)
-    end
+  local at = row_of(self.items, self.key_of, id)
+  if at then
+    return self:select(at)
   end
   return nil
 end
@@ -277,6 +296,7 @@ end
 ---@param key string
 function ui.reset(key)
   state[key .. ".cursor"] = nil
+  state[key .. ".selected"] = nil
   state[key .. ".offset"] = nil
   state[key .. ".follow"] = nil
 end
@@ -294,10 +314,17 @@ end
 
 --- A list cursor that survives the list changing under it.
 ---
---- The state a pane with a list invariably grows — where the cursor is, where
---- the window is, which row it is chasing, and what it last told everyone else
---- — written once. Four panes had four spellings of it and none of them agreed
---- on what happens when the list is reordered under the selection.
+--- The state a pane with a list invariably grows — what is selected, where the
+--- cursor is, where the window is, which row it is chasing, and what it last
+--- told everyone else — written once. Four panes had four spellings of it and
+--- none of them agreed on what happens when the list is reordered under the
+--- selection.
+---
+--- **The selection is the item, not the row.** Every build re-derives the row
+--- number from the identity `_settle` remembered, so a list that is reordered,
+--- grown or shortened between two builds keeps the cursor on the same item. The
+--- remembered row number answers only when that item is no longer in the list,
+--- and then it answers with whatever has taken its place.
 ---
 --- Built fresh on every call, from `state`, so a render, a key handler and a
 --- click handler all see the same cursor without passing one around.
@@ -337,14 +364,18 @@ function ui.cursor(key, items, opts)
       state[key .. ".follow"] = steered
     end
   end
-  local follow = state[key .. ".follow"]
-  if follow then
-    for index, item in ipairs(items) do
-      if identity(item, self.key_of) == follow then
-        self.index = index
-        break
-      end
-    end
+  -- Where the cursor lands, in order of authority: the row it is chasing, then
+  -- the row it was already on. A row number is the last resort rather than the
+  -- first, because the list is rebuilt from a snapshot that nothing here
+  -- controls — a session opening or closing above the cursor renumbers every
+  -- row below it, and honouring the old number moves the selection onto a
+  -- different item while the operator is reading it (issue #1211). The number
+  -- is still what answers when the selected item has gone: `_settle` clamps it,
+  -- so the cursor lands on whatever now occupies that position.
+  local at = row_of(items, self.key_of, state[key .. ".follow"])
+    or row_of(items, self.key_of, state[key .. ".selected"])
+  if at then
+    self.index = at
   end
   self:_settle()
   return self

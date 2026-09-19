@@ -463,6 +463,27 @@ by the two requests that are deliberate: a clicked notification and
 `thurbox-cli session focus`, both through `focus_session`, which the list
 follows by id rather than by row number.
 
+**A session appearing or going away moves nothing either** — which used to be
+this promise's weak half. The list's cursor was a row *number* restored from
+`state`, and only a follow, a foreign `store.selected` write or a `focus_session`
+request ever remapped it onto an id, so an ordinary rebuild kept the number: a
+session opening or closing *above* the cursor renumbered every row below it and
+slid a different session under the highlight and into the agent pane, while the
+keyboard stayed where it was (issue #1211). Nothing had to be created *by this
+interface* for that to happen, which is why a fleet — opening and closing
+sessions constantly and without warning — hit it hardest. So the selection is
+the **session**, not its row: `ui.cursor` writes down which item is selected and
+re-derives the row from it on every build.
+
+The row number is kept for exactly one case, the selected session no longer being
+in the list, and then the cursor lands on **whatever now occupies that
+position** — the neighbour below it, or the list's last row once the list is
+shorter than the cursor. Not the top, which is a second theft of the same kind,
+and not nothing, which would blank the agent pane over a session the operator
+never closed. It is also the answer the model already assumed: a row dropped by
+`session_model.build` is dropped before anything is grouped or ordered, so that
+the cursor lands on the next row.
+
 Not having to hunt for the row you just asked for is worth that interruption to
 some people, so it is **a setting rather than a decision**: the session list's
 `focus_new_session` (settings → Sessions, off by default) makes a create or a

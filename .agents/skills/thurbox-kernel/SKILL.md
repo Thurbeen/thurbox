@@ -190,9 +190,10 @@ failure with no symptom — and prints the `layout.lua` line to add.
 reach for: `ui.panel` (one focus convention — a brighter border and a title
 badge, never a marker glyph), `ui.list` (variable row heights, a sticky window,
 the selection bar as the row's own `style`, overflow either as marker rows or as
-`▲ N`/`▼ N` on the frame), `ui.cursor` (`{index, offset, follow}` plus the
-steer/publish protocol, so another pane writing `store.selected` moves the list
-and the list's own echo is not mistaken for one), `ui.row` (a span builder that
+`▲ N`/`▼ N` on the frame), `ui.cursor` (the selection as the **item** it is on
+rather than the row, re-derived on every build so a reordered list keeps it,
+plus the steer/publish protocol, so another pane writing `store.selected` moves
+the list and the list's own echo is not mistaken for one), `ui.row` (a span builder that
 knows the row's width, so a trailing note is budgeted rather than re-measured),
 `ui.empty`, `ui.modal`, `ui.footer` (hints resolved from the key **registry**,
 so a rebind moves them), `ui.status`/`ui.dots`, `ui.rule`. `lib/widgets.lua` is
