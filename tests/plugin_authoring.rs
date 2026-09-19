@@ -780,3 +780,82 @@ fn the_pane_that_draws_by_default_is_not_warned_about() {
         output.json
     );
 }
+
+/// A pill the band drops is the one declaration with no symptom anywhere: no
+/// button, no warning, no log line, and the author's next move is reading
+/// `bands.rs`. The drop itself is right — a chip that lights and does nothing
+/// costs a press to discover — so what `check` owes them is which of the two
+/// mistakes they made.
+#[test]
+fn a_dropped_pill_says_whether_the_palette_has_its_action_or_nothing_does() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let ui = at(home.path());
+    run(Action::New {
+        name: "notes".into(),
+    })
+    .expect("new");
+
+    // Two pills, neither of which the band can draw: one names a chord-less
+    // `commands` entry, the other is a typo for it.
+    let file = ui.join("plugins").join("90_notes.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(
+        &file,
+        body.replace(
+            "  settings = {",
+            "  commands = {\n\
+            \x20   { action = \"notes.open\", desc = \"open the notes\" },\n\
+            \x20 },\n\n\
+            \x20 pills = {\n\
+            \x20   { action = \"notes.open\", label = \"Notes\" },\n\
+            \x20   { action = \"notes.opne\", label = \"Memory\" },\n\
+            \x20 },\n\n\
+            \x20 settings = {",
+        ),
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+    assert!(output.failure.is_none(), "{:?}", output.json);
+
+    let dropped = output.json["dropped_pills"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let of = |label: &str| -> serde_json::Value {
+        dropped
+            .iter()
+            .find(|row| row["label"] == label)
+            .cloned()
+            .unwrap_or_else(|| panic!("no report for the {label:?} pill: {:?}", output.json))
+    };
+
+    let palette_only = of("Notes");
+    assert_eq!(palette_only["action"], "notes.open");
+    assert_eq!(palette_only["file"], "plugins/90_notes.lua");
+    assert_eq!(
+        palette_only["reason"], "palette-only",
+        "an action the palette can reach is a reasonable thing to have written: \
+         {palette_only}"
+    );
+
+    let unknown = of("Memory");
+    assert_eq!(unknown["action"], "notes.opne");
+    assert_eq!(
+        unknown["reason"], "unknown",
+        "and a typo is not the same mistake: {unknown}"
+    );
+
+    let human = output.human.clone();
+    assert!(
+        human.contains("Notes") && human.contains("notes.open"),
+        "the terminal report names the pill and its action, since the JSON is not \
+         what an author reads: {human}"
+    );
+    assert!(
+        human.contains("Memory") && human.contains("notes.opne"),
+        "both of them: {human}"
+    );
+}

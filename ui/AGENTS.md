@@ -83,13 +83,17 @@ thurbox-cli plugin check
 ```
 
 It loads the interface exactly as thurbox does and **exits non-zero** on failure.
-Do not report an edit as done without it. It catches two things, and the second is
-the one that looks like success:
+Do not report an edit as done without it. It catches three things, and the two
+after the first are the ones that look like success:
 
 - a file that will not load, named with its reason;
 - a pane that **loads and draws nothing**, because no arrangement places its slot.
   It compiles, declares its keys, appears in listings, and is absent from the
   screen. `check` prints the `layout.lua` line to add.
+- a **pill the action band drops**, because no chord resolves for its action. The
+  pane draws, the button does not, and `check` says which mistake it was: an
+  action that exists only as a chord-less `commands` entry, or one nothing
+  loaded declares at all. A warning, so it does not fail the exit.
 
 `check` loads; it does not read names. The mistakes it cannot see are the quiet
 ones — a node prop the kernel drops, a command option no verb reads, a theme role

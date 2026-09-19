@@ -350,14 +350,11 @@ impl App {
     /// The system modals and the clipboard pair go through the same registry as
     /// everything else, which is what makes them listable in help, conflict-checked
     /// against a plugin's keys, and rebindable — they simply have no Lua plugin
-    /// behind them.
+    /// behind them. The composition itself is
+    /// [`kernel::declare_interface`](thurbox::kernel::declare_interface), shared
+    /// with `thurbox-cli plugin check`.
     pub(crate) fn collect_declarations(&mut self) {
-        let (mut bindings, settings, mut pills) = self.host.all_declarations();
-        bindings.extend(thurbox::kernel::modals::bindings());
-        bindings.extend(thurbox::kernel::clipboard::bindings());
-        pills.extend(thurbox::kernel::modals::pills());
-        self.registry.declare_all(bindings, settings, pills);
-        self.registry.declare_commands(self.host.commands());
+        thurbox::kernel::declare_interface(&mut self.registry, &self.host);
         // Trust is read against the plugin set that just loaded, so a reload —
         // including the one a trust change triggers — lands both together.
         self.publish_trust();

@@ -228,6 +228,71 @@ pub fn entries(pills: &[Pill], registry: &Registry) -> Vec<Entry> {
     out
 }
 
+/// Why a declared pill never becomes an [`Entry`].
+///
+/// The drop is deliberate — see [`entries`] — but its two causes are different
+/// mistakes and the band cannot tell them apart on screen, because both look
+/// like an absent button. Whatever reports a drop reports this beside it, so an
+/// action that only the palette can reach is never confused with one nobody
+/// declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// The action is declared, as a chord-less `commands` entry, and nothing
+    /// binds a key to it. Reachable from the palette; not from the band.
+    PaletteOnly,
+    /// Nothing loaded declares the action at all — a misspelling, or a plugin
+    /// that is turned off or gone.
+    Unknown,
+}
+
+impl DropReason {
+    /// The name a machine reads it by.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DropReason::PaletteOnly => "palette-only",
+            DropReason::Unknown => "unknown",
+        }
+    }
+
+    /// What to tell the author: what the band found, and what to do about it.
+    pub fn explain(self, action: &str) -> String {
+        match self {
+            DropReason::PaletteOnly => format!(
+                "{action:?} is a command with no key, and the band draws only what a \
+                 chord resolves for — give it one: \
+                 `keys = {{ {{ key = \"…\", action = {action:?} }} }}`"
+            ),
+            DropReason::Unknown => format!(
+                "nothing loaded declares {action:?} — no key, no command — so either it is \
+                 misspelt or the plugin that declares it is turned off"
+            ),
+        }
+    }
+}
+
+/// Every declared pill [`entries`] drops, and why.
+///
+/// The same resolution read the other way round, so a diagnostic can never
+/// describe a drop the band did not make — or stay quiet about one it did.
+pub fn dropped<'a>(pills: &'a [Pill], registry: &Registry) -> Vec<(&'a Pill, DropReason)> {
+    pills
+        .iter()
+        .filter(|pill| chord_for(&pill.action, registry).is_none())
+        .map(|pill| {
+            let declared = registry
+                .commands()
+                .iter()
+                .any(|command| command.action == pill.action);
+            let reason = if declared {
+                DropReason::PaletteOnly
+            } else {
+                DropReason::Unknown
+            };
+            (pill, reason)
+        })
+        .collect()
+}
+
 /// The chord to advertise for an action, or `None` when nothing declares it.
 ///
 /// An F-key alternate wins over a `ctrl+<letter>` primary, which is what both
@@ -699,7 +764,7 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::registry::{Binding, Scope};
+    use crate::kernel::registry::{Binding, CommandDecl, Scope};
 
     fn binding(action: &str, chord: &str) -> Binding {
         Binding {
@@ -795,6 +860,67 @@ mod tests {
         let resolved = entries(registry.pills(), &registry);
         assert_eq!(resolved.len(), 1, "{resolved:?}");
         assert_eq!(resolved[0].label, "Help");
+    }
+
+    #[test]
+    fn a_dropped_pill_tells_a_palette_only_action_from_one_nobody_declared() {
+        // Both are dropped, and that stays. What they are not is the same
+        // mistake: one action runs from the palette and wants a chord, the other
+        // is a typo, and the band shows the same absent button for each.
+        let mut registry = registry_with(
+            vec![binding("help.open", "f1")],
+            vec![
+                pill("help.open", "Help", 10),
+                pill("notes.open", "Notes", 9),
+                pill("notes.opne", "Memory", 8),
+            ],
+        );
+        registry.declare_commands(vec![CommandDecl {
+            plugin: "p".into(),
+            action: "notes.open".into(),
+            description: "open the notes".into(),
+        }]);
+
+        let resolved = entries(registry.pills(), &registry);
+        assert_eq!(resolved.len(), 1, "the drop stays: {resolved:?}");
+
+        let reported = dropped(registry.pills(), &registry);
+        let reasons: Vec<(&str, DropReason)> = reported
+            .iter()
+            .map(|(pill, reason)| (pill.label.as_str(), *reason))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                ("Notes", DropReason::PaletteOnly),
+                ("Memory", DropReason::Unknown),
+            ]
+        );
+        assert!(
+            reported[0].1.explain("notes.open").contains("notes.open"),
+            "the explanation names the action it is about: {:?}",
+            reported[0].1.explain("notes.open")
+        );
+    }
+
+    /// Binding a chord to a chord-less command is how it stops being one, so the
+    /// pill that names it draws and there is nothing left to report.
+    #[test]
+    fn a_command_the_user_bound_a_chord_to_is_no_longer_a_dropped_pill() {
+        let mut registry = registry_with(Vec::new(), vec![pill("notes.open", "Notes", 9)]);
+        registry.declare_commands(vec![CommandDecl {
+            plugin: "p".into(),
+            action: "notes.open".into(),
+            description: "open the notes".into(),
+        }]);
+        assert_eq!(dropped(registry.pills(), &registry).len(), 1);
+
+        registry.rebind("notes.open", Some("f9")).expect("rebind");
+        assert!(dropped(registry.pills(), &registry).is_empty());
+        assert_eq!(
+            entries(registry.pills(), &registry)[0].display(),
+            "Notes · F9"
+        );
     }
 
     #[test]

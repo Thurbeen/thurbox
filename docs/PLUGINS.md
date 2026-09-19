@@ -1442,7 +1442,22 @@ The section is read at startup, beside `bindings` and `settings`, and what it ca
 is invent a button — a priority names a pill that already exists and nothing else. That
 is the same standard the band holds your own declaration to: it draws a pill only when a
 **key** resolves for its action, so a pill pointing at a palette-only `commands` entry is
-dropped as silently as one naming nothing. Give the action a key as well.
+dropped exactly like one naming nothing. Give the action a key as well.
+
+The drop stays — a chip that lights on hover and then does nothing costs a press to
+discover — but it is not silent: `plugin check` reports every pill the band dropped, and
+says which of the two mistakes it was, because an action the palette can reach and a
+misspelt one look identical from the outside.
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — …, notes
+  ! plugins/90_notes.lua — pill "Notes" is not drawn: "notes.open" is a command with no key, …
+  ! plugins/90_notes.lua — pill "Memory" is not drawn: nothing loaded declares "notes.opne" — …
+```
+
+A warning rather than a failure, like the switch-slot case above: the pane still loads
+and still draws, and what is missing is one button.
 
 ## Panes that give a v1 surface back
 
