@@ -115,6 +115,10 @@ jobs:
             windows_e2e_probes:
               - 'scripts/dev/e2e/windows-vm.sh'
               - 'scripts/dev/e2e/windows-vm.bats'
+              # `bad`'s counter and `fail`'s exit status live here, and the
+              # suite asserts on both: a change to them can make the probes
+              # advisory again, which is the whole defect (#1170).
+              - 'scripts/dev/e2e/lib/e2e-common.sh'
               - 'src/session/mod.rs'
               - '.github/workflows/ci.yml'
             # cog.toml is an input to the checker, not merely a neighbour: it

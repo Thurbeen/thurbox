@@ -14,8 +14,11 @@ setup() {
   # option was set on %3, and every pane — that one included — reads it back
   # empty, because psmux implements no per-pane user options.
   PSMUX_336=$'%1 \n%3 '
-  # What a multiplexer that does implement them answers (tmux).
+  # What a multiplexer that does implement them per pane answers (tmux).
   ROUND_TRIPPED=$'%1 \n%3 working'
+  # What one stored at window or server scope would answer: set on %3, read
+  # back on every pane, so no pane's state belongs to its own session.
+  LEAKED=$'%1 working\n%3 working'
 }
 
 # Run one of the harness's helpers without provisioning a VM: windows-vm.sh
@@ -69,17 +72,22 @@ RS
 }
 
 @test "the psmux 3.3.6 answer reads as unsupported, not as a pass" {
-  drive pane_option_measured '%3 working' "$PSMUX_336"
+  drive pane_option_measured '%3' working "$PSMUX_336"
   [ "${lines[0]}" = no ]
 }
 
 @test "a round-tripped option reads as supported" {
-  drive pane_option_measured '%3 working' "$ROUND_TRIPPED"
+  drive pane_option_measured '%3' working "$ROUND_TRIPPED"
   [ "${lines[0]}" = yes ]
 }
 
+@test "an option every pane can read is not the per-pane mailbox" {
+  drive pane_option_measured '%3' working "$LEAKED"
+  [ "${lines[0]}" = no ]
+}
+
 @test "nothing at all is unknown rather than unsupported" {
-  drive pane_option_measured '%3 working' ""
+  drive pane_option_measured '%3' working ""
   [ "${lines[0]}" = unknown ]
 }
 
@@ -94,7 +102,7 @@ RS
   [[ "${lines[0]}" == *1170* ]]
 }
 
-@test "a closed gate over a psmux that implements both halves fails as stale" {
+@test "a closed gate over a psmux that implements both halves must be reconsidered" {
   drive psmux_gate_verdict closed yes yes
   [ "${lines[-1]}" = "rc=0 FAILS=1" ]
 }
