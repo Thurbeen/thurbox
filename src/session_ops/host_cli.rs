@@ -575,7 +575,11 @@ fn describe_status(status: i64) -> String {
             None => format!("died on signal {signal}"),
         };
     }
-    if status < 0 {
+    // Windows hands back the NTSTATUS of an unhandled exception, which reaches
+    // here as a negative number or as the same bits unsigned depending on how
+    // the shell printed it. `exited 3221225477` is that value read as an exit
+    // code, which tells an operator nothing; both spellings are one value.
+    if !(0..=0xFFFF).contains(&status) {
         return format!("crashed (0x{:08X})", status as i32 as u32);
     }
     format!("exited {status}")
@@ -1005,7 +1009,13 @@ fn verify_provisioned(host: &HostDef, dest: &str) -> Result<CliInfo, String> {
         Ok(None) => Err(format!(
             "the provisioned thurbox-cli at {dest} is not there"
         )),
-        Err(e) => Err(format!("the provisioned {e}")),
+        // A broken-CLI message already names the binary it is about. Anything
+        // else is the host failing to answer at all, and says nothing about
+        // `dest`, so it is not worth reading as though it did.
+        Err(e) if e.broken_cli => Err(format!("the provisioned {e}")),
+        Err(e) => Err(format!(
+            "could not ask the provisioned thurbox-cli at {dest} for its version: {e}"
+        )),
     }
 }
 
@@ -1120,14 +1130,6 @@ pub(crate) mod fake {
         CALLS.with(|c| c.borrow_mut().clear());
     }
 
-    pub fn install_script_runner(runner: ScriptRunner) {
-        SCRIPTS.with(|s| *s.borrow_mut() = Some(runner));
-    }
-
-    pub fn install_installer(installer: Installer) {
-        INSTALLER.with(|i| *i.borrow_mut() = Some(installer));
-    }
-
     pub fn clear() {
         USABLE.with(|u| *u.borrow_mut() = None);
         RUNNER.with(|r| *r.borrow_mut() = None);
@@ -1145,6 +1147,20 @@ pub(crate) mod fake {
 
     pub(super) fn install_override(host: &HostDef) -> Option<Result<String, String>> {
         INSTALLER.with(|i| i.borrow().as_ref().map(|install| install(host)))
+    }
+
+    /// The two seams the planted-binary tests drive, with the local shell
+    /// that makes them worth driving. Unix-only because those tests run a real
+    /// `/bin/sh` against a file they wrote, and an ungated setter nothing calls
+    /// is dead code under the Windows clippy job.
+    #[cfg(unix)]
+    pub fn install_script_runner(runner: ScriptRunner) {
+        SCRIPTS.with(|s| *s.borrow_mut() = Some(runner));
+    }
+
+    #[cfg(unix)]
+    pub fn install_installer(installer: Installer) {
+        INSTALLER.with(|i| *i.borrow_mut() = Some(installer));
     }
 
     /// A script runner that runs the host's own script through **this**
@@ -1358,12 +1374,18 @@ mod tests {
         );
         assert!(died.broken_cli);
         // Windows has no 128+n convention: an unhandled exception arrives as
-        // the NTSTATUS itself (0xC0000005 is an access violation).
-        let crashed = parse_probe("@cli C:/x/thurbox-cli.exe\n@status -1073741819\n").unwrap_err();
-        assert!(
-            crashed.message.contains("crashed (0xC0000005)"),
-            "{crashed}"
-        );
+        // the NTSTATUS itself (0xC0000005 is an access violation), in whichever
+        // of its two spellings the shell printed it. Read as an exit code, the
+        // unsigned one would say `exited 3221225477` and mean nothing.
+        for status in ["-1073741819", "3221225477"] {
+            let crashed =
+                parse_probe(&format!("@cli C:/x/thurbox-cli.exe\n@status {status}\n")).unwrap_err();
+            assert!(
+                crashed.message.contains("crashed (0xC0000005)"),
+                "{crashed}"
+            );
+            assert!(crashed.broken_cli);
+        }
         let silent = parse_probe("@cli /x/thurbox-cli\n@status 0\n").unwrap_err();
         assert!(
             silent.message.contains("ran and printed nothing"),
@@ -1716,8 +1738,8 @@ mod tests {
         let err = provision(&probe_host("bad-install")).unwrap_err();
 
         assert!(
-            err.contains("SIGSEGV"),
-            "the refusal must name what the binary actually did: {err}"
+            err.contains("the provisioned") && err.contains("SIGSEGV"),
+            "the refusal must name the binary it is about and what it did: {err}"
         );
     }
 
@@ -1734,7 +1756,7 @@ mod tests {
 
         let temp = tempfile::TempDir::new().unwrap();
         let home = temp.path().to_path_buf();
-        plant_cli(&home, SEGFAULTS);
+        let cli = plant_cli(&home, SEGFAULTS);
         let _guard = FakeGuard;
         fake::install_script_runner(fake::local_shell(&home));
         let installs = std::sync::Arc::new(AtomicUsize::new(0));
@@ -1755,11 +1777,53 @@ mod tests {
              left to back off against the very binary that broke it"
         );
         match verdict {
-            Usable::Yes(cli) => {
-                assert_eq!(cli.version, crate::agent::version_check::current_version())
+            Usable::Yes(found) => {
+                assert_eq!(
+                    found.version,
+                    crate::agent::version_check::current_version()
+                )
             }
             Usable::No(reason) => panic!("locked out by its own broken CLI: {reason}"),
         }
+        assert_eq!(
+            std::fs::read_to_string(&cli).unwrap(),
+            working_cli(),
+            "the half-written binary is what the next pass has to replace"
+        );
+    }
+
+    /// And the refusal that has to survive all of this: a host that did not
+    /// answer says nothing about any binary, so it keeps its backoff rather
+    /// than paying for a release archive every time the backoff expires.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_does_not_answer_is_not_re_provisioned() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let _guard = FakeGuard;
+        fake::install_script_runner(Box::new(|_, _| {
+            Err(fake::unreached("ssh: connect to host port 22: timed out"))
+        }));
+        let installs = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&installs);
+        fake::install_installer(Box::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err("an unreachable host must never get this far".to_string())
+        }));
+        let host = probe_host("off-the-network");
+        forget(&host);
+
+        let verdict = usable(&host);
+
+        assert!(
+            matches!(&verdict, Usable::No(reason) if reason.contains("host not answering")),
+            "{verdict:?}"
+        );
+        assert_eq!(
+            installs.load(Ordering::SeqCst),
+            0,
+            "nothing about a host that did not answer says its CLI needs replacing"
+        );
     }
 
     /// And the message an operator reads has to name the cause. "printed no
