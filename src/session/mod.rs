@@ -101,7 +101,11 @@ pub const HOOK_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
 /// guarantee), `#{@user_option}` expansion for the poller, and claude
 /// accepting a forward-slash `--settings` path on Windows.
 /// `scripts/dev/e2e/windows-vm.sh test` carries the probes; flip this to
-/// `true` only with that evidence. Closed = exactly the old strip behavior
+/// `true` only with that evidence. That harness **reads this function's body**
+/// for which way the gate is set and fails when psmux disagrees with it —
+/// either way round: a gate opened over a mailbox psmux drops, or a psmux that
+/// has grown the scope while the gate is still closed (issue #1170). So this
+/// stays a bare `true`/`false`. Closed = exactly the old strip behavior
 /// (the agent launches clean with no hooks, surfaced via
 /// `SessionInfo::hook_wiring`). Defined in the pure-data layer so `agent`
 /// (poller) and `session_ops` (rewrite/shipping) flip on the one switch.

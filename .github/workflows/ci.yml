@@ -33,6 +33,7 @@ jobs:
       install_ps: ${{ steps.filter.outputs.install_ps }}
       winget: ${{ steps.filter.outputs.winget }}
       pr_title: ${{ steps.filter.outputs.pr_title }}
+      windows_e2e_probes: ${{ steps.filter.outputs.windows_e2e_probes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -107,6 +108,14 @@ jobs:
               # The winget channel's testable half: the manifest bump and the
               # submit/skip + deferrable decisions the release job asks for.
               - 'packaging/winget/**'
+              - '.github/workflows/ci.yml'
+            # The Windows harness needs a VM, but its psmux hook-status gate
+            # probes do not: they check what the VM measured against the gate
+            # in src/session/mod.rs, and that comparison runs here.
+            windows_e2e_probes:
+              - 'scripts/dev/e2e/windows-vm.sh'
+              - 'scripts/dev/e2e/windows-vm.bats'
+              - 'src/session/mod.rs'
               - '.github/workflows/ci.yml'
             # cog.toml is an input to the checker, not merely a neighbour: it
             # declares the type and scope allowlists `cog verify` enforces and
@@ -353,6 +362,21 @@ jobs:
       - name: Run winget packaging tests
         run: bats packaging/winget/winget.bats
 
+  windows-e2e-probes:
+    name: Windows Harness Probe Tests
+    needs: changes
+    if: needs.changes.outputs.windows_e2e_probes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+      # No VM here. The suite drives windows-vm.sh's gate helpers directly, so
+      # the branch where psmux drops the pane option is exercised on every
+      # change to either side of the comparison (issue #1170).
+      - name: Run the psmux hook-status gate probe tests
+        run: bats scripts/dev/e2e/windows-vm.bats
+
   shellcheck:
     name: ShellCheck
     needs: changes
@@ -522,6 +546,7 @@ jobs:
       - install-script
       - install-script-ps
       - winget-packaging
+      - windows-e2e-probes
       - shellcheck
       - lua
       - website-lint
