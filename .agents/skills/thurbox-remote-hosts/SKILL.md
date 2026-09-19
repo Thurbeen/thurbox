@@ -216,11 +216,20 @@ session), never on the loop, ADR-P12).
   branched inside the four pipelines so every caller delegates). A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
   release archive of this version, checksum-verified; a dev build ships its
-  own sibling binary when the platform matches) — but a thurbox running on
-  the host **advertises its own CLI** there first (`host_cli::
-  advertise_running_cli`, a symlink refreshed at TUI boot and on every CLI
-  call), which is how a host running a dev checkout is shareable without any
-  provisioning. That advertiser only ever manages a symlink of its own: it
+  own sibling binary when the platform matches), and `host_cli::provision`
+  asks that binary for its version before reporting success — the checksum is
+  taken here, nothing checks what landed there. The probe's protocol carries
+  `@status <n>` so a CLI that died on a signal, one whose output could not be
+  read and no CLI at all are told apart (`host_cli::ProbeFailure`), and a host
+  that answered with a **broken** CLI re-provisions instead of backing off:
+  the cached `No` skips the mirror pass, and the mirror is the only caller
+  that reaches provisioning, so the bad binary used to disable its own repair.
+  But a thurbox running on the host **advertises its own CLI** there first
+  (`host_cli::advertise_running_cli`, a symlink refreshed at TUI boot and on
+  every CLI call), which is how a host running a dev checkout is shareable
+  without any provisioning. That advertiser only ever manages a symlink of its
+  own — it never writes a regular file there, so it is never the thing that
+  leaves a half-written binary at that path: it
   returns when the running CLI *is* the path it advertises into — which on a
   provisioned host it is, `resolve_cli_binary` answering with a sibling of the
   running exe — leaves a regular file there alone, and removes an existing
