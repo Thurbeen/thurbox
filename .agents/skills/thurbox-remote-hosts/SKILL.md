@@ -306,7 +306,12 @@ session), never on the loop, ADR-P12).
   provisioning, rewrite shipping, and the status poller — is gated off on one
   switch (`session::psmux_hook_rewrite_supported`) until the psmux behaviors are
   proven by `scripts/dev/e2e/windows-vm.sh test`'s probes; such sessions show a
-  `Hooks: degraded` hint instead of silently idling.
+  `Hooks: degraded` hint instead of silently idling. Those probes read the
+  switch and **fail** the harness when psmux disagrees with it in either
+  direction, so the gate cannot be opened without the evidence and cannot go
+  stale once psmux grows the scope (issue #1170 — psmux 3.3.6 implements no
+  per-pane user options at all, and the transport that replaces the mailbox is
+  deferred).
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` resolves the
   session's `HostDef` from its `backend_type` and, for a remote session, kills
