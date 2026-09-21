@@ -197,7 +197,7 @@ impl App {
         });
     }
 
-    /// `Command::Copy`: the focused session's visible screen to the clipboard.
+    /// `Command::Copy`: the named surface's screen to the clipboard.
     pub(crate) fn apply_copy_command(&mut self, session: &str) {
         match self.terminals.visible_text(session) {
             Some(text) => {
@@ -472,8 +472,8 @@ impl App {
         }
 
         // Born at the rect it will be painted into where the last frame recorded
-        // one; `open_shell` documents why the render-time resize cannot correct a
-        // bad birth size once the size memo looks settled.
+        // one, so its first frame is already the right shape — a pane started a
+        // screen wide reflows everything it has printed on the next one.
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let rect = self.terminals.last_rect(&key.surface_id());
         let (rows, cols) = match rect {

@@ -31,7 +31,14 @@ impl App {
             .iter()
             .map(|row| row.id.clone())
             .collect();
-        self.refresh_links(&sessions);
+        // Links are asked of every SURFACE, not every session: a session's
+        // companion shell is a screen of its own, and it prints URLs whether or
+        // not the agent's pane is the one on screen.
+        let surfaces: Vec<String> = sessions
+            .iter()
+            .flat_map(|id| [id.clone(), thurbox::kernel::terminal::shell_surface(id)])
+            .collect();
+        self.refresh_links(&surfaces);
         self.refresh_search_content(&sessions);
         // Generation-gated, so an idle session costs one atomic load. The
         // mutating half runs here; the map itself is borrowed below, after the
@@ -147,8 +154,8 @@ impl App {
         self.link_scans.insert(id.to_string(), now);
         let found = self.terminals.links(id);
         // Absent rather than empty when there are none, which is the shape a
-        // plugin reads: `thurbox.links[id]` is nil for a session with no links,
-        // not a table with nothing in it.
+        // plugin reads: `thurbox.links[surface]` is nil for a screen with no
+        // links, not a table with nothing in it.
         //
         // Compared before storing: a printing agent moves its stamp every frame
         // while the links on screen usually stay put, and treating a re-scan as
@@ -166,8 +173,9 @@ impl App {
         }
     }
 
-    /// Rescan for the links on each session's screen, where that screen moved
-    /// — and no more often than [`LINK_SCAN_INTERVAL`] while it keeps moving.
+    /// Rescan for the links on each named surface's screen, where that screen
+    /// moved — and no more often than [`LINK_SCAN_INTERVAL`] while it keeps
+    /// moving.
     ///
     /// Part of publishing rather than a standing cost of the loop, because the
     /// answer is only ever read by a plugin — and gated on the session's
@@ -181,9 +189,9 @@ impl App {
     /// rows each time, so the compare below found a change every frame and moved
     /// the data epoch — undoing ADR-P16's gating wholesale for anyone whose
     /// agent prints a URL. Hence the second gate, an age (ADR-P13).
-    pub(crate) fn refresh_links(&mut self, sessions: &[String]) {
+    pub(crate) fn refresh_links(&mut self, surfaces: &[String]) {
         let now = Instant::now();
-        for id in sessions {
+        for id in surfaces {
             // Only surfaces that are ON SCREEN. Extracting links walks the whole
             // vt100 grid and URL-scans every row, and doing that for every
             // session with a live pane cost ~1.2ms a frame with three of them —
@@ -213,8 +221,8 @@ impl App {
                 }
             }
         }
-        // A session that left the snapshot takes its cached answer with it.
-        let known: std::collections::HashSet<&str> = sessions.iter().map(String::as_str).collect();
+        // A surface that left the snapshot takes its cached answer with it.
+        let known: std::collections::HashSet<&str> = surfaces.iter().map(String::as_str).collect();
         self.links.retain(|id, _| known.contains(id.as_str()));
         self.link_stamps.retain(|id, _| known.contains(id.as_str()));
         self.link_scans.retain(|id, _| known.contains(id.as_str()));

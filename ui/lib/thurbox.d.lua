@@ -711,8 +711,8 @@
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>
----@field links table<string, thurbox.Link[]>
----@field content table<string, string> Served while `store.want_content` asks.
+---@field links table<string, thurbox.Link[]> Keyed by SURFACE, not by session: a session's companion shell is `<id>#shell` and has links of its own.
+---@field content table<string, string> Keyed by session, and carrying BOTH its panes' screens. Served while `store.want_content` asks.
 ---@field printing table<string, boolean> Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.
 ---@field runs table<string, thurbox.Run> Answers to THIS plugin's runs.
 ---@field granted thurbox.Granted
@@ -899,7 +899,7 @@ function require(name) end
 ---@field force? boolean Restore what can be restored.
 
 ---@class (exact) thurbox.cmd.Session
----@field session string
+---@field session string A session id, or for `copy` a surface: `<id>#shell` reads the companion shell's screen rather than the agent's.
 
 ---@class (exact) thurbox.cmd.Send
 ---@field session string

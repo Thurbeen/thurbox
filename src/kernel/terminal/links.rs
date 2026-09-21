@@ -211,7 +211,7 @@ impl Terminals {
     /// or a repainted row emit nothing instead of a link over cells that no
     /// longer show it.
     pub fn hyperlink_paints(&self, session: &str, buf: &Buffer) -> Vec<HyperlinkPaint> {
-        let Some((live, parser)) = self.surface_parser(session) else {
+        let Some((painted, parser)) = self.surface_parser(session) else {
             return Vec::new();
         };
         let Ok(parser) = parser.lock() else {
@@ -222,7 +222,10 @@ impl Terminals {
         if parser.callbacks().hyperlinks().is_empty() {
             return Vec::new();
         }
-        let inner = live.rect.get();
+        // This surface's own rect: the runs are re-printed over the cells that
+        // drew them, which is only the right place while the rect belongs to
+        // the pane whose grid they were read from.
+        let inner = painted.rect.get();
         if inner.width == 0 || inner.height == 0 {
             return Vec::new();
         }

@@ -414,11 +414,16 @@ globals:
     property: read-only
   thurbox.diffs:
     property: read-only
+  # Keyed by SURFACE rather than by session: a session's companion shell is
+  # `<id>#shell` and prints URLs of its own, whether or not the agent's pane is
+  # the one on screen.
   thurbox.links:
     property: read-only
-  # What each session's terminal is showing, served only while a pane is asking
-  # for it (`store.want_content`) — nobody wants every agent's screen on every
-  # frame.
+  # What each session's terminals are showing — both panes, under the session's
+  # id, because a search asks which SESSION holds the text and the answer is the
+  # same whether the agent printed it or the shell did. Served only while a pane
+  # is asking for it (`store.want_content`) — nobody wants every agent's screen
+  # on every frame.
   thurbox.content:
     property: read-only
   # Which sessions are producing output right now, keyed by session id. Its own

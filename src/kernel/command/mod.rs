@@ -148,7 +148,12 @@ pub enum Command {
         run_now: bool,
         delete: bool,
     },
-    /// Copy a session's visible terminal contents to the clipboard.
+    /// Copy a surface's terminal contents to the clipboard.
+    ///
+    /// `session` is a SURFACE name: a bare id is the agent's pane and
+    /// `<id>#shell` its companion shell. A pane showing the shell asks for the
+    /// shell — it already spells that name to render it — because the two are
+    /// separate panes that may both be on screen.
     ///
     /// Applied on the UI thread: the vt100 screen lives behind a `!Send` VM
     /// neighbour and the clipboard wants the tty, neither of which a worker can

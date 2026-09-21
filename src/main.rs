@@ -495,10 +495,15 @@ struct App {
     grabbed: Option<usize>,
     /// The node holding the pointer between a press and its release, if any.
     pointer_grab: Option<PointerGrab>,
-    /// The session whose pty took the last left press, if the program inside
+    /// The SURFACE whose pty took the last left press, if the program inside
     /// tracks the mouse. While set, moves and the release are forwarded there
     /// instead of drawing thurbox's own selection — the press chose the owner
     /// of the whole gesture.
+    ///
+    /// A surface rather than a session because a session has two of them: the
+    /// agent's pane and its companion shell can be on screen at once, and only
+    /// one of them took the press. Opaque here — it is handed straight back to
+    /// the terminal store, which is what resolves it.
     pty_pointer: Option<String>,
     /// Programs plugins asked to be run, and what they printed.
     runs: thurbox::kernel::runs::RunStore,
