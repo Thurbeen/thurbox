@@ -299,6 +299,224 @@ fn a_module_may_not_be_delivered_outside_its_own_namespace() {
     );
 }
 
+// ── a package that carries several panes ───────────────────────────────────
+
+/// A package with two panes sharing one module, one version and one lock entry.
+///
+/// Modelled on the plugins people actually ship: `thurbox-annotate` carries two
+/// panes and `thurbox-files` three, sharing a `lib/`, a gate and one history.
+fn multi_pane_package(root: &Path, name: &str, version: &str) -> PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!(
+            "name = \"{name}\"\n\
+             description = \"two panes, one package\"\n\
+             version = \"{version}\"\n\
+             [[pane]]\n\
+             source = \"main.lua\"\n\
+             path = \"plugins/75_{name}.lua\"\n\
+             [[pane]]\n\
+             source = \"notes.lua\"\n\
+             path = \"plugins/76_{name}_notes.lua\"\n\
+             [[module]]\n\
+             source = \"util.lua\"\n\
+             path = \"lib/{name}/util.lua\"\n"
+        ),
+    )
+    .expect("manifest");
+    for (file, slot) in [
+        ("main.lua", name.to_string()),
+        ("notes.lua", format!("{name}_notes")),
+    ] {
+        std::fs::write(
+            dir.join(file),
+            format!(
+                "local util = require(\"lib.{name}.util\")\n\
+                 return {{\n\
+                   name = \"{slot}\",\n\
+                   slot = \"{slot}\",\n\
+                   render = function(ctx)\n\
+                     return {{ kind = \"text\", text = util.label(ctx.width) }}\n\
+                   end,\n\
+                 }}\n"
+            ),
+        )
+        .expect("pane");
+    }
+    std::fs::write(
+        dir.join("util.lua"),
+        "local u = {}\nfunction u.label(w) return \"m \" .. tostring(w) end\nreturn u\n",
+    )
+    .expect("module");
+    dir
+}
+
+#[test]
+fn a_package_with_several_panes_installs_all_of_them() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v0.3.1");
+
+    let report = install(&src);
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert!(
+        ui.join("plugins/75_atlas.lua").is_file(),
+        "the first pane lands"
+    );
+    assert!(
+        ui.join("plugins/76_atlas_notes.lua").is_file(),
+        "and so does the second — one install, not two"
+    );
+    assert!(ui.join("lib/atlas/util.lua").is_file(), "with their module");
+
+    // One version, one pin, one lock entry: the package is the unit of
+    // distribution, so both panes are recorded under the one record.
+    let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
+    assert_eq!(lock.plugins.len(), 1, "{lock:?}");
+    let entry = &lock.plugins[0];
+    assert_eq!(entry.version, "v0.3.1");
+    for file in [
+        "plugins/75_atlas.lua",
+        "plugins/76_atlas_notes.lua",
+        "lib/atlas/util.lua",
+    ] {
+        assert!(entry.files.contains_key(file), "{file} recorded: {entry:?}");
+    }
+
+    // And both load, which is the only proof the second pane is more than a file
+    // on disk.
+    let checked = run(Action::Check).expect("check runs");
+    let loaded: Vec<&str> = checked.json["loaded"]
+        .as_array()
+        .expect("loaded is a list")
+        .iter()
+        .filter_map(|name| name.as_str())
+        .collect();
+    assert!(loaded.contains(&"atlas"), "{loaded:?}");
+    assert!(loaded.contains(&"atlas_notes"), "{loaded:?}");
+}
+
+#[test]
+fn a_singular_pane_manifest_installs_exactly_as_it_did() {
+    // The compatibility promise, and the thing most likely to break quietly:
+    // `pane = { … }` is sugar for one `[[pane]]` and must keep parsing, keep its
+    // destination, and keep honouring `--as`.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = package(home.path(), "atlas", "v0.3.1", "atlas");
+
+    let report = install(&src);
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(
+        report.json["file"], "plugins/75_atlas.lua",
+        "{:?}",
+        report.json
+    );
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
+
+    let moved = package(home.path(), "beacon", "v1", "beacon");
+    let done = run(Action::Install {
+        src: moved.display().to_string(),
+        as_file: Some("plugins/88_beacon.lua".into()),
+        pin: None,
+    })
+    .expect("install");
+    assert!(done.failure.is_none(), "{:?}", done.json);
+    assert!(
+        ui.join("plugins/88_beacon.lua").is_file(),
+        "--as still redirects the one pane a singular manifest declares"
+    );
+    assert!(!ui.join("plugins/75_beacon.lua").is_file());
+}
+
+#[test]
+fn as_selects_which_pane_the_entry_is_keyed_on() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+
+    let done = run(Action::Install {
+        src: src.display().to_string(),
+        as_file: Some("plugins/76_atlas_notes.lua".into()),
+        pin: None,
+    })
+    .expect("install");
+    assert!(done.failure.is_none(), "{:?}", done.json);
+    assert_eq!(
+        done.json["file"], "plugins/76_atlas_notes.lua",
+        "the named pane is the one the spec entry is keyed on: {:?}",
+        done.json
+    );
+    // Selecting is not installing half a package: every pane still arrives.
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+
+    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    assert!(spec.contains("plugins/76_atlas_notes.lua"), "{spec}");
+}
+
+#[test]
+fn as_naming_no_declared_pane_is_refused_and_lists_them() {
+    // A redirect the spec cannot record is a redirect `sync` cannot reproduce, so
+    // several panes land where their author put them — and saying which ones those
+    // are is the difference between a rule and a wall.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+
+    let error = run(Action::Install {
+        src: src.display().to_string(),
+        as_file: Some("plugins/90_elsewhere.lua".into()),
+        pin: None,
+    })
+    .expect_err("should refuse");
+    assert!(error.contains("plugins/75_atlas.lua"), "{error}");
+    assert!(error.contains("plugins/76_atlas_notes.lua"), "{error}");
+    assert!(
+        !ui.join("plugins.toml").exists(),
+        "and nothing is recorded: {error}"
+    );
+}
+
+#[test]
+fn removing_a_multi_pane_package_takes_back_every_pane() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    install(&src);
+
+    run(Action::Remove {
+        name: "atlas".into(),
+    })
+    .expect("remove runs");
+    assert!(!ui.join("plugins/75_atlas.lua").exists());
+    assert!(
+        !ui.join("plugins/76_atlas_notes.lua").exists(),
+        "one record covers both panes, so one removal takes both back"
+    );
+    assert!(!ui.join("lib/atlas/util.lua").exists());
+}
+
+#[test]
+fn syncing_a_multi_pane_package_is_idempotent() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    install(&src);
+
+    let synced = run(Action::Sync).expect("sync runs");
+    assert!(synced.failure.is_none(), "{:?}", synced.json);
+    assert!(
+        synced.json.to_string().contains("current"),
+        "a second run changes nothing: {:?}",
+        synced.json
+    );
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+}
+
 // ── converging ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -1185,6 +1403,49 @@ fn a_cloned_repository_takes_its_pane_from_its_own_manifest() {
     let loaded = checked.json["loaded"].to_string();
     assert!(loaded.contains("widget"), "{loaded}");
     assert!(!loaded.contains("extra"), "{loaded}");
+}
+
+/// A repository's manifest declaring several panes is an ambiguity, not an answer:
+/// a pane inside a working copy loads only because the spec names it, and a spec
+/// entry names one. So it says which it found, and `--as` picks as it always has.
+#[test]
+fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let _ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    std::fs::write(
+        repo.join("plugins/50_extra.lua"),
+        "return { name = \"extra\", slot = \"extra\", render = function() return \"\" end }\n",
+    )
+    .expect("second pane");
+    std::fs::write(
+        repo.join("plugin.toml"),
+        "name = \"widget\"\n\
+         [[pane]]\nsource = \"plugins/40_widget.lua\"\npath = \"plugins/40_widget.lua\"\n\
+         [[pane]]\nsource = \"plugins/50_extra.lua\"\npath = \"plugins/50_extra.lua\"\n",
+    )
+    .expect("manifest");
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-m", "manifest"]);
+
+    let error = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect_err("several panes is not one entry point");
+    assert!(error.contains("plugins/40_widget.lua"), "{error}");
+    assert!(error.contains("plugins/50_extra.lua"), "{error}");
+    assert!(error.contains("--as"), "and says how to choose: {error}");
+
+    let chosen = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: Some("plugins/50_extra.lua".into()),
+        pin: None,
+    })
+    .expect("install with --as");
+    assert!(chosen.failure.is_none(), "{:?}", chosen.json);
+    assert_eq!(chosen.json["file"], "thurbox-widget/plugins/50_extra.lua");
 }
 
 #[test]

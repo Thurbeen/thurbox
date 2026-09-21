@@ -615,11 +615,44 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     None
 }
 
+/// Every pane this install delivered, the one the entry is keyed on first.
+///
+/// A package's panes and its modules share one record, and a module is forced under
+/// `lib/<name>/` by the manifest's own validation — so everything else the record
+/// delivered is a pane. Read from the lock rather than carried through
+/// [`crate::kernel::packages::EntryReport`] because reporting is the only thing that
+/// wants the distinction.
+fn delivered_panes(dir: &Path, file: &str) -> Vec<String> {
+    let mut panes = vec![file.to_string()];
+    if let Ok(lock) = crate::kernel::packages::read_lock(dir) {
+        if let Some(entry) = lock.entry(file) {
+            panes.extend(
+                entry
+                    .files
+                    .keys()
+                    .filter(|delivered| {
+                        delivered.as_str() != file && !delivered.starts_with("lib/")
+                    })
+                    .cloned(),
+            );
+        }
+    }
+    panes
+}
+
 fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<CommandOutput, String> {
     let dir = install_dir()?;
     let report = crate::kernel::packages::install(&dir, src, as_file, pin)?;
 
-    let hint = placement_hint(&dir, &report.file);
+    // Asked of every pane the package brought, not only the entry's: the one
+    // failure with no symptom is a pane that loads and draws nothing, and a second
+    // pane nothing places is that failure exactly.
+    let panes = delivered_panes(&dir, &report.file);
+    let hints: Vec<String> = panes
+        .iter()
+        .filter_map(|pane| placement_hint(&dir, pane))
+        .collect();
+    let hint = hints.first().cloned();
     let repository = crate::kernel::packages::is_repository(&report.src);
     let mut human = format!(
         "{} {} from {} ({})",
@@ -628,13 +661,19 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
         report.src,
         report.version
     );
+    if panes.len() > 1 {
+        human.push_str(&format!(
+            "\n  and {}, from the same package",
+            panes[1..].join(", ")
+        ));
+    }
     if repository {
         // Said at the moment it happens, not only in the guide. Installing a plugin
         // from a repository puts that repository's files on your disk — binaries
         // included — which is what cloning anything does, and is worse left unsaid.
         human.push_str("\n  a working copy of that repository is now in your interface directory");
     }
-    if let Some(hint) = &hint {
+    for hint in &hints {
         human.push_str(&format!("\n  {hint}"));
     }
     human.push_str("\n  `thurbox-cli plugin check` to confirm it loads and draws");
@@ -647,7 +686,9 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
             "version": report.version,
             "outcome": report.outcome.as_str(),
             "repository": repository,
+            "panes": panes,
             "placement_hint": hint,
+            "placement_hints": hints,
             "summary": format!("{} {}", report.outcome.as_str(), report.file),
         }),
         human,

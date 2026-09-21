@@ -427,8 +427,9 @@ pub struct Fetched {
 /// is what makes "install this single file somebody published" a supported thing
 /// rather than a special case.
 ///
-/// `as_file` overrides the destination the manifest proposes. It is required for
-/// the degenerate shape, which proposes none.
+/// `as_file` is read by [`deliveries`], which decides whether it redirects the one
+/// pane a package declares or selects among several. It is required for the
+/// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
     use crate::agent::extension_config as ext;
 
@@ -467,14 +468,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         .map_err(|e| format!("{src}: {e}"))?;
 
     let mut payloads = Vec::new();
-    for (index, file) in manifest.files().enumerate() {
-        // Only the PANE may be redirected. A module's path is the namespace rule
-        // the manifest was validated against, and letting `--as` move it would
-        // hand back the collision that rule exists to prevent.
-        let destination = match (index, as_file) {
-            (0, Some(file)) => file.to_string(),
-            _ => file.path.clone(),
-        };
+    for (destination, file) in deliveries(&manifest, as_file)? {
         plugin_spec::validate_destination(&destination)?;
         payloads.push(Payload {
             file: destination,
@@ -485,6 +479,77 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         manifest: Some(manifest),
         payloads,
     })
+}
+
+/// Every file a package delivers and where it lands, the entry's own pane first.
+///
+/// `--as` means one of two things, and how many panes the package declares decides
+/// which — because with one pane there is nothing to select, and with several there
+/// is nothing safe to redirect:
+///
+/// * **One pane**: a *redirect*. The pane lands where `--as` says, which is what it
+///   has always done and what every singular manifest was written against.
+/// * **Several panes**: a *selection*. It names one of the declared destinations,
+///   and that pane becomes the one the spec entry is keyed on; every pane still
+///   lands where its author put it. Redirecting one of several would produce a
+///   destination the spec cannot record — an entry names one — so `sync` could not
+///   reproduce it on the next machine, and a move that survives until the next
+///   convergence is worse than one refused up front.
+///
+/// A module is never redirected either way: its path is the `lib/<name>/` namespace
+/// rule the manifest was validated against, and letting `--as` move it would hand
+/// back the collision that rule exists to prevent.
+fn deliveries<'a>(
+    manifest: &'a crate::session::PackageManifest,
+    as_file: Option<&str>,
+) -> Result<Vec<(String, &'a crate::session::PackageFile)>, String> {
+    let mut files: Vec<(String, &crate::session::PackageFile)> = match manifest.panes.as_slice() {
+        [only] => vec![(as_file.unwrap_or(&only.path).to_string(), only)],
+        several => {
+            let mut ordered: Vec<(String, &crate::session::PackageFile)> = several
+                .iter()
+                .map(|pane| (pane.path.clone(), pane))
+                .collect();
+            if let Some(selected) = as_file {
+                let index = several
+                    .iter()
+                    .position(|pane| pane.path == selected)
+                    .ok_or_else(|| pick_a_pane(selected, several))?;
+                // Moved to the front rather than swapped, so the rest keep the order
+                // their author declared them in.
+                let chosen = ordered.remove(index);
+                ordered.insert(0, chosen);
+            }
+            ordered
+        }
+    };
+    files.extend(
+        manifest
+            .modules
+            .iter()
+            .map(|module| (module.path.clone(), module)),
+    );
+    Ok(files)
+}
+
+/// What to say when a destination names no pane a multi-pane package declares.
+///
+/// Worded for both callers, which is why it does not simply say "pass --as": on an
+/// install the destination came from `--as`, but on a `sync` or an `update` it came
+/// from a spec entry written when the package carried fewer panes. Both readers need
+/// the same thing — the list, since nothing in front of them holds the manifest.
+fn pick_a_pane(given: &str, panes: &[crate::session::PackageFile]) -> String {
+    format!(
+        "{} carries {} panes and none of them is {given} — an entry is keyed on one \
+         of {}, which --as selects rather than moves",
+        crate::session::PackageManifest::FILE,
+        panes.len(),
+        panes
+            .iter()
+            .map(|pane| pane.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Split a `.lua` source into the directory holding it and its file name.
@@ -599,12 +664,13 @@ fn last_segment(source: &str, windows: bool) -> &str {
 /// Three answers in order, and the order is the point:
 ///
 /// 1. **`--as`**, because an explicit request wins over anything inferred.
-/// 2. **The repository's own `plugin.toml`**, if it has one. A manifest is therefore
-///    *not* irrelevant to a cloned plugin: it is how a repository with several panes
-///    names its entry point, and it means one repository serves both install
-///    mechanisms rather than presenting two doors that behave differently. Read
-///    leniently (`pane_source_of`) — the copy-model rules do not apply to a tree
-///    that keeps its own layout.
+/// 2. **The repository's own `plugin.toml`**, if it has one and it names a single
+///    pane. A manifest is therefore *not* irrelevant to a cloned plugin, and it
+///    means one repository serves both install mechanisms rather than presenting two
+///    doors that behave differently. Read leniently (`pane_sources_of`) — the
+///    copy-model rules do not apply to a tree that keeps its own layout. A manifest
+///    declaring several is an ambiguity like step 3's, not an answer: a nested pane
+///    loads only because the spec names it, and a spec entry names one.
 /// 3. **The single `.lua` under `plugins/`**, which is what a one-pane repository
 ///    looks like and makes "clone it and it works" true with no manifest at all.
 ///
@@ -626,10 +692,19 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
 
     // The repository's own manifest, when it has one.
     if let Ok(text) = std::fs::read_to_string(root.join(crate::session::PackageManifest::FILE)) {
-        if let Some(source) = plugin_spec::pane_source_of(&text) {
+        let sources = plugin_spec::pane_sources_of(&text);
+        if sources.len() > 1 {
+            return Err(format!(
+                "{} names {} panes ({}) — name the one to load: --as plugins/<file>",
+                crate::session::PackageManifest::FILE,
+                sources.len(),
+                sources.join(", ")
+            ));
+        }
+        if let Some(source) = sources.first() {
             let file = format!("{name}/{}", source.trim_start_matches('/'));
             plugin_spec::validate_destination(&file)?;
-            if !root.join(&source).is_file() {
+            if !root.join(source).is_file() {
                 return Err(format!(
                     "{} names {source} as its pane, which is not in the repository",
                     crate::session::PackageManifest::FILE
