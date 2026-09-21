@@ -1122,7 +1122,7 @@ impl Session {
         debug!("Session writer task exiting");
     }
 
-    /// Resize the session's pane and grid, and its companion shell's with it.
+    /// Resize the agent's own pane and grid — and **only** that one.
     /// (`send_input` / `has_exited` / `last_output_at` / `backend_id` come from
     /// the embedded [`WiredPane`].)
     ///
@@ -1132,6 +1132,15 @@ impl Session {
     /// the size it asked for to keep a round trip off every frame, and a
     /// memoized failure would leave the agent wrapping at the old width with
     /// nothing to trigger another attempt, so it memoizes only on `true`.
+    ///
+    /// The companion shell is sized by [`Self::resize_shell`] and by nothing
+    /// else. This used to size both, on the assumption that the two take turns
+    /// in one rect — true while the shell was a second tab of the centre, and
+    /// false the moment an arrangement gives the shell a slot of its own. A
+    /// shell in a 35% column then dragged the agent holding `center` down to
+    /// its width, every frame, and the agent rendered at the shell's size
+    /// (#1220). A pane's size comes from the rect that pane is painted into;
+    /// there is no size the two share.
     pub fn resize(&self, rows: u16, cols: u16) -> bool {
         // A placeholder has no live pane; only resize its local notice buffer.
         // Talking to the (possibly-down) backend here would issue a blocking
@@ -1149,11 +1158,21 @@ impl Session {
             tracing::warn!("Failed to resize session: {e}");
             return false;
         }
+        true
+    }
+
+    /// Resize the companion shell's pane and grid, if there is one.
+    ///
+    /// The shell's half of [`Self::resize`], separate because the two panes are
+    /// separate surfaces: each is sized from the rect it was painted into, and
+    /// neither's geometry is derived from the other's. Reports what that one
+    /// reports, and for the same reason — the render path memoizes only a size
+    /// that reached the backend.
+    pub fn resize_shell(&self, rows: u16, cols: u16) -> bool {
         let Some(shell) = &self.shell_pane else {
+            // No shell, so nothing to reach and nothing left at a stale width.
             return true;
         };
-        // The two panes take turns in one rect, so a shell left at the old size
-        // is the same wrong wrapping as an agent left at it.
         if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::warn!("Failed to resize shell pane: {e}");
             return false;

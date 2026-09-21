@@ -3109,6 +3109,24 @@ other panel toggles' F-keys.
   and then `exec "$SHELL" -l`, falling back to `/bin/sh -l` if `$SHELL` is
   unset. A psmux (Windows SSH) host keeps its native `powershell` pane.
 
+### The shell is a surface, not a second view of the agent
+
+A session's shell is addressed as `<session id>#shell` and is a **surface of its
+own**: the kernel keeps its rect, the size it has told the multiplexer, its
+scrollback, its links and its share of the mouse apart from the agent's. So an
+arrangement that gives the shell a slot of its own — `layout.lua` is the
+operator's file, and any legal arrangement has to work — puts two panes on
+screen at two sizes, each drawing itself and neither reading the other's
+geometry.
+
+While the two shared one per-session rect and size memo, every frame resized
+both panes to whichever of them painted last: the agent rendered at the shell's
+dimensions, opening the shell reflowed the agent, the shell drew its own screen
+at the agent's width, and the two repainted each other continuously (#1220).
+The bundled centre pane still offers the two as tabs, which is a choice that
+pane makes about the slot it was given — not one the kernel imposes on anyone
+else's arrangement.
+
 ---
 
 ## Clickable URLs

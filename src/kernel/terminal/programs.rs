@@ -178,12 +178,10 @@ pub fn plan_keys(plugin: &str, name: &str, running: bool, program: &str) -> Keys
 /// One plugin's program pane, and the rect it was last painted into.
 pub(super) struct ProgramSlot {
     pub(super) pane: crate::agent::backend::ProgramPane,
-    /// Last rect painted, so a resize happens on change rather than per frame.
-    pub(super) size: Cell<(u16, u16)>,
-    /// Where it was last painted, so a click can be mapped into its grid. Cleared
-    /// each frame with every other surface's, so a pane that stopped drawing
-    /// cannot be hit (see [`Terminals::forget_rects`]).
-    pub(super) rect: Cell<Rect>,
+    /// Where it was last painted and the size it was last told about — the same
+    /// per-surface record a session's two panes each hold, and for the same
+    /// reason: geometry belongs to one surface.
+    pub(super) painted: super::Painted,
     /// What the plugin asked to run, kept so a restart can re-adopt with the same
     /// program recorded and a report can name it.
     pub(super) program: String,
@@ -198,9 +196,8 @@ impl Terminals {
     /// and not a second copy of the program.
     ///
     /// The pane is born at `rows`/`cols`, which the caller passes as the rect it
-    /// will be painted into where that is known. `open_shell` documents why: the
-    /// render-time resize cannot correct a bad birth size when the size memo has
-    /// already been set, so the pane looks settled while being a screen wide.
+    /// will be painted into where that is known — so its first frame is already
+    /// the right shape rather than a screen-wide one that reflows on the next.
     pub fn start_program(
         &mut self,
         key: &ProgramKey,
@@ -279,8 +276,10 @@ impl Terminals {
             key.clone(),
             ProgramSlot {
                 pane,
-                size: Cell::new((rows, cols)),
-                rect: Cell::new(Rect::default()),
+                painted: super::Painted {
+                    size: Cell::new((rows, cols)),
+                    rect: Cell::new(Rect::default()),
+                },
                 program: program.to_string(),
             },
         );

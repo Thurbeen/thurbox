@@ -195,48 +195,109 @@ fn mouse_report(
     }
 }
 
-/// A session we have attached to, plus the size we last told it about.
+/// Where one surface was last painted, and the size its pane was last told
+/// about.
+///
+/// **One per surface, never one per session.** A session shows up to two of
+/// them — the agent and its companion shell — and an arrangement may put both
+/// on screen at once, in slots of different sizes. Sharing one of these between
+/// the two is what made them fight: each frame set the memo from its own rect,
+/// found the other's there, and resized on a size that was never its own
+/// (#1220). A plugin's program pane holds one of these too, for the same
+/// reason.
+#[derive(Default)]
+struct Painted {
+    /// Last size pushed to the pane. A terminal that is not resized to its
+    /// visible rect renders at the wrong width, so this is tracked per surface
+    /// and pushed whenever that surface's rect changes.
+    size: Cell<(u16, u16)>,
+    /// Where the surface was last painted, so a mouse position can be converted
+    /// into a grid position. Cleared at the start of every frame
+    /// ([`Terminals::forget_rects`]), so only what actually painted can be hit.
+    rect: Cell<Rect>,
+}
+
+impl Painted {
+    /// A surface that painted into a rect with room in it.
+    fn on_screen(&self) -> bool {
+        let rect = self.rect.get();
+        rect.width > 0 && rect.height > 0
+    }
+}
+
+/// The session a surface name belongs to, and whether it names that session's
+/// companion shell.
+///
+/// The one place the `<id>#shell` spelling is read. What comes back says which
+/// **pane** was asked for and nothing about what else is on screen: the two are
+/// independent surfaces, and a name that resolved differently depending on
+/// which of them painted last is exactly the shared tab area this stopped
+/// being.
+fn split_surface(surface: &str) -> (&str, bool) {
+    match surface.strip_suffix(SHELL_SUFFIX) {
+        Some(id) => (id, true),
+        None => (surface, false),
+    }
+}
+
+/// The surface name of a session's companion shell.
+///
+/// Spelled here rather than at each caller so the suffix has one definition —
+/// the one the resolver on the other side of it reads back.
+pub fn shell_surface(session: &str) -> String {
+    format!("{session}{SHELL_SUFFIX}")
+}
+
+/// A session we have attached to, and the painted state of each of its panes.
 struct Live {
     session: crate::agent::Session,
-    /// Last size pushed to the pane. A terminal that is not resized to its
-    /// visible rect renders at the wrong width, so this is tracked per pane
-    /// and pushed whenever the rect changes.
-    size: Cell<(u16, u16)>,
-    /// Where this session's surface was last painted, so a mouse position can
-    /// be converted into a grid position.
-    rect: Cell<Rect>,
-    /// Whether the shell — rather than the agent — was the view painted into
-    /// that rect. The two take turns in one rect, so a pointer landing in it
-    /// has to be told which pane it is over.
-    shell_visible: Cell<bool>,
+    /// The agent's own pane.
+    agent: Painted,
+    /// The companion shell's, independent of the agent's in every respect —
+    /// which slot it sits in, how big it is, and whether it is on screen at all.
+    shell: Painted,
 }
 
 impl Live {
-    /// The parser of the pane currently *painted* into this session's rect.
-    ///
-    /// The agent and its companion shell take turns in one rect, so every reader
-    /// that answers "what is on screen" — the text a copy takes, the links a
-    /// click resolves, the screen a search scans — has to ask this rather than
-    /// reach for `session.parser`. Reaching for it directly is what made copying
-    /// out of a shell fail: a one-line selection read the agent's blank row and
-    /// reported "nothing to copy", and a taller one copied the agent's text from
-    /// under the shell the user was looking at.
-    fn visible_parser(&self) -> &Arc<std::sync::Mutex<crate::agent::SessionParser>> {
-        match (self.shell_visible.get(), &self.session.shell_pane) {
-            (true, Some(shell)) => &shell.parser,
-            _ => &self.session.parser,
+    /// The painted state of one of this session's two panes.
+    fn painted(&self, shell: bool) -> &Painted {
+        if shell {
+            &self.shell
+        } else {
+            &self.agent
         }
     }
 
-    /// Send bytes to the pane currently painted into this session's rect.
+    /// The parser of one of this session's two panes, or `None` when the shell
+    /// was asked for and there is not one.
+    fn parser(&self, shell: bool) -> Option<&Arc<std::sync::Mutex<crate::agent::SessionParser>>> {
+        match (shell, &self.session.shell_pane) {
+            (true, Some(pane)) => Some(&pane.parser),
+            (true, None) => None,
+            (false, _) => Some(&self.session.parser),
+        }
+    }
+
+    /// Send bytes to one of this session's two panes.
     ///
-    /// The write half of [`Self::visible_parser`], beside it so the two cannot
-    /// come to disagree: a wheel tick answered by one pane must not be delivered
-    /// to the other.
-    fn send_visible_input(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
-        match (self.shell_visible.get(), &self.session.shell_pane) {
-            (true, Some(shell)) => shell.send_input(bytes),
-            _ => self.session.send_input(bytes),
+    /// The write half of [`Self::parser`], beside it so the two cannot come to
+    /// disagree: a wheel tick answered by one pane must not be delivered to the
+    /// other.
+    fn send(&self, shell: bool, bytes: Vec<u8>) -> anyhow::Result<()> {
+        match (shell, &self.session.shell_pane) {
+            (true, Some(pane)) => pane.send_input(bytes),
+            (true, None) => Ok(()),
+            (false, _) => self.session.send_input(bytes),
+        }
+    }
+
+    /// Push a size to one of this session's two panes, reporting whether it
+    /// reached the backend — the render path memoizes only a size that did.
+    fn resize(&self, shell: bool, rows: u16, cols: u16) -> bool {
+        if shell {
+            self.session.resize_shell(rows, cols)
+        } else {
+            self.session.resize(rows, cols)
         }
     }
 }
@@ -728,9 +789,14 @@ impl Terminals {
                         done.session.clone(),
                         Live {
                             session,
-                            size: Cell::new((rows, cols)),
-                            rect: Cell::new(Rect::default()),
-                            shell_visible: Cell::new(false),
+                            // The size it was adopted at; the shell has none
+                            // until there is one, and gets its own on the first
+                            // frame that paints it.
+                            agent: Painted {
+                                size: Cell::new((rows, cols)),
+                                rect: Cell::new(Rect::default()),
+                            },
+                            shell: Painted::default(),
                         },
                     );
                     if self.failed.remove(&done.session).is_some() {
@@ -967,23 +1033,14 @@ impl Terminals {
     #[must_use = "the caller decides whether the keystroke was consumed from this"]
     pub fn send(&self, session: &str, bytes: Vec<u8>) -> bool {
         // A shell surface is addressed `<id>#shell`, the same spelling
-        // `render_session` resolves — so the view you are looking at is the pane
+        // `render_session` resolves — so the pane you are looking at is the one
         // your keystrokes reach. Without this leg the shell drew but could not
         // be typed into, which only became visible once it stopped being a pane
         // of its own and became a tab of the terminal.
-        if let Some(id) = session.strip_suffix(SHELL_SUFFIX) {
-            return match self
-                .live
-                .get(id)
-                .and_then(|live| live.session.shell_pane.as_ref())
-            {
-                Some(shell) => shell.send_input(bytes).is_ok(),
-                None => false,
-            };
-        }
-        match self.live.get(session) {
-            Some(live) => live.session.send_input(bytes).is_ok(),
-            None => false,
+        let (id, shell) = split_surface(session);
+        match self.live.get(id) {
+            Some(live) if live.parser(shell).is_some() => live.send(shell, bytes).is_ok(),
+            _ => false,
         }
     }
 
@@ -999,37 +1056,40 @@ impl Terminals {
     /// such pane, or the backend cannot say — every caller reads that as "not
     /// known to be dead", so an unsure answer changes nothing.
     pub fn is_dead(&self, surface: &str) -> Option<bool> {
-        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
-            return self.live.get(id)?.session.shell_is_dead()?.ok();
+        let (id, shell) = split_surface(surface);
+        let live = self.live.get(id)?;
+        if shell {
+            return live.session.shell_is_dead()?.ok();
         }
-        self.live.get(surface)?.session.is_dead().ok()
+        live.session.is_dead().ok()
     }
 
-    /// The live entry a surface key names, and the parser it is showing.
+    /// The pane a surface name addresses: where it was painted, and its parser.
     ///
-    /// One resolver for both spellings a surface arrives as: an explicit
-    /// `<id>#shell` asks for the shell, and a bare id asks for whichever pane is
-    /// painted into that session's rect ([`Live::visible_parser`]). Every reader
-    /// of a grid goes through it, so a copy, a click on a link and a content
-    /// search cannot disagree about which of the two panes the user is looking
-    /// at.
+    /// One resolver for both spellings a surface arrives as — `<id>#shell` names
+    /// the companion shell, a bare id names the agent — and every reader of a
+    /// grid goes through it, so a copy, a click on a link and a content search
+    /// all read the pane they were asked about. Which pane that is depends on
+    /// the name and on nothing else: resolving it against whichever of the two
+    /// painted last is what let a selection in one pane copy out of the other.
     fn surface_parser(
         &self,
         surface: &str,
-    ) -> Option<(&Live, &Arc<std::sync::Mutex<crate::agent::SessionParser>>)> {
-        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
-            let live = self.live.get(id)?;
-            return Some((live, &live.session.shell_pane.as_ref()?.parser));
-        }
-        let live = self.live.get(surface)?;
-        Some((live, live.visible_parser()))
+    ) -> Option<(
+        &Painted,
+        &Arc<std::sync::Mutex<crate::agent::SessionParser>>,
+    )> {
+        let (id, shell) = split_surface(surface);
+        let live = self.live.get(id)?;
+        Some((live.painted(shell), live.parser(shell)?))
     }
 
-    /// The visible contents of a session's terminal, as text.
+    /// The contents of one surface's terminal, as text.
     ///
-    /// Visible is meant literally: a session showing its companion shell reports
-    /// the shell's screen, because that is the one the user is reading and the one
-    /// a copy or a search is about.
+    /// Named by surface, so `<id>#shell` reads the shell's screen and a bare id
+    /// reads the agent's. A pane that shows the shell asks for the shell — it
+    /// already spells that surface to render it — rather than relying on the
+    /// kernel to guess which of the two the user is reading.
     ///
     /// Read here rather than in a worker because the parser lives beside a
     /// `!Send` VM — which is the compile-time guarantee working, not an
@@ -1048,7 +1108,13 @@ impl Terminals {
         Some(out)
     }
 
-    /// What each named session's terminal is showing, for a search to scan.
+    /// What each named session's terminals are showing, for a search to scan.
+    ///
+    /// **Both** of a session's panes, under that session's id: a search asks
+    /// which session holds the text, and the answer is the same session whether
+    /// the agent printed it or the shell did. Scanning only whichever pane
+    /// happened to be on screen is what made a search's answer depend on the
+    /// arrangement.
     ///
     /// Only sessions with a live pane appear: an unreachable host or a session
     /// whose pane has not been adopted has no parser to read, so it contributes
@@ -1062,7 +1128,10 @@ impl Terminals {
         sessions
             .iter()
             .filter_map(|id| {
-                let text = self.visible_text(id)?;
+                let text = match self.visible_text(&shell_surface(id)) {
+                    Some(shell) => format!("{}\n{shell}", self.visible_text(id)?),
+                    None => self.visible_text(id)?,
+                };
                 let capped: String = text
                     .lines()
                     .rev()
@@ -1103,6 +1172,11 @@ impl Terminals {
     ///
     /// Idempotent: `ensure_shell_pane` returns early when one exists, so a
     /// plugin can command this every time you press the key.
+    ///
+    /// It changes nothing about the agent. Opening a shell used to resize the
+    /// agent's pane — the new pane was born at the agent's rect and the two
+    /// shared one size memo — which is why a shell appearing anywhere on screen
+    /// reflowed the agent (#1220).
     pub fn open_shell(
         &mut self,
         session: &str,
@@ -1114,17 +1188,14 @@ impl Terminals {
             .live
             .get_mut(session)
             .ok_or("this session has no live pane to attach a shell to")?;
-        // Born at the size of the rect it will be painted into, when that is
-        // known. The caller only has the whole terminal's size, and the
-        // render-time resize below cannot correct it: the agent view shares
-        // this memo and has already set it, so the size looks settled while the
-        // new pane is a screen wide.
-        let rect = live.rect.get();
-        let (rows, cols) = if rect.width > 0 && rect.height > 0 {
-            (rect.height, rect.width)
-        } else {
-            (rows, cols)
-        };
+        // Born at whatever the caller had — the whole terminal — and sized for
+        // real by the first frame that paints it, because its size memo starts
+        // empty and any rect differs from it. This used to be born at the
+        // AGENT's rect, on the reasoning that the render-time resize could not
+        // correct a memo the agent had already set. That memo is now the
+        // shell's own, so the reasoning is gone with it — and taking a birth
+        // size off the other pane was the same coupling in miniature.
+        //
         // `Session::adopt` builds a fresh `SessionInfo`, so its own `cwd` is
         // always `None` here — v2 attaches rather than restoring the persisted
         // row. Without passing one the shell inherits the multiplexer's
@@ -1189,33 +1260,58 @@ impl Terminals {
     /// screen. Cleared each frame, only what actually painted can be hit.
     pub fn forget_rects(&self) {
         for live in self.live.values() {
-            live.rect.set(Rect::default());
+            live.agent.rect.set(Rect::default());
+            live.shell.rect.set(Rect::default());
         }
         for slot in self.programs.values() {
-            slot.rect.set(Rect::default());
+            slot.painted.rect.set(Rect::default());
         }
     }
 
-    /// Where a session's surface was last painted, so a click can be mapped
-    /// into its grid.
+    /// Where a surface was last painted, so a click can be mapped into its grid.
     ///
-    /// `None` once the surface is not on screen: an empty rect cannot contain a
-    /// pointer, so a stale one would only ever be a wrong answer.
+    /// `None` once that surface is not on screen: an empty rect cannot contain a
+    /// pointer, so a stale one would only ever be a wrong answer. A session's
+    /// two panes answer separately — `<id>#shell` is where the shell was
+    /// painted, a bare id where the agent was — so a point is resolved against
+    /// the pane it actually landed in.
     pub fn last_rect(&self, session: &str) -> Option<Rect> {
         // A program surface keeps its rect on its own slot, so the one accessor
-        // answers for both kinds — callers ask about "a surface", not about a
-        // session.
+        // answers for all three kinds — callers ask about "a surface", not about
+        // a session.
         if let Some(key) = self.program_key(session) {
             return self
                 .programs
                 .get(key)
-                .map(|slot| slot.rect.get())
-                .filter(|rect| rect.width > 0 && rect.height > 0);
+                .filter(|slot| slot.painted.on_screen())
+                .map(|slot| slot.painted.rect.get());
         }
+        let (id, shell) = split_surface(session);
         self.live
-            .get(session)
-            .map(|live| live.rect.get())
-            .filter(|rect| rect.width > 0 && rect.height > 0)
+            .get(id)
+            .map(|live| live.painted(shell))
+            .filter(|painted| painted.on_screen())
+            .map(|painted| painted.rect.get())
+    }
+
+    /// The pane under `(x, y)`: the session it belongs to, and which of that
+    /// session's two it is.
+    ///
+    /// Both panes are candidates and each is tested against its own rect. Which
+    /// one a pointer is over is not a question a session can answer for itself
+    /// once the two are on screen at once — asking it that way is what sent a
+    /// press in one pane to the program running in the other.
+    fn pane_at(&self, x: u16, y: u16) -> Option<(&str, &Live, bool)> {
+        let position = Position::new(x, y);
+        self.live.iter().find_map(|(id, live)| {
+            [false, true]
+                .into_iter()
+                .find(|&shell| {
+                    let painted = live.painted(shell);
+                    painted.on_screen() && painted.rect.get().contains(position)
+                })
+                .map(|shell| (id.as_str(), live, shell))
+        })
     }
 
     /// Hand a wheel tick to whatever terminal is under `(x, y)`, if that
@@ -1227,15 +1323,12 @@ impl Terminals {
     /// first and `false` means "nobody here wants it" — the caller then scrolls
     /// the pane itself. v1 draws the same line in `try_forward_wheel_to_pty`.
     pub fn forward_wheel(&self, x: u16, y: u16, up: bool) -> bool {
-        let position = Position::new(x, y);
-        let Some((_, live)) = self
-            .live
-            .iter()
-            .find(|(_, live)| live.rect.get().contains(position))
-        else {
+        let Some((_, live, shell)) = self.pane_at(x, y) else {
             return false;
         };
-        let parser = live.visible_parser();
+        let Some(parser) = live.parser(shell) else {
+            return false;
+        };
         let encoding = match parser.lock() {
             Ok(parser) => {
                 let screen = parser.screen();
@@ -1251,14 +1344,14 @@ impl Terminals {
         // The rect is the surface's own content area — the plugin's frame is
         // outside it — so the offset needs no border adjustment. PTY cells are
         // 1-based.
-        let rect = live.rect.get();
+        let rect = live.painted(shell).rect.get();
         let col = u32::from(x - rect.x) + 1;
         let row = u32::from(y - rect.y) + 1;
         let button = if up { 64 } else { 65 };
         let Some(bytes) = mouse_report(encoding, button, col, row, true) else {
             return false;
         };
-        match live.send_visible_input(bytes) {
+        match live.send(shell, bytes) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("forwarding a wheel tick to the pty failed: {e}");
@@ -1271,25 +1364,29 @@ impl Terminals {
     /// inside asked for the mouse — any tracking mode hears a press.
     ///
     /// The wheel above answers per tick; a button starts a *gesture*. So the
-    /// caller is told which session took the press and routes the moves and
-    /// the release back by that key, the way any pointer capture works: the
-    /// surface that heard the press owns the button until it comes back up,
-    /// even when the drag wanders off the pane.
+    /// caller is told which SURFACE took the press — a bare id or `<id>#shell`
+    /// — and routes the moves and the release back by that name, the way any
+    /// pointer capture works: the surface that heard the press owns the button
+    /// until it comes back up, even when the drag wanders off the pane. The
+    /// name has to carry which pane, because the other one may be on screen too
+    /// and the gesture belongs to exactly one of them.
     pub fn forward_press(&self, x: u16, y: u16) -> Option<String> {
-        let position = Position::new(x, y);
-        let (key, live) = self
-            .live
-            .iter()
-            .find(|(_, live)| live.rect.get().contains(position))?;
-        self.forward_button(live, x, y, 0, true, |_| true)
-            .then(|| key.clone())
+        let (id, live, shell) = self.pane_at(x, y)?;
+        let key = if shell {
+            shell_surface(id)
+        } else {
+            id.to_string()
+        };
+        self.forward_button(live, shell, x, y, 0, true, |_| true)
+            .then_some(key)
     }
 
     /// A move with the button held, to the session that took the press.
     /// Only `?1002`/`?1003` ask to hear these.
     pub fn forward_motion(&self, session: &str, x: u16, y: u16) -> bool {
-        self.live.get(session).is_some_and(|live| {
-            self.forward_button(live, x, y, 32, true, |mode| {
+        let (id, shell) = split_surface(session);
+        self.live.get(id).is_some_and(|live| {
+            self.forward_button(live, shell, x, y, 32, true, |mode| {
                 matches!(
                     mode,
                     vt100::MouseProtocolMode::ButtonMotion | vt100::MouseProtocolMode::AnyMotion
@@ -1305,16 +1402,11 @@ impl Terminals {
     /// no button down there is no press to have chosen an owner, so the move
     /// belongs to whatever pane the pointer is actually over.
     pub fn forward_move(&self, x: u16, y: u16) -> bool {
-        let position = Position::new(x, y);
-        let Some((_, live)) = self
-            .live
-            .iter()
-            .find(|(_, live)| live.rect.get().contains(position))
-        else {
+        let Some((_, live, shell)) = self.pane_at(x, y) else {
             return false;
         };
         // 35 is "motion, no button": 3 under the 32 move flag.
-        self.forward_button(live, x, y, 35, true, |mode| {
+        self.forward_button(live, shell, x, y, 35, true, |mode| {
             mode == vt100::MouseProtocolMode::AnyMotion
         })
     }
@@ -1322,8 +1414,9 @@ impl Terminals {
     /// The release that ends the gesture, to the session that took the press.
     /// Every mode past X10 (`?9`) asks to hear it.
     pub fn forward_release(&self, session: &str, x: u16, y: u16) -> bool {
-        self.live.get(session).is_some_and(|live| {
-            self.forward_button(live, x, y, 0, false, |mode| {
+        let (id, shell) = split_surface(session);
+        self.live.get(id).is_some_and(|live| {
+            self.forward_button(live, shell, x, y, 0, false, |mode| {
                 mode != vt100::MouseProtocolMode::Press
             })
         })
@@ -1335,16 +1428,20 @@ impl Terminals {
     /// Coordinates are clamped into the pane rather than dropped: a drag that
     /// crosses the border still means "as far as you go in that direction" to
     /// the program tracking it, which is how every capture behaves.
+    #[allow(clippy::too_many_arguments)]
     fn forward_button(
         &self,
         live: &Live,
+        shell: bool,
         x: u16,
         y: u16,
         button: u32,
         press: bool,
         wants: impl Fn(vt100::MouseProtocolMode) -> bool,
     ) -> bool {
-        let parser = live.visible_parser();
+        let Some(parser) = live.parser(shell) else {
+            return false;
+        };
         let asked = match parser.lock() {
             Ok(parser) => {
                 let screen = parser.screen();
@@ -1360,16 +1457,17 @@ impl Terminals {
 
         // The rect is the surface's own content area, as for the wheel; a
         // surface no longer painted has an empty one and gets nothing.
-        let rect = live.rect.get();
-        if rect.width == 0 || rect.height == 0 {
+        let painted = live.painted(shell);
+        if !painted.on_screen() {
             return false;
         }
+        let rect = painted.rect.get();
         let col = u32::from(x.clamp(rect.x, rect.x + rect.width - 1) - rect.x) + 1;
         let row = u32::from(y.clamp(rect.y, rect.y + rect.height - 1) - rect.y) + 1;
         let Some(bytes) = mouse_report(encoding, button, col, row, press) else {
             return false;
         };
-        match live.send_visible_input(bytes) {
+        match live.send(shell, bytes) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("forwarding a button event to the pty failed: {e}");
@@ -1505,16 +1603,16 @@ impl Terminals {
                 .get(key)
                 .map(|slot| slot.pane.last_output_at());
         }
-        if let Some(id) = surface.strip_suffix(SHELL_SUFFIX) {
-            return self
-                .live
-                .get(id)
-                .and_then(|live| live.session.shell_pane.as_ref())
-                .map(|shell| shell.last_output_at());
+        let (id, shell) = split_surface(surface);
+        let live = self.live.get(id)?;
+        if shell {
+            return live
+                .session
+                .shell_pane
+                .as_ref()
+                .map(|pane| pane.last_output_at());
         }
-        self.live
-            .get(surface)
-            .map(|live| live.session.last_output_at())
+        Some(live.session.last_output_at())
     }
 
     /// A cheap signature of every live pane's last output.
@@ -1777,12 +1875,12 @@ impl SurfaceProvider for Terminals {
 
         // Recorded so a click and a wheel can be resolved against this rect, the
         // same way a session surface's is.
-        slot.rect.set(area);
+        slot.painted.rect.set(area);
         // Matched to the rect on change only: a program told its size every frame
         // is a program sent a SIGWINCH every frame.
         let wanted = (area.height, area.width);
-        if slot.size.get() != wanted && slot.pane.resize(area.height, area.width) {
-            slot.size.set(wanted);
+        if slot.painted.size.get() != wanted && slot.pane.resize(area.height, area.width) {
+            slot.painted.size.set(wanted);
         }
         let Ok(parser) = slot.pane.parser.lock() else {
             return super::paint::ProgramPaint::NotStarted;
@@ -1796,61 +1894,38 @@ impl SurfaceProvider for Terminals {
 
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
         // A session's shell is addressed as `<id>#shell`, so it is a second
-        // surface over the same primitive rather than a second node kind.
-        if let Some(id) = session.strip_suffix(SHELL_SUFFIX) {
-            let Some(live) = self.live.get(id) else {
-                return false;
-            };
-            let Some(shell) = &live.session.shell_pane else {
-                return false;
-            };
-            // The shell is opened at the terminal's size, not the pane's, and
-            // while it is the visible view nothing else drives a resize — so it
-            // is matched to its rect here, exactly as the agent surface below
-            // is. `Session::resize` sizes both panes, which is right: they take
-            // turns in the same rect.
-            live.rect.set(area);
-            live.shell_visible.set(true);
-            let wanted = (area.height, area.width);
-            if live.size.get() != wanted && live.session.resize(area.height, area.width) {
-                live.size.set(wanted);
-            }
-            let Ok(mut parser) = shell.parser.lock() else {
-                return false;
-            };
-            // The shell has a scrollback of its own — it is wired up by the same
-            // `wire_up` the agent pane is — so the offset is set here exactly as
-            // it is below. Left out, the pane could hold an offset for the shell
-            // and the wheel could move it, and the screen behind it never went
-            // anywhere.
-            parser.screen_mut().set_scrollback(usize::from(scroll));
-            links::clear_uncovered(frame, area, parser.screen());
-            frame.render_widget(
-                PseudoTerminal::new(parser.screen()).style(Style::default()),
-                area,
-            );
-            return true;
-        }
-
-        let Some(live) = self.live.get(session) else {
+        // surface over the same primitive rather than a second node kind — and
+        // ONE path paints either of them, parameterised by which pane the name
+        // asked for. It was two, and the two disagreed: each recorded its rect
+        // and its size in the same pair of cells, so whichever painted second
+        // resized both panes to its own rect and the pane painted first spent
+        // the next frame undoing it (#1220).
+        let (id, shell) = split_surface(session);
+        let Some(live) = self.live.get(id) else {
             return false;
         };
+        let Some(parser) = live.parser(shell) else {
+            return false;
+        };
+        let painted = live.painted(shell);
 
-        // The pane must match the rect it is painted into, or the agent wraps
-        // at the wrong width. `resize` is a no-op when nothing changed, but the
-        // comparison keeps a tmux round-trip off every frame.
-        live.rect.set(area);
-        live.shell_visible.set(false);
+        // The pane must match the rect it is painted into, or its program wraps
+        // at the wrong width. The memo is this surface's own, so the comparison
+        // keeps a tmux round-trip off every frame without ever reading a size
+        // that belongs to the other pane.
+        painted.rect.set(area);
         let wanted = (area.height, area.width);
-        if live.size.get() != wanted && live.session.resize(area.height, area.width) {
-            live.size.set(wanted);
+        if painted.size.get() != wanted && live.resize(shell, area.height, area.width) {
+            painted.size.set(wanted);
         }
 
-        let Ok(mut parser) = live.session.parser.lock() else {
+        let Ok(mut parser) = parser.lock() else {
             return false;
         };
         // Scrollback is a property of the screen, not of the widget, so it is
-        // set before reading and left where the plugin asked for it.
+        // set before reading and left where the plugin asked for it. The shell
+        // has one of its own — it is wired up by the same `wire_up` the agent
+        // pane is — and it is this surface's offset that is applied here.
         parser.screen_mut().set_scrollback(usize::from(scroll));
         links::clear_uncovered(frame, area, parser.screen());
         frame.render_widget(
@@ -1860,6 +1935,11 @@ impl SurfaceProvider for Terminals {
         true
     }
 }
+
+/// The agent pane and its companion shell are independent surfaces — the
+/// property this module's sharing used to break (#1220).
+#[cfg(test)]
+mod decoupling;
 
 #[cfg(test)]
 mod tests {

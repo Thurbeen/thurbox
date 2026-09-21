@@ -711,7 +711,7 @@
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>
----@field links table<string, thurbox.Link[]>
+---@field links table<string, thurbox.Link[]> Keyed by SURFACE, not by session: a session's companion shell is `<id>#shell` and has links of its own.
 ---@field content table<string, string> Served while `store.want_content` asks.
 ---@field printing table<string, boolean> Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.
 ---@field runs table<string, thurbox.Run> Answers to THIS plugin's runs.

@@ -490,15 +490,29 @@ impl App {
             .cloned()
     }
 
-    /// Which session's terminal surface a point falls in, and where that
-    /// surface was painted.
+    /// Which terminal surface a point falls in, and where that surface was
+    /// painted.
+    ///
+    /// Both of a session's panes are candidates, each against its own rect: a
+    /// selection or a `Ctrl+Click` in the shell's pane is about the shell's
+    /// grid, which is only true because the name that comes back says which of
+    /// the two it is.
     pub(crate) fn surface_at(&self, x: u16, y: u16) -> Option<(String, Rect)> {
         let position = ratatui::layout::Position::new(x, y);
         self.snapshots
             .current()
             .sessions
             .iter()
-            .filter_map(|row| Some((row.id.clone(), self.terminals.last_rect(&row.id)?)))
+            .flat_map(|row| {
+                [
+                    row.id.clone(),
+                    thurbox::kernel::terminal::shell_surface(&row.id),
+                ]
+            })
+            .filter_map(|surface| {
+                let rect = self.terminals.last_rect(&surface)?;
+                Some((surface, rect))
+            })
             .find(|(_, rect)| rect.contains(position))
     }
 
@@ -745,7 +759,14 @@ impl App {
     pub(crate) fn paint_outer_hyperlinks(&self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
+            // Both panes: a shell in a slot of its own paints links the outer
+            // terminal should know about exactly as the agent's does, and a
+            // surface not painted this frame contributes nothing anyway.
             paints.extend(self.terminals.hyperlink_paints(&row.id, buf));
+            paints.extend(
+                self.terminals
+                    .hyperlink_paints(&thurbox::kernel::terminal::shell_surface(&row.id), buf),
+            );
         }
         // A band's hit carries no plugin, which is also what makes it unable to
         // be its own float — hence the `Option`.

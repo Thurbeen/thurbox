@@ -81,7 +81,8 @@ already follow.
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
   bars), `snapshot` (the read side), `command` (the write side), `terminal/` (live
   PTY surfaces: the attach machinery, plugin program panes, link detection +
-  OSC 8 painting), `selection` (mouse text selection over a pane),
+  OSC 8 painting — every surface owns its own rect and size memo, and a
+  session's agent and its `#shell` companion are two of them, never one), `selection` (mouse text selection over a pane),
   `consent` (the one-time v1→v2 gate), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
