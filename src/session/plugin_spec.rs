@@ -23,7 +23,7 @@
 //! exactly as they do for [`crate::session::AgentDef`] and
 //! [`crate::session::HostDef`]. Nothing here touches the filesystem.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -114,19 +114,41 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The pane a package manifest names, read **leniently**.
+/// The panes a package manifest names, read **leniently**, in declared order.
 ///
-/// Only `pane.source` — the path within the package — and none of the copy-model
-/// rules [`PackageManifest::validate`] enforces. Those rules exist for a package
-/// whose files are copied to prescribed destinations; a repository keeps its own
-/// layout, so a manifest written for a clone would legitimately fail them (its
+/// Only each pane's `source` — the path within the package — and none of the
+/// copy-model rules [`PackageManifest::validate`] enforces. Those rules exist for a
+/// package whose files are copied to prescribed destinations; a repository keeps its
+/// own layout, so a manifest written for a clone would legitimately fail them (its
 /// modules live at `lib/…` inside its own tree, not at `lib/<name>/…` inside the
 /// interface). Reading strictly here would reject a correct repository for breaking
 /// a rule that does not apply to it.
-pub fn pane_source_of(text: &str) -> Option<String> {
-    let value: toml::Value = toml::from_str(text).ok()?;
-    let source = value.get("pane")?.get("source")?.as_str()?.trim();
-    (!source.is_empty()).then(|| source.to_string())
+///
+/// Both spellings, since a repository's manifest is read through this and is as free
+/// to carry `[[pane]]` as any other. What more than one of them means is the
+/// caller's to decide: this function reports, it does not choose.
+///
+/// One element per **declaration**, `None` where it has no usable `source`. A
+/// malformed declaration is still a declaration: dropping it would let a manifest
+/// declaring two panes read as declaring one, and install half of it silently.
+pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(pane) = value.get("pane") else {
+        return Vec::new();
+    };
+    let declared: Vec<&toml::Value> = match pane.as_array() {
+        Some(array) => array.iter().collect(),
+        None => vec![pane],
+    };
+    declared
+        .into_iter()
+        .map(|pane| {
+            let source = pane.get("source")?.as_str()?.trim();
+            (!source.is_empty()).then(|| source.to_string())
+        })
+        .collect()
 }
 
 /// Is this destination inside an installed plugin's own directory rather than the
@@ -252,8 +274,10 @@ impl PluginSpec {
 /// version = "v0.3.1"
 /// requires_thurbox = ">=2.0"
 ///
-/// # the pane, and where it lands unless `--as` says otherwise
-/// pane = { source = "atlas.lua", path = "plugins/75_atlas.lua" }
+/// # a pane, and where it lands. Repeated for each one the package carries.
+/// [[pane]]
+/// source = "atlas.lua"
+/// path = "plugins/75_atlas.lua"
 ///
 /// # shared modules, which must live under lib/<name>/
 /// [[module]]
@@ -261,9 +285,17 @@ impl PluginSpec {
 /// path = "lib/atlas/util.lua"
 /// ```
 ///
-/// One pane per package, because a spec entry names one destination. A single
-/// `.lua` URL is the degenerate case with no manifest at all: one file, no
-/// modules, no declared compatibility.
+/// **Several panes per package**, because a package is a unit of *distribution* —
+/// one version, one pin, one lock record — and not a unit of pane. The plugins
+/// people have shipped carry two and three panes over one `lib/`, one gate and one
+/// version history; under one pane each, a manifest's `version` and
+/// `requires_thurbox` would describe one of them and the rest would install a
+/// destination at a time forever.
+///
+/// `pane = { … }` is kept as sugar for a single `[[pane]]`, so every manifest
+/// written before this parses and installs exactly as it did. A single `.lua` URL
+/// is still the degenerate case with no manifest at all: one file, no modules, no
+/// declared compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub name: String,
@@ -278,10 +310,38 @@ pub struct PackageManifest {
     /// versions is enough.
     #[serde(default)]
     pub requires_thurbox: Option<String>,
-    pub pane: PackageFile,
-    /// Shared modules the pane requires.
+    /// The panes this package delivers, in the order the manifest declares them.
+    /// The first is the one a spec entry is keyed on unless `--as` names another.
+    #[serde(rename = "pane", deserialize_with = "one_or_several_panes")]
+    pub panes: Vec<PackageFile>,
+    /// Shared modules the panes require.
     #[serde(default, rename = "module")]
     pub modules: Vec<PackageFile>,
+}
+
+/// Read `[[pane]]` and `pane = { … }` as the same thing.
+///
+/// The singular spelling is what every manifest written before a package could
+/// carry several uses — both shipped examples among them — so it stays. Sugar for a
+/// list of one, rather than a second shape every caller downstream would have to
+/// know about.
+fn one_or_several_panes<'de, D>(deserializer: D) -> Result<Vec<PackageFile>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    // Through `toml::Value` rather than an untagged enum: when neither shape
+    // matches, untagged reports only "did not match any variant", while this names
+    // the field that is actually wrong — and a manifest is hand-written, so that
+    // field is most of the message.
+    let value = toml::Value::deserialize(deserializer)?;
+    match value {
+        toml::Value::Array(_) => Vec::<PackageFile>::deserialize(value).map_err(D::Error::custom),
+        one => PackageFile::deserialize(one)
+            .map(|pane| vec![pane])
+            .map_err(D::Error::custom),
+    }
 }
 
 /// One file a package delivers.
@@ -303,9 +363,9 @@ impl PackageManifest {
         Ok(manifest)
     }
 
-    /// Every file this package delivers, pane first.
+    /// Every file this package delivers, panes first.
     pub fn files(&self) -> impl Iterator<Item = &PackageFile> {
-        std::iter::once(&self.pane).chain(self.modules.iter())
+        self.panes.iter().chain(self.modules.iter())
     }
 
     /// Refuse a manifest that would deliver outside the interface directory, or
@@ -327,6 +387,9 @@ impl PackageManifest {
                 self.name
             ));
         }
+        if self.panes.is_empty() {
+            return Err(format!("{}: declares no pane", Self::FILE));
+        }
         for file in self.files() {
             validate_destination(&file.path)?;
             validate_destination(&file.source)?;
@@ -342,12 +405,24 @@ impl PackageManifest {
                 ));
             }
         }
-        if self.pane.path.starts_with("lib/") {
-            return Err(format!(
-                "{}: the pane {} belongs in plugins/",
-                Self::FILE,
-                self.pane.path
-            ));
+        for pane in &self.panes {
+            if pane.path.starts_with("lib/") {
+                return Err(format!(
+                    "{}: the pane {} belongs in plugins/",
+                    Self::FILE,
+                    pane.path
+                ));
+            }
+        }
+        // Two files landing on one path cannot both be honoured, and letting the
+        // last win would make what is installed depend on the order the manifest
+        // happens to list them in — the rule `PluginSpec::parse` already applies to
+        // two spec entries, now reachable within one package.
+        let mut seen = BTreeSet::new();
+        for file in self.files() {
+            if !seen.insert(file.path.as_str()) {
+                return Err(format!("{}: {} is delivered twice", Self::FILE, file.path));
+            }
         }
         Ok(())
     }
@@ -874,5 +949,80 @@ file = "plugins/80_notes.lua"
         ] {
             assert!(!is_bare_name(not), "{not}");
         }
+    }
+
+    #[test]
+    fn both_spellings_of_a_pane_parse_to_the_same_list() {
+        let singular = PackageManifest::parse(
+            "name = \"atlas\"\npane = { source = \"a.lua\", path = \"plugins/75_atlas.lua\" }\n",
+        )
+        .expect("singular");
+        let listed = PackageManifest::parse(
+            "name = \"atlas\"\n[[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n",
+        )
+        .expect("listed");
+        assert_eq!(singular, listed);
+        assert_eq!(singular.panes.len(), 1);
+    }
+
+    #[test]
+    fn a_malformed_pane_names_the_field_that_is_wrong() {
+        let error = PackageManifest::parse("name = \"atlas\"\n[[pane]]\nsource = \"a.lua\"\n")
+            .expect_err("no path");
+        assert!(error.contains("path"), "{error}");
+    }
+
+    #[test]
+    fn a_manifest_must_declare_a_pane() {
+        let missing = PackageManifest::parse("name = \"atlas\"\n").expect_err("no pane");
+        assert!(missing.contains("pane"), "{missing}");
+        let empty = PackageManifest::parse("name = \"atlas\"\npane = []\n").expect_err("empty");
+        assert!(empty.contains("declares no pane"), "{empty}");
+    }
+
+    #[test]
+    fn two_files_of_one_package_may_not_share_a_destination() {
+        let error = PackageManifest::parse(
+            "name = \"atlas\"\n\
+             [[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n\
+             [[pane]]\nsource = \"b.lua\"\npath = \"plugins/75_atlas.lua\"\n",
+        )
+        .expect_err("duplicate");
+        assert!(error.contains("delivered twice"), "{error}");
+    }
+
+    #[test]
+    fn every_pane_is_held_to_the_plugins_rule() {
+        let error = PackageManifest::parse(
+            "name = \"atlas\"\n\
+             [[pane]]\nsource = \"a.lua\"\npath = \"plugins/75_atlas.lua\"\n\
+             [[pane]]\nsource = \"b.lua\"\npath = \"lib/atlas/b.lua\"\n",
+        )
+        .expect_err("second pane in lib/");
+        assert!(error.contains("belongs in plugins/"), "{error}");
+    }
+
+    #[test]
+    fn pane_sources_are_read_in_either_spelling() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            pane_sources_of("pane = { source = \"plugins/40_a.lua\" }\n"),
+            vec![some("plugins/40_a.lua")]
+        );
+        assert_eq!(
+            pane_sources_of(
+                "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"plugins/41_b.lua\"\n"
+            ),
+            vec![some("plugins/40_a.lua"), some("plugins/41_b.lua")]
+        );
+        // A declaration with no usable source still counts.
+        assert_eq!(
+            pane_sources_of(
+                "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"
+            ),
+            vec![some("plugins/40_a.lua"), None, None]
+        );
+        assert!(pane_sources_of("name = \"x\"\n").is_empty());
+        assert!(pane_sources_of("not toml [").is_empty());
     }
 }
