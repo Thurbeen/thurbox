@@ -583,7 +583,8 @@ release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
 depend on the local `PATH` — shelling out to `sha256sum`/`shasum` made it
 impossible on native Windows, issue #1182), extracts it
-(`tar`), and atomically replaces the installed `thurbox`/`thurbox-cli`
+(`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and atomically
+replaces the installed `thurbox`/`thurbox-cli`
 binaries in place — mirroring `scripts/install.sh`. The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
 the current binaries untouched; the whole step runs before the TUI takes the
@@ -596,6 +597,20 @@ major-version guards); dev builds (`0.0.0-dev`) never auto-update. The default i
 location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
+
+**Windows takes the same path, with two differences.** It used to be refused
+outright, which made a default-on `auto_update` silently mean nothing there
+(issue #1172). The release artifact is the `.zip` `install.ps1` extracts, so the
+unpacker is chosen by the archive's extension. And a rename cannot replace an
+executable a process is running from — Windows keeps its image mapped — so the
+swap there is Win32 `ReplaceFile` (through PowerShell's
+`[System.IO.File]::Replace`), which moves the replaced binary aside to
+`.thurbox.exe.old` instead of deleting it. That works while thurbox runs, and the
+running process keeps its old image until the next launch, as on Unix. The swap
+is one system call, so a thurbox killed or closed mid-update leaves the old
+binary or the new one, never neither. The `.old` file is removed by the next
+update, once nothing runs from it; updating again while a thurbox still does is
+refused with nothing changed.
 
 **Auto-update never crosses a major version.** A 1.x install is told that 2.x
 exists (the badge, and `thurbox-cli version --check`, both report it) and is
