@@ -173,8 +173,7 @@ local function block_name(block)
   return session and (session.name or ""):lower() or nil
 end
 
---- Append every block's rows to `out`, blocks in order and rows within a block
---- in theirs -- so a root keeps its subtree.
+--- Flatten blocks back into rows: a root immediately followed by its subtree.
 local function emit_blocks(out, blocks)
   for _, block in ipairs(blocks) do
     for _, item in ipairs(block) do
@@ -205,8 +204,8 @@ function order.sorted_within_groups(items)
       index = finish
     end
     -- Case-insensitive, like v1, and stable on a tie so equal names keep their
-    -- existing relative order. A block with no name to sort by is held out
-    -- rather than compared: see `block_name`.
+    -- existing relative order. A nameless block is not in the comparison at
+    -- all: see `block_name`.
     local named, nameless = {}, {}
     for position, block in ipairs(blocks) do
       block.position = position
@@ -224,9 +223,8 @@ function order.sorted_within_groups(items)
       return a.name < b.name
     end)
     emit_blocks(out, named)
-    -- The nameless ones at the group's end, in the order they arrived -- which
-    -- is where `session_model.build` draws them and where their sessions will
-    -- appear.
+    -- Last, because that is where `session_model.build` draws a placeholder and
+    -- where the session it stands for will appear.
     emit_blocks(out, nameless)
     at = group_last + 1
   end
