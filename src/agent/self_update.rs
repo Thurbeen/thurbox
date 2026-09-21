@@ -253,15 +253,19 @@ fn verify_sha256(file: &Path, expected: &str) -> Result<(), String> {
 /// to have — `tar.exe` only arrived in Windows 10 1803, and `unzip` never did.
 /// `-LiteralPath` where `install.ps1` writes `-Path` because these are paths and
 /// not wildcards: a `[` in an install directory would otherwise be read as a
-/// character class. Anything else is the release tarball and goes to `tar`,
-/// exactly as before.
+/// character class. Progress is silenced because the child shares thurbox's
+/// console, and the startup update runs while the interface owns the screen:
+/// `Expand-Archive` would draw its progress bar over the frame, where `tar`
+/// prints nothing on success. Anything else is the release tarball and goes to
+/// `tar`, exactly as before.
 fn extractor_for(archive: &Path, into: &Path) -> (&'static str, Vec<std::ffi::OsString>) {
     if archive
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
     {
         let script = format!(
-            "Expand-Archive -LiteralPath {} -DestinationPath {} -Force",
+            "$ProgressPreference='SilentlyContinue'; \
+             Expand-Archive -LiteralPath {} -DestinationPath {} -Force",
             crate::shell::powershell_quote(&archive.to_string_lossy()),
             crate::shell::powershell_quote(&into.to_string_lossy()),
         );
@@ -715,6 +719,11 @@ mod tests {
         );
         // An update overwrites what the last one extracted.
         assert!(script.contains("-Force"), "{script}");
+        // No progress bar drawn over the interface that shares the console.
+        assert!(
+            script.starts_with("$ProgressPreference='SilentlyContinue'; Expand-Archive"),
+            "{script}"
+        );
         // No profile to source and nothing to prompt with: this runs headless.
         let flags: Vec<String> = args
             .iter()
