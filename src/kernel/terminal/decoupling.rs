@@ -31,10 +31,10 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+// Nothing from `crate::agent` is imported here, by rule rather than by
+// accident: the kernel reaches it by fully-qualified path only, never by `use`
+// (`tests/architecture_rules.rs`), and a test is not an exception to it.
 use super::{shell_surface, Live, Painted, Terminals};
-// `agent` is reachable from the kernel by fully-qualified path only, never by
-// `use` — the rule `tests/architecture_rules.rs` enforces, and a test is not an
-// exception to it.
 use crate::kernel::layout::{resolve, Region};
 use crate::kernel::node::{Axis, Node, Size, SurfaceSource};
 use crate::kernel::paint::render;
@@ -251,7 +251,7 @@ impl Harness {
     /// assertions are not about.
     fn print(&self, shell: bool, text: &str) {
         let live = self.terminals.live.get(&self.id).expect("live");
-        let parser = live.parser(shell).expect("parser");
+        let parser = live.pane(shell).parser().expect("parser");
         let mut parser = parser.lock().expect("lock");
         parser.process(b"\x1b[?25l");
         parser.process(text.as_bytes());
@@ -260,7 +260,7 @@ impl Harness {
     /// The grid size a pane currently holds — rows by columns.
     fn grid(&self, shell: bool) -> (u16, u16) {
         let live = self.terminals.live.get(&self.id).expect("live");
-        let parser = live.parser(shell).expect("parser");
+        let parser = live.pane(shell).parser().expect("parser");
         let size = parser.lock().expect("lock").screen().size();
         (size.0, size.1)
     }
@@ -660,4 +660,47 @@ async fn a_press_is_captured_by_the_pane_it_landed_in() {
     assert!(!harness
         .terminals
         .forward_motion(&harness.id, shell.x + 2, shell.y + 2));
+}
+
+#[tokio::test]
+async fn a_search_reads_both_of_a_sessions_screens() {
+    let harness = Harness::new(HEIGHT, WIDTH);
+    harness.print(false, "AGENT-SCREEN");
+    harness.print(true, "SHELL-SCREEN");
+
+    // A search asks which SESSION holds the text, so both panes answer under
+    // the session's own id: the shell is a screen of that session whether or
+    // not it is the pane on screen. Scanning only whichever one happened to be
+    // painted made a search's answer depend on the arrangement.
+    let screens = harness.terminals.screens(std::slice::from_ref(&harness.id));
+    let found = screens.get(&harness.id).expect("the session's screens");
+    assert!(found.contains("AGENT-SCREEN"), "{found}");
+    assert!(found.contains("SHELL-SCREEN"), "{found}");
+    // Keyed by session, so the shell contributes no entry of its own.
+    assert!(!screens.contains_key(&harness.shell()));
+}
+
+#[tokio::test]
+async fn links_are_found_on_the_surface_that_printed_them() {
+    let harness = Harness::new(HEIGHT, WIDTH);
+    harness.print(false, "https://example.invalid/agent");
+    harness.print(true, "https://example.invalid/shell");
+
+    // Unlike a search, links are per SURFACE: a link is clicked in the rect
+    // that drew it, so an answer that mixed the two panes would offer the
+    // shell's URLs at coordinates inside the agent.
+    let agent: Vec<String> = harness
+        .terminals
+        .links(&harness.id)
+        .into_iter()
+        .map(|(url, _, _)| url)
+        .collect();
+    let shell: Vec<String> = harness
+        .terminals
+        .links(&harness.shell())
+        .into_iter()
+        .map(|(url, _, _)| url)
+        .collect();
+    assert_eq!(agent, vec!["https://example.invalid/agent".to_string()]);
+    assert_eq!(shell, vec!["https://example.invalid/shell".to_string()]);
 }

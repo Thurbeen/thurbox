@@ -197,7 +197,7 @@ impl App {
         });
     }
 
-    /// `Command::Copy`: the focused session's visible screen to the clipboard.
+    /// `Command::Copy`: the named surface's screen to the clipboard.
     pub(crate) fn apply_copy_command(&mut self, session: &str) {
         match self.terminals.visible_text(session) {
             Some(text) => {

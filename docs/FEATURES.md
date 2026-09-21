@@ -3099,9 +3099,10 @@ convenient shell toggle wins. `F8` is the equivalent alternate, matching the
 other panel toggles' F-keys.
 
 - **Status bar**: Shows "Shell" label when viewing the shell pane.
-- **Per-session state**: Each session tracks its own `TerminalView`
-  (Agent or Shell) independently.
-- Input is forwarded to whichever pane is currently active.
+- **Per-session state**: which of the two the centre pane is showing is kept
+  per session, so flipping to the shell on one does not flip it on the next.
+  That is the pane's own state, not the kernel's — see the section below.
+- Input reaches the pane the surface names, `<id>#shell` or the bare id.
 - **Remote/WSL sessions**: the shell pane opens the host user's own
   interactive **login shell** — the same environment an `ssh <host>` login
   gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It

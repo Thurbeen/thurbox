@@ -1173,6 +1173,20 @@ impl Session {
             // No shell, so nothing to reach and nothing left at a stale width.
             return true;
         };
+        // [`Self::resize`]'s placeholder branch, spelled out here too — grid
+        // included. Reporting `true` without sizing the local buffer would let
+        // the render path memoize a size the parser never took, leaving the
+        // pane wrapped at the old width with nothing to ask again: the #1220
+        // failure, one pane down. Nothing constructs a placeholder in v2 (see
+        // the field), so this costs a branch and buys the two halves being
+        // unable to come apart if one ever does.
+        if self.placeholder {
+            let (rows, cols) = vt_floor(rows, cols);
+            if let Ok(mut parser) = shell.parser.lock() {
+                parser.screen_mut().set_size(rows, cols);
+            }
+            return true;
+        }
         if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
             tracing::warn!("Failed to resize shell pane: {e}");
             return false;

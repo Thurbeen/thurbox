@@ -43,17 +43,17 @@ impl App {
             // node: while a scrollbar has the pointer, the movement is that
             // pane's, not a selection over the text beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(session) = self.pty_pointer.clone() {
+                if let Some(surface) = self.pty_pointer.clone() {
                     self.terminals
-                        .forward_motion(&session, mouse.column, mouse.row);
+                        .forward_motion(&surface, mouse.column, mouse.row);
                 } else if !self.drag_held(mouse.column, mouse.row) {
                     self.drag_selection(mouse.column, mouse.row);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                if let Some(session) = self.pty_pointer.take() {
+                if let Some(surface) = self.pty_pointer.take() {
                     self.terminals
-                        .forward_release(&session, mouse.column, mouse.row);
+                        .forward_release(&surface, mouse.column, mouse.row);
                 }
                 self.pointer_grab = None;
                 if let Some(selection) = &mut self.selection {
@@ -310,13 +310,13 @@ impl App {
         // has already focused the pane above; only the selection leg is
         // ceded. `Ctrl+Click` stays thurbox's (the link leg, earlier), the
         // way modified presses conventionally bypass an application's mouse.
-        if let Some(session) = self.terminals.forward_press(x, y) {
+        if let Some(surface) = self.terminals.forward_press(x, y) {
             // Whatever selection was armed elsewhere is over: this gesture is
             // the program's, and keeping the old one would turn the next
             // `Ctrl+C` into a copy of it — the same reason the modified press
             // above drops it.
             self.selection = None;
-            self.pty_pointer = Some(session);
+            self.pty_pointer = Some(surface);
             return;
         }
         self.begin_selection(x, y);
