@@ -427,7 +427,7 @@ pub struct Fetched {
 /// is what makes "install this single file somebody published" a supported thing
 /// rather than a special case.
 ///
-/// `as_file` is read by [`deliveries`], which decides whether it redirects the one
+/// `as_file` is read by `deliveries`, which decides whether it redirects the one
 /// pane a package declares or selects among several. It is required for the
 /// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
@@ -848,6 +848,21 @@ pub fn install(
                 "{} already exists and is not managed here — move it aside, or \
                  install with --as to a different file",
                 payload.file
+            ));
+        }
+        // A pane another entry already delivers: what selecting a different pane of
+        // an installed multi-pane package looks like. Two records covering one pane
+        // cannot both be honoured — removing either takes the other's files. Modules
+        // are left out, since `lib/` is not a pane and two single-pane copies of a
+        // package sharing one has always been allowed.
+        if let Some(owner) = lock
+            .covering(&payload.file)
+            .filter(|owner| owner.file != file && !payload.file.starts_with("lib/"))
+        {
+            return Err(format!(
+                "{} is already delivered by the entry for {} — remove that one first \
+                 to key the package on a different pane",
+                payload.file, owner.file
             ));
         }
     }

@@ -47,8 +47,10 @@ pub enum Action {
     Install {
         /// A bare name from the examples in the repo, a URL, or a filesystem path.
         src: String,
-        /// Where the pane lands. Required for a single `.lua` source, which
-        /// proposes no destination of its own.
+        /// Where the pane lands — or, for a package declaring several panes, which
+        /// of their destinations the entry is keyed on; those are not moved.
+        /// Required for a single `.lua` source, which proposes no destination of
+        /// its own.
         #[arg(long = "as", value_name = "FILE")]
         as_file: Option<String>,
         /// The version to install, and to keep installing.

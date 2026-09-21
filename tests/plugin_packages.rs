@@ -481,6 +481,33 @@ fn as_naming_no_declared_pane_is_refused_and_lists_them() {
 }
 
 #[test]
+fn keying_an_installed_package_on_another_pane_is_refused() {
+    // A second entry covering the same panes would make `remove` of either one take
+    // the other's files, and leave the survivor pointing at nothing.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    install(&src);
+
+    let error = run(Action::Install {
+        src: src.display().to_string(),
+        as_file: Some("plugins/76_atlas_notes.lua".into()),
+        pin: None,
+    })
+    .expect_err("should refuse");
+    assert!(
+        error.contains("plugins/75_atlas.lua"),
+        "names the owner: {error}"
+    );
+    let spec = thurbox::kernel::packages::read_spec(&ui).expect("spec");
+    assert_eq!(spec.plugins.len(), 1, "{spec:?}");
+
+    // Reinstalling the same selection is an update, not a conflict.
+    let again = install(&src);
+    assert!(again.failure.is_none(), "{:?}", again.json);
+}
+
+#[test]
 fn removing_a_multi_pane_package_takes_back_every_pane() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
@@ -508,8 +535,8 @@ fn syncing_a_multi_pane_package_is_idempotent() {
 
     let synced = run(Action::Sync).expect("sync runs");
     assert!(synced.failure.is_none(), "{:?}", synced.json);
-    assert!(
-        synced.json.to_string().contains("current"),
+    assert_eq!(
+        synced.json["entries"][0]["outcome"], "current",
         "a second run changes nothing: {:?}",
         synced.json
     );

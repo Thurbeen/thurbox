@@ -326,10 +326,10 @@ where
 {
     use serde::de::Error;
 
-    // Through `toml::Value` rather than an untagged enum: untagged asks serde to
-    // buffer and re-play the content, which is a well-known way to lose a TOML
-    // error's line number — and a manifest is hand-written, so the line is most of
-    // the message.
+    // Through `toml::Value` rather than an untagged enum: when neither shape
+    // matches, untagged reports only "did not match any variant", while this names
+    // the field that is actually wrong — and a manifest is hand-written, so that
+    // field is most of the message.
     let value = toml::Value::deserialize(deserializer)?;
     match value {
         toml::Value::Array(_) => Vec::<PackageFile>::deserialize(value).map_err(D::Error::custom),
@@ -958,6 +958,13 @@ file = "plugins/80_notes.lua"
         .expect("listed");
         assert_eq!(singular, listed);
         assert_eq!(singular.panes.len(), 1);
+    }
+
+    #[test]
+    fn a_malformed_pane_names_the_field_that_is_wrong() {
+        let error = PackageManifest::parse("name = \"atlas\"\n[[pane]]\nsource = \"a.lua\"\n")
+            .expect_err("no path");
+        assert!(error.contains("path"), "{error}");
     }
 
     #[test]
