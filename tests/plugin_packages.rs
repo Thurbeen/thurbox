@@ -605,6 +605,49 @@ fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
 }
 
 #[test]
+fn a_targeted_update_leaves_a_live_entrys_old_record_alone() {
+    // A three-pane package re-keyed by hand from its first pane to its second, and
+    // another source keyed on its third. The re-keyed entry's old record covers the
+    // other entry's key too, but it is still the re-keyed entry's: updating the other
+    // one must not take back files the re-keyed entry is running.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    let manifest = std::fs::read_to_string(src.join("plugin.toml")).expect("manifest");
+    std::fs::write(
+        src.join("plugin.toml"),
+        manifest.replace(
+            "[[module]]",
+            "[[pane]]\nsource = \"notes.lua\"\npath = \"plugins/77_atlas_extra.lua\"\n[[module]]",
+        ),
+    )
+    .expect("third pane");
+    install(&src);
+    let loose = home.path().join("extra.lua");
+    std::fs::write(&loose, "return { name = \"extra\", slot = \"extra\" }\n").expect("loose");
+    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    std::fs::write(
+        ui.join("plugins.toml"),
+        format!(
+            "{}\n[[plugin]]\nsrc = '{}'\nfile = \"plugins/77_atlas_extra.lua\"\n",
+            spec.replace("plugins/75_atlas.lua", "plugins/76_atlas_notes.lua"),
+            loose.display()
+        ),
+    )
+    .expect("hand edit");
+
+    // Refused or not, it must not have taken anything of the re-keyed entry's back.
+    let _ = run(Action::Update {
+        name: Some("plugins/77_atlas_extra.lua".into()),
+    });
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(
+        ui.join("plugins/76_atlas_notes.lua").is_file(),
+        "the re-keyed entry's own pane is still installed"
+    );
+}
+
+#[test]
 fn the_legacy_placement_hint_is_about_the_keyed_pane() {
     // `file` names the keyed pane, so `placement_hint` — kept for existing readers —
     // must describe that pane, not whichever pane happened to need a hint first.

@@ -1069,7 +1069,7 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
 /// Take back the records the spec no longer lists, among those `wanted` picks.
 ///
 /// Shared by [`sync`], which takes back every one, and [`update`], which takes back
-/// only a record covering one of its targets' keys: a hand-edit that re-keys a
+/// only a record that is one of its targets' own: a hand-edit that re-keys a
 /// multi-pane package leaves its old record covering the pane the new key names, and
 /// delivering over it would be refused as a second owner — or, if allowed, leave two
 /// records the next `sync` would reconcile by withdrawing the live entry's files.
@@ -1121,16 +1121,23 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
         return Ok(Vec::new());
     }
 
-    // Only a record covering a target's own key — the one a hand re-key leaves
-    // behind, and the one that would read as a second owner of that pane. Matching
-    // by source instead would take back a different entry's files, which this update
-    // does not deliver. Copied packages only: a repository's record names a file
-    // inside a working copy git owns.
-    let mut reports = withdraw_stale(dir, &spec, &mut lock, |stale| {
-        !is_repository(&stale.src)
-            && targets
+    // Only a record that is provably a target's own leftover from a hand re-key:
+    // same source, covering the target's key, and covering no other live entry's
+    // key. The last condition is what makes it the target's — a re-keyed entry's old
+    // record also covers that entry's new key, and taking it back from under an
+    // update that does not deliver that entry would leave it without its files.
+    // Copied packages only: a repository's record names a file inside a working
+    // copy git owns.
+    let owned_by = |stale: &LockEntry, target: &PluginEntry| {
+        stale.src == target.src
+            && stale.files.contains_key(&target.file)
+            && !spec
+                .plugins
                 .iter()
-                .any(|target| stale.files.contains_key(&target.file))
+                .any(|other| other.file != target.file && stale.files.contains_key(&other.file))
+    };
+    let mut reports = withdraw_stale(dir, &spec, &mut lock, |stale| {
+        !is_repository(&stale.src) && targets.iter().any(|target| owned_by(stale, target))
     })?;
     for entry in targets {
         if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
