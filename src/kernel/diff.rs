@@ -556,7 +556,8 @@ mod tests {
     /// Run `git` in `repo` with the location variables scrubbed.
     ///
     /// The pre-commit hook exports `GIT_DIR` and friends, so an unscrubbed call
-    /// from the suite lands in the real repository (see AGENTS.md → Testing).
+    /// from the suite lands in the real repository (see the `GIT_*` scrub rule in
+    /// `.agents/skills/thurbox-testing/SKILL.md`).
     fn git_in(repo: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .args(args)
