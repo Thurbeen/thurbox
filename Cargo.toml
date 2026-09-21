@@ -34,11 +34,10 @@ base64 = "0.23"
 
 # SHA-256 for release/artifact verification, computed in process rather than
 # shelled out to `sha256sum`/`shasum` — native Windows has neither, and a
-# checksum that depends on the local PATH is not one (issue #1182). Held at
-# 0.10 rather than the newer 0.11 on purpose: 0.10.9 is already resolved in the
-# tree for termwiz, pest_meta and wezterm-blob-leases, so this adds nothing to
-# build, while 0.11 is semver-incompatible with their requirement and would put
-# a second copy of the same hasher beside it.
+# checksum that depends on the local PATH is not one (issue #1182). Cargo.lock
+# also lists sha2 0.10.9, for termwiz, pest_meta and wezterm-blob-leases, but
+# only behind ratatui's `termwiz` backend, which is not enabled: it is never
+# built, so 0.11 here is the only copy compiled.
 sha2 = "0.11"
 
 # v2 plugin kernel: the Lua runtime plugins are written in, and the filesystem

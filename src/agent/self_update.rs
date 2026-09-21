@@ -209,15 +209,34 @@ fn parse_checksum(checksums: &str, artifact: &str) -> Option<String> {
 ///
 /// Streamed through the hasher rather than read whole: a release archive is
 /// tens of megabytes and nothing here needs its bytes, only its digest.
+///
+/// Fed by hand rather than by `io::copy`: since `sha2` 0.11 the hasher is no
+/// longer an `io::Write` (that moved to the separate `digest-io` crate), and its
+/// output is a `hybrid_array::Array`, which has no `LowerHex`.
 fn sha256_of(file: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    use std::io::Read;
 
     let mut handle =
         std::fs::File::open(file).map_err(|e| format!("open {} to hash: {e}", file.display()))?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut handle, &mut hasher)
-        .map_err(|e| format!("read {} to hash: {e}", file.display()))?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let mut buf = [0u8; 8192];
+    loop {
+        match handle.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(format!("read {} to hash: {e}", file.display())),
+        }
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        }))
 }
 
 /// Verify `file`'s SHA256 against `expected`, case-insensitively.
@@ -921,6 +940,20 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         verify_sha256(
             &file,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
+    }
+
+    /// A file larger than the read buffer is hashed whole, not just its first
+    /// chunk: the FIPS 180-2 one-million-`a` vector.
+    #[test]
+    fn verify_sha256_hashes_past_the_read_buffer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("million-a");
+        std::fs::write(&file, vec![b'a'; 1_000_000]).unwrap();
+        verify_sha256(
+            &file,
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
         )
         .unwrap();
     }
