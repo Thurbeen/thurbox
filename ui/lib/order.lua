@@ -156,24 +156,19 @@ function order.move_block(items, at, down)
   return moved
 end
 
---- The name a root block sorts under, lowercased, or nil when it has none.
+--- A creation in flight is its own root block carrying the `command` that will
+--- make a session rather than a session, so it has no name to be alphabetical
+--- about. Reading one off it is what took the pane down on Shift+S (#1200), as
+--- soon as a group held a second block for the comparator to run on at all.
 ---
---- A creation in flight is a row whose session does not exist yet: it carries
---- the `command` that will make one, not a `session`, and it is its own root
---- block. So it has no name to be alphabetical about, and reading one off it is
---- what took the sessions pane down on Shift+S (issue #1200) as soon as a group
---- held a second block for the comparator to be called on at all.
----
---- Nil rather than `""`, because an empty name is not the same answer: it would
---- sort the placeholder to the TOP of its group, and the group's end is where
---- `session_model.build` draws it -- the spot its session will occupy once the
---- creation lands.
+--- Nil rather than `""`: an empty name is a real sort key, and it would put the
+--- placeholder at the TOP of its group instead of the end, where
+--- `session_model.build` draws it and where its session will land.
 local function block_name(block)
   local session = block[1].session
   return session and (session.name or ""):lower() or nil
 end
 
---- Flatten blocks back into rows: a root immediately followed by its subtree.
 local function emit_blocks(out, blocks)
   for _, block in ipairs(blocks) do
     for _, item in ipairs(block) do
@@ -204,8 +199,7 @@ function order.sorted_within_groups(items)
       index = finish
     end
     -- Case-insensitive, like v1, and stable on a tie so equal names keep their
-    -- existing relative order. A nameless block is not in the comparison at
-    -- all: see `block_name`.
+    -- existing relative order.
     local named, nameless = {}, {}
     for position, block in ipairs(blocks) do
       block.position = position
@@ -223,8 +217,6 @@ function order.sorted_within_groups(items)
       return a.name < b.name
     end)
     emit_blocks(out, named)
-    -- Last, because that is where `session_model.build` draws a placeholder and
-    -- where the session it stands for will appear.
     emit_blocks(out, nameless)
     at = group_last + 1
   end
