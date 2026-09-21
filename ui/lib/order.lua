@@ -156,9 +156,31 @@ function order.move_block(items, at, down)
   return moved
 end
 
+--- A creation in flight is its own root block carrying the `command` that will
+--- make a session rather than a session, so it has no name to be alphabetical
+--- about. Reading one off it is what took the pane down on Shift+S (#1200), as
+--- soon as a group held a second block for the comparator to run on at all.
+---
+--- Nil rather than `""`: an empty name is a real sort key, and it would put the
+--- placeholder at the TOP of its group instead of the end, where
+--- `session_model.build` draws it and where its session will land.
+local function block_name(block)
+  local session = block[1].session
+  return session and (session.name or ""):lower() or nil
+end
+
+local function emit_blocks(out, blocks)
+  for _, block in ipairs(blocks) do
+    for _, item in ipairs(block) do
+      out[#out + 1] = item
+    end
+  end
+end
+
 --- Sort by name **within each repo group**, preserving group order and the
 --- parent/child nesting: roots sort among themselves, each parent's children
---- among theirs. v1's `sort_alphabetically_within_groups`.
+--- among theirs. A block with no session behind it yet keeps its group's end.
+--- v1's `sort_alphabetically_within_groups`.
 function order.sorted_within_groups(items)
   local out = {}
   local at = 1
@@ -178,22 +200,24 @@ function order.sorted_within_groups(items)
     end
     -- Case-insensitive, like v1, and stable on a tie so equal names keep their
     -- existing relative order.
+    local named, nameless = {}, {}
     for position, block in ipairs(blocks) do
       block.position = position
+      block.name = block_name(block)
+      if block.name then
+        named[#named + 1] = block
+      else
+        nameless[#nameless + 1] = block
+      end
     end
-    table.sort(blocks, function(a, b)
-      local left = (a[1].session.name or ""):lower()
-      local right = (b[1].session.name or ""):lower()
-      if left == right then
+    table.sort(named, function(a, b)
+      if a.name == b.name then
         return a.position < b.position
       end
-      return left < right
+      return a.name < b.name
     end)
-    for _, block in ipairs(blocks) do
-      for _, item in ipairs(block) do
-        out[#out + 1] = item
-      end
-    end
+    emit_blocks(out, named)
+    emit_blocks(out, nameless)
     at = group_last + 1
   end
   return out

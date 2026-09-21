@@ -16,7 +16,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
-use thurbox::kernel::command::Command;
+use thurbox::kernel::command::{Command, InFlight, Phase};
 use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render as paint_node, PlaceholderSurfaces};
@@ -73,6 +73,20 @@ fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &registry_for(host));
 }
 
+/// A `create` the kernel has accepted and no snapshot has answered yet: it
+/// names no session, only the repo its row will land in.
+fn creating(repo: &str) -> InFlight {
+    InFlight {
+        id: 1,
+        kind: "create",
+        session: String::new(),
+        subject: Some(repo.into()),
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    }
+}
+
 /// The registry the kernel would build from what the bundled plugins declare —
 /// separate so a test can override a setting before publishing it.
 fn registry_for(host: &LuaHost) -> Registry {
@@ -83,6 +97,15 @@ fn registry_for(host: &LuaHost) -> Registry {
 }
 
 fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
+    publish_inflight(host, snapshot, registry, &[]);
+}
+
+fn publish_inflight(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    registry: &Registry,
+    inflight: &[InFlight],
+) {
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
@@ -90,7 +113,7 @@ fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight,
         themes: &themes,
         registry,
         diffs: &diffs,
@@ -143,7 +166,11 @@ fn press(host: &LuaHost, chord: &str) {
 }
 
 fn press_in(host: &LuaHost, snapshot: &Snapshot, chord: &str) {
-    publish_in(host, snapshot);
+    press_inflight(host, snapshot, &[], chord);
+}
+
+fn press_inflight(host: &LuaHost, snapshot: &Snapshot, inflight: &[InFlight], chord: &str) {
+    publish_inflight(host, snapshot, &registry_for(host), inflight);
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     let mut key = KeyPress {
         name: chord.to_string(),
@@ -761,4 +788,127 @@ fn force_deleting_an_unmerged_branch_still_asks() {
             "merged={merged:?}: {tree}"
         );
     }
+}
+
+#[test]
+fn shift_s_sorts_each_group_by_name() {
+    // The baseline the fix below must not move: with nothing in flight, the
+    // group's sessions are persisted in name order, case-insensitively.
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("aaa", "Zulu"), row("bbb", "alpha")],
+        ..Snapshot::default()
+    };
+
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "S");
+
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Order {
+            list: vec!["bbb".into(), "aaa".into()],
+        }]
+    );
+}
+
+/// Issue #1200: `Shift+S` took the pane down whenever a creation was in flight
+/// in a group that already held a session. A placeholder is its own root block
+/// with no `session` behind it, and a group of two blocks is the first one that
+/// invokes the comparator at all — which is why one session was never enough.
+#[test]
+fn sorting_with_a_creation_in_flight_does_not_take_the_pane_down() {
+    let host = host();
+    let snapshot = snapshot();
+    let inflight = [creating("thurbox")];
+
+    render_in(&host, &snapshot);
+    press_inflight(&host, &snapshot, &inflight, "S");
+
+    // The sort still happens, over the sessions that have one: a placeholder
+    // carries no session id, so there is nothing of it to persist an order for.
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Order {
+            list: vec!["aaa".into(), "bbb".into()],
+        }]
+    );
+}
+
+/// `lib.order`'s own answer, read off a pane that calls it.
+///
+/// The sort's output reaches the screen through nothing: the list is rebuilt
+/// from `session_model.build` every frame, and `persist_order` keeps only the
+/// rows carrying a session id. So where it puts a block is asserted here, on
+/// the function, rather than inferred from a pane that would draw the same
+/// list either way.
+fn sorted_by_order_lua(items: &str) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+
+    // `require` reads the interface directory, so the module under test is the
+    // repository's own file, copied in beside the probe rather than restated.
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&lib).expect("mkdir");
+    let checkout = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    std::fs::copy(checkout.join("lib/order.lua"), lib.join("order.lua")).expect("copy lib.order");
+
+    std::fs::write(
+        plugins.join("10_probe.lua"),
+        format!(
+            r#"
+local order = require("lib.order")
+
+return {{
+  name = "probe",
+  slot = "center",
+  render = function()
+    local names = {{}}
+    for _, item in ipairs(order.sorted_within_groups({items})) do
+      names[#names + 1] = item.session and item.session.name or "<nameless>"
+    end
+    return {{ type = "text", text = table.concat(names, ",") }}
+  end,
+}}
+"#
+        ),
+    )
+    .expect("write the probe");
+
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let index = host.index_of("probe").expect("no probe plugin");
+    let rendered = host
+        .render(
+            index,
+            RenderContext {
+                width: 40,
+                height: 4,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render the probe");
+    format!("{:?}", rendered.node)
+}
+
+#[test]
+fn the_sort_puts_a_nameless_block_at_its_groups_end() {
+    // The placeholder is deliberately FIRST in the input. `session_model.build`
+    // never emits one there — which is the point: the contract has to hold for
+    // the function, not for the one arrangement its caller happens to pass, or
+    // the next caller inherits a comparator that indexes a session that is not
+    // there.
+    let items = r#"{
+      { session = { name = "zulu" }, depth = 0, header = "thurbox", target = "z" },
+      { command = {}, depth = 0, target = false },
+      { session = { name = "alpha" }, depth = 0, target = "a" },
+    }"#;
+
+    let drawn = sorted_by_order_lua(items);
+    assert!(
+        drawn.contains("alpha,zulu,<nameless>"),
+        "the named blocks sort and the nameless one lands last:\n{drawn}"
+    );
 }
