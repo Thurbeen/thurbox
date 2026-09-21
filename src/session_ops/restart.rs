@@ -320,7 +320,9 @@ enum Relaunch {
     /// behind by a restart killed mid-flight would otherwise make `start`
     /// report success and leave the session with no window at all. It still
     /// asks whether a window is already there, so an unpark of a session that
-    /// has one does not spawn a second.
+    /// has one does not spawn a second — locally. Delegated to a host that
+    /// restarts its own sessions it is sent as a plain restart, because the
+    /// one flag there carries both halves; see the delegation below.
     Unparking,
 }
 
@@ -330,8 +332,10 @@ impl Relaunch {
         self != Self::Asked
     }
 
-    /// Whether somebody else holding the row means there is nothing to do.
-    fn defers_to_a_holder(self) -> bool {
+    /// Whether this is a **repairer** — which is both what standing down for a
+    /// hold is for and what `--if-missing` says on the wire to a host that
+    /// restarts its own sessions.
+    fn is_a_repairer(self) -> bool {
         self == Self::IfMissing
     }
 }
@@ -366,7 +370,14 @@ fn restart_for(
         .as_ref()
         .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
     {
-        return restart_delegated(db, &session, host, &cli, why.only_if_missing());
+        // `--if-missing` is "I am a repairer", and the host reads both halves
+        // out of it: put a window back only if one is gone, and stand down for
+        // a hold somebody there already has. An unpark is neither — the
+        // operator asked for it, and `stop` killed the window on the host
+        // already, so the flag saves nothing and a hold left behind there
+        // would silently no-op a `session start` that has cleared the parked
+        // mark here.
+        return restart_delegated(db, &session, host, &cli, why.is_a_repairer());
     }
 
     // Taken before the liveness question below, because that question's answer
@@ -376,7 +387,7 @@ fn restart_for(
     // Who declines on it is `Relaunch`'s to say; what keeps two callers that
     // do not decline to one window is the retirement in `agent::tmux`.
     let held = hold_restart(db, session_id);
-    if why.defers_to_a_holder() && held.is_none() {
+    if why.is_a_repairer() && held.is_none() {
         tracing::debug!(
             "'{}' is already being restarted; not relaunching",
             session.name
@@ -759,17 +770,20 @@ mod tests {
     /// does not spawn a second — but a hold left behind by a restart killed
     /// mid-flight outlives it by minutes, and standing down for one would make
     /// `start` clear the parked mark, report success and leave the session with
-    /// no window at all until the hold expired.
+    /// no window at all until the hold expired. The second predicate is what a
+    /// delegated restart puts on the wire too, so the same unpark must not
+    /// reach a host as `--if-missing` — see
+    /// `shared_tests::an_unpark_reaches_the_host_as_a_plain_restart`.
     #[test]
     fn only_a_repairer_stands_down_for_a_hold() {
         assert!(!Relaunch::Asked.only_if_missing());
-        assert!(!Relaunch::Asked.defers_to_a_holder());
+        assert!(!Relaunch::Asked.is_a_repairer());
 
         assert!(Relaunch::IfMissing.only_if_missing());
-        assert!(Relaunch::IfMissing.defers_to_a_holder());
+        assert!(Relaunch::IfMissing.is_a_repairer());
 
         assert!(Relaunch::Unparking.only_if_missing());
-        assert!(!Relaunch::Unparking.defers_to_a_holder());
+        assert!(!Relaunch::Unparking.is_a_repairer());
     }
 
     /// A hold is per row, and given back on every path out of the restart that

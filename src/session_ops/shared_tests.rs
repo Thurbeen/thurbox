@@ -284,6 +284,34 @@ fn a_restart_asks_the_host_and_a_relaunch_says_if_missing() {
     assert_eq!(relaunch.last().map(String::as_str), Some("--if-missing"));
 }
 
+/// `--if-missing` is "I am a repairer" on the wire, and a host reads both halves
+/// out of it: put a window back only if one is gone, and stand down for a
+/// restart hold somebody there already has. An unpark is neither — `stop`
+/// killed the window on the host already, and the operator asked for it back —
+/// so a hold left behind there would otherwise no-op a `session start` that has
+/// cleared the parked mark here.
+#[test]
+fn an_unpark_reaches_the_host_as_a_plain_restart() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "parked");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "parked"));
+    rig.db.set_session_stopped(id, true).unwrap();
+
+    super::restart::start_session_headless(&rig.db, id).unwrap();
+
+    let restart = fake::calls()
+        .into_iter()
+        .find(|c| c.get(1).map(String::as_str) == Some("restart"))
+        .expect("the unpark is delegated");
+    assert_eq!(restart, vec!["session", "restart", &id.to_string()]);
+}
+
 #[test]
 fn a_restore_is_performed_by_the_host_and_the_row_returns() {
     let rig = rig();
