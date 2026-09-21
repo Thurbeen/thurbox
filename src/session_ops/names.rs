@@ -40,12 +40,15 @@ const HOLD_TTL_FLOOR_MS: u64 = 5 * 60 * 1000;
 /// The floor covers the operation itself — an extension's declared session
 /// spawns in place, no `worktree_branch`, so no `git fetch` and no checkout,
 /// and is a tmux window and an agent launch; a restore recreates worktrees and
-/// relaunches. What the floor cannot cover on its own is the part the *user*
-/// sizes: every lifecycle hook runs inside one of these operations, in file
-/// order, each bounded only by its own `timeout_secs` — an `Option<u64>` with
-/// no cap, and the shipped template shows `timeout_secs = 120`. A hold shorter
-/// than that budget lapses while its holder is still waiting on a hook, and the
-/// next creator sees a free name and an absent row.
+/// relaunches; a restart (`super::restart::hold_restart`, which holds a row
+/// rather than a name and is sized from here for the same reason) kills a
+/// window and puts one back. What the floor cannot cover on its own is the
+/// part the *user* sizes: every lifecycle hook runs inside one of these
+/// operations, in file order, each bounded only by its own `timeout_secs` —
+/// an `Option<u64>` with no cap, and the shipped template shows
+/// `timeout_secs = 120`. A hold shorter than that budget lapses while its
+/// holder is still waiting on a hook, and the next creator sees a free name
+/// and an absent row.
 ///
 /// Every hook in the file is counted rather than the events one operation will
 /// reach. It is a strict over-estimate — no operation runs them all — and that
@@ -53,7 +56,7 @@ const HOLD_TTL_FLOOR_MS: u64 = 5 * 60 * 1000;
 /// too short costs the pair. It also cannot go stale, which per-event budgets
 /// did: the restore's hold was sized on the *creation* hooks and a long
 /// `session.pre_restore` outlived it.
-fn hold_ttl_ms() -> u64 {
+pub(super) fn hold_ttl_ms() -> u64 {
     // Fully-qualified per the session_ops → agent path-only architecture rule.
     let hooks = crate::agent::hooks_config::load_or_seed();
     let budget: std::time::Duration = hooks.hooks.iter().map(|h| h.timeout()).sum();

@@ -2149,6 +2149,18 @@ configures, whose `timeout_secs` has no cap — and hold it across the whole ope
 rather than across the lookups: a creation that has claimed a name has not
 written its row yet, so a lookup alone cannot see it.
 
+The same claim, keyed on a **row** rather than a name, is what keeps a restart
+from being raced. `session restart` kills the window and then spawns its
+replacement, and in between the session is indistinguishable from one whose
+agent died — so a repairer relaunches it, both spawn, and the ADR-25 stamp lands
+on two windows, which is an answer `WindowIndex` refuses for good (issue #1207).
+A restart holds its row for the length of the operation and a
+`restart --if-missing` declines a row already held; an operator's own
+`session restart` is not declined, because a hold outlives its holder by minutes
+and one left behind would otherwise refuse the verb long after the holder died.
+What the hold cannot reach — a server already carrying such a pair — is repaired
+by retiring the loser, which ADR-25 describes.
+
 A restore refuses a name a live session now answers to, matched on the sanitised
 *window* name as `rename` matches it, since `deploy prod` and `deploy.prod` are
 two names and one `tb-deploy_prod`. The refusal is **not** waived by

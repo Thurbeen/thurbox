@@ -53,6 +53,15 @@ fn session_name_claim_key(backend: &str, name: &str) -> String {
     format!("session_name_claim:{backend}:{name}")
 }
 
+/// Metadata key under which a restart records that it is replacing the window
+/// of the session `id` names. Keyed on the **row**, not on `(backend, name)`
+/// like [`session_name_claim_key`]: a name is a question two machines may
+/// legitimately answer differently, while the row a restart replaces the window
+/// of is one thing wherever it runs.
+fn session_restart_claim_key(id: &str) -> String {
+    format!("session_restart_claim:{id}")
+}
+
 /// Metadata key recording an opt-out of the built-in extension `name`. The
 /// format is load-bearing rather than cosmetic: `hooks` must keep producing
 /// `builtin_hooks_optout`, the key written before there was more than one
@@ -367,17 +376,58 @@ impl Database {
         expires_at: u64,
         now: u64,
     ) -> rusqlite::Result<bool> {
+        self.claim_until(&session_name_claim_key(backend, name), expires_at, now)
+    }
+
+    /// Atomically claim the right to replace session `id`'s window, for as long
+    /// as `expires_at`. Returns `true` for the single winner.
+    ///
+    /// [`claim_session_name`](Self::claim_session_name) keyed on the row rather
+    /// than the name, and the same conditional statement. A name is a question
+    /// two machines may legitimately answer differently, while the row a
+    /// restart replaces the window of is one thing wherever it runs — see
+    /// `session_ops::restart::hold_restart` for what a loser does about it.
+    pub fn claim_session_restart(
+        &self,
+        id: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        self.claim_until(&session_restart_claim_key(id), expires_at, now)
+    }
+
+    /// Give up a claim taken by
+    /// [`claim_session_restart`](Self::claim_session_restart), identified by the
+    /// `expires_at` it was taken with — a claim since taken over carries a
+    /// different value and is left alone, exactly as for a name.
+    pub fn release_session_restart(&self, id: &str, expires_at: u64) -> rusqlite::Result<()> {
+        self.release_claim(&session_restart_claim_key(id), expires_at)
+    }
+
+    /// The claim both of the above are: one conditional statement, which is
+    /// what makes it a claim rather than a look followed by a write.
+    ///
+    /// The expiry is what makes a holder that died mid-operation recoverable —
+    /// a claim older than `now` is taken over rather than waited on forever —
+    /// and it doubles as the claim's token, which is why the release below
+    /// matches on it.
+    fn claim_until(&self, key: &str, expires_at: u64, now: u64) -> rusqlite::Result<bool> {
         let claimed = self.conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
              ON CONFLICT(key) DO UPDATE SET value = ?2 \
              WHERE CAST(metadata.value AS INTEGER) <= ?3",
-            params![
-                session_name_claim_key(backend, name),
-                expires_at.to_string(),
-                now as i64,
-            ],
+            params![key, expires_at.to_string(), now as i64],
         )?;
         Ok(claimed == 1)
+    }
+
+    /// Delete a claim, and only the exact one that was taken.
+    fn release_claim(&self, key: &str, expires_at: u64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM metadata WHERE key = ?1 AND value = ?2",
+            params![key, expires_at.to_string()],
+        )?;
+        Ok(())
     }
 
     /// Give up a claim taken by [`claim_session_name`](Self::claim_session_name),
@@ -389,14 +439,7 @@ impl Database {
         name: &str,
         expires_at: u64,
     ) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM metadata WHERE key = ?1 AND value = ?2",
-            params![
-                session_name_claim_key(backend, name),
-                expires_at.to_string()
-            ],
-        )?;
-        Ok(())
+        self.release_claim(&session_name_claim_key(backend, name), expires_at)
     }
 
     /// Atomically read + clear the pending "focus this session" request that

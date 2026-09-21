@@ -181,7 +181,7 @@ pub fn start_session_headless(
 ) -> Result<RestartReport, String> {
     db.set_session_stopped(session_id, false)
         .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
-    restart_session_headless_with(db, session_id, true)
+    restart_for(db, session_id, Relaunch::Unparking)
 }
 
 /// Refuse a restart of a row that has been deleted since it was loaded.
@@ -291,6 +291,61 @@ pub fn restart_session_headless_with(
     session_id: SessionId,
     if_missing: bool,
 ) -> Result<RestartReport, String> {
+    restart_for(
+        db,
+        session_id,
+        match if_missing {
+            true => Relaunch::IfMissing,
+            false => Relaunch::Asked,
+        },
+    )
+}
+
+/// Why a window is being put back — which is the whole of what a hold on the
+/// row means to this caller ([`hold_restart`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Relaunch {
+    /// The caller asked for this restart by name. It replaces the window
+    /// whatever is there, and a hold does not stop it.
+    Asked,
+    /// A repairer: the interface's respawn of surveyed rows, a peer's
+    /// `restart --if-missing`, extension self-heal. It puts a window back only
+    /// when one is gone — and a row somebody else is already restarting is a
+    /// row whose window is *about to be back*, which is the only thing that
+    /// tells the two apart (issue #1207).
+    IfMissing,
+    /// `session start`. The window is gone because `stop` killed it and the
+    /// operator has asked for it back, so it is asked for rather than
+    /// repaired: a hold outlives its holder by minutes by design, and one left
+    /// behind by a restart killed mid-flight would otherwise make `start`
+    /// report success and leave the session with no window at all. It still
+    /// asks whether a window is already there, so an unpark of a session that
+    /// has one does not spawn a second — locally. Delegated to a host that
+    /// restarts its own sessions it is sent as a plain restart, because the
+    /// one flag there carries both halves; see the delegation below.
+    Unparking,
+}
+
+impl Relaunch {
+    /// Whether a window that is already there means there is nothing to do.
+    fn only_if_missing(self) -> bool {
+        self != Self::Asked
+    }
+
+    /// Whether this is a **repairer** — which is both what standing down for a
+    /// hold is for and what `--if-missing` says on the wire to a host that
+    /// restarts its own sessions.
+    fn is_a_repairer(self) -> bool {
+        self == Self::IfMissing
+    }
+}
+
+/// Every restart, with [`Relaunch`] saying which caller's rules apply.
+fn restart_for(
+    db: &Database,
+    session_id: SessionId,
+    why: Relaunch,
+) -> Result<RestartReport, String> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
@@ -315,10 +370,32 @@ pub fn restart_session_headless_with(
         .as_ref()
         .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
     {
-        return restart_delegated(db, &session, host, &cli, if_missing);
+        // `--if-missing` is "I am a repairer", and the host reads both halves
+        // out of it: put a window back only if one is gone, and stand down for
+        // a hold somebody there already has. An unpark is neither — the
+        // operator asked for it, and `stop` killed the window on the host
+        // already, so the flag saves nothing and a hold left behind there
+        // would silently no-op a `session start` that has cleared the parked
+        // mark here.
+        return restart_delegated(db, &session, host, &cli, why.is_a_repairer());
     }
 
-    if if_missing && !relaunch_is_owed(db, &session, host.as_ref())? {
+    // Taken before the liveness question below, because that question's answer
+    // is honest and wrong: a window killed by a restart that has not yet
+    // spawned its replacement really is gone. The hold is what tells "gone"
+    // apart from "being replaced", and it lives until this function returns.
+    // Who declines on it is `Relaunch`'s to say; what keeps two callers that
+    // do not decline to one window is the retirement in `agent::tmux`.
+    let held = hold_restart(db, session_id);
+    if why.is_a_repairer() && held.is_none() {
+        tracing::debug!(
+            "'{}' is already being restarted; not relaunching",
+            session.name
+        );
+        return Ok(RestartReport::default());
+    }
+
+    if why.only_if_missing() && !relaunch_is_owed(db, &session, host.as_ref())? {
         return Ok(RestartReport::default());
     }
 
@@ -397,8 +474,69 @@ fn restart_delegated(
     Ok(RestartReport { hook_failures })
 }
 
+/// A restart's hold on the row it is replacing the window of, given back when
+/// this value is dropped.
+///
+/// Structural for the reason [`super::names::HeldName`] is: a restart runs
+/// through `?` and early returns, and a hold leaked by the one path that did
+/// not reach its release holds the row until it expires.
+struct HeldRestart<'a> {
+    db: &'a Database,
+    id: String,
+    expires_at: u64,
+}
+
+impl Drop for HeldRestart<'_> {
+    fn drop(&mut self) {
+        // Best-effort, exactly as a name's release is: a hold that cannot be
+        // deleted expires on its own, and failing a restart that already
+        // happened over its bookkeeping would be the worse answer.
+        if let Err(e) = self.db.release_session_restart(&self.id, self.expires_at) {
+            tracing::warn!("could not release the restart hold on '{}': {e}", self.id);
+        }
+    }
+}
+
+/// Hold the right to replace `session_id`'s window — or `None` when somebody
+/// else already holds it.
+///
+/// A restart is kill-then-spawn, and between those two steps the session is
+/// indistinguishable from one whose agent died. That is exactly what a
+/// repairer relaunches — the interface's `respawn_missing_agents`, a peer's
+/// `restart --if-missing`, extension self-heal — and both then spawn and stamp,
+/// leaving one session id on two windows (issue #1207). The `respawned` guard
+/// in `respawn_missing_agents` only ever closed the interface racing itself;
+/// `thurbox-cli session restart` is a separate process, and the database is the
+/// only thing the two share.
+///
+/// Sized by [`super::names::hold_ttl_ms`], which already counts every
+/// configured lifecycle hook — so a `pre_restart` that takes minutes is inside
+/// the hold rather than beyond it — and expiring is what keeps a restart killed
+/// mid-flight from holding its row forever.
+fn hold_restart(db: &Database, session_id: SessionId) -> Option<HeldRestart<'_>> {
+    let id = session_id.to_string();
+    let now = crate::sync::current_time_millis();
+    let expires_at = now.saturating_add(super::names::hold_ttl_ms());
+    match db.claim_session_restart(&id, expires_at, now) {
+        Ok(true) => Some(HeldRestart { db, id, expires_at }),
+        Ok(false) => None,
+        // A read that failed says nothing about who holds the row, and the
+        // caller only ever declines a *relaunch* on a `None` — which is the
+        // safe direction: the next heartbeat asks again.
+        Err(e) => {
+            tracing::warn!("could not claim the restart of '{id}': {e}");
+            None
+        }
+    }
+}
+
 /// Whether a relaunch is owed: never for a parked session, and only when a
 /// listing positively says the window is gone.
+///
+/// Deliberately not the whole question. "Is the window gone" is answered
+/// honestly and wrongly in the middle of a restart, and [`hold_restart`] is
+/// what covers that — asked by the caller rather than here, so the hold lives
+/// for the restart instead of for this question.
 fn relaunch_is_owed(
     db: &Database,
     session: &SharedSession,
@@ -588,6 +726,113 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
         }
+    }
+
+    /// A hold is taken against a config dir of the test's own: sizing one
+    /// reads `hooks.toml`, and seeding the operator's is not this suite's to do.
+    fn hooks_isolated() -> (tempfile::TempDir, crate::paths::TestPathGuard) {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let guard = crate::paths::TestPathGuard::new(temp.path());
+        (temp, guard)
+    }
+
+    /// The race #1207 reports, at the only point the two processes meet. A
+    /// restart is kill-then-spawn, and a repairer asked in between is told —
+    /// honestly — that the window is gone. Nothing in tmux can tell that apart
+    /// from an agent that died, so the row itself has to say so.
+    #[test]
+    fn a_relaunch_declines_a_row_that_is_already_being_restarted() {
+        let (_temp, _guard) = hooks_isolated();
+        let db = Database::open_in_memory().unwrap();
+        let row = session(Some("conversation"), None);
+        db.upsert_session(&row).unwrap();
+
+        let held = hold_restart(&db, row.id).expect("the restart wins the row");
+
+        // `--if-missing` is a repairer, and it must not put a second agent on a
+        // window somebody is in the middle of replacing. Answered before tmux
+        // is asked anything, so this needs no server.
+        assert_eq!(
+            restart_session_headless_with(&db, row.id, true),
+            Ok(RestartReport::default()),
+            "a relaunch of a row being restarted is not owed"
+        );
+
+        drop(held);
+        assert!(
+            hold_restart(&db, row.id).is_some(),
+            "the restart ending gives the row back"
+        );
+    }
+
+    /// `session start` is the caller that looks like a repairer and is not. It
+    /// asks `if_missing` so an unpark of a session that already has a window
+    /// does not spawn a second — but a hold left behind by a restart killed
+    /// mid-flight outlives it by minutes, and standing down for one would make
+    /// `start` clear the parked mark, report success and leave the session with
+    /// no window at all until the hold expired. The second predicate is what a
+    /// delegated restart puts on the wire too, so the same unpark must not
+    /// reach a host as `--if-missing` — see
+    /// `shared_tests::an_unpark_reaches_the_host_as_a_plain_restart`.
+    #[test]
+    fn only_a_repairer_stands_down_for_a_hold() {
+        assert!(!Relaunch::Asked.only_if_missing());
+        assert!(!Relaunch::Asked.is_a_repairer());
+
+        assert!(Relaunch::IfMissing.only_if_missing());
+        assert!(Relaunch::IfMissing.is_a_repairer());
+
+        assert!(Relaunch::Unparking.only_if_missing());
+        assert!(!Relaunch::Unparking.is_a_repairer());
+    }
+
+    /// A hold is per row, and given back on every path out of the restart that
+    /// took it — the reason it is a guard rather than a call at each return.
+    #[test]
+    fn only_one_restart_holds_a_row_at_a_time() {
+        let (_temp, _guard) = hooks_isolated();
+        let db = Database::open_in_memory().unwrap();
+        let mine = session(None, None);
+        let other = session(None, None);
+
+        let held = hold_restart(&db, mine.id).expect("the first restart wins");
+        assert!(
+            hold_restart(&db, mine.id).is_none(),
+            "the second must not start killing windows"
+        );
+        assert!(
+            hold_restart(&db, other.id).is_some(),
+            "a hold says nothing about any other session"
+        );
+
+        drop(held);
+        assert!(
+            hold_restart(&db, mine.id).is_some(),
+            "the row is free again once the restart is over"
+        );
+    }
+
+    /// A restart killed mid-flight — between its kill and its spawn is exactly
+    /// where a `SIGKILL` hurts — must not lock its own row out forever. The
+    /// expiry is what bounds that, and it is the claim's token too, so the
+    /// holder that overran cannot release its successor's.
+    #[test]
+    fn a_restart_hold_left_behind_expires_rather_than_sticking() {
+        let (_temp, _guard) = hooks_isolated();
+        let db = Database::open_in_memory().unwrap();
+        let row = session(None, None);
+        let id = row.id.to_string();
+        let now = crate::sync::current_time_millis();
+
+        assert!(db.claim_session_restart(&id, now - 1, now).unwrap());
+        let successor = hold_restart(&db, row.id).expect("an expired hold is taken over");
+
+        db.release_session_restart(&id, now - 1).unwrap();
+        assert!(
+            hold_restart(&db, row.id).is_none(),
+            "releasing the dead hold must leave the successor's alone"
+        );
+        drop(successor);
     }
 
     /// A `pre_restart` hook runs the user's own program between the row being

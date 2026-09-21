@@ -1771,6 +1771,47 @@ the interface has opened one, and every teardown — force delete, reap, `stop`,
 `restart`, `--on-existing replace` — now takes both down through the stamp
 rather than through a column that is usually NULL.
 
+**One session, one window per role is enforced, not merely assumed.** The
+three-valued answer above only works while that holds, and as first written
+nothing kept it: `respawn_local` is kill-then-spawn, and between those two steps
+the session is indistinguishable from one whose agent died — which is what every
+repairer relaunches. Both then spawned and stamped, one id landed on two
+windows, and `unknown` is permanent because the windows stay (issue #1207). Two
+mechanisms now, and they answer different halves:
+
+- **The row is held for the length of a restart.** `restart::hold_restart` is
+  `Database::claim_session_restart`, the conditional statement
+  `claim_session_name` already is (docs/FEATURES.md → "Two creators never reach
+  an `--on-existing`") re-keyed on the session id, and a
+  `restart --if-missing` declines a row somebody else is replacing the window
+  of. It is the only thing the two processes share, and it is what stops a
+  second agent from ever being launched onto one conversation. Only a
+  *relaunch* declines on it: a hold outlives its holder by minutes by design, so
+  refusing an operator's own `session restart` would leave the verb answering
+  "already restarting" long after the holder died.
+- **A second window carrying a stamp is retired where the stamp is written.**
+  `agent::tmux::retire_duplicate_windows` runs after every local stamp
+  (`stamp_local_window`, and `TmuxBackend::stamp_window` for the interface's own
+  spawn and for an adopt) and **the highest window id keeps the identity**.
+  Not "the window I just made": both racers run the sweep, so "mine wins" has
+  each retire the other's and can leave the session no window at all, while a
+  key tmux issues in order and never reissues makes every sweep reach the same
+  verdict. It also closes the gap between a window being created and being
+  stamped — the last stamp to land is followed by a listing that sees every
+  earlier one. Liveness is deliberately not the key: it changes between two
+  listings taken a moment apart, and a newest window whose pane already exited
+  is kept and stays on screen under `remain-on-exit`, which is how the operator
+  sees why it exited.
+
+The same sweep runs from `owned_target` before it gives up on an `unknown`, and
+that is what reaches a server **already** carrying a pair — no migration does,
+because those windows exist. `WindowIndex` itself is untouched: `stamped_match`
+still refuses two, because the repair is a *write* and reading one of two as the
+answer is the unsound step the pane-id tie-break was rejected for above. Both
+are local tmux only; psmux keeps `@` options in one server-global map, so the
+stamp is withheld at both ends there (ADR-13) and a sweep that believed a
+listing would retire every window on the server.
+
 ---
 
 ## ADR-26: One reaper, and a row is written by the column that changed
