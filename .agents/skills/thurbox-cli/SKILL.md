@@ -215,6 +215,19 @@ session that has no pane on sight — the interface's respawn of surveyed rows, 
 peer's `restart --if-missing` after a reboot, and extension self-heal. All three
 skip a stopped row; `session start` is the only caller that clears the mark.
 
+Those same three also skip a row that is **already being restarted**. A restart
+kills the window and then spawns its replacement, and in between the session is
+pane-less for the same reason a parked one is, so a repairer used to put a
+second agent on it and the ADR-25 stamp landed on two windows (issue #1207).
+`restart` holds the row for the length of the operation —
+`Database::claim_session_restart`, the name claim re-keyed on the session id —
+and a repairer stands down while somebody holds it. `restart` and `start`
+themselves do not: a hold outlives its holder by minutes by design, and one left
+behind by a restart killed mid-flight must not refuse the verb the operator
+typed. What keeps two of those to one window is `agent::tmux`, which retires
+every window but the highest-numbered one carrying a session's stamp each time a
+stamp is written, and again before it gives up on an ambiguous one.
+
 The mark is **reported by the read verbs**, not only by `watch`: a parked
 session stays in `session list` and carries `stopped: true` with
 `state: "stopped"` on `get` and `list` — the same key and type the stream uses.
