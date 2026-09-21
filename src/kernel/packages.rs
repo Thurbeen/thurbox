@@ -1020,27 +1020,9 @@ fn record_repository(
 pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     let spec = read_spec(dir)?;
     let mut lock = read_lock(dir)?;
-    let mut reports = Vec::new();
-
     // Withdrawn first, so a spec that moves a pane from one file to another does
     // not have the old file taken back after the new one is written.
-    for stale in lock
-        .beyond(&spec)
-        .into_iter()
-        .cloned()
-        .collect::<Vec<LockEntry>>()
-    {
-        withdraw(dir, &stale)?;
-        lock.forget(&stale.file);
-        reports.push(EntryReport {
-            name: stale.file.clone(),
-            file: stale.file.clone(),
-            src: stale.src.clone(),
-            version: stale.version.clone(),
-            from: None,
-            outcome: Outcome::Removed,
-        });
-    }
+    let mut reports = withdraw_stale(dir, &spec, &mut lock, |_| true)?;
 
     for entry in &spec.plugins {
         if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
@@ -1084,6 +1066,41 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     Ok(reports)
 }
 
+/// Take back the records the spec no longer lists, among those `wanted` picks.
+///
+/// Shared by [`sync`], which takes back every one, and [`update`], which takes back
+/// only its targets' own: a hand-edit that re-keys a multi-pane package leaves its
+/// old record covering the panes the new key delivers, and delivering over it would
+/// be refused as a second owner — or, if allowed, leave two records the next
+/// `sync` would reconcile by withdrawing the live entry's files.
+fn withdraw_stale(
+    dir: &Path,
+    spec: &PluginSpec,
+    lock: &mut PluginLock,
+    wanted: impl Fn(&LockEntry) -> bool,
+) -> Result<Vec<EntryReport>, String> {
+    let stale: Vec<LockEntry> = lock
+        .beyond(spec)
+        .into_iter()
+        .filter(|entry| wanted(entry))
+        .cloned()
+        .collect();
+    let mut reports = Vec::new();
+    for stale in stale {
+        withdraw(dir, &stale)?;
+        lock.forget(&stale.file);
+        reports.push(EntryReport {
+            name: stale.file.clone(),
+            file: stale.file.clone(),
+            src: stale.src.clone(),
+            version: stale.version.clone(),
+            from: None,
+            outcome: Outcome::Removed,
+        });
+    }
+    Ok(reports)
+}
+
 /// Advance entries to what their source carries now.
 ///
 /// `key` names one entry; `None` is all of them. An entry the spec **pins** is
@@ -1104,7 +1121,11 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
         return Ok(Vec::new());
     }
 
-    let mut reports = Vec::new();
+    // Only copied packages: the overlap a re-key leaves is a copy-model conflict, and
+    // a repository's record names a file inside a working copy git owns.
+    let mut reports = withdraw_stale(dir, &spec, &mut lock, |stale| {
+        !is_repository(&stale.src) && targets.iter().any(|target| target.src == stale.src)
+    })?;
     for entry in targets {
         if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
             let (outcome, commit, from) = converge_repository(dir, entry, &url, true, &mut lock)?;

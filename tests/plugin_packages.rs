@@ -519,7 +519,8 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
     std::fs::write(
         ui.join("plugins.toml"),
         format!(
-            "{spec}\n[[plugin]]\nsrc = \"{}\"\nfile = \"plugins/76_atlas_notes.lua\"\n",
+            // A literal string, so a Windows path's backslashes are not escapes.
+            "{spec}\n[[plugin]]\nsrc = '{}'\nfile = \"plugins/76_atlas_notes.lua\"\n",
             src.display()
         ),
     )
@@ -532,6 +533,40 @@ fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
     );
     let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
     assert_eq!(lock.plugins.len(), 1, "no second record: {lock:?}");
+}
+
+#[test]
+fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
+    // Changing which pane the one entry is keyed on is a legitimate edit. The record
+    // under the old key is stale, not a second owner, and `update` takes it back the
+    // way `sync` does rather than refusing.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    install(&src);
+    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    std::fs::write(
+        ui.join("plugins.toml"),
+        spec.replace("plugins/75_atlas.lua", "plugins/76_atlas_notes.lua"),
+    )
+    .expect("hand edit");
+
+    let updated = run(Action::Update { name: None }).expect("update converges");
+    assert!(updated.failure.is_none(), "{:?}", updated.json);
+    let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
+    assert_eq!(lock.plugins.len(), 1, "{lock:?}");
+    assert_eq!(lock.plugins[0].file, "plugins/76_atlas_notes.lua");
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
+    assert!(ui.join("plugins/76_atlas_notes.lua").is_file());
+
+    // And the result is one a later sync agrees with, not one it undoes.
+    let synced = run(Action::Sync).expect("sync");
+    assert_eq!(
+        synced.json["entries"][0]["outcome"], "current",
+        "{:?}",
+        synced.json
+    );
+    assert!(ui.join("plugins/75_atlas.lua").is_file());
 }
 
 #[test]
