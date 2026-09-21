@@ -570,6 +570,41 @@ fn rekeying_the_sole_entry_by_hand_then_updating_converges() {
 }
 
 #[test]
+fn a_targeted_update_leaves_another_entrys_stale_record_alone() {
+    // Two entries from one source — a single-pane package installed twice — and the
+    // first re-keyed by hand. Updating only the second must not take back the first's
+    // files: that entry is not delivered by this update, so it would be left with
+    // nothing installed until a full sync.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = package(home.path(), "beacon", "v1", "beacon");
+    install(&src);
+    run(Action::Install {
+        src: src.display().to_string(),
+        as_file: Some("plugins/88_beacon.lua".into()),
+        pin: None,
+    })
+    .expect("second copy");
+    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    std::fs::write(
+        ui.join("plugins.toml"),
+        spec.replace("plugins/75_beacon.lua", "plugins/77_beacon.lua"),
+    )
+    .expect("hand edit");
+
+    let updated = run(Action::Update {
+        name: Some("plugins/88_beacon.lua".into()),
+    })
+    .expect("update runs");
+    assert!(
+        !updated.json.to_string().contains("removed"),
+        "nothing of the other entry's is taken back: {:?}",
+        updated.json
+    );
+    assert!(ui.join("plugins/75_beacon.lua").is_file());
+}
+
+#[test]
 fn the_legacy_placement_hint_is_about_the_keyed_pane() {
     // `file` names the keyed pane, so `placement_hint` — kept for existing readers —
     // must describe that pane, not whichever pane happened to need a hint first.

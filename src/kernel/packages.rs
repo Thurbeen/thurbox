@@ -1069,10 +1069,10 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
 /// Take back the records the spec no longer lists, among those `wanted` picks.
 ///
 /// Shared by [`sync`], which takes back every one, and [`update`], which takes back
-/// only its targets' own: a hand-edit that re-keys a multi-pane package leaves its
-/// old record covering the panes the new key delivers, and delivering over it would
-/// be refused as a second owner — or, if allowed, leave two records the next
-/// `sync` would reconcile by withdrawing the live entry's files.
+/// only a record covering one of its targets' keys: a hand-edit that re-keys a
+/// multi-pane package leaves its old record covering the pane the new key names, and
+/// delivering over it would be refused as a second owner — or, if allowed, leave two
+/// records the next `sync` would reconcile by withdrawing the live entry's files.
 fn withdraw_stale(
     dir: &Path,
     spec: &PluginSpec,
@@ -1121,10 +1121,16 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
         return Ok(Vec::new());
     }
 
-    // Only copied packages: the overlap a re-key leaves is a copy-model conflict, and
-    // a repository's record names a file inside a working copy git owns.
+    // Only a record covering a target's own key — the one a hand re-key leaves
+    // behind, and the one that would read as a second owner of that pane. Matching
+    // by source instead would take back a different entry's files, which this update
+    // does not deliver. Copied packages only: a repository's record names a file
+    // inside a working copy git owns.
     let mut reports = withdraw_stale(dir, &spec, &mut lock, |stale| {
-        !is_repository(&stale.src) && targets.iter().any(|target| target.src == stale.src)
+        !is_repository(&stale.src)
+            && targets
+                .iter()
+                .any(|target| stale.files.contains_key(&target.file))
     })?;
     for entry in targets {
         if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
