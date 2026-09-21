@@ -325,15 +325,15 @@ docs/ORCHESTRATION.md the control-plane pattern. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md
 owns the introduction.
 
-CLAUDE.md is the agent-facing index into those owners: it carries pointers and
+AGENTS.md is the agent-facing index into those owners: it carries pointers and
 the operating guidance a coding agent needs on every turn, and a code change
 that invalidates or extends a documented decision updates the owning doc in the
 same change. The per-subsystem working reference lives in the skills under
 .agents/skills/ (thurbox-testing, thurbox-performance, thurbox-release,
 thurbox-agents, thurbox-remote-hosts, thurbox-cli, thurbox-extensions,
 thurbox-session-status, thurbox-kernel, thurbox-ui-surfaces,
-thurbox-demo-media), which CLAUDE.md indexes: detail an agent needs only when
-working on that subsystem belongs in its skill rather than back in CLAUDE.md,
+thurbox-demo-media), which AGENTS.md indexes: detail an agent needs only when
+working on that subsystem belongs in its skill rather than back in AGENTS.md,
 and a change that invalidates one updates it in the same change. A skill is a
 working reference, not an owner - the docs above still own the rationale.
 ui/AGENTS.md owns interface-authoring guidance for whichever coding CLI is

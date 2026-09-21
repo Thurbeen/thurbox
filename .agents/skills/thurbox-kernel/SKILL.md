@@ -5,7 +5,7 @@ description: The thurbox v2 plugin kernel: the five rules, module dependency rul
 
 # Thurbox plugin kernel and plugin authoring
 
-*Working reference extracted from `CLAUDE.md`, which indexes it. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
+*Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
 ## Architecture (plugin kernel)
 

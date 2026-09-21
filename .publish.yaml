@@ -18,7 +18,7 @@ review:
     # blocks matching the paths the change touches.
     - docs/REVIEW.md
     # The agent-facing index into the docs and the per-subsystem skills.
-    - CLAUDE.md
+    - AGENTS.md
     # The contribution process: commit conventions, staging discipline, the
     # pull request title, and this gate.
     - CONTRIBUTING.md

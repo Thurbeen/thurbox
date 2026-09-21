@@ -2,7 +2,7 @@
 
 This guide covers setting up your environment, the conventions the project
 follows, and how to get a change merged. Skimming [`README.md`](README.md),
-[`CLAUDE.md`](CLAUDE.md) and the design docs under [`docs/`](docs/) first will
+[`AGENTS.md`](AGENTS.md) and the design docs under [`docs/`](docs/) first will
 save you time.
 
 Be respectful and constructive: assume good faith, keep discussions on the
@@ -52,16 +52,14 @@ sandbox for trying thurbox in isolation — is in
 
 ## Coding agents
 
-Thurbox is agent-neutral, and so is the repo. [`CLAUDE.md`](CLAUDE.md) is the
-canonical guidance doc — Claude Code reads it directly, and
-[opencode](https://opencode.ai) loads it as project rules through its
-Claude-Code compatibility (which only applies when no `AGENTS.md` exists, so
-there is deliberately no `AGENTS.md` duplicating it).
+Thurbox is agent-neutral, and so is the repo. [`AGENTS.md`](AGENTS.md) is the
+canonical guidance doc shared by coding agents. Keep repository instructions
+there so every agent reads the same source.
 
 The skills are checked in under `.agents/skills/`: eleven per-subsystem
 working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
-… — `CLAUDE.md` indexes them) plus `ui-review`. They carry the
-detail that used to sit in `CLAUDE.md`, so it stays an index and an agent loads
+… — `AGENTS.md` indexes them) plus `ui-review`. They carry the
+detail that used to sit in `AGENTS.md`, so it stays an index and an agent loads
 only the subject it is working on. `.agents/skills/` is the agent-neutral home —
 the body of every skill lives there once, and each is exposed to a specific CLI
 by a **relative symlink** from that CLI's own directory (`.claude/skills/<name>`
@@ -271,14 +269,14 @@ doc in the **same PR**. Rationale lives in:
   against, and which document owns which class of fact
 
 Comments explain **why**, not **what** — see the Comments section of
-[`CLAUDE.md`](CLAUDE.md).
+[`AGENTS.md`](AGENTS.md).
 
 ## Architecture
 
 Module dependencies are one-directional (`session ← agent ← kernel ← main`) and
 enforced by `tests/architecture_rules.rs`: a new module fails that test until
 its dependencies are declared in the allowlist. The graph is documented in the
-Module Dependency Rules section of [`CLAUDE.md`](CLAUDE.md) and, with the full
+Module Dependency Rules section of [`AGENTS.md`](AGENTS.md) and, with the full
 per-module allowlist, in [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
 
 ## Pull requests

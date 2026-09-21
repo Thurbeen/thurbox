@@ -10,7 +10,7 @@
 //! (`use crate::{a, b}`), bare imports (`use crate::a;`), multi-line
 //! statements, and fully-qualified paths in code (`crate::a::item(…)`).
 //!
-//! The layering mirrors CLAUDE.md ("Module Dependency Rules") and
+//! The layering mirrors AGENTS.md ("Module Dependency Rules") and
 //! docs/CONSTITUTION.md §2. If a rule change is intentional, update those
 //! docs in the same PR.
 
@@ -583,7 +583,7 @@ fn format_violations(rules: &ModuleRules, violations: &[Violation]) -> String {
     }
     msg.push_str(
         "Fix the import, or — if the architecture is changing on purpose — update \
-         MODULE_RULES in tests/architecture_rules.rs plus CLAUDE.md and docs/CONSTITUTION.md.\n",
+         MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and docs/CONSTITUTION.md.\n",
     );
     msg
 }

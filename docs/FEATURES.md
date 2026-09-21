@@ -1242,7 +1242,7 @@ importing `git`); persistence in `storage::review`.
 ### Implementation reference: surface, layout, and helpers
 
 The full surface — every key, the layout invariants, and the named helper behind
-each part. `CLAUDE.md` keeps a summary and points here.
+each part. `AGENTS.md` keeps a summary and points here.
 
 - **Surface (tuicr-like).** A continuous diff stream in the central pane (its own
   `InputFocus::CodeReview` — unlike the shell pane's `TerminalView`, it *captures*
@@ -2420,7 +2420,7 @@ table lets a future TUI inbox surface unread counts with no schema change.
 ### Implementation reference: storage, delivery, and CLI
 
 The data/storage shape, delivery + backpressure guarantees, and the full CLI
-surface. `CLAUDE.md` keeps the identity contract and points here.
+surface. `AGENTS.md` keeps the identity contract and points here.
 
 - **Data**: `session::SessionMessage` (pure data, `session/message.rs`;
   `validate_kind_body` bounds `kind`≤32 B / `body`≤64 KiB). **Storage**:

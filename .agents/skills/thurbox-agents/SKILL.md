@@ -5,7 +5,7 @@ description: The declarative coding-agent registry (agents.toml / AgentDef): the
 
 # Thurbox agent definitions
 
-*Working reference extracted from `CLAUDE.md`, which indexes it. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
+*Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
 ## Agent Definitions
 
