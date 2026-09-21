@@ -465,7 +465,7 @@ that arrangement rather than its own taste.
 manifest's `[[files]]` lays down `FLEET.md` in the extension home and
 three `[[symlinks]]` surface it as `CLAUDE.md`, `AGENTS.md` and
 `GEMINI.md`, so the lead reads what it is *for* whichever CLI is behind
-it. That text is deliberately not the repo's own `CLAUDE.md`: one says
+it. That text is deliberately not the repo's own `AGENTS.md`: one says
 what the session is for — hold the plan and the log, never the branches
 — and the other says how to work inside the checkout. A lead whose
 invariant lives only in the conversation that stated it keeps that

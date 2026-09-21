@@ -1,7 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code)
-when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 ## Project
 
@@ -76,7 +75,7 @@ skills** under `.agents/skills/`, loaded on demand instead of on every turn.
 Every skill's body lives there, agent-neutrally; `.claude/skills/<name>` is a
 relative symlink into it, so Claude Code and opencode read the one copy.
 Each carries its subject verbatim, so a section named elsewhere in the repo
-("the *Agent Definitions* section of CLAUDE.md") is now the skill on this list
+("the *Agent Definitions* section of AGENTS.md") is now the skill on this list
 that names it. Read the one your change touches:
 
 | Skill | Owns (the sections that moved) |

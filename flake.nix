@@ -40,7 +40,7 @@
 
         # System deps to build/test/lint thurbox (mirrors .github/workflows/ci.yml).
         systemTools = with pkgs; [
-          tmux # session backend (CLAUDE.md: >= 3.2)
+          tmux # session backend (AGENTS.md: >= 3.2)
           git
           shellcheck # shell linter (pre-commit + CI)
           selene # Lua linter for ui/ (pre-commit + CI); enforces the plugin sandbox

@@ -335,7 +335,7 @@ growth would bloat the database over months of use.
   temp-file-rename pattern.
 - *CLI flags only* — doesn't scale to multiple sessions and
   long-lived configuration.
-- *Embedded in CLAUDE.md* — mixes repo-specific AI guidance with
+- *Embedded in AGENTS.md* — mixes repo-specific AI guidance with
   application configuration; wrong separation of concerns.
 
 ---

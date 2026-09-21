@@ -5,7 +5,7 @@ description: Generating thurbox's demo media: the VHS tapes driven by scripts/de
 
 # Thurbox demo videos and screenshots
 
-*Working reference extracted from `CLAUDE.md`, which indexes it. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
+*Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
 ## Demo Video
 

@@ -5,7 +5,7 @@ description: Hooks-driven session status in thurbox: the SessionState vocabulary
 
 # Thurbox session status and notifications
 
-*Working reference extracted from `CLAUDE.md`, which indexes it. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
+*Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
 ## Session status (hooks-driven)
 

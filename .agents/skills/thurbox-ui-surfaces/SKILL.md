@@ -5,7 +5,7 @@ description: Thurbox's interface surfaces and their contracts: the keybinding re
 
 # Thurbox keybindings, themes, settings and search
 
-*Working reference extracted from `CLAUDE.md`, which indexes it. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
+*Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
 ## Keybindings
 
