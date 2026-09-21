@@ -650,11 +650,15 @@ fn install(src: &str, as_file: Option<&str>, pin: Option<&str>) -> Result<Comman
     // failure with no symptom is a pane that loads and draws nothing, and a second
     // pane nothing places is that failure exactly.
     let panes = delivered_panes(&dir, &report.file);
-    let hints: Vec<String> = panes
+    let per_pane: Vec<Option<String>> = panes
         .iter()
-        .filter_map(|pane| placement_hint(&dir, pane))
+        .map(|pane| placement_hint(&dir, pane))
         .collect();
-    let hint = hints.first().cloned();
+    // `placement_hint` keeps its meaning for existing readers — the hint for
+    // `file`, the keyed pane, which `delivered_panes` puts first — and every pane's
+    // hint goes in `placement_hints`.
+    let hint = per_pane.first().cloned().flatten();
+    let hints: Vec<String> = per_pane.into_iter().flatten().collect();
     let repository = crate::kernel::packages::is_repository(&report.src);
     let mut human = format!(
         "{} {} from {} ({})",

@@ -127,7 +127,11 @@ pub fn validate_destination(file: &str) -> Result<(), String> {
 /// Both spellings, since a repository's manifest is read through this and is as free
 /// to carry `[[pane]]` as any other. What more than one of them means is the
 /// caller's to decide: this function reports, it does not choose.
-pub fn pane_sources_of(text: &str) -> Vec<String> {
+///
+/// One element per **declaration**, `None` where it has no usable `source`. A
+/// malformed declaration is still a declaration: dropping it would let a manifest
+/// declaring two panes read as declaring one, and install half of it silently.
+pub fn pane_sources_of(text: &str) -> Vec<Option<String>> {
     let Ok(value) = toml::from_str::<toml::Value>(text) else {
         return Vec::new();
     };
@@ -140,9 +144,10 @@ pub fn pane_sources_of(text: &str) -> Vec<String> {
     };
     declared
         .into_iter()
-        .filter_map(|pane| Some(pane.get("source")?.as_str()?.trim()))
-        .filter(|source| !source.is_empty())
-        .map(str::to_string)
+        .map(|pane| {
+            let source = pane.get("source")?.as_str()?.trim();
+            (!source.is_empty()).then(|| source.to_string())
+        })
         .collect()
 }
 
@@ -999,15 +1004,23 @@ file = "plugins/80_notes.lua"
 
     #[test]
     fn pane_sources_are_read_in_either_spelling() {
+        let some = |s: &str| Some(s.to_string());
         assert_eq!(
             pane_sources_of("pane = { source = \"plugins/40_a.lua\" }\n"),
-            vec!["plugins/40_a.lua"]
+            vec![some("plugins/40_a.lua")]
         );
         assert_eq!(
             pane_sources_of(
                 "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"plugins/41_b.lua\"\n"
             ),
-            vec!["plugins/40_a.lua", "plugins/41_b.lua"]
+            vec![some("plugins/40_a.lua"), some("plugins/41_b.lua")]
+        );
+        // A declaration with no usable source still counts.
+        assert_eq!(
+            pane_sources_of(
+                "[[pane]]\nsource = \"plugins/40_a.lua\"\n[[pane]]\nsource = \"\"\n[[pane]]\n"
+            ),
+            vec![some("plugins/40_a.lua"), None, None]
         );
         assert!(pane_sources_of("name = \"x\"\n").is_empty());
         assert!(pane_sources_of("not toml [").is_empty());

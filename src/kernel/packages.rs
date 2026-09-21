@@ -171,6 +171,7 @@ pub fn deliver(
     entry.validate()?;
     for payload in payloads {
         plugin_spec::validate_destination(&payload.file)?;
+        refuse_a_pane_owned_elsewhere(entry, payload, lock)?;
     }
 
     let (recorded, tombstoned): (BTreeMap<String, String>, Vec<String>) = lock
@@ -210,6 +211,32 @@ pub fn deliver(
         removed,
     });
     Ok(outcome)
+}
+
+/// Refuse a pane another entry's record already delivers.
+///
+/// What keying one multi-pane package twice looks like — by `install --as` naming a
+/// second pane, or by a hand-edited spec listing it twice. Two records covering one
+/// pane cannot both be honoured: removing either takes the other's files. Checked
+/// here, on the one path `install`, `sync` and `update` all deliver through, and
+/// before anything is written. Modules are left out, since `lib/` is not a pane and
+/// two single-pane copies of a package sharing one has always been allowed.
+fn refuse_a_pane_owned_elsewhere(
+    entry: &PluginEntry,
+    payload: &Payload,
+    lock: &PluginLock,
+) -> Result<(), String> {
+    if payload.file.starts_with("lib/") {
+        return Ok(());
+    }
+    match lock.covering(&payload.file) {
+        Some(owner) if owner.file != entry.file => Err(format!(
+            "{} is already delivered by the entry for {} — remove that one first to \
+             key the package on a different pane",
+            payload.file, owner.file
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// What one payload's delivery does to the lock record.
@@ -694,14 +721,18 @@ fn pane_in_working_copy(root: &Path, name: &str, as_file: Option<&str>) -> Resul
     if let Ok(text) = std::fs::read_to_string(root.join(crate::session::PackageManifest::FILE)) {
         let sources = plugin_spec::pane_sources_of(&text);
         if sources.len() > 1 {
+            let named: Vec<&str> = sources
+                .iter()
+                .map(|source| source.as_deref().unwrap_or("one with no source"))
+                .collect();
             return Err(format!(
                 "{} names {} panes ({}) — name the one to load: --as plugins/<file>",
                 crate::session::PackageManifest::FILE,
                 sources.len(),
-                sources.join(", ")
+                named.join(", ")
             ));
         }
-        if let Some(source) = sources.first() {
+        if let Some(Some(source)) = sources.first() {
             let file = format!("{name}/{}", source.trim_start_matches('/'));
             plugin_spec::validate_destination(&file)?;
             if !root.join(source).is_file() {
@@ -848,21 +879,6 @@ pub fn install(
                 "{} already exists and is not managed here — move it aside, or \
                  install with --as to a different file",
                 payload.file
-            ));
-        }
-        // A pane another entry already delivers: what selecting a different pane of
-        // an installed multi-pane package looks like. Two records covering one pane
-        // cannot both be honoured — removing either takes the other's files. Modules
-        // are left out, since `lib/` is not a pane and two single-pane copies of a
-        // package sharing one has always been allowed.
-        if let Some(owner) = lock
-            .covering(&payload.file)
-            .filter(|owner| owner.file != file && !payload.file.starts_with("lib/"))
-        {
-            return Err(format!(
-                "{} is already delivered by the entry for {} — remove that one first \
-                 to key the package on a different pane",
-                payload.file, owner.file
             ));
         }
     }

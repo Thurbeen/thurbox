@@ -508,6 +508,65 @@ fn keying_an_installed_package_on_another_pane_is_refused() {
 }
 
 #[test]
+fn syncing_a_spec_that_keys_one_package_twice_is_refused() {
+    // The same conflict as re-keying on install, reached by hand-editing the spec:
+    // convergence must not write the second record either.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    install(&src);
+    let spec = std::fs::read_to_string(ui.join("plugins.toml")).expect("spec");
+    std::fs::write(
+        ui.join("plugins.toml"),
+        format!(
+            "{spec}\n[[plugin]]\nsrc = \"{}\"\nfile = \"plugins/76_atlas_notes.lua\"\n",
+            src.display()
+        ),
+    )
+    .expect("hand edit");
+
+    let error = run(Action::Sync).expect_err("should refuse");
+    assert!(
+        error.contains("plugins/75_atlas.lua"),
+        "names the owner: {error}"
+    );
+    let lock = thurbox::kernel::packages::read_lock(&ui).expect("lock");
+    assert_eq!(lock.plugins.len(), 1, "no second record: {lock:?}");
+}
+
+#[test]
+fn the_legacy_placement_hint_is_about_the_keyed_pane() {
+    // `file` names the keyed pane, so `placement_hint` — kept for existing readers —
+    // must describe that pane, not whichever pane happened to need a hint first.
+    let home = tempfile::tempdir().expect("tempdir");
+    let _ui = interface(home.path());
+    let src = multi_pane_package(home.path(), "atlas", "v1");
+    // The keyed pane floats, so it needs no placing; the second one does.
+    std::fs::write(
+        src.join("main.lua"),
+        "return { name = \"atlas\", slot = \"atlas\", floats = true, \
+         render = function() return { kind = \"text\", text = \"a\" } end }\n",
+    )
+    .expect("floating pane");
+
+    let report = install(&src);
+    assert!(report.failure.is_none(), "{:?}", report.json);
+    assert_eq!(report.json["file"], "plugins/75_atlas.lua");
+    assert!(
+        report.json["placement_hint"].is_null(),
+        "the keyed pane needs no hint: {:?}",
+        report.json
+    );
+    assert!(
+        report.json["placement_hints"]
+            .to_string()
+            .contains("atlas_notes"),
+        "the second pane's hint is still reported: {:?}",
+        report.json
+    );
+}
+
+#[test]
 fn removing_a_multi_pane_package_takes_back_every_pane() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = interface(home.path());
@@ -1473,6 +1532,33 @@ fn a_cloned_repository_declaring_several_panes_asks_which_to_load() {
     .expect("install with --as");
     assert!(chosen.failure.is_none(), "{:?}", chosen.json);
     assert_eq!(chosen.json["file"], "thurbox-widget/plugins/50_extra.lua");
+}
+
+/// A declaration missing its `source` is still a declaration: dropping it would
+/// leave one pane looking unambiguous and silently omit the other.
+#[test]
+fn a_cloned_repository_with_a_malformed_second_pane_still_asks() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let _ui = interface(home.path());
+    let repo = plugin_repo(home.path(), "widget");
+    std::fs::write(
+        repo.join("plugin.toml"),
+        "name = \"widget\"\n\
+         [[pane]]\nsource = \"plugins/40_widget.lua\"\npath = \"plugins/40_widget.lua\"\n\
+         [[pane]]\npath = \"plugins/50_extra.lua\"\n",
+    )
+    .expect("manifest");
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-m", "manifest"]);
+
+    let error = run(Action::Install {
+        src: format!("git+{}", repo.display()),
+        as_file: None,
+        pin: None,
+    })
+    .expect_err("two declarations are not one entry point");
+    assert!(error.contains("2 panes"), "{error}");
+    assert!(error.contains("--as"), "{error}");
 }
 
 #[test]
