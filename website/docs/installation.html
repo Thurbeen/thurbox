@@ -289,9 +289,11 @@ nix profile install github:Thurbeen/thurbox          # install into your profile
             <code>programs.thurbox</code>
             options under Home Manager. The only other option,
             <code>programs.thurbox.automations.enable</code>
-            , sets up the systemd user timer from
+            , sets up the user timer from
             <code>packaging/systemd</code>
-            so automations keep firing after a reboot.
+            (or the launchd agent from
+            <code>packaging/launchd</code>
+            under Home Manager on macOS) so automations keep firing after a reboot.
           </p>
           <p>
             A flake build isn't a release. It reports its version as

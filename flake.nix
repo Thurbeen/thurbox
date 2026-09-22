@@ -56,8 +56,8 @@
             description = "The thurbox package to install.";
           };
           automations.enable = lib.mkEnableOption ''
-            a systemd user timer that runs `thurbox-cli automation tick` every
-            minute, so automations fire after a reboot without the TUI having
+            a user timer (systemd, or launchd under Home Manager on macOS) that
+            runs `thurbox-cli automation tick` every minute, so automations fire after a reboot without the TUI having
             been opened
           '';
         };
@@ -112,7 +112,9 @@
           options.programs.thurbox = options { inherit lib pkgs; };
           config = lib.mkIf cfg.enable {
             home.packages = [ cfg.package ];
-            systemd.user = lib.mkIf cfg.automations.enable {
+            # Home Manager also runs on macOS, where the timer is the launchd
+            # agent from packaging/launchd instead.
+            systemd.user = lib.mkIf (cfg.automations.enable && pkgs.stdenv.hostPlatform.isLinux) {
               services.thurbox-automations = {
                 Unit.Description = "Fire due thurbox automations (headless)";
                 Service = {
@@ -126,6 +128,21 @@
                 Install.WantedBy = [ "timers.target" ];
               };
             };
+            launchd.agents.thurbox-automations =
+              lib.mkIf (cfg.automations.enable && pkgs.stdenv.hostPlatform.isDarwin)
+                {
+                  enable = true;
+                  config = {
+                    Label = "dev.thurbox.automations";
+                    ProgramArguments = [
+                      "${cfg.package}/bin/thurbox-cli"
+                      "automation"
+                      "tick"
+                    ];
+                    StartInterval = 60;
+                    RunAtLoad = true;
+                  };
+                };
           };
         };
     }
