@@ -43,7 +43,7 @@ pub const PRESETS: &[Preset] = &[
     },
     Preset {
         name: "split-shell",
-        summary: "the agent pane on top, the same session's shell in a pane below it",
+        summary: "the agent pane over the same session's shell; installed panes on the right",
         layout: include_str!("../../ui/layouts/split-shell.lua"),
     },
     Preset {
@@ -102,7 +102,8 @@ pub fn not_in_force(dir: &Path, chosen: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "layout {name} is chosen, but your edited layout.lua is in use ·          `thurbox-cli layout set {name}` switches (your copy is kept as a backup)",
+        "layout {name} is chosen but your edited layout.lua is in use · \
+         `thurbox-cli layout set {name}` switches, keeping a backup",
         name = preset.name
     ))
 }
