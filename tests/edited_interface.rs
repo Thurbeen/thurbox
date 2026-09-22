@@ -270,6 +270,10 @@ fn pinned() -> BTreeSet<String> {
 /// `pairs` never sees them, yet they are what third-party panes use most. So
 /// the table's own keys find what is new, and every pinned name is also read
 /// the way a pane reads it — with a theme published, as it is on screen.
+///
+/// The one gap: a NEW metatable-served name is not discovered, so adding a
+/// shorthand does not force a line here. Removing one that is pinned is caught,
+/// which is the half the promise is about.
 fn exported_surface(pinned: &BTreeSet<String>) -> BTreeSet<String> {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = bundled::materialize(dir.path());

@@ -630,7 +630,14 @@ pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(e) = std::fs::write(&path, contents) {
+        // A restore that cannot write must leave the edit where it was, not
+        // leave the interface with no arrangement at all.
+        if let Some(backup) = &backup {
+            let _ = std::fs::rename(backup, &path);
+        }
+        return Err(format!("{}: {e}", path.display()));
+    }
 
     manifest.insert(relative.to_string(), Record::Written(digest(contents)));
     write_manifest(dir, &manifest)?;
