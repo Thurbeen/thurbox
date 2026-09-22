@@ -258,8 +258,10 @@ cd thurbox
 cargo build --release</code></pre>
 
           <p>
-            The binary will be at
+            The binaries will be at
             <code>target/release/thurbox</code>
+            and
+            <code>target/release/thurbox-cli</code>
             . Requires Rust 1.75+.
           </p>
 
@@ -390,17 +392,246 @@ cargo build --release</code></pre>
             Uninstall
             <a href="#uninstall" class="heading-anchor">#</a>
           </h2>
-          <p>Remove the binary, depending on how you installed it:</p>
-          <pre><code class="language-bash">rm ~/.local/bin/thurbox        # curl one-liner / manual install
-brew uninstall thurbox         # Homebrew
-paru -R thurbox thurbox-bin    # Arch (AUR)
-winget uninstall Thurbeen.thurbox  # winget (Windows)
-choco uninstall thurbox        # Chocolatey (Windows)</code></pre>
           <p>
-            Sessions outlive Thurbox in tmux, so stop them too &mdash; and optionally delete state
-            and config (this erases session history, theme, and
-            <code>agents.toml</code>
-            ):
+            Removing the binary is not enough on its own: agent sessions keep running in tmux,
+            Thurbox has written hook and skill files into your coding agents' own directories, and
+            every worktree it created is registered in the repository it came from. Go through the
+            steps below in order, because steps 1 and 2 need
+            <code>thurbox-cli</code>
+            , which step 3 removes. The paths are the defaults on Linux and macOS; Windows and remote
+            hosts follow in step 5.
           </p>
-          <pre data-wrap><code class="language-bash">tmux -L thurbox kill-server    # ends all running agent sessions
-rm -rf ~/.local/share/thurbox ~/.config/thurbox   # optional: wipe state</code></pre>
+          <div class="info-box">
+            <p>
+              <strong>Moved something?</strong>
+              <code>thurbox-cli version --json</code>
+              prints the tmux socket in use (<code>tmux_socket</code>) and the data directory
+              (<code>data_dir</code>). They differ from the defaults for a development build
+              (<code>thurbox-dev</code>), under
+              <code>THURBOX_DATA_DIR</code>
+              or
+              <code>THURBOX_SOCKET</code>
+              , and the data directory follows
+              <code>$XDG_DATA_HOME</code>
+              . The config directory follows
+              <code>THURBOX_CONFIG_DIR</code>
+              , then
+              <code>$XDG_CONFIG_HOME</code>
+              . Substitute your values below.
+            </p>
+          </div>
+
+          <h3 id="uninstall-stop">1. Stop sessions</h3>
+          <p>
+            Quit the TUI, then stop the tmux server Thurbox runs on. It holds every agent session
+            and the automation heartbeat, so nothing Thurbox started survives it.
+            <strong>Destructive:</strong>
+            this ends every running agent session, and any unsaved agent conversation with it.
+          </p>
+          <pre data-wrap><code class="language-bash">thurbox-cli version --json      # note tmux_socket and data_dir
+tmux -L thurbox kill-server     # stops every session and the heartbeat</code></pre>
+
+          <h3 id="uninstall-other-tools">2. Remove what Thurbox added to other tools</h3>
+          <p>
+            Thurbox ships two built-in extensions that reach outside its own directories, and
+            reinstalls both on every start unless you opt out.
+            <code>hooks</code>
+            wires your agents' status hooks: it merges entries into
+            <code>~/.codex/hooks.json</code>
+            ,
+            <code>~/.gemini/settings.json</code>
+            and
+            <code>~/.kimi-code/config.toml</code>
+            , and drops its own files for opencode, vibe, pi, omp, Copilot and grok.
+            <code>ui-skill</code>
+            installs the
+            <code>thurbox-ui</code>
+            skill into Claude Code, Codex, opencode, Copilot and
+            <code>~/.agents</code>
+            . Each file is written only if that agent's directory already exists.
+          </p>
+          <p>
+            Deactivating an extension reverses its install. It deletes only files that still carry
+            Thurbox's marker (the text
+            <code>thurbox `extension install`</code>
+            ), prunes Thurbox's entries from the merged files, and removes the arguments it
+            added to
+            <code>agents.toml</code>
+            . A skill or hook file you edited and took the marker out of is yours, and is left
+            alone.
+          </p>
+          <pre data-wrap><code class="language-bash">thurbox-cli extension deactivate hooks
+thurbox-cli extension deactivate ui-skill
+thurbox-cli extension list                        # anything else you installed?
+thurbox-cli extension uninstall &lt;name&gt; --purge   # for each one listed</code></pre>
+          <p>
+            That can leave empty directories behind &mdash; the
+            <code>thurbox-ui</code>
+            skill directories, and a hooks or plugin directory Thurbox created for an agent &mdash;
+            and a merge target that Thurbox created itself, such as
+            <code>~/.codex/hooks.json</code>
+            , as an empty
+            <code>{}</code>
+            . Delete those if you like;
+            <code>rmdir</code>
+            only removes a directory that is empty:
+          </p>
+          <pre data-wrap><code class="language-bash">rmdir ~/.claude/skills/thurbox-ui ~/.codex/skills/thurbox-ui \
+  ~/.config/opencode/skills/thurbox-ui ~/.copilot/skills/thurbox-ui \
+  ~/.agents/skills/thurbox-ui 2&gt;/dev/null</code></pre>
+          <p>
+            Thurbox writes nothing else outside its directories: no shell completions, no shell
+            profile, no
+            <code>~/.claude/settings.json</code>
+            (Claude Code gets its hooks through a
+            <code>--settings</code>
+            file in Thurbox's config directory), no tmux or git config, and no services.
+          </p>
+
+          <h3 id="uninstall-binaries">3. Remove the binaries</h3>
+          <p>Every install method ships both <code>thurbox</code> and <code>thurbox-cli</code>.</p>
+          <pre data-wrap><code class="language-bash"># curl one-liner (the tarball also puts a LICENSE file next to the binaries)
+rm -f ~/.local/bin/thurbox ~/.local/bin/thurbox-cli ~/.local/bin/LICENSE
+# ...or in the directory you set INSTALL_DIR to
+
+brew uninstall thurbox          # Homebrew
+paru -R thurbox-bin             # Arch (AUR), prebuilt package
+paru -R thurbox                 # Arch (AUR), built from source</code></pre>
+          <p>
+            A
+            <a href="#from-source">source build</a>
+            installs nothing: delete the clone, and any copy of
+            <code>target/release/thurbox</code>
+            or
+            <code>thurbox-cli</code>
+            you put on your
+            <code>PATH</code>
+            . Windows is in step 5.
+          </p>
+
+          <h3 id="uninstall-state">4. Optionally remove worktrees, config and state</h3>
+          <p>
+            Every worktree Thurbox created lives under
+            <code>~/.local/share/thurbox/worktrees/</code>
+            , and can hold a lot, build output included. Each one is also registered in its
+            repository's
+            <code>.git/worktrees</code>
+            , so remove them through git rather than just deleting the directory.
+            <strong>Destructive:</strong>
+            <code>--force</code>
+            discards uncommitted changes in each worktree. The loop prints each branch and path
+            first, and commits already on a branch stay there.
+          </p>
+          <pre data-wrap><code class="language-bash">for wt in ~/.local/share/thurbox/worktrees/*/*/; do
+  [ -e "$wt/.git" ] || continue
+  echo "$(git -C "$wt" branch --show-current)  $wt"
+  git -C "$wt" worktree remove --force "$wt"
+done</code></pre>
+          <p>
+            Thurbox never deletes the branches it created; remove any you no longer want with
+            <code>git branch -D &lt;branch&gt;</code>
+            in their repository. If you already deleted the worktree directories by hand, run
+            <code>git worktree prune</code>
+            in each repository to drop the stale registrations.
+          </p>
+          <p>
+            Then delete Thurbox's own directories.
+            <strong>Destructive:</strong>
+            this erases the session database and history, logs,
+            <code>agents.toml</code>
+            ,
+            <code>hosts.toml</code>
+            , your theme, keybindings and interface customisations, and the extension opt-outs from
+            step 2 (a later reinstall starts from scratch).
+          </p>
+          <pre data-wrap><code class="language-bash">rm -rf ~/.local/share/thurbox ~/.config/thurbox</code></pre>
+
+          <h3 id="uninstall-windows">5. Windows and remote hosts</h3>
+          <p>
+            <strong>Windows.</strong>
+            The same steps, in PowerShell. Sessions run on psmux instead of tmux; step 2 is the same
+            <code>thurbox-cli extension</code>
+            commands, and the agent files it removes sit under
+            <code>%USERPROFILE%</code>
+            . Configuration lives in
+            <code>%APPDATA%\thurbox</code>
+            and state in
+            <code>%LOCALAPPDATA%\thurbox</code>
+            .
+          </p>
+          <pre data-wrap><code class="language-powershell"># 1. Stop sessions (destructive: ends every running agent session)
+psmux -L thurbox kill-server
+
+# 2. Remove what Thurbox added to other tools
+thurbox-cli extension deactivate hooks
+thurbox-cli extension deactivate ui-skill
+
+# 3. Remove the binaries
+winget uninstall Thurbeen.thurbox       # winget
+choco uninstall thurbox                 # Chocolatey
+# install.ps1: the install directory, and its entry in your user PATH
+$dir = "$env:LOCALAPPDATA\Programs\thurbox"   # or your THURBOX_INSTALL_DIR
+Remove-Item -Recurse -Force $dir
+$path = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';' |
+  Where-Object { $_ -and $_ -ne $dir }
+[Environment]::SetEnvironmentVariable('Path', ($path -join ';'), 'User')
+
+# 4. Optional (destructive): worktrees, then config and state
+Get-ChildItem "$env:LOCALAPPDATA\thurbox\worktrees\*\*" -Directory | ForEach-Object {
+  git -C $_.FullName worktree remove --force $_.FullName
+}
+Remove-Item -Recurse -Force "$env:APPDATA\thurbox", "$env:LOCALAPPDATA\thurbox"</code></pre>
+          <p>
+            <strong>Remote hosts.</strong>
+            Sessions on an
+            <code>ssh:</code>
+            or
+            <code>wsl:</code>
+            host from
+            <code>hosts.toml</code>
+            run on that host, and Thurbox never cleans a host up for you. On each host it may have
+            left a tmux server, worktrees under
+            <code>~/.local/share/thurbox/worktrees</code>
+            (or the host's
+            <code>worktrees_dir</code>
+            ), a copy of
+            <code>thurbox-cli</code>
+            and its database under
+            <code>~/.local/share/thurbox</code>
+            , and the same agent hook files as step 2. Run this on the host, through
+            <code>ssh &lt;host&gt;</code>
+            or
+            <code>wsl -d &lt;distro&gt;</code>
+            .
+            <strong>Destructive</strong>
+            in the same way as steps 1 and 4. Use the host's
+            <code>socket</code>
+            from
+            <code>hosts.toml</code>
+            if you set one.
+          </p>
+          <pre data-wrap><code class="language-bash">tmux -L thurbox kill-server
+for wt in ~/.local/share/thurbox/worktrees/*/*/; do
+  [ -e "$wt/.git" ] || continue
+  git -C "$wt" worktree remove --force "$wt"
+done
+for f in ~/.config/opencode/plugin/thurbox-status.js ~/.vibe/hooks.toml \
+  ~/.copilot/hooks/thurbox-status.json ~/.grok/hooks/thurbox-status.json \
+  ~/.pi/agent/extensions/thurbox-status.ts ~/.omp/agent/extensions/thurbox-status.ts; do
+  grep -qs 'thurbox `extension install`' "$f" &amp;&amp; rm "$f"
+done
+rm -rf ~/.local/share/thurbox ~/.config/thurbox</code></pre>
+          <p>
+            The entries merged into
+            <code>~/.codex/hooks.json</code>
+            ,
+            <code>~/.gemini/settings.json</code>
+            and
+            <code>~/.kimi-code/config.toml</code>
+            on the host have no command to prune them: delete by hand each hook whose command
+            mentions
+            <code>@thurbox_state</code>
+            or
+            <code>thurbox-cli session signal</code>
+            . A Windows host is the same with psmux and the Windows paths above.
+          </p>
