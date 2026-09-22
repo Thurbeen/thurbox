@@ -248,6 +248,60 @@ paru -S thurbox       # build from source</code></pre>
             or your preferred helper.
           </p>
 
+          <h2 id="nix">
+            Nix and NixOS
+            <a href="#nix" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The repository is a flake. It builds both binaries from source against
+            <code>Cargo.lock</code>
+            and puts
+            <code>tmux</code>
+            and
+            <code>git</code>
+            on their
+            <code>PATH</code>
+            , after anything you already have there. It builds on x86_64 and aarch64 Linux, and it declares both macOS architectures too.
+          </p>
+          <pre><code class="language-bash">nix run github:Thurbeen/thurbox                      # try it without installing
+nix profile install github:Thurbeen/thurbox          # install into your profile</code></pre>
+          <p>On NixOS, add the flake to your system flake and enable its module:</p>
+          <pre><code class="language-nix">{
+  inputs.thurbox.url = "github:Thurbeen/thurbox";
+
+  outputs = { nixpkgs, thurbox, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        thurbox.nixosModules.default
+        { programs.thurbox.enable = true; }
+      ];
+    };
+  };
+}</code></pre>
+          <p>
+            <code>overlays.default</code>
+            adds
+            <code>pkgs.thurbox</code>
+            if you'd rather list the package yourself, and
+            <code>homeManagerModules.default</code>
+            offers the same
+            <code>programs.thurbox</code>
+            options under Home Manager. The only other option,
+            <code>programs.thurbox.automations.enable</code>
+            , sets up the systemd user timer from
+            <code>packaging/systemd</code>
+            so automations keep firing after a reboot.
+          </p>
+          <p>
+            A flake build isn't a release. It reports its version as
+            <code>0.0.0-unstable-&lt;date&gt;+&lt;commit&gt;</code>
+            and never updates itself, because Nix owns the binary. To pin a version, point the input at a
+            tag, for example
+            <code>github:Thurbeen/thurbox/v2.30.3</code>
+            .
+          </p>
+
           <h2 id="from-source">
             From Source
             <a href="#from-source" class="heading-anchor">#</a>
@@ -498,7 +552,27 @@ rm -f ~/.local/bin/thurbox ~/.local/bin/thurbox-cli ~/.local/bin/LICENSE
 
 brew uninstall thurbox          # Homebrew
 paru -R thurbox-bin             # Arch (AUR), prebuilt package
-paru -R thurbox                 # Arch (AUR), built from source</code></pre>
+paru -R thurbox                 # Arch (AUR), built from source
+nix profile remove thurbox      # Nix, installed with nix profile install</code></pre>
+          <p>
+            On NixOS or Home Manager, delete
+            <code>programs.thurbox</code>
+            ,
+            <code>thurbox.nixosModules.default</code>
+            or
+            <code>thurbox.homeManagerModules.default</code>
+            and the
+            <code>thurbox</code>
+            input from your flake, then rebuild with
+            <code>sudo nixos-rebuild switch</code>
+            or
+            <code>home-manager switch</code>
+            . If you had turned on
+            <code>automations.enable</code>
+            , the rebuild removes the timer too. The store copy stays until
+            <code>nix-collect-garbage</code>
+            .
+          </p>
           <p>
             A
             <a href="#from-source">source build</a>

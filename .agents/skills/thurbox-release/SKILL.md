@@ -153,6 +153,16 @@ package channels (each gated on its secret, skipped on forks):
   `NestedInstallerType = portable` (PATH aliases `thurbox`/`thurbox-cli`, no
   MSI). Install: `winget install Thurbeen.thurbox`. Windows x86_64 only.
 
+- **Nix** (`flake.nix`, `nix/package.nix`): *not* a release channel, and
+  nothing in `cd.yml` touches it. The flake cannot read tags, so it builds any
+  ref as `0.0.0-unstable-<commit date>` (base from `Cargo.toml` with `-dev`
+  dropped, commit hash appended in `THURBOX_RELEASE_VERSION`). No `-dev` keeps
+  the `dev_build` cfg off, so it uses the release socket and data dir; the
+  `0.0.0` keeps `is_dev_build()` true, so auto-update never tries to rewrite
+  the read-only store. Pinning a release means pointing the flake input at its
+  tag. CI's `nix` job runs `nix flake check --all-systems` and `nix build`;
+  `flake.lock` moves only when someone runs `nix flake update`.
+
 See `packaging/README.md` for the full packaging overview.
 
 ### Commit Types and Versioning

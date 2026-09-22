@@ -44,6 +44,18 @@ headless one) — with checksum verification and platform auto-detection.
 You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on
 native Windows), **git**, and at least one coding-agent CLI.
 
+**Nix / NixOS:**
+
+```bash
+nix run github:Thurbeen/thurbox                # try it
+nix profile install github:Thurbeen/thurbox    # install it
+```
+
+On NixOS, add `github:Thurbeen/thurbox` as a flake input and import
+`thurbox.nixosModules.default` with `programs.thurbox.enable = true;`. The
+[Installation page](https://thurbox.thurbeen.eu/docs/installation.html#nix)
+has the full snippet, the overlay and the Home Manager module.
+
 Homebrew, the AUR, winget, Chocolatey, building from source, pinning a version
 and changing the install directory are all on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
