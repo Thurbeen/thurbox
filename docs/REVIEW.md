@@ -282,7 +282,10 @@ something a user can work around.
 
 install.sh is deliberately POSIX sh, not bash: it is run as `curl ... | sh`.
 Keep it to standard tools (curl/wget, tar, sha256sum/shasum), non-interactive,
-and cleaning up through its trap.
+and cleaning up through its trap. The one question it may ask - which layout
+preset - is asked only on a terminal (read from /dev/tty, since stdin is the
+pipe) and only when neither `--layout` nor `THURBOX_LAYOUT` answered it; with no
+terminal it asks nothing and changes nothing.
 
 install.ps1 is PowerShell 5.1+ and its source must stay ASCII-only, because
 that is what survives `irm | iex` decoding on Windows PowerShell 5.1.
