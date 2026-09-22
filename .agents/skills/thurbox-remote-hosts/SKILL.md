@@ -83,7 +83,8 @@ binary name rather than forked (a remote SSH host can also pin
 `multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
 control-mode protocol is byte-identical over either transport/binary, with
 **psmux divergences** (verified against psmux 3.3.6, each branched on
-`TmuxTransport::uses_psmux()`) — psmux lacks `send-keys -H`, does not join
+`TmuxTransport::uses_psmux()`; spawning needs psmux ≥ 3.3.7, asked of the
+server by `check_psmux_version` — ADR-13 has why) — psmux lacks `send-keys -H`, does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
 keystrokes from the primitives psmux does support (`send_keys_commands`), folds

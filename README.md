@@ -41,8 +41,8 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 That installs both binaries — `thurbox` (the TUI) and `thurbox-cli` (the
 headless one) — with checksum verification and platform auto-detection.
 
-You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on
-native Windows), **git**, and at least one coding-agent CLI.
+You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) ≥ 3.3.7
+on native Windows), **git**, and at least one coding-agent CLI.
 
 **Nix / NixOS:**
 

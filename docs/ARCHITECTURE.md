@@ -875,6 +875,32 @@ before touching that path.
   #1168, and the stamp fix above does not reach it: the two are independent and
   either one alone leaves the interface attaching no pane at all.
 
+### psmux 3.3.7 is the floor, asked of the server at each spawn
+
+Before psmux 3.3.7 (psmux#450) the server's console attach/detach — which every
+`send-keys C-c`, bracketed paste and mouse or VT injection performs, so ordinary
+use of an agent pane — leaves the server's std handle slots on freed, recycled
+handle values, and every pane born afterwards inherits them. The pane still has
+its ConPTY, but its shell and the agent that shell launches read and write
+whatever those values now name: nothing they print reaches the pane, and Claude
+Code reports `stdin is unreadable (EISDIR)` (or `ENOTCONN` — the errno is
+whatever the value was recycled into, a directory handle being the common one),
+drops into `--print` and exits within two seconds. Measured on a Windows 11
+host: with a burst of `send-keys C-c` at one window, 3.3.6 bore every later
+window that way and 3.3.8 none. It looks path-dependent (it was first reported
+on the existing-worktree flow) only because a long-lived server that has been
+typed into is the precondition, not anything about the session.
+
+The window command cannot work around it — the handles are corrupt from the
+pane's birth, before any PowerShell of ours runs — so `TmuxBackend::spawn` and
+`spawn_window` refuse to create a pane on psmux older than 3.3.7
+(`check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
+upgrading psmux leaves a server started before it on the old code, and the
+message says to restart it. Only where no session exists yet, so no server to
+ask, does the binary's `-V` answer — before it starts one that every spawn
+would then refuse. Attaching to existing panes is not gated, so an
+old server's sessions stay reachable until then.
+
 ### A Windows host speaks PowerShell, not `sh`
 
 psmux is the *multiplexer*; the divergence above is about its wire protocol.
