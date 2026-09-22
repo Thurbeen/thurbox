@@ -193,12 +193,46 @@ whose call took the time.
   (`Ctrl+,` → `]` → `t`). You cannot do that step for them, and you should not
   edit `ui.json` to fake it. Draw the untrusted state honestly instead.
 
+## What `lib/` promises a file that calls it
+
+Thurbox never overwrites a file you edited. So an edited `layout.lua` or pane
+stays as it was while an upgrade keeps updating the untouched `lib/` files it
+calls. Every third-party pane is in the same position. `lib/` therefore keeps one
+promise, and it is everything such a file may rely on:
+
+- **Every name a module returns stays.** Anything in the table
+  `require("lib.<name>")` returns (`panels.shown`, `ui.list`, `theme.role`, …)
+  keeps its name and its kind: a function stays a function, a table stays a
+  table.
+- **A call that worked keeps working.** A new parameter is optional and
+  trailing, or a new field of an options table. Arguments an old caller passes
+  keep their meaning. A result may gain fields but never loses or retypes one.
+- **A retired name stays as a shim.** It forwards to its replacement and is
+  never removed.
+
+Nothing else is promised: a module's `local` functions, its private state, the
+exact styles and text it draws, or writes into a module's tables.
+`thurbox.d.lua` is types, not a module.
+
+This is a compatibility promise rather than a version number. A preserved file is
+frozen at whichever release it was edited in. A version could only tell that file
+it no longer fits; it could not make it work. Side-by-side copies of `lib/` would
+mean landing every fix once per copy, and published plugins declare no version to
+pin to. The thurbox repository's test suite holds `lib/` to this promise. It
+loads edited files frozen from an old release, and it pins a list of every
+exported name.
+
+The promise runs one way: **do not edit a `lib/` file.** An edited one stops
+receiving updates too, and the next release's panes will call names it lacks.
+Put your own helpers in a module of your own, such as `lib/mine.lua`.
+
 ## Do not break the way back
 
 `layout.lua` and `lib/` are shared by every pane; a mistake there takes the whole
 screen, not one pane. Prefer adding a file over editing those two. Anything shipped
 with thurbox can be restored (`Ctrl+,` → `]` → `r`), so a bad edit is recoverable —
-but only if you say what you changed.
+but only if you say what you changed. Restoring an edited `layout.lua` keeps your
+copy as `layout.lua.bak` (then `.bak.2`, never over an earlier one).
 
 A file **you** added has no shipped copy to restore, so the way back for it is
 `space` on its row in that same tab: turned off, untouched on disk, and the

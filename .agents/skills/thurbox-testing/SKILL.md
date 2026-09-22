@@ -35,6 +35,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `remote_status`, `session_status`, `core_settings`, `attach_by_name`.
   Several build an interface in a tempdir from the embedded copy, so delivery and
   loading are exercised together.
+- **`tests/edited_interface.rs`** — an edited interface keeps working across an
+  upgrade. It holds files frozen from old releases with a user's edit
+  (`tests/fixtures/edited_interface/<release>/`: v2.22.4's layout, session
+  list and agent pane, v2.32.0's layout and agent pane), and checks that they are preserved, arrange, render and pass `plugin check`
+  against the current `lib/` and kernel. It also pins every name `lib/` exports
+  (`lib_surface.txt`). This is the check behind `lib/`'s compatibility promise
+  in `ui/AGENTS.md`. Never refresh the frozen files to follow `ui/`. A new
+  `lib/` export is appended to the pin; a removed one means adding a shim back.
 - **`tests/kernel_limits.rs`** — instruction and memory ceilings, in their own file
   because they mutate process-wide limits.
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),

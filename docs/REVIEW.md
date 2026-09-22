@@ -140,6 +140,13 @@ folded into ui/lib/ rather than repeated across panes, dead code and unused
 locals gone, magic numbers named, early returns rather than deep nesting, and
 no abstraction introduced before there is real duplication to justify it.
 
+ui/lib/ is a public API. Edited layouts and panes are preserved across upgrades,
+and third-party panes call into lib/ too, so a change there keeps the promise in
+ui/AGENTS.md: an exported name is never removed, renamed or given another kind.
+A call that worked keeps working, and a retired name stays as a shim.
+tests/edited_interface.rs checks this. A change that edits its frozen fixtures or
+drops a line from lib_surface.txt is breaking that promise, not tidying.
+
 Read it for coherence too, across the whole diff and against the panes around
 it: naming, patterns and widget use consistent with the rest of ui/, the shape
 a helper returns agreeing with what every caller expects, snapshot fields read

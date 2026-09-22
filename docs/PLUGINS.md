@@ -1285,7 +1285,7 @@ Four keys act on the selected row:
 
 | Key | Does |
 |---|---|
-| `r` | **restore** — write the copy thurbox ships back over the file |
+| `r` | **restore** — write the copy thurbox ships back over the file (an edited `layout.lua` is kept as `layout.lua.bak` first) |
 | `space` | **off / on** — the file is untouched, simply not loaded |
 | `d` | **remove** — deletes. Asked twice, and the confirmation says whether it can be undone |
 | `t` | **trust** — grant or withdraw the capabilities the file declares |
