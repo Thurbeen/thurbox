@@ -243,7 +243,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let host = host();
     let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
     // The interface is three panes — the list, the centre and the search strip —
-    // plus the optional shell pane only the `split-shell` layout places, plus
+    // plus the optional shell pane only the `split-shell` and `ide` layouts place, plus
     // five floats that occupy no slot at all: the creation flow, the
     // confirmation, the rename field, the context menu and the restore list. The
     // view of the interface's own files is

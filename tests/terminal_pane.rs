@@ -210,7 +210,7 @@ fn session_surface(node: &Node) -> String {
 fn the_centre_holds_one_terminal_plugin_rather_than_two() {
     let host = host();
     // The shell is a tab of the terminal. The shell PANE that also ships is an
-    // optional one for layouts that want both on screen (`split-shell`); the
+    // optional one for layouts that want both on screen (`split-shell`, `ide`); the
     // bundled arrangement never places it, so here it is not a second stop.
     let shell = &host.plugins[index_of(&host, "shell")];
     assert!(shell.optional, "the shell pane must not be required");

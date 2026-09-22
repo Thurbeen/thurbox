@@ -2,8 +2,8 @@
 -- the `shell` slot.
 --
 -- The agent pane already shows this shell as its Shell tab. This file exists
--- for arrangements that want both on screen at once — the `split-shell` layout
--- puts it below the agent — and it is the same `<id>#shell` surface over the
+-- for arrangements that want both on screen at once — the `split-shell` and
+-- `ide` layouts put it below the agent — and it is the same `<id>#shell` surface over the
 -- same live terminal, so a keystroke typed here reaches the same shell the tab
 -- would have shown.
 --

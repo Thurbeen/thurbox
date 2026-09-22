@@ -452,3 +452,228 @@ fn turning_the_shell_pane_off_gives_the_agent_its_shell_tab_back() {
     host.note_placed(&on_screen);
     assert_eq!(host.shared_bool("placed.shell"), Some(false));
 }
+
+// ── four presets ──────────────────────────────────────────────────────────
+
+#[test]
+fn four_presets_ship_with_classic_first() {
+    let names: Vec<&str> = presets::PRESETS.iter().map(|preset| preset.name).collect();
+    assert_eq!(names, ["classic", "split-shell", "focus", "ide"]);
+}
+
+/// A third-party column the way an installed plugin brings one — a slot no
+/// bundled pane fills, with its own panel toggle — so the presets can be asked
+/// where they put a pane they have never heard of.
+fn with_a_third_party_column(dir: &Path, slot: &str) {
+    std::fs::write(
+        dir.join(format!("plugins/90_{slot}.lua")),
+        format!(
+            "local panels = require(\"lib.panels\")\n\
+             return {{\n  name = \"{slot}\",\n  slot = \"{slot}\",\n  \
+             render = function() return {{ type = \"text\", text = \"{slot}\" }} end,\n  \
+             on_action = function(action)\n    \
+             if action == \"{slot}.toggle\" then panels.toggle(\"{slot}\") return true end\n    \
+             return false\n  end,\n}}\n"
+        ),
+    )
+    .expect("write the third-party pane");
+}
+
+fn toggle_sessions(host: &LuaHost) {
+    host.on_action(index_of(host, "sessions"), "sessions.toggle_panel")
+        .expect("F9");
+}
+
+// ── focus ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn focus_gives_the_agent_the_whole_width_and_f9_brings_the_list_back() {
+    let dir = delivered("focus");
+    let host = host_at(dir.path());
+    publish(&host);
+
+    let wide = slots(&host, 160, 48);
+    let center = rect_of(&wide, "center").expect("the agent pane");
+    assert_eq!(center.width, 160, "{wide:?}");
+    assert!(rect_of(&wide, "sessions").is_none(), "{wide:?}");
+    assert!(rect_of(&wide, "shell").is_none(), "{wide:?}");
+
+    // One press, not two: the list starts hidden here, and F9 is the same toggle
+    // every other preset uses.
+    toggle_sessions(&host);
+    let shown = slots(&host, 160, 48);
+    let sessions = rect_of(&shown, "sessions").expect("F9 brings the list back");
+    assert!(sessions.x < rect_of(&shown, "center").expect("center").x);
+    toggle_sessions(&host);
+    assert!(rect_of(&slots(&host, 160, 48), "sessions").is_none());
+
+    let narrow = slots(&host, 60, 48);
+    assert_eq!(rect_of(&narrow, "center").expect("center").width, 60);
+}
+
+#[test]
+fn focus_keeps_third_party_columns_closed_until_their_toggle_opens_them() {
+    let dir = delivered("focus");
+    with_a_third_party_column(dir.path(), "files");
+    let host = host_at(dir.path());
+    publish(&host);
+
+    assert!(rect_of(&slots(&host, 200, 50), "files").is_none());
+    host.on_action(index_of(&host, "files"), "files.toggle")
+        .expect("the pane's toggle");
+    let shown = slots(&host, 200, 50);
+    let files = rect_of(&shown, "files").expect("its toggle brings it back");
+    assert!(files.x > rect_of(&shown, "center").expect("center").x);
+}
+
+#[test]
+fn focus_leaves_the_shell_a_tab_of_the_agent() {
+    let dir = delivered("focus");
+    let host = split_shell_with_a_selection(dir.path(), 160, 48);
+    let agent = host
+        .render(index_of(&host, "agent"), ctx(160, 46))
+        .expect("render the agent pane");
+    assert!(words(&agent.node).contains("Shell"), "{:?}", agent.node);
+}
+
+// ── ide ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn ide_puts_sessions_left_and_the_shell_along_the_bottom_with_no_empty_right_column() {
+    let dir = delivered("ide");
+    let host = host_at(dir.path());
+    publish(&host);
+
+    let wide = slots(&host, 200, 50);
+    let sessions = rect_of(&wide, "sessions").expect("the list on the left");
+    let center = rect_of(&wide, "center").expect("the agent pane");
+    let shell = rect_of(&wide, "shell").expect("the shell panel");
+    assert_eq!(sessions.x, 0);
+    assert!(center.x >= sessions.x + sessions.width);
+    assert_eq!(shell.x, center.x, "the panel sits under the agent");
+    assert_eq!(shell.width, center.width);
+    assert_eq!(shell.y, center.y + center.height);
+    // Nothing fills a right-hand slot, so nothing is reserved for one: the agent
+    // runs to the right edge.
+    assert_eq!(center.x + center.width, 200, "{wide:?}");
+}
+
+#[test]
+fn ide_gives_filled_right_hand_panes_a_column_and_drops_it_before_the_rest() {
+    let dir = delivered("ide");
+    with_a_third_party_column(dir.path(), "files");
+    with_a_third_party_column(dir.path(), "fleetqueue");
+    let host = host_at(dir.path());
+    publish(&host);
+
+    let wide = slots(&host, 200, 50);
+    let center = rect_of(&wide, "center").expect("center");
+    let shell = rect_of(&wide, "shell").expect("shell");
+    let files = rect_of(&wide, "files").expect("a filled right-hand slot is placed");
+    let queue = rect_of(&wide, "fleetqueue").expect("so is every other one");
+    assert_eq!(files.x, center.x + center.width, "right of the agent");
+    assert_eq!(files.x, queue.x, "stacked in the one right column");
+    assert_eq!(files.width, queue.width);
+    assert_eq!(
+        shell.x + shell.width,
+        files.x,
+        "the panel stops at the column"
+    );
+
+    // One press hides it: the column starts open in this preset, and the pane's
+    // own toggle agrees with that.
+    host.on_action(index_of(&host, "files"), "files.toggle")
+        .expect("the pane's toggle");
+    assert!(rect_of(&slots(&host, 200, 50), "files").is_none());
+
+    // Below `three_panel_min_cols` the right column goes first; below
+    // `two_panel_min_cols` the agent is alone.
+    let middle = slots(&host, 100, 50);
+    assert!(rect_of(&middle, "fleetqueue").is_none(), "{middle:?}");
+    assert!(rect_of(&middle, "sessions").is_some(), "{middle:?}");
+    assert!(rect_of(&middle, "shell").is_some(), "{middle:?}");
+    let narrow = slots(&host, 60, 50);
+    assert!(rect_of(&narrow, "center").is_some());
+    for gone in ["sessions", "shell", "fleetqueue", "files"] {
+        assert!(rect_of(&narrow, gone).is_none(), "{gone}: {narrow:?}");
+    }
+}
+
+#[test]
+fn ide_drops_the_shell_panel_on_a_short_screen_and_the_tab_comes_back() {
+    let dir = delivered("ide");
+    let host = split_shell_with_a_selection(dir.path(), 160, 16);
+    assert!(rect_of(&slots(&host, 160, 16), "shell").is_none());
+    let agent = host
+        .render(index_of(&host, "agent"), ctx(120, 14))
+        .expect("render the agent pane");
+    assert!(words(&agent.node).contains("Shell"), "{:?}", agent.node);
+}
+
+#[test]
+fn every_preset_passes_plugin_check_with_third_party_columns_installed() {
+    // The operator's own interface adds columns thurbox has never heard of; a
+    // preset that cannot place them would fail `check` for every such install.
+    for preset in ["focus", "ide"] {
+        let dir = delivered(preset);
+        with_a_third_party_column(dir.path(), "files");
+        let host = host_at(dir.path());
+        publish(&host);
+        let unplaced = host
+            .unplaced_slots(thurbox::kernel::layout::REFERENCE)
+            .expect("resolves");
+        assert!(unplaced.is_empty(), "{preset}: {unplaced:?}");
+    }
+}
+
+/// A host arranged at `width`×`height` with the placement recorded, but with
+/// nothing rendered yet — so no pane has published a selection.
+fn arranged(dir: &Path, width: u16, height: u16) -> LuaHost {
+    let host = host_at(dir);
+    publish(&host);
+    let on_screen: std::collections::HashSet<String> = slots(&host, width, height)
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect();
+    host.note_placed(&on_screen);
+    host
+}
+
+#[test]
+fn with_the_list_hidden_the_agent_pane_still_shows_and_selects_a_session() {
+    // The list owns the selection and writes it from its render, so a layout
+    // that starts it hidden would otherwise show "no session" until F9.
+    let dir = delivered("focus");
+    let host = arranged(dir.path(), 160, 48);
+    let agent = host
+        .render(index_of(&host, "agent"), ctx(160, 46))
+        .expect("render the agent pane");
+    let surface = agent
+        .node
+        .first_session_surface()
+        .expect("the agent shows a session");
+    assert_eq!(host.shared_string("selected").as_deref(), Some(surface));
+}
+
+#[test]
+fn with_the_list_hidden_a_focus_request_still_lands() {
+    // A clicked notification or `thurbox-cli session focus` leaves a one-shot
+    // request the list consumes; with the list off screen the agent pane must.
+    let dir = delivered("focus");
+    let host = arranged(dir.path(), 160, 48);
+    let beta = row("beta").id;
+    host.set_shared_string("focus_session", &beta);
+    let agent = host
+        .render(index_of(&host, "agent"), ctx(160, 46))
+        .expect("render the agent pane");
+    assert_eq!(agent.node.first_session_surface(), Some(beta.as_str()));
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some(beta.as_str())
+    );
+    assert_eq!(
+        host.shared_string("focus_session"),
+        None,
+        "spent, not replayed"
+    );
+}

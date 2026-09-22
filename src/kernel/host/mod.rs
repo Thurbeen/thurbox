@@ -240,7 +240,7 @@ pub struct Plugin {
     /// leave out on purpose.
     ///
     /// The companion shell pane is the case: it ships to everyone, and only the
-    /// `split-shell` layout gives it a slot. Without this, every arrangement
+    /// `split-shell` and `ide` layouts give it a slot. Without this, every arrangement
     /// that leaves it out — `classic`, and every `layout.lua` written before it
     /// existed — would fail `plugin check` over a pane nobody asked to see.
     pub optional: bool,
