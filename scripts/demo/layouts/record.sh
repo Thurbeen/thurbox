@@ -155,7 +155,7 @@ choose_in_settings() {
     k F6 1.2
     for _ in $(seq 1 30); do
         outer capture-pane -p -t 0 | grep -q '▸ layout ' && break
-        k j 0.15
+        k j 0.05
     done
     sleep 0.8
     for _ in $(seq 1 "$steps"); do k Right 0.9; done
@@ -168,7 +168,7 @@ walk_classic() {
     k F6 1.2
     for _ in $(seq 1 30); do
         outer capture-pane -p -t 0 | grep -q '▸ layout ' && break
-        k j 0.15
+        k j 0.05
     done
     sleep 1.5
     snap settings
@@ -257,20 +257,29 @@ walk_ide() {
     snap wide
 }
 
-# Cut the cast where thurbox starts exiting (the cursor coming back, or the
-# alternate screen leaving): a GIF loops, and a bare shell would be its last
-# frame.
+# Cut the cast to thurbox itself: from its first frame (a blank terminal while
+# it boots is not worth a second of anyone's attention) to where it starts
+# exiting — the cursor coming back, or the alternate screen leaving — because a
+# GIF loops, and a bare shell would be its last frame.
 trim() {
     python3 - "$1" <<'TRIM'
 import json, sys
 
 path = sys.argv[1]
 lines = open(path).read().splitlines()
-for i, line in enumerate(lines[1:], start=1):
-    data = json.loads(line)
-    if data[1] == "o" and ("\x1b[?25h" in data[2] or "\x1b[?1049l" in data[2]):
-        open(path, "w").write("\n".join(lines[:i]) + "\n")
-        break
+header, events = lines[0], [json.loads(line) for line in lines[1:]]
+start = next(i for i, e in enumerate(events) if e[1] == "o" and "Sessions" in e[2])
+end = next(
+    (i for i, e in enumerate(events)
+     if i > start and e[1] == "o" and ("\x1b[?25h" in e[2] or "\x1b[?1049l" in e[2])),
+    len(events),
+)
+# Everything before the first frame still has to reach the terminal agg
+# replays (modes, the alternate screen), so it is kept at time zero.
+t0 = events[start][0]
+kept = [[0.0, e[1], e[2]] for e in events[:start] if e[1] == "o"]
+kept += [[round(e[0] - t0, 6), e[1], e[2]] for e in events[start:end]]
+open(path, "w").write("\n".join([header] + [json.dumps(e) for e in kept]) + "\n")
 TRIM
 }
 

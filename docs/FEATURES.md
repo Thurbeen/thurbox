@@ -3472,11 +3472,16 @@ other panel toggles' F-keys.
   That is the pane's own state, not the kernel's — see the section below.
 - Input reaches the pane the surface names, `<id>#shell` or the bare id.
 - **A shell that has ended is replaced.** `exit`, or its window closing from
-  outside, ends the shell's stream while the agent runs on; the next raise of
-  the tab spawns a fresh shell rather than showing the dead one, whose grid —
+  outside, ends the shell's stream while the agent runs on; the next paint of
+  its surface — the tab, or the shell pane of the `split-shell` and `ide` layout
+  presets — spawns a fresh shell rather than showing the dead one, whose grid —
   once dropped off screen after `hidden_terminal_secs` — has no pane left to be
-  rebuilt from and would stay blank. For the same reason a restart does not
-  re-adopt a recorded shell id the multiplexer's listing no longer has.
+  rebuilt from and would stay blank. `Terminals` asks once per dead shell. For
+  the same reason a restart does not re-adopt a recorded shell id the
+  multiplexer's listing no longer has.
+- **Layout presets**: `split-shell` and `ide` give the shell a pane of its own
+  below the agent, and the tab steps aside while that pane is on screen — see
+  `docs/PLUGINS.md` → *Layout presets*.
 - **Remote/WSL sessions**: the shell pane opens the host user's own
   interactive **login shell** — the same environment an `ssh <host>` login
   gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It
