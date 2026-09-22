@@ -52,6 +52,16 @@ config_version = 1
 # 12x this on its own, so the cost of a dormant session is already small.
 # git_poll_secs = 5
 
+# The interface's arrangement, chosen from the presets thurbox ships:
+#   classic      the session list beside the agent pane (the default)
+#   split-shell  the same, with the selected session's shell in a pane below
+#                the agent, both on screen at once
+# `thurbox-cli layout set <name>` or the settings panel (Ctrl+,) switch it and
+# rewrite layout.lua in place, backing up a copy you edited first. Changing
+# this line by hand applies on the next start, and leaves an edited layout.lua
+# alone.
+# layout = "classic"
+
 # Feature flags: turn whole TUI features off. All default to true.
 # Disabling `automations` also stops the TUI firing schedules and arming
 # the tmux heartbeat on startup; explicit `thurbox-cli automation`
@@ -229,45 +239,6 @@ pub fn load_quiet() -> Settings {
         .unwrap_or_default()
 }
 
-/// Take the top-level `layout` key out of settings.toml, returning a note for
-/// the message band when the arrangement it named is gone.
-///
-/// Only v2.32.0 wrote that key: it named a layout preset, and presets were
-/// rolled back in the next release (#1227). Left in place it would be an
-/// "unknown field" warning on every start; removing it is what makes the note
-/// a one-time one. Called by the interface at start and nowhere else, because
-/// `thurbox-cli` (run by every agent hook) would take the key before the note
-/// could ever be shown. Silent for `classic`: that arrangement is the one still
-/// shipped, so nothing on screen changed.
-pub fn retire_layout_preset() -> Option<String> {
-    let path = settings_config_path()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
-    // Cut by the parsed spans, not through `DocumentMut::remove`: that also
-    // drops the comments above the key, which in a seeded file document the keys
-    // before it. The spans cover any spelling, a multi-line string included.
-    let doc = toml_edit::Document::parse(contents.as_str()).ok()?;
-    let (key, item) = doc.as_table().get_key_value("layout")?;
-    let (start, end) = (key.span()?.start, item.span()?.end);
-    let line_start = contents[..start].rfind('\n').map_or(0, |at| at + 1);
-    let line_end = contents[end..]
-        .find('\n')
-        .map_or(contents.len(), |at| end + at + 1);
-    let kept = format!("{}{}", &contents[..line_start], &contents[line_end..]);
-    if let Err(e) = write_atomically(&path, &kept) {
-        return Some(format!(
-            "settings.toml: could not remove the withdrawn `layout` key: {e}"
-        ));
-    }
-    match item.as_str() {
-        Some("classic") => None,
-        chosen => Some(format!(
-            "layout presets were rolled back: {} is now the classic layout, the shell is \
-             its Shell tab · `layout` removed from settings.toml",
-            chosen.unwrap_or("your layout")
-        )),
-    }
-}
-
 /// Set a boolean key on a `toml_edit` table.
 fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
     table[key] = toml_edit::value(v);
@@ -319,6 +290,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
     doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
+    doc["layout"] = value(settings.layout.as_str());
 
     if !doc.contains_key("features") {
         doc["features"] = toml_edit::table();
@@ -359,25 +331,20 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    write_atomically(&path, &doc.to_string())
-}
-
-/// Write settings.toml aside and rename it into place.
-///
-/// Every mirror pass re-reads this file (`load_quiet`), and one that caught it
-/// truncated mid-write would read the defaults for a pass - re-adopting the
-/// transitive sessions a user had hidden, only to forget them again on the
-/// next. One staged file per write, so two processes (or threads) writing at
-/// once never rename each other's content into place.
-fn write_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    // Written aside and renamed into place: every mirror pass re-reads this
+    // file (`load_quiet`), and one that caught it truncated mid-write would
+    // read the defaults for a pass - re-adopting the transitive sessions a
+    // user had hidden, only to forget them again on the next.
+    // One staged file per save, so two processes (or threads) saving at once
+    // never rename each other's content into place.
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let staged = path.with_extension(format!(
         "toml.saving-{}-{}",
         std::process::id(),
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::write(&staged, contents)
-        .and_then(|()| std::fs::rename(&staged, path))
+    std::fs::write(&staged, doc.to_string())
+        .and_then(|()| std::fs::rename(&staged, &path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&staged);
             e
@@ -412,6 +379,7 @@ mod tests {
             "three_panel_min_cols",
             "audit_retention_days",
             "git_poll_secs",
+            "layout",
             "[features]",
             "tasks",
             "automations",
@@ -468,71 +436,6 @@ mod tests {
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert_eq!(s, Settings::default());
         assert!(path.exists(), "settings.toml should have been seeded");
-    }
-
-    #[test]
-    fn a_withdrawn_layout_preset_is_noted_once_and_removed() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "# mine\nlayout = \"split-shell\"\ngit_poll_secs = 9\n\n[features]\nmouse = false\n",
-        )
-        .unwrap();
-
-        let note = retire_layout_preset().expect("a note for a withdrawn preset");
-        assert!(note.contains("split-shell"), "{note}");
-        let left = std::fs::read_to_string(&path).unwrap();
-        assert!(!left.contains("layout"), "{left}");
-        assert!(
-            left.contains("# mine") && left.contains("mouse = false"),
-            "{left}"
-        );
-
-        let (settings, warnings) = load_or_seed_with_warnings();
-        assert!(warnings.is_empty(), "got: {warnings:?}");
-        assert_eq!(settings.git_poll_secs, 9);
-        assert_eq!(retire_layout_preset(), None, "said once");
-    }
-
-    #[test]
-    fn a_classic_layout_key_is_removed_without_a_note() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "layout = \"classic\"\n").unwrap();
-
-        assert_eq!(retire_layout_preset(), None);
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("layout"));
-    }
-
-    #[test]
-    fn a_layout_key_in_any_toml_spelling_is_removed_whole() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        for spelling in [
-            "layout = \"\"\"\nsplit-shell\"\"\"\n",
-            "\"layout\" = 'split-shell' # mine\n",
-        ] {
-            std::fs::write(&path, format!("# kept\n{spelling}git_poll_secs = 9\n")).unwrap();
-
-            assert!(retire_layout_preset().is_some(), "{spelling}");
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap(),
-                "# kept\ngit_poll_secs = 9\n"
-            );
-            let (settings, warnings) = load_or_seed_with_warnings();
-            assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
-            assert_eq!(settings.git_poll_secs, 9);
-        }
     }
 
     #[test]

@@ -181,6 +181,9 @@ impl App {
             self.last_link_paints.clear();
         }
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
+        if reflowed {
+            self.host.note_placed(&self.visible_slots);
+        }
         // A focus request that named a slot this layout has only just placed —
         // the search strip's, which shows itself and asks for focus in one
         // action. Taken here because this is the first moment the slot exists,

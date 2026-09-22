@@ -60,13 +60,15 @@ function panels.toggle(name)
   return now
 end
 
---- Retired with the layout presets, and kept as a shim (`ui/AGENTS.md`: a
---- name `lib/` published stays). v2.32.0's agent pane asks it whether a shell
---- pane is on screen, and an edited copy of that pane is preserved across
---- upgrades. No arrangement places one any more, so the answer is always no,
---- and the pane keeps its Shell tab.
-function panels.placed(_slot)
-  return false
+--- Did the last arrangement put `slot` on screen?
+---
+--- Written by the kernel (`placed.<slot>`) after arranging and before any pane
+--- renders, because only it knows. What it answers is not the toggle above:
+--- a slot can be open and still left out — a narrow screen, or a layout that
+--- never names it. The agent pane asks it about `shell` to decide whether its
+--- own Shell tab is needed.
+function panels.placed(slot)
+  return store["placed." .. slot] == true
 end
 
 return panels

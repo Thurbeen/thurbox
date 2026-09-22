@@ -204,6 +204,15 @@ impl Harness {
     /// size — the state the interface is in the moment before the first frame
     /// of an arrangement that shows both.
     fn new(rows: u16, cols: u16) -> Self {
+        Self::build(rows, cols, true)
+    }
+
+    /// The same session with no companion shell opened yet.
+    fn without_shell(rows: u16, cols: u16) -> Self {
+        Self::build(rows, cols, false)
+    }
+
+    fn build(rows: u16, cols: u16, open_shell: bool) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = crate::paths::TestPathGuard::new(dir.path());
         let recorder = Arc::new(Recorder::default());
@@ -222,9 +231,11 @@ impl Harness {
             None,
         )
         .expect("adopt the agent pane");
-        session
-            .ensure_shell_pane(rows, cols, None)
-            .expect("open the companion shell");
+        if open_shell {
+            session
+                .ensure_shell_pane(rows, cols, None)
+                .expect("open the companion shell");
+        }
 
         let mut terminals = Terminals::new();
         let id = "probe-0000".to_string();
@@ -238,6 +249,7 @@ impl Harness {
                     ..Default::default()
                 },
                 shell: Painted::default(),
+                shell_asked: std::cell::Cell::new(false),
             },
         );
         // Both panes were born at the terminal's size; the arrangement is what
@@ -498,6 +510,32 @@ async fn each_rect_shows_the_pane_that_owns_it() {
 
     assert_eq!(screen.first_row("center"), "AGENT-SCREEN");
     assert_eq!(screen.first_row("shell"), "SHELL-SCREEN");
+}
+
+#[tokio::test]
+async fn a_shell_surface_painted_before_its_shell_exists_asks_for_one_once() {
+    // A layout that gives the shell a pane of its own paints `<id>#shell` before
+    // anything opened the shell. The pane must not have to ask from its render,
+    // so the paint notes it — once per attach, since a shell that fails to open
+    // repaints every frame.
+    let harness = Harness::without_shell(HEIGHT, WIDTH);
+    harness.frame(&one_pane("center"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "painting the agent asks for no shell"
+    );
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert_eq!(
+        harness.terminals.take_wanted_shells(),
+        vec![harness.id.clone()]
+    );
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "asked once per attach, not once per frame"
+    );
 }
 
 #[tokio::test]

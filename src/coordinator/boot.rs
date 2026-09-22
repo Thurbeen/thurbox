@@ -131,9 +131,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // reason. Without this call `settings::global()` hands out `Settings::default`
     // and the whole file is ignored, however carefully it was written.
     let phase = Instant::now();
-    // Before the load, so a key v2.32.0 wrote is noted once here rather than
-    // reported as unknown on every start.
-    let layout_note = thurbox::agent::settings_config::retire_layout_preset();
     let (config, config_warnings) = thurbox::kernel::config::Config::load();
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
 
@@ -147,8 +144,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // shows every session as permanently idle. Run here for the same reason v1
     // runs it here: tmux spawn output would otherwise land on the alternate
     // screen. Opt out with `thurbox-cli extension deactivate hooks`.
-    let mut startup_notices: Vec<String> = layout_note.into_iter().collect();
-    startup_notices.extend(config_warnings);
+    let mut startup_notices: Vec<String> = config_warnings;
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {
         startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));
@@ -488,9 +484,26 @@ fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Opt
 /// Only the two outcomes that are about THEIR files: an edit of theirs kept
 /// where a newer version was available, and a file taken back because this
 /// binary no longer ships it. Writes and updates are the ordinary case and say
-/// nothing, so this stays a signal rather than a greeting.
+/// nothing, so this stays a signal rather than a greeting — with one exception,
+/// the first run, which is told which layout preset it got and where the others
+/// are. Said rather than asked: a question on the first frame would stand in
+/// front of every scripted and recorded launch, and a line in the message band
+/// costs nobody anything.
 fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> {
     let mut parts = Vec::new();
+    if report
+        .written
+        .iter()
+        .any(|file| file == thurbox::kernel::bundled::LAYOUT)
+    {
+        let preset = thurbox::kernel::presets::chosen_or_default(
+            &thurbox::session::settings::global().layout,
+        );
+        parts.push(format!(
+            "layout: {} · others in settings → layout, or `thurbox-cli layout list`",
+            preset.name
+        ));
+    }
     if !report.preserved.is_empty() {
         parts.push(format!(
             "kept your version of {}",
@@ -509,6 +522,24 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_first_run_is_told_its_layout_and_where_the_others_are() {
+        let first = thurbox::kernel::bundled::Report {
+            written: vec!["layout.lua".to_string(), "plugins/20_agent.lua".to_string()],
+            ..Default::default()
+        };
+        let notice = delivery_notice(&first).expect("a first run says something");
+        assert!(notice.contains("layout: classic"), "{notice}");
+        assert!(notice.contains("thurbox-cli layout list"), "{notice}");
+
+        // Every later start finds the layout on disk and stays quiet.
+        let upgrade = thurbox::kernel::bundled::Report {
+            updated: vec!["layout.lua".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(delivery_notice(&upgrade), None);
+    }
 
     /// The log appender keeps a bounded number of days and names them the way
     /// the docs say.

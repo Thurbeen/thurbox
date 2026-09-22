@@ -58,6 +58,11 @@ pub struct Settings {
     /// that scans every process launch (issue #1167).
     #[serde(default = "default_git_poll_secs")]
     pub git_poll_secs: u64,
+    /// The layout preset delivered as the interface's `layout.lua`
+    /// (`kernel::presets`). Read by delivery, so an upgrade keeps refreshing the
+    /// arrangement the user chose rather than reverting it to `classic`.
+    #[serde(default = "default_layout")]
+    pub layout: String,
     /// Per-feature on/off switches (`[features]` table). Absent table = all
     /// enabled.
     #[serde(default)]
@@ -351,6 +356,9 @@ fn default_audit_retention_days() -> u64 {
 fn default_git_poll_secs() -> u64 {
     5
 }
+fn default_layout() -> String {
+    "classic".to_string()
+}
 
 impl Settings {
     /// Whether any **restart-only** setting differs between `self` and `other`.
@@ -389,6 +397,7 @@ impl Default for Settings {
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
             git_poll_secs: default_git_poll_secs(),
+            layout: default_layout(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),

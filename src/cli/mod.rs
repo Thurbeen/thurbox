@@ -49,6 +49,7 @@ pub mod editor;
 pub mod extensions;
 pub mod home;
 pub mod identity;
+pub mod layout;
 pub mod messages;
 pub mod notify;
 pub mod output;
@@ -279,6 +280,11 @@ pub enum Command {
         #[command(subcommand)]
         action: runtime::Action,
     },
+    /// The interface's layout presets: list them, or switch to one.
+    Layout {
+        #[command(subcommand)]
+        action: layout::Action,
+    },
     /// Interface plugins: where they live, start one, check it loads.
     Plugin {
         #[command(subcommand)]
@@ -438,6 +444,8 @@ fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandErr
         Command::Watch(_) => unreachable!("handled in run(), which owns the stream"),
         Command::Runtime { action } => runtime::run(action),
         // The only command that needs no database: a plugin is a file.
+        // A file and a setting, like `plugin`: no database.
+        Command::Layout { action } => layout::run(action)?,
         Command::Plugin { action } => plugins::run(action)?,
         // Reads the machine, not the database: what is installed is not
         // something thurbox recorded.
