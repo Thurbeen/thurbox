@@ -160,8 +160,34 @@ impl App {
         self.dirty = true;
     }
 
+    /// Open every held shell whose session has attached since it was asked for.
+    pub(crate) fn open_pending_shells(&mut self) {
+        if self.pending_shells.is_empty() {
+            return;
+        }
+        let ready: Vec<String> = self
+            .pending_shells
+            .iter()
+            .filter(|session| self.terminals.is_attached(session))
+            .cloned()
+            .collect();
+        for session in ready {
+            self.pending_shells.remove(&session);
+            self.apply_shell_command(&session);
+        }
+    }
+
     /// `Command::Shell`: a companion shell beside a session's agent.
+    ///
+    /// Held rather than refused while the session has not attached yet: a
+    /// layout that shows the shell in a pane of its own asks for it on its first
+    /// frame, which comes before the attach does, and refusing then left the pane
+    /// empty with an error in the message band.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
+        if !self.terminals.is_attached(session) && self.terminals.failure(session).is_none() {
+            self.pending_shells.insert(session.to_string());
+            return;
+        }
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         // Resolved from the snapshot rather than the live
         // `Session`: an adopted one carries no cwd of its own.

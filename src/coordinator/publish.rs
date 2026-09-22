@@ -23,6 +23,7 @@ impl App {
         // session is on screen — a stale set there would freeze the very
         // spinner it gates.
         self.terminals.sync_printing();
+        self.open_pending_shells();
         self.advance_animation();
         let sessions: Vec<String> = self
             .snapshots
