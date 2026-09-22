@@ -19,19 +19,25 @@
     # Pin a version / custom dir (run as a file):
     .\install.ps1 -Version v0.1.0 -InstallDir C:\tools\thurbox
 
+.EXAMPLE
+    # Choose the interface layout preset (asked on a terminal otherwise):
+    .\install.ps1 -Layout split-shell
+
 .NOTES
     Configuration can also be supplied via environment variables, which is the
     reliable path for the pipe-to-iex form that cannot pass parameters:
       $env:THURBOX_VERSION      = 'v0.1.0'
       $env:THURBOX_INSTALL_DIR  = 'C:\tools\thurbox'
       $env:THURBOX_REPO         = 'Thurbeen/thurbox'
+      $env:THURBOX_LAYOUT       = 'split-shell'
 #>
 
 [CmdletBinding()]
 param(
     [string]$Version,
     [string]$InstallDir,
-    [string]$Repo
+    [string]$Repo,
+    [string]$Layout
 )
 
 Set-StrictMode -Version Latest
@@ -40,6 +46,7 @@ $ErrorActionPreference = 'Stop'
 # --- Configuration (parameter overrides env var overrides default) ----------
 if (-not $Repo)    { $Repo    = if ($env:THURBOX_REPO)    { $env:THURBOX_REPO }    else { 'Thurbeen/thurbox' } }
 if (-not $Version) { $Version = if ($env:THURBOX_VERSION) { $env:THURBOX_VERSION } else { '' } }
+if (-not $Layout)  { $Layout  = if ($env:THURBOX_LAYOUT)  { $env:THURBOX_LAYOUT }  else { '' } }
 if (-not $InstallDir) {
     if ($env:THURBOX_INSTALL_DIR) { $InstallDir = $env:THURBOX_INSTALL_DIR }
     elseif ($env:LOCALAPPDATA)    { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\thurbox' }
@@ -134,6 +141,23 @@ function Add-ToUserPath {
     return $true
 }
 
+# --- Layout preset ----------------------------------------------------------
+# The -Layout parameter or THURBOX_LAYOUT, else asked on an interactive console.
+# An empty answer keeps whatever the profile already has (classic on a fresh one).
+function Set-Layout {
+    param([string]$Dir)
+    $cli = Join-Path $Dir 'thurbox-cli.exe'
+    if (-not (Test-Path $cli)) { return }
+    $choice = $Layout
+    if (-not $choice -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        $choice = Read-Host 'Layout: classic, or split-shell (a shell pane below the agent) [Enter keeps the current one]'
+    }
+    if (-not $choice) { return }
+    & $cli layout set $choice | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Ok "Layout: $choice" }
+    else { Write-Warn "Could not set layout '$choice' - see: thurbox-cli layout list" }
+}
+
 # --- Main -------------------------------------------------------------------
 function Invoke-Install {
     Show-Banner
@@ -179,6 +203,8 @@ function Invoke-Install {
 
     Write-Host ''
     Write-Ok "Thurbox installed to $InstallDir\thurbox.exe"
+
+    Set-Layout $InstallDir
 
     if (Add-ToUserPath $InstallDir) {
         Write-Warn "Added $InstallDir to your user PATH - restart your terminal for it to take effect."
