@@ -297,6 +297,9 @@ What an upgrade does to each file follows from the same record:
 - **removed** → left removed;
 - **yours** → not touched, ever. Delivery writes only files it ships;
 - **no longer shipped** → taken back if you never changed it, kept if you did.
+  The one exception is `plugins/25_shell.lua`, from v2.32.0's rolled-back layout
+  presets: an edited copy is moved to `plugins/25_shell.lua.bak`, because loaded
+  it fills a slot the classic layout never places.
 
 Removing every pane is allowed and does what it says: nothing draws, the chrome
 still works, and the Interface tab still lists what you removed. It is not treated as a broken
