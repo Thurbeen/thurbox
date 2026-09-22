@@ -91,6 +91,8 @@ struct Recorder {
     unreachable: std::sync::atomic::AtomicBool,
     /// `adopt` fails.
     adopt_fails: std::sync::atomic::AtomicBool,
+    /// `spawn` fails.
+    spawn_fails: std::sync::atomic::AtomicBool,
 }
 
 impl Recorder {
@@ -141,6 +143,9 @@ impl crate::agent::backend::SessionBackend for Recorder {
             .lock()
             .expect("calls")
             .push(format!("spawn {SHELL_PANE}"));
+        if self.spawn_fails.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("spawn failed");
+        }
         let (output, input) = self.io();
         Ok(crate::agent::backend::SpawnedSession {
             backend_id: SHELL_PANE.to_string(),
@@ -1116,4 +1121,27 @@ async fn the_wait_before_asking_again_starts_when_the_open_failed() {
         harness.terminals.take_wanted_shells().is_empty(),
         "asked again the moment the slow open returned"
     );
+}
+
+#[tokio::test]
+async fn a_replacement_that_fails_to_spawn_still_waits_before_the_next_ask() {
+    // The dead shell is gone once it is killed, so the next paint's ask named a
+    // different shell ("none") and started the backoff over — one more blocking
+    // spawn straight after the first.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::from_secs(60);
+    shell_stream_ended(&harness);
+    for flag in [&harness.backend.dead, &harness.backend.spawn_fails] {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(harness.terminals.take_wanted_shells().is_empty());
 }

@@ -1422,8 +1422,18 @@ impl Terminals {
             // ask: this open may have blocked for as long as a stalled link
             // takes to time out, and a wait timed from before it would already
             // be over.
+            // And it names the shell as it now stands: a dead one killed on
+            // the way is "none", which the next paint would otherwise take for
+            // a new shell and ask about at once.
+            let now_names = live
+                .session
+                .shell_pane
+                .as_ref()
+                .map(|pane| pane.backend_id().to_string())
+                .unwrap_or_default();
             if let Some(ask) = live.shell_asked.get_mut().as_mut() {
                 ask.at = std::time::Instant::now();
+                ask.shell = now_names;
             }
             return Err(e.to_string());
         }
