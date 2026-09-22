@@ -78,118 +78,79 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             pane; the session's shell is the pane's <em>Shell</em> tab
             (<kbd>F8</kbd>).
           </p>
-          <pre><code class="language-text">╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ─ Shell · F8 ──────────────── api (demo) [Uncovered] ╮
-│── repo ─────────────││sh-5.3$ █                                                          │
-│ ◌ api  no status ho…││                                                                   │
-│ ◌ docs  no status h…││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <span class="terminal-title">classic</span>
+            </div>
+            <div class="terminal-body">
+              <!-- prettier-ignore -->
+              <video src="../assets/layout-classic.mp4" width="1024" height="686" autoplay loop muted playsinline preload="none">
+                classic: the session list beside the agent pane; F8 flips the pane to its Shell tab and back, F9 hides the list, and below 80 columns the agent is alone
+              </video>
+            </div>
+          </div>
           <p>
             <strong><code>split-shell</code></strong>: the same, with the selected
             session's shell in its own pane below the agent, both live at once.
             <kbd>F8</kbd> moves focus into the shell pane and back. Below 80 columns
-            it falls back to the agent alone, and the <em>Shell</em> tab returns.
+            it falls back to the agent alone, and the <em>Shell</em> tab returns
+            &mdash; with the keyboard, if you were typing in the shell. Installed
+            panes get a column on the right from 120 columns up.
           </p>
-          <pre><code class="language-text">╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ───────────────────────────── api (demo) [Uncovered] ╮
-│── repo ─────────────││sh-5.3$ █                                                          │
-│ ◌ api  no status ho…││                                                                   │
-│ ◌ docs  no status h…││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     │╰───────────────────────────────────────────────────────────────────╯
-│                     │╭────────────────────────────────────────────────────── api (shell) ╮
-│                     ││sh-5.3$ █                                                          │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-│                     ││                                                                   │
-╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <span class="terminal-title">split-shell</span>
+            </div>
+            <div class="terminal-body">
+              <!-- prettier-ignore -->
+              <video src="../assets/layout-split-shell.mp4" width="1024" height="686" autoplay loop muted playsinline preload="none">
+                split-shell: the shell in a pane below the agent; F8 moves between them, the shell follows the selected session, and a narrow screen folds it back into a tab that keeps the keyboard
+              </video>
+            </div>
+          </div>
           <p>
             <strong><code>focus</code></strong>: the agent pane alone, the whole
             width, like VS Code's Zen mode or JetBrains' Distraction-Free mode.
             <kbd>F9</kbd> brings the session list back and hides it again, and an
-            installed pane's own toggle does the same for its column. The shell stays
+            installed pane stays closed until its own toggle opens it. The shell stays
             the agent pane's <em>Shell</em> tab.
           </p>
-          <pre><code class="language-text">╭ ▶ F9 ─ Agent ─ Shell · F8 ─────────────────────────────────────── api (demo) [Uncovered] ╮
-│sh-5.3$ █                                                                                 │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-╰──────────────────────────────────────────────────────────────────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <span class="terminal-title">focus</span>
+            </div>
+            <div class="terminal-body">
+              <!-- prettier-ignore -->
+              <video src="../assets/layout-focus.mp4" width="1024" height="686" autoplay loop muted playsinline preload="none">
+                focus: the agent alone at full width; F9 brings the session list back and hides it again
+              </video>
+            </div>
+          </div>
           <p>
             <strong><code>ide</code></strong>: the arrangement VS Code and JetBrains
             open with. The session list on the left, the agent in the middle with the
             shell as a panel along its bottom, and a right-hand column holding every
-            other pane you installed (here the <code>tasks</code> example pane). With
+            other pane you installed (in the recording, the <code>tasks</code> example pane). With
             nothing installed there, no column is reserved and the agent runs to the
             right edge. The right column needs 120 columns
             (<code>three_panel_min_cols</code>); below 80 the agent is alone.
           </p>
-          <pre><code class="language-text">╭ Sessions ──────────◌◌╮╭ ◀ F9 ─ Agent ────────────────────────── api (demo) [Uncovered] ╮╭ Tasks ─────────────────────╮
-│── repo ──────────────││sh-5.3$ █                                                       ││  nothing on the list — n to│
-│ ◌ api  no status hoo…││                                                                ││────────────────────────────│
-│ ◌ docs  no status ho…││                                                                ││  0 open  ·  0 done         │
-│                      ││                                                                ││ space status   n new   ente│
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      │╰────────────────────────────────────────────────────────────────╯│                            │
-│                      │╭─────────────────────────────────────────────────── api (shell) ╮│                            │
-│                      ││sh-5.3$ █                                                       ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-╰──────────────────────╯╰────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O Open                            Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <div class="terminal-frame">
+            <div class="terminal-header">
+              <span class="terminal-title">ide</span>
+            </div>
+            <div class="terminal-body">
+              <!-- prettier-ignore -->
+              <video src="../assets/layout-ide.mp4" width="1024" height="686" autoplay loop muted playsinline preload="none">
+                ide: sessions left, the agent with its shell panel below, installed panes in a right column that goes first as the screen narrows
+              </video>
+            </div>
+          </div>
           <p>
             Switch at any time with <code>thurbox-cli layout set &lt;name&gt;</code> or
-            <code>layout</code> in settings. A <code>layout.lua</code> you edited is
-            backed up to <code>layout.lua.bak</code> before a switch replaces it.
+            <code>layout</code> in settings (<kbd>F6</kbd>), as each recording does
+            first. A <code>layout.lua</code> you edited is backed up to
+            <code>layout.lua.bak</code> before a switch replaces it.
           </p>
 
           <h3>Windows (PowerShell)</h3>

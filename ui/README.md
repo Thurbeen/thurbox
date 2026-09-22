@@ -422,84 +422,66 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 
 ## The arrangement is a preset you can switch
 
-`layout.lua` is written from one of the presets thurbox ships:
-
-| preset | arranges |
-|---|---|
-| `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
-| `split-shell` | the same, with the selected session's shell in a pane below the agent |
-| `focus` | the agent pane alone, full width (VS Code's Zen mode); `F9` and each pane's own toggle bring columns back |
-| `ide` | VS Code's or JetBrains' shape: sessions left, the shell along the bottom of the agent, every other installed pane stacked in a right column |
+`layout.lua` is written from one of the four presets thurbox ships. Each is modelled
+on an arrangement you already know, and each keeps the same rules: `F9` hides and
+shows the list, a pane turned off in the Interface tab reserves no room, and below
+`two_panel_min_cols` (80) the agent pane is alone on screen.
 
 ```bash
 thurbox-cli layout list              # which one is chosen, and whether layout.lua is edited
-thurbox-cli layout set split-shell   # switch; settings → layout does the same
+thurbox-cli layout set split-shell   # switch; settings (F6) → layout does the same
 ```
 
 An untouched `layout.lua` follows upgrades of the preset you chose. An edited one is
 yours: nothing overwrites it, and a switch you ask for moves it to `layout.lua.bak`
-first (`.bak.2` and on, never over an earlier backup) and tells you so.
+first (`.bak.2` and on, never over an earlier backup) and tells you so. If
+`settings.toml` names a preset while an edited `layout.lua` is in use, the first
+start says so in the message band.
 
-At 92×23, with two sessions:
+The shell is always reachable. Where a preset gives it a pane of its own, the agent
+pane drops its Shell tab and `F8` moves focus between the two; wherever the shell
+pane is left out (a narrow or short screen), the tab comes back, and a shell you
+were typing into keeps the keyboard across the change. A shell you `exit` is
+replaced by a fresh one the next time it is shown.
 
-`focus`, where the list starts hidden and `F9` brings it back:
+### `classic` (the default)
 
-```text
-╭ ▶ F9 ─ Agent ─ Shell · F8 ─────────────────────────────────────── api (demo) [Uncovered] ╮
-│sh-5.3$ █                                                                                 │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-│                                                                                          │
-╰──────────────────────────────────────────────────────────────────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q
-```
+The session list beside the agent pane — thurbox's own arrangement since v1. The
+shell is the agent pane's tab: `Ctrl+T` or `F8` switches between them. Installed
+panes need a slot added here by hand.
 
-`ide` at 120 columns, with the `tasks` example pane installed. The right column
-holds every slot the preset does not place by name, exists only while one of them is
-filled, and is the first thing dropped below `three_panel_min_cols` (120):
+![classic](https://raw.githubusercontent.com/Thurbeen/thurbox/main/media/layout-classic.gif)
 
-```text
-╭ Sessions ──────────◌◌╮╭ ◀ F9 ─ Agent ────────────────────────── api (demo) [Uncovered] ╮╭ Tasks ─────────────────────╮
-│── repo ──────────────││sh-5.3$ █                                                       ││  nothing on the list — n to│
-│ ◌ api  no status hoo…││                                                                ││────────────────────────────│
-│ ◌ docs  no status ho…││                                                                ││  0 open  ·  0 done         │
-│                      ││                                                                ││ space status   n new   ente│
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      │╰────────────────────────────────────────────────────────────────╯│                            │
-│                      │╭─────────────────────────────────────────────────── api (shell) ╮│                            │
-│                      ││sh-5.3$ █                                                       ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-│                      ││                                                                ││                            │
-╰──────────────────────╯╰────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
- Agent  2 session(s)  ^H/^L Focus ^O Open                            Help · F1   Theme · F4   Settings · F6   Quit · ^Q
-```
+### `split-shell`
 
-`classic` and `split-shell` are drawn on the
-[installation page](https://thurbox.thurbeen.eu/docs/installation.html#layout).
+The terminal split the way tmux users split one: the selected session's shell in a
+pane below the agent, both on screen at once. It follows the selection. Installed
+panes (a file tree, a queue) get a column on the right, open until their own toggle
+closes it, and dropped first below `three_panel_min_cols` (120).
+
+![split-shell](https://raw.githubusercontent.com/Thurbeen/thurbox/main/media/layout-split-shell.gif)
+
+### `focus`
+
+The agent alone, full width — VS Code's Zen mode, JetBrains' Distraction-Free mode.
+The list starts hidden and `F9` brings it back; the shell stays a tab. Installed
+panes stay closed until their own toggle opens them, so a pane with no toggle is
+not shown here.
+
+![focus](https://raw.githubusercontent.com/Thurbeen/thurbox/main/media/layout-focus.gif)
+
+### `ide`
+
+The shape VS Code and JetBrains open with: sessions on the left where the explorer
+is, the agent where the editor is, the shell as the panel along its bottom, and
+every installed pane stacked in a right-hand column (VS Code's secondary side bar),
+open until its toggle closes it. The right column goes first as the screen narrows,
+then the list and the shell panel.
+
+![ide](https://raw.githubusercontent.com/Thurbeen/thurbox/main/media/layout-ide.gif)
+
+`scripts/demo/layouts/record.sh` makes these recordings, so they can be remade after
+a change.
 
 With the list off screen, as `focus` starts, the agent pane keeps the selection
 itself: it shows the list's first session and honours a clicked notification or

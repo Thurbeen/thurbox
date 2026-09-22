@@ -82,7 +82,9 @@ already follow.
   bars), `snapshot` (the read side), `command` (the write side), `terminal/` (live
   PTY surfaces: the attach machinery, plugin program panes, link detection +
   OSC 8 painting — every surface owns its own rect and size memo, and a
-  session's agent and its `#shell` companion are two of them, never one),
+  session's agent and its `#shell` companion are two of them, never one — and
+  a surface paints into one rect a frame, the first, so two panes naming the
+  same shell cannot fight over its size),
   `selection` (mouse text selection over a pane),
   `consent` (the one-time v1→v2 gate), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,

@@ -311,7 +311,7 @@ is `layout` in `settings.toml`:
 | Preset | Arranges |
 |---|---|
 | `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
-| `split-shell` | the same, with the selected session's shell in its own pane below the agent |
+| `split-shell` | the same, with the selected session's shell in its own pane below the agent, and installed panes in a right column |
 | `focus` | the agent pane alone, full width; F9 and each pane's own toggle bring columns back |
 | `ide` | sessions left, the shell along the bottom of the agent, every other installed pane stacked in a right column |
 
@@ -378,7 +378,9 @@ preset**; edited, it is yours and left alone. Switching is the one act that
 replaces a file you may have edited, so it backs yours up first — to
 `layout.lua.bak`, then `.bak.2`, never over an earlier backup — and says where.
 Changing `layout` in `settings.toml` by hand applies on the next start and, like
-any delivery, leaves an edited `layout.lua` alone.
+any delivery, leaves an edited `layout.lua` alone — and that start says so in the
+message band (`presets::not_in_force`), since the setting then names an arrangement
+nobody is looking at.
 
 Keeping your own arrangement and gaining the shell pane is one edit to it: where
 it places `{ slot = "center" }`, place the centre and the shell in a column
@@ -388,7 +390,11 @@ instead, as `split-shell` does (`ui/layouts/split-shell.lua`):
 { axis = "vertical", children = { { slot = "center" }, { slot = "shell", len = 12 } } }
 ```
 
-`focus` and `ide` are drawn in `ui/README.md`. Each borrows an IDE's shape:
+Each preset has a recording in `ui/README.md` (made by
+`scripts/demo/layouts/record.sh`). Each borrows a known shape:
+
+- **`split-shell`** is a terminal split the way tmux or Warp split one. Its
+  right-hand column works as `ide`'s does, below.
 
 - **`focus`** is VS Code's Zen mode and JetBrains' Distraction-Free mode: the
   agent alone. The list starts hidden through `lib.panels.starts("sessions",
@@ -406,6 +412,16 @@ A preset that places the session list nowhere still has a selection: the list
 owns `store.selected` and writes it from its render, so while it is off screen
 the agent pane keeps it — it spends a `focus_session` request and, with nothing
 selected, selects the list's first row.
+
+The shell keeps the keyboard when the arrangement moves it. `plugins/25_shell.lua`
+records `store["shell.focused"]` from its render; when a narrow or short screen
+takes the pane away while it has focus, the agent pane opens its Shell tab and takes
+focus (the kernel may have handed it to the list), and when the pane comes back
+while the agent pane is focused on that tab, focus goes back to the pane. One
+terminal is also painted into one rect a frame — the first — so an agent pane
+edited before shell panes existed, still offering its tab under a layout that
+places the shell pane, cannot resize the shell to two sizes. And a shell you
+`exit` is replaced the next time its surface is painted, in a pane or a tab.
 
 ## The smallest plugin
 

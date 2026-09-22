@@ -3210,6 +3210,14 @@ other panel toggles' F-keys.
   per session, so flipping to the shell on one does not flip it on the next.
   That is the pane's own state, not the kernel's — see the section below.
 - Input reaches the pane the surface names, `<id>#shell` or the bare id.
+- **`exit` is not the end of it**: a shell whose process ended is replaced by a
+  fresh one the next time its surface is painted, so the tab (or the shell pane
+  of the `split-shell` and `ide` layout presets) never sits on a frozen screen
+  that swallows keystrokes. `Session::ensure_shell_pane` treats an exited shell
+  as none, and `Terminals` asks once per dead shell.
+- **Layout presets**: `split-shell` and `ide` give the shell a pane of its own
+  below the agent, and the tab steps aside while that pane is on screen — see
+  `docs/PLUGINS.md` → *Layout presets*.
 - **Remote/WSL sessions**: the shell pane opens the host user's own
   interactive **login shell** — the same environment an `ssh <host>` login
   gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It

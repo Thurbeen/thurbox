@@ -185,9 +185,9 @@ reload puts the new arrangement on screen. An outside edit of `layout` does not
 `THURBOX_UI_DIR` is set, since that directory is somebody's checkout.
 
 > `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
-> `global_search` gated surfaces the interface no longer draws, and
-> `three_panel_min_cols` sized a column that no longer exists. None of the six is
-> read by anything: they are parsed so an existing `settings.toml` keeps loading
+> `global_search` gated surfaces the interface no longer draws. None of the five
+> is read by anything (`three_panel_min_cols`, once in this list, now sizes the
+> right-hand column of the `split-shell` and `ide` presets): they are parsed so an existing `settings.toml` keeps loading
 > rather than failing on an unknown key, and setting one does nothing in either
 > direction. The settings panel does not offer them.
 

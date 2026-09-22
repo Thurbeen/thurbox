@@ -78,3 +78,14 @@ page styles in `website/css/tutorial.css`) for the site. They are separate docum
 in different voices, not a generated pair, so **a step edited in one is edited in
 both**; the recorder writes only `media/tutorial/`.
 
+
+**The layout presets have a recorder of their own.** `scripts/demo/layouts/record.sh
+[preset…]` writes `media/layout-<preset>.{gif,mp4}` — one clip per preset, embedded
+in `ui/README.md` (by raw GitHub URL, since that file ships into every user's
+interface directory) and on the installation page (`website/docs/installation.html`,
+from `website/assets/`, which `pages.yml` fills). Same toolchain as the Doom clip
+(asciinema records, agg rasterises, tmux `send-keys` presses the real F-keys and
+resizes the terminal for the narrow fallback), in a hermetic sandbox with a made-up
+agent and made-up sessions. Each clip chooses its preset in the settings panel first,
+so the row is found by name rather than by counting. `SNAP=<dir>` keeps a text
+capture after every step, which is how a recording is checked before it is committed.
