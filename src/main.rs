@@ -484,10 +484,11 @@ struct App {
     dirty: bool,
     /// Set while drawing when any plugin's tree differed from last frame.
     changed_this_frame: bool,
-    /// Output stamp each surface was last painted at, keyed by surface name.
+    /// Output count each surface was last painted at, keyed by surface name.
     /// What makes a quiet terminal settle rather than repaint every frame.
     last_output_painted: std::collections::HashMap<String, u64>,
-    /// Every live pane's last-output stamp, summed, as of the last check.
+    /// Every live pane's output count (`WiredPane::output_count`), summed, as of
+    /// the last check.
     ///
     /// Compared each iteration so that new agent output *causes* a frame. The
     /// per-surface map above only decides whether a frame that is already

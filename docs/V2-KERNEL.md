@@ -359,9 +359,9 @@ conversion less often:
   A **surface** used to defeat this outright: its cells live outside the tree, so
   a pane showing one was treated as changed every frame and the whole
   demand-driven scheme collapsed to a steady 60fps whenever a terminal was
-  visible. It is now gated on the pane's own output stamp
-  (`Terminals::output_stamp`), the same atomic v1 reads in
-  `detect_output_redraw`, so a quiet agent settles at the redraw floor.
+  visible. It is now gated on the pane's own output count
+  (`Terminals::output_stamp`, over `WiredPane::output_count`), so a quiet agent
+  settles at the redraw floor.
 - **Read less.** The snapshot rebuild is gated on `PRAGMA data_version`, so an
   idle thurbox stops re-reading five tables (plus one query per automation)
   every 400ms. Git stats are folded in either way — they arrive from workers,

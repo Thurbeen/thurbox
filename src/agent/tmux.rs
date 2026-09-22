@@ -2196,6 +2196,16 @@ impl TmuxBackend {
     }
 }
 
+/// Read `pane_gone`'s answer: `<pane id> <pane_dead>` for a pane tmux has, and
+/// nothing, or another pane's id, for one it does not.
+fn pane_gone_from(answer: &str, backend_id: &str) -> bool {
+    let mut fields = answer.split_whitespace();
+    match (fields.next(), fields.next()) {
+        (Some(id), Some(dead)) if id == backend_id => dead == "1",
+        _ => true,
+    }
+}
+
 impl SessionBackend for TmuxBackend {
     fn name(&self) -> &str {
         &self.name
@@ -2680,6 +2690,17 @@ impl SessionBackend for TmuxBackend {
             LOOP_COMMAND_BUDGET,
         )?;
         Ok(result.trim() == "1")
+    }
+
+    fn pane_gone(&self, backend_id: &str) -> Result<bool> {
+        // One bounded question, for the reason `is_dead` gives. The pane's own
+        // id comes back with its state; a pane tmux no longer has comes back as
+        // an empty line (and exit 0), which `is_dead` alone reads as alive.
+        let result = self.ctrl_command_within(
+            &format!("display-message -t {backend_id} -p '#{{pane_id}} #{{pane_dead}}'"),
+            LOOP_COMMAND_BUDGET,
+        )?;
+        Ok(pane_gone_from(&result, backend_id))
     }
 
     fn kill(&self, backend_id: &str) -> Result<()> {
@@ -4473,6 +4494,18 @@ pub fn window_pane_pid(session_id: &str, session_name: &str) -> Result<Option<u3
 
 #[cfg(test)]
 mod tests {
+    use super::pane_gone_from;
+
+    #[test]
+    fn a_pane_tmux_no_longer_has_reads_as_gone_not_alive() {
+        // `display-message -t %9` for a pane that is gone prints an empty line
+        // and exits 0 — the answer that made a vanished shell look alive.
+        assert!(pane_gone_from("", "%9"));
+        assert!(pane_gone_from("%3 0", "%9"), "another pane's answer");
+        assert!(pane_gone_from("%9 1", "%9"), "dead");
+        assert!(!pane_gone_from("%9 0\n", "%9"), "there, and running");
+    }
+
     use super::*;
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,

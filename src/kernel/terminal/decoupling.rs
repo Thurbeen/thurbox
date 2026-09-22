@@ -87,6 +87,10 @@ struct Recorder {
     calls: Mutex<Vec<String>>,
     /// What `is_dead` answers.
     dead: std::sync::atomic::AtomicBool,
+    /// The multiplexer cannot be asked: `is_dead` errors.
+    unreachable: std::sync::atomic::AtomicBool,
+    /// `adopt` fails.
+    adopt_fails: std::sync::atomic::AtomicBool,
 }
 
 impl Recorder {
@@ -156,6 +160,9 @@ impl crate::agent::backend::SessionBackend for Recorder {
             .lock()
             .expect("calls")
             .push(format!("adopt {backend_id}"));
+        if self.adopt_fails.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("adopt failed");
+        }
         let (output, input) = self.io();
         Ok(crate::agent::backend::AdoptedSession {
             output,
@@ -175,6 +182,9 @@ impl crate::agent::backend::SessionBackend for Recorder {
         Ok(())
     }
     fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+        if self.unreachable.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("the host did not answer");
+        }
         Ok(self.dead.load(std::sync::atomic::Ordering::SeqCst))
     }
     fn kill(&self, backend_id: &str) -> anyhow::Result<()> {
@@ -972,5 +982,65 @@ async fn a_dead_shell_is_killed_before_it_is_replaced() {
     assert_eq!(
         *harness.backend.calls.lock().expect("calls"),
         vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
+    );
+}
+
+fn has_shell(harness: &Harness) -> bool {
+    harness
+        .terminals
+        .live
+        .get(&harness.id)
+        .is_some_and(|live| live.session.shell_pane.is_some())
+}
+
+#[tokio::test]
+async fn a_shell_nobody_can_ask_about_is_kept_rather_than_replaced() {
+    // A stalled link ends the stream and then leaves every question about the
+    // pane unanswered. Replacing it on that silence orphaned a window that never
+    // died.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+    assert!(harness.backend.calls.lock().expect("calls").is_empty());
+    assert!(has_shell(&harness), "the pane is still the session's");
+}
+
+#[tokio::test]
+async fn a_reattach_that_fails_keeps_the_pane_to_try_again() {
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .adopt_fails
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+    assert!(
+        has_shell(&harness),
+        "not dropped, so the next ask cannot spawn"
+    );
+
+    harness
+        .backend
+        .adopt_fails
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("reattached");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("adopt {SHELL_PANE}"), format!("adopt {SHELL_PANE}")]
     );
 }

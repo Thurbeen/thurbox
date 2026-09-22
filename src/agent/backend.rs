@@ -486,6 +486,15 @@ pub trait SessionBackend: Send + Sync {
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
 
+    /// Whether a pane is dead *or no longer exists* — `Ok(true)` only on the
+    /// multiplexer's word, `Err` when it could not be asked. Distinct from
+    /// [`Self::is_dead`] because tmux answers that one for a pane it no longer
+    /// has with an empty line, which reads as alive. Called from the interface's
+    /// loop, so an implementation that reaches a remote host bounds the wait.
+    fn pane_gone(&self, backend_id: &str) -> Result<bool> {
+        self.is_dead(backend_id)
+    }
+
     /// Kill/destroy a session (for Ctrl+X close).
     fn kill(&self, backend_id: &str) -> Result<()>;
 
@@ -1996,16 +2005,23 @@ impl Session {
             // it still exists and replaced.
             Some(pane) => {
                 let old = pane.backend_id().to_string();
-                self.shell_pane = None;
-                // Both asked: tmux answers `is_dead` for a pane it no longer
-                // has with an empty line, which reads as alive, while it has no
-                // pid to give for one.
-                let alive = matches!(self.backend.pane_pid(&old), Ok(Some(_)))
-                    && matches!(self.backend.is_dead(&old), Ok(false));
-                if alive {
-                    return self.adopt_shell_pane(&old, rows, cols);
+                // Replaced only on the multiplexer's word that it is gone: a
+                // host that cannot be asked keeps its pane (the error says why),
+                // and a live one is reattached, keeping the pane if that fails —
+                // dropping it there would let the next ask spawn a second window
+                // beside one that never died.
+                if !self.backend.pane_gone(&old)? {
+                    let kept = self.shell_pane.take();
+                    return match self.adopt_shell_pane(&old, rows, cols) {
+                        Ok(()) => Ok(()),
+                        Err(e) => {
+                            self.shell_pane = kept;
+                            Err(e)
+                        }
+                    };
                 }
                 let _ = self.backend.kill(&old);
+                self.shell_pane = None;
                 self.info.shell_backend_id = None;
             }
             None => {}
