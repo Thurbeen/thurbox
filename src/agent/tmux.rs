@@ -1158,6 +1158,17 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
+/// The `set-option` flag for a server-wide option. psmux 3.3.8 refuses `-s`
+/// ("unknown flag -s") and keeps one option table anyway, so it gets `-g`,
+/// which 3.3.7 and 3.3.8 both take.
+fn server_option_scope(psmux: bool) -> &'static str {
+    if psmux {
+        "-g"
+    } else {
+        "-s"
+    }
+}
+
 /// Delay between sending command text and pressing Enter via tmux, used by the
 /// synchronous `send_prompt_now` path.
 const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
@@ -1399,14 +1410,18 @@ impl TmuxBackend {
         // For a remote backend the local `$SHELL` path may not exist on the
         // remote host, so fall back to a POSIX shell there.
         //
-        // On Windows (psmux) we deliberately do NOT pin `default-command`: the
-        // local `$SHELL`/`/bin/sh` don't exist, and forcing a Windows shell here
+        // On psmux we deliberately do NOT pin `default-command`: `$SHELL` and
+        // `/bin/sh` don't exist on Windows, and forcing a Windows shell here
         // would have to match psmux's own command-execution model. Letting psmux
-        // use its native ConPTY default shell is the safe choice.
+        // use its native ConPTY default shell is the safe choice. Decided by the
+        // multiplexer, not by the OS thurbox runs on: a Linux thurbox driving a
+        // psmux host used to pin `/bin/sh` there.
+        let psmux = self.transport.uses_psmux();
+        let scope = server_option_scope(psmux);
         #[cfg(not(windows))]
-        {
+        if !psmux {
             let shell = self.config_shell();
-            self.tmux_run(&["set-option", "-s", "default-command", &shell])?;
+            self.tmux_run(&["set-option", scope, "default-command", &shell])?;
         }
 
         // Server-wide options every supported tmux understands. A failure here
@@ -1416,7 +1431,7 @@ impl TmuxBackend {
             ("extended-keys", "on"),
         ];
         for (key, val) in &server_opts {
-            self.tmux_run(&["set-option", "-s", key, val])?;
+            self.tmux_run(&["set-option", scope, key, val])?;
         }
 
         // `extended-keys-format csi-u` is best-effort: the option landed in tmux
@@ -1428,7 +1443,7 @@ impl TmuxBackend {
         // unless it is `csi-u`. Ignoring the error keeps a 3.2 host working (pi
         // users there simply miss the hint) while 3.3+ hosts get the preferred
         // format.
-        if let Err(e) = self.tmux_run(&["set-option", "-s", "extended-keys-format", "csi-u"]) {
+        if let Err(e) = self.tmux_run(&["set-option", scope, "extended-keys-format", "csi-u"]) {
             debug!("extended-keys-format=csi-u not set (likely tmux < 3.3): {e}");
         }
 
@@ -1497,6 +1512,12 @@ impl TmuxBackend {
     /// must not open a control-mode connection.
     fn ensure_session_configured(&self) -> Result<()> {
         if !self.session_exists() {
+            // No session to ask for `#{version}` yet, and creating one may start
+            // a server — with an idle shell in it — that every spawn would then
+            // refuse. The binary is what would start it, so it answers instead.
+            if self.transport.uses_psmux() {
+                check_psmux_version(&self.tmux_output(&["-V"])?, &self.socket())?;
+            }
             debug!(
                 "Creating tmux session '{}' on socket '{}'",
                 self.session,
@@ -4493,6 +4514,14 @@ mod tests {
         assert!(check_min_version("psmux 0.3.1").is_ok());
         assert!(check_min_version("psmux 1.0").is_ok());
         assert!(check_min_version("pmux 0.1").is_ok());
+    }
+
+    /// psmux 3.3.8 answers `set-option -s` with "unknown flag -s", which failed
+    /// every session setup against it; 3.3.7 took either scope.
+    #[test]
+    fn psmux_server_options_are_set_in_the_global_scope() {
+        assert_eq!(server_option_scope(true), "-g");
+        assert_eq!(server_option_scope(false), "-s");
     }
 
     // --- check_psmux_version (the psmux#450 floor) ---

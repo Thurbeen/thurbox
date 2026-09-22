@@ -896,7 +896,9 @@ pane's birth, before any PowerShell of ours runs — so `TmuxBackend::spawn` and
 `spawn_window` refuse to create a pane on psmux older than 3.3.7
 (`check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
 upgrading psmux leaves a server started before it on the old code, and the
-message says to restart it. Attaching to existing panes is not gated, so an
+message says to restart it. Only where no session exists yet, so no server to
+ask, does the binary's `-V` answer — before it starts one that every spawn
+would then refuse. Attaching to existing panes is not gated, so an
 old server's sessions stay reachable until then.
 
 ### A Windows host speaks PowerShell, not `sh`
