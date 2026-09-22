@@ -519,8 +519,12 @@
 
 /* ---- Install method tabs ---- */
 .install-tabs {
-  /* Wide enough for all 7 tabs on one row (~810px of tabs + gaps). At 780px
-     "From Source" wrapped to a second row, which read as a layout bug. */
+  /* Wide enough for all 8 tabs on one row (~870px of tabs + gaps). At 780px
+     "From Source" wrapped to a second row, which read as a layout bug.
+     width: 100% because this max-width overrides the hero column's 100% cap,
+     and with auto margins the block would otherwise size to the unwrapped tab
+     row and overflow a phone screen. */
+  width: 100%;
   max-width: 880px;
   margin: 0 auto var(--space-xl);
   text-align: left;
@@ -532,7 +536,7 @@
   scroll-margin-top: calc(var(--nav-height) + var(--space-lg));
 }
 
-/* 7 tabs are ~620px wide and would stack into 4 rows on a phone, so the rail
+/* 8 tabs are ~700px wide and would stack into 4 rows on a phone, so the rail
    scrolls them horizontally. The rail — not the [role=tablist] — is the scroll
    container: making the tablist itself scrollable would turn it into a
    focusable scroll area and add noise for screen readers. The border lives on
@@ -568,11 +572,16 @@
   display: none;
 }
 
-/* Wide enough for all 7 — drop the rail affordance entirely. */
+/* Wide enough for every tab on one row — drop the rail affordance entirely.
+   The tighter padding is what fits all eight in the hero column. */
 @media (min-width: 960px) {
   .install-tablist {
     flex-wrap: wrap;
     overflow-x: visible;
+  }
+
+  .install-tablist .install-tab {
+    padding-inline: 0.9rem;
   }
 
   .install-tablist-rail::after {
