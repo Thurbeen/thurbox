@@ -235,34 +235,23 @@ pub fn load_quiet() -> Settings {
 pub fn retire_layout_preset() -> Option<String> {
     let path = settings_config_path()?;
     let contents = std::fs::read_to_string(&path).ok()?;
-    let doc = contents.parse::<toml_edit::DocumentMut>().ok()?;
-    let removed = doc.get("layout")?;
-    // The line, not `DocumentMut::remove`: that also drops the comments above
-    // the key, which in a seeded file document the keys before it.
-    let before_tables = contents
-        .lines()
-        .position(|line| line.trim_start().starts_with('['))
-        .unwrap_or(usize::MAX);
-    let kept: String = contents
-        .split_inclusive('\n')
-        .enumerate()
-        .filter(|(at, line)| {
-            let key = line.trim_start().strip_prefix("layout");
-            !(*at < before_tables && key.is_some_and(|rest| rest.trim_start().starts_with('=')))
-        })
-        .map(|(_, line)| line)
-        .collect();
-    // A key spelt some other way (`"layout" = …`) is left to the ordinary
-    // unknown-field warning rather than announced as removed every start.
-    if kept == contents {
-        return None;
-    }
-    if let Err(e) = std::fs::write(&path, kept) {
+    // Cut by the parsed spans, not through `DocumentMut::remove`: that also
+    // drops the comments above the key, which in a seeded file document the keys
+    // before it. The spans cover any spelling, a multi-line string included.
+    let doc = toml_edit::Document::parse(contents.as_str()).ok()?;
+    let (key, item) = doc.as_table().get_key_value("layout")?;
+    let (start, end) = (key.span()?.start, item.span()?.end);
+    let line_start = contents[..start].rfind('\n').map_or(0, |at| at + 1);
+    let line_end = contents[end..]
+        .find('\n')
+        .map_or(contents.len(), |at| end + at + 1);
+    let kept = format!("{}{}", &contents[..line_start], &contents[line_end..]);
+    if let Err(e) = write_atomically(&path, &kept) {
         return Some(format!(
             "settings.toml: could not remove the withdrawn `layout` key: {e}"
         ));
     }
-    match removed.as_str() {
+    match item.as_str() {
         Some("classic") => None,
         chosen => Some(format!(
             "layout presets were rolled back: {} is now the classic layout, the shell is \
@@ -362,20 +351,25 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    // Written aside and renamed into place: every mirror pass re-reads this
-    // file (`load_quiet`), and one that caught it truncated mid-write would
-    // read the defaults for a pass - re-adopting the transitive sessions a
-    // user had hidden, only to forget them again on the next.
-    // One staged file per save, so two processes (or threads) saving at once
-    // never rename each other's content into place.
+    write_atomically(&path, &doc.to_string())
+}
+
+/// Write settings.toml aside and rename it into place.
+///
+/// Every mirror pass re-reads this file (`load_quiet`), and one that caught it
+/// truncated mid-write would read the defaults for a pass - re-adopting the
+/// transitive sessions a user had hidden, only to forget them again on the
+/// next. One staged file per write, so two processes (or threads) writing at
+/// once never rename each other's content into place.
+fn write_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let staged = path.with_extension(format!(
         "toml.saving-{}-{}",
         std::process::id(),
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::write(&staged, doc.to_string())
-        .and_then(|()| std::fs::rename(&staged, &path))
+    std::fs::write(&staged, contents)
+        .and_then(|()| std::fs::rename(&staged, path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&staged);
             e
@@ -509,20 +503,27 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_key_it_cannot_remove_is_not_announced_as_removed() {
+    fn a_layout_key_in_any_toml_spelling_is_removed_whole() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "\"layout\" = \"split-shell\"\n").unwrap();
+        for spelling in [
+            "layout = \"\"\"\nsplit-shell\"\"\"\n",
+            "\"layout\" = 'split-shell' # mine\n",
+        ] {
+            std::fs::write(&path, format!("# kept\n{spelling}git_poll_secs = 9\n")).unwrap();
 
-        assert_eq!(retire_layout_preset(), None);
-        let (_, warnings) = load_or_seed_with_warnings();
-        assert!(
-            warnings.iter().any(|w| w.contains("layout")),
-            "left to the unknown-field warning: {warnings:?}"
-        );
+            assert!(retire_layout_preset().is_some(), "{spelling}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "# kept\ngit_poll_secs = 9\n"
+            );
+            let (settings, warnings) = load_or_seed_with_warnings();
+            assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
+            assert_eq!(settings.git_poll_secs, 9);
+        }
     }
 
     #[test]

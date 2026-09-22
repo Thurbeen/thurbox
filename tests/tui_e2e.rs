@@ -1409,9 +1409,9 @@ fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
 /// Leave `profile` as v2.32.0 left someone who chose the `split-shell` preset:
 /// that release's layout, shell pane, agent pane and `lib/panels.lua` on disk,
 /// the delivery manifest recording them as written, and `layout` in
-/// settings.toml. `edited_layout` adds a line of the user's own to the layout,
-/// so delivery must keep it rather than refresh it.
-fn as_v2_32_0_split_shell(profile: &Profile, edited_layout: bool) {
+/// settings.toml. `edited` adds a line of the user's own to the layout and to
+/// the shell pane, so delivery must keep both rather than refresh them.
+fn as_v2_32_0_split_shell(profile: &Profile, edited: bool) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_32_0_split_shell");
     let ui = profile.path("config/ui");
     let report = thurbox::kernel::bundled::materialize(&ui);
@@ -1432,7 +1432,7 @@ fn as_v2_32_0_split_shell(profile: &Profile, edited_layout: bool) {
             relative.to_string(),
             thurbox::kernel::bundled::digest(&shipped).into(),
         );
-        let on_disk = if edited_layout && relative == "layout.lua" {
+        let on_disk = if edited && matches!(relative, "layout.lua" | "plugins/25_shell.lua") {
             format!("{shipped}-- my own line\n")
         } else {
             shipped
@@ -1522,8 +1522,8 @@ fn a_v2_32_0_split_shell_profile_upgrades_to_the_classic_layout() {
 
 #[test]
 fn a_layout_edited_from_the_split_shell_preset_is_kept_and_still_works() {
-    // Their edit is theirs and is kept. It still names a `shell` slot, which
-    // nothing fills once the shell pane is taken back — so the arrangement's own
+    // Their edits are theirs and are kept. The layout still names a `shell`
+    // slot, which nothing fills once the shell pane is set aside — so the arrangement's own
     // `filled` check leaves it out and the Shell tab is where the shell is.
     let Some((profile, tui)) =
         shell_session_prepared(|p| as_v2_32_0_split_shell(p, true), plain_shell)
@@ -1537,6 +1537,14 @@ fn a_layout_edited_from_the_split_shell_preset_is_kept_and_still_works() {
             .ends_with("-- my own line\n"),
         "an edited layout is never overwritten"
     );
+    // The edited shell pane is kept too, but aside: loaded, it would be a pane
+    // with a slot no arrangement places, which `plugin check` rejects.
+    assert!(
+        std::fs::read_to_string(profile.path("config/ui/plugins/25_shell.lua.bak"))
+            .expect("the edit is kept beside the pane")
+            .ends_with("-- my own line\n")
+    );
+    profile.cli(&["plugin", "check"]);
 }
 
 #[test]

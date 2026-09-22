@@ -332,6 +332,15 @@ fn deliver(
     }
 }
 
+/// Shipped files whose edited copy is moved aside, not kept loading, once this
+/// binary stops shipping them.
+///
+/// `plugins/25_shell.lua` came with v2.32.0's layout presets (#1227), which
+/// were rolled back. Kept loading, it fills a `shell` slot that classic never
+/// places (so `plugin check` fails), or one an edited split-shell layout still
+/// places, which draws the shell twice beside the agent pane's Shell tab.
+const WITHDRAWN: &[&str] = &["plugins/25_shell.lua"];
+
 /// Take back what we shipped and no longer ship.
 ///
 /// Without this, renaming a bundled plugin between releases leaves the old copy
@@ -357,6 +366,20 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
                     Ok(()) => {
                         manifest.remove(&relative);
                         report.retired.push(relative);
+                    }
+                    Err(e) => report.errors.push(format!("{}: {e}", path.display())),
+                }
+            }
+            // Theirs, but a pane that cannot work without what went with it:
+            // kept aside rather than loaded.
+            Ok(_) if WITHDRAWN.contains(&relative.as_str()) => {
+                let aside = dir.join(format!("{relative}.bak"));
+                match std::fs::rename(&path, &aside) {
+                    Ok(()) => {
+                        manifest.remove(&relative);
+                        report
+                            .retired
+                            .push(format!("{relative} (your edit is in {relative}.bak)"));
                     }
                     Err(e) => report.errors.push(format!("{}: {e}", path.display())),
                 }
@@ -1265,6 +1288,34 @@ mod tests {
         let manifest = read_manifest(dir.path());
         assert!(!manifest.contains_key("plugins/40_gone.lua"));
         assert!(!manifest.contains_key("plugins/41_kept.lua"));
+    }
+
+    #[test]
+    fn an_edited_withdrawn_pane_is_kept_aside_rather_than_loaded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialize(dir.path());
+
+        let pane = dir.path().join("plugins/25_shell.lua");
+        std::fs::write(&pane, "-- mine\nreturn {}").expect("write");
+        let mut manifest = read_manifest(dir.path());
+        manifest.insert(
+            "plugins/25_shell.lua".into(),
+            Record::Written(digest("return {}")),
+        );
+        write_manifest(dir.path(), &manifest).expect("manifest");
+
+        let report = materialize(dir.path());
+        assert_eq!(
+            report.retired,
+            vec!["plugins/25_shell.lua (your edit is in plugins/25_shell.lua.bak)"]
+        );
+        assert!(report.preserved.is_empty(), "{:?}", report.preserved);
+        assert!(!pane.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak")).expect("read"),
+            "-- mine\nreturn {}"
+        );
+        assert!(!read_manifest(dir.path()).contains_key("plugins/25_shell.lua"));
     }
 
     #[test]
