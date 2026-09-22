@@ -101,6 +101,16 @@ footer: true
             </button>
             <button
               class="install-tab"
+              id="tab-nix"
+              role="tab"
+              aria-controls="panel-nix"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              Nix
+            </button>
+            <button
+              class="install-tab"
               id="tab-source"
               role="tab"
               aria-controls="panel-source"
@@ -244,6 +254,24 @@ footer: true
             </p>
             <pre><code class="language-bash">paru -S thurbox-bin   # prebuilt (fastest)
 paru -S thurbox       # build from source</code></pre>
+          </div>
+
+          <div class="install-panel" role="tabpanel" id="panel-nix" aria-labelledby="tab-nix" hidden>
+            <p>
+              Linux (x86_64, aarch64) &amp; Apple Silicon macOS. The repository is a flake that
+              builds both binaries from source and puts
+              <code>tmux</code>
+              and
+              <code>git</code>
+              on their
+              <code>PATH</code>
+              . On NixOS, see the
+              <a href="docs/installation.html#nix">module setup</a>
+              .
+            </p>
+            <pre data-wrap><code class="language-bash">nix profile install github:Thurbeen/thurbox</code></pre>
+            <p>Or try it without installing:</p>
+            <pre><code class="language-bash">nix run github:Thurbeen/thurbox</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden>

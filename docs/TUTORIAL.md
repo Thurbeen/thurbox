@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 ```
 
 Windows is `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`;
-Homebrew, AUR, winget and Chocolatey are on the
+Homebrew, AUR, Nix, winget and Chocolatey are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
 You also need:
