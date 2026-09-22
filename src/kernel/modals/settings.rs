@@ -89,16 +89,23 @@ impl CoreField {
     fn restart_required(&self) -> bool {
         let base = Settings::default();
         let mut changed = base.clone();
-        let altered = match (self.get)(&base) {
+        (self.set)(&mut changed, &self.altered((self.get)(&base)));
+        base.restart_only_differs(&changed)
+    }
+
+    /// A value this field accepts that differs from `current` — the probe
+    /// [`Self::restart_required`] changes the field with.
+    fn altered(&self, current: Value) -> Value {
+        match current {
             Value::Bool(on) => Value::Bool(!on),
             Value::Number(n) => Value::Number(n + 1.0),
-            // Any name but the current one, so the write is always a change.
+            // An enum only takes its own spellings, so the probe steps to the
+            // next one; any other name would be ignored and change nothing.
+            Value::Text(current) if self.id == "layout" => Value::Text(next_preset(&current, true)),
             Value::Text(current) => {
                 Value::Text(if current == "off" { "auto" } else { "off" }.to_string())
             }
-        };
-        (self.set)(&mut changed, &altered);
-        base.restart_only_differs(&changed)
+        }
     }
 }
 
@@ -1435,14 +1442,7 @@ mod tests {
 
             // What a reload would actually do with that field changed.
             let mut changed = base.clone();
-            let altered = match (field.get)(&base) {
-                Value::Bool(on) => Value::Bool(!on),
-                Value::Number(n) => Value::Number(n + 1.0),
-                Value::Text(current) => {
-                    Value::Text(if current == "off" { "auto" } else { "off" }.to_string())
-                }
-            };
-            (field.set)(&mut changed, &altered);
+            (field.set)(&mut changed, &field.altered((field.get)(&base)));
             assert_ne!(
                 (field.get)(&changed),
                 (field.get)(&base),

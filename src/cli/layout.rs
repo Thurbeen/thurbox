@@ -41,7 +41,6 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
 /// working tree, and rewriting its `layout.lua` from a settings command would be
 /// an edit to somebody's source that nobody asked for.
 fn interface_dir() -> Result<PathBuf, String> {
-    use crate::kernel::bundled::Chosen;
     let (dir, chosen, report) = crate::kernel::bundled::resolve(true)?;
     if !report.errors.is_empty() {
         return Err(format!(
@@ -51,13 +50,15 @@ fn interface_dir() -> Result<PathBuf, String> {
         ));
     }
     match chosen {
-        Chosen::UserCopy | Chosen::Override => Ok(dir),
-        Chosen::Checkout => Err(format!(
+        crate::kernel::bundled::Chosen::UserCopy | crate::kernel::bundled::Chosen::Override => {
+            Ok(dir)
+        }
+        crate::kernel::bundled::Chosen::Checkout => Err(format!(
             "{} is a checkout (THURBOX_UI_DIR), and a layout switch does not rewrite \
              a repository's files — unset THURBOX_UI_DIR to switch your own interface",
             dir.display()
         )),
-        Chosen::Fallback => Err(format!(
+        crate::kernel::bundled::Chosen::Fallback => Err(format!(
             "there is no interface directory of your own to switch ({})",
             chosen.reason()
         )),
