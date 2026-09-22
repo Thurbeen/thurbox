@@ -179,6 +179,11 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
         .map_err(|e| format!("{file}.floats: {e}"))?
         .unwrap_or(false);
 
+    let optional = def
+        .get::<Option<bool>>("optional")
+        .map_err(|e| format!("{file}.optional: {e}"))?
+        .unwrap_or(false);
+
     let bindings = read_bindings(&def, &name)?;
     let settings = read_settings(&def, &name)?;
     let pills = read_pills(&def, &name)?;
@@ -207,6 +212,7 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
         order,
         decorates,
         floats,
+        optional,
         bindings,
         settings,
         pills,

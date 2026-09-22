@@ -197,6 +197,9 @@ impl Config {
             // Restart-only because the git-stat cache is built with it, and a
             // cache that re-read it would also have to re-age every entry.
             git_poll_secs: restart_only.git_poll_secs,
+            // Live: the settings panel rewrites layout.lua as it saves, and the
+            // reload that follows is what puts it on screen.
+            layout: fresh.layout,
             config_version: fresh.config_version,
         };
         if needs_restart {

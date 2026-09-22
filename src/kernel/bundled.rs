@@ -93,6 +93,12 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "plugins/20_agent.lua",
         include_str!("../../ui/plugins/20_agent.lua"),
     ),
+    // Placed only by the layouts that want the shell on screen beside the agent
+    // (`split-shell`); everywhere else it is an optional pane left out.
+    (
+        "plugins/25_shell.lua",
+        include_str!("../../ui/plugins/25_shell.lua"),
+    ),
     (
         "plugins/60_confirm.lua",
         include_str!("../../ui/plugins/60_confirm.lua"),
@@ -114,6 +120,11 @@ pub const BUNDLED: &[(&str, &str)] = &[
         include_str!("../../ui/plugins/80_restore.lua"),
     ),
 ];
+
+/// The arrangement's file name. Its contents are whichever layout preset is
+/// chosen (`super::presets`), so it is the one bundled file whose shipped text
+/// is not simply its [`BUNDLED`] entry.
+pub const LAYOUT: &str = "layout.lua";
 
 /// Records which version of each bundled file was last written, so a user's
 /// edits can be told from a stale copy — and, once written, so its absence can
@@ -265,12 +276,29 @@ pub fn digest(text: &str) -> String {
 }
 
 /// Write the bundled interface into `dir`, preserving anything the user edited
-/// and re-writing nothing they deleted.
+/// and re-writing nothing they deleted, with the layout preset `settings.toml`
+/// chose as its arrangement.
 pub fn materialize(dir: &Path) -> Report {
+    let chosen = &crate::session::settings::global().layout;
+    materialize_with(dir, super::presets::chosen_or_default(chosen))
+}
+
+/// [`materialize`], delivering `preset` as the arrangement.
+///
+/// The preset only changes which text is delivered to `layout.lua`; every rule
+/// above applies to it unchanged. So a user's edited layout is preserved here
+/// whichever preset is chosen — replacing one is [`super::presets::apply`]'s
+/// job, which backs it up first.
+pub fn materialize_with(dir: &Path, preset: &super::presets::Preset) -> Report {
     let mut report = Report::default();
     let mut manifest = read_manifest(dir);
 
     for (relative, contents) in BUNDLED {
+        let contents = if *relative == LAYOUT {
+            preset.layout
+        } else {
+            contents
+        };
         deliver(dir, relative, contents, &mut manifest, &mut report);
     }
 
@@ -452,6 +480,10 @@ fn source_of(
 ) -> Source {
     match bundled.get(relative) {
         Some(shipped) if *shipped == current => Source::Bundled,
+        // Any preset is a shipped arrangement, not an edit of the default one.
+        Some(_) if relative == LAYOUT && super::presets::matching(current).is_some() => {
+            Source::Bundled
+        }
         Some(_) => Source::Edited,
         // Shipped takes precedence deliberately: a package that delivered over
         // a bundled path is still, to delivery, a shipped file that changed —
@@ -568,13 +600,21 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
 ///
 /// Covers both undo cases at once — a file the user deleted and one they edited
 /// — because both are "put back what we ship and forget what happened to it".
+///
+/// `layout.lua` comes back as the preset delivery last wrote there, so
+/// restoring an edited `split-shell` layout does not quietly switch it to
+/// `classic`.
 pub fn restore(dir: &Path, relative: &str) -> Result<(), String> {
     let path = checked(dir, relative)?;
-    let contents = BUNDLED
-        .iter()
-        .find(|(name, _)| *name == relative)
-        .map(|(_, contents)| *contents)
-        .ok_or_else(|| format!("{relative} is not part of the bundled interface"))?;
+    let contents = if relative == LAYOUT {
+        delivered_preset(dir).layout
+    } else {
+        BUNDLED
+            .iter()
+            .find(|(name, _)| *name == relative)
+            .map(|(_, contents)| *contents)
+            .ok_or_else(|| format!("{relative} is not part of the bundled interface"))?
+    };
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -686,6 +726,39 @@ pub(crate) fn decide(existing: Option<&str>, delivered: Delivered<'_>, payload: 
         }
         (Some(_), _) => Action::Preserve,
     }
+}
+
+/// The preset delivery last wrote to `dir`'s `layout.lua`, told from the digest
+/// it recorded; the one `settings.toml` names when that record matches no
+/// preset this binary ships (an older release's copy, or none at all).
+pub fn delivered_preset(dir: &Path) -> &'static super::presets::Preset {
+    let recorded = read_manifest(dir)
+        .get(LAYOUT)
+        .and_then(Record::digest)
+        .map(str::to_string);
+    super::presets::PRESETS
+        .iter()
+        .find(|preset| recorded.as_deref() == Some(digest(preset.layout).as_str()))
+        .unwrap_or_else(|| {
+            super::presets::chosen_or_default(&crate::session::settings::global().layout)
+        })
+}
+
+/// Whether `contents` is exactly what delivery last recorded writing to
+/// `relative` — i.e. nobody has edited it since.
+pub fn is_untouched(dir: &Path, relative: &str, contents: &str) -> bool {
+    read_manifest(dir)
+        .get(relative)
+        .and_then(Record::digest)
+        .is_some_and(|recorded| recorded == digest(contents))
+}
+
+/// Record that `contents` is what delivery wrote to `relative`, so it is
+/// updated on upgrade like any untouched shipped file.
+pub fn record_written(dir: &Path, relative: &str, contents: &str) -> Result<(), String> {
+    let mut manifest = read_manifest(dir);
+    manifest.insert(relative.to_string(), Record::Written(digest(contents)));
+    write_manifest(dir, &manifest)
 }
 
 fn read_manifest(dir: &Path) -> BTreeMap<String, Record> {

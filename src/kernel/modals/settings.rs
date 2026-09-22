@@ -237,6 +237,18 @@ const CORE_FIELDS: &[CoreField] = &[
         },
     },
     CoreField {
+        id: "layout",
+        description: "the arrangement: classic, split-shell (shell below the agent)",
+        get: |s| Value::Text(s.layout.clone()),
+        set: |s, v| {
+            if let Value::Text(name) = v {
+                if crate::kernel::presets::find(name).is_some() {
+                    s.layout = name.clone();
+                }
+            }
+        },
+    },
+    CoreField {
         id: "two_panel_min_cols",
         description: "width at which the session column appears",
         get: |s| Value::Number(s.two_panel_min_cols as f64),
@@ -315,6 +327,22 @@ fn next_backend(name: &str, forward: bool) -> String {
         (at + count - 1) % count
     };
     BACKENDS[next].0.to_string()
+}
+
+/// The next layout preset after `name`, wrapping — the `layout` row's step.
+fn next_preset(name: &str, forward: bool) -> String {
+    let presets = crate::kernel::presets::PRESETS;
+    let at = presets
+        .iter()
+        .position(|preset| preset.name == name)
+        .unwrap_or(0);
+    let count = presets.len();
+    let next = if forward {
+        (at + 1) % count
+    } else {
+        (at + count - 1) % count
+    };
+    presets[next].name.to_string()
 }
 
 /// The core rows as the renderer wants them: ordinary [`Setting`]s owned by
@@ -582,7 +610,11 @@ impl SettingsModal {
             // A core text value is an enum, and it cycles; a plugin's is free
             // text, which only typing changes.
             Value::Text(name) if setting.plugin == CORE_OWNER => {
-                let next = next_backend(name, by >= 0.0);
+                let next = if setting.id == "layout" {
+                    next_preset(name, by >= 0.0)
+                } else {
+                    next_backend(name, by >= 0.0)
+                };
                 self.put(registry, on_disk, &setting, Value::Text(next))
             }
             Value::Text(_) => None,

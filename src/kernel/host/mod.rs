@@ -236,6 +236,14 @@ pub struct Plugin {
     /// kernel knows to render it *after* the arrangement, without having to
     /// render it once to find out.
     pub floats: bool,
+    /// Declared `optional = true`: a pane some arrangements place and others
+    /// leave out on purpose.
+    ///
+    /// The companion shell pane is the case: it ships to everyone, and only the
+    /// `split-shell` layout gives it a slot. Without this, every arrangement
+    /// that leaves it out — `classic`, and every `layout.lua` written before it
+    /// existed — would fail `plugin check` over a pane nobody asked to see.
+    pub optional: bool,
     /// Keys this plugin declared, as data — enumerable without invoking it.
     pub bindings: Vec<Binding>,
     /// Settings this plugin accepts.
@@ -2135,10 +2143,19 @@ impl LuaHost {
     /// pane behind a **closed panel toggle**. `search` starts closed, so the
     /// bundled arrangement legitimately names no `search` slot until something
     /// opens it — which would make the interface we ship fail its own check.
+    ///
+    /// The fourth is a slot whose every occupant declared itself **optional**
+    /// ([`Plugin::optional`]): leaving it out is a choice of arrangement, not a
+    /// mistake in one.
     pub fn unplaced_slots(&self, area: Rect) -> Result<Vec<String>, String> {
         let occupied: BTreeSet<String> = self
             .occupied_slots()
             .into_iter()
+            .filter(|slot| {
+                self.plugins
+                    .iter()
+                    .any(|plugin| plugin.slot == *slot && !plugin.optional)
+            })
             .map(str::to_string)
             .collect();
         let placed = self.placed_slots(area)?;
@@ -2146,6 +2163,28 @@ impl LuaHost {
             .into_iter()
             .filter(|slot| !placed.contains(slot))
             .collect())
+    }
+
+    /// Record which slots the arrangement put on screen, as `placed.<slot>` in
+    /// the shared `store` (read through `lib.panels.placed`).
+    ///
+    /// A pane sometimes has to know whether a *sibling* is on screen — the agent
+    /// pane offers its Shell tab only while no shell pane is showing, because one
+    /// terminal cannot be drawn at two sizes. Only the kernel knows, and only
+    /// after arranging, so it says so here: between arranging and painting,
+    /// so the frame that reflows is the frame that reads the answer. Written only
+    /// on change, so a settled screen bumps no state version and costs a pure
+    /// pane no cache hit.
+    pub fn note_placed(&self, on_screen: &std::collections::HashSet<String>) {
+        let occupied: Vec<String> = self
+            .occupied_slots()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for slot in occupied {
+            let shown = on_screen.contains(&slot);
+            self.set_shared_bool(&format!("placed.{slot}"), shown);
+        }
     }
 
     /// Slots the arrangement places at `area`, with every panel toggle opened.
