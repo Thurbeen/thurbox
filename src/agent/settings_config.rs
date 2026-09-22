@@ -222,6 +222,51 @@ pub fn load_quiet() -> Settings {
         .unwrap_or_default()
 }
 
+/// Take the top-level `layout` key out of settings.toml, returning a note for
+/// the message band when the arrangement it named is gone.
+///
+/// Only v2.32.0 wrote that key: it named a layout preset, and presets were
+/// rolled back in the next release (#1227). Left in place it would be an
+/// "unknown field" warning on every start; removing it is what makes the note
+/// a one-time one. Called by the interface at start and nowhere else, because
+/// `thurbox-cli` (run by every agent hook) would take the key before the note
+/// could ever be shown. Silent for `classic`: that arrangement is the one still
+/// shipped, so nothing on screen changed.
+pub fn retire_layout_preset() -> Option<String> {
+    let path = settings_config_path()?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let doc = contents.parse::<toml_edit::DocumentMut>().ok()?;
+    let removed = doc.get("layout")?;
+    // The line, not `DocumentMut::remove`: that also drops the comments above
+    // the key, which in a seeded file document the keys before it.
+    let before_tables = contents
+        .lines()
+        .position(|line| line.trim_start().starts_with('['))
+        .unwrap_or(usize::MAX);
+    let kept: String = contents
+        .split_inclusive('\n')
+        .enumerate()
+        .filter(|(at, line)| {
+            let key = line.trim_start().strip_prefix("layout");
+            !(*at < before_tables && key.is_some_and(|rest| rest.trim_start().starts_with('=')))
+        })
+        .map(|(_, line)| line)
+        .collect();
+    if let Err(e) = std::fs::write(&path, kept) {
+        return Some(format!(
+            "settings.toml: could not remove the withdrawn `layout` key: {e}"
+        ));
+    }
+    match removed.as_str() {
+        Some("classic") => None,
+        chosen => Some(format!(
+            "layout presets were rolled back: {} is now the classic layout, the shell is \
+             its Shell tab · `layout` removed from settings.toml",
+            chosen.unwrap_or("your layout")
+        )),
+    }
+}
+
 /// Set a boolean key on a `toml_edit` table.
 fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
     table[key] = toml_edit::value(v);
@@ -415,6 +460,47 @@ mod tests {
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert_eq!(s, Settings::default());
         assert!(path.exists(), "settings.toml should have been seeded");
+    }
+
+    #[test]
+    fn a_withdrawn_layout_preset_is_noted_once_and_removed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "# mine\nlayout = \"split-shell\"\ngit_poll_secs = 9\n\n[features]\nmouse = false\n",
+        )
+        .unwrap();
+
+        let note = retire_layout_preset().expect("a note for a withdrawn preset");
+        assert!(note.contains("split-shell"), "{note}");
+        let left = std::fs::read_to_string(&path).unwrap();
+        assert!(!left.contains("layout"), "{left}");
+        assert!(
+            left.contains("# mine") && left.contains("mouse = false"),
+            "{left}"
+        );
+
+        let (settings, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert_eq!(settings.git_poll_secs, 9);
+        assert_eq!(retire_layout_preset(), None, "said once");
+    }
+
+    #[test]
+    fn a_classic_layout_key_is_removed_without_a_note() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "layout = \"classic\"\n").unwrap();
+
+        assert_eq!(retire_layout_preset(), None);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("layout"));
     }
 
     #[test]

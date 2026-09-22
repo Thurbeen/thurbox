@@ -410,6 +410,11 @@ lists the hooks in force.
 > `thurbox-cli config validate`, and simply not listed in the panel, since a
 > row that gates nothing reads as broken. `automations` is honoured, but it
 > arms the headless heartbeat rather than an in-TUI scheduler.
+>
+> A top-level `layout` key is the one v2.32.0 wrote for its layout presets,
+> which the next release rolled back (#1227). The interface removes that line at
+> start (only that line; the comments around it stay) and, unless it named
+> `classic`, says once in the message band that the classic layout is back.
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly

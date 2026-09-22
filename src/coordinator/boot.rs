@@ -131,6 +131,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // reason. Without this call `settings::global()` hands out `Settings::default`
     // and the whole file is ignored, however carefully it was written.
     let phase = Instant::now();
+    // Before the load, so a key v2.32.0 wrote is noted once here rather than
+    // reported as unknown on every start.
+    let layout_note = thurbox::agent::settings_config::retire_layout_preset();
     let (config, config_warnings) = thurbox::kernel::config::Config::load();
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
 
@@ -144,7 +147,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // shows every session as permanently idle. Run here for the same reason v1
     // runs it here: tmux spawn output would otherwise land on the alternate
     // screen. Opt out with `thurbox-cli extension deactivate hooks`.
-    let mut startup_notices: Vec<String> = config_warnings;
+    let mut startup_notices: Vec<String> = layout_note.into_iter().collect();
+    startup_notices.extend(config_warnings);
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {
         startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));

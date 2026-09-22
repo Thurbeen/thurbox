@@ -1161,6 +1161,15 @@ fn shell_session() -> Option<(Profile, Tui)> {
 /// The same, with the binary's environment adjusted — for the cases where what
 /// is being tested is what thurbox does with the machine it thinks it is on.
 fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {
+    shell_session_prepared(|_| {}, adjust)
+}
+
+/// The same, with `prepare` run over the profile after the session exists and
+/// before the binary starts — for a scenario about what a start finds on disk.
+fn shell_session_prepared(
+    prepare: impl FnOnce(&Profile),
+    adjust: impl FnOnce(&mut Command),
+) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -1187,6 +1196,7 @@ fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui
     // gate can tell, and a gate on a pty is a real prompt; this is the
     // headless answer to it.
     profile.cli(&["config", "accept-interface"]);
+    prepare(&profile);
 
     let tui = Tui::spawn_with(&profile, 40, 120, adjust);
     tui.wait_for("probe");
@@ -1330,6 +1340,203 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// Wait until the action band names `view` as the focused pane's view.
+fn wait_for_view(tui: &Tui, view: &str) {
+    tui.wait_until(
+        &format!("the {view} view to be the one on screen"),
+        |frame| {
+            frame
+                .lines()
+                .last()
+                .is_some_and(|band| band.trim_start().starts_with(view))
+        },
+    );
+}
+
+/// The companion shell is the user's `$SHELL`, and a zsh started in the
+/// profile's empty HOME opens its first-run wizard instead of a prompt.
+fn plain_shell(cmd: &mut Command) {
+    cmd.env("SHELL", "/bin/sh");
+}
+
+/// Ctrl+T there and back twice, typing into each side: the shell is its own
+/// live terminal, and what it printed is still there after the agent has had
+/// the pane.
+fn exercise_the_shell_tab(tui: &mut Tui) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    // The pane paints before the shell inside it has drawn a prompt, and a
+    // keystroke sent in between is lost.
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-in-\"\"shell\r");
+    tui.wait_for("tb-in-shell");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Agent");
+    tui.wait_gone("tb-in-shell");
+    tui.send(b"echo tb-in-\"\"agent\r");
+    tui.wait_for("tb-in-agent");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_for("tb-in-shell");
+    assert!(
+        !tui.frame().contains("tb-in-agent"),
+        "the Shell tab must show the shell, not the agent's terminal:\n{}",
+        tui.frame()
+    );
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-still-\"\"live\r");
+    tui.wait_for("tb-still-live");
+}
+
+#[test]
+fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
+    // The classic arrangement's companion shell: a tab of the agent pane that
+    // Ctrl+T raises and lowers. #1227 swapped it for a pane of its own under a
+    // split layout; this pins the tab its rollback brings back.
+    let Some((_profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    exercise_the_shell_tab(&mut tui);
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// Leave `profile` as v2.32.0 left someone who chose the `split-shell` preset:
+/// that release's layout, shell pane, agent pane and `lib/panels.lua` on disk,
+/// the delivery manifest recording them as written, and `layout` in
+/// settings.toml. `edited_layout` adds a line of the user's own to the layout,
+/// so delivery must keep it rather than refresh it.
+fn as_v2_32_0_split_shell(profile: &Profile, edited_layout: bool) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_32_0_split_shell");
+    let ui = profile.path("config/ui");
+    let report = thurbox::kernel::bundled::materialize(&ui);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let manifest_path = ui.join(".bundled.json");
+    let mut manifest: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
+            .expect("manifest is a map");
+    for relative in [
+        "layout.lua",
+        "plugins/25_shell.lua",
+        "plugins/20_agent.lua",
+        "lib/panels.lua",
+    ] {
+        let shipped = std::fs::read_to_string(fixture.join(relative)).expect("fixture");
+        manifest.insert(
+            relative.to_string(),
+            thurbox::kernel::bundled::digest(&shipped).into(),
+        );
+        let on_disk = if edited_layout && relative == "layout.lua" {
+            format!("{shipped}-- my own line\n")
+        } else {
+            shipped
+        };
+        std::fs::write(ui.join(relative), on_disk).expect("write fixture");
+    }
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string(&manifest).expect("manifest"),
+    )
+    .expect("write manifest");
+
+    let settings = profile.path("config/settings.toml");
+    let body = std::fs::read_to_string(&settings).expect("settings");
+    std::fs::write(&settings, format!("layout = \"split-shell\"\n{body}")).expect("settings");
+}
+
+/// What every v2.32.0 split-shell profile must come back to after upgrading:
+/// the one-time note, the classic Shell tab working, the shell pane taken back
+/// and the settings key gone — and, started again, nothing more said.
+fn assert_back_to_classic(profile: &Profile, mut tui: Tui) {
+    tui.wait_for("layout presets");
+    exercise_the_shell_tab(&mut tui);
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+
+    let ui = profile.path("config/ui");
+    assert!(
+        !ui.join("plugins/25_shell.lua").exists(),
+        "the shell pane must be taken back"
+    );
+    let shipped = |relative: &str| {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("ui")
+                .join(relative),
+        )
+        .expect("shipped")
+    };
+    for relative in ["plugins/20_agent.lua", "lib/panels.lua"] {
+        assert_eq!(
+            std::fs::read_to_string(ui.join(relative)).expect("delivered"),
+            shipped(relative),
+            "{relative} must be refreshed to this release's copy"
+        );
+    }
+    let settings: toml::Table = std::fs::read_to_string(profile.path("config/settings.toml"))
+        .expect("settings")
+        .parse()
+        .expect("settings.toml still parses");
+    assert!(
+        !settings.contains_key("layout"),
+        "the withdrawn key must be gone"
+    );
+    assert!(
+        settings.contains_key("features"),
+        "the rest of settings.toml must survive"
+    );
+
+    let tui = Tui::spawn(profile, 40, 120);
+    tui.wait_for("probe");
+    tui.wait_until_quiet();
+    assert!(
+        !tui.frame().contains("layout presets"),
+        "the note is said once:\n{}",
+        tui.frame()
+    );
+}
+
+#[test]
+fn a_v2_32_0_split_shell_profile_upgrades_to_the_classic_layout() {
+    // Layout presets shipped in v2.32.0 and were rolled back. Someone who picked
+    // `split-shell` has its layout.lua, its shell pane and the agent pane that
+    // dropped its Shell tab for it — all untouched, so all refreshed or retired.
+    let Some((profile, tui)) =
+        shell_session_prepared(|p| as_v2_32_0_split_shell(p, false), plain_shell)
+    else {
+        return;
+    };
+    assert_back_to_classic(&profile, tui);
+    assert_eq!(
+        std::fs::read_to_string(profile.path("config/ui/layout.lua")).expect("layout"),
+        include_str!("../ui/layout.lua"),
+        "an untouched split-shell layout is refreshed to classic"
+    );
+}
+
+#[test]
+fn a_layout_edited_from_the_split_shell_preset_is_kept_and_still_works() {
+    // Their edit is theirs and is kept. It still names a `shell` slot, which
+    // nothing fills once the shell pane is taken back — so the arrangement's own
+    // `filled` check leaves it out and the Shell tab is where the shell is.
+    let Some((profile, tui)) =
+        shell_session_prepared(|p| as_v2_32_0_split_shell(p, true), plain_shell)
+    else {
+        return;
+    };
+    assert_back_to_classic(&profile, tui);
+    assert!(
+        std::fs::read_to_string(profile.path("config/ui/layout.lua"))
+            .expect("layout")
+            .ends_with("-- my own line\n"),
+        "an edited layout is never overwritten"
+    );
 }
 
 #[test]
