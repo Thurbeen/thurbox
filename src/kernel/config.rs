@@ -188,6 +188,8 @@ impl Config {
             // Restart-only wholesale.
             notifications: restart_only.notifications,
             clipboard: restart_only.clipboard,
+            // Live: the mirror reads the file itself on every pass.
+            remote: fresh.remote,
             scrollback_lines: restart_only.scrollback_lines,
             two_panel_min_cols: restart_only.two_panel_min_cols,
             three_panel_min_cols: restart_only.three_panel_min_cols,

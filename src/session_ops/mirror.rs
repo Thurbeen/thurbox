@@ -40,6 +40,10 @@ pub struct MirrorReport {
     /// local tombstone stands, and the delete is pushed to the host. The
     /// symmetric counterpart of `unknown_local`/[`register_unknown`].
     pub tombstoned: Vec<SessionId>,
+    /// Transitive rows dropped from this database because
+    /// [`Transitive::Hide`] is in force. Nothing reached the host: the
+    /// session goes on at its owner.
+    pub forgotten: Vec<SessionId>,
     /// Why the host could not be mirrored, when it could not.
     pub error: Option<String>,
 }
@@ -51,7 +55,8 @@ impl MirrorReport {
             && self.deleted.is_empty()
             && self.restored.is_empty()
             && self.registered.is_empty()
-            && self.tombstoned.is_empty())
+            && self.tombstoned.is_empty()
+            && self.forgotten.is_empty())
     }
 
     pub fn to_json(&self) -> Value {
@@ -66,6 +71,7 @@ impl MirrorReport {
             "unknown_local": ids(&self.unknown_local),
             "registered": ids(&self.registered),
             "tombstoned": ids(&self.tombstoned),
+            "forgotten": ids(&self.forgotten),
             "error": self.error,
         })
     }
@@ -82,6 +88,11 @@ pub struct HostRow {
     /// local tombstone, which is the reading that stops a delete from being
     /// undone on the next pass.
     pub updated_at: Option<u64>,
+    /// The host lists it under one of its own remote backends: its mirror of a
+    /// further host's session (see [`reconcile_with`]). Such a row carries no
+    /// pane, since the id the host reports is a pane on that further host's
+    /// server, and on this backend's server it names some other agent.
+    pub transitive: bool,
 }
 
 /// A deleted session as the host lists it.
@@ -257,6 +268,7 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
         hook_state: string("hook_state"),
         base_branch: string("base_branch"),
         updated_at: value.get("updated_at").and_then(Value::as_u64),
+        transitive: false,
     })
 }
 
@@ -389,7 +401,10 @@ fn plan_row(
 ) -> RowPlan {
     let id = row.session.id;
     if let Some(local) = local_active.get(&id) {
-        let merged = merge(local, &row.session);
+        let mut merged = merge(local, &row.session);
+        if row.transitive {
+            merged.backend_id.clear();
+        }
         return if merged == *local {
             RowPlan::Unchanged
         } else {
@@ -561,14 +576,156 @@ pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<Mirro
     let backend = host.backend_name();
     let active = host_cli::run(host, cli, &["session", "list"])?;
     let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
-    let report = apply(
-        db,
-        &backend,
-        &parse_active(&active, &backend),
-        &parse_deleted(&deleted),
-    );
+    let transitive = if crate::agent::settings_config::load_quiet()
+        .remote
+        .transitive_sessions
+    {
+        Transitive::Show
+    } else {
+        Transitive::Hide
+    };
+    let report = reconcile_with(db, &backend, &active, &deleted, transitive);
     push_tombstones(db, host, cli, &report.tombstoned);
     Ok(report)
+}
+
+/// What a mirror pass does with a host's **transitive** rows: the sessions it
+/// lists that are not its own but its mirror of a further host (`ssh:`/`wsl:`
+/// in its own `backend_type`). `[remote] transitive_sessions` in
+/// `settings.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transitive {
+    /// Mirror them, once each: a session this database already holds on any
+    /// other path — the owner reached directly, or our own — stays there.
+    Show,
+    /// Mirror only the host's own sessions, and forget the transitive rows an
+    /// earlier pass took on.
+    Hide,
+}
+
+/// [`reconcile_with`] under the default, [`Transitive::Show`].
+pub fn reconcile(db: &Database, backend: &str, active: &Value, deleted: &Value) -> MirrorReport {
+    reconcile_with(db, backend, active, deleted, Transitive::Show)
+}
+
+/// The database half of a mirror pass: reconcile the rows on `backend` to the
+/// host's `session list --json` (`active`) and `session list --deleted --json`
+/// (`deleted`) answers, exactly as they came over the wire.
+///
+/// A session keeps its id on every hop, so the id is its identity and a row is
+/// a *path* to it. One database holds one row per id, so a session reached two
+/// ways would be relabelled by whichever pass ran last — and a host that
+/// mirrors this instance back would relabel this instance's own sessions as
+/// the host's. The rule that settles it: the host's own sessions are the
+/// host's, while a transitive one is taken only when no other path here holds
+/// its id already. A direct pass relabels a transitive row it finds on its own
+/// (its [`apply`] adopts over it), so the direct path is the one that sticks,
+/// and every action on the row — delete, restart, send — goes to its owner.
+pub fn reconcile_with(
+    db: &Database,
+    backend: &str,
+    active: &Value,
+    deleted: &Value,
+    transitive: Transitive,
+) -> MirrorReport {
+    let foreign = transitive_ids(active)
+        .chain(transitive_ids(deleted))
+        .collect::<HashSet<_>>();
+    let forgotten = match transitive {
+        Transitive::Show => Vec::new(),
+        Transitive::Hide => forget_transitive(db, backend, &foreign),
+    };
+    let elsewhere: HashSet<SessionId> = match transitive {
+        Transitive::Hide => HashSet::new(),
+        Transitive::Show => {
+            let active = db.list_active_sessions().unwrap_or_default();
+            let deleted = db.list_deleted_sessions().unwrap_or_default();
+            active
+                .iter()
+                .map(|s| (s.id, s.backend_type.as_str()))
+                .chain(deleted.iter().map(|s| (s.id, s.backend_type.as_str())))
+                .filter(|(_, on)| *on != backend)
+                .map(|(id, _)| id)
+                .collect()
+        }
+    };
+    let taken = |id: &SessionId| {
+        !foreign.contains(id) || (transitive == Transitive::Show && !elsewhere.contains(id))
+    };
+    let active: Vec<HostRow> = parse_active(active, backend)
+        .into_iter()
+        .filter(|r| taken(&r.session.id))
+        .map(|mut row| {
+            if foreign.contains(&row.session.id) {
+                as_transitive(&mut row);
+            }
+            row
+        })
+        .collect();
+    let deleted: Vec<HostDeletedRow> = parse_deleted(deleted)
+        .into_iter()
+        .filter(|r| taken(&r.id))
+        .collect();
+    let mut report = apply(db, backend, &active, &deleted);
+    report.forgotten = forgotten;
+    report
+}
+
+/// Make a host's row safe to hold on its backend when the session is not the
+/// host's own. Its pane id names a pane on the further host's server, so it is
+/// dropped rather than attached to on this one. Its checkouts are the further
+/// host's, so they are marked borrowed: a teardown that falls back to running
+/// here (the host did not answer) then keeps them instead of removing
+/// whatever sits at those paths on the host in between. Every action on the
+/// row reaches the owner through the host's own CLI, as with any shared row.
+fn as_transitive(row: &mut HostRow) {
+    row.transitive = true;
+    row.session.backend_id.clear();
+    for worktree in &mut row.session.worktrees {
+        worktree.created_by_thurbox = false;
+    }
+}
+
+/// The ids of the rows in a `session list` answer that the host lists under
+/// one of *its* remote backends — its mirror of a further host.
+fn transitive_ids(listing: &Value) -> impl Iterator<Item = SessionId> + '_ {
+    listing.as_array().into_iter().flatten().filter_map(|row| {
+        let on = row.get("backend_type")?.as_str()?;
+        crate::session::is_remote_backend(on)
+            .then(|| row.get("id")?.as_str()?.parse().ok())
+            .flatten()
+    })
+}
+
+/// Drop this database's rows on `backend` that the host lists as transitive.
+///
+/// Forgotten rather than deleted: the session lives on at its owner, and a
+/// tombstone here would be pushed back to the host as a delete of it (see
+/// [`push_tombstones`]) the moment the setting was turned back on.
+fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
+    let held = db
+        .list_active_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.id, s.backend_type))
+        .chain(
+            db.list_deleted_sessions()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.id, s.backend_type)),
+        );
+    let mut forgotten: Vec<SessionId> = held
+        .filter(|(id, on)| on == backend && foreign.contains(id))
+        .filter_map(|(id, _)| match db.forget_session(id) {
+            Ok(()) => Some(id),
+            Err(e) => {
+                tracing::warn!("mirror: could not forget {id}: {e}");
+                None
+            }
+        })
+        .collect();
+    forgotten.sort_by_key(|id| id.to_string());
+    forgotten
 }
 
 /// Tell the host about the deletes it has not heard: the rows it still lists as

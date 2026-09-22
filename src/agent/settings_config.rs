@@ -102,6 +102,16 @@ config_version = 1
 # [clipboard]
 # provider = "auto"             # auto | native | osc52 | none
 
+# Sessions on remote hosts (hosts.toml). A shareable host lists its own
+# sessions and, when it mirrors hosts of its own, theirs too. Those transitive
+# sessions are listed here once each, on the most direct path this instance has
+# to them (a host you reach directly wins over the same session seen through
+# another), and every action on one goes to the host that owns it. Set to
+# `false` to list only each host's own sessions. Applies on the next mirror
+# pass.
+# [remote]
+# transitive_sessions = true
+
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────
@@ -198,6 +208,18 @@ pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
             vec![format!("Failed to read settings.toml: {e}")],
         ),
     }
+}
+
+/// The settings as the file holds them right now, for a caller that re-reads
+/// them on every use rather than once at startup (the mirror's
+/// `[remote] transitive_sessions`). Never seeds the file and never warns: an
+/// absent, unreadable or malformed file is the defaults, and the startup load
+/// is where a bad file gets reported.
+pub fn load_quiet() -> Settings {
+    settings_config_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|contents| toml::from_str(&contents).ok())
+        .unwrap_or_default()
 }
 
 /// Set a boolean key on a `toml_edit` table.
@@ -336,6 +358,8 @@ mod tests {
             "sound",
             "min_interval_secs",
             "backend",
+            "[remote]",
+            "transitive_sessions",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
@@ -513,5 +537,25 @@ mod tests {
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert!(!s.features.automations);
         assert!(s.features.tasks, "untouched flags stay enabled");
+    }
+
+    #[test]
+    fn load_quiet_reads_the_file_without_seeding_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let path = settings_config_path().unwrap();
+
+        assert!(load_quiet().remote.transitive_sessions, "absent = default");
+        assert!(!path.exists(), "and nothing was seeded");
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[remote]\ntransitive_sessions = false\n").unwrap();
+        assert!(!load_quiet().remote.transitive_sessions);
+
+        std::fs::write(&path, "[remote\n").unwrap();
+        assert!(
+            load_quiet().remote.transitive_sessions,
+            "malformed = default"
+        );
     }
 }

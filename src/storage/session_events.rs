@@ -74,6 +74,10 @@ pub enum EventReason {
     SoftDeleted,
     /// `gone`: hard-deleted — worktrees and window torn down, not restorable.
     ForceDeleted,
+    /// `gone`: dropped from this database without touching the session, which
+    /// goes on at its owner — a transitive mirror row hidden by `[remote]
+    /// transitive_sessions = false`.
+    Forgotten,
 }
 
 impl EventReason {
@@ -88,6 +92,7 @@ impl EventReason {
             Self::Updated => "updated",
             Self::SoftDeleted => "soft_deleted",
             Self::ForceDeleted => "force_deleted",
+            Self::Forgotten => "forgotten",
         }
     }
 }

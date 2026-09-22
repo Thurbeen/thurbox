@@ -454,6 +454,9 @@ also_on_waiting     = false    # also fire when a session finishes (Working → 
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
+
+[remote]
+transitive_sessions = true     # list sessions a host mirrors from hosts of its own
 ```
 
 ### `git_poll_secs` — how much `git` thurbox runs
@@ -638,6 +641,19 @@ headless `automation tick` — then refreshes each stale extension in place
 so a launch where nothing is stale does no extra work; a refresh runs at most
 once per extension per binary version. With `auto_update` off, the nudge is
 shown and you update extensions by hand.
+
+### `[remote]` — sessions on hosts of hosts
+
+A shareable host (see [hosts.toml](#hoststoml)) lists its own sessions and,
+when it mirrors hosts of its own, theirs. `transitive_sessions` (default
+`true`) keeps those: each session is listed once, on the most direct path this
+instance has to it — a host reached directly wins over the same session seen
+through another — and every action on it reaches the host that owns it. A row
+seen through another host has no terminal attached here. `false` lists only
+each host's own sessions and drops the rows already taken on, without deleting
+anything anywhere. Read by every mirror pass, so a change applies on the next
+one (within 10 s in the TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
+has the rule.
 
 ### `[notifications]` — OS notification settings
 
