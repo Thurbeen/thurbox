@@ -373,13 +373,17 @@ fn retire(dir: &Path, manifest: &mut BTreeMap<String, Record>, report: &mut Repo
             // Theirs, but a pane that cannot work without what went with it:
             // kept aside rather than loaded.
             Ok(_) if WITHDRAWN.contains(&relative.as_str()) => {
-                let aside = dir.join(format!("{relative}.bak"));
-                match std::fs::rename(&path, &aside) {
+                // Never over a backup already there: `rename` would replace it.
+                let aside = std::iter::once(format!("{relative}.bak"))
+                    .chain((2..).map(|n| format!("{relative}.bak.{n}")))
+                    .find(|name| !dir.join(name).exists())
+                    .expect("an unbounded series has a free name");
+                match std::fs::rename(&path, dir.join(&aside)) {
                     Ok(()) => {
                         manifest.remove(&relative);
                         report
                             .retired
-                            .push(format!("{relative} (your edit is in {relative}.bak)"));
+                            .push(format!("{relative} (your edit is in {aside})"));
                     }
                     Err(e) => report.errors.push(format!("{}: {e}", path.display())),
                 }
@@ -1316,6 +1320,24 @@ mod tests {
             "-- mine\nreturn {}"
         );
         assert!(!read_manifest(dir.path()).contains_key("plugins/25_shell.lua"));
+
+        // Once more, over the backup that is now there: it is not replaced.
+        std::fs::write(&pane, "-- again\nreturn {}").expect("write");
+        let mut manifest = read_manifest(dir.path());
+        manifest.insert(
+            "plugins/25_shell.lua".into(),
+            Record::Written(digest("return {}")),
+        );
+        write_manifest(dir.path(), &manifest).expect("manifest");
+        materialize(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak")).expect("read"),
+            "-- mine\nreturn {}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak.2")).expect("read"),
+            "-- again\nreturn {}"
+        );
     }
 
     #[test]
