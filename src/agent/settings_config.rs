@@ -49,6 +49,10 @@ config_version = 1
 #   classic      the session list beside the agent pane (the default)
 #   split-shell  the same, with the selected session's shell in a pane below
 #                the agent, both on screen at once
+#   focus        the agent pane alone, full width; F9 and each pane's own
+#                toggle bring columns back
+#   ide          sessions left, the shell along the bottom of the agent, and
+#                installed plugin panes in a right-hand column
 # `thurbox-cli layout set <name>` or the settings panel (Ctrl+,) switch it and
 # rewrite layout.lua in place, backing up a copy you edited first. Changing
 # this line by hand applies on the next start, and leaves an edited layout.lua

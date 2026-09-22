@@ -1237,15 +1237,12 @@ fn band_names(frame: &str, pane: &str) -> bool {
         .is_some_and(|band| band.trim_start().starts_with(pane))
 }
 
-#[test]
-fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them() {
-    // The `split-shell` preset, chosen the way an install chooses it, on the real
-    // binary: the agent and the same session's shell are both painted, the
-    // agent pane no longer offers a Shell tab, and F8 walks focus into the shell
-    // pane — where keystrokes reach the shell — and back out.
+/// A `probe` session whose agent is `sh`, under the layout preset `layout`
+/// chosen the way an install chooses it, on the real binary at 120×40.
+fn session_under_layout(layout: &str) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
-        return;
+        return None;
     }
     let profile = Profile::new();
     std::fs::write(
@@ -1280,11 +1277,24 @@ fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them()
         "probe-agent",
     ]);
     cli(&["config", "accept-interface"]);
-    cli(&["layout", "set", "split-shell"]);
+    cli(&["layout", "set", layout]);
 
-    let mut tui = Tui::spawn_with(&profile, 40, 120, |command| {
+    let tui = Tui::spawn_with(&profile, 40, 120, |command| {
         command.env("SHELL", "/bin/sh");
     });
+    tui.wait_for("(probe-agent)");
+    Some((profile, tui))
+}
+
+#[test]
+fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them() {
+    // The `split-shell` preset, chosen the way an install chooses it, on the real
+    // binary: the agent and the same session's shell are both painted, the
+    // agent pane no longer offers a Shell tab, and F8 walks focus into the shell
+    // pane — where keystrokes reach the shell — and back out.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
     tui.wait_for("(probe-agent)");
     tui.wait_for("probe (shell)");
     tui.wait_until("the agent pane to be the focused one", |frame| {
@@ -1321,6 +1331,91 @@ fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them()
     tui.wait_until("focus to return to the agent", |frame| {
         band_names(frame, "Agent")
     });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn focus_shows_the_agent_alone_and_f9_brings_the_session_list_back() {
+    // `focus`, on the real binary: the agent pane has the whole width and the
+    // list is hidden, and F9 — the same toggle as everywhere else — brings it
+    // back on its first press and hides it again on the second.
+    let Some((_profile, mut tui)) = session_under_layout("focus") else {
+        return;
+    };
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        band_names(frame, "Agent")
+    });
+    assert!(
+        !tui.frame().contains("Sessions"),
+        "the list starts hidden:\n{}",
+        tui.frame()
+    );
+    // Still a tab of the agent pane: this preset places no shell pane.
+    assert!(tui.frame().contains("Shell ·"), "{}", tui.frame());
+
+    tui.send(F9);
+    tui.wait_for("Sessions");
+    let (list_col, _) = tui.find("Sessions");
+    let (agent_col, _) = tui.find("(probe-agent)");
+    assert!(
+        list_col < agent_col,
+        "the list opens on the left:\n{}",
+        tui.frame()
+    );
+
+    tui.send(F9);
+    tui.wait_until("the list to hide again", |frame| {
+        !frame.contains("Sessions")
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ide_shows_the_list_left_and_the_shell_along_the_bottom() {
+    // `ide`, on the real binary: the list on the left, the same session's shell
+    // as a panel under the agent, and — with no plugin filling a right-hand
+    // slot — no right column reserved for nothing.
+    let Some((_profile, mut tui)) = session_under_layout("ide") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.wait_for("Sessions");
+    let (list_col, _) = tui.find("Sessions");
+    let (agent_col, agent_row) = tui.find("(probe-agent)");
+    let (shell_col, shell_row) = tui.find("probe (shell)");
+    let frame = tui.frame();
+    assert!(list_col < agent_col, "the list is on the left:\n{frame}");
+    assert!(
+        shell_row > agent_row,
+        "the shell sits below the agent:\n{frame}"
+    );
+    assert!(
+        shell_col > list_col,
+        "beside the list, not under it:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Shell ·"),
+        "the agent pane still offers a Shell tab:\n{frame}"
+    );
+    // The agent's frame runs to the last column: its title row ends in the
+    // top-right corner at the screen's edge.
+    let title_line = frame
+        .lines()
+        .nth(usize::from(agent_row))
+        .expect("title row");
+    assert!(
+        title_line.trim_end().ends_with('╮') || title_line.trim_end().ends_with('┐'),
+        "no right column is reserved when nothing fills it:\n{frame}"
+    );
+    assert_eq!(
+        title_line.trim_end().chars().count(),
+        120,
+        "the agent reaches the right edge:\n{frame}"
+    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

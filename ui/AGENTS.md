@@ -145,8 +145,9 @@ install one — neither fails, because you may have meant it.
 
 ## `layout.lua` came from a preset
 
-The arrangement is one of the presets thurbox ships — `classic`, or `split-shell`
-with the session's shell in a pane below the agent — chosen with
+The arrangement is one of the presets thurbox ships — `classic`; `split-shell`
+with the session's shell in a pane below the agent; `focus`, the agent alone; or
+`ide`, with the shell below the agent and other panes in a right column — chosen with
 `thurbox-cli layout set <name>` (or `layout` in settings). If the user asks for a
 different *arrangement*, check `thurbox-cli layout list` first: switching presets
 may be the whole answer. A switch replaces `layout.lua` and backs up an edited

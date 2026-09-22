@@ -245,7 +245,7 @@ const CORE_FIELDS: &[CoreField] = &[
     },
     CoreField {
         id: "layout",
-        description: "the arrangement: classic, split-shell (shell below the agent)",
+        description: "the arrangement: classic, split-shell (shell below the agent), focus (agent alone), ide (shell below, plugin panes right)",
         get: |s| Value::Text(s.layout.clone()),
         set: |s, v| {
             if let Value::Text(name) = v {

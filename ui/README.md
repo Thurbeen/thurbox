@@ -401,6 +401,8 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 |---|---|
 | `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
 | `split-shell` | the same, with the selected session's shell in a pane below the agent |
+| `focus` | the agent pane alone, full width (VS Code's Zen mode); `F9` and each pane's own toggle bring columns back |
+| `ide` | VS Code's or JetBrains' shape: sessions left, the shell along the bottom of the agent, every other installed pane stacked in a right column |
 
 ```bash
 thurbox-cli layout list              # which one is chosen, and whether layout.lua is edited
@@ -410,6 +412,71 @@ thurbox-cli layout set split-shell   # switch; settings → layout does the same
 An untouched `layout.lua` follows upgrades of the preset you chose. An edited one is
 yours: nothing overwrites it, and a switch you ask for moves it to `layout.lua.bak`
 first (`.bak.2` and on, never over an earlier backup) and tells you so.
+
+At 92×23, with two sessions:
+
+`focus`, where the list starts hidden and `F9` brings it back:
+
+```text
+╭ ▶ F9 ─ Agent ─ Shell · F8 ─────────────────────────────────────── api (demo) [Uncovered] ╮
+│sh-5.3$ █                                                                                 │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q
+```
+
+`ide` at 120 columns, with the `tasks` example pane installed. The right column
+holds every slot the preset does not place by name, exists only while one of them is
+filled, and is the first thing dropped below `three_panel_min_cols` (120):
+
+```text
+╭ Sessions ──────────◌◌╮╭ ◀ F9 ─ Agent ────────────────────────── api (demo) [Uncovered] ╮╭ Tasks ─────────────────────╮
+│── repo ──────────────││sh-5.3$ █                                                       ││  nothing on the list — n to│
+│ ◌ api  no status hoo…││                                                                ││────────────────────────────│
+│ ◌ docs  no status ho…││                                                                ││  0 open  ·  0 done         │
+│                      ││                                                                ││ space status   n new   ente│
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      │╰────────────────────────────────────────────────────────────────╯│                            │
+│                      │╭─────────────────────────────────────────────────── api (shell) ╮│                            │
+│                      ││sh-5.3$ █                                                       ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+╰──────────────────────╯╰────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O Open                            Help · F1   Theme · F4   Settings · F6   Quit · ^Q
+```
+
+`classic` and `split-shell` are drawn on the
+[installation page](https://thurbox.thurbeen.eu/docs/installation.html#layout).
+
+With the list off screen, as `focus` starts, the agent pane keeps the selection
+itself: it shows the list's first session and honours a clicked notification or
+`thurbox-cli session focus`, which the list would otherwise handle.
 
 The shell pane (`plugins/25_shell.lua`, slot `shell`) is declared `optional = true`,
 so an arrangement that leaves it out — `classic`, or your own — passes

@@ -193,7 +193,7 @@ parse_args() {
 choose_layout() {
   local cli="$1/thurbox-cli"; [ -x "$cli" ] || return 0
   if [ -z "$LAYOUT" ] && [ -t 2 ] && { : < /dev/tty; } 2> /dev/null; then
-    printf '%b' "${C_CYAN}▸${C_RESET} Layout: ${C_BOLD}classic${C_RESET}, or ${C_BOLD}split-shell${C_RESET} (a shell pane below the agent) [Enter keeps the current one] " >&2
+    printf '%b' "${C_CYAN}▸${C_RESET} Layout: ${C_BOLD}classic${C_RESET} (sessions beside the agent), ${C_BOLD}split-shell${C_RESET} (a shell pane below it), ${C_BOLD}focus${C_RESET} (the agent alone) or ${C_BOLD}ide${C_RESET} (shell below, plugin panes on the right) [Enter keeps the current one] " >&2
     read -r LAYOUT < /dev/tty || LAYOUT=""
   fi
   [ -n "$LAYOUT" ] || return 0

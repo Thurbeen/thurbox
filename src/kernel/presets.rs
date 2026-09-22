@@ -46,6 +46,16 @@ pub const PRESETS: &[Preset] = &[
         summary: "the agent pane on top, the same session's shell in a pane below it",
         layout: include_str!("../../ui/layouts/split-shell.lua"),
     },
+    Preset {
+        name: "focus",
+        summary: "the agent pane alone, full width; F9 and each pane's toggle bring columns back",
+        layout: include_str!("../../ui/layouts/focus.lua"),
+    },
+    Preset {
+        name: "ide",
+        summary: "sessions left, the shell along the bottom, installed panes in a right column",
+        layout: include_str!("../../ui/layouts/ide.lua"),
+    },
 ];
 
 /// The preset called `name`, if thurbox ships one.

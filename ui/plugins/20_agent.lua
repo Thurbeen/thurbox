@@ -30,6 +30,7 @@ local chrome = require("lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
 local plugin_settings = require("lib.settings")
+local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -90,6 +91,46 @@ local function selected()
     end
   end
   return nil
+end
+
+--- Keep the selection alive while the session list is off screen.
+---
+--- The list owns `store.selected` and writes it from its own render, which is
+--- also where it spends a `focus_session` request (a clicked notification,
+--- `thurbox-cli session focus`). A list that is not placed never renders — the
+--- `focus` preset starts it hidden, and F9 hides it anywhere — so this pane
+--- stands in for it: the request lands, and with nothing selected the list's
+--- first row is, the one its cursor would start on. Written only on a change,
+--- like the list's own writes, and the list adopts it through its `steer` the
+--- moment it is shown again.
+local function select_without_the_list()
+  if panels.placed("sessions") then
+    return
+  end
+  local rows = thurbox and thurbox.sessions or {}
+  -- Spent only once its row exists: a request can arrive before the snapshot
+  -- that carries the session, and the list's cursor waits for it the same way.
+  local request = store.focus_session
+  if request then
+    for _, row in ipairs(rows) do
+      if row.id == request then
+        store.focus_session = nil
+        if store.selected ~= request then
+          store.selected = request
+        end
+        break
+      end
+    end
+  end
+  if selected() then
+    return
+  end
+  for _, item in ipairs(session_model.build(rows)) do
+    if item.target then
+      store.selected = item.target
+      return
+    end
+  end
 end
 
 --- The tab a session is showing.
@@ -898,6 +939,7 @@ return {
     local width, height = ctx.width or 0, ctx.height or 0
     local level = ctx.focused and "focused" or "active"
     local border = chrome.border_style(level)
+    select_without_the_list()
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,

@@ -498,9 +498,15 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
         let preset = thurbox::kernel::presets::chosen_or_default(
             &thurbox::session::settings::global().layout,
         );
+        let others: Vec<&str> = thurbox::kernel::presets::PRESETS
+            .iter()
+            .map(|other| other.name)
+            .filter(|name| *name != preset.name)
+            .collect();
         parts.push(format!(
-            "layout: {} · others in settings → layout, or `thurbox-cli layout list`",
-            preset.name
+            "layout: {} · also {} — settings → layout, or `thurbox-cli layout set <name>`",
+            preset.name,
+            others.join(", ")
         ));
     }
     if !report.preserved.is_empty() {
@@ -530,7 +536,14 @@ mod tests {
         };
         let notice = delivery_notice(&first).expect("a first run says something");
         assert!(notice.contains("layout: classic"), "{notice}");
-        assert!(notice.contains("thurbox-cli layout list"), "{notice}");
+        assert!(notice.contains("thurbox-cli layout set"), "{notice}");
+        for preset in thurbox::kernel::presets::PRESETS {
+            assert!(
+                notice.contains(preset.name),
+                "{} unnamed: {notice}",
+                preset.name
+            );
+        }
 
         // Every later start finds the layout on disk and stays quiet.
         let upgrade = thurbox::kernel::bundled::Report {
