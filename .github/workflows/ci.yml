@@ -493,7 +493,7 @@ jobs:
     # contribution on a credential the contributor cannot be given. A skipped
     # job's result is `skipped`, not `failure`, so `all-checks` passes without
     # it. The trade is real and deliberate: a fork's code is not analysed
-    # before it lands, since this workflow only ever runs on `pull_request`.
+    # before it lands, only after, when `sonar.yml` analyses `main`.
     if: >-
       needs.changes.outputs.rust == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository
