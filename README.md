@@ -44,9 +44,14 @@ headless one) — with checksum verification and platform auto-detection.
 You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on
 native Windows), **git**, and at least one coding-agent CLI.
 
-Homebrew, the AUR, winget, Chocolatey, building from source, pinning a version,
-changing the install directory and uninstalling are all on the
+Homebrew, the AUR, winget, Chocolatey, building from source, pinning a version
+and changing the install directory are all on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
+
+**Uninstall:** removing the binaries is not enough — sessions keep running in
+tmux, and thurbox wires hooks and a skill into your coding agents' own
+directories. Follow the
+[uninstall steps](https://thurbox.thurbeen.eu/docs/installation.html#uninstall).
 
 ## Your first session
 
