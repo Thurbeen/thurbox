@@ -161,20 +161,39 @@ impl App {
     }
 
     /// Open the companion shell of every session whose `<id>#shell` surface
-    /// painted last frame with no shell behind it.
+    /// painted with no live shell behind it — none yet, or one that exited.
     ///
     /// A layout that shows the shell in a pane of its own needs the shell to
     /// exist, and the pane cannot ask for it without writing from its render.
     /// Asked here instead, of what was actually painted: only an attached
     /// session can paint, so this never asks on behalf of one that will fail.
+    /// A paint asks again after a failure (`Terminals::shell_retry`), so its
+    /// error is said once, not on every retry, until it changes or the shell
+    /// opens.
     pub(crate) fn open_wanted_shells(&mut self) {
         for session in self.terminals.take_wanted_shells() {
-            self.apply_shell_command(&session);
+            match self.open_shell(&session) {
+                Ok(()) => {
+                    self.shell_errors.remove(&session);
+                }
+                Err(e) => {
+                    if self.shell_errors.get(&session) != Some(&e) {
+                        self.report(format!("could not open a shell: {e}"), Level::Error);
+                        self.shell_errors.insert(session, e);
+                    }
+                }
+            }
         }
     }
 
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
+        if let Err(e) = self.open_shell(session) {
+            self.report(format!("could not open a shell: {e}"), Level::Error);
+        }
+    }
+
+    fn open_shell(&mut self, session: &str) -> Result<(), String> {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         // Resolved from the snapshot rather than the live
         // `Session`: an adopted one carries no cwd of its own.
@@ -183,17 +202,13 @@ impl App {
             .current()
             .session(session)
             .and_then(|row| self.terminals.launch_cwd(row));
-        if let Err(e) = self
-            .terminals
-            .open_shell(session, rows, cols, cwd.as_deref())
-        {
-            self.report(format!("could not open a shell: {e}"), Level::Error);
-        } else {
-            // Its window outlives this process, so the id has to
-            // as well — otherwise the next start forgets the
-            // shell and orphans the window it left running.
-            self.remember_shell(session);
-        }
+        self.terminals
+            .open_shell(session, rows, cols, cwd.as_deref())?;
+        // Its window outlives this process, so the id has to as well —
+        // otherwise the next start forgets the shell and orphans the window
+        // it left running.
+        self.remember_shell(session);
+        Ok(())
     }
 
     /// `Command::Editor`: hand the configured editor this thread's tty.
