@@ -316,9 +316,20 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     // file (`load_quiet`), and one that caught it truncated mid-write would
     // read the defaults for a pass - re-adopting the transitive sessions a
     // user had hidden, only to forget them again on the next.
-    let staged = path.with_extension("toml.saving");
-    std::fs::write(&staged, doc.to_string())?;
-    std::fs::rename(&staged, &path)
+    // One staged file per save, so two processes (or threads) saving at once
+    // never rename each other's content into place.
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staged = path.with_extension(format!(
+        "toml.saving-{}-{}",
+        std::process::id(),
+        SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&staged, doc.to_string())
+        .and_then(|()| std::fs::rename(&staged, &path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&staged);
+            e
+        })
 }
 
 #[cfg(test)]
