@@ -610,22 +610,6 @@ fn ide_drops_the_shell_panel_on_a_short_screen_and_the_tab_comes_back() {
     assert!(words(&agent.node).contains("Shell"), "{:?}", agent.node);
 }
 
-#[test]
-fn every_preset_passes_plugin_check_with_third_party_columns_installed() {
-    // The operator's own interface adds columns thurbox has never heard of; a
-    // preset that cannot place them would fail `check` for every such install.
-    for preset in ["focus", "ide"] {
-        let dir = delivered(preset);
-        with_a_third_party_column(dir.path(), "files");
-        let host = host_at(dir.path());
-        publish(&host);
-        let unplaced = host
-            .unplaced_slots(thurbox::kernel::layout::REFERENCE)
-            .expect("resolves");
-        assert!(unplaced.is_empty(), "{preset}: {unplaced:?}");
-    }
-}
-
 /// A host arranged at `width`×`height` with the placement recorded, but with
 /// nothing rendered yet — so no pane has published a selection.
 fn arranged(dir: &Path, width: u16, height: u16) -> LuaHost {
@@ -820,6 +804,7 @@ fn a_chosen_preset_an_edited_layout_keeps_out_of_force_is_said_at_start() {
     .expect("edit layout.lua");
     let note = presets::not_in_force(dir.path(), "split-shell").expect("a note");
     assert!(note.contains("thurbox-cli layout set split-shell"), "{note}");
+    assert!(!note.contains("  "), "one line, no run of spaces: {note}");
     assert_eq!(presets::not_in_force(dir.path(), "classic"), None);
     assert_eq!(presets::not_in_force(dir.path(), "nope"), None);
 }

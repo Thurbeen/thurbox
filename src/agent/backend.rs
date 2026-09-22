@@ -881,10 +881,11 @@ impl WiredPane {
     ///
     /// The lock-free redraw signal: a renderer compares it against the stamp
     /// it last painted at, so a quiet pane costs one atomic load instead of a
-    /// repaint. Monotonic non-decreasing — the reader thread only ever stores
-    /// `now` — which is what lets the render loop's cheap output-change
-    /// detector ([`crate::kernel::terminal::Terminals::output_generation`])
-    /// spot new output without locking the vt100 parser.
+    /// repaint. Strictly increasing per chunk of live output, and moved only
+    /// once the parser holds that chunk — which is what lets the render loop's
+    /// cheap output-change detector
+    /// ([`crate::kernel::terminal::Terminals::output_generation`]) spot new
+    /// output without locking the vt100 parser, and never paint ahead of it.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
     }
@@ -1611,17 +1612,28 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not.
-                    if seed_len < n {
-                        last_output_at.store(now_millis(), Ordering::Relaxed);
-                    }
-                    seed_len = seed_len.saturating_sub(n);
                     let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
+                    // Bytes beyond the seed boundary are live activity; a chunk
+                    // that is entirely within the seed is not. Stamped after the
+                    // feed, never before: the stamp is the loop's cue to repaint,
+                    // and a paint between the two would show the old grid with
+                    // the cue already spent.
+                    // And always forward, if only by a millisecond: two chunks
+                    // inside one would otherwise stamp the same value, and a
+                    // loop that looked between them would see no change.
+                    if seed_len < n {
+                        let now = now_millis();
+                        let _ = last_output_at.fetch_update(
+                            Ordering::Release,
+                            Ordering::Relaxed,
+                            |prev| Some(now.max(prev + 1)),
+                        );
+                    }
+                    seed_len = seed_len.saturating_sub(n);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
@@ -2479,6 +2491,105 @@ mod tests {
         assert!(screen.starts_with("fé\nok"), "{screen:?}");
         assert!(exited.load(Ordering::SeqCst));
         assert!(last_output_at.load(Ordering::Relaxed) > 0);
+    }
+
+    /// The stamp is the loop's cue to repaint, so it must not move before the
+    /// parser holds what moved it: a frame painted in between shows the old grid,
+    /// and with the cue already spent nothing repaints until the next output —
+    /// seen as a shell's `ls` missing from the screen until something else
+    /// printed.
+    #[test]
+    fn reader_loop_stamps_output_only_once_the_parser_has_it() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let exited = Arc::new(AtomicBool::new(false));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+
+        // Held as a paint holds it, so the reader has to wait to feed it.
+        let held = parser.lock().unwrap();
+        let reader = {
+            let (parser, exited, stamp) = (
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+            );
+            std::thread::spawn(move || {
+                Session::reader_loop(
+                    Box::new(Cursor::new(b"CHANGELOG".to_vec())),
+                    parser,
+                    exited,
+                    stamp,
+                    0,
+                );
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            last_output_at.load(Ordering::SeqCst),
+            0,
+            "stamped while the parser did not yet hold the bytes"
+        );
+        drop(held);
+        reader.join().unwrap();
+        assert!(last_output_at.load(Ordering::SeqCst) > 0);
+        assert!(parser
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .starts_with("CHANGELOG"));
+    }
+
+    /// Two chunks inside one millisecond must still read as two changes: the
+    /// loop repaints on a changed stamp, and one it saw after the first chunk
+    /// would otherwise be the same after the second.
+    #[test]
+    fn reader_loop_moves_the_stamp_for_every_chunk() {
+        struct Chunks {
+            left: Vec<&'static [u8]>,
+            stamp: Arc<AtomicU64>,
+            seen: Arc<Mutex<Vec<u64>>>,
+        }
+        impl Read for Chunks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push(self.stamp.load(Ordering::SeqCst));
+                let Some(chunk) = self.left.pop() else {
+                    return Ok(0);
+                };
+                buf[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        Session::reader_loop(
+            Box::new(Chunks {
+                left: vec![b"b", b"a"],
+                stamp: Arc::clone(&last_output_at),
+                seen: Arc::clone(&seen),
+            }),
+            parser,
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&last_output_at),
+            0,
+        );
+        let seen = seen.lock().unwrap().clone();
+        // Before any output, after the first chunk, after the second.
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[2] > seen[1] && seen[1] > seen[0], "{seen:?}");
     }
 
     /// The other half: once the seed is exhausted, genuinely live bytes still

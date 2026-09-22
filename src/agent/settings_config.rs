@@ -34,9 +34,8 @@ config_version = 1
 # Terminal width (columns) below which only the terminal pane renders.
 # two_panel_min_cols = 80
 
-# Accepted and ignored: this sized v1's third column (info panel /
-# tasks / file viewer), and the current interface has no third column.
-# Kept so an existing settings.toml still loads.
+# Terminal width (columns) at which the split-shell and ide layouts give
+# installed panes (a file tree, a queue) a right-hand column.
 # three_panel_min_cols = 120
 
 # Days of audit-log and session-event history kept (pruned on startup).
@@ -55,15 +54,16 @@ config_version = 1
 # The interface's arrangement, chosen from the presets thurbox ships:
 #   classic      the session list beside the agent pane (the default)
 #   split-shell  the same, with the selected session's shell in a pane below
-#                the agent, both on screen at once
+#                the agent, both on screen at once, and installed plugin panes
+#                in a right-hand column
 #   focus        the agent pane alone, full width; F9 and each pane's own
 #                toggle bring columns back
 #   ide          sessions left, the shell along the bottom of the agent, and
 #                installed plugin panes in a right-hand column
 # `thurbox-cli layout set <name>` or the settings panel (Ctrl+,) switch it and
 # rewrite layout.lua in place, backing up a copy you edited first. Changing
-# this line by hand applies on the next start, and leaves an edited layout.lua
-# alone.
+# this line by hand applies on the next start; an edited layout.lua stays in
+# use, and the start says so.
 # layout = "classic"
 
 # Feature flags: turn whole TUI features off. All default to true.

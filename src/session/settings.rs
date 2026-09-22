@@ -38,8 +38,9 @@ pub struct Settings {
     /// Terminal width (columns) below which only the terminal pane renders.
     #[serde(default = "default_two_panel_min_cols")]
     pub two_panel_min_cols: u16,
-    /// Terminal width (columns) at which the optional third column (info /
-    /// tasks / file viewer) becomes available.
+    /// Terminal width (columns) at which a layout preset's right-hand column —
+    /// the installed panes `split-shell` and `ide` stack there — has room.
+    /// Published to the arrangement as `thurbox.settings.three_panel_min_cols`.
     #[serde(default = "default_three_panel_min_cols")]
     pub three_panel_min_cols: u16,
     /// Days of audit-log and session-event history kept (both pruned on

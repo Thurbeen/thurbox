@@ -423,7 +423,7 @@ all commented so defaults still apply out of the box.
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
-| `three_panel_min_cols` | `120` | width unlocking the `ide` preset's right-hand column |
+| `three_panel_min_cols` | `120` | width unlocking the right-hand column of installed panes in the `split-shell` and `ide` presets |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 | `layout` | `"classic"` | the layout preset delivered as the interface's `layout.lua`: `classic`, `split-shell`, `focus` or `ide` (see below) |
@@ -438,7 +438,7 @@ config_version = 1
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # width for the ide preset's right column
+three_panel_min_cols  = 120    # width for split-shell's and ide's right column
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 layout                = "classic"  # layout preset: classic | split-shell | focus | ide
@@ -559,7 +559,7 @@ that give `code_review` and `info_panel` back
 which are switched on and off from the Interface tab like any other pane.
 They are still parsed rather than rejected, so an existing `settings.toml`
 keeps loading instead of failing on an unknown key — but setting one has no
-effect in either direction. Same for `three_panel_min_cols` above.
+effect in either direction.
 
 | Key | Default | Controls |
 |-----|---------|----------|
