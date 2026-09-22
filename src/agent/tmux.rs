@@ -1124,18 +1124,17 @@ const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 7);
 /// banner: psmux 3.3.6 prints `tmux 3.3.6`, later ones add a `psmux X.Y.Z (…)`
 /// line, which wins when present. An answer with no readable version is let
 /// through: it proves nothing about the fix either way.
-fn check_psmux_version(version_output: &str) -> Result<()> {
+fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     let version = version_output.lines().rev().find_map(|line| {
         let line = line.trim();
         let rest = line
             .strip_prefix("psmux ")
             .or_else(|| line.strip_prefix("tmux "))
             .unwrap_or(line);
-        let mut parts = rest
-            .split_whitespace()
-            .next()?
-            .split('.')
-            .map(|p| p.parse::<u32>().ok());
+        let mut parts = rest.split_whitespace().next()?.split('.').map(|p| {
+            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().ok()
+        });
         Some((
             parts.next()??,
             parts.next()??,
@@ -1146,14 +1145,14 @@ fn check_psmux_version(version_output: &str) -> Result<()> {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
             "psmux {}.{}.{} is too old: its server can start an agent with a stdin that is \
              not its pane (\"stdin is unreadable (EISDIR)\"). Upgrade psmux to {}.{}.{} or \
-             newer, then restart its server (`psmux -L <socket> kill-server`) — a running \
+             newer, then restart its server (`psmux -L {socket} kill-server`) — a running \
              server keeps the old code",
             v.0,
             v.1,
             v.2,
             MIN_PSMUX_VERSION.0,
             MIN_PSMUX_VERSION.1,
-            MIN_PSMUX_VERSION.2
+            MIN_PSMUX_VERSION.2,
         ),
         _ => Ok(()),
     }
@@ -2150,7 +2149,8 @@ impl SessionBackend for TmuxBackend {
         // Asked of the server, per spawn: it is the server's code that births
         // the pane, and one started before an upgrade keeps running the old.
         if psmux {
-            check_psmux_version(&self.ctrl_command("display-message -p '#{version}'")?)?;
+            let version = self.ctrl_command("display-message -p '#{version}'")?;
+            check_psmux_version(&version, &self.socket())?;
         }
         // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
         // interactive login shell — the SSH-login environment — instead of the
@@ -3654,7 +3654,7 @@ fn check_local_psmux_server() -> Result<()> {
     let output = local_mux_command(&["display-message", "-t", TMUX_SESSION, "-p", "#{version}"])
         .output()
         .map_err(|e| local_launch_failure("Failed to ask psmux its version", e))?;
-    check_psmux_version(&String::from_utf8_lossy(&output.stdout))
+    check_psmux_version(&String::from_utf8_lossy(&output.stdout), &local_socket())
 }
 
 /// The pane id out of a one-shot `new-window -P -F '#{pane_id}'`'s stdout.
@@ -4503,36 +4503,43 @@ mod tests {
     /// the agent reports "stdin is unreadable (EISDIR)" and exits.
     #[test]
     fn psmux_older_than_3_3_7_is_refused_with_the_upgrade() {
-        let err = check_psmux_version("tmux 3.3.6\n").unwrap_err().to_string();
+        let err = check_psmux_version("tmux 3.3.6\n", "thurbox")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("3.3.6"), "{err}");
         assert!(err.contains("3.3.7"), "{err}");
-        assert!(err.contains("kill-server"), "{err}");
-        assert!(check_psmux_version("tmux 3.3.5").is_err());
-        assert!(check_psmux_version("psmux 3.2.9").is_err());
+        assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
+        assert!(check_psmux_version("tmux 3.3.5", "thurbox").is_err());
+        assert!(check_psmux_version("psmux 3.2.9", "thurbox").is_err());
     }
 
     /// `#{version}` is answered by the running server, which is what matters:
     /// upgrading the binary leaves a server started before it on the old code.
     #[test]
     fn a_running_server_is_judged_by_its_own_version() {
-        assert!(check_psmux_version("3.3.6\n").is_err());
-        assert!(check_psmux_version("3.3.8").is_ok());
+        assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());
+        assert!(check_psmux_version("3.3.8", "thurbox").is_ok());
     }
 
     #[test]
     fn psmux_3_3_7_and_newer_is_accepted() {
-        assert!(check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n").is_ok());
-        assert!(check_psmux_version("tmux 3.3.7\npsmux 3.3.7").is_ok());
-        assert!(check_psmux_version("psmux 3.4.0").is_ok());
-        assert!(check_psmux_version("psmux 4.0").is_ok());
+        assert!(
+            check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
+                .is_ok()
+        );
+        assert!(check_psmux_version("tmux 3.3.7\npsmux 3.3.7", "thurbox").is_ok());
+        assert!(check_psmux_version("psmux 3.4.0", "thurbox").is_ok());
+        assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
+        // A pre-release suffix on the patch is still that patch, not 0.
+        assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
     }
 
     /// A banner this cannot read says nothing about the fix, and refusing it
     /// would lock out every later psmux that changes how it prints `-V`.
     #[test]
     fn an_unreadable_psmux_banner_is_not_refused() {
-        assert!(check_psmux_version("").is_ok());
-        assert!(check_psmux_version("psmux (dev build)").is_ok());
+        assert!(check_psmux_version("", "thurbox").is_ok());
+        assert!(check_psmux_version("psmux (dev build)", "thurbox").is_ok());
     }
 
     #[test]
