@@ -31,10 +31,12 @@ iteration. State drives the paint:
 
 - **Input** marks the UI dirty: `App::update` calls `App::request_redraw`, so a
   keypress paints on the very next iteration (latency unchanged).
-- **Agent output** marks the UI dirty: `App::detect_output_redraw` sums each
-  session's monotonic `last_output_at` atomic into a rolling signature
-  (`Session::last_output_at`, no vt100 lock); a change means new output, so the
-  terminal repaints immediately.
+- **Agent output** marks the UI dirty: `Terminals::output_generation` sums each
+  pane's output count (`WiredPane::output_count`, no vt100 lock) into a rolling
+  signature; a change means new output, so the terminal repaints immediately.
+  A count rather than the `last_output_at` clock, because two chunks inside one
+  millisecond are two changes, and it moves only once the parser holds the
+  chunk, so the frame it triggers never paints the grid from before it.
 - **Status transitions** mark the UI dirty: `refresh_session_statuses` requests
   a redraw when a session's status/activity/notification actually changes
   (a quiet `Busy → Waiting` produces no output, so the output detector can't

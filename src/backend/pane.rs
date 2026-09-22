@@ -1662,16 +1662,23 @@ impl Session {
             // that the multiplexer no longer knows (`exit` closed it), is
             // killed as far as it still exists and replaced.
             let old = shell.backend_id().to_string();
-            self.shell_pane = None;
-            // Both asked: tmux answers `is_dead` for a pane it no longer has
-            // with an empty line, which reads as alive, while it has no pid to
-            // give for one.
-            let alive = matches!(self.backend.pane_pid(&old), Ok(Some(_)))
-                && matches!(self.backend.is_dead(&old), Ok(false));
-            if alive {
-                return self.adopt_shell_pane(&old, rows, cols);
+            // Replaced only on the multiplexer's word that it is gone: a host
+            // that cannot be asked keeps its pane (the error says why), and a
+            // live one is reattached, keeping the pane if that fails — dropping
+            // it there would let the next ask spawn a second window beside one
+            // that never died.
+            if !self.backend.pane_gone(&old)? {
+                let kept = self.shell_pane.take();
+                return match self.adopt_shell_pane(&old, rows, cols) {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        self.shell_pane = kept;
+                        Err(e)
+                    }
+                };
             }
             let _ = self.backend.kill(&old);
+            self.shell_pane = None;
             self.info.shell_backend_id = None;
         }
 
