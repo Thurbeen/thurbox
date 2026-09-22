@@ -250,11 +250,28 @@ pub fn shell_surface(session: &str) -> String {
     format!("{session}{SHELL_SUFFIX}")
 }
 
-/// How long a paint waits before asking again for a shell it did not get: long
-/// enough that a host that keeps refusing costs one bounded question and one
-/// line every few seconds rather than every frame, short enough that "control
-/// mode is busy" is gone before anyone wonders why the shell has not come back.
+/// How long a paint first waits before asking again for a shell it did not get:
+/// short enough that "control mode is busy" is gone before anyone wonders why
+/// the shell has not come back. Doubled on each further failure up to
+/// [`SHELL_RETRY_CAP`] ([`retry_after`]), because an ask can end in a spawn that
+/// waits out a stalled link on the loop, and a fixed interval would freeze the
+/// interface again every couple of seconds for as long as the link stayed down.
 const SHELL_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+const SHELL_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The wait before the next ask, after `attempts` asks for the same shell.
+fn retry_after(base: std::time::Duration, attempts: u32) -> std::time::Duration {
+    let doublings = attempts.saturating_sub(1).min(16);
+    base.saturating_mul(1 << doublings).min(SHELL_RETRY_CAP)
+}
+
+/// A paint's ask for a live shell: which one it replaces (`""` for none), when
+/// it last asked, and how many times.
+struct ShellAsk {
+    shell: String,
+    at: std::time::Instant,
+    attempts: u32,
+}
 
 /// A session we have attached to, and the painted state of each of its panes.
 struct Live {
@@ -266,7 +283,7 @@ struct Live {
     shell: Painted,
     /// The shell painting last asked a replacement for, and when
     /// ([`Terminals::take_wanted_shells`]): `""` for none at all, or the backend
-    /// id of one that exited. Once per [`SHELL_RETRY`], not per frame: a shell
+    /// id of one that exited. Backed off from [`SHELL_RETRY`], not per frame: a shell
     /// that fails to open repaints its surface every frame, and re-asking each
     /// time would be a multiplexer round trip and an error per frame — but an ask
     /// that failed ("control mode is busy") is asked again, or the pane would sit
@@ -274,7 +291,7 @@ struct Live {
     /// seen live, so one that later ends is asked for at once. Kept here so a
     /// restarted or reattached session, a new `Live`, asks again. The explicit
     /// chord asks as often as it is pressed.
-    shell_asked: RefCell<Option<(String, std::time::Instant)>>,
+    shell_asked: RefCell<Option<ShellAsk>>,
 }
 
 impl Live {
@@ -436,8 +453,8 @@ pub struct Terminals {
     /// had no shell. Drained by the loop, which opens each one
     /// ([`Self::take_wanted_shells`]).
     wanted_shells: RefCell<std::collections::BTreeSet<String>>,
-    /// How long a paint waits before asking again for a shell it already
-    /// asked for and did not get ([`Live::shell_asked`]).
+    /// The first wait before a paint asks again for a shell it did not get
+    /// ([`retry_after`]).
     pub(crate) shell_retry: std::time::Duration,
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
@@ -1452,7 +1469,7 @@ impl Terminals {
     }
 
     /// Queue a replacement for `live`'s shell if it has none or it exited,
-    /// at most once per [`SHELL_RETRY`] ([`Live::shell_asked`]).
+    /// again only after [`retry_after`] ([`Live::shell_asked`]).
     fn want_a_live_shell(&self, id: &str, live: &Live) {
         let current = match &live.session.shell_pane {
             // Live: whatever was asked for came, so a later end is asked about
@@ -1466,15 +1483,22 @@ impl Terminals {
             Some(pane) => pane.backend_id().to_string(),
             None => String::new(),
         };
-        let recent = live
-            .shell_asked
-            .borrow()
-            .as_ref()
-            .is_some_and(|(asked, at)| *asked == current && at.elapsed() < self.shell_retry);
-        if recent {
-            return;
-        }
-        *live.shell_asked.borrow_mut() = Some((current, std::time::Instant::now()));
+        let mut asked = live.shell_asked.borrow_mut();
+        let attempts = match asked.as_ref() {
+            Some(ask) if ask.shell == current => {
+                if ask.at.elapsed() < retry_after(self.shell_retry, ask.attempts) {
+                    return;
+                }
+                ask.attempts + 1
+            }
+            _ => 1,
+        };
+        *asked = Some(ShellAsk {
+            shell: current,
+            at: std::time::Instant::now(),
+            attempts,
+        });
+        drop(asked);
         self.wanted_shells.borrow_mut().insert(id.to_string());
     }
 
@@ -2444,6 +2468,25 @@ mod tests {
             assert_eq!(buffer[(2, 0)].symbol(), painted, "cursor shown: {cursor}");
             assert_eq!(buffer[(0, 0)].symbol(), "$", "the grid paints either way");
         }
+    }
+
+    #[test]
+    fn a_shell_that_keeps_failing_is_asked_for_less_and_less_often() {
+        // Each ask can end in a spawn that waits out a stalled link on the loop,
+        // so a fixed interval froze the interface again every couple of seconds.
+        let base = std::time::Duration::from_secs(2);
+        assert_eq!(retry_after(base, 1), base);
+        assert_eq!(retry_after(base, 2), base * 2);
+        assert_eq!(retry_after(base, 3), base * 4);
+        assert_eq!(
+            retry_after(base, 40),
+            SHELL_RETRY_CAP,
+            "capped, never overflowing"
+        );
+        assert_eq!(
+            retry_after(std::time::Duration::ZERO, 5),
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]
