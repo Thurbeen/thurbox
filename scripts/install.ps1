@@ -150,7 +150,7 @@ function Set-Layout {
     if (-not (Test-Path $cli)) { return }
     $choice = $Layout
     if (-not $choice -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
-        $choice = Read-Host 'Layout: classic, or split-shell (a shell pane below the agent) [Enter keeps the current one]'
+        $choice = Read-Host 'Layout: classic (sessions beside the agent), split-shell (a shell pane below it), focus (the agent alone) or ide (shell below, plugin panes on the right) [Enter keeps the current one]'
     }
     if (-not $choice) { return }
     & $cli layout set $choice | Out-Null

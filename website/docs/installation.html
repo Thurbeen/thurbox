@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
           <h3 id="layout">Choosing a layout</h3>
           <p>
             The installer asks which arrangement the interface should start with
-            &mdash; press Enter for <code>classic</code>, the default. To choose without
+            &mdash; one of four, below; press Enter for <code>classic</code>, the default. To choose without
             being asked, pass <code>--layout</code> (or set
             <code>THURBOX_LAYOUT</code>, or <code>-Layout</code> for the PowerShell
             installer):
@@ -126,6 +126,66 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 │                     ││                                                                   │
 ╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
  Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <p>
+            <strong><code>focus</code></strong>: the agent pane alone, the whole
+            width, like VS Code's Zen mode or JetBrains' Distraction-Free mode.
+            <kbd>F9</kbd> brings the session list back and hides it again, and an
+            installed pane's own toggle does the same for its column. The shell stays
+            the agent pane's <em>Shell</em> tab.
+          </p>
+          <pre><code class="language-text">╭ ▶ F9 ─ Agent ─ Shell · F8 ─────────────────────────────────────── api (demo) [Uncovered] ╮
+│sh-5.3$ █                                                                                 │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+│                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <p>
+            <strong><code>ide</code></strong>: the arrangement VS Code and JetBrains
+            open with. The session list on the left, the agent in the middle with the
+            shell as a panel along its bottom, and a right-hand column holding every
+            other pane you installed (here the <code>tasks</code> example pane). With
+            nothing installed there, no column is reserved and the agent runs to the
+            right edge. The right column needs 120 columns
+            (<code>three_panel_min_cols</code>); below 80 the agent is alone.
+          </p>
+          <pre><code class="language-text">╭ Sessions ──────────◌◌╮╭ ◀ F9 ─ Agent ────────────────────────── api (demo) [Uncovered] ╮╭ Tasks ─────────────────────╮
+│── repo ──────────────││sh-5.3$ █                                                       ││  nothing on the list — n to│
+│ ◌ api  no status hoo…││                                                                ││────────────────────────────│
+│ ◌ docs  no status ho…││                                                                ││  0 open  ·  0 done         │
+│                      ││                                                                ││ space status   n new   ente│
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      │╰────────────────────────────────────────────────────────────────╯│                            │
+│                      │╭─────────────────────────────────────────────────── api (shell) ╮│                            │
+│                      ││sh-5.3$ █                                                       ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+│                      ││                                                                ││                            │
+╰──────────────────────╯╰────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O Open                            Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
           <p>
             Switch at any time with <code>thurbox-cli layout set &lt;name&gt;</code> or
             <code>layout</code> in settings. A <code>layout.lua</code> you edited is

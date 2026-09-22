@@ -94,7 +94,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
         include_str!("../../ui/plugins/20_agent.lua"),
     ),
     // Placed only by the layouts that want the shell on screen beside the agent
-    // (`split-shell`); everywhere else it is an optional pane left out.
+    // (`split-shell`, `ide`); everywhere else it is an optional pane left out.
     (
         "plugins/25_shell.lua",
         include_str!("../../ui/plugins/25_shell.lua"),

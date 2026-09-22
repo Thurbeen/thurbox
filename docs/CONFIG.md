@@ -423,10 +423,10 @@ all commented so defaults still apply out of the box.
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
-| `three_panel_min_cols` | `120` | width unlocking the optional third column |
+| `three_panel_min_cols` | `120` | width unlocking the `ide` preset's right-hand column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
-| `layout` | `"classic"` | the layout preset delivered as the interface's `layout.lua`: `classic` or `split-shell` (see below) |
+| `layout` | `"classic"` | the layout preset delivered as the interface's `layout.lua`: `classic`, `split-shell`, `focus` or `ide` (see below) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -438,10 +438,10 @@ config_version = 1
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
+three_panel_min_cols  = 120    # width for the ide preset's right column
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
-layout                = "classic"  # layout preset: classic | split-shell
+layout                = "classic"  # layout preset: classic | split-shell | focus | ide
 
 [features]
 shell_pane    = true
@@ -487,8 +487,10 @@ step with its output, so its sessions always keep their grids. Read at startup.
 
 The interface's `layout.lua` is written from one of the presets thurbox ships,
 and this key names which: `classic` (the session list beside the agent pane,
-the shell a tab of it) or `split-shell` (the same, with the selected session's
-shell in its own pane below the agent). `thurbox-cli layout set <name>`, the
+the shell a tab of it), `split-shell` (the same, with the selected session's
+shell in its own pane below the agent), `focus` (the agent pane alone, full
+width; F9 brings the list back) or `ide` (the list left, the shell along the
+bottom of the agent, other installed panes in a right-hand column). `thurbox-cli layout set <name>`, the
 settings panel's `layout` row, and the installers (`--layout` / `-Layout` /
 `THURBOX_LAYOUT`) all write it *and* rewrite `layout.lua` on the spot, backing up
 an edited copy as `layout.lua.bak` first. Editing the key by hand applies on the

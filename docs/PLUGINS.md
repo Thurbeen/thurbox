@@ -312,6 +312,8 @@ is `layout` in `settings.toml`:
 |---|---|
 | `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
 | `split-shell` | the same, with the selected session's shell in its own pane below the agent |
+| `focus` | the agent pane alone, full width; F9 and each pane's own toggle bring columns back |
+| `ide` | sessions left, the shell along the bottom of the agent, every other installed pane stacked in a right column |
 
 ```bash
 thurbox-cli layout list              # the presets, the chosen one, and whether yours is edited
@@ -385,6 +387,25 @@ instead, as `split-shell` does (`ui/layouts/split-shell.lua`):
 ```lua
 { axis = "vertical", children = { { slot = "center" }, { slot = "shell", len = 12 } } }
 ```
+
+`focus` and `ide` are drawn in `ui/README.md`. Each borrows an IDE's shape:
+
+- **`focus`** is VS Code's Zen mode and JetBrains' Distraction-Free mode: the
+  agent alone. The list starts hidden through `lib.panels.starts("sessions",
+  false)` rather than a reading of its own, so F9 shows it on the first press
+  and the agent pane's chevron agrees. A third-party column stays closed until
+  its own toggle opens it, and then sits right of the agent.
+- **`ide`** is the default VS Code and JetBrains window: the list where the
+  explorer is, the shell as the bottom panel under the agent only, and a
+  right-hand column (VS Code's secondary side bar). That column takes every
+  filled slot the preset does not place by name, sorted, stacked, and declared
+  open with `lib.panels.starts`, so a pane's toggle closes it on one press. It
+  exists only while one is filled, and goes first below `three_panel_min_cols`.
+
+A preset that places the session list nowhere still has a selection: the list
+owns `store.selected` and writes it from its render, so while it is off screen
+the agent pane keeps it — it spends a `focus_session` request and, with nothing
+selected, selects the list's first row.
 
 ## The smallest plugin
 
@@ -633,7 +654,7 @@ arrangement is two columns:
 |---|---|---|
 | `sessions` | far left | width ≥ 80 **and** toggled open (F9) |
 | `center` | the remainder | always |
-| `shell` | below `center` | only in the `split-shell` [layout preset](#layout-presets), at width ≥ 80 with 20+ rows for the two panes |
+| `shell` | below `center` | only in the `split-shell` and `ide` [layout presets](#layout-presets), at width ≥ 80 with 20+ rows for the two panes |
 
 A pane that only ever floats — the new-session flow is the bundled example —
 names a slot nothing places, so it never competes for the centre.
@@ -648,8 +669,8 @@ The one exception is a pane that declares **`optional = true`**: it ships to
 everyone, but only some arrangements place it, and leaving it out is a choice
 rather than a mistake — so `plugin check` does not report its slot, and the
 Interface tab lists it as `hidden` rather than `no slot`. The companion shell pane
-(`plugins/25_shell.lua`, slot `shell`) is the bundled one: `split-shell` places
-it, `classic` and every layout written before it existed do not.
+(`plugins/25_shell.lua`, slot `shell`) is the bundled one: `split-shell` and `ide`
+place it, `classic` and every layout written before it existed do not.
 
 Several plugins may name the same slot. `center` is a **switch** slot — one
 occupant is visible at a time and focusing one brings it forward, so the focus

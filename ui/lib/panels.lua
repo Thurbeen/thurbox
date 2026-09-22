@@ -25,6 +25,19 @@ local KEY = "panels."
 --- this panel starts as".
 local OPEN_AT_START = { sessions = true }
 
+--- Declare where one panel starts, for an arrangement whose default differs.
+---
+--- A preset that starts the list closed (`focus`) or a plugin column open
+--- (`ide`) says so here rather than reading "unset" its own way, so the
+--- panel's toggle and every pane asking `shown` agree with what is on screen —
+--- otherwise a toggle's first press would flip an unset state to the value it
+--- already appeared to have, and change nothing. Held in this module rather
+--- than in `store`: it is a property of the arrangement loaded now, and a
+--- switch of layout rebuilds the VM, so another preset never inherits it.
+function panels.starts(name, open)
+  OPEN_AT_START[name] = open == true
+end
+
 --- Open state of one panel. Unset reads as the panel's start state, which for
 --- everything but the session list is closed — v1's.
 function panels.shown(name)
