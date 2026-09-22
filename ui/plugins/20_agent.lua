@@ -157,6 +157,32 @@ local function set_tab(id, tab)
   state["tab:" .. id] = tab ~= AGENT_TAB and tab or nil
 end
 
+--- Keep the keyboard on the shell when the arrangement moves it.
+---
+--- A layout that places the shell pane leaves it out when the screen is
+--- narrow or short, and puts it back when there is room. Either way the shell
+--- someone was typing into must keep the keyboard: off screen, it carries on as
+--- this pane's Shell tab (and this pane takes focus, which the kernel may have
+--- given the list); back on screen, a focused Shell tab hands over to it.
+local function follow_the_shell(ctx, id)
+  if not id or not shell_enabled() then
+    return
+  end
+  if shell_below() then
+    if ctx.focused and state["tab:" .. id] == SHELL_TAB then
+      set_tab(id, AGENT_TAB)
+      command("focus", { text = SHELL_PANE })
+    end
+  elseif store["shell.focused"] then
+    store["shell.focused"] = nil
+    set_tab(id, SHELL_TAB)
+    command("shell", { session = id })
+    if not ctx.focused then
+      command("focus", { text = NAME })
+    end
+  end
+end
+
 --- The surface a tab addresses: the session itself, or its `#shell` sibling.
 ---
 --- The same spelling the surface node carries and the kernel resolves, so
@@ -995,6 +1021,7 @@ return {
     local level = chrome.level(ctx.focused)
     local border = chrome.border_style(level)
     select_without_the_list()
+    follow_the_shell(ctx, store.selected)
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,

@@ -89,17 +89,12 @@ end
 --- as open, is what makes that toggle's first press close it.
 local function right_panes(ctx)
   local names = {}
-  if type(ctx.slots) == "table" then
-    for slot, occupied in pairs(ctx.slots) do
-      if occupied == true and not KNOWN[slot] then
-        panels.starts(slot, true)
-        if panels.shown(slot) then
-          names[#names + 1] = slot
-        end
-      end
+  for _, slot in ipairs(panels.others(ctx, KNOWN)) do
+    panels.starts(slot, true)
+    if panels.shown(slot) then
+      names[#names + 1] = slot
     end
   end
-  table.sort(names)
   return names
 end
 

@@ -85,6 +85,28 @@ pub fn matching(contents: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.layout == contents)
 }
 
+/// A line for the message band when `settings.toml` names a preset that an
+/// edited `layout.lua` keeps off the screen.
+///
+/// Delivery never replaces an edited layout, so choosing a preset by editing
+/// `layout` by hand changes nothing while one is on disk — and the settings
+/// row and `layout list` then name an arrangement nobody is looking at. Said
+/// rather than fixed: switching would move the user's file, which only an
+/// explicit `layout set` does. Nothing to say for `classic` (an edited copy of
+/// the default is simply the user's own layout) or for a name that is no
+/// preset (delivery already ran the default for it).
+pub fn not_in_force(dir: &Path, chosen: &str) -> Option<String> {
+    let preset = find(chosen).filter(|preset| preset.name != DEFAULT)?;
+    let current = std::fs::read_to_string(dir.join(bundled::LAYOUT)).ok()?;
+    if current == preset.layout || bundled::is_untouched(dir, bundled::LAYOUT, &current) {
+        return None;
+    }
+    Some(format!(
+        "layout {name} is chosen, but your edited layout.lua is in use ·          `thurbox-cli layout set {name}` switches (your copy is kept as a backup)",
+        name = preset.name
+    ))
+}
+
 /// What [`apply`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Applied {

@@ -1,8 +1,8 @@
 -- The arrangement: the `split-shell` preset.
 --
--- `classic` with one change: the selected session's companion shell has a pane
--- of its own, below the agent, so the two are on screen at once instead of
--- taking turns as tabs of one pane.
+-- `classic` with the terminal split the way tmux users and Warp split one: the
+-- selected session's companion shell has a pane of its own below the agent, so
+-- the two are on screen at once instead of taking turns as tabs of one pane.
 --
 --   ┌─────────────────────────────────────────┐ header  (kernel)
 --   ├──────────┬──────────────────────────────┤
@@ -16,6 +16,11 @@
 --   ├─────────────────────────────────────────┤
 --   │ footer                                  │ (kernel)
 --   └─────────────────────────────────────────┘
+--
+-- A pane installed into a slot this file does not name (a file tree, a queue)
+-- gets a column on the right, open until its own toggle closes it, and that
+-- column is the first thing to go as the screen narrows (below
+-- `three_panel_min_cols`). Below `two_panel_min_cols` the agent is alone.
 --
 -- `thurbox-cli layout set split-shell` (or `layout` in settings) wrote this
 -- file. Edit it freely: thurbox stops updating a layout.lua you have changed,
@@ -33,13 +38,14 @@
 
 local panels = require("lib.panels")
 
--- `Settings::two_panel_min_cols`: below it there is room for the agent alone.
--- The fallback keeps a kernel that published nothing on a working screen.
+-- `Settings::two_panel_min_cols` and `three_panel_min_cols`, with their
+-- defaults, so a kernel that published nothing still gets a working screen.
 local TWO_PANEL_MIN_COLS_DEFAULT = 80
+local THREE_PANEL_MIN_COLS_DEFAULT = 120
 
-local function two_panel_min_cols()
+local function setting(name, default)
   local settings = thurbox and thurbox.settings
-  return (settings and settings.two_panel_min_cols) or TWO_PANEL_MIN_COLS_DEFAULT
+  return (settings and settings[name]) or default
 end
 
 -- Below 20 rows the header goes first, the footer below 4.
@@ -55,6 +61,9 @@ local SHELL_MIN_ROWS = 8
 -- The centre column must be at least this tall before it is split at all;
 -- below it the agent keeps every row and the shell is its tab again.
 local SPLIT_MIN_ROWS = 20
+
+-- Slots this file places by name. Any other a plugin fills goes to the right.
+local KNOWN = { sessions = true, center = true, shell = true, search = true }
 
 local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0
@@ -88,8 +97,23 @@ local function centre_column(ctx, rows)
   }
 end
 
+--- Installed panes on screen, in a stable order. Each starts open — a pane
+--- with no toggle of its own would otherwise never be seen — and its toggle,
+--- if it has one, closes it on the first press.
+local function right_panes(ctx)
+  local names = {}
+  for _, slot in ipairs(panels.others(ctx, KNOWN)) do
+    panels.starts(slot, true)
+    if panels.shown(slot) then
+      names[#names + 1] = slot
+    end
+  end
+  return names
+end
+
 return function(ctx)
   local height = ctx.height or 0
+  local width = ctx.width or 0
   local children = {}
 
   if height >= HEADER_MIN_ROWS then
@@ -102,7 +126,7 @@ return function(ctx)
   local header_rows = height >= HEADER_MIN_ROWS and 1 or 0
   local content_rows = height - header_rows - search_rows - band_rows
 
-  if (ctx.width or 0) < two_panel_min_cols() then
+  if width < setting("two_panel_min_cols", TWO_PANEL_MIN_COLS_DEFAULT) then
     children[#children + 1] = { slot = "center" }
   else
     local columns = {}
@@ -112,6 +136,15 @@ return function(ctx)
       columns[#columns + 1] = { slot = "sessions", pct = 25, min = 20 }
     end
     columns[#columns + 1] = centre_column(ctx, content_rows)
+
+    local right = right_panes(ctx)
+    if #right > 0 and width >= setting("three_panel_min_cols", THREE_PANEL_MIN_COLS_DEFAULT) then
+      local stack = {}
+      for _, slot in ipairs(right) do
+        stack[#stack + 1] = { slot = slot }
+      end
+      columns[#columns + 1] = { axis = "vertical", pct = 22, min = 30, children = stack }
+    end
     children[#children + 1] = { axis = "horizontal", children = columns }
   end
 

@@ -92,6 +92,14 @@ return {
 
   render = function(ctx)
     local level = ctx.focused and "focused" or "active"
+    -- Whether the keyboard is here, for the agent pane: when an arrangement
+    -- takes this pane off screen while it has focus, the shell goes on in the
+    -- agent pane's Shell tab rather than handing the next keystroke to the
+    -- agent. Only while drawn, so the last frame this pane painted is what
+    -- answers. Written on change, like every other shared value.
+    if (store["shell.focused"] == true) ~= ctx.focused then
+      store["shell.focused"] = ctx.focused or nil
+    end
     local session = selected()
 
     if not session then
