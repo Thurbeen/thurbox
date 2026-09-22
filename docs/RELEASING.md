@@ -124,6 +124,25 @@ its `branch` to the repository's default: harmless from `main`, where that is th
 ref already checked out, but from `v1.x` it tries to push that branch's tip onto
 `main`, is rejected as a non-fast-forward, and the tag never leaves the runner.
 
+## The Nix flake is not a release channel
+
+`flake.nix` builds whatever ref it is pointed at, and nothing in `cd.yml`
+touches it. A flake cannot read git tags, so it cannot know which release a
+commit is. It takes the base from `Cargo.toml`, drops the `-dev`, and adds the
+commit's date: `0.0.0-unstable-2026-09-22`. `thurbox-cli version` also shows
+the short hash.
+
+That string works because of two separate checks. `build.rs` turns on the
+`dev_build` cfg only for a version containing `-dev`, and that cfg moves a
+binary onto the `thurbox-dev` socket and data directory. A Nix install has to
+share the release's sessions, so it can't carry `-dev`. The runtime
+`is_dev_build()` also treats a `0.0.0` version as unreleased, and that keeps
+auto-update and `thurbox-cli update` from trying to replace a binary in the
+read-only Nix store. Anyone who wants a release pins the flake input to its
+tag. The binary still reports `0.0.0-unstable-…`, dated to the tagged commit. Being unreleased has one
+more effect: `official_ref()` fetches official extensions from `main` rather
+than from a tag, which is the same thing a source build does.
+
 ## Checklist for a release that changes artifacts
 
 - [ ] `thurbox` and `thurbox-cli` are still in **both** archive steps of `cd.yml`
@@ -132,7 +151,8 @@ ref already checked out, but from `v1.x` it tries to push that branch's tip onto
       `packaging/homebrew/Formula/thurbox.rb`, `packaging/aur/thurbox/PKGBUILD`,
       `packaging/aur/thurbox-bin/PKGBUILD`,
       `packaging/winget/manifests/*installer.yaml`, `scripts/install.sh`,
-      `scripts/install.ps1`.
+      `scripts/install.ps1`, and `nix/package.nix` (`cargoBuildFlags` and the
+      wrapper loop).
 - [ ] Installers handle its **absence**, so installing an older release still
       works (`scripts/install.bats` asserts this).
 - [ ] Adding to `BINARIES` was a deliberate decision, not a reflex.

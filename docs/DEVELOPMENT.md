@@ -10,16 +10,16 @@ isolated sandbox.
 The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
 `rust-toolchain.toml`), `tmux`, `shellcheck`, `bats`, Node, `cargo-nextest`,
 `cargo-deny`, `cocogitto`, `just`, and the demo stack (`vhs`/`ffmpeg`/`ttyd`).
-It does **not** pin versions: no `flake.lock` is committed and
-`rust-toolchain.toml` says `stable`, so a fresh checkout resolves whatever is
-current. No CI workflow uses Nix — this is a local convenience, not the thing
-CI runs.
+`flake.lock` pins nixpkgs, so the shell's tools move only when someone runs
+`nix flake update`; the Rust toolchain still follows `stable` from
+`rust-toolchain.toml`. The same flake also packages thurbox itself
+(`nix/package.nix`), which CI's `nix` job builds; the rest of CI installs its
+tools without Nix, so the shell is a local convenience, not what CI runs.
 
 ```bash
 # one-time, if not done already: enable flakes
 #   mkdir -p ~/.config/nix && echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
 
-nix flake lock        # one-time: generate/commit flake.lock (pins inputs)
 nix develop           # enter the pinned shell
 # ...or, with direnv installed, once:
 direnv allow          # auto-enters the shell on `cd` (see .envrc)
