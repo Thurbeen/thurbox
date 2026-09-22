@@ -1587,6 +1587,182 @@ fn ide_shows_the_list_left_and_the_shell_along_the_bottom() {
 }
 
 #[test]
+fn ide_f8_moves_focus_into_the_shell_panel_and_back() {
+    let Some((_profile, mut tui)) = session_under_layout("ide") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        band_names(frame, "Agent")
+    });
+    tui.send(F8);
+    tui.wait_until("the shell panel to take focus", |frame| {
+        band_names(frame, "Shell")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-ide-\"\"marker\r");
+    tui.wait_for("tb-ide-marker");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, marker) = tui.find("tb-ide-marker");
+    assert!(marker > shell_title, "typed into the panel:\n{}", tui.frame());
+    tui.send(F8);
+    tui.wait_until("focus to return to the agent", |frame| {
+        band_names(frame, "Agent")
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// Ctrl+T there and back twice, typing into each side: the shell is its own
+/// live terminal, and what it printed is still there after the agent has had
+/// the pane.
+fn exercise_the_shell_tab(tui: &mut Tui) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    // The pane paints before the shell inside it has drawn a prompt, and a
+    // keystroke sent in between is lost.
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-in-\"\"shell\r");
+    tui.wait_for("tb-in-shell");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Agent");
+    tui.wait_gone("tb-in-shell");
+    tui.send(b"echo tb-in-\"\"agent\r");
+    tui.wait_for("tb-in-agent");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_for("tb-in-shell");
+    assert!(
+        !tui.frame().contains("tb-in-agent"),
+        "the Shell tab must show the shell, not the agent's terminal:\n{}",
+        tui.frame()
+    );
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-still-\"\"live\r");
+    tui.wait_for("tb-still-live");
+}
+
+fn wait_for_view(tui: &Tui, view: &str) {
+    tui.wait_until(
+        &format!("the {view} view to be the one on screen"),
+        |frame| band_names(frame, view),
+    );
+}
+
+#[test]
+fn classic_keeps_the_shell_a_tab_that_switches_and_holds_a_working_shell() {
+    // `classic` is the unchanged default: the companion shell is a tab of the
+    // agent pane that Ctrl+T raises and lowers, and no shell pane appears.
+    let Some((_profile, mut tui)) = session_under_layout("classic") else {
+        return;
+    };
+    assert!(
+        !tui.frame().contains("probe (shell)"),
+        "classic places no shell pane:\n{}",
+        tui.frame()
+    );
+    exercise_the_shell_tab(&mut tui);
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_exited_shell_comes_back_in_the_shell_pane() {
+    // `exit` typed into the shell pane used to leave its last screen frozen
+    // there for good: keystrokes went nowhere, and neither F8 nor a restart of
+    // the pane's focus brought a shell back.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.send(F8);
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-first-\"\"shell; exit\r");
+    tui.wait_for("tb-first-shell");
+    tui.wait_gone("tb-first-shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-second-\"\"shell\r");
+    tui.wait_for("tb-second-shell");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, marker) = tui.find("tb-second-shell");
+    assert!(marker > shell_title, "in the shell pane:\n{}", tui.frame());
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_exited_shell_tab_opens_a_new_shell() {
+    // The same dead shell under `classic`: its tab kept painting the frozen
+    // screen and Ctrl+T toggled between that and the agent forever.
+    let Some((_profile, mut tui)) = session_under_layout("classic") else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-first-\"\"shell; exit\r");
+    tui.wait_for("tb-first-shell");
+    tui.wait_gone("tb-first-shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-second-\"\"shell\r");
+    tui.wait_for("tb-second-shell");
+    assert!(tui.frame().contains("probe (shell)"), "{}", tui.frame());
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn the_shell_keeps_the_keyboard_when_the_screen_narrows_and_widens() {
+    // Typing in the shell pane, then narrowing the terminal, took the shell
+    // pane off screen and dropped focus onto the agent pane showing the AGENT:
+    // the next line typed went to the agent. And the other way round: on the
+    // agent's Shell tab, widening gave the agent back its own view.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.send(F8);
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+
+    tui.resize(40, 70);
+    tui.wait_until("the agent pane to show the shell", |frame| {
+        frame.contains("probe (shell)") && !frame.contains("(probe-agent)")
+    });
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-narrow-\"\"marker\r");
+    tui.wait_for("tb-narrow-marker");
+
+    tui.resize(40, 120);
+    tui.wait_until("both panes to be back", |frame| {
+        frame.contains("probe (shell)") && frame.contains("(probe-agent)")
+    });
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-wide-\"\"marker\r");
+    tui.wait_for("tb-wide-marker");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, narrow) = tui.find("tb-narrow-marker");
+    let (_, wide) = tui.find("tb-wide-marker");
+    assert!(
+        narrow > shell_title && wide > shell_title,
+        "both lines went to the shell, none to the agent:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
 fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
     // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
     // agent's EOF, and the delete it also means is left to the session list.

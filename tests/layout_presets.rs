@@ -677,3 +677,149 @@ fn with_the_list_hidden_a_focus_request_still_lands() {
         "spent, not replayed"
     );
 }
+
+// ── defects found running the first split-shell ───────────────────────────
+
+/// A third-party column in the one spot every preset but `classic` can place:
+/// installed, never mentioned by the layout.
+#[test]
+fn split_shell_gives_third_party_columns_a_right_hand_column() {
+    let dir = delivered("split-shell");
+    with_a_third_party_column(dir.path(), "files");
+    with_a_third_party_column(dir.path(), "fleetqueue");
+    let host = host_at(dir.path());
+    publish(&host);
+
+    let wide = slots(&host, 200, 50);
+    let center = rect_of(&wide, "center").expect("center");
+    let files = rect_of(&wide, "files").expect("placed, not dropped");
+    let queue = rect_of(&wide, "fleetqueue").expect("placed, not dropped");
+    assert_eq!(files.x, queue.x, "one right-hand column: {wide:?}");
+    assert!(files.x >= center.x + center.width, "{wide:?}");
+    let unplaced = host
+        .unplaced_slots(thurbox::kernel::layout::REFERENCE)
+        .expect("resolves");
+    assert!(unplaced.is_empty(), "{unplaced:?}");
+}
+
+#[test]
+fn every_preset_but_classic_places_third_party_columns() {
+    // `classic` is the file as it shipped; a column there is placed by hand.
+    for preset in ["split-shell", "focus", "ide"] {
+        let dir = delivered(preset);
+        with_a_third_party_column(dir.path(), "files");
+        let host = host_at(dir.path());
+        publish(&host);
+        let unplaced = host
+            .unplaced_slots(thurbox::kernel::layout::REFERENCE)
+            .expect("resolves");
+        assert!(unplaced.is_empty(), "{preset}: {unplaced:?}");
+    }
+}
+
+#[test]
+fn with_the_list_hidden_by_f9_a_focus_request_still_lands_under_classic() {
+    // Not only `focus`: F9 hides the list anywhere, and a clicked notification
+    // or `thurbox-cli session focus` was held until the list came back.
+    let dir = delivered("classic");
+    let host = host_at(dir.path());
+    publish(&host);
+    host.render(index_of(&host, "sessions"), ctx(40, 12))
+        .expect("render the list");
+    toggle_sessions(&host);
+    let on_screen: std::collections::HashSet<String> = slots(&host, 160, 48)
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect();
+    assert!(!on_screen.contains("sessions"));
+    host.note_placed(&on_screen);
+
+    let beta = row("beta").id;
+    host.set_shared_string("focus_session", &beta);
+    let agent = host
+        .render(index_of(&host, "agent"), ctx(160, 46))
+        .expect("render the agent pane");
+    assert_eq!(agent.node.first_session_surface(), Some(beta.as_str()));
+}
+
+fn focused(width: u16, height: u16) -> RenderContext {
+    RenderContext {
+        focused: true,
+        ..ctx(width, height)
+    }
+}
+
+fn note_arranged(host: &LuaHost, width: u16, height: u16) {
+    let on_screen: std::collections::HashSet<String> = slots(host, width, height)
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect();
+    host.note_placed(&on_screen);
+}
+
+#[test]
+fn a_focused_shell_pane_that_leaves_the_screen_hands_its_shell_to_the_agent_pane() {
+    // Narrowing took the shell pane away and focus fell to the agent pane —
+    // showing the agent, so the next line meant for the shell reached the agent.
+    for preset in ["split-shell", "ide"] {
+        let dir = delivered(preset);
+        let host = split_shell_with_a_selection(dir.path(), 160, 48);
+        host.render(index_of(&host, "shell"), focused(120, 16))
+            .expect("render the focused shell pane");
+
+        note_arranged(&host, 60, 48);
+        let agent = host
+            .render(index_of(&host, "agent"), focused(60, 46))
+            .expect("render the agent pane");
+        let surface = agent.node.first_session_surface().expect("a surface");
+        assert!(
+            surface.ends_with("#shell"),
+            "{preset}: the agent pane shows the shell: {surface}"
+        );
+    }
+}
+
+#[test]
+fn the_shell_tab_hands_the_keyboard_to_a_shell_pane_that_appears() {
+    // The other direction: typing on the agent's Shell tab, then widening, gave
+    // the agent pane its own view back and left the keyboard with the agent.
+    let dir = delivered("split-shell");
+    let host = split_shell_with_a_selection(dir.path(), 60, 48);
+    host.on_action(index_of(&host, "agent"), "shell.open")
+        .expect("the chord opens the Shell tab");
+    host.drain_commands();
+
+    note_arranged(&host, 160, 48);
+    let agent = host
+        .render(index_of(&host, "agent"), focused(120, 30))
+        .expect("render the agent pane");
+    let surface = agent.node.first_session_surface().expect("a surface");
+    assert!(!surface.ends_with("#shell"), "{surface}");
+    let focus: Vec<String> = host
+        .drain_commands()
+        .iter()
+        .filter(|command| command.kind() == "focus")
+        .map(|command| format!("{command:?}"))
+        .collect();
+    assert!(
+        focus.iter().any(|command| command.contains("\"shell\"")),
+        "focus follows the shell into its pane: {focus:?}"
+    );
+}
+
+#[test]
+fn a_chosen_preset_an_edited_layout_keeps_out_of_force_is_said_at_start() {
+    // settings.toml named split-shell while an edited layout.lua stayed on
+    // screen, and nothing said the choice was not in force.
+    let dir = delivered("classic");
+    assert_eq!(presets::not_in_force(dir.path(), "split-shell"), None);
+    std::fs::write(
+        dir.path().join("layout.lua"),
+        "-- mine\nreturn function() return { children = { { slot = \"center\" } } } end\n",
+    )
+    .expect("edit layout.lua");
+    let note = presets::not_in_force(dir.path(), "split-shell").expect("a note");
+    assert!(note.contains("thurbox-cli layout set split-shell"), "{note}");
+    assert_eq!(presets::not_in_force(dir.path(), "classic"), None);
+    assert_eq!(presets::not_in_force(dir.path(), "nope"), None);
+}

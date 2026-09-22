@@ -249,7 +249,7 @@ impl Harness {
                     ..Default::default()
                 },
                 shell: Painted::default(),
-                shell_asked: std::cell::Cell::new(false),
+                shell_asked: std::cell::RefCell::new(None),
             },
         );
         // Both panes were born at the terminal's size; the arrangement is what
@@ -329,7 +329,9 @@ impl Harness {
     fn surface_in(&self, slot: &str) -> Option<Node> {
         let session = match slot {
             "center" | "agent" => self.id.clone(),
-            "shell" => self.shell(),
+            // The agent pane on its Shell tab: the same shell surface, in the
+            // agent's slot.
+            "shell" | "shell-tab" => self.shell(),
             _ => return None,
         };
         Some(Node::Surface {
@@ -882,4 +884,26 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
         1,
         "asked once"
     );
+}
+
+#[tokio::test]
+async fn one_shell_painted_in_two_rects_in_one_frame_keeps_the_first() {
+    // An agent pane edited before shell panes existed still offers its Shell
+    // tab, and a layout that also places the shell pane then painted one
+    // terminal into two rects every frame: the pty took whichever size came
+    // last, and the other rect showed it wrapped at the wrong width.
+    let harness = Harness::new(HEIGHT, WIDTH);
+    let both = column_and_centre("sessions", "shell", "shell-tab");
+    let screen = harness.frame(&both, WIDTH, HEIGHT);
+    let first = screen.rect("shell");
+    let second = screen.rect("shell-tab");
+    assert_ne!((first.height, first.width), (second.height, second.width));
+
+    harness.frame(&both, WIDTH, HEIGHT);
+    let sizes = harness.backend.sizes(SHELL_PANE);
+    assert!(
+        sizes.iter().all(|size| *size == (first.height, first.width)),
+        "the shell is sized to one rect, not both: {sizes:?}"
+    );
+    assert_eq!(harness.grid(true), (first.height, first.width));
 }
