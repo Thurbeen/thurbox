@@ -34,6 +34,7 @@ jobs:
       winget: ${{ steps.filter.outputs.winget }}
       pr_title: ${{ steps.filter.outputs.pr_title }}
       windows_e2e_probes: ${{ steps.filter.outputs.windows_e2e_probes }}
+      nix: ${{ steps.filter.outputs.nix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -120,6 +121,22 @@ jobs:
               # advisory again, which is the whole defect (#1170).
               - 'scripts/dev/e2e/lib/e2e-common.sh'
               - 'src/session/mod.rs'
+              - '.github/workflows/ci.yml'
+            # The package builds the crate, so every Rust input is a Nix input
+            # too: a new `include_str!` outside the package's source set, or a
+            # dependency that needs a system library, breaks only this job.
+            nix:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'src/**'
+              - 'build.rs'
+              - 'ui/**'
+              - 'examples/**'
+              - 'extensions/**'
+              - 'benches/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - '.github/workflows/ci.yml'
             # cog.toml is an input to the checker, not merely a neighbour: it
             # declares the type and scope allowlists `cog verify` enforces and
@@ -533,6 +550,21 @@ jobs:
             target/release/thurbox-cli
           if-no-files-found: warn
 
+  nix:
+    name: Nix package
+    needs: changes
+    if: needs.changes.outputs.nix == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      # Evaluates every output for every system the flake declares, and runs
+      # this runner's checks, which evaluate the NixOS module against the
+      # package. The package's own unit tests run inside `nix build`.
+      - run: nix flake check --all-systems -L
+      - run: nix build -L
+      - run: ./result/bin/thurbox-cli version
+
   all-checks:
     name: All Checks
     if: always()
@@ -551,6 +583,7 @@ jobs:
       - install-script-ps
       - winget-packaging
       - windows-e2e-probes
+      - nix
       - shellcheck
       - lua
       - website-lint

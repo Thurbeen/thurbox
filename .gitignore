@@ -69,3 +69,6 @@ website/assets/*.mp4
 # human to annotate in a browser. Working material for one review, not part of
 # the project — the same entry firstmate carries.
 .lavish/
+
+# nix build output
+/result
