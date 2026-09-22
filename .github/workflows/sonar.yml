@@ -1,0 +1,49 @@
+# Analyses `main` on SonarCloud after every merge.
+#
+# The `sonarqube` job in `ci.yml` analyses a pull request, and SonarCloud files
+# that under the pull request, never under the `main` branch. With no scan on
+# `main` itself the project's dashboard and its quality gate describe whatever
+# commit was last analysed there, however many fixes have landed since.
+#
+# The scan lives here rather than behind a `push:` trigger in `ci.yml`, because
+# that workflow is built around a pull request: `changes` diffs against a base,
+# `pr-title-checker` reads a title, `all-checks` is the required status, and a
+# push would run the whole Rust matrix again for a commit its pull request
+# already passed. This one job is what `main` needs.
+#
+# SonarCloud's automatic analysis must stay off for the project: it refuses a CI
+# scan while it is on, which would fail this job and the pull request one too.
+name: SonarQube (main)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer merge supersedes an analysis still running for the one before it.
+concurrency:
+  group: sonar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonarqube:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # Reports the gate on the commit, so a red `main` is visible in GitHub and
+      # not only on SonarCloud. Nothing waits on it: `cd.yml` has its own trigger.
+      - name: SonarQube Quality Gate check
+        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa # v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
