@@ -108,6 +108,30 @@ pub fn not_in_force(dir: &Path, chosen: &str) -> Option<String> {
     ))
 }
 
+/// Whether a switch may rewrite the `layout.lua` in `dir`, which `chosen` says
+/// how the interface found.
+///
+/// The one rule `thurbox-cli layout set` and the settings panel's `layout` row
+/// both follow. A user's own copy and a `THURBOX_UI_DIR` override are an
+/// interface somebody runs, so a switch they ask for is theirs to make. A
+/// checkout is a repository's working tree, and rewriting its file would be an
+/// edit to somebody's source nobody asked for; the fallback is a throwaway copy
+/// that no next start would read.
+pub fn may_switch(dir: &Path, chosen: bundled::Chosen) -> Result<(), String> {
+    match chosen {
+        bundled::Chosen::UserCopy | bundled::Chosen::Override => Ok(()),
+        bundled::Chosen::Checkout => Err(format!(
+            "{} is a checkout (THURBOX_UI_DIR), and a layout switch does not rewrite \
+             a repository's files — unset THURBOX_UI_DIR to switch your own interface",
+            dir.display()
+        )),
+        bundled::Chosen::Fallback => Err(format!(
+            "there is no interface directory of your own to switch ({})",
+            chosen.reason()
+        )),
+    }
+}
+
 /// What [`apply`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Applied {
@@ -182,6 +206,17 @@ mod tests {
     #[test]
     fn an_unknown_name_runs_the_default_rather_than_nothing() {
         assert_eq!(chosen_or_default("nope").name, DEFAULT);
+    }
+
+    #[test]
+    fn a_switch_may_write_the_users_copy_and_an_override_but_not_a_checkout() {
+        // One rule for `thurbox-cli layout set` and the settings row: they used
+        // to disagree, the panel refusing an override the CLI rewrote.
+        let dir = Path::new("/x/ui");
+        assert!(may_switch(dir, bundled::Chosen::UserCopy).is_ok());
+        assert!(may_switch(dir, bundled::Chosen::Override).is_ok());
+        assert!(may_switch(dir, bundled::Chosen::Checkout).is_err());
+        assert!(may_switch(dir, bundled::Chosen::Fallback).is_err());
     }
 
     #[test]

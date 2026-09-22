@@ -799,6 +799,8 @@ pub struct WiredPane {
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    /// Chunks of live output fed to the parser so far — the redraw signal.
+    output_count: Arc<AtomicU64>,
     /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
     /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
@@ -877,17 +879,22 @@ impl WiredPane {
         self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
-    /// When this pane last produced output, as epoch milliseconds.
-    ///
-    /// The lock-free redraw signal: a renderer compares it against the stamp
-    /// it last painted at, so a quiet pane costs one atomic load instead of a
-    /// repaint. Strictly increasing per chunk of live output, and moved only
-    /// once the parser holds that chunk — which is what lets the render loop's
-    /// cheap output-change detector
-    /// ([`crate::kernel::terminal::Terminals::output_generation`]) spot new
-    /// output without locking the vt100 parser, and never paint ahead of it.
+    /// When this pane last produced output, as epoch milliseconds — a clock,
+    /// read as "how long has it been quiet" (the printing spinner, the
+    /// stuck-`working` fallback), stored only once the parser holds that output.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
+    }
+
+    /// How many chunks of live output the parser has taken, which is the
+    /// lock-free redraw signal: a renderer compares it against the count it last
+    /// painted at, so a quiet pane costs one atomic load instead of a repaint.
+    /// A count and not the clock above, because two chunks inside one
+    /// millisecond are two changes, and moved only after the parser holds the
+    /// chunk, so a paint it triggers never shows the grid from before it. What
+    /// [`crate::kernel::terminal::Terminals::output_generation`] sums.
+    pub fn output_count(&self) -> u64 {
+        self.output_count.load(Ordering::Acquire)
     }
 
     /// Whether the pane's process/stream has ended.
@@ -898,6 +905,12 @@ impl WiredPane {
     /// behind.
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Force the "stream ended" state, for tests of what replaces a shell.
+    #[cfg(test)]
+    pub fn mark_exited_for_test(&self) {
+        self.exited.store(true, Ordering::SeqCst);
     }
 
     /// The backend-specific pane identifier.
@@ -938,11 +951,15 @@ impl WiredPane {
         self.residency.is_resident()
     }
 
-    /// [`Self::last_output_at`], moved as well whenever the grid is rebuilt:
-    /// the stamp for anything read off the grid, which a rebuild changes
-    /// without the pane printing anything.
+    /// [`Self::output_count`], moved as well whenever the grid is rebuilt: the
+    /// stamp for anything read off the grid, which a rebuild changes without
+    /// the pane printing anything.
+    ///
+    /// Over the count rather than the `last_output_at` clock, for the reason
+    /// the count exists: two chunks inside one millisecond are two changes, and
+    /// the count moves only once the parser holds the chunk.
     pub fn content_stamp(&self) -> u64 {
-        self.last_output_at()
+        self.output_count()
             .wrapping_add(self.residency.changes.load(Ordering::Acquire))
     }
 
@@ -1415,6 +1432,7 @@ impl Session {
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
+        let output_count = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
@@ -1423,6 +1441,7 @@ impl Session {
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
         let residency_clone = Arc::clone(&residency);
+        let output_count_clone = Arc::clone(&output_count);
         let seed_len = io.seed_len;
         let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
@@ -1432,6 +1451,7 @@ impl Session {
                 exited_clone,
                 last_output_clone,
                 residency_clone,
+                output_count_clone,
                 seed_len,
                 size,
             );
@@ -1443,6 +1463,7 @@ impl Session {
             backend_id: io.backend_id,
             exited,
             last_output_at,
+            output_count,
             label,
             residency,
             backend: Some(Arc::clone(backend)),
@@ -1528,6 +1549,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(0)),
+                output_count: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -1579,6 +1601,7 @@ impl Session {
         exited: Arc<AtomicBool>,
         last_output_at: Arc<AtomicU64>,
         residency: Arc<Residency>,
+        output_count: Arc<AtomicU64>,
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
@@ -1618,20 +1641,13 @@ impl Session {
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
                     // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not. Stamped after the
-                    // feed, never before: the stamp is the loop's cue to repaint,
+                    // that is entirely within the seed is not. Marked after the
+                    // feed, never before: the count is the loop's cue to repaint,
                     // and a paint between the two would show the old grid with
                     // the cue already spent.
-                    // And always forward, if only by a millisecond: two chunks
-                    // inside one would otherwise stamp the same value, and a
-                    // loop that looked between them would see no change.
                     if seed_len < n {
-                        let now = now_millis();
-                        let _ = last_output_at.fetch_update(
-                            Ordering::Release,
-                            Ordering::Relaxed,
-                            |prev| Some(now.max(prev + 1)),
-                        );
+                        last_output_at.store(now_millis(), Ordering::Relaxed);
+                        output_count.fetch_add(1, Ordering::Release);
                     }
                     seed_len = seed_len.saturating_sub(n);
                 }
@@ -1970,11 +1986,26 @@ impl Session {
     ) -> Result<()> {
         match &self.shell_pane {
             Some(pane) if !pane.has_exited() => return Ok(()),
-            // `exit` typed into it: its window is gone, and a shell kept in
-            // that state paints its last screen forever and swallows every
-            // keystroke. Asking for the shell is asking for a live one.
-            Some(_) => {
+            // Its stream ended. A shell kept in that state paints its last
+            // screen forever and swallows every keystroke, so asking for the
+            // shell is asking for a live one — but an ended stream is not an
+            // ended shell: a dropped ssh link ends it with the window still
+            // running whatever was in it. That window is reattached, not
+            // orphaned beside a new one. One that is dead, or that the
+            // multiplexer no longer knows (`exit` closed it), is killed as far as
+            // it still exists and replaced.
+            Some(pane) => {
+                let old = pane.backend_id().to_string();
                 self.shell_pane = None;
+                // Both asked: tmux answers `is_dead` for a pane it no longer
+                // has with an empty line, which reads as alive, while it has no
+                // pid to give for one.
+                let alive = matches!(self.backend.pane_pid(&old), Ok(Some(_)))
+                    && matches!(self.backend.is_dead(&old), Ok(false));
+                if alive {
+                    return self.adopt_shell_pane(&old, rows, cols);
+                }
+                let _ = self.backend.kill(&old);
                 self.info.shell_backend_id = None;
             }
             None => {}
@@ -2077,6 +2108,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
+                output_count: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -2102,8 +2134,8 @@ impl Session {
     /// detector, OSC title/bell signals, and buffer-content search.
     #[cfg(test)]
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
-        // Strictly-increasing bump: two feeds within the same millisecond must
-        // still read as *new* output to `App::detect_output_redraw`'s signature.
+        // Strictly-increasing bump, like a live chunk's: two feeds within the
+        // same millisecond must still read as *new* output to the loop.
         let prev = self.wired.last_output_at.load(Ordering::Relaxed);
         self.wired
             .last_output_at
@@ -2111,6 +2143,7 @@ impl Session {
         if let Ok(mut p) = self.wired.parser.lock() {
             p.process(bytes);
         }
+        self.wired.output_count.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -2380,6 +2413,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2483,6 +2517,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             0,
             None,
         );
@@ -2493,48 +2528,51 @@ mod tests {
         assert!(last_output_at.load(Ordering::Relaxed) > 0);
     }
 
-    /// The stamp is the loop's cue to repaint, so it must not move before the
+    /// The count is the loop's cue to repaint, so it must not move before the
     /// parser holds what moved it: a frame painted in between shows the old grid,
     /// and with the cue already spent nothing repaints until the next output —
     /// seen as a shell's `ls` missing from the screen until something else
     /// printed.
     #[test]
-    fn reader_loop_stamps_output_only_once_the_parser_has_it() {
+    fn reader_loop_marks_output_only_once_the_parser_has_it() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             4,
             20,
             0,
             TermSignals::default(),
         )));
-        let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
+        let output_count = Arc::new(AtomicU64::new(0));
 
         // Held as a paint holds it, so the reader has to wait to feed it.
         let held = parser.lock().unwrap();
         let reader = {
-            let (parser, exited, stamp) = (
+            let (parser, stamp, count) = (
                 Arc::clone(&parser),
-                Arc::clone(&exited),
                 Arc::clone(&last_output_at),
+                Arc::clone(&output_count),
             );
             std::thread::spawn(move || {
                 Session::reader_loop(
                     Box::new(Cursor::new(b"CHANGELOG".to_vec())),
                     parser,
-                    exited,
+                    Arc::new(AtomicBool::new(false)),
                     stamp,
+                    count,
                     0,
                 );
             })
         };
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(
-            last_output_at.load(Ordering::SeqCst),
+            output_count.load(Ordering::SeqCst),
             0,
-            "stamped while the parser did not yet hold the bytes"
+            "marked while the parser did not yet hold the bytes"
         );
+        assert_eq!(last_output_at.load(Ordering::SeqCst), 0);
         drop(held);
         reader.join().unwrap();
+        assert_eq!(output_count.load(Ordering::SeqCst), 1);
         assert!(last_output_at.load(Ordering::SeqCst) > 0);
         assert!(parser
             .lock()
@@ -2544,14 +2582,15 @@ mod tests {
             .starts_with("CHANGELOG"));
     }
 
-    /// Two chunks inside one millisecond must still read as two changes: the
-    /// loop repaints on a changed stamp, and one it saw after the first chunk
-    /// would otherwise be the same after the second.
+    /// Two chunks inside one millisecond must still read as two changes, since
+    /// the loop repaints on a changed count — while the clock beside it stays a
+    /// clock: a flood of chunks must not push it past now, where "quiet for"
+    /// would read zero long after the output stopped.
     #[test]
-    fn reader_loop_moves_the_stamp_for_every_chunk() {
+    fn reader_loop_counts_every_chunk_and_keeps_the_clock_honest() {
         struct Chunks {
             left: Vec<&'static [u8]>,
-            stamp: Arc<AtomicU64>,
+            count: Arc<AtomicU64>,
             seen: Arc<Mutex<Vec<u64>>>,
         }
         impl Read for Chunks {
@@ -2559,7 +2598,7 @@ mod tests {
                 self.seen
                     .lock()
                     .unwrap()
-                    .push(self.stamp.load(Ordering::SeqCst));
+                    .push(self.count.load(Ordering::SeqCst));
                 let Some(chunk) = self.left.pop() else {
                     return Ok(0);
                 };
@@ -2574,22 +2613,28 @@ mod tests {
             TermSignals::default(),
         )));
         let last_output_at = Arc::new(AtomicU64::new(0));
+        let output_count = Arc::new(AtomicU64::new(0));
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let chunks: Vec<&'static [u8]> = vec![b"x"; 500];
         Session::reader_loop(
             Box::new(Chunks {
-                left: vec![b"b", b"a"],
-                stamp: Arc::clone(&last_output_at),
+                left: chunks,
+                count: Arc::clone(&output_count),
                 seen: Arc::clone(&seen),
             }),
             parser,
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&last_output_at),
+            Arc::clone(&output_count),
             0,
         );
         let seen = seen.lock().unwrap().clone();
-        // Before any output, after the first chunk, after the second.
-        assert_eq!(seen.len(), 3, "{seen:?}");
-        assert!(seen[2] > seen[1] && seen[1] > seen[0], "{seen:?}");
+        assert_eq!(seen[..3], [0, 1, 2], "one step per chunk");
+        assert_eq!(output_count.load(Ordering::SeqCst), 500);
+        assert!(
+            last_output_at.load(Ordering::SeqCst) <= now_millis(),
+            "the clock ran ahead of now"
+        );
     }
 
     /// The other half: once the seed is exhausted, genuinely live bytes still
@@ -2614,6 +2659,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2654,6 +2700,7 @@ mod tests {
             exited,
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );

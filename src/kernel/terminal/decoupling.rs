@@ -83,6 +83,10 @@ struct Recorder {
     senders: Mutex<Vec<std::sync::mpsc::Sender<()>>>,
     /// Snapshot requests taken, none of them ever answered.
     snapshots: std::sync::atomic::AtomicUsize,
+    /// Every spawn, adopt and kill, in order, as `"<verb> <pane>"`.
+    calls: Mutex<Vec<String>>,
+    /// What `is_dead` answers.
+    dead: std::sync::atomic::AtomicBool,
 }
 
 impl Recorder {
@@ -129,6 +133,10 @@ impl crate::agent::backend::SessionBackend for Recorder {
         _: u16,
         _: u16,
     ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("spawn {SHELL_PANE}"));
         let (output, input) = self.io();
         Ok(crate::agent::backend::SpawnedSession {
             backend_id: SHELL_PANE.to_string(),
@@ -139,11 +147,15 @@ impl crate::agent::backend::SessionBackend for Recorder {
     }
     fn adopt(
         &self,
-        _: &str,
+        backend_id: &str,
         _: u16,
         _: u16,
         _: Option<Vec<u8>>,
     ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("adopt {backend_id}"));
         let (output, input) = self.io();
         Ok(crate::agent::backend::AdoptedSession {
             output,
@@ -163,16 +175,20 @@ impl crate::agent::backend::SessionBackend for Recorder {
         Ok(())
     }
     fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
-        Ok(false)
+        Ok(self.dead.load(std::sync::atomic::Ordering::SeqCst))
     }
-    fn kill(&self, _: &str) -> anyhow::Result<()> {
+    fn kill(&self, backend_id: &str) -> anyhow::Result<()> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("kill {backend_id}"));
         Ok(())
     }
     fn detach(&self, _: &str) -> anyhow::Result<()> {
         Ok(())
     }
     fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
-        Ok(None)
+        Ok(Some(1))
     }
     fn default_shell(&self) -> String {
         "/bin/sh".to_string()
@@ -908,4 +924,53 @@ async fn one_shell_painted_in_two_rects_in_one_frame_keeps_the_first() {
         "the shell is sized to one rect, not both: {sizes:?}"
     );
     assert_eq!(harness.grid(true), (first.height, first.width));
+}
+
+/// The shell's stream ended, as `exit` ends it — and as a dropped ssh link ends
+/// it too, with the window still running whatever was in it.
+fn shell_stream_ended(harness: &Harness) {
+    let live = harness.terminals.live.get(&harness.id).expect("live");
+    live.session
+        .shell_pane
+        .as_ref()
+        .expect("a shell")
+        .mark_exited_for_test();
+    harness.backend.calls.lock().expect("calls").clear();
+}
+
+#[tokio::test]
+async fn a_shell_whose_stream_ended_but_whose_pane_lives_is_reattached_not_orphaned() {
+    // A remote shell's ssh stream can drop while its window runs on, a build in
+    // it. Spawning a second shell there left the first running with nothing
+    // recording its id, so teardown never reached it.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("adopt {SHELL_PANE}")]
+    );
+}
+
+#[tokio::test]
+async fn a_dead_shell_is_killed_before_it_is_replaced() {
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .dead
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
+    );
 }

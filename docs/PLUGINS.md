@@ -101,10 +101,17 @@ changed — which is most of them, and is the single largest saving available in
 frame. But nothing checks the claim, and getting it wrong gives you a pane
 painted from a stale tree, with no error anywhere. Two things disqualify a pane:
 
-- **It writes `store` or `state` from inside `render`.** Those writes stop
+- **It writes `store` or `state` from inside `render`** — unless the write
+  only ever answers something the cache key already carries. Those writes stop
   happening on the frames the render is skipped. This is why the bundled search
   strip is deliberately *not* pure — it leaves its content request in `store`
-  while rendering.
+  while rendering. The exception is a write (or a `command`) whose trigger is
+  itself part of the key — `ctx.focused`, the size, a changed snapshot, or a
+  shared value that bumps the state version — because then no frame on which it
+  would act is skipped: the shell pane records `store["shell.focused"]` when its
+  focus changes, and the agent pane acts on a focus request or a moved shell
+  pane the frame it sees one. Check the trigger against the key before relying
+  on this.
 - **It animates from `ctx.frame`, or from `ctx.elapsed` faster than the shared
   widgets do.** Animating at the shared rate is fine — the working spinner does,
   and the session list is pure — because the kernel keys a cached tree on that

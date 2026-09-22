@@ -182,7 +182,8 @@ The `layout` row is the one core row whose save *does* something beyond the file
 act as `thurbox-cli layout set`, backup of an edited `layout.lua` included — and the
 reload puts the new arrangement on screen. An outside edit of `layout` does not
 (delivery applies it on the next start), and neither does a save while
-`THURBOX_UI_DIR` is set, since that directory is somebody's checkout.
+`THURBOX_UI_DIR` points at a checkout — `presets::may_switch` is the one rule the
+row and `thurbox-cli layout set` share.
 
 > `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
 > `global_search` gated surfaces the interface no longer draws. None of the five

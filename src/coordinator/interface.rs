@@ -206,12 +206,14 @@ impl App {
     ///
     /// The same act as `thurbox-cli layout set` (`presets::apply`), including
     /// the backup of an edited `layout.lua`, and it lands through the ordinary
-    /// reload. Never into a `THURBOX_UI_DIR` directory: that is a checkout or a
-    /// sandbox somebody pointed thurbox at, and its arrangement is theirs.
+    /// reload — into the directories that one writes and no other
+    /// (`presets::may_switch`).
     fn switch_layout(&mut self, name: &str) {
-        if std::env::var_os("THURBOX_UI_DIR").is_some() {
+        let refused = thurbox::kernel::bundled::resolve(false)
+            .and_then(|(_, chosen, _)| thurbox::kernel::presets::may_switch(&self.ui_dir, chosen));
+        if let Err(why) = refused {
             self.toast(format!(
-                "layout {name} saved; THURBOX_UI_DIR's layout.lua is left as it is"
+                "layout {name} saved; layout.lua left as it is: {why}"
             ));
             return;
         }

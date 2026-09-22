@@ -193,7 +193,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     }
 
     let (ui_dir, ui_notices) = resolve_ui_dir()?;
-    startup_notices.extend(ui_notices);
+    startup_notices.extend(ui_notices.rest);
+    let startup_notices = layout_first(ui_notices.layout, startup_notices);
 
     // A user copy that will not load must not cost the interface, but the falling
     // back lives in `App::reload_interface` — called once below and on every
@@ -442,25 +443,70 @@ fn focus_index_of(host: &LuaHost, name: &str) -> usize {
 /// they edited. A missing or unwritable config directory is not fatal: the
 /// embedded copies are written somewhere throwaway and used from there, because
 /// no interface at all is the one outcome worth avoiding.
-fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
+/// What resolving the interface has to say: the arrangement's line, which goes
+/// first ([`layout_first`]), and the rest.
+struct UiNotices {
+    layout: Option<String>,
+    rest: Vec<String>,
+}
+
+fn resolve_ui_dir() -> Result<(PathBuf, UiNotices), Box<dyn Error>> {
     // The resolution itself lives in the library, so `thurbox-cli plugin dir`
     // reports the directory this will actually load. Writing the user's copy is
     // the interface's business, which is why it asks for it.
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
-    let mut notices = Vec::new();
-    // First, because only the first startup notice is shown: the others say
-    // where the interface came from, this says it is not what was chosen. Not
-    // for a `THURBOX_UI_DIR`, somebody's deliberate redirection whose layout the
-    // setting was never going to choose.
-    if matches!(chosen, thurbox::kernel::bundled::Chosen::UserCopy) {
-        notices.extend(thurbox::kernel::presets::not_in_force(
-            &dir,
-            &thurbox::session::settings::global().layout,
+    let layout = layout_notice(&report, &dir, chosen);
+    let mut rest = Vec::new();
+    rest.extend(directory_notice(&dir, chosen));
+    rest.extend(delivery_notice(&report));
+    Ok((dir, UiNotices { layout, rest }))
+}
+
+/// Put the layout notice ahead of every other startup notice.
+///
+/// Only the first startup notice is shown, and the layout one is said on the
+/// one start it matters — the first run, or a choice an edited `layout.lua`
+/// keeps out of force — where the others (hooks just wired, a directory note)
+/// would otherwise always win it.
+fn layout_first(layout: Option<String>, rest: Vec<String>) -> Vec<String> {
+    layout.into_iter().chain(rest).collect()
+}
+
+/// What to say about the arrangement, if anything.
+///
+/// The first run is told which preset it got and where the others are. Said
+/// rather than asked: a question on the first frame would stand in front of
+/// every scripted and recorded launch, and a line in the message band costs
+/// nobody anything. After that, only a preset `settings.toml` names that an
+/// edited `layout.lua` keeps off screen — never for a `THURBOX_UI_DIR`,
+/// somebody's deliberate redirection whose layout the setting does not choose.
+fn layout_notice(
+    report: &thurbox::kernel::bundled::Report,
+    dir: &Path,
+    chosen: thurbox::kernel::bundled::Chosen,
+) -> Option<String> {
+    let setting = &thurbox::session::settings::global().layout;
+    if report
+        .written
+        .iter()
+        .any(|file| file == thurbox::kernel::bundled::LAYOUT)
+    {
+        let preset = thurbox::kernel::presets::chosen_or_default(setting);
+        let others: Vec<&str> = thurbox::kernel::presets::PRESETS
+            .iter()
+            .map(|other| other.name)
+            .filter(|name| *name != preset.name)
+            .collect();
+        return Some(format!(
+            "layout: {} · also {} — settings → layout, or `thurbox-cli layout set <name>`",
+            preset.name,
+            others.join(", ")
         ));
     }
-    notices.extend(directory_notice(&dir, chosen));
-    notices.extend(delivery_notice(&report));
-    Ok((dir, notices))
+    if matches!(chosen, thurbox::kernel::bundled::Chosen::UserCopy) {
+        return thurbox::kernel::presets::not_in_force(dir, setting);
+    }
+    None
 }
 
 /// Which interface just loaded — said only when there is a question.
@@ -494,32 +540,10 @@ fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Opt
 /// Only the two outcomes that are about THEIR files: an edit of theirs kept
 /// where a newer version was available, and a file taken back because this
 /// binary no longer ships it. Writes and updates are the ordinary case and say
-/// nothing, so this stays a signal rather than a greeting — with one exception,
-/// the first run, which is told which layout preset it got and where the others
-/// are. Said rather than asked: a question on the first frame would stand in
-/// front of every scripted and recorded launch, and a line in the message band
-/// costs nobody anything.
+/// nothing, so this stays a signal rather than a greeting; the arrangement's own
+/// first-run line is [`layout_notice`]'s.
 fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> {
     let mut parts = Vec::new();
-    if report
-        .written
-        .iter()
-        .any(|file| file == thurbox::kernel::bundled::LAYOUT)
-    {
-        let preset = thurbox::kernel::presets::chosen_or_default(
-            &thurbox::session::settings::global().layout,
-        );
-        let others: Vec<&str> = thurbox::kernel::presets::PRESETS
-            .iter()
-            .map(|other| other.name)
-            .filter(|name| *name != preset.name)
-            .collect();
-        parts.push(format!(
-            "layout: {} · also {} — settings → layout, or `thurbox-cli layout set <name>`",
-            preset.name,
-            others.join(", ")
-        ));
-    }
     if !report.preserved.is_empty() {
         parts.push(format!(
             "kept your version of {}",
@@ -545,7 +569,9 @@ mod tests {
             written: vec!["layout.lua".to_string(), "plugins/20_agent.lua".to_string()],
             ..Default::default()
         };
-        let notice = delivery_notice(&first).expect("a first run says something");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = thurbox::kernel::bundled::Chosen::UserCopy;
+        let notice = layout_notice(&first, dir.path(), user).expect("a first run says something");
         assert!(notice.contains("layout: classic"), "{notice}");
         assert!(notice.contains("thurbox-cli layout set"), "{notice}");
         for preset in thurbox::kernel::presets::PRESETS {
@@ -561,7 +587,18 @@ mod tests {
             updated: vec!["layout.lua".to_string()],
             ..Default::default()
         };
+        assert_eq!(layout_notice(&upgrade, dir.path(), user), None);
         assert_eq!(delivery_notice(&upgrade), None);
+    }
+
+    #[test]
+    fn the_layout_notice_is_the_startup_notice_shown() {
+        // Only the first startup notice is shown, and a first run with an agent
+        // installed always has "hooks: wired …" ahead of it otherwise.
+        let rest = vec!["hooks: wired agent hooks for claude".to_string()];
+        let ordered = layout_first(Some("layout: classic".to_string()), rest.clone());
+        assert_eq!(ordered.first().map(String::as_str), Some("layout: classic"));
+        assert_eq!(layout_first(None, rest.clone()), rest);
     }
 
     /// The log appender keeps a bounded number of days and names them the way
