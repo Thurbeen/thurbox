@@ -250,6 +250,12 @@ pub fn shell_surface(session: &str) -> String {
     format!("{session}{SHELL_SUFFIX}")
 }
 
+/// How long a paint waits before asking again for a shell it did not get: long
+/// enough that a host that keeps refusing costs one bounded question and one
+/// line every few seconds rather than every frame, short enough that "control
+/// mode is busy" is gone before anyone wonders why the shell has not come back.
+const SHELL_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A session we have attached to, and the painted state of each of its panes.
 struct Live {
     session: crate::agent::Session,
@@ -258,16 +264,17 @@ struct Live {
     /// The companion shell's, independent of the agent's in every respect —
     /// which slot it sits in, how big it is, and whether it is on screen at all.
     shell: Painted,
-    /// The shell painting last asked a replacement for
-    /// ([`Terminals::take_wanted_shells`]): `Some("")` for none at all, or the
-    /// backend id of one that exited. Once per shell, not per frame: a shell
+    /// The shell painting last asked a replacement for, and when
+    /// ([`Terminals::take_wanted_shells`]): `""` for none at all, or the backend
+    /// id of one that exited. Once per [`SHELL_RETRY`], not per frame: a shell
     /// that fails to open repaints its surface every frame, and re-asking each
-    /// time would be a multiplexer round trip and an error per frame. Cleared
-    /// whenever the shell is seen live, so one that later ends is asked for
-    /// again.
-    /// Kept here so a restarted or reattached session, a new `Live`, asks
-    /// again. The explicit chord asks as often as it is pressed.
-    shell_asked: RefCell<Option<String>>,
+    /// time would be a multiplexer round trip and an error per frame — but an ask
+    /// that failed ("control mode is busy") is asked again, or the pane would sit
+    /// on a dead screen until somebody pressed F8. Cleared whenever the shell is
+    /// seen live, so one that later ends is asked for at once. Kept here so a
+    /// restarted or reattached session, a new `Live`, asks again. The explicit
+    /// chord asks as often as it is pressed.
+    shell_asked: RefCell<Option<(String, std::time::Instant)>>,
 }
 
 impl Live {
@@ -429,6 +436,9 @@ pub struct Terminals {
     /// had no shell. Drained by the loop, which opens each one
     /// ([`Self::take_wanted_shells`]).
     wanted_shells: RefCell<std::collections::BTreeSet<String>>,
+    /// How long a paint waits before asking again for a shell it already
+    /// asked for and did not get ([`Live::shell_asked`]).
+    pub(crate) shell_retry: std::time::Duration,
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
     failed: HashMap<String, Failure>,
@@ -565,6 +575,7 @@ impl Terminals {
             live: HashMap::new(),
             ready: RefCell::new(std::collections::HashSet::new()),
             wanted_shells: RefCell::new(std::collections::BTreeSet::new()),
+            shell_retry: SHELL_RETRY,
             failed: HashMap::new(),
             discovered: HashMap::new(),
             discovery_due: HashMap::new(),
@@ -1441,7 +1452,7 @@ impl Terminals {
     }
 
     /// Queue a replacement for `live`'s shell if it has none or it exited,
-    /// once per shell ([`Live::shell_asked`]).
+    /// at most once per [`SHELL_RETRY`] ([`Live::shell_asked`]).
     fn want_a_live_shell(&self, id: &str, live: &Live) {
         let current = match &live.session.shell_pane {
             // Live: whatever was asked for came, so a later end is asked about
@@ -1455,10 +1466,15 @@ impl Terminals {
             Some(pane) => pane.backend_id().to_string(),
             None => String::new(),
         };
-        if live.shell_asked.borrow().as_deref() == Some(current.as_str()) {
+        let recent = live
+            .shell_asked
+            .borrow()
+            .as_ref()
+            .is_some_and(|(asked, at)| *asked == current && at.elapsed() < self.shell_retry);
+        if recent {
             return;
         }
-        *live.shell_asked.borrow_mut() = Some(current);
+        *live.shell_asked.borrow_mut() = Some((current, std::time::Instant::now()));
         self.wanted_shells.borrow_mut().insert(id.to_string());
     }
 

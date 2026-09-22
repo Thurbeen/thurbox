@@ -495,6 +495,9 @@ struct App {
     /// happening counts as a change — which is why, without this, a printing
     /// agent was drawn at the 250ms floor rather than at once.
     last_output_gen: u64,
+    /// The last error a paint-driven shell open reported, per session, so a
+    /// retry that fails the same way says nothing new (`open_wanted_shells`).
+    shell_errors: std::collections::HashMap<String, String>,
     /// Plugin holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
     /// The node holding the pointer between a press and its release, if any.

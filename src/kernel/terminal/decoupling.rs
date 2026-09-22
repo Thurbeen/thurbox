@@ -1044,3 +1044,47 @@ async fn a_reattach_that_fails_keeps_the_pane_to_try_again() {
         vec![format!("adopt {SHELL_PANE}"), format!("adopt {SHELL_PANE}")]
     );
 }
+
+#[tokio::test]
+async fn a_shell_that_could_not_be_replaced_is_asked_for_again_by_a_later_paint() {
+    // "control mode is busy" is an answer to take and try again on: kept after
+    // one, an exited shell was never asked about by a paint again, and its pane
+    // sat on the dead screen until someone pressed F8.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::ZERO;
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness
+        .backend
+        .unreachable
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    harness
+        .backend
+        .dead
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert_eq!(
+        harness.terminals.take_wanted_shells(),
+        vec![id.clone()],
+        "the paint asks again"
+    );
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("replaced");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
+    );
+}

@@ -303,6 +303,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         changed_this_frame: false,
         last_output_painted: std::collections::HashMap::new(),
         last_output_gen: 0,
+        shell_errors: std::collections::HashMap::new(),
         grabbed: None,
         pointer_grab: None,
         pty_pointer: None,
