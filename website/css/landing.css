@@ -519,7 +519,8 @@
 
 /* ---- Install method tabs ---- */
 .install-tabs {
-  /* Wide enough for all 8 tabs on one row (~870px of tabs + gaps). At 780px
+  /* Wide enough for all 8 tabs on one row (~850px of tabs + gaps at the
+     tighter padding set below). At 780px
      "From Source" wrapped to a second row, which read as a layout bug.
      width: 100% because this max-width overrides the hero column's 100% cap,
      and with auto margins the block would otherwise size to the unwrapped tab
@@ -536,7 +537,7 @@
   scroll-margin-top: calc(var(--nav-height) + var(--space-lg));
 }
 
-/* 8 tabs are ~700px wide and would stack into 4 rows on a phone, so the rail
+/* 8 tabs are ~900px wide and would stack into 4 rows on a phone, so the rail
    scrolls them horizontally. The rail — not the [role=tablist] — is the scroll
    container: making the tablist itself scrollable would turn it into a
    focusable scroll area and add noise for screen readers. The border lives on
