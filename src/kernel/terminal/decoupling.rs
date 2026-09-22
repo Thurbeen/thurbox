@@ -1110,7 +1110,7 @@ async fn the_wait_before_asking_again_starts_when_the_open_failed() {
     let id = harness.id.clone();
     assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
     // The open takes longer than the wait.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(harness
         .terminals
         .open_shell(&id, HEIGHT, WIDTH, None)

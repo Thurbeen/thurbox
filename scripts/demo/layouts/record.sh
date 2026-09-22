@@ -145,6 +145,15 @@ teardown() {
         . "$S/env.sh"
         tmux -L demo kill-server 2>/dev/null || true
     )
+    # Two thurbox processes starting the server at once can each start one, and
+    # the loser no longer owns the socket `kill-server` reaches — so anything
+    # still running under this sandbox's socket directory goes too.
+    for environ in /proc/[0-9]*/environ; do
+        if tr '\0' '\n' < "$environ" 2>/dev/null | grep -qx "TMUX_TMPDIR=$S/tmux"; then
+            pid=${environ#/proc/}
+            kill "${pid%/environ}" 2>/dev/null || true
+        fi
+    done
 }
 
 # Settings → layout, one preset along per Right, saved. The row is found by
