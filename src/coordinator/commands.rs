@@ -167,20 +167,20 @@ impl App {
     /// exist, and the pane cannot ask for it without writing from its render.
     /// Asked here instead, of what was actually painted: only an attached
     /// session can paint, so this never asks on behalf of one that will fail.
-    /// A paint asks again after a failure (`Terminals::shell_retry`), so its
-    /// error is said once, not on every retry, until it changes or the shell
-    /// opens.
+    /// A paint asks again after a failure, backing off, so its error is said
+    /// once, not on every retry, until it changes or the shell opens.
     pub(crate) fn open_wanted_shells(&mut self) {
-        for session in self.terminals.take_wanted_shells() {
-            match self.open_shell(&session) {
-                Ok(()) => {
-                    self.shell_errors.remove(&session);
-                }
-                Err(e) => {
-                    if self.shell_errors.get(&session) != Some(&e) {
-                        self.report(format!("could not open a shell: {e}"), Level::Error);
-                        self.shell_errors.insert(session, e);
-                    }
+        let wanted = self.terminals.take_wanted_shells();
+        if !self.shell_errors.is_empty() {
+            let current = self.snapshots.current();
+            self.shell_errors
+                .retain(|session, _| current.session(session).is_some());
+        }
+        for session in wanted {
+            if let Err(e) = self.open_shell(&session) {
+                if self.shell_errors.get(&session) != Some(&e) {
+                    self.report(format!("could not open a shell: {e}"), Level::Error);
+                    self.shell_errors.insert(session, e);
                 }
             }
         }
@@ -204,6 +204,8 @@ impl App {
             .and_then(|row| self.terminals.launch_cwd(row));
         self.terminals
             .open_shell(session, rows, cols, cwd.as_deref())?;
+        // Opened, by a paint or the chord: the next failure is news again.
+        self.shell_errors.remove(session);
         // Its window outlives this process, so the id has to as well —
         // otherwise the next start forgets the shell and orphans the window
         // it left running.
