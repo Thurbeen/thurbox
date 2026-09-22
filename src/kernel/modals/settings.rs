@@ -89,23 +89,16 @@ impl CoreField {
     fn restart_required(&self) -> bool {
         let base = Settings::default();
         let mut changed = base.clone();
-        (self.set)(&mut changed, &self.altered((self.get)(&base)));
-        base.restart_only_differs(&changed)
-    }
-
-    /// A value this field accepts that differs from `current` — the probe
-    /// [`Self::restart_required`] changes the field with.
-    fn altered(&self, current: Value) -> Value {
-        match current {
+        let altered = match (self.get)(&base) {
             Value::Bool(on) => Value::Bool(!on),
             Value::Number(n) => Value::Number(n + 1.0),
-            // An enum only takes its own spellings, so the probe steps to the
-            // next one; any other name would be ignored and change nothing.
-            Value::Text(current) if self.id == "layout" => Value::Text(next_preset(&current, true)),
+            // Any name but the current one, so the write is always a change.
             Value::Text(current) => {
                 Value::Text(if current == "off" { "auto" } else { "off" }.to_string())
             }
-        }
+        };
+        (self.set)(&mut changed, &altered);
+        base.restart_only_differs(&changed)
     }
 }
 
@@ -244,18 +237,6 @@ const CORE_FIELDS: &[CoreField] = &[
         },
     },
     CoreField {
-        id: "layout",
-        description: "the arrangement: classic, split-shell (shell below the agent)",
-        get: |s| Value::Text(s.layout.clone()),
-        set: |s, v| {
-            if let Value::Text(name) = v {
-                if crate::kernel::presets::find(name).is_some() {
-                    s.layout = name.clone();
-                }
-            }
-        },
-    },
-    CoreField {
         id: "two_panel_min_cols",
         description: "width at which the session column appears",
         get: |s| Value::Number(s.two_panel_min_cols as f64),
@@ -334,22 +315,6 @@ fn next_backend(name: &str, forward: bool) -> String {
         (at + count - 1) % count
     };
     BACKENDS[next].0.to_string()
-}
-
-/// The next layout preset after `name`, wrapping — the `layout` row's step.
-fn next_preset(name: &str, forward: bool) -> String {
-    let presets = crate::kernel::presets::PRESETS;
-    let at = presets
-        .iter()
-        .position(|preset| preset.name == name)
-        .unwrap_or(0);
-    let count = presets.len();
-    let next = if forward {
-        (at + 1) % count
-    } else {
-        (at + count - 1) % count
-    };
-    presets[next].name.to_string()
 }
 
 /// The core rows as the renderer wants them: ordinary [`Setting`]s owned by
@@ -617,11 +582,7 @@ impl SettingsModal {
             // A core text value is an enum, and it cycles; a plugin's is free
             // text, which only typing changes.
             Value::Text(name) if setting.plugin == CORE_OWNER => {
-                let next = if setting.id == "layout" {
-                    next_preset(name, by >= 0.0)
-                } else {
-                    next_backend(name, by >= 0.0)
-                };
+                let next = next_backend(name, by >= 0.0);
                 self.put(registry, on_disk, &setting, Value::Text(next))
             }
             Value::Text(_) => None,
@@ -1442,7 +1403,14 @@ mod tests {
 
             // What a reload would actually do with that field changed.
             let mut changed = base.clone();
-            (field.set)(&mut changed, &field.altered((field.get)(&base)));
+            let altered = match (field.get)(&base) {
+                Value::Bool(on) => Value::Bool(!on),
+                Value::Number(n) => Value::Number(n + 1.0),
+                Value::Text(current) => {
+                    Value::Text(if current == "off" { "auto" } else { "off" }.to_string())
+                }
+            };
+            (field.set)(&mut changed, &altered);
             assert_ne!(
                 (field.get)(&changed),
                 (field.get)(&base),

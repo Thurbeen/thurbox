@@ -37,6 +37,9 @@ local widgets = require("lib.widgets")
 --- ITSELF to bring itself forward (`command("focus", …)`).
 local NAME = "agent"
 
+--- The shell pane's name, and the slot it is shown in.
+local SHELL_PANE = "shell"
+
 --- The tabs this pane owns, and the actions that select each. The chips select
 --- (v1 `select_central_tab`, idempotent); the `shell.open` chord toggles (v1
 --- `toggle_shell_view`) — two behaviours, so two entry points.
@@ -51,6 +54,17 @@ local NAME = "agent"
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
   return plugin_settings.feature("shell_pane", true) ~= false
+end
+
+--- Is the shell showing in a pane of its own (`plugins/25_shell.lua`)?
+---
+--- Then this pane is the agent's alone: no Shell tab, and `shell.open` moves
+--- focus there instead. Asked of the arrangement every frame rather than of the
+--- chosen preset, so a layout that drops the shell pane — `split-shell` on a
+--- narrow screen, or any layout.lua that never places it — gets the tab back and
+--- the shell is always reachable.
+local function shell_below()
+  return panels.placed(SHELL_PANE)
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
@@ -85,7 +99,7 @@ end
 --- not flip it on the next one you select. Absent = the agent, so a session
 --- that never switched costs no state at all.
 local function tab_of(id)
-  if not id then
+  if not id or shell_below() then
     return AGENT_TAB
   end
   return state["tab:" .. id] or AGENT_TAB
@@ -568,7 +582,7 @@ local function tab_specs(active)
   -- `[features] shell_pane` off means there is no second view, so there is no
   -- chip for one either: an affordance for a disabled feature is the clutter the
   -- switch was flipped to avoid.
-  if shell_enabled() then
+  if shell_enabled() and not shell_below() then
     specs[#specs + 1] = {
       name = "Shell",
       active = active == SHELL_TAB,
@@ -812,6 +826,11 @@ end
 --- use (v1 `show_shell_view`); `ensure_shell_pane` behind the command is
 --- idempotent, so asking again on every switch costs nothing.
 local function show_tab(id, tab)
+  if tab == SHELL_TAB and shell_below() then
+    command("shell", { session = id })
+    command("focus", { text = SHELL_PANE })
+    return
+  end
   set_tab(id, tab)
   if tab == SHELL_TAB then
     command("shell", { session = id })
@@ -1010,7 +1029,12 @@ return {
       -- v1 `toggle_shell_view`: the chord flips between the two views, where
       -- the chips select outright. Swallowed without a session, because there
       -- is no terminal for anything else to do it to either.
-      if id and shell_enabled() then
+      if id and shell_enabled() and shell_below() then
+        -- With the shell in its own pane the chord is a focus toggle instead:
+        -- pressed again from there, it returns to wherever focus was.
+        command("shell", { session = id })
+        command("focus", { text = SHELL_PANE, toggle = true })
+      elseif id and shell_enabled() then
         show_tab(id, tab_of(id) == SHELL_TAB and AGENT_TAB or SHELL_TAB)
       end
       return true

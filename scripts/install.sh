@@ -3,12 +3,10 @@ set -e
 
 # Thurbox Installation Script
 # Usage: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-# Layout: ... | sh -s -- --layout split-shell   (or THURBOX_LAYOUT=split-shell)
 
 REPO="${REPO:-Thurbeen/thurbox}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
-LAYOUT="${THURBOX_LAYOUT:-}"
 TEMP_DIR=""
 
 # Colors (auto-disabled when stderr is not a terminal, NO_COLOR is set, or TERM=dumb)
@@ -184,23 +182,6 @@ do_install() {
   if [ -f "$dir/thurbox-cli" ]; then chmod +x "$dir/thurbox-cli"; fi
 }
 
-# --layout NAME (or --layout=NAME); anything else is ignored
-parse_args() {
-  while [ $# -gt 0 ]; do case "$1" in --layout) LAYOUT="${2:-}"; shift ;; --layout=*) LAYOUT="${1#*=}" ;; esac; shift; done
-}
-
-# Layout preset from the flag or env var, else asked on a terminal; empty keeps the current one
-choose_layout() {
-  local cli="$1/thurbox-cli"; [ -x "$cli" ] || return 0
-  if [ -z "$LAYOUT" ] && [ -t 2 ] && { : < /dev/tty; } 2> /dev/null; then
-    printf '%b' "${C_CYAN}▸${C_RESET} Layout: ${C_BOLD}classic${C_RESET}, or ${C_BOLD}split-shell${C_RESET} (a shell pane below the agent) [Enter keeps the current one] " >&2
-    read -r LAYOUT < /dev/tty || LAYOUT=""
-  fi
-  [ -n "$LAYOUT" ] || return 0
-  if "$cli" layout set "$LAYOUT" > /dev/null; then success "Layout: ${C_BOLD}$LAYOUT${C_RESET}"
-  else warn "Could not set layout '$LAYOUT' — see: thurbox-cli layout list"; fi
-}
-
 # Show success message
 show_success() {
   printf '\n' >&2
@@ -220,7 +201,6 @@ show_success() {
 
 # Main
 main() {
-  parse_args "$@"
   banner
 
   local platform target version binary
@@ -239,7 +219,6 @@ main() {
   binary=$(get_binary "$version" "$target" "$TEMP_DIR") || return 1
 
   do_install "$binary" "$INSTALL_DIR"
-  choose_layout "$INSTALL_DIR"
 
   show_success "$INSTALL_DIR"
   printf '\n' >&2

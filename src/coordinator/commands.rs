@@ -160,19 +160,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Open the companion shell of every session whose `<id>#shell` surface
-    /// painted last frame with no shell behind it.
-    ///
-    /// A layout that shows the shell in a pane of its own needs the shell to
-    /// exist, and the pane cannot ask for it without writing from its render.
-    /// Asked here instead, of what was actually painted: only an attached
-    /// session can paint, so this never asks on behalf of one that will fail.
-    pub(crate) fn open_wanted_shells(&mut self) {
-        for session in self.terminals.take_wanted_shells() {
-            self.apply_shell_command(&session);
-        }
-    }
-
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));

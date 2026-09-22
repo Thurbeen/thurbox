@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary: every subcommand group (agent, session, automation, task, message, editor, config, extension, version, update, notify, perf, layout, plugin), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
+description: The thurbox-cli binary: every subcommand group (agent, session, automation, task, message, editor, config, extension, version, update, notify, perf, plugin), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
 ---
 
 # thurbox-cli, automations, tasks and messages
@@ -62,12 +62,7 @@ startup when the flag is on), `notify`
 and last error; `--test` fires a sample — see OS notifications below), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
 or its perf HUD is active; `--plugins` for one row per pane, sorted by cost,
-with hints — see `docs/PERFORMANCE.md`), `layout`
-(`list` the layout presets — which is chosen, and whether `layout.lua` is
-hand-edited — and `set <name>`, which records `layout` in `settings.toml` and
-rewrites `layout.lua`, backing an edited copy up to `layout.lua.bak[.N]` first;
-refuses a `THURBOX_UI_DIR` checkout — see `docs/PLUGINS.md` → Layout presets),
-`plugin`
+with hints — see `docs/PERFORMANCE.md`), `plugin`
 (v2 interface plugins without a TTY: `dir` reports the directory in force and
 which of the two rules chose it, `new <name>` writes a starter that already
 loads, `check` loads the interface the way `thurbox` does and exits non-zero on

@@ -209,23 +209,19 @@ fn session_surface(node: &Node) -> String {
 #[test]
 fn the_centre_holds_one_terminal_plugin_rather_than_two() {
     let host = host();
-    // The shell is a tab of the terminal. The shell PANE that also ships is an
-    // optional one for layouts that want both on screen (`split-shell`); the
-    // bundled arrangement never places it, so here it is not a second stop.
-    let shell = &host.plugins[index_of(&host, "shell")];
-    assert!(shell.optional, "the shell pane must not be required");
-    let placed = host
-        .placed_slots(thurbox::kernel::layout::REFERENCE)
-        .expect("the arrangement");
-    assert!(!placed.contains("shell"), "{placed:?}");
+    let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"shell"),
+        "the shell is a tab of the terminal now, not a plugin: {names:?}"
+    );
 
     // The kernel does not know which plugin "is" the terminal — it knows which
-    // asked for raw session input. Of the panes this arrangement places, exactly
-    // one may, or a keystroke has two homes.
+    // asked for raw session input. Exactly one may, or a keystroke has two
+    // homes.
     let raw: Vec<&str> = host
         .plugins
         .iter()
-        .filter(|plugin| plugin.session_input && placed.contains(&plugin.slot))
+        .filter(|plugin| plugin.session_input)
         .map(|plugin| plugin.name.as_str())
         .collect();
     assert_eq!(raw, vec![TERMINAL], "one pane owns the pty");
