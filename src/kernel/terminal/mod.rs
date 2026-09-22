@@ -1417,9 +1417,16 @@ impl Terminals {
             .shell_pane
             .as_ref()
             .is_some_and(|pane| pane.has_exited());
-        live.session
-            .ensure_shell_pane(rows, cols, cwd)
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = live.session.ensure_shell_pane(rows, cols, cwd) {
+            // The wait before a paint asks again runs from here, not from the
+            // ask: this open may have blocked for as long as a stalled link
+            // takes to time out, and a wait timed from before it would already
+            // be over.
+            if let Some(ask) = live.shell_asked.get_mut().as_mut() {
+                ask.at = std::time::Instant::now();
+            }
+            return Err(e.to_string());
+        }
         // A shell replacing one that exited is born at the terminal's size,
         // and the memo still holds the old one's: forgotten, or the first frame
         // would find the rect unchanged and never size the new pty to it.

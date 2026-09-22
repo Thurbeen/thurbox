@@ -1088,3 +1088,32 @@ async fn a_shell_that_could_not_be_replaced_is_asked_for_again_by_a_later_paint(
         vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
     );
 }
+
+#[tokio::test]
+async fn the_wait_before_asking_again_starts_when_the_open_failed() {
+    // An open can block for as long as a stalled link takes to time out. Timed
+    // from the ask, every wait shorter than that had already run out by the
+    // next paint, so the asks — and the freezes — came back to back.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::from_millis(200);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    // The open takes longer than the wait.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "asked again the moment the slow open returned"
+    );
+}
