@@ -902,7 +902,9 @@ async fn one_shell_painted_in_two_rects_in_one_frame_keeps_the_first() {
     harness.frame(&both, WIDTH, HEIGHT);
     let sizes = harness.backend.sizes(SHELL_PANE);
     assert!(
-        sizes.iter().all(|size| *size == (first.height, first.width)),
+        sizes
+            .iter()
+            .all(|size| *size == (first.height, first.width)),
         "the shell is sized to one rect, not both: {sizes:?}"
     );
     assert_eq!(harness.grid(true), (first.height, first.width));

@@ -486,17 +486,19 @@ step with its output, so its sessions always keep their grids. Read at startup.
 ### `layout` — which arrangement the interface is delivered with
 
 The interface's `layout.lua` is written from one of the presets thurbox ships,
-and this key names which: `classic` (the session list beside the agent pane,
-the shell a tab of it), `split-shell` (the same, with the selected session's
-shell in its own pane below the agent), `focus` (the agent pane alone, full
-width; F9 brings the list back) or `ide` (the list left, the shell along the
-bottom of the agent, other installed panes in a right-hand column). `thurbox-cli layout set <name>`, the
-settings panel's `layout` row, and the installers (`--layout` / `-Layout` /
-`THURBOX_LAYOUT`) all write it *and* rewrite `layout.lua` on the spot, backing up
-an edited copy as `layout.lua.bak` first. Editing the key by hand applies on the
-next start, through ordinary delivery — so an untouched `layout.lua` switches and
-an edited one is left alone (`thurbox-cli layout list` says which you have). An
-unknown name delivers `classic`. Full rules: `docs/PLUGINS.md` → Layout presets.
+and this key names which: `classic` (the session list beside the agent pane, the
+shell a tab of it), `split-shell` (the same, with the selected session's shell
+in its own pane below the agent, installed panes in a right-hand column),
+`focus` (the agent pane alone, full width; F9 brings the list back) or `ide`
+(the list left, the shell along the bottom of the agent, other installed panes
+in a right-hand column). `thurbox-cli layout set <name>`, the settings panel's
+`layout` row, and the installers (`--layout` / `-Layout` / `THURBOX_LAYOUT`) all
+write it *and* rewrite `layout.lua` on the spot, backing up an edited copy as
+`layout.lua.bak` first. Editing the key by hand applies on the next start,
+through ordinary delivery — so an untouched `layout.lua` switches and an edited
+one is left alone, which the start says in the message band (`thurbox-cli layout
+list` says which you have). An unknown name delivers `classic`. Full rules:
+`docs/PLUGINS.md` → Layout presets.
 
 ### `git_poll_secs` — how much `git` thurbox runs
 

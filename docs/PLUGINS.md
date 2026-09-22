@@ -395,7 +395,6 @@ Each preset has a recording in `ui/README.md` (made by
 
 - **`split-shell`** is a terminal split the way tmux or Warp split one. Its
   right-hand column works as `ide`'s does, below.
-
 - **`focus`** is VS Code's Zen mode and JetBrains' Distraction-Free mode: the
   agent alone. The list starts hidden through `lib.panels.starts("sessions",
   false)` rather than a reading of its own, so F9 shows it on the first press

@@ -1604,7 +1604,11 @@ fn ide_f8_moves_focus_into_the_shell_panel_and_back() {
     tui.wait_for("tb-ide-marker");
     let (_, shell_title) = tui.find("probe (shell)");
     let (_, marker) = tui.find("tb-ide-marker");
-    assert!(marker > shell_title, "typed into the panel:\n{}", tui.frame());
+    assert!(
+        marker > shell_title,
+        "typed into the panel:\n{}",
+        tui.frame()
+    );
     tui.send(F8);
     tui.wait_until("focus to return to the agent", |frame| {
         band_names(frame, "Agent")

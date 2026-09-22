@@ -803,7 +803,10 @@ fn a_chosen_preset_an_edited_layout_keeps_out_of_force_is_said_at_start() {
     )
     .expect("edit layout.lua");
     let note = presets::not_in_force(dir.path(), "split-shell").expect("a note");
-    assert!(note.contains("thurbox-cli layout set split-shell"), "{note}");
+    assert!(
+        note.contains("thurbox-cli layout set split-shell"),
+        "{note}"
+    );
     assert!(!note.contains("  "), "one line, no run of spaces: {note}");
     assert_eq!(presets::not_in_force(dir.path(), "classic"), None);
     assert_eq!(presets::not_in_force(dir.path(), "nope"), None);
