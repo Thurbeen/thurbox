@@ -50,7 +50,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    convert   table <-> node              lib/ui        panel, list, cursor, row…
                                          lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     4 panes + 4 floats
+   host      VM, reload, isolation       plugins/*     3 panes + 3 floats
    registry  keys, settings, commands
    modals    help, settings, theme, files, palette
    events    derived from the snapshot

@@ -62,7 +62,6 @@ const F12: &[u8] = b"\x1b[24~";
 const F6: &[u8] = b"\x1b[17~";
 const F10: &[u8] = b"\x1b[21~";
 const F9: &[u8] = b"\x1b[20~";
-const F8: &[u8] = b"\x1b[19~";
 
 /// The `GIT_*` location variables git exports to hook processes — the list
 /// `git::GIT_LOCATION_ENV` scrubs, which is crate-private. A suite running
@@ -1224,103 +1223,6 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     // marker was typed into, so a routing regression cannot pass this.
     tui.send(b"echo tb-e2e-\"\"marker\r");
     tui.wait_for("tb-e2e-marker");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// Whether the action band names `pane` as the focused one.
-fn band_names(frame: &str, pane: &str) -> bool {
-    frame
-        .lines()
-        .last()
-        .is_some_and(|band| band.trim_start().starts_with(pane))
-}
-
-#[test]
-fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them() {
-    // The `split-shell` preset, chosen the way an install chooses it, on the real
-    // binary: the agent and the same session's shell are both painted, the
-    // agent pane no longer offers a Shell tab, and F8 walks focus into the shell
-    // pane — where keystrokes reach the shell — and back out.
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"probe-agent\"\n\n[[agents]]\nname = \"probe-agent\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
-    let repo = repo(profile.root.path());
-    // The companion shell is the user's `$SHELL`, which under this profile's
-    // empty HOME can be an interactive first-run wizard that eats keystrokes.
-    // Pinned for every process here, since whichever starts the multiplexer
-    // server hands it the default shell.
-    let cli = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut command);
-        command.env("SHELL", "/bin/sh");
-        let output = command.args(args).output().expect("run thurbox-cli");
-        assert!(
-            output.status.success(),
-            "thurbox-cli {args:?} failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    cli(&[
-        "session",
-        "create",
-        "--name",
-        "probe",
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "probe-agent",
-    ]);
-    cli(&["config", "accept-interface"]);
-    cli(&["layout", "set", "split-shell"]);
-
-    let mut tui = Tui::spawn_with(&profile, 40, 120, |command| {
-        command.env("SHELL", "/bin/sh");
-    });
-    tui.wait_for("(probe-agent)");
-    tui.wait_for("probe (shell)");
-    tui.wait_until("the agent pane to be the focused one", |frame| {
-        band_names(frame, "Agent")
-    });
-    let (_, agent_title) = tui.find("(probe-agent)");
-    let (_, shell_title) = tui.find("probe (shell)");
-    assert!(
-        shell_title > agent_title,
-        "the shell pane sits below the agent:\n{}",
-        tui.frame()
-    );
-    assert!(
-        !tui.frame().contains("Shell ·"),
-        "the agent pane still offers a Shell tab:\n{}",
-        tui.frame()
-    );
-
-    tui.send(F8);
-    tui.wait_until("the shell pane to take focus", |frame| {
-        band_names(frame, "Shell")
-    });
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-split-\"\"marker\r");
-    tui.wait_for("tb-split-marker");
-    let (_, marker) = tui.find("tb-split-marker");
-    assert!(
-        marker > shell_title,
-        "typed into the shell pane, not the agent:\n{}",
-        tui.frame()
-    );
-
-    tui.send(F8);
-    tui.wait_until("focus to return to the agent", |frame| {
-        band_names(frame, "Agent")
-    });
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

@@ -483,26 +483,9 @@ fn directory_notice(dir: &Path, chosen: thurbox::kernel::bundled::Chosen) -> Opt
 /// Only the two outcomes that are about THEIR files: an edit of theirs kept
 /// where a newer version was available, and a file taken back because this
 /// binary no longer ships it. Writes and updates are the ordinary case and say
-/// nothing, so this stays a signal rather than a greeting — with one exception,
-/// the first run, which is told which layout preset it got and where the others
-/// are. Said rather than asked: a question on the first frame would stand in
-/// front of every scripted and recorded launch, and a line in the message band
-/// costs nobody anything.
+/// nothing, so this stays a signal rather than a greeting.
 fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> {
     let mut parts = Vec::new();
-    if report
-        .written
-        .iter()
-        .any(|file| file == thurbox::kernel::bundled::LAYOUT)
-    {
-        let preset = thurbox::kernel::presets::chosen_or_default(
-            &thurbox::session::settings::global().layout,
-        );
-        parts.push(format!(
-            "layout: {} · others in settings → layout, or `thurbox-cli layout list`",
-            preset.name
-        ));
-    }
     if !report.preserved.is_empty() {
         parts.push(format!(
             "kept your version of {}",
@@ -521,24 +504,6 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_first_run_is_told_its_layout_and_where_the_others_are() {
-        let first = thurbox::kernel::bundled::Report {
-            written: vec!["layout.lua".to_string(), "plugins/20_agent.lua".to_string()],
-            ..Default::default()
-        };
-        let notice = delivery_notice(&first).expect("a first run says something");
-        assert!(notice.contains("layout: classic"), "{notice}");
-        assert!(notice.contains("thurbox-cli layout list"), "{notice}");
-
-        // Every later start finds the layout on disk and stays quiet.
-        let upgrade = thurbox::kernel::bundled::Report {
-            updated: vec!["layout.lua".to_string()],
-            ..Default::default()
-        };
-        assert_eq!(delivery_notice(&upgrade), None);
-    }
 
     /// The log appender keeps a bounded number of days and names them the way
     /// the docs say.

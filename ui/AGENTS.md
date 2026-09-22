@@ -143,19 +143,6 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 `plugin check` warns about a pane in that state and `plugin install` says it when you
 install one — neither fails, because you may have meant it.
 
-## `layout.lua` came from a preset
-
-The arrangement is one of the presets thurbox ships — `classic`, or `split-shell`
-with the session's shell in a pane below the agent — chosen with
-`thurbox-cli layout set <name>` (or `layout` in settings). If the user asks for a
-different *arrangement*, check `thurbox-cli layout list` first: switching presets
-may be the whole answer. A switch replaces `layout.lua` and backs up an edited
-copy as `layout.lua.bak`, so tell the user where their version went.
-
-To give an arrangement the shell pane instead, place slot `shell` below `center`
-(`{ axis = "vertical", children = { { slot = "center" }, { slot = "shell", len = 12 } } }`).
-It is declared `optional`, so an arrangement without it is not an error.
-
 ## Make the pane cost what changed, not what exists
 
 `render` runs on the UI thread up to thirty times a second. Three habits keep a

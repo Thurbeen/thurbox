@@ -45,16 +45,6 @@ config_version = 1
 # 12x this on its own, so the cost of a dormant session is already small.
 # git_poll_secs = 5
 
-# The interface's arrangement, chosen from the presets thurbox ships:
-#   classic      the session list beside the agent pane (the default)
-#   split-shell  the same, with the selected session's shell in a pane below
-#                the agent, both on screen at once
-# `thurbox-cli layout set <name>` or the settings panel (Ctrl+,) switch it and
-# rewrite layout.lua in place, backing up a copy you edited first. Changing
-# this line by hand applies on the next start, and leaves an edited layout.lua
-# alone.
-# layout = "classic"
-
 # Feature flags: turn whole TUI features off. All default to true.
 # Disabling `automations` also stops the TUI firing schedules and arming
 # the tmux heartbeat on startup; explicit `thurbox-cli automation`
@@ -282,7 +272,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
     doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
-    doc["layout"] = value(settings.layout.as_str());
 
     if !doc.contains_key("features") {
         doc["features"] = toml_edit::table();
@@ -370,7 +359,6 @@ mod tests {
             "three_panel_min_cols",
             "audit_retention_days",
             "git_poll_secs",
-            "layout",
             "[features]",
             "tasks",
             "automations",

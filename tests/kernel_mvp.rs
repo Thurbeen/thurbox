@@ -243,8 +243,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let host = host();
     let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
     // The interface is three panes — the list, the centre and the search strip —
-    // plus the optional shell pane only the `split-shell` layout places, plus
-    // four floats that occupy no slot at all: the creation flow, the
+    // plus four floats that occupy no slot at all: the creation flow, the
     // confirmation, the rename field and the restore list. The view of the interface's own files is
     // NOT among them: it is a tab of the settings modal, because a recovery tool
     // that is itself a plugin can be the thing that is broken. Every other v1
@@ -255,7 +254,6 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
         [
             "sessions",
             "agent",
-            "shell",
             "confirm",
             "rename",
             "search",

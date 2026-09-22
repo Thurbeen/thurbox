@@ -136,33 +136,3 @@
 @test "script conditionally chmods thurbox-cli" {
   grep -q 'thurbox-cli.*chmod' "${BATS_TEST_DIRNAME}/install.sh"
 }
-
-# A stand-in thurbox-cli that records how it was called.
-stub_cli() {
-  printf '#!/bin/sh\necho "$@" > "%s/called"\n' "$1" > "$1/thurbox-cli"
-  chmod +x "$1/thurbox-cli"
-}
-
-@test "THURBOX_LAYOUT picks the layout preset" {
-  tmpdir=$(mktemp -d)
-  stub_cli "$tmpdir"
-  THURBOX_LAYOUT=split-shell TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; choose_layout '$tmpdir'"
-  [ "$(cat "$tmpdir/called")" = "layout set split-shell" ]
-  rm -rf "$tmpdir"
-}
-
-@test "--layout picks the layout preset" {
-  tmpdir=$(mktemp -d)
-  stub_cli "$tmpdir"
-  TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; parse_args --layout split-shell; choose_layout '$tmpdir'"
-  [ "$(cat "$tmpdir/called")" = "layout set split-shell" ]
-  rm -rf "$tmpdir"
-}
-
-@test "no choice and no terminal leaves the layout alone" {
-  tmpdir=$(mktemp -d)
-  stub_cli "$tmpdir"
-  TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; choose_layout '$tmpdir'" 2>/dev/null
-  [ ! -e "$tmpdir/called" ]
-  rm -rf "$tmpdir"
-}
