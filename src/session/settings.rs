@@ -59,6 +59,29 @@ pub struct Settings {
     /// Clipboard transport settings (`[clipboard]` table). Absent = `auto`.
     #[serde(default)]
     pub clipboard: ClipboardSettings,
+    /// Remote-host settings (`[remote]` table).
+    #[serde(default)]
+    pub remote: RemoteSettings,
+}
+
+/// How sessions on remote hosts are mirrored (`[remote]` table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSettings {
+    /// Also list the sessions a shareable host mirrors from hosts of its own
+    /// (A → B → C: C's sessions, seen on A through B). Each session is listed
+    /// once, on the most direct path this instance has to it. `false` lists
+    /// only each host's own sessions. Read by every mirror pass, so a change
+    /// applies on the next one.
+    #[serde(default = "default_true")]
+    pub transitive_sessions: bool,
+}
+
+impl Default for RemoteSettings {
+    fn default() -> Self {
+        Self {
+            transitive_sessions: true,
+        }
+    }
 }
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
@@ -353,6 +376,7 @@ impl Default for Settings {
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
+            remote: RemoteSettings::default(),
         }
     }
 }

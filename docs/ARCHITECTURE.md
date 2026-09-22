@@ -1597,6 +1597,24 @@ follow from the host owning the record, none of which the first cut had:
   ever mirrored it from that host — still falls back to comparing against
   local `deleted_at`, the same approximation the comparison used everywhere
   before v45.
+- **A session is its id; a row is one path to it.** A host lists the
+  sessions it mirrors from hosts of its own beside its own, under its own
+  `ssh:`/`wsl:` names, and every hop keeps the id. Taking every row a host
+  lists meant one database row per id was relabelled by whichever pass ran
+  last: with A → B → C and A → C, C's session moved between `ssh:<b>` and
+  `ssh:<c>` every ten seconds, and a B that mirrored A back relabelled A's own
+  *local* sessions as B's. `mirror::reconcile_with` takes a host's own rows as
+  before and a transitive one only when this database holds its id on no
+  other path, active or deleted — so the direct path, and this instance's own
+  rows, always win, and a delete taken on the direct path is not revived
+  through another. A transitive row drops its pane id (a pane on the further
+  host's server, which on this host's server names someone else's agent) and
+  marks its checkouts borrowed; everything done to it goes through the host's
+  CLI, which delegates to the owner. Showing them is the default;
+  `settings.toml` `[remote] transitive_sessions = false` shows only each
+  host's own, and *forgets* the rows already taken (`Database::forget_session`,
+  the one path that removes a session row) — a tombstone there would be
+  pushed to the host as a delete of a live session that is not ours.
 - **"The host does not know this row" is not a failure to delete.** The host
   resolves the id against its *active* rows, so a fork minted here, a
   pre-ADR-24 row, and one a peer already deleted all answer "Session not

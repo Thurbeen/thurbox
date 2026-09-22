@@ -171,7 +171,7 @@ like, and a sampler that reads the row every 250 ms sees neither edge.
 Each line carries a `seq` (monotonic, never reused), the `event`
 (`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
 `spawned`/`registered`/`restored`, `state`/`stopped`/`started`/`updated`,
-`soft_deleted`/`force_deleted` — the `from_state` → `to_state` of the
+`soft_deleted`/`force_deleted`/`forgotten` — the `from_state` → `to_state` of the
 transition, and the same gating fields the table above lists, so acting on a
 `blocked` needs no follow-up `session get`. `hook_state_contradicted` is `null`
 (not checked) unless you pass `--verify`.
@@ -183,7 +183,10 @@ closes the pipe.
 
 `gone` used to be one word for both deletes. It is now two, and the difference
 is the one that matters to a driver: `soft_deleted` can be restored,
-`force_deleted` had its worktrees and window torn down.
+`force_deleted` had its worktrees and window torn down. A third, `forgotten`,
+touched nothing at all: a session mirrored through another host left this
+instance's list (`[remote] transitive_sessions = false`) and goes on running at
+its owner.
 
 ### `--parent`
 

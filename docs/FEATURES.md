@@ -693,6 +693,24 @@ has the rationale; the shape:
   `thurbox-cli session sync [--host <name>]` runs one pass by hand.
   What is the observer's stays the observer's: display order, the
   companion shell. A pass that changes nothing writes nothing.
+- **Hosts of hosts.** A host that mirrors hosts of its own lists their
+  sessions too, under *its* `ssh:`/`wsl:` names — so A reaching B, with
+  B reaching C, sees C's sessions through B. A session keeps its id on
+  every hop, so the id is its identity and each row is one path to it:
+  a session is listed **once**, and a pass through B only takes a
+  session this instance holds on no other path. A → C directly wins —
+  C's own pass relabels a row B's pass took first, and B's pass never
+  takes it back — and a host that mirrors this instance back never
+  relabels this instance's own sessions as its. Delete, restart,
+  `send` and `key` on a row seen through B go to B's CLI, which
+  delegates in turn to C. Such a row carries **no pane** (the id B
+  reports is a pane on C's server, and on B's it would be another
+  agent), so its terminal is not attached here; its checkouts are
+  listed but marked borrowed, so no teardown run on B removes them.
+  `[remote] transitive_sessions = false` in `settings.toml` lists only
+  each host's own sessions, and the next pass forgets the rows it took
+  on — dropped, not deleted, so nothing reaches the session's owner and
+  turning it back on brings them back.
 - **Delegation.** Create, delete (soft or forced), restart and restore
   on a shareable host run `thurbox-cli session …` *on the host*, which
   does the worktree, the hooks and the launch with the host's own

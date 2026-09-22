@@ -326,7 +326,7 @@ Each line carries:
 |---|---|
 | `seq` | monotonic, never reused — what `--since` resumes from |
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
-| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated` · `soft_deleted`, `force_deleted` |
+| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated` · `soft_deleted`, `force_deleted`, `forgotten` |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
 | `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
 

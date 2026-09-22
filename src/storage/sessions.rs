@@ -292,6 +292,55 @@ impl Database {
         tx.commit()
     }
 
+    /// Remove a row outright — the one place a session row leaves the table.
+    ///
+    /// Only for a row that was never this database's record: a mirror of a
+    /// session some other instance owns, reached through a host that mirrors
+    /// it in turn (`session_ops::mirror::Transitive::Hide`). A delete would
+    /// leave a tombstone, and a mirror pass pushes a tombstone to the host as
+    /// a delete — of a session that is alive and not ours. Its worktrees and
+    /// metadata go with it; the audit and event logs keep their history.
+    pub fn forget_session(&self, id: SessionId) -> rusqlite::Result<()> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let was_active = self
+            .conn
+            .query_row(
+                "SELECT deleted_at IS NULL FROM sessions WHERE id = ?1",
+                params![id_str],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?;
+        self.conn.execute(
+            "DELETE FROM worktrees WHERE session_id = ?1",
+            params![id_str],
+        )?;
+        self.conn.execute(
+            "DELETE FROM session_meta WHERE session_id = ?1",
+            params![id_str],
+        )?;
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id_str])?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Deleted,
+            None,
+            None,
+            None,
+        )?;
+        if was_active == Some(true) {
+            self.record_session_event(
+                id,
+                SessionEventKind::Gone,
+                EventReason::Forgotten,
+                None,
+                None,
+            )?;
+        }
+        tx.commit()
+    }
+
     /// Record whether a deleted row still owes a teardown on the host it lived
     /// on (schema v46).
     ///
