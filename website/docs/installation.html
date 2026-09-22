@@ -64,6 +64,74 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
           </p>
 
+          <h3 id="layout">Choosing a layout</h3>
+          <p>
+            The installer asks which arrangement the interface should start with
+            &mdash; press Enter for <code>classic</code>, the default. To choose without
+            being asked, pass <code>--layout</code> (or set
+            <code>THURBOX_LAYOUT</code>, or <code>-Layout</code> for the PowerShell
+            installer):
+          </p>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --layout split-shell</code></pre>
+          <p>
+            <strong><code>classic</code></strong>: the session list beside the agent
+            pane; the session's shell is the pane's <em>Shell</em> tab
+            (<kbd>F8</kbd>).
+          </p>
+          <pre><code class="language-text">╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ─ Shell · F8 ──────────────── api (demo) [Uncovered] ╮
+│── repo ─────────────││sh-5.3$ █                                                          │
+│ ◌ api  no status ho…││                                                                   │
+│ ◌ docs  no status h…││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <p>
+            <strong><code>split-shell</code></strong>: the same, with the selected
+            session's shell in its own pane below the agent, both live at once.
+            <kbd>F8</kbd> moves focus into the shell pane and back. Below 80 columns
+            it falls back to the agent alone, and the <em>Shell</em> tab returns.
+          </p>
+          <pre><code class="language-text">╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ───────────────────────────── api (demo) [Uncovered] ╮
+│── repo ─────────────││sh-5.3$ █                                                          │
+│ ◌ api  no status ho…││                                                                   │
+│ ◌ docs  no status h…││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     │╰───────────────────────────────────────────────────────────────────╯
+│                     │╭────────────────────────────────────────────────────── api (shell) ╮
+│                     ││sh-5.3$ █                                                          │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q</code></pre>
+          <p>
+            Switch at any time with <code>thurbox-cli layout set &lt;name&gt;</code> or
+            <code>layout</code> in settings. A <code>layout.lua</code> you edited is
+            backed up to <code>layout.lua.bak</code> before a switch replaces it.
+          </p>
+
           <h3>Windows (PowerShell)</h3>
           <div class="info-box">
             <p>
