@@ -254,7 +254,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         updates: thurbox::kernel::updates::Updates::start(config.features()),
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
-        pending_shells: std::collections::HashSet::new(),
         pending_focus: None,
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),

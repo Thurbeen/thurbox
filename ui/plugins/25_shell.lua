@@ -13,6 +13,10 @@
 -- `plugin check`. While it IS on screen the agent pane drops its Shell tab (it
 -- asks `lib.panels.placed("shell")`), because one terminal cannot be drawn at
 -- two sizes.
+--
+-- Nothing here asks for the shell to be opened: painting a `<id>#shell` surface
+-- for a session that has none is what opens it, so this render writes nothing
+-- and the pane can be `pure`.
 
 local chrome = require("lib.chrome")
 local plugin_settings = require("lib.settings")
@@ -38,24 +42,11 @@ local function shell_enabled()
   return plugin_settings.feature("shell_pane", true) ~= false
 end
 
---- Whether a shell can be opened for this session at all. Asking for one on a
---- session with no live pane only puts an error in the message band.
+--- Whether this session has a live terminal to open a shell beside.
 local function can_open(session)
   return not session.attach_error
     and session.status ~= "stopped"
     and session.status ~= "unreachable"
-end
-
---- Ask for the session's shell once per session per run. `command("shell")` is
---- idempotent, but it records the shell's pane id each time it is applied, so
---- it is not something to send on every frame.
-local function ensure_shell(session)
-  local key = "opened:" .. session.id
-  if state[key] or not can_open(session) then
-    return
-  end
-  state[key] = true
-  command("shell", { session = session.id })
 end
 
 --- How far back the shell's scrollback is showing. Wheel only: the page keys
@@ -94,6 +85,7 @@ return {
   name = NAME,
   slot = "shell",
   optional = true,
+  pure = true,
   input = "session",
   order = 25,
   focusable = true,
@@ -123,7 +115,6 @@ return {
       return body
     end
 
-    ensure_shell(session)
     local surface = session.id .. "#shell"
     local scroll = scroll_of(surface)
     if scroll > 0 then

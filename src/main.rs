@@ -327,9 +327,6 @@ struct App {
     /// keeps Tab from parking focus on a pane nobody can see — v1's rule that a
     /// panel is "a cycle stop only while visible".
     visible_slots: std::collections::HashSet<String>,
-    /// Sessions whose companion shell was asked for before the session had
-    /// attached, opened as soon as it has (`App::open_pending_shells`).
-    pending_shells: std::collections::HashSet<String>,
     /// A focus request whose slot the arrangement had not placed yet.
     ///
     /// Held for exactly one layout and re-asked there. See

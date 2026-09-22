@@ -313,13 +313,15 @@ fn split_shell_shows_the_agent_and_its_shell_at_once_for_the_selected_session() 
         "the agent pane still offers a Shell tab: {:?}",
         agent.node
     );
-    // And the shell pane opened the companion shell it is showing.
+    // The pane asks for nothing from its render — painting its surface is what
+    // opens the shell (`Terminals::take_wanted_shells`) — so it can be pure.
+    assert!(host.plugins[index_of(&host, "shell")].pure);
     let kinds: Vec<&str> = host
         .drain_commands()
         .iter()
         .map(|command| command.kind())
         .collect();
-    assert!(kinds.contains(&"shell"), "{kinds:?}");
+    assert!(!kinds.contains(&"shell"), "{kinds:?}");
 }
 
 #[test]

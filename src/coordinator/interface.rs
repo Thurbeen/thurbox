@@ -177,6 +177,11 @@ impl App {
     pub(crate) fn apply_settings(&mut self, draft: thurbox::session::settings::Settings) {
         let switched = draft.layout != self.config.on_disk().layout;
         let layout = draft.layout.clone();
+        // A layout switch writes the file here and now rather than leaving it to
+        // the worker: were the write to fail after `layout.lua` had switched, the
+        // next start would find an untouched preset that is not the chosen one
+        // and deliver the old choice back over it.
+        let recorded = switched.then(|| thurbox::agent::settings_config::save_settings(&draft));
         let outcome = self.config.adopt(draft.clone());
         self.config.mark_saved();
         self.commands
@@ -186,8 +191,13 @@ impl App {
         if outcome == thurbox::kernel::config::Reloaded::NeedsRestart {
             self.toast("saved — some changes apply on restart".to_string());
         }
-        if switched {
-            self.switch_layout(&layout);
+        match recorded {
+            Some(Ok(())) => self.switch_layout(&layout),
+            Some(Err(e)) => self.report(
+                format!("layout not switched — settings.toml could not be written: {e}"),
+                Level::Error,
+            ),
+            None => {}
         }
         self.dirty = true;
     }
