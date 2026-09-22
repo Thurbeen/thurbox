@@ -262,8 +262,9 @@ struct Live {
     /// ([`Terminals::take_wanted_shells`]): `Some("")` for none at all, or the
     /// backend id of one that exited. Once per shell, not per frame: a shell
     /// that fails to open repaints its surface every frame, and re-asking each
-    /// time would be a multiplexer round trip and an error per frame. A shell
-    /// that opens and later exits is a different one, so it is asked for again.
+    /// time would be a multiplexer round trip and an error per frame. Cleared
+    /// whenever the shell is seen live, so one that later ends is asked for
+    /// again.
     /// Kept here so a restarted or reattached session, a new `Live`, asks
     /// again. The explicit chord asks as often as it is pressed.
     shell_asked: RefCell<Option<String>>,
@@ -1616,7 +1617,14 @@ impl Terminals {
     /// once per shell ([`Live::shell_asked`]).
     fn want_a_live_shell(&self, id: &str, live: &Live) {
         let current = match &live.session.shell_pane {
-            Some(pane) if !pane.has_exited() => return,
+            // Live: whatever was asked for came, so a later end is asked about
+            // again — even of a pane reattached under the same id.
+            Some(pane) if !pane.has_exited() => {
+                if live.shell_asked.borrow().is_some() {
+                    live.shell_asked.replace(None);
+                }
+                return;
+            }
             Some(pane) => pane.backend_id().to_string(),
             None => String::new(),
         };
@@ -2001,18 +2009,14 @@ impl Terminals {
     ///
     /// This is the redraw signal for a *surface*: its cells live outside the
     /// node tree, so tree equality cannot tell whether it changed. Comparing
-    /// this stamp against the one a renderer last painted at can — and it is a
-    /// single atomic load, which is why v1 reads the same field rather than
-    /// diffing screens.
+    /// this count against the one a renderer last painted at can — and it is a
+    /// single atomic load rather than a diff of screens.
     ///
     /// Accepts the `<id>#shell` spelling, so the view you are looking at is the
     /// pane whose output is checked.
     pub fn output_stamp(&self, surface: &str) -> Option<u64> {
         if let Some(key) = self.program_key(surface) {
-            return self
-                .programs
-                .get(key)
-                .map(|slot| slot.pane.last_output_at());
+            return self.programs.get(key).map(|slot| slot.pane.output_seq());
         }
         self.pane(surface)?.content_stamp()
     }
@@ -2021,8 +2025,8 @@ impl Terminals {
     /// pane behind a surface name, `<id>#shell` and program surfaces included.
     /// `None` when nothing is attached there.
     ///
-    /// Exact where [`Self::output_stamp`] is not: it moves once per chunk the
-    /// parser took, and only after taking it. What an echo is waited on by.
+    /// It moves once per chunk the parser took, and only after taking it. What
+    /// an echo is waited on by.
     pub fn output_seq(&self, surface: &str) -> Option<u64> {
         if let Some(key) = self.program_key(surface) {
             return self.programs.get(key).map(|slot| slot.pane.output_seq());

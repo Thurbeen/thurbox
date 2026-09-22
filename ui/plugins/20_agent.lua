@@ -967,7 +967,10 @@ return {
   -- Pure: the tree is a surface node naming a session, not the terminal's
   -- contents. What moves under a printing agent is the vt100 grid the surface
   -- is painted from, which is not in the tree at all — so the tree can be
-  -- reused every frame and the pane still repaints.
+  -- reused every frame and the pane still repaints. What render writes
+  -- (`select_without_the_list`, `follow_the_shell`) acts only on things the cache
+  -- key carries — focus, a shared value, the snapshot — so no frame on which it
+  -- would act is skipped (docs/PLUGINS.md, the `pure` trap).
   pure = true,
   -- Keys this plugin does not handle go straight to the pty of whichever view
   -- is showing. That is what makes this an ordinary plugin rather than a kernel

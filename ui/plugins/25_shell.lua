@@ -15,8 +15,10 @@
 -- two sizes.
 --
 -- Nothing here asks for the shell to be opened: painting a `<id>#shell` surface
--- for a session that has none is what opens it, so this render writes nothing
--- and the pane can be `pure`.
+-- for a session that has none (or whose shell exited) is what opens it. The one
+-- write this render makes, `store["shell.focused"]`, answers `ctx.focused`,
+-- which is part of the cache key — so the pane can still be `pure`: no frame
+-- on which that write would change anything is ever skipped.
 
 local chrome = require("lib.chrome")
 local plugin_settings = require("lib.settings")

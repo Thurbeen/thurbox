@@ -693,6 +693,12 @@ impl WiredPane {
         self.exited.load(Ordering::SeqCst)
     }
 
+    /// Force the "stream ended" state, for tests of what replaces a shell.
+    #[cfg(test)]
+    pub fn mark_exited_for_test(&self) {
+        self.exited.store(true, Ordering::SeqCst);
+    }
+
     /// The backend-specific pane identifier.
     pub fn backend_id(&self) -> &str {
         &self.backend_id
@@ -731,11 +737,15 @@ impl WiredPane {
         self.residency.is_resident()
     }
 
-    /// [`Self::last_output_at`], moved as well whenever the grid is rebuilt:
-    /// the stamp for anything read off the grid, which a rebuild changes
-    /// without the pane printing anything.
+    /// [`Self::output_seq`], moved as well whenever the grid is rebuilt: the
+    /// stamp for anything read off the grid, which a rebuild changes without
+    /// the pane printing anything.
+    ///
+    /// Over the sequence rather than the `last_output_at` clock, for the reason
+    /// the sequence exists: two chunks inside one millisecond are two changes,
+    /// and it moves only once the parser holds the chunk.
     pub fn content_stamp(&self) -> u64 {
-        self.last_output_at()
+        self.output_seq()
             .wrapping_add(self.residency.changes.load(Ordering::Acquire))
     }
 
@@ -1646,6 +1656,23 @@ impl Session {
             if !shell.has_exited() || self.has_exited() {
                 return Ok(());
             }
+            // An ended stream is not an ended shell: a dropped ssh link ends it
+            // with the window still running whatever was in it. That window is
+            // reattached, not orphaned beside a new one. One that is dead, or
+            // that the multiplexer no longer knows (`exit` closed it), is
+            // killed as far as it still exists and replaced.
+            let old = shell.backend_id().to_string();
+            self.shell_pane = None;
+            // Both asked: tmux answers `is_dead` for a pane it no longer has
+            // with an empty line, which reads as alive, while it has no pid to
+            // give for one.
+            let alive = matches!(self.backend.pane_pid(&old), Ok(Some(_)))
+                && matches!(self.backend.is_dead(&old), Ok(false));
+            if alive {
+                return self.adopt_shell_pane(&old, rows, cols);
+            }
+            let _ = self.backend.kill(&old);
+            self.info.shell_backend_id = None;
         }
 
         let shell_cmd = self.backend.default_shell();
@@ -1779,8 +1806,8 @@ impl Session {
     /// detector, OSC title/bell signals, and buffer-content search.
     #[cfg(test)]
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
-        // Strictly-increasing bump: two feeds within the same millisecond must
-        // still read as *new* output to `App::detect_output_redraw`'s signature.
+        // Strictly-increasing bump, like a live chunk's: two feeds within the
+        // same millisecond must still read as *new* output to the loop.
         let prev = self.wired.last_output_at.load(Ordering::Relaxed);
         self.wired
             .last_output_at

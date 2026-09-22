@@ -35,11 +35,8 @@ pub fn run(action: Action) -> Result<CommandOutput, String> {
     }
 }
 
-/// The interface directory a switch may write into.
-///
-/// Only the user's own copy. A `THURBOX_UI_DIR` checkout is a repository's
-/// working tree, and rewriting its `layout.lua` from a settings command would be
-/// an edit to somebody's source that nobody asked for.
+/// The interface directory a switch may write into, by the rule the settings
+/// panel follows too ([`crate::kernel::presets::may_switch`]).
 fn interface_dir() -> Result<PathBuf, String> {
     let (dir, chosen, report) = crate::kernel::bundled::resolve(true)?;
     if !report.errors.is_empty() {
@@ -49,20 +46,8 @@ fn interface_dir() -> Result<PathBuf, String> {
             report.errors.join("; ")
         ));
     }
-    match chosen {
-        crate::kernel::bundled::Chosen::UserCopy | crate::kernel::bundled::Chosen::Override => {
-            Ok(dir)
-        }
-        crate::kernel::bundled::Chosen::Checkout => Err(format!(
-            "{} is a checkout (THURBOX_UI_DIR), and a layout switch does not rewrite \
-             a repository's files — unset THURBOX_UI_DIR to switch your own interface",
-            dir.display()
-        )),
-        crate::kernel::bundled::Chosen::Fallback => Err(format!(
-            "there is no interface directory of your own to switch ({})",
-            chosen.reason()
-        )),
-    }
+    crate::kernel::presets::may_switch(&dir, chosen)?;
+    Ok(dir)
 }
 
 fn list() -> Result<CommandOutput, String> {
