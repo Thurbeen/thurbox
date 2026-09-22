@@ -429,3 +429,24 @@ fn layout_set_refuses_a_preset_that_does_not_exist() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("split-shell"), "names the real ones: {text}");
 }
+
+#[test]
+fn turning_the_shell_pane_off_gives_the_agent_its_shell_tab_back() {
+    // `placed.shell` must not outlive the pane it describes: with the shell pane
+    // turned off (or deleted) the arrangement stops placing it, and a stale
+    // `true` would hide the Shell tab and leave the shell unreachable.
+    let dir = delivered("split-shell");
+    let mut host = split_shell_with_a_selection(dir.path(), 160, 48);
+    assert_eq!(host.shared_bool("placed.shell"), Some(true));
+
+    std::fs::remove_file(dir.path().join("plugins/25_shell.lua")).expect("remove the pane");
+    host.reload_from(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let on_screen: std::collections::HashSet<String> = slots(&host, 160, 48)
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect();
+    assert!(!on_screen.contains("shell"));
+    host.note_placed(&on_screen);
+    assert_eq!(host.shared_bool("placed.shell"), Some(false));
+}

@@ -157,10 +157,15 @@ Describe 'Get-ExpectedChecksum' {
 }
 
 Describe 'Set-Layout' {
-    It 'takes the preset from -Layout or THURBOX_LAYOUT' {
-        $source = Get-Content $script:ScriptPath -Raw
-        $source | Should -Match '\[string\]\$Layout'
-        $source | Should -Match 'THURBOX_LAYOUT'
+    It 'takes the preset from THURBOX_LAYOUT when no -Layout is passed' {
+        $env:THURBOX_LAYOUT = 'split-shell'
+        try {
+            . $script:ScriptPath
+            $Layout | Should -Be 'split-shell'
+        }
+        finally {
+            Remove-Item Env:\THURBOX_LAYOUT -ErrorAction SilentlyContinue
+        }
     }
 
     It 'does nothing when thurbox-cli is not installed there' {

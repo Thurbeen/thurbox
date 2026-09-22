@@ -182,9 +182,18 @@ impl App {
     /// Held rather than refused while the session has not attached yet: a
     /// layout that shows the shell in a pane of its own asks for it on its first
     /// frame, which comes before the attach does, and refusing then left the pane
-    /// empty with an error in the message band.
+    /// empty with an error in the message band. A session that failed to attach
+    /// or is stopped will not attach by waiting, so it is still refused, aloud.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
-        if !self.terminals.is_attached(session) && self.terminals.failure(session).is_none() {
+        let stopped = self
+            .snapshots
+            .current()
+            .session(session)
+            .is_some_and(|row| row.stopped);
+        if !self.terminals.is_attached(session)
+            && self.terminals.failure(session).is_none()
+            && !stopped
+        {
             self.pending_shells.insert(session.to_string());
             return;
         }

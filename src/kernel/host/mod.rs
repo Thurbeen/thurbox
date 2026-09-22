@@ -2175,15 +2175,27 @@ impl LuaHost {
     /// so the frame that reflows is the frame that reads the answer. Written only
     /// on change, so a settled screen bumps no state version and costs a pure
     /// pane no cache hit.
+    ///
+    /// Every slot recorded before is answered again, not only the ones still
+    /// occupied: a pane turned off or deleted stops occupying its slot, and a
+    /// `true` left behind for it would keep telling its siblings it is on screen.
     pub fn note_placed(&self, on_screen: &std::collections::HashSet<String>) {
-        let occupied: Vec<String> = self
+        const PREFIX: &str = "placed.";
+        let mut slots: BTreeSet<String> = self
             .occupied_slots()
             .into_iter()
             .map(str::to_string)
             .collect();
-        for slot in occupied {
+        slots.extend(
+            self.store
+                .borrow()
+                .keys()
+                .filter_map(|key| key.strip_prefix(PREFIX))
+                .map(str::to_string),
+        );
+        for slot in slots {
             let shown = on_screen.contains(&slot);
-            self.set_shared_bool(&format!("placed.{slot}"), shown);
+            self.set_shared_bool(&format!("{PREFIX}{slot}"), shown);
         }
     }
 
