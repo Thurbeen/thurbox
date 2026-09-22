@@ -458,8 +458,8 @@ session), never on the loop, ADR-P12).
   pass, forever.
 - **Hosts of hosts: one row per session id, the direct path wins.** A host
   lists what it mirrors from its own hosts beside its own sessions (its
-  `backend_type` is then `ssh:`/`wsl:`). `mirror::reconcile_with` (what
-  `mirror_host` runs; `reconcile` = the default) takes a host's own rows as
+  `backend_type` is then `ssh:`/`wsl:`). `mirror::reconcile_with` (the database
+  half of `mirror_host`) takes a host's own rows as
   always and a **transitive** one only when no other backend here holds that
   id, active or deleted — so A → C beats A → B → C, a B mirroring A back never
   relabels A's local rows, and a direct delete is not revived through B. A
@@ -471,7 +471,7 @@ session), never on the loop, ADR-P12).
   only own rows and **forgets** the transitive ones held on that backend
   (`Database::forget_session`, event reason `forgotten`) — never a tombstone,
   which the next pass would push to B as a delete of a live session.
-  `tests/transitive_mirror.rs` pins it over three real databases.
+  `tests/shared_sessions.rs` pins it over three real databases.
 - **A delegated delete the host does not know falls through** to the local
   teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
   peer already deleted there all make the host answer "Session not found", and

@@ -603,11 +603,6 @@ pub enum Transitive {
     Hide,
 }
 
-/// [`reconcile_with`] under the default, [`Transitive::Show`].
-pub fn reconcile(db: &Database, backend: &str, active: &Value, deleted: &Value) -> MirrorReport {
-    reconcile_with(db, backend, active, deleted, Transitive::Show)
-}
-
 /// The database half of a mirror pass: reconcile the rows on `backend` to the
 /// host's `session list --json` (`active`) and `session list --deleted --json`
 /// (`deleted`) answers, exactly as they came over the wire.
