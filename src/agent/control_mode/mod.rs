@@ -1392,7 +1392,7 @@ impl ControlMode {
     ) -> Result<String> {
         let response = rx
             .recv_timeout(budget)
-            .context(format!("Timeout waiting for response to: {cmd}"))?;
+            .with_context(|| format!("Timeout waiting for response to: {cmd}"))?;
 
         if response.is_error {
             bail!("tmux command failed: {cmd}: {}", response.lines.join("\n"));

@@ -1070,14 +1070,14 @@ fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
         bail!("Cannot parse tmux version from: {version_str}");
     }
 
-    let major: u32 = parts[0].parse().context(format!(
-        "Cannot parse tmux major version from: {version_str}"
-    ))?;
+    let major: u32 = parts[0]
+        .parse()
+        .with_context(|| format!("Cannot parse tmux major version from: {version_str}"))?;
     // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
     let minor_str: String = parts[1].chars().take_while(char::is_ascii_digit).collect();
-    let minor: u32 = minor_str.parse().context(format!(
-        "Cannot parse tmux minor version from: {version_str}"
-    ))?;
+    let minor: u32 = minor_str
+        .parse()
+        .with_context(|| format!("Cannot parse tmux minor version from: {version_str}"))?;
 
     Ok((major, minor))
 }
