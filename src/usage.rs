@@ -225,12 +225,17 @@ fn parse_claude_credentials(text: &str) -> Option<(String, Option<String>)> {
     Some((token, plan))
 }
 
+/// Read a local credentials file, `None` when it is missing or unreadable.
+async fn read_local_text(path: &std::path::Path) -> Option<String> {
+    tokio::fs::read_to_string(path).await.ok()
+}
+
 /// Read Claude's local credentials: the on-disk file, else the macOS Keychain
 /// (where Claude Code stores them when no file exists). The keychain attempt
 /// is harmless off-macOS — `security` isn't on PATH, so spawn fails fast.
 async fn claude_local_credentials() -> Option<String> {
     if let Some(path) = claude_credentials_path() {
-        return std::fs::read_to_string(path).ok();
+        return read_local_text(&path).await;
     }
     let out = tokio::process::Command::new("security")
         .args([
@@ -436,9 +441,10 @@ fn parse_antigravity_credentials(text: &str) -> Option<String> {
 
 async fn antigravity(host: Option<&HostDef>) -> AgentUsage {
     let creds = match host {
-        None => crate::paths::home_dir()
-            .map(|h| h.join(".gemini").join("oauth_creds.json"))
-            .and_then(|p| std::fs::read_to_string(p).ok()),
+        None => match crate::paths::home_dir() {
+            Some(home) => read_local_text(&home.join(".gemini").join("oauth_creds.json")).await,
+            None => None,
+        },
         Some(h) => remote_read_text(h, ANTIGRAVITY_POSIX_READ, ANTIGRAVITY_WINDOWS_READ).await,
     };
     let Some(token) = creds.as_deref().and_then(parse_antigravity_credentials) else {
@@ -647,6 +653,21 @@ mod tests {
             Some("ya29.x")
         );
         assert!(parse_antigravity_credentials("{}").is_none());
+    }
+
+    #[tokio::test]
+    async fn local_credentials_read_whole_file_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds.json");
+        std::fs::write(&path, "{\"access_token\": \"ya29.x\"}\n").unwrap();
+        assert_eq!(
+            read_local_text(&path).await.as_deref(),
+            Some("{\"access_token\": \"ya29.x\"}\n")
+        );
+        assert!(read_local_text(&dir.path().join("missing.json"))
+            .await
+            .is_none());
+        assert!(read_local_text(dir.path()).await.is_none());
     }
 
     // ── vendor response parsing ──

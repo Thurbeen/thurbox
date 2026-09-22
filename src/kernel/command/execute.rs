@@ -215,7 +215,7 @@ fn session_name(
     }
     worktree_path
         .map(std::path::Path::new)
-        .and_then(|path| path.file_name())
+        .and_then(std::path::Path::file_name)
         .map(|name| name.to_string_lossy().to_string())
         .or_else(|| branch.map(str::to_string))
         .or_else(|| {
