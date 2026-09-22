@@ -312,7 +312,13 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    std::fs::write(&path, doc.to_string())
+    // Written aside and renamed into place: every mirror pass re-reads this
+    // file (`load_quiet`), and one that caught it truncated mid-write would
+    // read the defaults for a pass - re-adopting the transitive sessions a
+    // user had hidden, only to forget them again on the next.
+    let staged = path.with_extension("toml.saving");
+    std::fs::write(&staged, doc.to_string())?;
+    std::fs::rename(&staged, &path)
 }
 
 #[cfg(test)]
@@ -537,6 +543,20 @@ mod tests {
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert!(!s.features.automations);
         assert!(s.features.tasks, "untouched flags stay enabled");
+    }
+
+    #[test]
+    fn save_settings_leaves_nothing_staged_beside_the_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        save_settings(&Settings::default()).unwrap();
+
+        let dir = settings_config_path().unwrap().parent().unwrap().to_owned();
+        let names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, vec!["settings.toml".to_string()]);
     }
 
     #[test]
