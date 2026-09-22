@@ -252,6 +252,11 @@ pub fn retire_layout_preset() -> Option<String> {
         })
         .map(|(_, line)| line)
         .collect();
+    // A key spelt some other way (`"layout" = …`) is left to the ordinary
+    // unknown-field warning rather than announced as removed every start.
+    if kept == contents {
+        return None;
+    }
     if let Err(e) = std::fs::write(&path, kept) {
         return Some(format!(
             "settings.toml: could not remove the withdrawn `layout` key: {e}"
@@ -501,6 +506,23 @@ mod tests {
 
         assert_eq!(retire_layout_preset(), None);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("layout"));
+    }
+
+    #[test]
+    fn a_layout_key_it_cannot_remove_is_not_announced_as_removed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "\"layout\" = \"split-shell\"\n").unwrap();
+
+        assert_eq!(retire_layout_preset(), None);
+        let (_, warnings) = load_or_seed_with_warnings();
+        assert!(
+            warnings.iter().any(|w| w.contains("layout")),
+            "left to the unknown-field warning: {warnings:?}"
+        );
     }
 
     #[test]
