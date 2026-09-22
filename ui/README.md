@@ -10,7 +10,8 @@ guessable from the code, and two of them are the difference between a plugin tha
 works and one that fails at runtime with nothing on screen to say why.
 
 ```text
-layout.lua      the arrangement: which slots exist, and where
+layout.lua      the arrangement: which slots exist, and where — delivered from a
+                layout preset (`thurbox-cli layout list`)
 lib/            shared helpers — widgets, theme roles, fuzzy match, text input,
                 focus styling, modal shells, scrolling, and the session-list
                 and repo-picker models
@@ -391,6 +392,29 @@ remove one.
 
 `plugins.lock` beside the spec records what each entry resolved to. You edit the
 spec; nothing edits the lock. Commit both and this interface reproduces elsewhere.
+
+## The arrangement is a preset you can switch
+
+`layout.lua` is written from one of the presets thurbox ships:
+
+| preset | arranges |
+|---|---|
+| `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
+| `split-shell` | the same, with the selected session's shell in a pane below the agent |
+
+```bash
+thurbox-cli layout list              # which one is chosen, and whether layout.lua is edited
+thurbox-cli layout set split-shell   # switch; settings → layout does the same
+```
+
+An untouched `layout.lua` follows upgrades of the preset you chose. An edited one is
+yours: nothing overwrites it, and a switch you ask for moves it to `layout.lua.bak`
+first (`.bak.2` and on, never over an earlier backup) and tells you so.
+
+The shell pane (`plugins/25_shell.lua`, slot `shell`) is declared `optional = true`,
+so an arrangement that leaves it out — `classic`, or your own — passes
+`plugin check`. While it is on screen the agent pane drops its Shell tab, and `F8`
+moves focus to the shell pane and back.
 
 ## Files here are yours, and recoverable
 

@@ -54,7 +54,7 @@ local SHELL_PCT = 35
 local SHELL_MIN_ROWS = 8
 -- The centre column must be at least this tall before it is split at all;
 -- below it the agent keeps every row and the shell is its tab again.
-local SPLIT_MIN_ROWS = 24
+local SPLIT_MIN_ROWS = 20
 
 local function status_rows()
   return (thurbox and thurbox.chrome and thurbox.chrome.status_rows) or 0

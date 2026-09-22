@@ -265,8 +265,14 @@ fn split_shell_puts_the_shell_below_the_agent_and_falls_back_to_the_agent_alone(
     assert_eq!(shell.x, center.x, "the shell sits under the agent");
     assert_eq!(shell.width, center.width);
     assert_eq!(shell.y, center.y + center.height, "directly below it");
-    assert!(center.height > shell.height, "the agent keeps the larger half");
-    assert!(rect_of(&wide, "sessions").is_some(), "the list stays beside both");
+    assert!(
+        center.height > shell.height,
+        "the agent keeps the larger half"
+    );
+    assert!(
+        rect_of(&wide, "sessions").is_some(),
+        "the list stays beside both"
+    );
 
     // The narrow-width rule every preset keeps: below `two_panel_min_cols` there
     // is room for the agent and nothing else.
