@@ -448,6 +448,16 @@ fn resolve_ui_dir() -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
     // the interface's business, which is why it asks for it.
     let (dir, chosen, report) = thurbox::kernel::bundled::resolve(true)?;
     let mut notices = Vec::new();
+    // First, because only the first startup notice is shown: the others say
+    // where the interface came from, this says it is not what was chosen. Not
+    // for a `THURBOX_UI_DIR`, somebody's deliberate redirection whose layout the
+    // setting was never going to choose.
+    if matches!(chosen, thurbox::kernel::bundled::Chosen::UserCopy) {
+        notices.extend(thurbox::kernel::presets::not_in_force(
+            &dir,
+            &thurbox::session::settings::global().layout,
+        ));
+    }
     notices.extend(directory_notice(&dir, chosen));
     notices.extend(delivery_notice(&report));
     Ok((dir, notices))

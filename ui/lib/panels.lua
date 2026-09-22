@@ -73,6 +73,22 @@ function panels.toggle(name)
   return now
 end
 
+--- The filled slots an arrangement does not name — the column an installed
+--- pane brings (a file tree, a queue) — sorted, so they keep their order from
+--- one frame to the next. `known` is the set the arrangement places itself.
+function panels.others(ctx, known)
+  local names = {}
+  if type(ctx.slots) == "table" then
+    for slot, filled in pairs(ctx.slots) do
+      if filled == true and not known[slot] then
+        names[#names + 1] = slot
+      end
+    end
+  end
+  table.sort(names)
+  return names
+end
+
 --- Did the last arrangement put `slot` on screen?
 ---
 --- Written by the kernel (`placed.<slot>`) after arranging and before any pane

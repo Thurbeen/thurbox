@@ -1956,8 +1956,16 @@ impl Session {
         cols: u16,
         cwd: Option<&std::path::Path>,
     ) -> Result<()> {
-        if self.shell_pane.is_some() {
-            return Ok(());
+        match &self.shell_pane {
+            Some(pane) if !pane.has_exited() => return Ok(()),
+            // `exit` typed into it: its window is gone, and a shell kept in
+            // that state paints its last screen forever and swallows every
+            // keystroke. Asking for the shell is asking for a live one.
+            Some(_) => {
+                self.shell_pane = None;
+                self.info.shell_backend_id = None;
+            }
+            None => {}
         }
 
         let shell_cmd = self.backend.default_shell();

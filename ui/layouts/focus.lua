@@ -71,14 +71,11 @@ end
 --- Third-party columns someone has opened, in a stable order.
 local function opened_columns(ctx)
   local names = {}
-  if type(ctx.slots) == "table" then
-    for slot, occupied in pairs(ctx.slots) do
-      if occupied == true and not KNOWN[slot] and panels.shown(slot) then
-        names[#names + 1] = slot
-      end
+  for _, slot in ipairs(panels.others(ctx, KNOWN)) do
+    if panels.shown(slot) then
+      names[#names + 1] = slot
     end
   end
-  table.sort(names)
   return names
 end
 

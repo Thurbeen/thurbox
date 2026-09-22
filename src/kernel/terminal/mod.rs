@@ -258,13 +258,15 @@ struct Live {
     /// The companion shell's, independent of the agent's in every respect —
     /// which slot it sits in, how big it is, and whether it is on screen at all.
     shell: Painted,
-    /// Whether painting the shell surface already asked for a shell on this
-    /// attach ([`Terminals::take_wanted_shells`]). Once per attach, not per
-    /// frame: a shell that fails to open repaints its surface every frame, and
-    /// re-asking each time would be a multiplexer round trip and an error per
-    /// frame. Kept here so a restarted or reattached session, a new `Live`,
-    /// asks again. The explicit chord asks as often as it is pressed.
-    shell_asked: Cell<bool>,
+    /// The shell painting last asked a replacement for
+    /// ([`Terminals::take_wanted_shells`]): `Some("")` for none at all, or the
+    /// backend id of one that exited. Once per shell, not per frame: a shell
+    /// that fails to open repaints its surface every frame, and re-asking each
+    /// time would be a multiplexer round trip and an error per frame. A shell
+    /// that opens and later exits is a different one, so it is asked for again.
+    /// Kept here so a restarted or reattached session, a new `Live`, asks
+    /// again. The explicit chord asks as often as it is pressed.
+    shell_asked: RefCell<Option<String>>,
 }
 
 impl Live {
@@ -954,7 +956,7 @@ impl Terminals {
                                 ..Default::default()
                             },
                             shell: Painted::default(),
-                            shell_asked: Cell::new(false),
+                            shell_asked: RefCell::new(None),
                         },
                     );
                     if self.failed.remove(&done.session).is_some() {
@@ -1381,9 +1383,21 @@ impl Terminals {
         // always `None` here — v2 attaches rather than restoring the persisted
         // row. Without passing one the shell inherits the multiplexer's
         // directory, which is wherever thurbox was started.
+        let replaced = live
+            .session
+            .shell_pane
+            .as_ref()
+            .is_some_and(|pane| pane.has_exited());
         live.session
             .ensure_shell_pane(rows, cols, cwd)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // A shell replacing one that exited is born at the terminal's size,
+        // and the memo still holds the old one's: forgotten, or the first frame
+        // would find the rect unchanged and never size the new pty to it.
+        if replaced {
+            live.shell.size.set((0, 0));
+        }
+        Ok(())
     }
 
     /// The pane id of a session's companion shell, once it has one.
@@ -1423,6 +1437,21 @@ impl Terminals {
                 false
             }
         }
+    }
+
+    /// Queue a replacement for `live`'s shell if it has none or it exited,
+    /// once per shell ([`Live::shell_asked`]).
+    fn want_a_live_shell(&self, id: &str, live: &Live) {
+        let current = match &live.session.shell_pane {
+            Some(pane) if !pane.has_exited() => return,
+            Some(pane) => pane.backend_id().to_string(),
+            None => String::new(),
+        };
+        if live.shell_asked.borrow().as_deref() == Some(current.as_str()) {
+            return;
+        }
+        *live.shell_asked.borrow_mut() = Some(current);
+        self.wanted_shells.borrow_mut().insert(id.to_string());
     }
 
     /// Sessions whose shell surface painted with no shell behind it since the
@@ -2127,23 +2156,27 @@ impl Terminals {
         let Some(pane) = self.pane(session) else {
             return false;
         };
+        // A shell surface painted with no live shell behind it — never opened,
+        // or `exit`ed — asks for one: a layout that gives the shell a pane of
+        // its own shows it without anyone asking, and a tab showing a dead
+        // shell would otherwise show it for good. Noted rather than opened
+        // here, because opening is a round trip to the multiplexer and this is
+        // the paint.
+        if pane.shell {
+            self.want_a_live_shell(split_surface(session).0, pane.live);
+        }
         let Some(parser) = pane.parser() else {
-            // A shell surface painted before its shell exists: a layout that gives
-            // the shell a pane of its own shows it without anyone asking for it.
-            // Noted rather than opened here, because opening is a round trip to
-            // the multiplexer and this is the paint.
-            let (id, shell) = split_surface(session);
-            let first_ask = || {
-                self.live
-                    .get(id)
-                    .is_some_and(|live| !live.shell_asked.replace(true))
-            };
-            if shell && first_ask() {
-                self.wanted_shells.borrow_mut().insert(id.to_string());
-            }
             return false;
         };
         let painted = pane.painted();
+        // One terminal has one size, so it is painted into one rect a frame:
+        // the first. A second — an agent pane edited before shell panes existed
+        // still offering its Shell tab under a layout that places the shell
+        // pane — would resize the pty to its own rect every frame and leave the
+        // other showing it wrapped at the wrong width (the #1220 class).
+        if painted.on_screen() && painted.rect.get() != area {
+            return false;
+        }
 
         // The pane must match the rect it is painted into, or its program wraps
         // at the wrong width. The memo is this surface's own, so the comparison
