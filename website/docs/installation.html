@@ -480,8 +480,10 @@ thurbox-cli extension uninstall &lt;name&gt; --purge   # for each one listed</co
   ~/.config/opencode/skills/thurbox-ui ~/.copilot/skills/thurbox-ui \
   ~/.agents/skills/thurbox-ui 2&gt;/dev/null</code></pre>
           <p>
-            Thurbox writes nothing else outside its directories: no shell completions, no shell
-            profile, no
+            Beyond these, the git worktrees and branches of step 4, and the Windows
+            <code>PATH</code>
+            entry of step 5, Thurbox writes nothing outside its own directories: no shell
+            completions, no shell profile, no
             <code>~/.claude/settings.json</code>
             (Claude Code gets its hooks through a
             <code>--settings</code>
