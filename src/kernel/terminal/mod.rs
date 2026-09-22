@@ -258,6 +258,13 @@ struct Live {
     /// The companion shell's, independent of the agent's in every respect —
     /// which slot it sits in, how big it is, and whether it is on screen at all.
     shell: Painted,
+    /// Whether painting the shell surface already asked for a shell on this
+    /// attach ([`Terminals::take_wanted_shells`]). Once per attach, not per
+    /// frame: a shell that fails to open repaints its surface every frame, and
+    /// re-asking each time would be a multiplexer round trip and an error per
+    /// frame. Kept here so a restarted or reattached session, a new `Live`,
+    /// asks again. The explicit chord asks as often as it is pressed.
+    shell_asked: Cell<bool>,
 }
 
 impl Live {
@@ -385,11 +392,6 @@ pub struct Terminals {
     /// had no shell. Drained by the loop, which opens each one
     /// ([`Self::take_wanted_shells`]).
     wanted_shells: RefCell<std::collections::BTreeSet<String>>,
-    /// Every session ever put in `wanted_shells`, so each is asked for once per
-    /// run: a shell that fails to open repaints its surface every frame, and
-    /// re-asking each time would be a multiplexer round trip and an error per
-    /// frame. The explicit chord still asks, as often as it is pressed.
-    asked_shells: RefCell<std::collections::HashSet<String>>,
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
     failed: HashMap<String, Failure>,
@@ -522,7 +524,6 @@ impl Terminals {
             live: HashMap::new(),
             ready: RefCell::new(std::collections::HashSet::new()),
             wanted_shells: RefCell::new(std::collections::BTreeSet::new()),
-            asked_shells: RefCell::new(std::collections::HashSet::new()),
             failed: HashMap::new(),
             discovered: HashMap::new(),
             discovery_due: HashMap::new(),
@@ -860,6 +861,7 @@ impl Terminals {
                                 rect: Cell::new(Rect::default()),
                             },
                             shell: Painted::default(),
+                            shell_asked: Cell::new(false),
                         },
                     );
                     if self.failed.remove(&done.session).is_some() {
@@ -1966,7 +1968,12 @@ impl SurfaceProvider for Terminals {
             // Noted rather than opened here, because opening is a round trip to
             // the multiplexer and this is the paint.
             let (id, shell) = split_surface(session);
-            if shell && self.asked_shells.borrow_mut().insert(id.to_string()) {
+            let first_ask = || {
+                self.live
+                    .get(id)
+                    .is_some_and(|live| !live.shell_asked.replace(true))
+            };
+            if shell && first_ask() {
                 self.wanted_shells.borrow_mut().insert(id.to_string());
             }
             return false;
