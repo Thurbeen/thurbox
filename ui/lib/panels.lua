@@ -60,4 +60,13 @@ function panels.toggle(name)
   return now
 end
 
+--- Retired with the layout presets, and kept as a shim (`ui/AGENTS.md`: a
+--- name `lib/` published stays). v2.32.0's agent pane asks it whether a shell
+--- pane is on screen, and an edited copy of that pane is preserved across
+--- upgrades. No arrangement places one any more, so the answer is always no,
+--- and the pane keeps its Shell tab.
+function panels.placed(_slot)
+  return false
+end
+
 return panels

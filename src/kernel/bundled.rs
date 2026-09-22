@@ -595,7 +595,12 @@ pub fn sources(dir: &Path) -> BTreeMap<String, Source> {
 ///
 /// Covers both undo cases at once — a file the user deleted and one they edited
 /// — because both are "put back what we ship and forget what happened to it".
-pub fn restore(dir: &Path, relative: &str) -> Result<(), String> {
+///
+/// An edited `layout.lua` is moved aside first, and the result says where. A
+/// restore is the user's act, but a pane's `command("plugin", …)` can ask for
+/// one as well as the Interface tab, so it must never be the step that loses an
+/// arrangement: every other pane depends on that one file.
+pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     let path = checked(dir, relative)?;
     let contents = BUNDLED
         .iter()
@@ -603,14 +608,58 @@ pub fn restore(dir: &Path, relative: &str) -> Result<(), String> {
         .map(|(_, contents)| *contents)
         .ok_or_else(|| format!("{relative} is not part of the bundled interface"))?;
 
+    let mut manifest = read_manifest(dir);
+    let backup = match std::fs::read_to_string(&path) {
+        Ok(current) if relative == LAYOUT && current != contents => {
+            let untouched = manifest
+                .get(relative)
+                .and_then(Record::digest)
+                .is_some_and(|recorded| recorded == digest(&current));
+            if untouched {
+                None
+            } else {
+                let to = free_backup_path(dir);
+                std::fs::rename(&path, &to)
+                    .map_err(|e| format!("could not back up {}: {e}", path.display()))?;
+                Some(to)
+            }
+        }
+        _ => None,
+    };
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(e) = std::fs::write(&path, contents) {
+        // A restore that cannot write must leave the edit where it was, not
+        // leave the interface with no arrangement at all.
+        if let Some(backup) = &backup {
+            let _ = std::fs::rename(backup, &path);
+        }
+        return Err(format!("{}: {e}", path.display()));
+    }
 
-    let mut manifest = read_manifest(dir);
     manifest.insert(relative.to_string(), Record::Written(digest(contents)));
-    write_manifest(dir, &manifest)
+    write_manifest(dir, &manifest)?;
+    Ok(backup)
+}
+
+/// The arrangement, the one file whose restore keeps a backup.
+const LAYOUT: &str = "layout.lua";
+
+/// The first `layout.lua.bak[.N]` that does not exist yet.
+///
+/// Not a `.lua` name on purpose: nothing loads it, so a backup can never become
+/// a second arrangement or a stray plugin.
+fn free_backup_path(dir: &Path) -> PathBuf {
+    let first = dir.join(format!("{LAYOUT}.bak"));
+    if !first.exists() {
+        return first;
+    }
+    (2..)
+        .map(|n| dir.join(format!("{LAYOUT}.bak.{n}")))
+        .find(|candidate| !candidate.exists())
+        .expect("an unused backup name")
 }
 
 /// Delete one file of the interface.

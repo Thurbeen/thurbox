@@ -399,7 +399,8 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 order). Editing a shipped
 file is fine — delivery stops overwriting it once you have. Deleting one is how
 you remove it, and the Interface tab (`Ctrl+,` → `]`) will `r` restore it from
-the binary. So no edit or deletion of a file thurbox ships is unrecoverable.
+the binary (an edited `layout.lua` is kept as `layout.lua.bak` first). So no edit
+or deletion of a file thurbox ships is unrecoverable.
 
 A file **you** added is the case `r` cannot help with — thurbox ships no version
 of it to put back, and it says so instead. The way back there is `space` on its

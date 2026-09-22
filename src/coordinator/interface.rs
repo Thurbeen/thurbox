@@ -199,8 +199,13 @@ impl App {
     ) {
         let outcome = match edit {
             thurbox::kernel::command::PluginEdit::Restore => {
-                thurbox::kernel::bundled::restore(&self.ui_dir, file)
-                    .map(|()| format!("restored {file}"))
+                thurbox::kernel::bundled::restore(&self.ui_dir, file).map(|backup| match backup {
+                    Some(backup) => format!(
+                        "restored {file} — your edited copy is kept as {}",
+                        backup.display()
+                    ),
+                    None => format!("restored {file}"),
+                })
             }
             thurbox::kernel::command::PluginEdit::Remove => {
                 thurbox::kernel::bundled::remove(&self.ui_dir, file)
