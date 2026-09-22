@@ -175,6 +175,13 @@ impl App {
     /// touches the world — so a read-only filesystem surfaces as a reported
     /// failure rather than a silent one.
     pub(crate) fn apply_settings(&mut self, draft: thurbox::session::settings::Settings) {
+        let switched = draft.layout != self.config.on_disk().layout;
+        let layout = draft.layout.clone();
+        // A layout switch writes the file here and now rather than leaving it to
+        // the worker: were the write to fail after `layout.lua` had switched, the
+        // next start would find an untouched preset that is not the chosen one
+        // and deliver the old choice back over it.
+        let recorded = switched.then(|| thurbox::agent::settings_config::save_settings(&draft));
         let outcome = self.config.adopt(draft.clone());
         self.config.mark_saved();
         self.commands
@@ -184,7 +191,44 @@ impl App {
         if outcome == thurbox::kernel::config::Reloaded::NeedsRestart {
             self.toast("saved — some changes apply on restart".to_string());
         }
+        match recorded {
+            Some(Ok(())) => self.switch_layout(&layout),
+            Some(Err(e)) => self.report(
+                format!("layout not switched — settings.toml could not be written: {e}"),
+                Level::Error,
+            ),
+            None => {}
+        }
         self.dirty = true;
+    }
+
+    /// Put the layout preset just chosen in settings into force, now.
+    ///
+    /// The same act as `thurbox-cli layout set` (`presets::apply`), including
+    /// the backup of an edited `layout.lua`, and it lands through the ordinary
+    /// reload. Never into a `THURBOX_UI_DIR` directory: that is a checkout or a
+    /// sandbox somebody pointed thurbox at, and its arrangement is theirs.
+    fn switch_layout(&mut self, name: &str) {
+        if std::env::var_os("THURBOX_UI_DIR").is_some() {
+            self.toast(format!(
+                "layout {name} saved; THURBOX_UI_DIR's layout.lua is left as it is"
+            ));
+            return;
+        }
+        match thurbox::kernel::presets::apply(&self.ui_dir, name) {
+            Ok(applied) => {
+                self.refresh_sources();
+                self.reload_at = Some(Instant::now() + DEBOUNCE);
+                self.toast(match applied.backup {
+                    Some(backup) => format!(
+                        "layout {name} — your edited layout.lua is kept as {}",
+                        backup.display()
+                    ),
+                    None => format!("layout {name}"),
+                });
+            }
+            Err(e) => self.report(e, Level::Error),
+        }
     }
 
     /// Restore or remove one interface file, and ask for the reload.
