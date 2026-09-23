@@ -688,8 +688,14 @@ async fn a_search_reads_both_of_a_sessions_screens() {
         .iter()
         .map(|hit| (hit.session.as_str(), hit.shell, hit.text.as_str()))
         .collect();
-    assert!(found.contains(&(harness.id.as_str(), false, "AGENT-SCREEN")), "{found:?}");
-    assert!(found.contains(&(harness.id.as_str(), true, "SHELL-SCREEN")), "{found:?}");
+    assert!(
+        found.contains(&(harness.id.as_str(), false, "AGENT-SCREEN")),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&(harness.id.as_str(), true, "SHELL-SCREEN")),
+        "{found:?}"
+    );
 }
 
 #[tokio::test]

@@ -191,7 +191,8 @@ local function results(scope)
   if scope ~= "text" then
     local found = {}
     for order, session in ipairs(sessions) do
-      local m = q.empty and { score = 0, positions = {} } or fuzzy.match_fields(q, fields_of(session))
+      local m = q.empty and { score = 0, positions = {} }
+        or fuzzy.match_fields(q, fields_of(session))
       if m then
         found[#found + 1] = {
           scope = "sessions",
@@ -601,7 +602,14 @@ local function empty_text(search, info)
     or search.scope == "text" and "terminal text"
     or "names or terminal text"
   local lines = info.answer and (" (" .. thousands(info.answer.lines) .. " lines)") or ""
-  return "  no match for " .. info.q.raw .. " in the " .. what .. " of " .. info.sessions .. " sessions" .. lines
+  return "  no match for "
+    .. info.q.raw
+    .. " in the "
+    .. what
+    .. " of "
+    .. info.sessions
+    .. " sessions"
+    .. lines
 end
 
 --- Move the cursor by `step` results and preview where it lands.
@@ -648,7 +656,12 @@ return {
     { key = "up", action = PREVIOUS, desc = "previous result (previews it)", group = "Search" },
     { key = "pagedown", action = PAGE_DOWN, desc = "results, a page down", group = "Search" },
     { key = "pageup", action = PAGE_UP, desc = "results, a page up", group = "Search" },
-    { key = "enter", action = ACTIVATE, desc = "open the result, scrolled to it", group = "Search" },
+    {
+      key = "enter",
+      action = ACTIVATE,
+      desc = "open the result, scrolled to it",
+      group = "Search",
+    },
     { key = "tab", action = SCOPE, desc = "search everything / text / names", group = "Search" },
     { key = "esc", action = CANCEL, desc = "close and put back", group = "Search" },
   },

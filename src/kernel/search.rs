@@ -65,9 +65,9 @@ pub const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 enum Term {
     /// Substring first, tight subsequence second. Stored case-folded when the
     /// query is case-insensitive.
-    Word(Vec<char>),
+    Word(String),
     /// Verbatim, as a substring only.
-    Phrase(Vec<char>),
+    Phrase(String),
     Regex(regex::Regex),
 }
 
@@ -78,13 +78,22 @@ pub struct Query {
     case_sensitive: bool,
     /// The plain words joined by single spaces, for the bonus a line earns by
     /// containing the whole query as typed. `None` for a single term.
-    whole: Option<Vec<char>>,
+    whole: Option<String>,
 }
 
 /// Case-fold one character, keeping it one character so positions line up
 /// with the original. `İ` lowercases to two; its first is close enough.
 fn fold(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
+}
+
+/// A line case-folded character by character — the same count of characters
+/// as the original, so a character index means the same place in both.
+pub fn fold_line(line: &str) -> String {
+    if line.is_ascii() {
+        return line.to_ascii_lowercase();
+    }
+    line.chars().map(fold).collect()
 }
 
 impl Query {
@@ -97,11 +106,11 @@ impl Query {
     /// * smart case: any capital letter makes the whole query case-sensitive
     pub fn parse(text: &str) -> Result<Option<Self>, String> {
         let case_sensitive = text.chars().any(char::is_uppercase);
-        let prepare = |s: &str| -> Vec<char> {
+        let prepare = |s: &str| -> String {
             if case_sensitive {
-                s.chars().collect()
+                s.to_string()
             } else {
-                s.chars().map(fold).collect()
+                fold_line(s)
             }
         };
         let mut terms = Vec::new();
@@ -136,8 +145,8 @@ impl Query {
         if terms.is_empty() {
             return Ok(None);
         }
-        let whole = (terms.len() > 1 && words.len() == terms.len())
-            .then(|| prepare(&words.join(" ")));
+        let whole =
+            (terms.len() > 1 && words.len() == terms.len()).then(|| prepare(&words.join(" ")));
         Ok(Some(Self {
             terms,
             case_sensitive,
@@ -148,34 +157,51 @@ impl Query {
     /// Match one line: the score and the character ranges that hit, or `None`
     /// when any term is missing.
     pub fn match_line(&self, line: &str) -> Option<LineMatch> {
-        let original: Vec<char> = line.chars().collect();
-        let folded: Vec<char> = if self.case_sensitive {
-            original.clone()
+        if self.case_sensitive {
+            self.match_folded(line, line)
         } else {
-            original.iter().copied().map(fold).collect()
-        };
+            self.match_folded(line, &fold_line(line))
+        }
+    }
+
+    /// [`Self::match_line`] with the line already folded by [`fold_line`] —
+    /// what a [`History`] keeps, so a query typed a letter at a time folds each
+    /// line once rather than once per keystroke. Ignored when the query is
+    /// case-sensitive.
+    ///
+    /// Substrings are found with `str::find` on the folded text, and only a
+    /// word that misses as a substring, and passes a cheap in-order check,
+    /// pays for the subsequence search.
+    pub fn match_folded(&self, line: &str, folded: &str) -> Option<LineMatch> {
+        let haystack = if self.case_sensitive { line } else { folded };
         let mut score = 0i32;
         let mut exact = true;
         let mut ranges = Vec::new();
+        let mut chars: Option<Vec<char>> = None;
         for term in &self.terms {
             match term {
                 Term::Word(word) => {
-                    if let Some(at) = find(&folded, word) {
-                        score += 100 + boundary_bonus(&original, at, at + word.len());
-                        ranges.push((at, at + word.len()));
+                    if let Some((at, end, bonus)) = find_str(haystack, word) {
+                        score += 100 + bonus;
+                        ranges.push((at, end));
                     } else {
-                        let positions = tight_subsequence(&folded, word)?;
+                        if !in_order(haystack, word) {
+                            return None;
+                        }
+                        let all = chars.get_or_insert_with(|| haystack.chars().collect());
+                        let wanted: Vec<char> = word.chars().collect();
+                        let positions = tight_subsequence(all, &wanted)?;
                         let span = positions.last()? + 1 - positions[0];
-                        let gaps = (span - word.len()) as i32;
-                        score += (40 - gaps * 5).max(10);
+                        let gaps = i32::try_from(span - wanted.len()).unwrap_or(i32::MAX / 8);
+                        score += (40 - gaps.saturating_mul(5)).max(10);
                         exact = false;
                         ranges.extend(positions.iter().map(|&p| (p, p + 1)));
                     }
                 }
                 Term::Phrase(phrase) => {
-                    let at = find(&folded, phrase)?;
-                    score += 150 + boundary_bonus(&original, at, at + phrase.len());
-                    ranges.push((at, at + phrase.len()));
+                    let (at, end, bonus) = find_str(haystack, phrase)?;
+                    score += 150 + bonus;
+                    ranges.push((at, end));
                 }
                 Term::Regex(regex) => {
                     let found = regex.find(line)?;
@@ -187,9 +213,9 @@ impl Query {
             }
         }
         if let Some(whole) = &self.whole {
-            if let Some(at) = find(&folded, whole) {
+            if let Some((at, end, _)) = find_str(haystack, whole) {
                 score += 200;
-                ranges.push((at, at + whole.len()));
+                ranges.push((at, end));
             }
         }
         Some(LineMatch {
@@ -211,7 +237,7 @@ fn regex_end(text: &str) -> Option<usize> {
             '\\' if !escaped => escaped = true,
             '/' if !escaped => {
                 let after = &body[at + 1..];
-                if at > 0 && after.chars().next().is_none_or(char::is_whitespace) {
+                if at > 0 && after.chars().next().map_or(true, char::is_whitespace) {
                     return Some(at + 1);
                 }
             }
@@ -231,23 +257,43 @@ pub struct LineMatch {
     pub ranges: Vec<(usize, usize)>,
 }
 
-fn find(haystack: &[char], needle: &[char]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
+/// Where `needle` first occurs in `haystack`, as a character range, with the
+/// bonus for standing alone: `err` in `err: …` above `err` in `stderr`.
+fn find_str(haystack: &str, needle: &str) -> Option<(usize, usize, i32)> {
+    if needle.is_empty() {
         return None;
     }
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// A word that stands alone ranks above one buried in another: `err` in
-/// `err: …` above `err` in `stderr`.
-fn boundary_bonus(line: &[char], start: usize, end: usize) -> i32 {
-    let open = start == 0 || !line[start - 1].is_alphanumeric();
-    let close = end >= line.len() || !line[end].is_alphanumeric();
-    match (open, close) {
+    let byte = haystack.find(needle)?;
+    let before = &haystack[..byte];
+    let after = &haystack[byte + needle.len()..];
+    let open = before
+        .chars()
+        .next_back()
+        .map_or(true, |c| !c.is_alphanumeric());
+    let close = after.chars().next().map_or(true, |c| !c.is_alphanumeric());
+    let bonus = match (open, close) {
         (true, true) => 30,
         (true, false) | (false, true) => 15,
         _ => 0,
+    };
+    let at = before.chars().count();
+    Some((at, at + needle.chars().count(), bonus))
+}
+
+/// Whether every character of `needle` appears in `haystack` in order — the
+/// allocation-free check that turns most lines away before the subsequence
+/// search has to build anything.
+fn in_order(haystack: &str, needle: &str) -> bool {
+    let mut wanted = needle.chars().peekable();
+    for c in haystack.chars() {
+        if wanted.peek() == Some(&c) {
+            wanted.next();
+        }
+        if wanted.peek().is_none() {
+            return true;
+        }
     }
+    wanted.peek().is_none()
 }
 
 /// The subsequence of `needle` in `haystack` with the shortest span, if that
@@ -260,14 +306,13 @@ fn boundary_bonus(line: &[char], start: usize, end: usize) -> i32 {
 fn tight_subsequence(haystack: &[char], needle: &[char]) -> Option<Vec<usize>> {
     let (&first, rest) = needle.split_first()?;
     let limit = needle.len() * 2;
-    let mut best: Option<Vec<usize>> = None;
-    for (start, _) in haystack.iter().enumerate().filter(|(_, &c)| c == first) {
+    let mut best: Option<(usize, Vec<usize>)> = None;
+    for start in (0..haystack.len()).filter(|&i| haystack[i] == first) {
+        let end = (start + limit).min(haystack.len());
         let mut positions = vec![start];
         let mut at = start + 1;
         for &wanted in rest {
-            let window = haystack.get(at..(start + limit).min(haystack.len()))?;
-            let offset = window.iter().position(|&c| c == wanted);
-            match offset {
+            match haystack[at.min(end)..end].iter().position(|&c| c == wanted) {
                 Some(offset) => {
                     positions.push(at + offset);
                     at += offset + 1;
@@ -275,17 +320,12 @@ fn tight_subsequence(haystack: &[char], needle: &[char]) -> Option<Vec<usize>> {
                 None => break,
             }
         }
-        if positions.len() == needle.len() {
-            let span = at - start;
-            if best
-                .as_ref()
-                .is_none_or(|b| span < b.last().map_or(usize::MAX, |l| l + 1) - b[0])
-            {
-                best = Some(positions);
-            }
+        let span = at - start;
+        if positions.len() == needle.len() && best.as_ref().map_or(true, |(b, _)| span < *b) {
+            best = Some((span, positions));
         }
     }
-    best
+    best.map(|(_, positions)| positions)
 }
 
 fn merge(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
@@ -307,6 +347,8 @@ fn merge(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryLine {
     pub text: String,
+    /// `text` through [`fold_line`], kept so matching folds nothing.
+    pub folded: String,
     /// The row the line starts on, counted from the oldest scrollback row.
     pub row: usize,
 }
@@ -357,13 +399,20 @@ impl History {
                 let row = base + r;
                 match lines.last_mut() {
                     Some(line) if continues => line.text.push_str(&text),
-                    _ => lines.push(HistoryLine { text, row }),
+                    _ => lines.push(HistoryLine {
+                        text,
+                        folded: String::new(),
+                        row,
+                    }),
                 }
                 continues = u16::try_from(r).is_ok_and(|r| screen.row_wrapped(r));
             }
             start = base + last;
         }
         screen.set_scrollback(offset);
+        for line in &mut lines {
+            line.folded = fold_line(&line.text);
+        }
         Self {
             lines,
             scrollback,
@@ -443,25 +492,70 @@ fn snippet(text: &str, ranges: &[(usize, usize)]) -> (String, Vec<(usize, usize)
     (out, moved)
 }
 
-/// Every hit for `query` in one terminal's history, best first.
-fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<Hit> {
+/// A matching line, before it is turned into a [`Hit`]: where it is and how
+/// well it matched. Kept this small because a one-letter query matches most
+/// lines of every session, and all but a few hundred are ranked away — the
+/// snippet is built only for those that survive.
+struct Found {
+    source: usize,
+    line: usize,
+    matched: LineMatch,
+    back: usize,
+}
+
+impl Found {
+    fn hit(self, sources: &[Source], histories: &[Arc<History>]) -> Hit {
+        let history = &histories[self.source];
+        let line = &history.lines[self.line];
+        let (text, ranges) = snippet(&line.text, &self.matched.ranges);
+        Hit {
+            session: sources[self.source].session.clone(),
+            shell: sources[self.source].shell,
+            text,
+            ranges,
+            back: self.back,
+            scroll: history.scroll_to(line.row),
+            exact: self.matched.exact,
+            score: self.matched.score,
+        }
+    }
+}
+
+/// Every line of one terminal's history that matches `query`.
+fn found_in(query: &Query, source: usize, history: &History) -> Vec<Found> {
     history
         .lines
         .iter()
-        .filter_map(|line| {
-            let matched = query.match_line(&line.text)?;
-            let (text, ranges) = snippet(&line.text, &matched.ranges);
-            Some(Hit {
-                session: session.to_string(),
-                shell,
-                text,
-                ranges,
+        .enumerate()
+        .filter_map(|(index, line)| {
+            Some(Found {
+                source,
+                line: index,
+                matched: query.match_folded(&line.text, &line.folded)?,
                 back: history.back(line.row),
-                scroll: history.scroll_to(line.row),
-                exact: matched.exact,
-                score: matched.score,
             })
         })
+        .collect()
+}
+
+/// Every hit for `query` in one terminal's history, in history order.
+#[cfg(test)]
+fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<Hit> {
+    let histories = vec![Arc::new(history.clone())];
+    let sources = vec![Source {
+        session: session.into(),
+        shell,
+        parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            1,
+            1,
+            0,
+            crate::agent::TermSignals::default(),
+        ))),
+        stamp: 0,
+    }];
+    found_in(query, 0, history)
+        .into_iter()
+        .map(|found| found.hit(&sources, &histories))
         .collect()
 }
 
@@ -535,40 +629,45 @@ pub fn run(request: Request, sources: &[Source], cache: &Mutex<CacheMap>) -> Ans
         *at = (*at).max(source.stamp);
     }
 
-    let mut per_session: HashMap<&str, Vec<Hit>> = HashMap::new();
+    let mut histories: Vec<Arc<History>> = Vec::with_capacity(sources.len());
+    let mut per_session: HashMap<&str, Vec<Found>> = HashMap::new();
     let mut lines = 0;
     let mut total = 0;
-    for source in sources {
+    for (index, source) in sources.iter().enumerate() {
         let key = (source.session.clone(), source.shell);
         let history = history_of(source, cache.lock().ok().and_then(|c| c.get(&key).cloned()));
         if let Ok(mut cache) = cache.lock() {
             cache.insert(key, (source.stamp, Arc::clone(&history)));
         }
         lines += history.lines.len();
-        let found = hits_in(&query, &source.session, source.shell, &history);
+        let found = found_in(&query, index, &history);
         total += found.len();
         per_session
             .entry(source.session.as_str())
             .or_default()
             .extend(found);
+        histories.push(history);
     }
 
     let searched = per_session.len();
-    let mut hits: Vec<Hit> = Vec::new();
+    let mut ranked: Vec<Found> = Vec::new();
     for (_, mut found) in per_session {
-        found.sort_by(rank_within);
+        found.sort_by(|a, b| rank(&a.matched, a.back, &b.matched, b.back));
         found.truncate(HITS_PER_SESSION);
-        hits.extend(found);
+        ranked.extend(found);
     }
-    hits.sort_by(|a, b| {
-        b.exact
-            .cmp(&a.exact)
-            .then(b.score.cmp(&a.score))
-            .then_with(|| recency.get(b.session.as_str()).cmp(&recency.get(a.session.as_str())))
+    let session_of = |found: &Found| sources[found.source].session.as_str();
+    ranked.sort_by(|a, b| {
+        rank(&a.matched, 0, &b.matched, 0)
+            .then_with(|| recency.get(session_of(b)).cmp(&recency.get(session_of(a))))
             .then(a.back.cmp(&b.back))
-            .then(a.session.cmp(&b.session))
+            .then(session_of(a).cmp(session_of(b)))
     });
-    hits.truncate(MAX_HITS);
+    ranked.truncate(MAX_HITS);
+    let hits = ranked
+        .into_iter()
+        .map(|found| found.hit(sources, &histories))
+        .collect();
     Answer {
         request,
         hits,
@@ -580,12 +679,13 @@ pub fn run(request: Request, sources: &[Source], cache: &Mutex<CacheMap>) -> Ans
     }
 }
 
-/// Within one session: best match first, and the most recent of equals.
-fn rank_within(a: &Hit, b: &Hit) -> std::cmp::Ordering {
+/// Best match first — every term exact before any fuzzy, then score — and the
+/// most recent (fewest rows back) of equals.
+fn rank(a: &LineMatch, a_back: usize, b: &LineMatch, b_back: usize) -> std::cmp::Ordering {
     b.exact
         .cmp(&a.exact)
         .then(b.score.cmp(&a.score))
-        .then(a.back.cmp(&b.back))
+        .then(a_back.cmp(&b_back))
 }
 
 /// The cache a [`SearchStore`] keeps between runs: each terminal's history,
@@ -676,7 +776,7 @@ impl SearchStore {
                 let printed = generation != self.generation;
                 let due = self
                     .dispatched
-                    .is_none_or(|at| at.elapsed() >= RESCAN_INTERVAL);
+                    .map_or(true, |at| at.elapsed() >= RESCAN_INTERVAL);
                 if !(printed && due) {
                     return false;
                 }
@@ -728,6 +828,19 @@ mod tests {
         assert!(exact.exact && !fuzzy.exact);
         assert!(exact.score > fuzzy.score);
         assert_eq!(exact.ranges, vec![(5, 11)]);
+    }
+
+    #[test]
+    fn the_tightest_subsequence_wins_wherever_it_is() {
+        // The first `c` starts a match too loose to count; a later one is tight.
+        assert!(q("cnfg").match_line("c.......... config").is_some());
+        assert_eq!(
+            tight_subsequence(
+                &"cxxxxxxxx cfg".chars().collect::<Vec<_>>(),
+                &['c', 'f', 'g']
+            ),
+            Some(vec![10, 11, 12])
+        );
     }
 
     #[test]

@@ -419,12 +419,12 @@ globals:
   # the one on screen.
   thurbox.links:
     property: read-only
-  # What each session's terminals are showing — both panes, under the session's
-  # id, because a search asks which SESSION holds the text and the answer is the
-  # same whether the agent printed it or the shell did. Served only while a pane
-  # is asking for it (`store.want_content`) — nobody wants every agent's screen
-  # on every frame.
-  thurbox.content:
+  # The content search's answer: lines found in every session's terminals,
+  # scrollback included, ranked, each with how far back it is and the scroll
+  # offset that shows it. Served only while a pane is asking for it
+  # (`store.want_content`) — nobody wants every agent's history read on every
+  # frame. Nil until the first answer lands.
+  thurbox.search:
     property: read-only
   # Which sessions are producing output right now, keyed by session id. Its own
   # tiny group rather than a field on each session row: the answer moves with an

@@ -7,6 +7,9 @@ chrome.title_style function
 fuzzy.compile function
 fuzzy.first function
 fuzzy.match function
+fuzzy.match_fields function
+fuzzy.passes function
+fuzzy.query function
 fuzzy.spans function
 hover.id function
 hover.role function

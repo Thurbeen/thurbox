@@ -445,7 +445,10 @@ fn a_session_is_found_by_a_line_in_its_terminal() {
     type_query(&host, "ENOSPC");
     render_after_debounce(
         &host,
-        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC no space left", 0)])),
+        Some(&answer(
+            "ENOSPC",
+            &[("ccc", "error: ENOSPC no space left", 0)],
+        )),
     );
     // Nothing matches `ENOSPC` by name, agent, branch or repo — only the text.
     assert_eq!(selected(&host).as_deref(), Some("ccc"));
@@ -464,7 +467,10 @@ fn an_answer_to_an_older_query_is_not_shown() {
     type_query(&host, "ENOSPC");
     render_after_debounce(
         &host,
-        Some(&answer("ENOSP", &[("ccc", "error: ENOSPC no space left", 0)])),
+        Some(&answer(
+            "ENOSP",
+            &[("ccc", "error: ENOSPC no space left", 0)],
+        )),
     );
     assert_eq!(host.shared_string("search.matches").as_deref(), Some(""));
 }

@@ -131,6 +131,10 @@ rumdl = "0.1.19"
 name = "frame_cost"
 harness = false
 
+[[bench]]
+name = "search_cost"
+harness = false
+
 [profile.dev]
 # Our own crate: enough optimisation to be usable, still quick to rebuild.
 #

@@ -1093,7 +1093,10 @@ fn build_links(
     Ok(Value::Table(links_table))
 }
 
-fn build_search(lua: &Lua, answer: Option<&crate::kernel::search::Answer>) -> Result<Value, String> {
+fn build_search(
+    lua: &Lua,
+    answer: Option<&crate::kernel::search::Answer>,
+) -> Result<Value, String> {
     let Some(answer) = answer else {
         return Ok(Value::Nil);
     };

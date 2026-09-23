@@ -213,7 +213,8 @@ function fuzzy.query(text)
   q.fold = fold
   q.needles = {}
   for _, word in ipairs(q.words) do
-    q.needles[#q.needles + 1] = { text = fold(word), chars = q.case and nil or chars(word), exact = false }
+    q.needles[#q.needles + 1] =
+      { text = fold(word), chars = q.case and nil or chars(word), exact = false }
   end
   for _, phrase in ipairs(q.phrases) do
     q.needles[#q.needles + 1] = { text = fold(phrase), exact = true }
