@@ -10,8 +10,19 @@
 # not something VHS can type), and nothing needs a browser.
 #
 # The "agent" is a stand-in declared in the sandbox's own agents.toml — a shell
-# loop that echoes each prompt and then prints a page of work — because thurbox
-# is agent-neutral and the point is the terminal's scrollback, not any one CLI.
+# loop that answers each prompt with a long lorem-ipsum transcript — because
+# thurbox is agent-neutral and the point is the terminal's scrollback, not any
+# one CLI. Filler, not real-looking output: the recording reads as a working
+# session without showing anything real, and it is long enough (~200 lines a
+# reply, on a ~36-row pane) that the prompt has genuinely scrolled away. The
+# filler never contains the words searched for, so every hit is the prompt.
+#
+# The theme is pinned, not inherited: thurbox's shipped `default` preset
+# (DEMO_THEME), written to metadata.active_theme the way scripts/demo/record.sh
+# pins its own. That preset draws in the terminal's ANSI colours on its native
+# background, so agg's terminal palette is pinned too (AGG_THEME), or a re-run
+# on another machine would render the same frames differently.
+#
 # Fully hermetic (tbx_sandbox_init_full): its own HOME, XDG dirs and tmux
 # socket, all removed on exit.
 #
@@ -26,11 +37,13 @@ OUT="${1:-$ROOT/media/search-full-content.gif}"
 COLS="${COLS:-140}"
 ROWS="${ROWS:-40}"
 SNAP="${SNAP:-}"
+DEMO_THEME="${DEMO_THEME:-default}"
+AGG_THEME="${AGG_THEME:-asciinema}"
 FONT_DIR="${FONT_DIR:-/usr/share/fonts}"
 FONT_FAMILY="${FONT_FAMILY:-JetBrains Mono,DejaVu Sans Mono}"
 
 missing=
-for tool in asciinema agg tmux git; do
+for tool in asciinema agg tmux git sqlite3; do
     command -v "$tool" >/dev/null || missing="$missing $tool"
 done
 for bin in thurbox thurbox-cli; do
@@ -59,17 +72,51 @@ printf '[features]\nautomations = false\nversion_check = false\nauto_update = fa
 
 cat >"$S/bin/demo-agent" <<'AGENT'
 #!/bin/sh
-# A stand-in coding agent: echo the prompt, then a page of "work" — enough to
-# push the prompt well out of view.
-printf 'demo agent ready. type a prompt.\n'
+# A stand-in coding agent that talks in lorem ipsum: a short transcript on
+# start, then a long "reply" to every prompt. Deterministic, so every recording
+# scrolls the same distance.
+filler() { # filler <paragraphs> <seed>
+    awk -v n="$1" -v seed="$2" 'BEGIN {
+        split("Lorem ipsum dolor sit amet, consectetur adipiscing elit.|" \
+              "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.|" \
+              "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.|" \
+              "Duis aute irure dolor in reprehenderit in voluptate velit esse.|" \
+              "Excepteur sint occaecat cupidatat non proident, sunt in culpa.|" \
+              "Curabitur pretium tincidunt lacus, nulla gravida orci a odio.|" \
+              "Nullam varius, turpis et commodo pharetra, est eros bibendum elit.|" \
+              "Praesent dapibus, neque id cursus faucibus, tortor neque egestas.|" \
+              "Vestibulum tortor quam, feugiat vitae, ultricies eget, tempor sit.|" \
+              "Aenean ultricies mi vitae est, mauris placerat eleifend leo.|" \
+              "Quisque sit amet est et sapien ullamcorper pharetra.|" \
+              "Donec non enim in turpis pulvinar facilisis, ut felis.", s, "|")
+        k = seed
+        for (p = 1; p <= n; p++) {
+            printf "● %s\n", s[k % 12 + 1]; k += 5
+            for (l = 0; l < 4 + k % 3; l++) {
+                printf "  %s\n", s[k % 12 + 1]; k += 7
+            }
+            print ""
+        }
+    }'
+}
+# Speak only once thurbox has attached and sized the pane: text printed at the
+# window's birth width is re-wrapped on the resize and reads as spliced rows.
+birth=$(stty size 2>/dev/null)
+waited=0
+while [ "$(stty size 2>/dev/null)" = "$birth" ] && [ "$waited" -lt 150 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+done
+sleep 0.3
+clear
+filler 6 1
+printf 'ready.\n'
+turn=0
 while printf '\n› ' && IFS= read -r prompt; do
-    printf 'prompt received: %s\n' "$prompt"
-    i=1
-    while [ "$i" -le 120 ]; do
-        printf '  step %3d  reading src/module_%02d.rs … ok\n' "$i" $((i % 37))
-        i=$((i + 1))
-    done
-    printf 'done.\n'
+    turn=$((turn + 1))
+    printf '\n'
+    filler 40 "$turn"
+    printf '● Done.\n'
 done
 AGENT
 chmod +x "$S/bin/demo-agent"
@@ -85,6 +132,16 @@ for name in login-fix api-refactor docs-pass; do
     thurbox-cli session create --name "$name" --repo-path "$REPO" --agent demo >/dev/null
 done
 thurbox-cli config accept-interface >/dev/null
+
+# Pin the theme (see the header), then read it back through thurbox itself so a
+# schema change fails here rather than recording the fallback silently.
+DB="$XDG_DATA_HOME/thurbox-dev/thurbox.db"
+sqlite3 "$DB" "INSERT INTO metadata (key, value) VALUES ('active_theme', '$DEMO_THEME') \
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+thurbox-cli config show --json | grep -q "\"theme\": *\"$DEMO_THEME\"" || {
+    echo "the theme did not take: expected $DEMO_THEME" >&2
+    exit 1
+}
 
 # --- record -------------------------------------------------------------------
 CAST="$S/search.cast"
@@ -117,15 +174,21 @@ wait_for() {
 }
 [ -n "$SNAP" ] && mkdir -p "$SNAP"
 
-wait_for "demo agent ready"
+wait_for "ready."
 sleep 1.5
 snap 1-boot
 
-# A prompt into the focused session, and the work that buries it.
+# A prompt into the focused session, and the reply that buries it. The reply is
+# waited for, and then the prompt is checked to be OFF the screen — the case
+# this demo exists to show is text search could not see before.
 typed "why does the login test flake on CI?"
 k Enter
-wait_for "done."
+wait_for "● Done."
 sleep 1
+if $TM capture-pane -p -t 0 | grep -qF "login test flake"; then
+    echo "the prompt is still on screen; the filler is too short" >&2
+    exit 1
+fi
 snap 2-buried
 
 # A second session gets a different prompt, so the search has two to rank.
@@ -137,7 +200,7 @@ k Enter
 sleep 1
 typed "tidy the api error types"
 k Enter
-wait_for "done."
+wait_for "● Done."
 sleep 1.5
 snap 3-second
 
@@ -184,5 +247,5 @@ TRIM
 
 mkdir -p "$(dirname "$OUT")"
 agg --font-dir "$FONT_DIR" --font-family "$FONT_FAMILY" --font-size 14 \
-    --idle-time-limit 2 --theme asciinema "$CAST" "$OUT"
+    --idle-time-limit 2 --theme "$AGG_THEME" "$CAST" "$OUT"
 ls -lh "$OUT"
