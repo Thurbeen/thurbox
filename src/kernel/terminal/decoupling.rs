@@ -310,6 +310,7 @@ impl Harness {
         Some(Node::Surface {
             source: SurfaceSource::Session(session),
             scroll: 0,
+            mark: None,
             frame: None,
             size: Default::default(),
             identity: Default::default(),

@@ -302,6 +302,17 @@ impl Tui {
             .collect()
     }
 
+    /// Whether the cell at `(y, x)` is drawn reversed — how the kernel marks a
+    /// surface row.
+    fn inverse_at(&self, y: u16, x: u16) -> bool {
+        self.screen
+            .lock()
+            .unwrap()
+            .screen()
+            .cell(y, x)
+            .is_some_and(vt100::Cell::inverse)
+    }
+
     fn raw_len(&self) -> usize {
         self.raw.lock().unwrap().len()
     }
@@ -1272,6 +1283,20 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
             && frame.contains("↑]")
             && frame.lines().any(|line| line.contains("│tb-findme "))
     });
+    // And the line is marked, so a long screen of output does not leave you
+    // hunting for the row you were brought to.
+    let frame = tui.frame();
+    let (y, line) = frame
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("│tb-findme "))
+        .expect("the landed line");
+    let byte = line.find("│tb-findme").expect("the landed line") + "│".len();
+    let x = line[..byte].chars().count();
+    assert!(
+        tui.inverse_at(y as u16, x as u16),
+        "the landed line is not highlighted:\n{frame}"
+    );
     assert!(tui.quit().success());
 }
 

@@ -334,6 +334,7 @@ that throws costs its own pane and nothing else.
 | `files.list/read` | Directory entries and file text, rooted at a session's directory |
 | `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
+| `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; nil until the first answer lands |
 | `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
 

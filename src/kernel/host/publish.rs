@@ -1133,6 +1133,7 @@ fn build_search(
         set(&entry, "positions", positions)?;
         set(&entry, "back", hit.back)?;
         set(&entry, "scroll", hit.scroll)?;
+        set(&entry, "row", hit.row)?;
         set(&entry, "exact", hit.exact)?;
         set(&entry, "score", hit.score)?;
         hits.raw_set(index + 1, entry).map_err(err)?;

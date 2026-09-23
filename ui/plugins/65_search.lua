@@ -314,7 +314,11 @@ local function preview(search, row, scroll)
     requests[#requests + 1] = "-" .. search.revealed
   end
   if row.hit then
-    requests[#requests + 1] = surface .. " " .. math.floor(row.hit.scroll or 0)
+    requests[#requests + 1] = surface
+      .. " "
+      .. math.floor(row.hit.scroll or 0)
+      .. " "
+      .. math.floor(row.hit.row or 0)
   end
   search.revealed = surface
   reveal(requests)
@@ -471,7 +475,7 @@ local function status_line(search, rows, info)
         .. " lines of "
         .. answer.sessions
         .. " sessions ("
-        .. math.floor((answer.ms or 0) + 0.5)
+        .. string.format((answer.ms or 0) < 10 and "%.1f" or "%.0f", answer.ms or 0)
         .. "ms)"
     end
   end

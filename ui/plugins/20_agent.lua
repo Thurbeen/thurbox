@@ -65,9 +65,10 @@ local SCROLL_LINES = 10
 local FOCUS = "terminal.focus"
 --- Scroll a terminal to where another pane asks — the search strip landing on a
 --- hit it found in the scrollback. The request is left in `store` under the
---- same name, because an action carries no argument: `"<surface> <offset>"`
---- shows a line, `"-<surface>"` puts that terminal back at the bottom, and
---- several are `;`-separated.
+--- same name, because an action carries no argument: `"<surface> <offset>
+--- <row>"` scrolls back by `offset` and marks screen row `row` (from the top),
+--- `"-<surface>"` puts that terminal back at the bottom, and several are
+--- `;`-separated.
 local REVEAL = "terminal.reveal"
 
 --- The session the list published, resolved against the current snapshot.
@@ -135,6 +136,14 @@ local function set_scroll(surface, scroll, scroll_max)
   end
   state["scroll:" .. surface] = scroll ~= 0 and scroll or nil
   state["scrollmax:" .. surface] = scroll_max ~= 0 and scroll_max or nil
+  -- Any move by hand leaves the line a search landed on; its mark goes with it.
+  state["mark:" .. surface] = nil
+end
+
+--- The screen row a search landed this surface on, from the top — see
+--- `reveal`. Drawn as the surface's `mark` until the view moves.
+local function mark_of(surface)
+  return surface and state["mark:" .. surface] or nil
 end
 
 --- Move a surface's scrollback by `lines`. `true` when it actually moved.
@@ -188,7 +197,7 @@ local function reveal()
     return
   end
   for request in spec:gmatch("[^;]+") do
-    local reset, surface, offset = request:match("^(%-?)(%S+)%s*(%d*)$")
+    local reset, surface, offset, row = request:match("^(%-?)(%S+)%s*(%d*)%s*(%d*)$")
     if surface then
       local id = surface:gsub("#shell$", "")
       local shell = id ~= surface
@@ -202,6 +211,7 @@ local function reveal()
         local scroll = tonumber(offset) or 0
         set_tab(id, shell and SHELL_TAB or AGENT_TAB)
         set_scroll(surface, scroll, math.max(scroll_max, scroll))
+        state["mark:" .. surface] = tonumber(row)
       end
     end
   end
@@ -976,10 +986,17 @@ return {
 
     -- The shell is a second surface over the same primitive, addressed as
     -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
+    -- The row a search landed on, while it is still inside the grid.
+    local mark = mark_of(surface)
+    if mark and mark >= height - 2 then
+      mark = nil
+    end
+
     return {
       type = "surface",
       session = surface,
       scroll = scroll,
+      mark = mark,
       fill = 1,
       frame = border_frame(title, level, border, strip, rows),
     }
@@ -1016,7 +1033,12 @@ return {
   -- belongs at the live end of the stream: the offset is dropped and the key
   -- is DECLINED, so it still reaches the pty.
   on_key = function()
-    snap_to_bottom(store.selected)
+    local id = store.selected
+    snap_to_bottom(id)
+    local surface = surface_of(id, tab_of(id))
+    if surface then
+      state["mark:" .. surface] = nil
+    end
     return false
   end,
 

@@ -427,6 +427,12 @@ impl History {
         (self.scrollback + self.rows).saturating_sub(row + 1)
     }
 
+    /// The screen row `row` lands on once the view is scrolled to
+    /// [`Self::scroll_to`] it.
+    pub fn row_on_screen(&self, row: usize) -> usize {
+        (row + self.scroll_to(row)).saturating_sub(self.scrollback)
+    }
+
     /// The scrollback offset that shows `row` a third of the way down the
     /// screen — context above it, and room below for what followed. A row
     /// already on the screen needs no scrolling at all.
@@ -456,6 +462,12 @@ pub struct Hit {
     pub back: usize,
     /// The scrollback offset that puts the line on screen.
     pub scroll: usize,
+    /// The screen row the line is on once scrolled to `scroll`, from the top.
+    ///
+    /// Counted from the top rather than the bottom because that is what a
+    /// resize leaves alone: the pane grows when the search strip closes, and
+    /// vt100 adds the new rows at the bottom.
+    pub row: usize,
     pub exact: bool,
     pub score: i32,
 }
@@ -515,6 +527,7 @@ impl Found {
             ranges,
             back: self.back,
             scroll: history.scroll_to(line.row),
+            row: history.row_on_screen(line.row),
             exact: self.matched.exact,
             score: self.matched.score,
         }
@@ -949,7 +962,7 @@ mod tests {
         // Scrolling to that offset puts the line on screen.
         parser.screen_mut().set_scrollback(hit.scroll);
         let visible: Vec<String> = parser.screen().rows(0, 20).collect();
-        assert!(visible.iter().any(|row| row == "needle"), "{visible:?}");
+        assert_eq!(visible[hit.row], "needle", "{visible:?}");
         assert!(hit.back >= 99);
     }
 

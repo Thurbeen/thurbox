@@ -378,6 +378,7 @@ fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
                 ranges: vec![],
                 back: scroll + 5,
                 scroll: *scroll,
+                row: 7,
                 exact: true,
                 score: 100,
             })
@@ -494,7 +495,7 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
-        Some("aaa 40")
+        Some("aaa 40 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
         owner: "plugins/65_search.lua".into(),
@@ -506,7 +507,7 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
     press(&host, "up");
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
-        Some("-aaa;ccc 120")
+        Some("-aaa;ccc 120 7")
     );
 
     // Cancelling scrolls the last one back too.
@@ -559,6 +560,8 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
         .node;
     let tree = format!("{node:?}");
     assert!(tree.contains("scroll: 120"), "{tree}");
+    // And the line it landed on is marked, at the row the kernel said.
+    assert!(tree.contains("mark: Some(7)"), "{tree}");
 }
 
 #[test]

@@ -103,6 +103,7 @@ struct Fields {
     align: Option<Value>,
     wrap: Option<Value>,
     scroll: Option<Value>,
+    mark: Option<Value>,
     axis: Option<Value>,
     gap: Option<Value>,
     children: Option<Value>,
@@ -140,6 +141,7 @@ impl Fields {
                 b"align" => &mut out.align,
                 b"wrap" => &mut out.wrap,
                 b"scroll" => &mut out.scroll,
+                b"mark" => &mut out.mark,
                 b"axis" => &mut out.axis,
                 b"gap" => &mut out.gap,
                 b"children" => &mut out.children,
@@ -267,6 +269,7 @@ fn convert_table(
             Ok(Node::Surface {
                 source,
                 scroll: val_u16(fields.scroll.as_ref(), "scroll", path)?.unwrap_or(0),
+                mark: val_u16(fields.mark.as_ref(), "mark", path)?,
                 frame,
                 size,
                 identity,
@@ -980,8 +983,16 @@ pub fn to_lua(lua: &mlua::Lua, node: &Node) -> Result<Value, String> {
                 table.set("style", style).map_err(|e| e.to_string())?;
             }
         }
-        Node::Surface { source, scroll, .. } => {
+        Node::Surface {
+            source,
+            scroll,
+            mark,
+            ..
+        } => {
             table.set("scroll", *scroll).map_err(|e| e.to_string())?;
+            if let Some(mark) = mark {
+                table.set("mark", *mark).map_err(|e| e.to_string())?;
+            }
             surface_source_to_lua(lua, &table, source)?;
         }
     }
@@ -1214,6 +1225,7 @@ mod tests {
         let surface = |source| Node::Surface {
             source,
             scroll: 0,
+            mark: None,
             frame: None,
             size: Size::default(),
             identity: Identity::default(),

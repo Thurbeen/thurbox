@@ -141,6 +141,7 @@
 ---@field program? string
 ---@field cells? thurbox.Line[]
 ---@field scroll? integer
+---@field mark? integer A row to highlight, counted from the top of the surface — where a pane that scrolled a terminal to a line points at it.
 
 ---@alias thurbox.Node thurbox.TextNode|thurbox.BoxNode|thurbox.InputNode|thurbox.SurfaceNode
 
@@ -480,6 +481,7 @@
 ---@field positions integer[] 1-based character indices of `text` that matched — what `lib.fuzzy.spans` lights.
 ---@field back integer Rows between the line and the bottom of its terminal.
 ---@field scroll integer The scrollback offset that puts the line on screen; 0 when it already is.
+---@field row integer The screen row, from the top, the line is on once scrolled to `scroll`.
 ---@field exact boolean Every term matched as a substring, phrase or regex — none only as a subsequence.
 ---@field score integer Higher is better; hits arrive already ranked.
 

@@ -350,6 +350,11 @@ pub enum Node {
     Surface {
         source: SurfaceSource,
         scroll: u16,
+        /// A row of the surface to highlight, counted from its top — where a
+        /// pane that scrolled a terminal to a line points at it. Painted by the
+        /// kernel over whatever the source drew, so the terminal itself is not
+        /// touched.
+        mark: Option<u16>,
         frame: Option<Frame>,
         size: Size,
         identity: Identity,
@@ -900,6 +905,7 @@ mod tests {
         let session = Node::Surface {
             source: SurfaceSource::Session("s1".into()),
             scroll: 0,
+            mark: None,
             frame: None,
             size: Size::default(),
             identity: Identity::default(),
@@ -907,6 +913,7 @@ mod tests {
         let program = Node::Surface {
             source: SurfaceSource::Program("program:plugins/90_watch.lua#watch".into()),
             scroll: 0,
+            mark: None,
             frame: None,
             size: Size::default(),
             identity: Identity::default(),
@@ -914,6 +921,7 @@ mod tests {
         let cells = Node::Surface {
             source: SurfaceSource::Cells(vec![Vec::new()]),
             scroll: 0,
+            mark: None,
             frame: None,
             size: Size::default(),
             identity: Identity::default(),
