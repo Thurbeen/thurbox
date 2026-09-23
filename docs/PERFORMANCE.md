@@ -1966,8 +1966,9 @@ its screen and history. The interface parses it again into a `vt100` grid of
 history, for every attached session whether or not it was ever shown. The
 multiplexer benchmark read that as about 1 MiB a session attached, where
 headless thurbox, which is tmux, holds all 50 in 9 MiB. It is more than that:
-the benchmark's sessions had barely scrolled. Measured on the interface process alone, 50 sessions attached at
-200x50, once every session had printed 6,000 lines:
+the benchmark's sessions had barely scrolled. Measured on the interface
+process alone, 50 sessions attached at 200x50, once every session had printed
+6,000 lines:
 
 | `scrollback_lines` | idle, nothing scrolled | history full |
 |---|---|---|
@@ -2044,8 +2045,8 @@ is its reader thread (its stack and malloc arena, ~135 KiB), not its grid.
 On the benchmark harness, same machine before and after, 50 sessions
 attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
 57.4, with CPU and keystroke latency unchanged and the stale first view
-(#1242) gone:
-[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23).
+(#1242) gone: see the section revisiting it in
+[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
 
 **Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
 build:
