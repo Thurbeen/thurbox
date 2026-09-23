@@ -191,7 +191,7 @@ function textinput.key(field, key)
     return true
   end
   if key.ctrl or key.alt then
-    -- Any other `ctrl`+letter is swallowed, so a control character is never
+    -- Any other bare `ctrl`+letter is swallowed, so a control character is never
     -- typed. An `alt` chord that is not a word edit is left unconsumed and never
     -- typed: the pane holding the field may own it (new-session's `alt+p`).
     if key.ctrl and not key.alt and key.char and widgets.chars(key.char) == 1 then

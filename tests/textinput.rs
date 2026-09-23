@@ -87,9 +87,9 @@ return {{
 }
 
 fn parse(start: &str) -> (String, usize) {
-    let bar = start.find('|').expect("a caret in the start value");
+    let caret = start.find('|').expect("a caret in the start value");
     let value = start.replacen('|', "", 1);
-    (value, start[..bar].chars().count())
+    (value, start[..caret].chars().count())
 }
 
 fn key(chord: &str) -> KeyPress {
