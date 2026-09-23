@@ -68,11 +68,9 @@ function textinput.insert(field, text)
   return field
 end
 
---- Start of the word before the caret, in characters — the target `ctrl+w`
---- deletes back to. Trailing separators are skipped first, so deleting a word
---- from `~/src/thing/` lands on `thing/` rather than on nothing.
-local function word_start(field)
-  local at = field.cursor
+--- The field's characters, one string each, and whether position `index`
+--- (1-based; out of range counts) separates words.
+local function characters(field)
   local chars = {}
   for _, code in utf8.codes(field.value) do
     chars[#chars + 1] = utf8.char(code)
@@ -81,6 +79,15 @@ local function word_start(field)
     local char = chars[index]
     return char == nil or char == " " or char == "/" or char == "."
   end
+  return chars, separator
+end
+
+--- Start of the word before the caret, in characters — the target `ctrl+w`
+--- deletes back to. Trailing separators are skipped first, so deleting a word
+--- from `~/src/thing/` lands on `thing/` rather than on nothing.
+local function word_start(field)
+  local _, separator = characters(field)
+  local at = field.cursor
   while at > 0 and separator(at) do
     at = at - 1
   end
@@ -88,6 +95,49 @@ local function word_start(field)
     at = at - 1
   end
   return at
+end
+
+--- End of the word after the caret, in characters — where `alt+f` moves to
+--- and `alt+d` deletes up to. The mirror of `word_start`: leading separators
+--- are skipped first.
+local function word_end(field)
+  local chars, separator = characters(field)
+  local at = field.cursor
+  while at < #chars and separator(at + 1) do
+    at = at + 1
+  end
+  while at < #chars and not separator(at + 1) do
+    at = at + 1
+  end
+  return at
+end
+
+--- Delete the characters between two caret positions, `from` < `to`, and
+--- leave the caret at `from`.
+local function delete_between(field, from, to)
+  local value = field.value
+  field.value = string.sub(value, 1, byte_at(value, from) - 1)
+    .. string.sub(value, byte_at(value, to))
+  field.cursor = from
+end
+
+--- The word chords a shell's line editor has taught every hand: `alt` with
+--- `b`/`f` (move), `d` (delete forward) and `backspace` (delete back), and
+--- `ctrl` or `alt` with the arrows and `delete`. True when it was one.
+local function word_edit(field, key)
+  local name = key.key
+  if name == "left" or (key.alt and name == "b") then
+    field.cursor = word_start(field)
+  elseif name == "right" or (key.alt and name == "f") then
+    field.cursor = word_end(field)
+  elseif name == "backspace" then
+    delete_between(field, word_start(field), field.cursor)
+  elseif name == "delete" or (key.alt and name == "d") then
+    delete_between(field, field.cursor, word_end(field))
+  else
+    return false
+  end
+  return true
 end
 
 --- The readline chords v1's own fields accept, and nothing else.
@@ -133,6 +183,9 @@ end
 --- whatever the field is inside, which is the only thing that knows what
 --- submitting means.
 function textinput.key(field, key)
+  if (key.ctrl or key.alt) and word_edit(field, key) then
+    return true
+  end
   if key.ctrl or key.alt then
     -- A modifier chord that is not a line edit is still swallowed rather than
     -- typed, but only for letters: `ctrl+p` and friends belong to the pane, and

@@ -668,7 +668,15 @@ impl App {
             }
             return;
         }
-        if let Some(index) = self.grabbed {
+        // And so does a pane holding the caret in a field of its own — the
+        // search strip. It is not a surface, so this went to the terminal
+        // behind it, or with none on screen was refused.
+        let typing = if self.focused_typing {
+            self.host.focusable().get(self.focus).copied()
+        } else {
+            None
+        };
+        if let Some(index) = self.grabbed.or(typing) {
             for ch in text.chars().filter(|ch| !ch.is_control()) {
                 self.dispatch_key_to(index, &KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             }
@@ -749,9 +757,10 @@ impl App {
         self.paste_text_or_decline()
     }
 
-    /// Whether a modal or a float is taking typed input right now.
+    /// Whether a modal, a float or a pane's own field is taking typed input
+    /// right now — somewhere a paste is typing, and a picture cannot go.
     fn overlay_owns_input(&self) -> bool {
-        self.modals.is_open() || self.grabbed.is_some()
+        self.modals.is_open() || self.grabbed.is_some() || self.focused_typing
     }
 
     /// Send `bytes` to a surface, routed by what the pane is **showing**.

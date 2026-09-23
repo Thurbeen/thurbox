@@ -440,6 +440,9 @@ struct App {
     /// that one is "which session am I looking at", which a program pane has no
     /// answer to, and this one is "where do unclaimed keys go".
     focused_surface: Option<String>,
+    /// Whether the focused pane holds the caret in a field of its own, so a
+    /// paste is typing for it rather than text for a terminal.
+    focused_typing: bool,
     /// The session the list had selected last frame, so moving off one can
     /// acknowledge the finished turn it was showing.
     last_selected_session: Option<String>,

@@ -652,6 +652,47 @@ fn the_search_strip_opens_with_focus_in_it() {
 }
 
 #[test]
+fn a_paste_lands_in_the_search_strip() {
+    // A paste goes where the caret is. It used to go to the terminal behind
+    // the strip — or, with no terminal on screen, nowhere — because only a
+    // modal or a float was offered the text before the focused terminal.
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"\x1b[200~zq-pasted\x1b[201~");
+    tui.wait_for("Search zq-pasted");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_search_field_edits_by_word_as_a_shell_line_does() {
+    // Alt+b, Alt+f, Alt+d and Alt+Backspace are what a shell's line editor
+    // has taught every hand; the field swallowed every Alt chord unused.
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"alpha beta gamma");
+    tui.wait_for("Search alpha beta gamma");
+
+    // Alt+Backspace: the word before the caret goes.
+    tui.send(b"\x1b\x7f");
+    tui.wait_for("Search alpha beta ");
+    tui.wait_gone("gamma");
+
+    // Alt+b back over `beta`, and what is typed lands before it.
+    tui.send(b"\x1bb");
+    tui.send(b"X");
+    tui.wait_for("Search alpha Xbeta");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn the_palette_lists_the_kernels_clipboard_actions() {
     // The one thing a unit test over a hand-assembled registry cannot show: the
     // *binary* declares copy and paste (`collect_declarations`), so they are

@@ -479,6 +479,16 @@ impl Node {
         }
     }
 
+    /// Whether this tree holds an input that owns the caret — a pane being
+    /// typed into, which is where a paste belongs.
+    pub fn has_focused_input(&self) -> bool {
+        match self {
+            Node::Input { focused, .. } => *focused,
+            Node::Box { children, .. } => children.iter().any(Node::has_focused_input),
+            _ => false,
+        }
+    }
+
     /// An empty placeholder, used where a plugin produced nothing.
     pub fn empty() -> Self {
         Node::Text {

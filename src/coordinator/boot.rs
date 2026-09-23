@@ -297,6 +297,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         band_targets: Vec::new(),
         focused_session: None,
         focused_surface: None,
+        focused_typing: false,
         last_selected_session: None,
         started: Instant::now(),
         frames: 0,
