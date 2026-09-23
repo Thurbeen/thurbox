@@ -277,8 +277,10 @@ Bash is the norm here - judge a script by the line at the top of it rather than
 by a repo-wide default.
 
 Not everything under this path is shell. scripts/demo/*.tape are VHS tapes
-driving the real TUI, scripts/demo/trim-cast.mjs is Node, and the installers
-have their own block.
+driving the real TUI, scripts/demo/trim-cast.mjs is Node, scripts/bench/ is
+standard-library Python (the multiplexer benchmark, which needs a pty and
+/proc, and must not grow a dependency to install), and the installers have
+their own block.
 
 ### `scripts/install.*`
 
@@ -328,7 +330,9 @@ kernel's shape and its five rules, and docs/PLUGINS.md owns interface-plugin
 authoring. docs/DEVELOPMENT.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/RELEASING.md owns the release process and
-docs/ORCHESTRATION.md the control-plane pattern. packaging/README.md owns the
+docs/ORCHESTRATION.md the control-plane pattern. docs/BENCHMARK-MULTIPLEXERS.md
+owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
+and the method of the harness under scripts/bench/ that measures it. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md
 owns the introduction.
 

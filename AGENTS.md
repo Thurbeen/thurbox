@@ -319,6 +319,8 @@ For rationale behind decisions, see `docs/`:
   the checklist for adding a new built-in
 - `docs/PERFORMANCE.md` — Render/tick performance: demand-driven redraw,
   perf counters, the session-order cache, and how to measure
+- `docs/BENCHMARK-MULTIPLEXERS.md` — thurbox against raw tmux and Herdr as a
+  host for agent sessions: results, method, and `just bench-multiplexers`
 - `docs/REVIEW.md` — The per-path house rules a change is reviewed
   against, the trees excluded from review, and which document owns
   which class of fact. `.publish.yaml` names it in `review.rules`;

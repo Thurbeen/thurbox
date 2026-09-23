@@ -2013,6 +2013,11 @@ failing:
 A reading from either is only comparable with another at the same terminal size
 and session count, so both pin theirs.
 
+A third instrument answers a different question — how thurbox compares with
+the alternatives, not with itself: `just bench-multiplexers` runs raw tmux,
+Herdr and thurbox through the same scenarios with the same stand-in agent.
+Its results and method are in [BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
+
 **And on a busy machine, trust the counters over the CPU.** A percentage from
 `/proc` is a real measurement of a shared machine: taken while something else was
 compiling, the same build measured 5.96% and 7.53% on two runs half an hour
