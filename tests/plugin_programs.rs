@@ -346,7 +346,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content: &Default::default(),
+        search: None,
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows: 0,

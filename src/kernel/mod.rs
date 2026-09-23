@@ -30,6 +30,7 @@ pub mod perf;
 pub mod registry;
 pub mod repos;
 pub mod runs;
+pub mod search;
 pub mod selection;
 pub mod snapshot;
 pub mod terminal;

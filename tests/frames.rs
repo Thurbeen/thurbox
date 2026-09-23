@@ -114,7 +114,7 @@ fn publish_inner(
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content: &Default::default(),
+        search: None,
         meta,
         metrics: &Default::default(),
         status_rows: 0,

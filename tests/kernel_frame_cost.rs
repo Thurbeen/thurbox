@@ -221,7 +221,7 @@ fn publish_at_printing(
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content: &Default::default(),
+        search: None,
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows: 0,

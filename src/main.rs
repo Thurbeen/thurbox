@@ -545,10 +545,9 @@ struct App {
     /// yet", and a screen that has settled must still be served by the stamp
     /// alone, for free, forever.
     link_scans: std::collections::HashMap<String, Instant>,
-    /// What each terminal was showing when a search last asked, and the output
-    /// generation it was read at. Empty while nothing is searching.
-    content: std::collections::HashMap<String, String>,
-    content_generation: Option<u64>,
+    /// The content search: every session's scrollback, read and matched on a
+    /// worker while the search strip asks (`kernel::search`).
+    search: thurbox::kernel::search::SearchStore,
     /// Where each interface file stands with the user, and the lock the answer
     /// was resolved against.
     ///

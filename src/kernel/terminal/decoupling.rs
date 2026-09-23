@@ -672,12 +672,24 @@ async fn a_search_reads_both_of_a_sessions_screens() {
     // the session's own id: the shell is a screen of that session whether or
     // not it is the pane on screen. Scanning only whichever one happened to be
     // painted made a search's answer depend on the arrangement.
-    let screens = harness.terminals.screens(std::slice::from_ref(&harness.id));
-    let found = screens.get(&harness.id).expect("the session's screens");
-    assert!(found.contains("AGENT-SCREEN"), "{found}");
-    assert!(found.contains("SHELL-SCREEN"), "{found}");
-    // Keyed by session, so the shell contributes no entry of its own.
-    assert!(!screens.contains_key(&harness.shell()));
+    let sources = harness
+        .terminals
+        .search_sources(std::slice::from_ref(&harness.id));
+    let answer = crate::kernel::search::run(
+        crate::kernel::search::Request {
+            query: "screen".into(),
+            sessions: None,
+        },
+        &sources,
+        &std::sync::Mutex::default(),
+    );
+    let found: Vec<(&str, bool, &str)> = answer
+        .hits
+        .iter()
+        .map(|hit| (hit.session.as_str(), hit.shell, hit.text.as_str()))
+        .collect();
+    assert!(found.contains(&(harness.id.as_str(), false, "AGENT-SCREEN")), "{found:?}");
+    assert!(found.contains(&(harness.id.as_str(), true, "SHELL-SCREEN")), "{found:?}");
 }
 
 #[tokio::test]

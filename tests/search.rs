@@ -14,6 +14,7 @@
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
+use thurbox::kernel::search::{Answer, Hit, Request};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
@@ -69,12 +70,23 @@ fn snapshot() -> Snapshot {
     }
 }
 
-fn publish(host: &LuaHost) {
-    publish_with(host, &Default::default());
+thread_local! {
+    /// The answer the kernel is currently publishing, so a keystroke's publish
+    /// carries the same one the render before it did — as the loop's would.
+    static PUBLISHED: std::cell::RefCell<Option<Answer>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Publish with terminal text, as the loop does once a plugin asks for it.
-fn publish_with(host: &LuaHost, content: &std::collections::HashMap<String, String>) {
+fn publish(host: &LuaHost) {
+    let held = PUBLISHED.with(|p| p.borrow().clone());
+    publish_with(host, held.as_ref());
+}
+
+/// Publish with a content-search answer, as the loop does once one lands.
+fn publish_with(host: &LuaHost, search: Option<&Answer>) {
+    publish_snapshot(host, &snapshot(), search);
+}
+
+fn publish_snapshot(host: &LuaHost, snap: &Snapshot, search: Option<&Answer>) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -83,14 +95,14 @@ fn publish_with(host: &LuaHost, content: &std::collections::HashMap<String, Stri
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
-        snapshot: &snapshot(),
+        snapshot: snap,
         attach_errors: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content,
+        search,
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows: 0,
@@ -350,20 +362,41 @@ fn the_opening_chord_is_declared_so_help_lists_it_and_it_can_be_rebound() {
     );
 }
 
-/// A screen for one session, as the kernel would serve it.
-fn screens(session: &str, text: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    map.insert(session.to_string(), text.to_string());
-    map
+/// The kernel's answer to `query`: one hit per `(session, line, scroll)`.
+fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
+    Answer {
+        request: Request {
+            query: query.into(),
+            sessions: None,
+        },
+        hits: hits
+            .iter()
+            .map(|(session, text, scroll)| Hit {
+                session: (*session).into(),
+                shell: false,
+                text: (*text).into(),
+                ranges: vec![],
+                back: scroll + 5,
+                scroll: *scroll,
+                exact: true,
+                score: 100,
+            })
+            .collect(),
+        total: hits.len(),
+        sessions: 3,
+        lines: 3000,
+        ..Answer::default()
+    }
 }
 
 /// Render after the debounce has elapsed, which is what makes the pane ask.
-fn render_after_debounce(host: &LuaHost, content: &std::collections::HashMap<String, String>) {
+fn render_after_debounce(host: &LuaHost, search: Option<&Answer>) {
+    PUBLISHED.with(|p| *p.borrow_mut() = search.cloned());
     let index = host.index_of(PLUGIN).expect("no search plugin");
     // Twice: the first render notices the query changed and starts the clock,
     // the second finds it unmoved and asks.
     for elapsed in [0.0_f64, 1.0] {
-        publish_with(host, content);
+        publish_with(host, search);
         host.render(
             index,
             RenderContext {
@@ -380,8 +413,8 @@ fn render_after_debounce(host: &LuaHost, content: &std::collections::HashMap<Str
 
 #[test]
 fn nothing_is_asked_of_the_terminals_until_a_query_settles() {
-    // Every agent's screen on every frame is not a thing to publish
-    // speculatively, so the read is served only while the pane asks — and it
+    // Every agent's history on every frame is not a thing to read
+    // speculatively, so the search is served only while the pane asks — and it
     // asks only once the query has stood still.
     let host = host();
     open(&host);
@@ -399,12 +432,12 @@ fn nothing_is_asked_of_the_terminals_until_a_query_settles() {
         "the first frame after a keystroke starts the clock, it does not ask"
     );
 
-    render_after_debounce(&host, &Default::default());
+    render_after_debounce(&host, None);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
 }
 
 #[test]
-fn a_session_is_found_by_what_its_terminal_is_showing() {
+fn a_session_is_found_by_a_line_in_its_terminal() {
     // The half that finds a session by the error in it, rather than by anything
     // anyone thought to name it.
     let host = host();
@@ -412,42 +445,217 @@ fn a_session_is_found_by_what_its_terminal_is_showing() {
     type_query(&host, "ENOSPC");
     render_after_debounce(
         &host,
-        &screens("ccc", "writing...\nerror: ENOSPC no space left\n$ "),
+        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC no space left", 0)])),
     );
-
-    // Nothing matches `ENOSPC` by name, agent, branch or repo — only the screen.
+    // Nothing matches `ENOSPC` by name, agent, branch or repo — only the text.
     assert_eq!(selected(&host).as_deref(), Some("ccc"));
+    // And the session list is told, so it lights a row it could not have
+    // matched against its own fields.
+    assert_eq!(host.shared_string("search.matches").as_deref(), Some("ccc"));
 }
 
 #[test]
-fn a_session_that_already_matched_is_not_listed_twice() {
-    // v1 skips the content scan for a session whose metadata matched: one result
-    // pretending to be two is worse than one.
+fn an_answer_to_an_older_query_is_not_shown() {
+    // The kernel answers a frame or two after the query settles, so while the
+    // next query runs the last answer is still published. Showing it under the
+    // new query would light the wrong characters and then vanish.
     let host = host();
     open(&host);
-    type_query(&host, "docs");
-    render_after_debounce(&host, &screens("ccc", "docs docs docs"));
+    type_query(&host, "ENOSPC");
+    render_after_debounce(
+        &host,
+        Some(&answer("ENOSP", &[("ccc", "error: ENOSPC no space left", 0)])),
+    );
+    assert_eq!(host.shared_string("search.matches").as_deref(), Some(""));
+}
 
-    // Still one result, so stepping past it wraps rather than landing on a
-    // duplicate of the same session.
+#[test]
+fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
+    // Preview is the feature: the agent pane scrolls back to the line while
+    // focus stays in the strip. The request is left in `store` and the agent
+    // pane is asked to read it — an action carries no argument.
+    let host = host();
+    open(&host);
+    type_query(&host, "ENOSPC");
+    let found = answer(
+        "ENOSPC",
+        &[("ccc", "first ENOSPC", 120), ("aaa", "second ENOSPC", 40)],
+    );
+    render_after_debounce(&host, Some(&found));
+    let _ = host.drain_commands();
+
     press(&host, "down");
-    assert_eq!(selected(&host).as_deref(), Some("ccc"));
+    assert_eq!(selected(&host).as_deref(), Some("aaa"));
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("aaa 40")
+    );
+    assert!(host.drain_commands().contains(&Command::Action {
+        owner: "plugins/65_search.lua".into(),
+        action: "terminal.reveal".into(),
+    }));
+
+    // Stepping back puts the terminal it left at the bottom in the same
+    // request, so previews do not leave a trail of scrolled terminals.
+    press(&host, "up");
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("-aaa;ccc 120")
+    );
+
+    // Cancelling scrolls the last one back too.
+    press(&host, "esc");
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("-ccc")
+    );
 }
 
 #[test]
-fn a_screen_hit_matches_as_a_substring_not_a_subsequence() {
-    // Subsequence matching over a whole screen would match nearly anything, so
-    // the content pass is a plain `contains` — v1 draws the same line.
+fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
+    // The operator's failure, at the plugin level: opening a hit must show the
+    // session SCROLLED TO the match, not merely focus it. The agent pane is
+    // driven the way the kernel routes the action, and its surface node is
+    // what the kernel paints with.
     let host = host();
     open(&host);
-    type_query(&host, "xyz");
-    render_after_debounce(&host, &screens("ccc", "x marks y then z"));
-    // The letters appear in order but not together, so this is not a match.
-    assert_eq!(
-        selected(&host).as_deref(),
-        Some("aaa"),
-        "no result to preview"
+    type_query(&host, "ENOSPC");
+    render_after_debounce(
+        &host,
+        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
     );
+    let _ = host.drain_commands();
+    press(&host, "enter");
+
+    let commands = host.drain_commands();
+    assert!(
+        commands.contains(&Command::Focus {
+            plugin: "agent".into(),
+            toggle: false,
+        }),
+        "{commands:?}"
+    );
+    let agent = host.index_of("agent").expect("agent pane");
+    host.on_action(agent, "terminal.reveal").expect("reveal");
+    publish(&host);
+    let node = host
+        .render(
+            agent,
+            RenderContext {
+                width: 80,
+                height: 24,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node;
+    let tree = format!("{node:?}");
+    assert!(tree.contains("scroll: 120"), "{tree}");
+}
+
+#[test]
+fn every_word_must_match_in_any_order_across_fields() {
+    // `claude docs`: the agent is claude, the name has docs. aaa is claude but
+    // not docs; only ccc is both.
+    let host = host();
+    open(&host);
+    type_query(&host, "docs claude");
+    render(&host, PLUGIN);
+    assert_eq!(host.shared_string("search.matches").as_deref(), Some("ccc"));
+}
+
+#[test]
+fn a_capital_makes_the_query_case_sensitive() {
+    let host = host();
+    open(&host);
+    type_query(&host, "osc");
+    render(&host, PLUGIN);
+    assert_eq!(host.shared_string("search.matches").as_deref(), Some("aaa"));
+
+    for _ in 0..3 {
+        press(&host, "backspace");
+    }
+    type_query(&host, "OSC");
+    render(&host, PLUGIN);
+    assert_eq!(host.shared_string("search.matches").as_deref(), Some(""));
+}
+
+#[test]
+fn an_exact_match_ranks_above_a_subsequence() {
+    // `ch` is a subsequence of `docs-hub` and a substring of `fix-branch`; the
+    // list puts docs-hub first, the ranking must not.
+    let host = host();
+    let snap = Snapshot {
+        sessions: vec![
+            row("ccc", "docs-hub", "codex", "x"),
+            row("bbb", "fix-branch", "codex", "y"),
+        ],
+        ..Snapshot::default()
+    };
+    publish_snapshot(&host, &snap, None);
+    let index = host.index_of(PLUGIN).expect("search");
+    host.on_action(index, "search.open").expect("open");
+    for ch in "ch".chars() {
+        publish_snapshot(&host, &snap, None);
+        let key = KeyPress {
+            name: ch.to_string(),
+            ch: Some(ch),
+            ..KeyPress::default()
+        };
+        host.on_key(index, &key).expect("key");
+    }
+    publish_snapshot(&host, &snap, None);
+    host.render(
+        index,
+        RenderContext {
+            width: 60,
+            height: 12,
+            focused: true,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .expect("render");
+    assert_eq!(
+        host.shared_string("search.matches").as_deref(),
+        Some("bbb ccc")
+    );
+}
+
+#[test]
+fn a_filter_narrows_the_terminals_searched() {
+    // `in:` and `repo:` never reach the kernel as text; they become the list of
+    // sessions its search is limited to.
+    let host = host();
+    open(&host);
+    type_query(&host, "in:docs err");
+    render_after_debounce(&host, None);
+    assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
+    assert_eq!(
+        host.shared_string("want_content.sessions").as_deref(),
+        Some("ccc")
+    );
+}
+
+#[test]
+fn tab_cycles_what_is_searched() {
+    let host = host();
+    open(&host);
+    type_query(&host, "err");
+    render_after_debounce(&host, None);
+    assert!(host.shared_string("want_content").is_some());
+
+    // text only: the terminals are still asked, and no name matches listed.
+    press(&host, "tab");
+    render_after_debounce(&host, None);
+    assert!(host.shared_string("want_content").is_some());
+
+    // names only: nothing is asked of the terminals.
+    press(&host, "tab");
+    render_after_debounce(&host, None);
+    assert_eq!(host.shared_string("want_content"), None);
 }
 
 #[test]
@@ -455,15 +663,16 @@ fn closing_the_strip_stops_the_terminals_being_read() {
     let host = host();
     open(&host);
     type_query(&host, "err");
-    render_after_debounce(&host, &Default::default());
+    render_after_debounce(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     press(&host, "esc");
     assert_eq!(
         host.shared_string("want_content"),
         None,
-        "a closed strip must not leave the kernel scanning screens"
+        "a closed strip must not leave the kernel searching terminals"
     );
+    assert_eq!(host.shared_string("search.matches"), None);
 }
 
 /// Enough matches to overflow the strip, painted through the real kernel.
@@ -510,7 +719,7 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
             registry: &registry,
             diffs: &diffs,
             links: &Default::default(),
-            content: &Default::default(),
+            search: None,
             meta: &Default::default(),
             metrics: &Default::default(),
             status_rows: 0,

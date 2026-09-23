@@ -1239,6 +1239,43 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 }
 
 #[test]
+fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
+    // The failure search was rebuilt for: a prompt typed earlier has scrolled
+    // off the screen, and searching for it found nothing, because only the
+    // visible screen was searched. So the marker is printed and then pushed
+    // three hundred lines up, found from the strip, and opened — and opening
+    // it has to land ON it, scrolled back, not merely focus the session.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    // Quoted apart on the command line, so the only line that spells the
+    // marker whole is the one the shell prints.
+    tui.send(b"echo tb-\"\"findme; seq 1 300\r");
+    tui.wait_for("300");
+    tui.wait_gone("tb-findme");
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"tb-findme");
+    // A result row names its session, how far back the hit is, and the line.
+    tui.wait_until("a result row for the scrolled-away line", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("probe") && line.contains('↑') && line.contains("tb-findme"))
+    });
+
+    tui.send(b"\r");
+    // Landed: the strip is gone, the terminal is scrolled back (its title
+    // carries the offset) and the printed line is back on screen.
+    tui.wait_until("the session scrolled to the match", |frame| {
+        !frame.contains("Search")
+            && frame.contains("↑]")
+            && frame.lines().any(|line| line.contains("│tb-findme "))
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
     // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
     // agent's EOF, and the delete it also means is left to the session list.

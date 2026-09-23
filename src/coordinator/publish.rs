@@ -101,7 +101,7 @@ impl App {
             registry: &self.registry,
             diffs: &self.diffs,
             links: &self.links,
-            content: &self.content,
+            search: self.search.answer(),
             meta,
             metrics: &self.metrics,
             status_rows: self.status_rows(),
@@ -228,37 +228,40 @@ impl App {
         self.link_scans.retain(|id, _| known.contains(id.as_str()));
     }
 
-    /// Read what each terminal is showing, while something is searching them.
+    /// Hand the content search whatever the strip is asking for.
     ///
-    /// The scan is the same walk [`Self::refresh_links`] makes, so serving it
-    /// always would not be ruinous — it would simply be paid by every interface
-    /// that never searches, which is the argument for asking. Gated a second time
-    /// on the screens having *moved*: a query is asked for once and then read on
-    /// every frame and every keystroke of it being narrowed, and re-reading every
-    /// grid for each of those is the whole cost of typing in the search strip.
+    /// The reading and matching happen on the search worker; this only compares
+    /// the request against the one last answered and, when a run is due, clones
+    /// each terminal's parser handle. The answer comes back through
+    /// `serve_worker_stores`, a frame or two later.
     pub(crate) fn refresh_search_content(&mut self, sessions: &[String]) {
-        let asked = self
+        use thurbox::kernel::search::{Request, WANT_CONTENT, WANT_SESSIONS};
+        let request = self
             .host
-            .shared_string(thurbox::kernel::terminal::WANT_CONTENT)
-            .is_some_and(|query| !query.is_empty());
-        if !asked {
-            // Dropped the moment nothing is searching, so a closed strip is not
-            // still holding every screen it scanned.
-            if self.content_generation.is_some() {
-                self.content = std::collections::HashMap::new();
-                self.content_generation = None;
-                self.note_published_change();
-            }
-            return;
-        }
+            .shared_string(WANT_CONTENT)
+            .filter(|query| !query.trim().is_empty())
+            .map(|query| Request {
+                query,
+                sessions: self
+                    .host
+                    .shared_string(WANT_SESSIONS)
+                    .map(|ids| ids.split_whitespace().map(str::to_string).collect()),
+            });
         let generation = self.terminals.output_generation();
-        if self.content_generation != Some(generation) {
-            let scanned = self.terminals.screens(sessions);
-            if scanned != self.content {
-                self.content = scanned;
-                self.note_published_change();
-            }
-            self.content_generation = Some(generation);
+        let terminals = &self.terminals;
+        let dropped = self.search.serve(request, generation, |request| {
+            let wanted: Vec<String> = match &request.sessions {
+                Some(only) => sessions
+                    .iter()
+                    .filter(|id| only.contains(id))
+                    .cloned()
+                    .collect(),
+                None => sessions.to_vec(),
+            };
+            terminals.search_sources(&wanted)
+        });
+        if dropped {
+            self.note_published_change();
         }
     }
 

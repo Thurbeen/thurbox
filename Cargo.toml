@@ -24,6 +24,10 @@ tui-term = "0.3"
 # Terminal emulation
 vt100 = "0.16"
 
+# The `/pattern/` term of the content search (kernel::search). Already in the
+# tree through tracing-subscriber's env-filter.
+regex = "1.13"
+
 # Display-width math for clickable-link column positions (wide CJK/emoji cells)
 unicode-width = "0.2"
 

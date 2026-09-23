@@ -130,23 +130,6 @@ const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// with its own retry.
 const MIRROR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The key a plugin leaves in `store` to ask for terminal text.
-///
-/// A parameterised read, like the creation flow's repository questions: nobody
-/// wants every agent's screen on every frame, so it is served only while
-/// something is asking. Its value is what is being searched for, which is also
-/// what makes "asking" and "having a query" the same state.
-pub const WANT_CONTENT: &str = "want_content";
-
-/// Most lines of one session's screens handed to a search.
-///
-/// v1 caps the same scan at 500 (`CONTENT_LINE_CAP`) — a bound that never binds,
-/// since a screen is tens of rows and a session contributes at most two of them
-/// (the agent's and its shell's). Kept at the same number so the two searches
-/// cannot disagree about what they read. It is the LAST lines that survive the
-/// cap, so a bound that did bind would keep the shell and drop the agent.
-const CONTENT_LINE_CAP: usize = 500;
-
 /// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
 
@@ -1162,43 +1145,37 @@ impl Terminals {
         Some(out)
     }
 
-    /// What each named session's terminals are showing, for a search to scan.
+    /// The terminals a content search reads, one [`search::Source`] per pane.
     ///
-    /// **Both** of a session's panes, under that session's id: a search asks
-    /// which session holds the text, and the answer is the same session whether
-    /// the agent printed it or the shell did. Scanning only whichever pane
-    /// happened to be on screen is what made a search's answer depend on the
-    /// arrangement.
+    /// **Both** of a session's panes, each under that session's id: a search
+    /// asks which session holds the text, and the answer is the same session
+    /// whether the agent printed it or the shell did. Scanning only whichever
+    /// pane happened to be on screen is what made a search's answer depend on
+    /// the arrangement.
     ///
     /// Only sessions with a live pane appear: an unreachable host or a session
-    /// whose pane has not been adopted has no parser to read, so it contributes
-    /// nothing. v1's content search has the same limit for the same reason.
+    /// whose pane has not been adopted has no parser to read.
     ///
-    /// Read on this thread rather than a worker because the parsers live beside
-    /// the `!Send` Lua VM — the compile-time guarantee working, not an
-    /// inconvenience. It is the same walk `links` already makes on every
-    /// publish, so it costs what that costs.
-    pub fn screens(&self, sessions: &[String]) -> HashMap<String, String> {
+    /// An `Arc` clone and an atomic load per pane — the reading itself happens
+    /// on the search worker, under each parser's own lock, which is what the
+    /// lock is for: the reader thread already feeds the same parser from off
+    /// this thread.
+    ///
+    /// [`search::Source`]: super::search::Source
+    pub fn search_sources(&self, sessions: &[String]) -> Vec<super::search::Source> {
         sessions
             .iter()
-            .filter_map(|id| {
-                let agent = self.visible_text(id)?;
-                // No separator: `visible_text` already terminates every row,
-                // so joining with one would open a blank line between them.
-                let text = match self.visible_text(&shell_surface(id)) {
-                    Some(shell) => agent + &shell,
-                    None => agent,
-                };
-                let capped: String = text
-                    .lines()
-                    .rev()
-                    .take(CONTENT_LINE_CAP)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some((id.clone(), capped))
+            .filter_map(|id| Some((id, self.live.get(id)?)))
+            .flat_map(|(id, live)| {
+                [false, true].into_iter().filter_map(move |shell| {
+                    let pane = live.pane(shell);
+                    Some(super::search::Source {
+                        session: id.clone(),
+                        shell,
+                        parser: Arc::clone(pane.parser()?),
+                        stamp: pane.last_output_at()?,
+                    })
+                })
             })
             .collect()
     }
