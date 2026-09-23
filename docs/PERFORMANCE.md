@@ -1964,9 +1964,9 @@ held, 50ms per keystroke or 50ms per rescan — by hand, never in CI (ADR-P5).
 its screen and history. The interface parses it again into a `vt100` grid of
 32 bytes a cell, sized to the whole terminal, with `scrollback_lines` rows of
 history, for every attached session whether or not it was ever shown. The
-multiplexer benchmark read that as about 1 MiB a session attached against
-tmux's headless 0.1. It is more than that: the benchmark's sessions had barely
-scrolled. Measured on the interface process alone, 50 sessions attached at
+multiplexer benchmark read that as about 1 MiB a session attached, where
+headless thurbox, which is tmux, holds all 50 in 9 MiB. It is more than that:
+the benchmark's sessions had barely scrolled. Measured on the interface process alone, 50 sessions attached at
 200x50, once every session had printed 6,000 lines:
 
 | `scrollback_lines` | idle, nothing scrolled | history full |
@@ -2041,8 +2041,11 @@ rebuilds, since both are built from the same capture layout.
 above): 50 sessions attached and idle, 42.5 → 27.1 MiB; with every history
 full, 350 → 32.6 MiB. One session, 17.8 → 17.5 MiB. What is left per session
 is its reader thread (its stack and malloc arena, ~135 KiB), not its grid.
-The whole-host numbers against tmux and Herdr are in
-[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
+On the benchmark harness, same machine before and after, 50 sessions
+attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
+57.4, with CPU and keystroke latency unchanged and the stale first view
+(#1242) gone:
+[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23).
 
 **Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
 build:
