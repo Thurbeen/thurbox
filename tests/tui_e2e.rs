@@ -809,6 +809,104 @@ fn a_pane_that_fails_to_load_is_reported_and_the_rest_of_the_interface_runs() {
     assert!(status.success(), "exit must still be clean: {status:?}");
 }
 
+/// Move the Interface tab's cursor onto the row listing `path`.
+///
+/// By pressing `j` until the pointer is on it rather than by counting, so the
+/// scenario does not depend on how many files the bundled interface has today.
+fn select_file(tui: &mut Tui, path: &str) {
+    for _ in 0..60 {
+        let on_it = |frame: &str| {
+            frame
+                .lines()
+                .any(|line| line.contains('▸') && line.contains(path))
+        };
+        if on_it(&tui.frame()) {
+            return;
+        }
+        let before = tui.frame();
+        tui.send(b"j");
+        tui.wait_until("the cursor to move", |frame| frame != before);
+    }
+    tui.give_up(&format!("{path} was never selected"));
+}
+
+#[test]
+fn the_interface_tab_explains_each_file_and_drives_every_action() {
+    // The tab exists to answer "why is this pane not on screen, and what do I do
+    // about it" without reading the guide. So: every file grouped, one word of
+    // state per row, the selected row's reason and fix spelled out, only the
+    // keys that row answers to, and the one destructive key asking first.
+    let interface = interface_with("plugins/10_sessions.lua", {
+        let shipped = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/plugins/10_sessions.lua"),
+        )
+        .expect("shipped pane");
+        &format!("{shipped}\n-- tb-edit\n")
+    });
+    std::fs::write(
+        interface.path().join("plugins/91_tbnotes.lua"),
+        r#"return { name = "tbnotes", slot = "tbnotes",
+  render = function() return { type = "text", text = "tb-notes" } end }"#,
+    )
+    .expect("an unplaced pane");
+    std::fs::write(
+        interface.path().join("plugins/92_tbrun.lua"),
+        r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
+  render = function() return { type = "text", text = "tb-run" } end }"#,
+    )
+    .expect("a pane asking to run programs");
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+
+    tui.send(F6);
+    tui.wait_for("Settings");
+    tui.send(b"]");
+    tui.wait_for("PANES");
+    tui.wait_for("not placed");
+
+    // Not on screen: the reason, and the line that fixes it.
+    select_file(&mut tui, "91_tbnotes.lua");
+    tui.wait_for(r#"{ slot = "tbnotes" }"#);
+
+    // space: off, said so, and back on.
+    tui.send(b" ");
+    tui.wait_for("space turns it back on");
+    tui.send(b" ");
+    tui.wait_gone("space turns it back on");
+
+    // d asks first, and moving away withdraws the question.
+    select_file(&mut tui, "91_tbnotes.lua");
+    tui.send(b"d");
+    tui.wait_for("cannot be undone");
+    tui.send(b"k");
+    tui.wait_gone("cannot be undone");
+
+    // t: what it asks for, and where it stands, before and after.
+    select_file(&mut tui, "92_tbrun.lua");
+    tui.wait_for("not granted");
+    tui.send(b"t");
+    tui.wait_for("t revokes it");
+
+    // r on an edited file asks, says what is lost, and then restores.
+    select_file(&mut tui, "10_sessions.lua");
+    tui.wait_for("r restore");
+    tui.send(b"r");
+    tui.wait_for("edits are lost");
+    tui.send(b"r");
+    tui.wait_for("restored plugins/10_sessions.lua");
+    let restored = std::fs::read_to_string(interface.path().join("plugins/10_sessions.lua"))
+        .expect("restored pane");
+    assert!(!restored.contains("tb-edit"), "the shipped copy is back");
+
+    tui.send(ESC);
+    tui.wait_gone("PANES");
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 /// A pane written for this test, dropped in beside the bundled ones.
 fn interface_plus(name: &str, body: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");

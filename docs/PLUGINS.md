@@ -288,7 +288,8 @@ interface you edit — there is no second, privileged copy running underneath.
 recorded as removed and is not written again — not on the next start, and not by
 an upgrade that changes it. Nothing is lost by it: the shipped copy is in the
 binary, so `r` in the Interface tab puts it back, and the same key discards your edits
-to a file you would rather have back as it shipped.
+to a file you would rather have back as it shipped — after asking, since nothing
+keeps the edit.
 
 What an upgrade does to each file follows from the same record:
 
@@ -1278,27 +1279,38 @@ state that file is in and where it came from; the header line is the directory i
 force, which is the answer to "my edits did nothing" — they are usually edits to a
 file that is not the one loaded.
 
-**Trouble sorts to the top**, so a failure never sits below thirty healthy rows:
+Rows are **grouped** — `PANES`, then `LAYOUT` (`layout.lua`, `plugins.toml`),
+`MODULES` and `DOCS` — and **trouble sorts to the top** of each group, so a failure
+never sits below thirty healthy rows. Each row carries one word of state, then where
+its trust stands, then where it came from when that is not "shipped, unchanged"
+(`edited`, `yours`, `from <package>`):
 
 | | State | Means |
 |---|---|---|
-| `✗` | `failed` | on disk, did not load. Select the row and the **error is in the footer** |
-| `⊘` | `removed` | thurbox ships it, you deleted it, delivery has stopped writing it |
-| `◌` | `no slot` | it loaded, and `layout.lua` places nothing in its slot — so it never draws |
+| `✗` | `failed` | on disk, did not load. Select the row and the **error is under the list** |
+| `⊘` | `deleted` | thurbox ships it, you deleted it, delivery has stopped writing it |
+| `◌` | `not placed` | it loaded, and `layout.lua` places nothing in its slot — so it never draws |
 | `◍` | `off` | present and intact, deliberately not loaded |
 | `●` | `on screen` | drawing now |
 | `◐` | `on demand` | a float or a modal, at rest |
-| `○` | `hidden` | loaded, not currently drawn |
-| `·` | | not a pane — `layout.lua`, a `lib/` module |
+| `○` | `hidden` | its slot is placed, but another pane holds it or its column is closed |
+| `·` | `on require`, `in use`, `guide`, `decorates` | not a pane with a slot of its own: a `lib/` module, the layout or manifest, a doc, a decorator |
 
-Four keys act on the selected row:
+Under the list, four lines explain the **selected** row: what it is (and the slot a
+pane wants) with its full source; why it is in that state; the one thing that
+changes it — for a pane that is not placed, the exact `{ slot = "…" }` line to add to
+`layout.lua`; and, for a file that declares capabilities, what it asks to do and
+whether that is granted.
+
+Four keys act on the selected row, and the footer lists only the ones that do
+something there:
 
 | Key | Does |
 |---|---|
-| `r` | **restore** — write the copy thurbox ships back over the file (an edited `layout.lua` is kept as `layout.lua.bak` first) |
-| `space` | **off / on** — the file is untouched, simply not loaded |
-| `d` | **remove** — deletes. Asked twice, and the confirmation says whether it can be undone |
-| `t` | **trust** — grant or withdraw the capabilities the file declares |
+| `r` | **restore** — write the copy thurbox ships back over the file. On an edited file it asks first and says what is lost: nothing keeps a pane's edits, and an edited `layout.lua` is moved to `layout.lua.bak`. A deleted file comes back on the first press |
+| `space` | **turn off / turn on** — the file is untouched, simply not loaded |
+| `d` | **delete** — asked twice, and the confirmation says whether it can be undone |
+| `t` | **trust** / **revoke** — grant or withdraw the capabilities the file declares |
 
 Each of the four reloads the interface, so the result is on screen immediately
 rather than at the next start, and each says what it did.
@@ -1722,9 +1734,9 @@ current`; moving that one means editing the pin and running `sync`.
 ### Trust for a pane you did not write
 
 `run` is granted per file, so where a file came from is the question to answer
-before granting it. The Interface tab says: a pane from a source reads `from <src>`
-rather than `yours`, and a `lib/<name>/` module a package brought is traced to it
-too.
+before granting it. The Interface tab says: a pane from a source reads
+`from <package>` rather than `yours`, with the full source under the list when it
+is selected, and a `lib/<name>/` module a package brought is traced to it too.
 
 The grant itself is recorded against the **source and version** it was made for,
 not against the file's contents alone:

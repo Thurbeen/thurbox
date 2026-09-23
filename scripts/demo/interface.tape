@@ -21,10 +21,11 @@
 # or Ctrl+, and VHS can send neither). `]` crosses to the Interface tab, `space`
 # turns a file off, `Esc` closes.
 #
-# ROW ORDER matters here and is easy to get wrong. The tab sorts by state — what
-# needs you first — so with the demo installed it is:
+# ROW ORDER matters here and is easy to get wrong. The tab groups by kind, panes
+# first, and sorts each group by state — what needs you first — so with the demo
+# installed it is:
 #
-#   0  plugins/65_search.lua      no slot   (its strip is closed)
+#   0  plugins/65_search.lua      not placed   (its strip is closed)
 #   1  plugins/10_sessions.lua    on screen
 #   2  plugins/20_agent.lua       on screen
 #   3  plugins/80_tasks.lua       on screen   yours

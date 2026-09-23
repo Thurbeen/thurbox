@@ -818,10 +818,11 @@ impl SettingsModal {
         chrome: Chrome,
     ) {
         // Sized to its content the way the settings half is: the directory line,
-        // a row per file up to the cap, the footer, and the border. A fixed
-        // height left blank rows under a short list.
-        let listed = files.rows.len().min(INTERFACE_MAX_ROWS);
-        let height = u16::try_from(listed + 4)
+        // a line per file and per group header up to the cap, the selected
+        // file's details, the footer, and the border. A fixed height left blank
+        // rows under a short list.
+        let listed = InterfaceTab::listed(files.rows).clamp(1, INTERFACE_MAX_ROWS);
+        let height = u16::try_from(listed + 8)
             .unwrap_or(u16::MAX)
             .min(area.height.saturating_sub(2))
             .max(6);
