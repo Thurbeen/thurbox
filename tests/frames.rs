@@ -326,18 +326,18 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
-            "╭ Sessions ───────────────────────⠇○◆●○╮",
-            "│── thurbox ───────────────────────────│",
-            "│ ⠇ ⑂ fix-osc52                        │",
-            "│ ○ └ ⑂ fix-osc52-tests                │",
-            "│ ◆ ⑂ add-wsl-tests  Blocked           │",
-            "│ ● ⑂ perf-cache                       │",
-            "│── website ───────────────────────────│",
-            "│ ○ ⑂ update-deps                      │",
-            "│                                      │",
-            "│                                      │",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━⠇○◆●○┓",
+            "┃── thurbox ───────────────────────────┃",
+            "┃ ⠇ ⑂ fix-osc52                        ┃",
+            "┃ ○ └ ⑂ fix-osc52-tests                ┃",
+            "┃ ◆ ⑂ add-wsl-tests  Blocked           ┃",
+            "┃ ● ⑂ perf-cache                       ┃",
+            "┃── website ───────────────────────────┃",
+            "┃ ○ ⑂ update-deps                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -361,18 +361,18 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
-            "╭ Sessions ────────────────────────⠇●○○╮",
-            "│── local · thurbox ───────────────────│",
-            "│ ⠇ ⑂ fix-osc52                        │",
-            "│ ● ⑂ perf-cache                       │",
-            "│── local · website ───────────────────│",
-            "│ ○ ⑂ update-deps                      │",
-            "│── buildbox · thurbox ────────────────│",
-            "│ ○ ⇅ ⑂ remote-build                   │",
-            "│                                      │",
-            "│                                      │",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━⠇●○○┓",
+            "┃── local · thurbox ───────────────────┃",
+            "┃ ⠇ ⑂ fix-osc52                        ┃",
+            "┃ ● ⑂ perf-cache                       ┃",
+            "┃── local · website ───────────────────┃",
+            "┃ ○ ⑂ update-deps                      ┃",
+            "┃── buildbox · thurbox ────────────────┃",
+            "┃ ○ ⇅ ⑂ remote-build                   ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -396,16 +396,16 @@ fn one_host_keeps_the_headers_it_has_always_had() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
-            "╭ Sessions ─────────────────────────⠇●○╮",
-            "│── thurbox ───────────────────────────│",
-            "│ ⠇ ⇅ ⑂ fix-osc52                      │",
-            "│ ● ⇅ ⑂ perf-cache                     │",
-            "│── website ───────────────────────────│",
-            "│ ○ ⇅ ⑂ update-deps                    │",
-            "│                                      │",
-            "│                                      │",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━⠇●○┓",
+            "┃── thurbox ───────────────────────────┃",
+            "┃ ⠇ ⇅ ⑂ fix-osc52                      ┃",
+            "┃ ● ⇅ ⑂ perf-cache                     ┃",
+            "┃── website ───────────────────────────┃",
+            "┃ ○ ⇅ ⑂ update-deps                    ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -434,14 +434,14 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
-            "╭ Sessions ──────────────────────────⠇○╮",
-            "│── local · thurbox ───────────────────│",
-            "│ ⠇ ⑂ fix-osc52                        │",
-            "│── local · thurbox ───────────────────│",
-            "│ ○ ⇅ ⑂ remote-build                   │",
-            "│                                      │",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━⠇○┓",
+            "┃── local · thurbox ───────────────────┃",
+            "┃ ⠇ ⑂ fix-osc52                        ┃",
+            "┃── local · thurbox ───────────────────┃",
+            "┃ ○ ⇅ ⑂ remote-build                   ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -460,16 +460,16 @@ fn the_session_list_windows_more_rows_than_it_has_lines() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
-            "╭ Sessions ────────○○○○○○○○○○○○○○○○○○○○╮",
-            "│── thurbox ───────────────────────────│",
-            "│ ○ ⑂ session-00                       │",
-            "│ ○ ⑂ session-01                       │",
-            "│ ○ ⑂ session-02                       │",
-            "│ ○ ⑂ session-03                       │",
-            "│ ○ ⑂ session-04                       │",
-            "│ ○ ⑂ session-05                       │",
-            "│ ○ ⑂ session-06                       │",
-            "╰─────────────────────────────────▼ 13 ╯",
+            "┏ ▸ Sessions ━━━━━━○○○○○○○○○○○○○○○○○○○○┓",
+            "┃── thurbox ───────────────────────────┃",
+            "┃ ○ ⑂ session-00                       ┃",
+            "┃ ○ ⑂ session-01                       ┃",
+            "┃ ○ ⑂ session-02                       ┃",
+            "┃ ○ ⑂ session-03                       ┃",
+            "┃ ○ ⑂ session-04                       ┃",
+            "┃ ○ ⑂ session-05                       ┃",
+            "┃ ○ ⑂ session-06                       ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▼ 13 ┛",
         ],
     );
 }
@@ -490,14 +490,14 @@ fn the_session_list_keeps_its_columns_under_double_width_names() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
-            "╭ Sessions ─────────────────────────○◆○╮",
-            "│── thurbox ───────────────────────────│",
-            "│ ○ ⑂ 修复终端宽度                     │",
-            "│ ◆ ⑂ emoji-🚀-name  Blocked           │",
-            "│ ○ ⑂ plain-name                       │",
-            "│                                      │",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━○◆○┓",
+            "┃── thurbox ───────────────────────────┃",
+            "┃ ○ ⑂ 修复终端宽度                     ┃",
+            "┃ ◆ ⑂ emoji-🚀-name  Blocked           ┃",
+            "┃ ○ ⑂ plain-name                       ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -522,11 +522,11 @@ fn a_double_width_name_budgets_the_status_by_the_columns_it_takes() {
     assert_frame(
         &text(&paint(&host, "sessions", 40, 5, true)),
         &[
-            "╭ Sessions ───────────────────────────○╮",
-            "│── thurbox ───────────────────────────│",
-            "│ ○ ⑂ 修复终端宽度  waiting for your r…│",
-            "│                                      │",
-            "╰──────────────────────────────────────╯",
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━○┓",
+            "┃── thurbox ───────────────────────────┃",
+            "┃ ○ ⑂ 修复终端宽度  waiting for your r…┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -538,16 +538,16 @@ fn the_session_list_truncates_rather_than_overflows_when_narrow() {
     assert_frame(
         &text(&paint(&host, "sessions", 22, 10, true)),
         &[
-            "╭ Sessions ─────⠇○◆●○╮",
-            "│── thurbox ─────────│",
-            "│ ⠇ ⑂ fix-osc52      │",
-            "│ ○ └ ⑂ fix-osc52-tes│",
-            "│ ◆ ⑂ add-wsl-tests  │",
-            "│ ● ⑂ perf-cache     │",
-            "│── website ─────────│",
-            "│ ○ ⑂ update-deps    │",
-            "│                    │",
-            "╰────────────────────╯",
+            "┏ ▸ Sessions ━━━⠇○◆●○┓",
+            "┃── thurbox ─────────┃",
+            "┃ ⠇ ⑂ fix-osc52      ┃",
+            "┃ ○ └ ⑂ fix-osc52-tes┃",
+            "┃ ◆ ⑂ add-wsl-tests  ┃",
+            "┃ ● ⑂ perf-cache     ┃",
+            "┃── website ─────────┃",
+            "┃ ○ ⑂ update-deps    ┃",
+            "┃                    ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -571,10 +571,10 @@ fn the_selection_is_a_style_and_moves_with_j() {
             style_runs(&after, 3),
         ],
         &[
-            "⟨LightCyan/Reset/NONE⟩│⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨LightCyan/Reset/NONE⟩│",
-            "⟨LightCyan/Reset/NONE⟩│⟨Green/Reset/NONE⟩ ○ ⟨DarkGray/Reset/NONE⟩└ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52-tests⟨Reset/Reset/NONE⟩                ⟨LightCyan/Reset/NONE⟩│",
-            "⟨LightCyan/Reset/NONE⟩│⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨LightCyan/Reset/NONE⟩│",
-            "⟨LightCyan/Reset/NONE⟩│⟨White/Indexed(24)/BOLD⟩ ○ └ ⑂ fix-osc52-tests                ⟨LightCyan/Reset/NONE⟩│",
+            "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨Cyan/Reset/BOLD⟩┃",
+            "⟨Cyan/Reset/BOLD⟩┃⟨Green/Reset/NONE⟩ ○ ⟨DarkGray/Reset/NONE⟩└ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52-tests⟨Reset/Reset/NONE⟩                ⟨Cyan/Reset/BOLD⟩┃",
+            "⟨Cyan/Reset/BOLD⟩┃⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨Cyan/Reset/BOLD⟩┃",
+            "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ○ └ ⑂ fix-osc52-tests                ⟨Cyan/Reset/BOLD⟩┃",
         ],
     );
 }
@@ -694,6 +694,16 @@ fn a_frame_draws_the_border_type_it_asks_for() {
             ],
         );
     }
+    // `thick` is the focused pane's: a cue in the glyphs themselves, so it
+    // survives a terminal with no colour at all.
+    assert_frame(
+        &text(&paint_lua_node(
+            r#"{ text = "", frame = { border_type = "thick" } }"#,
+            4,
+            3,
+        )),
+        &["┏━━┓", "┃  ┃", "┗━━┛"],
+    );
 }
 
 const OVERLAY_NODE: &str = r#"{
@@ -826,14 +836,14 @@ fn the_agent_pane_with_nothing_selected() {
     assert_frame(
         &text(&paint(&host, "agent", 50, 8, true)),
         &[
-            "┌ No Session ────────────────────────────────────┐",
-            "│       ┌───────────────────────────────┐        │",
-            "│       │No active sessions             │        │",
-            "│       │                               │        │",
-            "│       │  F1      Help                 │        │",
-            "│       └───────────────────────────────┘        │",
-            "│                                                │",
-            "└────────────────────────────────────────────────┘",
+            "┏ ▸ No Session ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "┃       ┌───────────────────────────────┐        ┃",
+            "┃       │No active sessions             │        ┃",
+            "┃       │                               │        ┃",
+            "┃       │  F1      Help                 │        ┃",
+            "┃       └───────────────────────────────┘        ┃",
+            "┃                                                ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -846,10 +856,11 @@ fn the_no_session_title_takes_the_borders_muted_colour_not_the_terminals_default
     // foreground. Routed through frame.title instead, build_block's existing
     // "an unstyled run takes the border's colour" rule now reaches it, so the
     // 'N' of "No Session" carries the same fg as the border it sits in rather
-    // than Color::Reset.
+    // than Color::Reset. Unfocused: focused, the empty pane wears the focus
+    // frame and its badge instead.
     let host = host();
     publish(&host, &snapshot(Vec::new()));
-    let buffer = paint(&host, "agent", 50, 8, true);
+    let buffer = paint(&host, "agent", 50, 8, false);
     let row = text(&buffer);
     let title_x = row[0].find('N').expect("the title is on the top border") as u16;
     let border_x = row[0].find('─').expect("the border has a horizontal rule") as u16;
@@ -877,14 +888,14 @@ fn the_agent_pane_before_its_session_is_attached() {
     assert_frame(
         &text(&paint(&host, "agent", 60, 8, true)),
         &[
-            "╭ ◀ F9 ─ Agent ─ Shell · F8 ── fix-osc52 (claude) [feat/fi…╮",
-            "│                                                          │",
-            "│                     terminal surface                     │",
-            "│                            fix                           │",
-            "│                       not attached                       │",
-            "│                                                          │",
-            "│                                                          │",
-            "╰──────────────────────────────────────────────────────────╯",
+            "┏ ◀ F9 ━ Agent ━ Shell · F8 ━━ ▸ fix-osc52 (claude) [feat/…┓",
+            "┃                                                          ┃",
+            "┃                     terminal surface                     ┃",
+            "┃                            fix                           ┃",
+            "┃                       not attached                       ┃",
+            "┃                                                          ┃",
+            "┃                                                          ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -903,10 +914,10 @@ fn the_agent_pane_closes_its_border_over_a_double_width_name() {
     assert_frame(
         &text(&paint(&host, "agent", 60, 4, true)),
         &[
-            "╭ ◀ F9 ─ Agent ─ Shell · F8 ── 修复终端宽度 (claude) [feat…╮",
-            "│                     terminal surface                     │",
-            "│                       修复终端宽度                       │",
-            "╰──────────────────────────────────────────────────────────╯",
+            "┏ ◀ F9 ━ Agent ━ Shell · F8 ━━ ▸ 修复终端宽度 (claude) [fe…┓",
+            "┃                     terminal surface                     ┃",
+            "┃                       修复终端宽度                       ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -925,14 +936,14 @@ fn the_agent_pane_explains_an_attach_failure() {
     assert_frame(
         &text(&paint(&host, "agent", 70, 8, true)),
         &[
-            "╭ ◀ F9 ─ Agent ─ Shell · F8 ── fix-osc52 (claude) [feat/fix-osc52] […╮",
-            "│                                                                    │",
-            "│                                                                    │",
-            "│                          no live terminal                          │",
-            "│                        can't find pane: %45                        │",
-            "│                                                                    │",
-            "│                                                                    │",
-            "╰────────────────────────────────────────────────────────────────────╯",
+            "┏ ◀ F9 ━ Agent ━ Shell · F8 ━━ ▸ fix-osc52 (claude) [feat/fix-osc52]…┓",
+            "┃                                                                    ┃",
+            "┃                                                                    ┃",
+            "┃                          no live terminal                          ┃",
+            "┃                        can't find pane: %45                        ┃",
+            "┃                                                                    ┃",
+            "┃                                                                    ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -983,14 +994,14 @@ fn the_agent_pane_paints_a_live_screen_inside_its_border() {
     assert_frame(
         &text(&paint_over(&host, "agent", 60, 8, true, &live)),
         &[
-            "╭ ◀ F9 ─ Agent ─ Shell · F8 ── fix-osc52 (claude) [feat/fi…╮",
-            "│$ cargo test                                              │",
-            "│   Compiling thurbox v0.0.0-dev                           │",
-            "│test result: ok. 3 passed ✓ 中                            │",
-            "│$ █                                                       │",
-            "│                                                          │",
-            "│                                                          │",
-            "╰──────────────────────────────────────────────────────────╯",
+            "┏ ◀ F9 ━ Agent ━ Shell · F8 ━━ ▸ fix-osc52 (claude) [feat/…┓",
+            "┃$ cargo test                                              ┃",
+            "┃   Compiling thurbox v0.0.0-dev                           ┃",
+            "┃test result: ok. 3 passed ✓ 中                            ┃",
+            "┃$ █                                                       ┃",
+            "┃                                                          ┃",
+            "┃                                                          ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }

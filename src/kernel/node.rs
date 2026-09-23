@@ -189,15 +189,18 @@ pub struct Overlay {
 
 /// Which glyphs a frame's border is drawn with.
 ///
-/// Two, because two is what the bundled panes distinguish: rounded is the
-/// program's normal chrome and square is what the agent pane's empty state
-/// draws. `Square` is what the panes call it; `Plain` is ratatui's name for the
-/// same corners and is accepted as a second spelling.
+/// Three, because three is what the bundled panes distinguish: rounded is the
+/// program's normal chrome, square is what the agent pane's empty state draws,
+/// and thick is the pane holding focus — the one focus cue that is a SHAPE, so
+/// it survives a monochrome terminal and a reader who cannot tell the theme's
+/// two border colours apart. `Square` is what the panes call it; `Plain` is
+/// ratatui's name for the same corners and is accepted as a second spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BorderKind {
     #[default]
     Rounded,
     Square,
+    Thick,
 }
 
 /// A frame drawn around a node.

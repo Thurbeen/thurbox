@@ -25,13 +25,24 @@ local theme = require("lib.theme")
 
 local widgets = {}
 
---- A bordered panel. Pass ctx.focused so the focused pane lights up.
+--- A bordered panel's frame. Pass ctx.focused so the focused pane is marked.
+---
+--- Kept for a pane that already calls it, in the shape it always returned: a
+--- STRING title, `borders` and `padding`, which a preserved pane may read. The
+--- focus convention rides beside them — `lib/chrome`'s border glyphs and
+--- colour, and its marked label; the title takes the border's colour, so it is
+--- a plain string and not `chrome.frame`'s badge. A new pane reaches the whole
+--- convention through `ui.panel`. `lib/chrome` is required here rather than at
+--- the top because it requires this file.
 function widgets.panel(title, focused)
+  local chrome = require("lib.chrome")
+  local level = chrome.level(focused)
   return {
-    title = focused and (" ▸ " .. title .. " ") or (" " .. title .. " "),
+    title = chrome.label(title, level),
     borders = "all",
-    border_style = focused and theme.accent or theme.muted,
     padding = 0,
+    border_type = chrome.border_type(level),
+    border_style = chrome.border_style(level),
   }
 end
 

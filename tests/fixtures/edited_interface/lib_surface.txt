@@ -1,6 +1,12 @@
 # lib/ surface an edited or third-party pane may rely on: `module.name kind`.
 # See the contract in ui/AGENTS.md. Add a line; never remove one.
 chrome.border_style function
+chrome.border_type function
+chrome.frame function
+chrome.label function
+chrome.level function
+chrome.MARK string
+chrome.rule function
 chrome.spans_len function
 chrome.SQUARE table
 chrome.title_style function

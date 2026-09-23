@@ -29,6 +29,7 @@
 -- filters, smart case. `tab` cycles what is searched: everything, text only,
 -- or names only.
 
+local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
 local panels = require("lib.panels")
 local textinput = require("lib.textinput")
@@ -770,7 +771,7 @@ return {
 
     return {
       type = "box",
-      frame = widgets.panel("Search", ctx.focused),
+      frame = chrome.frame("Search", chrome.level(ctx.focused)),
       children = children,
     }
   end,

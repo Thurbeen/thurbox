@@ -445,7 +445,10 @@ impl App {
             // merely drawn later.
             frame.render_widget(ratatui::widgets::Clear, rect);
             let mut hits = Vec::new();
-            paint::render_recording(frame, rect, &rendered.node, &self.terminals, &mut hits);
+            // No cursor: a float takes its keys through its own Lua handlers,
+            // so none of its surfaces is where typing goes.
+            let surfaces = self.terminals.cursor_on(None);
+            paint::render_recording(frame, rect, &rendered.node, &surfaces, &mut hits);
             // Recorded after every pane, so a float's targets win the overlap for
             // the same reason its cells do. Its whole rect goes in first — a
             // click that misses every button still lands on the modal rather than
@@ -556,7 +559,15 @@ impl App {
             self.last_trees[index] = Some(std::rc::Rc::clone(&node));
         }
         let mut hits = Vec::new();
-        paint::render_recording(frame, rect, &node, &self.terminals, &mut hits);
+        // A terminal paints its cursor only on the surface the keys go to: the
+        // focused pane's first live one, which is what input routes to.
+        let input = if focused {
+            node.first_live_surface()
+        } else {
+            None
+        };
+        let surfaces = self.terminals.cursor_on(input);
+        paint::render_recording(frame, rect, &node, &surfaces, &mut hits);
         // The pane's own rect is only a target when focus can rest on it. A
         // footer click must reach the pill it landed on and nothing else — v1
         // likewise records no `FocusPane` for panes that cannot hold focus.

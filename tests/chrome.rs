@@ -806,51 +806,19 @@ fn hiding_the_session_list_gives_the_centre_the_whole_width() {
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 160);
 }
 
-// ── Focus levels (v1 `ui::FocusLevel`) ─────────────────────────────────────
+// ── Focus (v1 `ui::FocusLevel`) ─────────────────────────────────────────────
 
-#[test]
-fn an_unfocused_pane_showing_the_current_session_stays_accented() {
-    // v1 has three levels and both of these panes fall through to `Active` when
-    // they do not hold focus: they still show the current session, so they keep
-    // the plain accent border. Dropping them to the gray `Inactive` border made
-    // the whole interface read as switched off the moment focus moved.
-    let host = host();
-    for pane in ["sessions", "agent"] {
-        let focused = border_colour(&host, pane, true);
-        let unfocused = border_colour(&host, pane, false);
-        assert_ne!(
-            focused, unfocused,
-            "{pane}: focus must still be visible (bright accent vs accent)"
-        );
-    }
+/// A dark default, a light theme, a low-contrast one and a high-contrast one:
+/// the focus cue has to survive all four, not just the palette it was drawn in.
+const FOCUS_THEMES: [&str; 4] = ["default", "github-light", "zenburn", "oxocarbon"];
 
-    // The property that was broken: the list dropped to the gray `Inactive`
-    // border while the agent pane stayed `Active`, so the two disagreed about
-    // what "not focused" looks like. Comparing them to each other needs no
-    // colour plumbing and says the invariant directly.
-    assert_eq!(
-        border_colour(&host, "sessions", false),
-        border_colour(&host, "agent", false),
-        "both panes show the current session, so both are `Active` unfocused"
-    );
-    // And the accent they share is not the theme's unfocused gray.
-    let accent = thurbox::kernel::theme::color_to_string(&border_colour(&host, "agent", false));
-    let gray = Themes::load(None)
-        .roles()
-        .get("border_unfocused")
-        .cloned()
-        .expect("the theme defines border_unfocused");
-    assert_ne!(
-        accent.to_lowercase(),
-        gray.to_lowercase(),
-        "an unfocused pane showing the current session keeps the ACCENT border, \
-         not the gray one"
-    );
-}
+/// Every bundled pane that can hold focus and frames itself.
+const FOCUSABLE: [&str; 3] = ["sessions", "agent", "search"];
 
-/// The colour of a pane's top-left border corner.
-fn border_colour(host: &LuaHost, pane: &str, focused: bool) -> ratatui::style::Color {
-    let themes = Themes::load(None);
+/// `pane` painted into a 60x10 buffer under `theme`, holding focus or not.
+fn framed(host: &LuaHost, pane: &str, focused: bool, theme: &str) -> ratatui::buffer::Buffer {
+    let mut themes = Themes::load(None);
+    themes.preview(theme).expect("a shipped theme");
     publish(host, &world(0), &themes);
     // The session list publishes the selection the agent pane reads.
     let sessions = host.index_of("sessions").expect("sessions");
@@ -865,11 +833,9 @@ fn border_colour(host: &LuaHost, pane: &str, focused: bool) -> ratatui::style::C
         },
     )
     .expect("render the list");
-
-    let index = host.index_of(pane).expect("pane");
     let node = host
         .render(
-            index,
+            host.index_of(pane).expect("pane"),
             RenderContext {
                 width: 60,
                 height: 10,
@@ -880,18 +846,304 @@ fn border_colour(host: &LuaHost, pane: &str, focused: bool) -> ratatui::style::C
         )
         .expect("render")
         .node;
-    let mut terminal = Terminal::new(TestBackend::new(60, 10)).expect("terminal");
+    paint_node(&node, 60, 10)
+}
+
+fn paint_node(
+    node: &thurbox::kernel::node::Node,
+    width: u16,
+    height: u16,
+) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| {
             thurbox::kernel::paint::render(
                 frame,
                 frame.area(),
-                &node,
+                node,
                 &thurbox::kernel::paint::PlaceholderSurfaces,
             )
         })
         .expect("draw");
-    terminal.backend().buffer()[(0, 0)].fg
+    terminal.backend().buffer().clone()
+}
+
+fn top_row(buffer: &ratatui::buffer::Buffer) -> String {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect()
+}
+
+/// The role's colour under `theme`, spelled the way `color_to_string` spells a
+/// painted cell's.
+fn role(theme: &str, name: &str) -> String {
+    let mut themes = Themes::load(None);
+    themes.preview(theme).expect("a shipped theme");
+    themes
+        .roles()
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("{theme} defines no {name}"))
+        .to_lowercase()
+}
+
+fn colour(color: Color) -> String {
+    thurbox::kernel::theme::color_to_string(&color).to_lowercase()
+}
+
+#[test]
+fn a_focused_pane_is_framed_thick_and_marked_in_every_theme() {
+    // The cues that survive with colour removed — a monochrome terminal, a
+    // colour-blind reader, a low-contrast palette — are the SHAPE of the border
+    // and the MARK in the title. Colour comes on top of those, never instead.
+    let host = host();
+    for theme in FOCUS_THEMES {
+        for pane in FOCUSABLE {
+            let on = framed(&host, pane, true, theme);
+            let off = framed(&host, pane, false, theme);
+            let (on_top, off_top) = (top_row(&on), top_row(&off));
+
+            assert_eq!(
+                on[(0, 0)].symbol(),
+                "┏",
+                "{theme}/{pane} focused:\n{on_top}"
+            );
+            assert_eq!(
+                on[(0, 9)].symbol(),
+                "┗",
+                "{theme}/{pane} focused bottom corner"
+            );
+            assert_eq!(on[(0, 5)].symbol(), "┃", "{theme}/{pane} focused side");
+            assert!(
+                on_top.contains("▸ "),
+                "{theme}/{pane} focused title is marked:\n{on_top}"
+            );
+
+            assert_eq!(
+                off[(0, 0)].symbol(),
+                "╭",
+                "{theme}/{pane} unfocused:\n{off_top}"
+            );
+            assert_eq!(off[(0, 5)].symbol(), "│", "{theme}/{pane} unfocused side");
+            assert!(
+                !off_top.contains('▸'),
+                "{theme}/{pane} only focus is marked:\n{off_top}"
+            );
+            assert!(
+                !off_top.contains('━'),
+                "{theme}/{pane} no thick run unfocused:\n{off_top}"
+            );
+
+            // And the colour agrees with the theme's own two border roles, so a
+            // theme that recolours focus recolours it here.
+            assert_eq!(
+                colour(on[(0, 0)].fg),
+                role(theme, "border_focused"),
+                "{theme}/{pane}"
+            );
+            assert_eq!(
+                colour(off[(0, 0)].fg),
+                role(theme, "border_unfocused"),
+                "{theme}/{pane}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_focused_title_is_a_bold_badge_and_an_unfocused_one_is_plain() {
+    // The badge is the second non-colour cue: bold, and on a filled field, where
+    // the unfocused title is neither — so it reads even where the border's two
+    // colours are close.
+    let host = host();
+    for theme in FOCUS_THEMES {
+        for pane in FOCUSABLE {
+            let on = framed(&host, pane, true, theme);
+            let off = framed(&host, pane, false, theme);
+            let mark = top_row(&on).chars().position(|c| c == '▸').expect("a mark");
+            let cell = &on[(mark as u16, 0)];
+            assert!(
+                cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                "{theme}/{pane}: the focused title is bold"
+            );
+            assert_eq!(
+                colour(cell.bg),
+                role(theme, "border_focused"),
+                "{theme}/{pane}"
+            );
+
+            let title = top_row(&off);
+            let word = title.find(|c: char| c.is_alphabetic()).expect("a title");
+            let at = title[..word].chars().count() as u16;
+            assert!(
+                !off[(at, 0)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::BOLD),
+                "{theme}/{pane}: the unfocused title is not bold:\n{title}"
+            );
+            assert_eq!(
+                off[(at, 0)].bg,
+                Color::Reset,
+                "{theme}/{pane}: no badge unfocused"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_focusable_pane_agrees_on_what_unfocused_looks_like() {
+    // One convention, not one per pane: the three panes had grown three
+    // answers, and the agent pane's accent border beside the list's accent
+    // border is what made "which one has focus?" a question at all.
+    let host = host();
+    for theme in FOCUS_THEMES {
+        let corners: Vec<_> = FOCUSABLE
+            .iter()
+            .map(|pane| {
+                let off = framed(&host, pane, false, theme);
+                (off[(0, 0)].symbol().to_string(), off[(0, 0)].fg)
+            })
+            .collect();
+        assert!(
+            corners.windows(2).all(|pair| pair[0] == pair[1]),
+            "{theme}: {corners:?}"
+        );
+    }
+}
+
+#[test]
+fn widgets_panel_keeps_the_shape_it_always_returned() {
+    // `lib/` results keep their fields and their types (ui/AGENTS.md): a pane
+    // preserved across an upgrade may read `title` as a string or copy
+    // `borders` and `padding`. The focus frame is added beside them.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = home.path().join("ui");
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins").join("50_shape.lua"),
+        r#"local widgets = require("lib.widgets")
+return {
+  name = "shape",
+  slot = "sessions",
+  render = function()
+    local parts = {}
+    for _, focused in ipairs({ true, false }) do
+      local f = widgets.panel("T", focused)
+      parts[#parts + 1] = type(f.title) .. ":" .. f.title .. ":" .. tostring(f.borders)
+        .. ":" .. tostring(f.padding) .. ":" .. tostring(f.border_type)
+    end
+    return { type = "text", text = table.concat(parts, "|") }
+  end,
+}"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &world(0), &Themes::load(None));
+    let node = host
+        .render(
+            host.index_of("shape").expect("shape"),
+            RenderContext {
+                width: 80,
+                height: 1,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node;
+    assert_eq!(
+        top_row(&paint_node(&node, 80, 1)).trim_end(),
+        "string: ▸ T :all:0:thick|string: T :all:0:rounded"
+    );
+}
+
+#[test]
+fn the_empty_agent_pane_still_says_it_has_focus() {
+    // With no session the agent pane draws its own square frame, and it is
+    // the pane holding focus at boot on a fresh install: without the cue there
+    // no pane on screen looked focused at all.
+    let host = host();
+    let empty = Snapshot {
+        sessions: Vec::new(),
+        ..world(0)
+    };
+    publish(&host, &empty, &Themes::load(None));
+    let paint = |focused| {
+        let node = host
+            .render(
+                host.index_of("agent").expect("agent"),
+                RenderContext {
+                    width: 60,
+                    height: 10,
+                    focused,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        top_row(&paint_node(&node, 60, 10))
+    };
+    assert!(
+        paint(true).starts_with("┏ ▸ No Session ━"),
+        "{}",
+        paint(true)
+    );
+    assert!(
+        paint(false).starts_with("┌ No Session ─"),
+        "{}",
+        paint(false)
+    );
+}
+
+#[test]
+fn a_third_party_pane_calling_ui_panel_gets_the_focus_treatment_for_free() {
+    // What a pane must do to opt in is pass `focused = ctx.focused` to
+    // `ui.panel`. Nothing else: no border type, no colour, no mark.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = home.path().join("ui");
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins").join("50_notes.lua"),
+        r#"local ui = require("lib.ui")
+return {
+  name = "notes",
+  slot = "sessions",
+  focusable = true,
+  render = function(ctx)
+    return ui.panel({
+      title = "Notes",
+      focused = ctx.focused,
+      body = { type = "text", text = "filler" },
+    })
+  end,
+}"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &world(0), &Themes::load(None));
+    let index = host.index_of("notes").expect("notes");
+    let paint = |focused| {
+        let node = host
+            .render(
+                index,
+                RenderContext {
+                    width: 30,
+                    height: 5,
+                    focused,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        top_row(&paint_node(&node, 30, 5))
+    };
+    assert!(paint(true).starts_with("┏ ▸ Notes ━"), "{}", paint(true));
+    assert!(paint(false).starts_with("╭ Notes ─"), "{}", paint(false));
 }
 
 // ── The central pane's border strip (v1 `App::render_central_pane`) ─────────

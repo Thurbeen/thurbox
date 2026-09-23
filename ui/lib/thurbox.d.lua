@@ -82,7 +82,7 @@
 ---@field title? thurbox.Text
 ---@field title_align? "left"|"center"|"centre"|"right"
 ---@field borders? "all"|"none"
----@field border_type? "rounded"|"square"|"plain"
+---@field border_type? "rounded"|"square"|"plain"|"thick"
 ---@field border_style? thurbox.StyleSpec
 ---@field style? thurbox.StyleSpec
 ---@field padding? integer

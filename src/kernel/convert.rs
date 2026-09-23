@@ -522,10 +522,12 @@ fn read_frame(fields: &Fields, path: Crumb<'_>) -> Result<Option<Frame>, String>
                 // Two spellings for one shape: `square` is what the panes call
                 // it, `plain` is ratatui's name for the same corners.
                 Some("square") | Some("plain") => BorderKind::Square,
+                Some("thick") => BorderKind::Thick,
                 Some(other) => {
                     return Err(format!(
-                    "{path}.frame.border_type: expected \"rounded\" or \"square\", found {other:?}"
-                ))
+                        "{path}.frame.border_type: expected \"rounded\", \"square\" or \"thick\", \
+                         found {other:?}"
+                    ))
                 }
             };
             Ok(Some(Frame {
@@ -1065,6 +1067,7 @@ fn frame_to_lua(lua: &mlua::Lua, frame: &Frame) -> Result<Table, String> {
         match frame.border_type {
             BorderKind::Rounded => "rounded",
             BorderKind::Square => "square",
+            BorderKind::Thick => "thick",
         },
     )
     .map_err(|e| e.to_string())?;
