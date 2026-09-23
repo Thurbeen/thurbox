@@ -256,6 +256,101 @@ fn window_close_leaves_other_windows_alone() {
     assert_eq!(&buf[..10], b"still here");
 }
 
+// --- layout change → the reader's grid size ---
+
+#[test]
+fn layout_change_reads_the_window_and_its_size() {
+    assert_eq!(
+        parse_notification("%layout-change @1 a87e,100x30,0,0,1 a87e,100x30,0,0,1 *"),
+        Notification::LayoutChange {
+            window_id: "@1".to_string(),
+            rows: 30,
+            cols: 100,
+        }
+    );
+    // A multi-pane layout nests, but its first size is still the window's.
+    assert_eq!(
+        parse_notification("%layout-change @4 d0a3,160x45,0,0{80x45,0,0,7,79x45,81,0,8} x"),
+        Notification::LayoutChange {
+            window_id: "@4".to_string(),
+            rows: 45,
+            cols: 160,
+        }
+    );
+    for garbled in [
+        "%layout-change ",
+        "%layout-change @1",
+        "%layout-change 1 a87e,100x30,0,0,1",
+        "%layout-change @1 a87e",
+        "%layout-change @1 a87e,100by30,0,0,1",
+    ] {
+        assert!(
+            matches!(parse_notification(garbled), Notification::Other(_)),
+            "{garbled}"
+        );
+    }
+}
+
+/// A size reaches the readers of the window's panes as an interrupted read of
+/// its own, after the output queued before it — and only those readers.
+#[test]
+fn a_window_resize_interrupts_its_panes_readers_in_order() {
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, rx) = sync_channel(8);
+    let (other_tx, other_rx) = sync_channel(8);
+    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%8".to_string(), vec![other_tx]);
+    windows
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), "@3".to_string());
+    windows
+        .lock()
+        .unwrap()
+        .insert("%8".to_string(), "@4".to_string());
+    let mut reader = ControlModeReader::new(rx);
+
+    ControlMode::dispatch_output(&senders, "%7", b"old".to_vec());
+    ControlMode::dispatch_resize(&senders, &windows, "@3", 30, 100);
+    ControlMode::dispatch_output(&senders, "%7", b"new".to_vec());
+
+    let mut buf = [0u8; 16];
+    assert_eq!(reader.read(&mut buf).unwrap(), 3);
+    assert_eq!(&buf[..3], b"old");
+    let err = reader.read(&mut buf).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+    assert_eq!(reader.read(&mut buf).unwrap(), 3);
+    assert_eq!(&buf[..3], b"new");
+    assert!(
+        other_rx.try_recv().is_err(),
+        "another window's pane was told"
+    );
+}
+
+/// The subscription reads the option `TmuxBackend::resize` writes.
+#[test]
+fn sized_by_reads_the_sizer_option() {
+    assert!(SIZED_BY.contains(&format!("#{{{SIZER_OPTION}}}")));
+}
+
+/// Who sizes a pane is a hint, not a point in the stream: it is noted and the
+/// read carries on to the next output.
+#[test]
+fn a_sizer_change_does_not_interrupt_the_read() {
+    let (tx, rx) = sync_channel(8);
+    let mut reader = ControlModeReader::new(rx);
+    let size = reader.size();
+    tx.send(PaneChunk::SizedElsewhere(true)).unwrap();
+    tx.send(PaneChunk::Output(b"x".to_vec())).unwrap();
+    let mut buf = [0u8; 4];
+    assert_eq!(reader.read(&mut buf).unwrap(), 1);
+    assert!(size.sized_elsewhere());
+}
+
 // --- parse_notification tests ---
 
 #[test]
@@ -1149,7 +1244,7 @@ impl ThrowawayServer {
     }
 
     fn control(&self) -> ControlMode {
-        ControlMode::start(&TmuxTransport::Local, &self.socket, Self::SESSION)
+        ControlMode::start(&TmuxTransport::Local, &self.socket, Self::SESSION, "tests")
             .expect("control mode starts")
     }
 }

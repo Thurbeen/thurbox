@@ -134,6 +134,7 @@ impl crate::agent::backend::SessionBackend for Recorder {
             backend_id: SHELL_PANE.to_string(),
             output,
             input,
+            size: None,
         })
     }
     fn adopt(
@@ -148,6 +149,7 @@ impl crate::agent::backend::SessionBackend for Recorder {
             output,
             input,
             seed_len: 0,
+            size: None,
         })
     }
     fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {

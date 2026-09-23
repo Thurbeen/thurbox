@@ -10,10 +10,12 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use tracing::{debug, warn};
 
-use crate::agent::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
+use crate::agent::backend::{
+    AdoptedSession, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession,
+};
 use crate::agent::control_mode::{
     self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
-    ControlModeWriter, PANE_CHANNEL_CAPACITY,
+    ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
 
@@ -1209,6 +1211,28 @@ pub struct TmuxBackend {
     /// (`local-tmux` or `ssh:<host>`).
     name: String,
     control: Mutex<Option<ControlMode>>,
+    /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
+    sizer: String,
+}
+
+/// `(rows, cols)` within what `resize-window` accepts, so a resize an `if-shell`
+/// runs can never be the one that fails (see `TmuxBackend::resize`). tmux's
+/// bounds are 1 and `WINDOW_MAXIMUM`, 10000.
+fn tmux_size(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.clamp(1, 10_000), cols.clamp(1, 10_000))
+}
+
+/// A name no other client of the server will have: this process, and which of
+/// its backends, and when. The time is what keeps an instance on another
+/// machine, whose pid may be the same, from reading as this one.
+fn sizer_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("{:x}-{nth:x}-{nanos:x}", std::process::id())
 }
 
 /// The local tmux backend. Thin alias-constructor over [`TmuxBackend`] kept for
@@ -1235,6 +1259,7 @@ impl TmuxBackend {
             session: TMUX_SESSION.to_string(),
             name: "local-tmux".to_string(),
             control: Mutex::new(None),
+            sizer: sizer_name(),
         }
     }
 
@@ -1251,6 +1276,7 @@ impl TmuxBackend {
             session: session.into(),
             name: name.into(),
             control: Mutex::new(None),
+            sizer: sizer_name(),
         }
     }
 
@@ -1795,7 +1821,8 @@ impl TmuxBackend {
         // hitting `control = None` and reporting the misleading "call
         // ensure_ready() first". Assigning `Some(fresh)` drops the dead
         // ControlMode (its cleanup) as it replaces it.
-        let fresh = ControlMode::start(&self.transport, &self.socket(), &self.session)?;
+        let fresh =
+            ControlMode::start(&self.transport, &self.socket(), &self.session, &self.sizer)?;
         *guard = Some(fresh);
         debug!("Control mode reconnected successfully");
         Ok(())
@@ -1845,9 +1872,10 @@ impl TmuxBackend {
     ///
     /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
     /// the budget covers only the lock, there being no answer to wait for.
-    fn ctrl_command_detached(&self, cmds: &[&str]) -> Result<()> {
+    /// `blocks` is what [`ControlMode::send_command_detached`] says it is.
+    fn ctrl_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
         self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
-            ctrl.send_command_detached(cmds)
+            ctrl.send_command_detached(cmds, blocks)
         })
     }
 
@@ -1903,7 +1931,15 @@ impl TmuxBackend {
     /// (`%window-close @3`), so without that mapping a pane cannot notice its
     /// own ending — and the announcement is one-shot, so learning the window
     /// late is the same as never learning it.
-    fn register_pane(&self, pane_id: &str, window_id: Option<&str>) -> Result<ControlModeReader> {
+    ///
+    /// Answers with where the pane's size will be reported, when it will be: a
+    /// `%layout-change` names a window, so only a pane whose window is known
+    /// can be told, and psmux sends none.
+    fn register_pane(
+        &self,
+        pane_id: &str,
+        window_id: Option<&str>,
+    ) -> Result<(ControlModeReader, Option<PaneSize>)> {
         // Handed in by whoever created the pane: `new-window` is already asked
         // to answer (`-P -F`), and answering with the window as well as the
         // pane costs nothing (see `SPAWN_FORMAT`). Asking separately is what
@@ -1918,22 +1954,45 @@ impl TmuxBackend {
         // there, as it always was — a backend that cannot answer (psmux, a
         // reconnecting control mode) keeps the old behaviour of no mapping and
         // no EOF from a window close, and says so in the log.
+        //
+        // On tmux the same question also reads the pane's size and who sizes it,
+        // for the grid. A pane being adopted may be another instance's to size,
+        // in which case the resize `connect_pane` sends next is declined, and a
+        // declined resize changes nothing — no `%layout-change` would ever say
+        // what size the grid should be. Read before that resize, which is
+        // right either way: declined, the size is unchanged; honoured, the
+        // change is reported after it, in the stream.
+        let mut learned = None;
         let window_id = match window_id {
             Some(id) => Some(id.to_string()),
-            None => match self
-                .ctrl_command(&format!("display-message -t {pane_id} -p '#{{window_id}}'"))
-            {
-                Ok(out) => {
-                    Some(out.trim().to_string()).filter(|id| control_mode::is_valid_window_id(id))
+            None => {
+                let format = if self.transport.uses_psmux() {
+                    "#{window_id}".to_string()
+                } else {
+                    format!("#{{window_id}} #{{pane_height}} #{{pane_width}} {SIZED_BY}")
+                };
+                match self.ctrl_command(&format!("display-message -t {pane_id} -p '{format}'")) {
+                    Ok(out) => {
+                        let mut fields = out.split_whitespace();
+                        let window = fields
+                            .next()
+                            .map(str::to_string)
+                            .filter(|id| control_mode::is_valid_window_id(id));
+                        let rows = fields.next().and_then(|n| n.parse::<u16>().ok());
+                        let cols = fields.next().and_then(|n| n.parse::<u16>().ok());
+                        let sized_by = fields.next().map(str::to_string);
+                        learned = rows.zip(cols).map(|size| (size, sized_by));
+                        window
+                    }
+                    Err(e) => {
+                        debug!(
+                            "could not learn which window {pane_id} is in ({e:#}); its exit \
+                         will not be announced"
+                        );
+                        None
+                    }
                 }
-                Err(e) => {
-                    debug!(
-                        "could not learn which window {pane_id} is in ({e:#}); its exit \
-                     will not be announced"
-                    );
-                    None
-                }
-            },
+            }
         };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         self.with_control(|ctrl| {
@@ -1946,16 +2005,27 @@ impl TmuxBackend {
                 .or_insert_with(Vec::new)
                 .push(tx);
             drop(senders);
-            if let Some(window_id) = window_id {
-                let mut windows = ctrl
-                    .pane_windows
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
-                windows.insert(pane_id.to_string(), window_id);
+            let Some(window_id) = window_id else {
+                return Ok(false);
+            };
+            let mut windows = ctrl
+                .pane_windows
+                .lock()
+                .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
+            windows.insert(pane_id.to_string(), window_id);
+            Ok(true)
+        })
+        .map(|mapped| {
+            let reader = ControlModeReader::new(rx);
+            let size = (mapped && !self.transport.uses_psmux()).then(|| reader.size());
+            // Before any byte is read, so the history seed — captured at this
+            // size — is parsed at it.
+            if let (Some(size), Some(((rows, cols), sized_by))) = (&size, learned) {
+                size.report(rows, cols);
+                size.set_sized_elsewhere(sized_by.is_some_and(|name| name != self.sizer));
             }
-            Ok(())
-        })?;
-        Ok(ControlModeReader::new(rx))
+            (reader, size)
+        })
     }
 
     /// Unregister a pane sender (causes the reader to get EOF).
@@ -2005,7 +2075,7 @@ impl TmuxBackend {
         rows: u16,
         cols: u16,
     ) -> Result<AdoptedSession> {
-        let reader = self.register_pane(pane_id, window_id)?;
+        let (reader, size) = self.register_pane(pane_id, window_id)?;
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
@@ -2026,6 +2096,7 @@ impl TmuxBackend {
             output: Box::new(reader),
             input: Box::new(writer),
             seed_len: 0,
+            size,
         })
     }
 
@@ -2155,6 +2226,7 @@ impl SessionBackend for TmuxBackend {
                 &self.transport,
                 &self.socket(),
                 &self.session,
+                &self.sizer,
             )?);
         }
 
@@ -2280,6 +2352,7 @@ impl SessionBackend for TmuxBackend {
             backend_id: pane_id,
             output: connected.output,
             input: connected.input,
+            size: connected.size,
         })
     }
 
@@ -2338,6 +2411,7 @@ impl SessionBackend for TmuxBackend {
             output: Box::new(Cursor::new(seed).chain(connected.output)),
             input: connected.input,
             seed_len,
+            size: connected.size,
         })
     }
 
@@ -2515,16 +2589,71 @@ impl SessionBackend for TmuxBackend {
         // inside the paint, and on a link that had gone bad that was the whole
         // interface frozen until the command timed out.
         //
-        // Still two commands and still in this order — a pane cannot exceed its
+        // Still two resizes and still in this order — a pane cannot exceed its
         // window — but as one list, so they take the lock once and tmux runs
         // them without returning to its event loop in between. Sent separately
         // they could be refused separately, and a window resized around a pane
         // that was not leaves the agent wrapping at the old width until some
         // later rect change asks again.
-        self.ctrl_command_detached(&[
-            &format!("resize-window -t {backend_id} -x {cols} -y {rows}"),
-            &format!("resize-pane -t {backend_id} -x {cols} -y {rows}"),
-        ])
+        let (rows, cols) = tmux_size(rows, cols);
+        let window = format!("resize-window -t {backend_id} -x {cols} -y {rows}");
+        let pane = format!("resize-pane -t {backend_id} -x {cols} -y {rows}");
+        if self.transport.uses_psmux() {
+            // No `if-shell -F` to decide with: the last instance to paint wins.
+            return self.ctrl_command_detached(&[&window, &pane], 2);
+        }
+        // A pane is the size of the rect ONE instance paints it into. Several
+        // instances attached to one server each paint their own rect, and when
+        // each resized to its own, whichever painted last — a toast taking a
+        // row is enough — re-wrapped the agent for everybody. So the window
+        // names its sizer (`SIZER_OPTION`), and a paint resizes only a window
+        // that is this instance's to size: one nobody claims, one it already
+        // sizes, or any window at all while it is the only client attached,
+        // which is what makes a sizer that quit or crashed let go.
+        // `claim_size` is how the name changes hands.
+        //
+        // Decided by tmux, in this same list, so a decision costs no round trip
+        // and two instances cannot both win it. The shape is fixed on purpose:
+        // the response queue expects a known number of `%begin` blocks per
+        // list, and `if-shell` answers with one more block for each command it
+        // runs — four taken and one declined, measured on tmux 3.7c. So the
+        // name is settled first by a `set-option -F` that always answers once,
+        // and each resize is its own `if-shell` whose else runs one command
+        // too: five blocks, whichever way it goes. A pane that is gone fails
+        // the first command and tmux drops the rest, which the queue expects
+        // of any list; an inner command failing does NOT stop the list, which
+        // is why the sizes are clamped to what tmux accepts (`tmux_size`).
+        let me = &self.sizer;
+        let may = format!(
+            "#{{||:#{{==:#{{session_attached}},1}},#{{||:#{{==:#{{{SIZER_OPTION}}},}},#{{==:#{{{SIZER_OPTION}}},{me}}}}}}}"
+        );
+        let settle =
+            format!("set-option -F -w -t {backend_id} {SIZER_OPTION} '#{{?{may},{me},#{{{SIZER_OPTION}}}}}'");
+        let mine = format!("#{{==:#{{{SIZER_OPTION}}},{me}}}");
+        let only_if_mine = |cmd: &str| {
+            format!("if-shell -F -t {backend_id} '{mine}' '{cmd}' 'display-message -p \"\"'")
+        };
+        self.ctrl_command_detached(&[&settle, &only_if_mine(&window), &only_if_mine(&pane)], 5)
+    }
+
+    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        if self.transport.uses_psmux() {
+            return self.resize(backend_id, rows, cols);
+        }
+        // Unconditional: this is the instance being typed into, which is what
+        // decides who sizes (see `resize`).
+        let (rows, cols) = tmux_size(rows, cols);
+        self.ctrl_command_detached(
+            &[
+                &format!(
+                    "set-option -w -t {backend_id} {SIZER_OPTION} {}",
+                    self.sizer
+                ),
+                &format!("resize-window -t {backend_id} -x {cols} -y {rows}"),
+                &format!("resize-pane -t {backend_id} -x {cols} -y {rows}"),
+            ],
+            3,
+        )
     }
 
     fn is_dead(&self, backend_id: &str) -> Result<bool> {

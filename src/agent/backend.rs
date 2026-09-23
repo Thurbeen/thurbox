@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::SystemTime;
@@ -41,6 +41,80 @@ pub(crate) fn now_millis() -> u64 {
 /// smaller grid would have shown.
 fn vt_floor(rows: u16, cols: u16) -> (u16, u16) {
     (rows.max(2), cols.max(2))
+}
+
+/// A pane's size as its backend reports it, handed from the backend's output
+/// reader to the loop that feeds the pane's grid.
+///
+/// A pane on a server other clients share is not necessarily the size of the
+/// rect this instance paints it into: another thurbox may be sizing it (see
+/// `TmuxBackend::resize`). A backend that can say what size the pane really is
+/// reports it here **in stream order** — between the last byte written for the
+/// old size and the first written for the new one — and the grid follows, so
+/// an instance that is not sizing still parses the program's output at the
+/// width the program is writing for. Held as `None` where the backend cannot
+/// say, and then the grid is sized to the rect, as it always was.
+#[derive(Clone, Default)]
+pub struct PaneSize(Arc<PaneSizeCells>);
+
+#[derive(Default)]
+struct PaneSizeCells {
+    /// Reported and not yet applied to the grid; 0 once taken.
+    pending: AtomicU32,
+    /// The last size reported, kept after it is applied.
+    current: AtomicU32,
+    /// Whether the multiplexer names another client as the pane's sizer.
+    elsewhere: AtomicBool,
+    /// Set when `elsewhere` goes from true to false, until the pane takes its
+    /// own size back ([`WiredPane::retake_size`]).
+    released: AtomicBool,
+}
+
+/// `(rows, cols)` as one atomic word. Zero is "none": no pane is 0×0.
+fn pack_size(rows: u16, cols: u16) -> u32 {
+    (u32::from(rows) << 16) | u32::from(cols)
+}
+
+fn unpack_size(packed: u32) -> Option<(u16, u16)> {
+    (packed != 0).then_some(((packed >> 16) as u16, packed as u16))
+}
+
+impl PaneSize {
+    /// The pane is now `rows` × `cols`. Called by the reader, which then
+    /// interrupts its read so the size is applied before any later byte.
+    pub fn report(&self, rows: u16, cols: u16) {
+        let packed = pack_size(rows, cols);
+        self.0.pending.store(packed, Ordering::Relaxed);
+        self.0.current.store(packed, Ordering::Relaxed);
+    }
+
+    /// Record whether another client is sizing the pane.
+    pub fn set_sized_elsewhere(&self, elsewhere: bool) {
+        if self.0.elsewhere.swap(elsewhere, Ordering::Relaxed) && !elsewhere {
+            self.0.released.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether another client is sizing the pane, as last reported. Only a hint
+    /// for the interface: it can trail a change by the multiplexer's report
+    /// interval, and nothing that decides a size reads it.
+    pub fn sized_elsewhere(&self) -> bool {
+        self.0.elsewhere.load(Ordering::Relaxed)
+    }
+
+    fn take(&self) -> Option<(u16, u16)> {
+        unpack_size(self.0.pending.swap(0, Ordering::Relaxed))
+    }
+
+    fn current(&self) -> u32 {
+        self.0.current.load(Ordering::Relaxed)
+    }
+
+    /// Whether the pane was released since this was last asked. A load first,
+    /// so the frame that asks and finds nothing writes nothing.
+    fn take_released(&self) -> bool {
+        self.0.released.load(Ordering::Relaxed) && self.0.released.swap(false, Ordering::Relaxed)
+    }
 }
 
 /// Length of the prefix of `buf` that is safe to feed to the vt100 parser
@@ -233,6 +307,8 @@ pub struct SpawnedSession {
     pub output: Box<dyn Read + Send>,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
+    /// Where the pane's real size is reported, when the backend can say.
+    pub size: Option<PaneSize>,
 }
 
 /// A reconnected session from the backend.
@@ -247,6 +323,8 @@ pub struct AdoptedSession {
     /// scrollback replay can't masquerade as fresh output — see
     /// `Session::reader_loop`.
     pub seed_len: usize,
+    /// Where the pane's real size is reported, when the backend can say.
+    pub size: Option<PaneSize>,
 }
 
 /// Trait that all session backends implement. The app layer interacts only through this trait.
@@ -385,8 +463,20 @@ pub trait SessionBackend: Send + Sync {
         Ok(())
     }
 
-    /// Resize a session's terminal.
+    /// Match a pane to the rect it is painted into.
+    ///
+    /// On a multiplexer other clients share, this may be declined: a pane
+    /// another client is sizing stays that client's size (see
+    /// `TmuxBackend::resize`), and a backend that declines reports the size the
+    /// pane really is through [`PaneSize`].
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
+
+    /// Size a pane to `rows` × `cols` and become the client that sizes it — the
+    /// user is typing into it here. Default: a plain [`Self::resize`], for a
+    /// backend nothing else shares.
+    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        self.resize(backend_id, rows, cols)
+    }
 
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
@@ -474,6 +564,34 @@ struct SessionIo {
     /// Whether the parser starts with its grid, or without one until it is
     /// first asked for ([`Session::adopt_dormant`]).
     resident: bool,
+    /// Where the pane's real size is reported, when the backend can say.
+    size: Option<PaneSize>,
+}
+
+impl SessionIo {
+    fn spawned(spawned: SpawnedSession) -> Self {
+        Self {
+            output: spawned.output,
+            input: spawned.input,
+            backend_id: spawned.backend_id,
+            mode: WireMode::Spawn,
+            seed_len: 0,
+            resident: true,
+            size: spawned.size,
+        }
+    }
+
+    fn adopted(adopted: AdoptedSession, backend_id: &str) -> Self {
+        Self {
+            output: adopted.output,
+            input: adopted.input,
+            backend_id: backend_id.to_string(),
+            mode: WireMode::Adopt,
+            seed_len: adopted.seed_len,
+            resident: true,
+            size: adopted.size,
+        }
+    }
 }
 
 /// Whether we are wiring a freshly-spawned process or reconnecting to an
@@ -680,11 +798,78 @@ pub struct WiredPane {
     label: &'static str,
     /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
     residency: Arc<Residency>,
+    /// The backend input is claimed through — `None` where there is no live
+    /// pane to size (a placeholder, a test stub).
+    backend: Option<Arc<dyn SessionBackend>>,
+    /// The pane's real size, where the backend reports it.
+    size: Option<PaneSize>,
+    /// The size last asked for from the rect this pane is painted into
+    /// ([`pack_size`]; 0 before the first).
+    wanted: AtomicU32,
 }
 
 impl WiredPane {
+    /// Send input, taking the pane's size first when it is not the size of the
+    /// rect it is painted into here.
+    ///
+    /// Input is what says which instance the user is at: on a pane several
+    /// instances show, the one being typed into sizes it and the others follow
+    /// (tmux's own `window-size latest`, with keystrokes as the activity). A
+    /// pane already at this instance's size needs nothing, so a claim is one
+    /// atomic comparison per keystroke and a message only when it changes
+    /// something.
     pub fn send_input(&self, data: Vec<u8>) -> Result<()> {
+        self.claim_size();
         send_to_input_channel(&self.input_tx, data, self.label)
+    }
+
+    fn claim_size(&self) {
+        let (Some(backend), Some(size)) = (&self.backend, &self.size) else {
+            return;
+        };
+        let wanted = self.wanted.load(Ordering::Relaxed);
+        let Some((rows, cols)) = unpack_size(wanted) else {
+            return;
+        };
+        if size.current() == wanted {
+            return;
+        }
+        if let Err(e) = backend.claim_size(&self.backend_id, rows, cols) {
+            debug!(pane = %self.backend_id, "could not claim the pane's size: {e:#}");
+        }
+    }
+
+    /// Take the pane's size back when the client that was sizing it has gone.
+    ///
+    /// Nothing else would: this instance's rect has not changed, so the render
+    /// path has no reason to ask, and a pane left at the departed instance's
+    /// size would stay letterboxed until the next keystroke. Called by the
+    /// render path per painted pane, and costs it one atomic load unless there
+    /// is something to do — which is one resize, to the size this instance
+    /// already asked for.
+    pub fn retake_size(&self) {
+        let (Some(backend), Some(size)) = (&self.backend, &self.size) else {
+            return;
+        };
+        if !size.take_released() {
+            return;
+        }
+        let wanted = self.wanted.load(Ordering::Relaxed);
+        let Some((rows, cols)) = unpack_size(wanted) else {
+            return;
+        };
+        if size.current() == wanted {
+            return;
+        }
+        if let Err(e) = backend.resize(&self.backend_id, rows, cols) {
+            debug!(pane = %self.backend_id, "could not take the pane's size back: {e:#}");
+        }
+    }
+
+    /// Whether the pane is being sized by another client — a hint for saying
+    /// why the grid is not the size of its rect. See [`PaneSize::sized_elsewhere`].
+    pub fn sized_elsewhere(&self) -> bool {
+        self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
     /// When this pane last produced output, as epoch milliseconds.
@@ -714,19 +899,28 @@ impl WiredPane {
         &self.backend_id
     }
 
-    /// Resize the backend pane and the local vt100 grid together.
+    /// Ask the backend to size the pane to its rect, and size the local vt100
+    /// grid with it where the backend cannot report the pane's real size.
     ///
     /// Floored for the reason `vt_floor` documents: a cramped layout really
     /// does compute a one-cell rect, and a grid that small is where vt100
     /// underflows on the next byte written into it. A pane with no grid is
     /// resized at the backend only: its grid comes back at whatever size the
     /// pane has when it does.
+    ///
+    /// Where the backend reports the pane's real size, the grid is left to that
+    /// report rather than set here: the resize may be declined (another client
+    /// is sizing the pane), and when it is not, the report arrives in the
+    /// output stream at the point the program starts writing for the new size.
     pub fn resize(&self, backend: &dyn SessionBackend, rows: u16, cols: u16) -> Result<()> {
         let (rows, cols) = vt_floor(rows, cols);
+        self.wanted.store(pack_size(rows, cols), Ordering::Relaxed);
         backend.resize(&self.backend_id, rows, cols)?;
-        if let Ok(mut parser) = self.parser.lock() {
-            if self.residency.is_resident() {
-                parser.screen_mut().set_size(rows, cols);
+        if self.size.is_none() {
+            if let Ok(mut parser) = self.parser.lock() {
+                if self.residency.is_resident() {
+                    parser.screen_mut().set_size(rows, cols);
+                }
             }
         }
         Ok(())
@@ -880,19 +1074,8 @@ impl ProgramPane {
         ) {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
-        let (wired, _signals) = Session::wire_up(
-            rows,
-            cols,
-            SessionIo {
-                output: spawned.output,
-                input: spawned.input,
-                backend_id: spawned.backend_id,
-                mode: WireMode::Spawn,
-                seed_len: 0,
-                resident: true,
-            },
-            "Program",
-        );
+        let (wired, _signals) =
+            Session::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Program");
         debug!(program, window_name, "spawned a plugin's program pane");
         Ok(Self {
             wired,
@@ -914,14 +1097,8 @@ impl ProgramPane {
         let (wired, _signals) = Session::wire_up(
             rows,
             cols,
-            SessionIo {
-                output: adopted.output,
-                input: adopted.input,
-                backend_id: backend_id.to_string(),
-                mode: WireMode::Adopt,
-                seed_len: adopted.seed_len,
-                resident: true,
-            },
+            SessionIo::adopted(adopted, backend_id),
+            &backend,
             "Program",
         );
         debug!(program, backend_id, "adopted a plugin's program pane");
@@ -1076,14 +1253,7 @@ impl Session {
             info,
             rows,
             cols,
-            SessionIo {
-                output: spawned.output,
-                input: spawned.input,
-                backend_id: spawned.backend_id,
-                mode: WireMode::Spawn,
-                seed_len: 0,
-                resident: true,
-            },
+            SessionIo::spawned(spawned),
             backend,
             provider,
             env,
@@ -1122,14 +1292,7 @@ impl Session {
             info,
             rows,
             cols,
-            SessionIo {
-                output: adopted.output,
-                input: adopted.input,
-                backend_id: backend_id.to_string(),
-                mode: WireMode::Adopt,
-                seed_len: adopted.seed_len,
-                resident: true,
-            },
+            SessionIo::adopted(adopted, backend_id),
             backend,
             provider,
             env,
@@ -1166,13 +1329,10 @@ impl Session {
             rows,
             cols,
             SessionIo {
-                output: adopted.output,
-                input: adopted.input,
-                backend_id: backend_id.to_string(),
-                mode: WireMode::Adopt,
-                seed_len: adopted.seed_len,
                 resident: false,
+                ..SessionIo::adopted(adopted, backend_id)
             },
+            backend,
             "Session",
         );
         Ok(Self {
@@ -1222,6 +1382,7 @@ impl Session {
         rows: u16,
         cols: u16,
         io: SessionIo,
+        backend: &Arc<dyn SessionBackend>,
         label: &'static str,
     ) -> (WiredPane, SignalCells) {
         let signals = SignalCells::new();
@@ -1257,6 +1418,7 @@ impl Session {
         let last_output_clone = Arc::clone(&last_output_at);
         let residency_clone = Arc::clone(&residency);
         let seed_len = io.seed_len;
+        let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
             Self::reader_loop(
                 io.output,
@@ -1265,6 +1427,7 @@ impl Session {
                 last_output_clone,
                 residency_clone,
                 seed_len,
+                size,
             );
         });
 
@@ -1276,6 +1439,11 @@ impl Session {
             last_output_at,
             label,
             residency,
+            backend: Some(Arc::clone(backend)),
+            size: io.size,
+            // The rect the caller is about to paint into, which the render
+            // path's own memo starts from too — so the first claim knows it.
+            wanted: AtomicU32::new(pack_size(rows, cols)),
         };
         (wired, signals)
     }
@@ -1290,7 +1458,7 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Self {
-        let (wired, signals) = Self::wire_up(rows, cols, io, "Session");
+        let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session");
         Self {
             info,
             wired,
@@ -1356,6 +1524,9 @@ impl Session {
                 last_output_at: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
+                backend: None,
+                size: None,
+                wanted: AtomicU32::new(0),
             },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
@@ -1403,6 +1574,7 @@ impl Session {
         last_output_at: Arc<AtomicU64>,
         residency: Arc<Residency>,
         mut seed_len: usize,
+        size: Option<PaneSize>,
     ) {
         let mut buf = [0u8; 4096];
         // Bytes of a trailing, not-yet-complete UTF-8 character held back from
@@ -1414,7 +1586,21 @@ impl Session {
         // truncated tail. `carry` is at most 3 bytes (a 4-byte char missing one).
         let mut carry: Vec<u8> = Vec::new();
         loop {
-            match reader.read(&mut buf) {
+            let read = reader.read(&mut buf);
+            // Taken between reads, never during one: a reported size is handed
+            // over as an interrupted read of its own (`ControlModeReader`), so
+            // every byte before it is already in the grid and none after it is.
+            // A pane with no grid has nothing to resize; the grid it gets back
+            // is built at the pane's size as tmux reports it then.
+            if let Some((rows, cols)) = size.as_ref().and_then(PaneSize::take) {
+                let (rows, cols) = vt_floor(rows, cols);
+                if let Ok(mut p) = parser.lock() {
+                    if residency.is_resident() {
+                        p.screen_mut().set_size(rows, cols);
+                    }
+                }
+            }
+            match read {
                 Ok(0) => {
                     debug!("Session reader: EOF");
                     break;
@@ -1704,14 +1890,8 @@ impl Session {
         let (wired, _signals) = Self::wire_up(
             rows,
             cols,
-            SessionIo {
-                output: spawned.output,
-                input: spawned.input,
-                backend_id: spawned.backend_id,
-                mode: WireMode::Spawn,
-                seed_len: 0,
-                resident: true,
-            },
+            SessionIo::spawned(spawned),
+            &self.backend,
             "Session",
         );
 
@@ -1788,14 +1968,8 @@ impl Session {
         let (wired, _signals) = Self::wire_up(
             rows,
             cols,
-            SessionIo {
-                output: spawned.output,
-                input: spawned.input,
-                backend_id: spawned.backend_id,
-                mode: WireMode::Spawn,
-                seed_len: 0,
-                resident: true,
-            },
+            SessionIo::spawned(spawned),
+            &self.backend,
             "Shell",
         );
 
@@ -1819,14 +1993,8 @@ impl Session {
         let (wired, _signals) = Self::wire_up(
             rows,
             cols,
-            SessionIo {
-                output: adopted.output,
-                input: adopted.input,
-                backend_id: backend_id.to_string(),
-                mode: WireMode::Adopt,
-                seed_len: adopted.seed_len,
-                resident: true,
-            },
+            SessionIo::adopted(adopted, backend_id),
+            &self.backend,
             "Shell",
         );
 
@@ -1886,6 +2054,9 @@ impl Session {
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
                 label: "Session",
                 residency: Arc::default(),
+                backend: None,
+                size: None,
+                wanted: AtomicU32::new(0),
             },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
@@ -2185,6 +2356,7 @@ mod tests {
             Arc::clone(&last_output_at),
             Arc::default(),
             seed_len,
+            None,
         );
 
         assert_eq!(
@@ -2192,6 +2364,75 @@ mod tests {
             initial_output_at(WireMode::Adopt),
             "scrollback replay alone must not read as activity"
         );
+    }
+
+    /// A pane is released only when another client WAS sizing it and no longer
+    /// is — never on a first report, and once per release.
+    #[test]
+    fn a_pane_is_released_once_when_its_sizer_goes() {
+        let size = PaneSize::default();
+        size.set_sized_elsewhere(false);
+        assert!(!size.take_released(), "nobody was sizing it");
+        size.set_sized_elsewhere(true);
+        assert!(!size.take_released());
+        size.set_sized_elsewhere(false);
+        assert!(size.take_released());
+        assert!(!size.take_released(), "taken once");
+    }
+
+    /// A size the backend reports lands between the bytes written before it and
+    /// the bytes written after — the old line is not re-wrapped at the new
+    /// width, and the new one is.
+    #[test]
+    fn reader_loop_resizes_the_grid_where_the_stream_says() {
+        struct Script(Vec<Result<&'static [u8], (u16, u16)>>, PaneSize);
+        impl Read for Script {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                match self.0.remove(0) {
+                    Ok(bytes) => {
+                        buf[..bytes.len()].copy_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    Err((rows, cols)) => {
+                        self.1.report(rows, cols);
+                        Err(std::io::ErrorKind::Interrupted.into())
+                    }
+                }
+            }
+        }
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let size = PaneSize::default();
+        let script = Script(
+            vec![
+                Ok(b"aaaaaaaaaaaaaaa\r\n".as_slice()),
+                Err((4, 10)),
+                Ok(b"bbbbbbbbbbbbbbb".as_slice()),
+            ],
+            size.clone(),
+        );
+        Session::reader_loop(
+            Box::new(script),
+            Arc::clone(&parser),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::default(),
+            0,
+            Some(size.clone()),
+        );
+
+        let parser = parser.lock().unwrap();
+        assert_eq!(parser.screen().size(), (4, 10));
+        let rows: Vec<String> = parser.screen().rows(0, 10).collect();
+        assert_eq!(rows[..3], ["aaaaaaaaaa", "bbbbbbbbbb", "bbbbb"]);
+        assert_eq!(size.current(), pack_size(4, 10));
     }
 
     /// A character split across two reads reaches the parser whole, and the
@@ -2218,6 +2459,7 @@ mod tests {
             Arc::clone(&last_output_at),
             Arc::default(),
             0,
+            None,
         );
 
         let screen = parser.lock().unwrap().screen().contents();
@@ -2249,6 +2491,7 @@ mod tests {
             Arc::clone(&last_output_at),
             Arc::default(),
             seed_len,
+            None,
         );
 
         let stamped = last_output_at.load(Ordering::Relaxed);
@@ -2288,6 +2531,7 @@ mod tests {
             Arc::clone(&last_output_at),
             Arc::default(),
             seed_len,
+            None,
         );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));

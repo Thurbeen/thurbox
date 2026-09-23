@@ -269,16 +269,20 @@ impl Terminals {
         if inner.width == 0 || inner.height == 0 {
             return Vec::new();
         }
+        let top = usize::from(painted.top.get());
 
         let mut paints = Vec::new();
         if !runs_empty {
             let rows = self.cached_rows(session, &parser);
             for run in parser.callbacks().hyperlinks().visible_runs(&rows) {
-                if run.row >= usize::from(inner.height) || run.col >= usize::from(inner.width) {
+                let Some(shown) = run.row.checked_sub(top) else {
+                    continue;
+                };
+                if shown >= usize::from(inner.height) || run.col >= usize::from(inner.width) {
                     continue;
                 }
                 let x = inner.x.saturating_add(run.col as u16);
-                let y = inner.y.saturating_add(run.row as u16);
+                let y = inner.y.saturating_add(shown as u16);
                 if let Some(cells) = drawn_label_cells(buf, inner, x, y, run.label) {
                     paints.push(HyperlinkPaint {
                         x,
@@ -303,11 +307,14 @@ impl Terminals {
             if paints.len() - claimed >= SCANNED_LINK_LIMIT {
                 break;
             }
-            if *row >= usize::from(inner.height) || *col >= usize::from(inner.width) {
+            let Some(shown) = row.checked_sub(top) else {
+                continue;
+            };
+            if shown >= usize::from(inner.height) || *col >= usize::from(inner.width) {
                 continue;
             }
             let x = inner.x.saturating_add(*col as u16);
-            let y = inner.y.saturating_add(*row as u16);
+            let y = inner.y.saturating_add(shown as u16);
             // Overlap, not an equal start. A run that opened PART-WAY through
             // printed URL text leaves the bare text in `scanned` starting to
             // its left, so comparing only the first cell let the plain leg
@@ -349,12 +356,13 @@ impl Terminals {
         selection: &crate::kernel::selection::Selection,
         pane_origin: (u16, u16),
     ) -> Option<String> {
-        let (_, parser) = self.surface_parser(session)?;
+        let (painted, parser) = self.surface_parser(session)?;
         let parser = parser.lock().ok()?;
-        Some(crate::kernel::selection::extract_text_from_screen(
+        Some(crate::kernel::selection::extract_text_from_rows(
             parser.screen(),
             selection,
             pane_origin,
+            painted.top.get(),
         ))
     }
 }

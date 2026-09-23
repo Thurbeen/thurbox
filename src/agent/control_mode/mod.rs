@@ -43,6 +43,16 @@ pub enum PaneChunk {
     /// order, which is why it — and not the thread that asked — puts the
     /// snapshot into the pane's channel.
     Snapshot(Box<PaneSnapshot>),
+    /// The pane's window is now this size — see [`Notification::LayoutChange`].
+    ///
+    /// In this channel rather than beside it for the reason a snapshot is: the
+    /// output a program writes after its window was resized is laid out for the
+    /// new size, and whatever was queued before it for the old one.
+    Resized { rows: u16, cols: u16 },
+    /// Whether another client is named as the pane's sizer. A hint with no
+    /// place in the stream, carried here only because this is where the pane's
+    /// reader listens.
+    SizedElsewhere(bool),
 }
 
 impl From<Vec<u8>> for PaneChunk {
@@ -179,6 +189,22 @@ impl PendingSnapshot {
     }
 }
 
+/// The window option naming the client that sizes a window, when several
+/// thurbox instances show it — see `TmuxBackend::resize`.
+pub const SIZER_OPTION: &str = "@thurbox_sizer";
+
+/// The format subscription reporting [`SIZED_BY`] per pane, so an instance can
+/// say its pane is being sized elsewhere.
+const SIZER_SUBSCRIPTION: &str = "thurbox-sizer";
+
+/// Who sizes a pane, as far as anybody else is concerned: the
+/// [`SIZER_OPTION`] while more than one client is attached, and nobody once a
+/// client is alone — an alone client may size any pane (`TmuxBackend::resize`),
+/// so a name left behind by an instance that has gone no longer counts. tmux
+/// re-evaluates a subscription as clients come and go, which is what tells the
+/// instance left behind that the size is its own again.
+pub const SIZED_BY: &str = "#{?#{==:#{session_attached},1},,#{@thurbox_sizer}}";
+
 /// Maps pane IDs to sync senders for multi-instance output broadcast.
 pub type PaneSendersMap = HashMap<String, Vec<SyncSender<PaneChunk>>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
@@ -285,6 +311,15 @@ pub enum Notification {
         pane_id: String,
         value: String,
     },
+    /// A window's size changed, whoever changed it — `%layout-change`, which
+    /// tmux sends to every control client for every `resize-window`, even one
+    /// that leaves the size where it was (measured, tmux 3.7c). The size is the
+    /// window's; thurbox's windows hold one pane each, so it is the pane's too.
+    LayoutChange {
+        window_id: String,
+        rows: u16,
+        cols: u16,
+    },
     Other(String),
 }
 
@@ -296,6 +331,7 @@ pub struct ControlModeReader {
     receiver: std::sync::mpsc::Receiver<PaneChunk>,
     buffer: Vec<u8>,
     pos: usize,
+    size: crate::agent::backend::PaneSize,
 }
 
 impl ControlModeReader {
@@ -304,7 +340,14 @@ impl ControlModeReader {
             receiver,
             buffer: Vec::new(),
             pos: 0,
+            size: crate::agent::backend::PaneSize::default(),
         }
+    }
+
+    /// Where this reader leaves the sizes tmux reports for its pane, for the
+    /// loop that feeds the pane's grid.
+    pub fn size(&self) -> crate::agent::backend::PaneSize {
+        self.size.clone()
     }
 }
 
@@ -323,22 +366,36 @@ impl Read for ControlModeReader {
             return Ok(n);
         }
 
-        // Block until the next chunk arrives.
-        match self.receiver.recv() {
-            Ok(PaneChunk::Snapshot(snapshot)) => Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                SnapshotArrived(snapshot),
-            )),
-            Ok(PaneChunk::Output(data)) => {
-                let n = data.len().min(buf.len());
-                buf[..n].copy_from_slice(&data[..n]);
-                if n < data.len() {
-                    self.buffer = data;
-                    self.pos = n;
+        // Block until the next chunk arrives. A size is handed over as an
+        // interrupted read of its own, as a snapshot is: every byte before it
+        // has been returned and none after it has, so the caller resizes its
+        // grid at exactly the point in the stream tmux resized the pane.
+        loop {
+            match self.receiver.recv() {
+                Ok(PaneChunk::Snapshot(snapshot)) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        SnapshotArrived(snapshot),
+                    ))
                 }
-                Ok(n)
+                Ok(PaneChunk::Resized { rows, cols }) => {
+                    self.size.report(rows, cols);
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                Ok(PaneChunk::SizedElsewhere(elsewhere)) => {
+                    self.size.set_sized_elsewhere(elsewhere);
+                }
+                Ok(PaneChunk::Output(data)) => {
+                    let n = data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    if n < data.len() {
+                        self.buffer = data;
+                        self.pos = n;
+                    }
+                    return Ok(n);
+                }
+                Err(_) => return Ok(0), // Channel closed → EOF.
             }
-            Err(_) => Ok(0), // Channel closed → EOF.
         }
     }
 }
@@ -749,6 +806,10 @@ pub fn parse_notification(line: &str) -> Notification {
         return n;
     }
 
+    if let Some(n) = parse_layout_change(line) {
+        return n;
+    }
+
     Notification::Other(line.to_string())
 }
 
@@ -787,6 +848,27 @@ fn parse_window_close(line: &str) -> Option<Notification> {
     }
     Some(Notification::WindowClose {
         window_id: window_id.to_string(),
+    })
+}
+
+/// `%layout-change @<window> <layout> <visible-layout> <flags>`, as the window
+/// and the size its layout gives it.
+///
+/// A layout is `<checksum>,<cols>x<rows>,<x>,<y>…`, and its second field is the
+/// whole window's size whatever the panes inside it are, so nothing past that
+/// field is read.
+fn parse_layout_change(line: &str) -> Option<Notification> {
+    let mut tokens = line.strip_prefix("%layout-change ")?.split_whitespace();
+    let window_id = tokens.next()?;
+    if !is_valid_window_id(window_id) {
+        return None;
+    }
+    let size = tokens.next()?.split(',').nth(1)?;
+    let (cols, rows) = size.split_once('x')?;
+    Some(Notification::LayoutChange {
+        window_id: window_id.to_string(),
+        rows: rows.parse().ok()?,
+        cols: cols.parse().ok()?,
     })
 }
 
@@ -1025,7 +1107,14 @@ fn sends_implicit_attach_response(transport: &TmuxTransport) -> bool {
 impl ControlMode {
     /// Start a control mode connection to the thurbox tmux session over the
     /// given transport (local or ssh).
-    pub(super) fn start(transport: &TmuxTransport, socket: &str, session: &str) -> Result<Self> {
+    /// `sizer` is this client's name in [`SIZER_OPTION`], so a pane named for
+    /// anybody else can be reported as sized elsewhere.
+    pub(super) fn start(
+        transport: &TmuxTransport,
+        socket: &str,
+        session: &str,
+        sizer: &str,
+    ) -> Result<Self> {
         // -C (single C): control mode with echo — works with piped stdin.
         // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
         let mut child = transport
@@ -1083,6 +1172,7 @@ impl ControlMode {
 
         let reader_stdin = Arc::clone(&stdin);
         let reader_pane_senders = Arc::clone(&pane_senders);
+        let reader_sizer = sizer.to_string();
         let reader_pane_windows = Arc::clone(&pane_windows);
         let reader_queue = Arc::clone(&response_queue);
         let reader_sub_events = Arc::clone(&sub_events);
@@ -1100,6 +1190,7 @@ impl ControlMode {
                     reader_queue,
                     reader_sub_events,
                     strict_blocks,
+                    &reader_sizer,
                 );
                 reader_alive.store(false, Ordering::Relaxed);
             })
@@ -1134,6 +1225,13 @@ impl ControlMode {
             );
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the remote-hook status subscription: {e:#}");
+            }
+            // Which client sizes each pane, for the interface to say why a
+            // pane is not the size of its rect. The same passive mechanism and
+            // the same best effort: without it the hint is simply never shown.
+            let arm = format!("refresh-client -B '{SIZER_SUBSCRIPTION}:%*:{SIZED_BY}'");
+            if let Err(e) = control.send_command(&arm) {
+                warn!("failed to arm the pane sizer subscription: {e:#}");
             }
         } else if transport.is_remote() && crate::session::psmux_hook_rewrite_supported() {
             // Unlike the subscription (passive — zero recurring cost), the
@@ -1289,6 +1387,7 @@ impl ControlMode {
     /// Commands sent via `send_command_nowait()` also produce `%begin`/`%end`
     /// blocks, but no waiter is in the queue for them — those responses are
     /// simply discarded.
+    #[allow(clippy::too_many_arguments)]
     fn reader_thread(
         mut reader: BufReader<std::process::ChildStdout>,
         stdin: Arc<Mutex<ChildStdin>>,
@@ -1297,6 +1396,7 @@ impl ControlMode {
         response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
         strict_blocks: bool,
+        sizer: &str,
     ) {
         // The in-flight block: the tag its `%begin` carried, and its lines.
         let mut collecting: Option<(Option<String>, Vec<String>)> = None;
@@ -1358,6 +1458,13 @@ impl ControlMode {
                 Notification::WindowClose { window_id } => {
                     Self::close_window_panes(&pane_senders, &pane_windows, &window_id);
                 }
+                Notification::LayoutChange {
+                    window_id,
+                    rows,
+                    cols,
+                } => {
+                    Self::dispatch_resize(&pane_senders, &pane_windows, &window_id, rows, cols);
+                }
                 // Consumed even mid-%begin block: tmux never interleaves
                 // notifications inside response bodies, so this can't eat a
                 // response line. Empty value = the pane option is unset.
@@ -1368,6 +1475,13 @@ impl ControlMode {
                 } => {
                     if name == crate::session::REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
                         Self::queue_sub_events(&sub_events, vec![(pane_id, value)]);
+                    } else if name == SIZER_SUBSCRIPTION {
+                        let elsewhere = !value.is_empty() && value != sizer;
+                        Self::send_event(
+                            &pane_senders,
+                            &pane_id,
+                            PaneChunk::SizedElsewhere(elsewhere),
+                        );
                     }
                 }
                 Notification::Other(text) => {
@@ -1429,6 +1543,49 @@ impl ControlMode {
             }
         }
         debug!(window_id, panes = ?gone, "window closed, its pane readers get EOF");
+    }
+
+    /// Tell the readers of every pane in `window_id` that it is now `rows` ×
+    /// `cols`, in line with the output around it (see [`PaneChunk`]).
+    ///
+    /// Only a pane registered with its window can be told, which is every pane
+    /// this connection wired up once it learnt the window
+    /// ([`crate::agent::tmux`]'s `register_pane`). A full channel drops the size
+    /// as it would drop output: the reader thread must never block.
+    fn dispatch_resize(
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        window_id: &str,
+        rows: u16,
+        cols: u16,
+    ) {
+        let panes: Vec<String> = match pane_windows.lock() {
+            Ok(windows) => windows
+                .iter()
+                .filter(|(_, window)| window.as_str() == window_id)
+                .map(|(pane, _)| pane.clone())
+                .collect(),
+            Err(_) => return,
+        };
+        for pane in &panes {
+            Self::send_event(pane_senders, pane, PaneChunk::Resized { rows, cols });
+        }
+    }
+
+    /// Hand one event to every reader of `pane_id`, dropping it for a full
+    /// channel as output is dropped: the reader thread must never block.
+    fn send_event(pane_senders: &PaneSendersMapShared, pane_id: &str, event: PaneChunk) {
+        let Ok(senders) = pane_senders.lock() else {
+            return;
+        };
+        let Some(tx_vec) = senders.get(pane_id) else {
+            return;
+        };
+        for tx in tx_vec {
+            if tx.try_send(event.clone()).is_err() {
+                debug!(pane_id = %pane_id, "Pane channel full or gone, dropping an event");
+            }
+        }
     }
 
     /// Broadcast a `%output` payload to every reader registered for `pane_id`.
@@ -1730,7 +1887,12 @@ impl ControlMode {
     /// runs a list without returning to its event loop in between, and one list
     /// is one enqueue under one lock. Two calls could take the lock separately
     /// and have the second refused, leaving the first applied on its own.
-    pub(super) fn send_command_detached(&self, cmds: &[&str]) -> Result<()> {
+    ///
+    /// `blocks` is how many `%begin` blocks tmux answers the list with, which
+    /// is one per command **plus one per command an `if-shell` in it runs** —
+    /// those answer separately (measured, tmux 3.7c). A wrong count hands the
+    /// surplus to the next waiter and shifts every later answer.
+    pub(super) fn send_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
         }
@@ -1738,7 +1900,7 @@ impl ControlMode {
             &self.stdin,
             &self.response_queue,
             &cmds.join(" ; "),
-            cmds.len(),
+            blocks,
             None,
         )
         .map(drop)

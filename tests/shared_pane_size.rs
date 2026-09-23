@@ -191,7 +191,10 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
         pane_size(&server, &id) == (41, 120)
     })
     .await;
-    until("A's grid to follow the claim", || grid_size(&a) == (41, 120)).await;
+    until("A's grid to follow the claim", || {
+        grid_size(&a) == (41, 120)
+    })
+    .await;
     assert_eq!(grid_size(&b), (41, 120));
 
     // And now it is A that cannot move it by painting.
@@ -199,20 +202,32 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     let seen = sizes_over_settle(&server, &id).await;
     assert_eq!(seen, vec![(41, 120)], "A took the size back without input");
 
-    // B goes away. A is alone, and its next rect change is honoured — once,
-    // with nothing in between.
+    // B goes away. A is alone, so the size is A's again: it takes it back on
+    // its own — A's rect has not changed, so nothing else would ask — once,
+    // with nothing in between. `retake_size` is what the render path calls for
+    // every pane it paints, so calling it here is a frame going by.
+    // Heard over a format subscription, which tmux re-evaluates once a second.
+    until("A to hear that B sizes the pane", || a.sized_elsewhere()).await;
     drop(b);
     b_backend.shutdown();
     drop(b_backend);
-    assert!(a.resize(27, 80));
-    until("the lone instance to size the pane", || {
-        pane_size(&server, &id) == (27, 80)
+    until("the lone instance to take its size back", || {
+        a.retake_size();
+        pane_size(&server, &id) == (26, 80)
     })
     .await;
     let seen = sizes_over_settle(&server, &id).await;
-    assert_eq!(seen, vec![(27, 80)]);
+    assert_eq!(seen, vec![(26, 80)], "the handover flapped");
     until("A's grid to follow its own size", || {
-        grid_size(&a) == (27, 80)
+        grid_size(&a) == (26, 80)
+    })
+    .await;
+    assert!(!a.sized_elsewhere());
+
+    // And from here on it resizes freely, as a lone instance always did.
+    assert!(a.resize(27, 80));
+    until("the lone instance to size the pane", || {
+        pane_size(&server, &id) == (27, 80)
     })
     .await;
     a.kill();

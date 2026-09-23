@@ -202,6 +202,14 @@ session), never on the loop, ADR-P12).
   shared with the mirror pass and the attach worker — and neither reconnects,
   because a reconnect is a fresh handshake plus a synchronous read of the
   implicit attach response.
+- **Several instances on one server size a pane by turns (ADR-27).** A paint's
+  resize is honoured only for a window whose `@thurbox_sizer` is this backend's
+  (or nobody's, or when it is the only client attached); input into a pane not
+  at this instance's size claims it (`claim_size`). Every grid follows the
+  pane's real size from `%layout-change`, in stream order (`PaneEvent`,
+  `PaneSize`). The conditional list answers with **five** `%begin` blocks
+  either way — `send_command_detached` is told the count, because an `if-shell`
+  adds a block per command it runs. psmux keeps last-writer-wins.
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
 - **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
