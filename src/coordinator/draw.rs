@@ -133,10 +133,10 @@ impl App {
     /// full frame is still owed one: `dirty` is left set, so it follows at the
     /// ordinary floor.
     ///
-    /// Only a session surface, only on the frame it was painted into last
-    /// time, and only when nothing was or is drawn over it: a highlighted row
-    /// (`mark`), a float, a modal, a selection. Those are the cells this would
-    /// paint the grid over.
+    /// Only a session surface at its live end, only on the frame it was
+    /// painted into last time, and only when nothing was or is drawn over it:
+    /// a highlighted row (`mark`), a float, a modal, a selection. Those are the
+    /// cells this would paint the grid over.
     fn paint_echo_frame(
         &mut self,
         terminal: &mut DefaultTerminal,
@@ -153,7 +153,9 @@ impl App {
             .iter()
             .flatten()
             .find_map(|tree| tree.session_surface(surface));
-        let Some((scroll, None)) = shown else {
+        // Scrolled back, the key's own handler has just snapped the pane to
+        // the live end, which the tree this would reuse does not know yet.
+        let Some((0, None)) = shown else {
             return Ok(false);
         };
         let size = terminal.size()?;
@@ -173,7 +175,7 @@ impl App {
                 frame,
                 rect,
                 surface,
-                scroll,
+                0,
             );
             paint::normalize_ambiguous_width(frame.buffer_mut());
             self.repaint_theme_background(frame);
