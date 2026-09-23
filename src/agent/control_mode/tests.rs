@@ -331,12 +331,6 @@ fn a_window_resize_interrupts_its_panes_readers_in_order() {
     );
 }
 
-/// The subscription reads the option `TmuxBackend::resize` writes.
-#[test]
-fn sized_by_reads_the_sizer_option() {
-    assert!(SIZED_BY.contains(&format!("#{{{SIZER_OPTION}}}")));
-}
-
 /// Who sizes a pane is a hint, not a point in the stream: it is noted and the
 /// read carries on to the next output.
 #[test]

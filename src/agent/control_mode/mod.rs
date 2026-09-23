@@ -189,9 +189,17 @@ impl PendingSnapshot {
     }
 }
 
+/// The one spelling of [`SIZER_OPTION`], so [`SIZED_BY`] can be built from it
+/// at compile time rather than restate it.
+macro_rules! sizer_option {
+    () => {
+        "@thurbox_sizer"
+    };
+}
+
 /// The window option naming the client that sizes a window, when several
 /// thurbox instances show it — see `TmuxBackend::resize`.
-pub const SIZER_OPTION: &str = "@thurbox_sizer";
+pub const SIZER_OPTION: &str = sizer_option!();
 
 /// The format subscription reporting [`SIZED_BY`] per pane, so an instance can
 /// say its pane is being sized elsewhere.
@@ -203,7 +211,7 @@ const SIZER_SUBSCRIPTION: &str = "thurbox-sizer";
 /// so a name left behind by an instance that has gone no longer counts. tmux
 /// re-evaluates a subscription as clients come and go, which is what tells the
 /// instance left behind that the size is its own again.
-pub const SIZED_BY: &str = "#{?#{==:#{session_attached},1},,#{@thurbox_sizer}}";
+pub const SIZED_BY: &str = concat!("#{?#{==:#{session_attached},1},,#{", sizer_option!(), "}}");
 
 /// Maps pane IDs to sync senders for multi-instance output broadcast.
 pub type PaneSendersMap = HashMap<String, Vec<SyncSender<PaneChunk>>>;
