@@ -28,6 +28,19 @@ pub struct DetectedLink {
 /// URL schemes we linkify, matching the old `(?:https?|file)://` prefix.
 const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
 
+/// Scanned links one surface may hand to the outer terminal in a frame.
+///
+/// The mirror of `session::hyperlink::VISIBLE_SCAN_LIMIT`, which bounds the OSC
+/// 8 leg, and owed for the same reason — except that this one counts what goes
+/// **out**, not what comes in. A screen of nothing but URLs really does scan as
+/// hundreds of them, and every one accepted is re-printed over the ssh link
+/// this whole pass exists to serve. Counting the input instead would misfire on
+/// the ordinary case: `Terminals::links` lists the OSC 8 runs first and every
+/// one of them is declined here, so a prefix cap would spend the budget on
+/// entries that emit nothing and drop the bare URLs behind them. A screenful
+/// cannot show more than this many links worth reading anyway.
+const SCANNED_LINK_LIMIT: usize = 128;
+
 /// A URL run stops at whitespace or any of these terminators (the old
 /// character class `[^\s<>"'\x60)\]]`).
 fn is_url_terminator(c: char) -> bool {
@@ -201,7 +214,7 @@ impl Terminals {
             })
     }
 
-    /// Every visible OSC 8 run, as cells already drawn into `buf`.
+    /// Every visible link on a surface, as cells already drawn into `buf`.
     ///
     /// The outer terminal is the only thing that can open a link when thurbox
     /// runs over ssh, and it knows nothing of ratatui's buffer — so v1 learned
@@ -210,16 +223,43 @@ impl Terminals {
     /// than off the vt100 grid is what makes a covering modal, a scrolled pane
     /// or a repainted row emit nothing instead of a link over cells that no
     /// longer show it.
-    pub fn hyperlink_paints(&self, session: &str, buf: &Buffer) -> Vec<HyperlinkPaint> {
+    ///
+    /// Both kinds of link ride it. OSC 8 runs are read from the table the
+    /// parser callbacks keep, which costs nothing to consult. **Plain-text
+    /// URLs** — what an agent prints far more often than it emits an escape —
+    /// come in as `scanned`, the list the caller already maintains for
+    /// `thurbox.links`: it is the same `Self::links` walk, paced by its own
+    /// stamp and age, so serving this leg from it adds no scan to the frame.
+    /// Handing them over matters as much as the runs do: with only the runs
+    /// linked, a remote agent that printed a bare URL left the local terminal
+    /// nothing to open, and `Ctrl+Click` — which thurbox itself answers — can
+    /// only copy on a host with no browser.
+    ///
+    /// `scanned` is not fresh. Its age is bounded by the link-scan interval
+    /// only while the agent is printing — `refresh_links` is gated on the
+    /// session's **output** stamp, and scrolling the pane moves every row
+    /// without producing output, so a scrolled screen can hold its pre-scroll
+    /// positions for as long as the agent stays quiet. Checking each position
+    /// against the cells the frame actually drew is therefore not a nicety, it
+    /// is the whole of the correctness, and matching the URL's glyphs is not
+    /// enough on its own — see `drawn_url_cells`, which is what makes a stale
+    /// entry drop out rather than link the wrong target.
+    pub fn hyperlink_paints(
+        &self,
+        session: &str,
+        buf: &Buffer,
+        scanned: &[(String, usize, usize)],
+    ) -> Vec<HyperlinkPaint> {
         let Some((painted, parser)) = self.surface_parser(session) else {
             return Vec::new();
         };
         let Ok(parser) = parser.lock() else {
             return Vec::new();
         };
-        // A session whose agent never printed a link pays one bool check per
-        // frame and nothing else.
-        if parser.callbacks().hyperlinks().is_empty() {
+        // A session showing no link of either kind pays one bool check and one
+        // slice length per frame, and nothing else.
+        let runs_empty = parser.callbacks().hyperlinks().is_empty();
+        if runs_empty && scanned.is_empty() {
             return Vec::new();
         }
         // This surface's own rect: the runs are re-printed over the cells that
@@ -230,19 +270,67 @@ impl Terminals {
             return Vec::new();
         }
 
-        let rows = self.cached_rows(session, &parser);
         let mut paints = Vec::new();
-        for run in parser.callbacks().hyperlinks().visible_runs(&rows) {
-            if run.row >= usize::from(inner.height) || run.col >= usize::from(inner.width) {
+        if !runs_empty {
+            let rows = self.cached_rows(session, &parser);
+            for run in parser.callbacks().hyperlinks().visible_runs(&rows) {
+                if run.row >= usize::from(inner.height) || run.col >= usize::from(inner.width) {
+                    continue;
+                }
+                let x = inner.x.saturating_add(run.col as u16);
+                let y = inner.y.saturating_add(run.row as u16);
+                if let Some(cells) = drawn_label_cells(buf, inner, x, y, run.label) {
+                    paints.push(HyperlinkPaint {
+                        x,
+                        y,
+                        url: run.url.to_string(),
+                        cells,
+                    });
+                }
+            }
+        }
+        // The runs claim their cells first, and the plain leg is checked
+        // against exactly those: two scanned URLs cannot collide with each
+        // other (`Self::links` gives each row's runs disjoint columns and drops
+        // a plain match underneath a visible OSC 8 one), so nothing is gained
+        // by re-scanning what this loop itself appends.
+        let claimed = paints.len();
+        for (url, row, col) in scanned {
+            // Counted on what goes OUT, not on what is read: `Self::links`
+            // lists the OSC 8 runs first, and every one of them is declined a
+            // few lines below, so a prefix cap would spend the whole budget on
+            // entries that emit nothing and drop the bare URLs behind them.
+            if paints.len() - claimed >= SCANNED_LINK_LIMIT {
+                break;
+            }
+            if *row >= usize::from(inner.height) || *col >= usize::from(inner.width) {
                 continue;
             }
-            let x = inner.x.saturating_add(run.col as u16);
-            let y = inner.y.saturating_add(run.row as u16);
-            if let Some(cells) = drawn_label_cells(buf, inner, x, y, run.label) {
+            let x = inner.x.saturating_add(*col as u16);
+            let y = inner.y.saturating_add(*row as u16);
+            // Overlap, not an equal start. A run that opened PART-WAY through
+            // printed URL text leaves the bare text in `scanned` starting to
+            // its left, so comparing only the first cell let the plain leg
+            // print over a run's cells — and, printed second, win. Whichever
+            // link the escape declared is the one thurbox's own click resolves,
+            // so the outer terminal must not be told a different one.
+            if paints[..claimed].iter().any(|paint| {
+                paint.y == y && paint.overlaps(x, UnicodeWidthStr::width(url.as_str()))
+            }) {
+                continue;
+            }
+            // A plain-text link's label is the URL itself: it is on the screen
+            // as text, which is how it was found. An OSC 8 entry in `scanned`
+            // whose label is NOT its target fails this and is skipped, having
+            // been served by the loop above; one whose label IS its target — an
+            // autolink — is what the overlap check above catches instead.
+            if let Some(cells) = drawn_url_cells(buf, inner, x, y, url, || {
+                parser.screen().row_wrapped(*row as u16)
+            }) {
                 paints.push(HyperlinkPaint {
                     x,
                     y,
-                    url: run.url.to_string(),
+                    url: url.clone(),
                     cells,
                 });
             }
@@ -282,6 +370,75 @@ pub struct HyperlinkPaint {
     pub y: u16,
     pub url: String,
     pub cells: Vec<(String, Style)>,
+}
+
+impl HyperlinkPaint {
+    /// Cells this paint covers, which is not `cells.len()`: a wide glyph is one
+    /// entry and two columns.
+    fn width(&self) -> usize {
+        self.cells
+            .iter()
+            .map(|(symbol, _)| UnicodeWidthStr::width(symbol.as_str()).max(1))
+            .sum()
+    }
+
+    /// Whether this paint shares a column with a `width`-wide run starting at
+    /// `x`. The caller has already matched the row.
+    fn overlaps(&self, x: u16, width: usize) -> bool {
+        let end = x.saturating_add(width as u16);
+        let mine_end = self.x.saturating_add(self.width() as u16);
+        x < mine_end && self.x < end
+    }
+}
+
+/// The cells a plain-text URL occupies in the drawn frame, or `None` if what
+/// the frame prints there is not that URL and only that URL.
+///
+/// [`drawn_label_cells`] is not enough on its own, because it walks the label
+/// and stops — it never asks what comes *after*. For an OSC 8 run that is
+/// right: the label is whatever the agent chose to print and abutting text is
+/// none of its business. For a URL it is the whole question, since the run was
+/// delimited by where the URL *ended*, and two ways of ending it are wrong:
+///
+/// * **The frame carries on.** The scanned list may be up to one link-scan
+///   interval old, and an agent that has since appended to a URL leaves the
+///   stale target a PREFIX of the printed one — `…/build/1` under cells now
+///   reading `…/build/12`. That matches glyph for glyph, so the terminal would
+///   have been handed a link to the wrong build. `wrapped` is consulted only
+///   when the run reaches the pane's edge, so this costs nothing on the
+///   ordinary row.
+/// * **The row wrapped.** [`detect_urls`] scans a row at a time and a URL too
+///   long for the pane is therefore found as its first half, the continuation
+///   carrying no scheme to be found by. Linking that half offers a truncated
+///   target, which is worse than the nothing it replaced — so a run that
+///   reaches the edge of a row the screen soft-wrapped is dropped. A URL that
+///   merely ends flush with the edge is kept, which is what `wrapped` is asked
+///   to tell apart.
+fn drawn_url_cells(
+    buf: &Buffer,
+    inner: Rect,
+    x: u16,
+    y: u16,
+    url: &str,
+    wrapped: impl FnOnce() -> bool,
+) -> Option<Vec<(String, Style)>> {
+    let cells = drawn_label_cells(buf, inner, x, y, url)?;
+    let end = x.saturating_add(UnicodeWidthStr::width(url) as u16);
+    // Clipped: `drawn_label_cells` stops at the pane's edge, so fewer cells
+    // than the URL needs means the rest of it is not on this row.
+    if end > inner.right() {
+        return None;
+    }
+    if end == inner.right() {
+        return (!wrapped()).then_some(cells);
+    }
+    let next = buf.cell(Position::new(end, y))?;
+    let carries_on = next
+        .symbol()
+        .chars()
+        .next()
+        .is_some_and(|ch| !is_url_terminator(ch));
+    (!carries_on).then_some(cells)
 }
 
 /// The cells `label` occupies in the drawn frame, or `None` if the frame no
@@ -722,6 +879,25 @@ mod tests {
         buf
     }
 
+    /// [`drawn_url_cells`] over a one-or-two-row pane, with `wrapped` standing
+    /// in for what the vt100 screen would answer for that row.
+    fn url_cells(
+        buf: &Buffer,
+        width: u16,
+        x: u16,
+        url: &str,
+        wrapped: bool,
+    ) -> Option<Vec<(String, Style)>> {
+        drawn_url_cells(
+            buf,
+            Rect::new(0, 0, width, buf.area.height),
+            x,
+            0,
+            url,
+            || wrapped,
+        )
+    }
+
     /// The glyphs, and only the glyphs: a pane indents its text, and linking a
     /// node's whole rect would underline the padding either side of it.
     #[test]
@@ -739,6 +915,110 @@ mod tests {
             .map(|(symbol, _)| symbol.as_str())
             .collect();
         assert_eq!(printed, "https://example.test/a");
+    }
+
+    /// The plain leg's whole basis: a plain-text URL is its own label, so
+    /// matching the URL string against the cells the frame drew at the column
+    /// the scan reported is a real check — those cells ARE the URL, it was
+    /// found by reading them.
+    #[test]
+    fn a_plain_url_matches_the_cells_it_was_read_from() {
+        let buf = buffer_with(40, 1, &["see https://example.test/a now"]);
+        let cells = url_cells(&buf, 40, 4, "https://example.test/a", false)
+            .expect("the frame still prints the URL there");
+        let printed: String = cells.iter().map(|(symbol, _)| symbol.as_str()).collect();
+        assert_eq!(printed, "https://example.test/a");
+    }
+
+    /// A row the agent has since repainted yields nothing rather than a link
+    /// over whatever text now sits at that column.
+    #[test]
+    fn a_url_the_frame_no_longer_prints_yields_no_cells() {
+        let buf = buffer_with(40, 1, &["see something else entirely now"]);
+        assert!(url_cells(&buf, 40, 4, "https://example.test/a", false).is_none());
+    }
+
+    /// The stale case that a glyph-for-glyph match does NOT catch, and the
+    /// reason the check looks one cell past the end. The scan caught a URL
+    /// mid-print; by the time this frame is drawn the agent has appended to it,
+    /// leaving the recorded target a prefix of what the cells now read. Every
+    /// glyph of the prefix still matches, so without the boundary the terminal
+    /// is handed a link to the wrong build.
+    #[test]
+    fn a_url_the_frame_has_grown_past_yields_no_cells() {
+        let buf = buffer_with(40, 1, &["see https://ci.test/build/12 now"]);
+        assert!(url_cells(&buf, 40, 4, "https://ci.test/build/1", false).is_none());
+    }
+
+    /// And the other end of that boundary: ending on a terminator is how a URL
+    /// run was delimited in the first place, so a `)` or a space after it is
+    /// the run ending, not the frame carrying on.
+    #[test]
+    fn a_url_followed_by_a_terminator_still_matches() {
+        let buf = buffer_with(40, 1, &["see (https://example.test/a) now"]);
+        assert!(url_cells(&buf, 40, 5, "https://example.test/a", false).is_some());
+    }
+
+    /// A URL too long for the pane is found by `detect_urls` as its first half
+    /// — the scan reads one row at a time and the continuation carries no
+    /// scheme. Linking that half would offer the outer terminal a TRUNCATED
+    /// target, which is worse than the nothing it replaced, so a run reaching
+    /// the edge of a soft-wrapped row is dropped.
+    #[test]
+    fn a_url_the_row_wrapped_under_yields_no_cells() {
+        let buf = buffer_with(24, 2, &["see https://example.test", "/a/long/path"]);
+        assert!(url_cells(&buf, 24, 4, "https://example.test", true).is_none());
+    }
+
+    /// The case that distinguishes: the same run at the same edge, on a row
+    /// that did not wrap, is a URL that merely ends flush with the pane and is
+    /// linked in full.
+    #[test]
+    fn a_url_ending_flush_with_the_edge_still_matches() {
+        let buf = buffer_with(24, 2, &["see https://example.test", ""]);
+        assert!(url_cells(&buf, 24, 4, "https://example.test", false).is_some());
+    }
+
+    /// An OSC 8 run reaches the plain-text leg too — `Terminals::links` lists
+    /// both kinds as `(url, row, col)` with no tag saying which. The leg needs
+    /// no tag: a run's label is not its target, so matching the target against
+    /// the drawn cells declines it, and the run keeps the paint the OSC 8 leg
+    /// already made for it.
+    #[test]
+    fn a_run_whose_label_is_not_its_target_declines_the_plain_leg() {
+        let buf = buffer_with(40, 1, &["see Github now"]);
+        assert!(url_cells(&buf, 40, 4, "https://github.com", false).is_none());
+    }
+
+    /// The run that check does NOT decline, and what stops it printing twice.
+    /// An autolink — `OSC 8 ; ; <url>` around the URL itself, which is how
+    /// agents render a bare link in markdown — has a label equal to its target,
+    /// so the plain leg would match it happily. Overlap with the cells the OSC
+    /// 8 leg already claimed is what skips it, and it is an overlap rather than
+    /// an equal start because a run that opened part-way through printed URL
+    /// text starts to the right of the bare text under it.
+    #[test]
+    fn a_paint_knows_the_columns_it_covers() {
+        let buf = buffer_with(40, 1, &["see https://example.test/a now"]);
+        let bare = (4u16, UnicodeWidthStr::width("https://example.test/a"));
+        let paint = |x: u16, label: &str| HyperlinkPaint {
+            x,
+            y: 0,
+            url: "https://tracker.test/1".to_string(),
+            cells: drawn_label_cells(&buf, Rect::new(0, 0, 40, 1), x, 0, label).expect("cells"),
+        };
+
+        // The autolink — label equal to target, so the glyph match accepts it
+        // and only this covers it. An equal-start check would have caught this
+        // one too.
+        assert!(paint(bare.0, "https://example.test/a").overlaps(bare.0, bare.1));
+        // The run opened PART-WAY through the printed URL, which an equal-start
+        // check would not have: it claims from column 12 while the bare text
+        // the scan found starts at 4.
+        assert!(paint(12, "example.test/a").overlaps(bare.0, bare.1));
+        // And the neighbours either side, which genuinely do not touch it.
+        assert!(!paint(27, "now").overlaps(bare.0, bare.1));
+        assert!(!paint(0, "see").overlaps(bare.0, bare.1));
     }
 
     /// Interior blanks are inside the label, so a linked button keeps its own

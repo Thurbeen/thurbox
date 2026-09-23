@@ -541,6 +541,18 @@ struct App {
     /// the screen per repeat, for answers that cannot have changed.
     links: std::collections::HashMap<String, Vec<(String, usize, usize)>>,
     link_stamps: std::collections::HashMap<String, u64>,
+    /// What the last frame handed the outer terminal, so an unchanged frame
+    /// hands it nothing.
+    ///
+    /// OSC 8 binds a URL to the *cells*, so the escapes only have to be
+    /// re-sent when those cells are re-printed. Sending them per painted frame
+    /// regardless is what a settled screen showing twenty bare URLs cost before
+    /// this: 295kB over four idle seconds, against 400 bytes for the same
+    /// screen with no URL on it — on the ssh link the whole pass exists to
+    /// serve. Dropped whenever the frame reprints cells the diff would
+    /// otherwise have skipped (see `App::draw`), since a re-printed cell loses
+    /// the hyperlink the terminal had attached to it.
+    last_link_paints: Vec<thurbox::kernel::terminal::HyperlinkPaint>,
     /// When each session's links were last scanned, so a screen that keeps
     /// moving is rescanned at [`LINK_SCAN_INTERVAL`] rather than per frame.
     /// Kept beside the stamp rather than folded into it: the stamp answers

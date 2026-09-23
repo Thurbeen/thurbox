@@ -195,6 +195,12 @@ impl App {
             Ok(message) => message,
             Err(e) => e,
         });
+        // The editor had the screen, and coming back clears it — so every cell
+        // the next frame prints is a fresh one, and a fresh cell carries none
+        // of the hyperlinks the terminal had attached. The frame can otherwise
+        // be identical to the one before the editor, which is exactly when the
+        // outer-terminal pass would say nothing and leave the links dead.
+        self.last_link_paints.clear();
     }
 
     /// `Command::Copy`: the named surface's screen to the clipboard.

@@ -3280,6 +3280,43 @@ visually and only the terminal's hyperlink state is added. Windows
 Terminal, kitty, WezTerm and iTerm2 then underline the label on hover and
 open the user's own browser on Ctrl/Cmd+Click.
 
+**Both kinds of link ride it**, not only the escapes. A plain-text URL is
+what an agent prints far more often than an OSC 8 run, and leaving it out
+made the common case the broken one: a thurbox reached over ssh handed the
+local terminal nothing to open, while the one gesture thurbox answers
+itself (`Ctrl+Click`) can only copy on a host with no browser. The URLs
+come from the list `App::refresh_links` already maintains for
+`thurbox.links`, so the pass adds no scan to the frame.
+
+That list is **stale by an unbounded amount**, and the pass is built
+around it rather than around a hoped-for freshness. `refresh_links` is
+gated on a surface's *output* stamp, so a wheel-scrolled pane keeps its
+pre-scroll positions for as long as the agent stays quiet — "up to one
+scan interval old" holds only while something is printing. Every entry is
+therefore checked against the cells the frame actually drew, and matching
+the URL's glyphs is not enough on its own: a stale target can be a
+*prefix* of what the row now reads (the scan caught `…/build/1`, the
+agent has since printed `…/build/12`), which matches glyph for glyph and
+would hand the terminal a link to the wrong page. So the cell one past
+the end is read too, and the run is taken only where the URL genuinely
+ends — at a terminator, or flush with a pane edge the row did not
+soft-wrap under. A URL the row *did* wrap under is dropped: `detect_urls`
+reads one row at a time, so it finds such a URL as its truncated first
+half, and linking that would offer a target that goes somewhere else.
+
+The two legs need no tag to tell them apart, which matters because
+`Terminals::links` returns both kinds as a bare `(url, row, col)`. A
+plain-text URL is its own label — it was found by reading the glyphs — so
+matching the target against the drawn cells accepts it, while an OSC 8
+run's label is usually not its target and the same match declines it. The
+exception is the **autolink**, `OSC 8 ; ; <url>` wrapped around the URL
+itself, which is how an agent renders a bare markdown link: there label
+and target are equal and the match accepts it. What stops it being
+printed twice is that the OSC 8 leg runs first and the plain leg skips
+any position *overlapping* the columns it claimed — an overlap rather
+than an equal start, because a run opened part-way through printed URL
+text starts to the right of the bare text underneath it.
+
 **An interface pane rides the same pass**, via the `url:<link>` click verb
 (`ClickVerb::Url`). It has to: a plugin returns cells and the kernel paints
 them, so nothing in that path can put an escape on the wire — the identical
@@ -3311,9 +3348,28 @@ Three properties keep this safe and cheap:
   of the node's glyphs are trimmed, since the rect a node is given is
   wider than the text in it.
 - **Off the hot path when unused**: the pass bails on
-  `HyperlinkTable::is_empty()` before computing layout or scanning the
-  screen, so a session whose agent never printed a link pays one check
-  per frame. Only the newest `VISIBLE_SCAN_LIMIT` (128) runs are scanned.
+  `HyperlinkTable::is_empty()` *and* an empty scanned-URL list before
+  computing layout or reading the grid, so a session showing no link of
+  either kind pays one check per frame. Only the newest
+  `VISIBLE_SCAN_LIMIT` (128) runs are scanned, and the plain-text leg
+  never walks a grid at all — it validates an already-scanned position
+  against the drawn frame, reading only the cells the URL covers. Its own
+  `SCANNED_LINK_LIMIT` (128) bounds it for the reason its mirror does,
+  but on the *output*: every accepted position is re-printed in full,
+  over the ssh link this pass exists to serve.
+- **Sent once per change, not once per frame**: what a link costs is not
+  the validation but the wire, and a settled screen is the common case.
+  OSC 8 binds the URL to the *cells*, so the escapes only have to go out
+  again when those cells are re-printed; the pass keeps what it last sent
+  and says nothing when the frame matches. Measured on a real pty, twenty
+  bare URLs on a screen that has stopped moving: **65kB/s, forever**,
+  against 100 bytes a second for the same screen with no URL on it — and
+  100 bytes a second with the comparison in. Two moments must send
+  identical paints anyway, and both are the same thing: cells reprinted
+  where nothing changed. A **reflow** forces a full repaint (`App::draw`
+  clears the memo), and **returning from an external editor** clears the
+  screen outright (`apply_editor_command` clears it). A reprinted cell
+  carries none of the hyperlinks the terminal had attached to it.
 
 The URL is stripped of control characters before it goes out
 (`hyperlink::osc8_open`): it is agent-controlled text being written back
@@ -3325,6 +3381,14 @@ terminal that forwards Ctrl+Click to the application instead of handling
 its own hyperlink will land on thurbox's own click path (which opens, or
 falls back to copying, per below). Setting `mouse = false` gives all
 clicks back to the terminal.
+
+There is no escape sequence that hands a press *back*: once the terminal
+has reported it, the application has it and cannot decline. So on a host
+with no browser the link gesture that opens a page is the terminal's own
+— the hover or modified click each emulator defines for an OSC 8 run,
+which is why every link is now offered as one. `Ctrl+Click` stays
+thurbox's, and on such a host it carries the URL to the clipboard and
+says so, which is the most it can do from a machine with nothing to open.
 
 ### Where the URL goes
 
