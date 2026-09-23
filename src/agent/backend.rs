@@ -767,20 +767,27 @@ impl WiredPane {
     }
 
     /// Ask for this pane's grid back, unless it has one or has already asked
-    /// within `SNAPSHOT_RETRY_MS`. Returns at once; the grid arrives on the
-    /// reader thread ([`Self::wait_resident`]).
-    pub fn restore(&self, backend: &dyn SessionBackend) {
+    /// within `SNAPSHOT_RETRY_MS`. Returns at once, and whether this call is
+    /// the one that asked; the grid arrives on the reader thread
+    /// ([`Self::wait_resident`]).
+    pub fn restore(&self, backend: &dyn SessionBackend) -> bool {
         if self.is_resident() {
-            return;
+            return false;
         }
         let now = now_millis();
         let asked = self.residency.requested_at.load(Ordering::Acquire);
         if asked != 0 && now.saturating_sub(asked) < SNAPSHOT_RETRY_MS {
-            return;
+            return false;
         }
         match backend.request_snapshot(&self.backend_id) {
-            Ok(()) => self.residency.requested_at.store(now, Ordering::Release),
-            Err(e) => debug!(pane = %self.backend_id, "could not ask for a snapshot: {e:#}"),
+            Ok(()) => {
+                self.residency.requested_at.store(now, Ordering::Release);
+                true
+            }
+            Err(e) => {
+                debug!(pane = %self.backend_id, "could not ask for a snapshot: {e:#}");
+                false
+            }
         }
     }
 
@@ -1189,11 +1196,11 @@ impl Session {
         self.supports_snapshots() && self.wired_pane(shell).is_some_and(WiredPane::evict)
     }
 
-    /// [`WiredPane::restore`] one of this session's panes.
-    pub fn restore_pane(&self, shell: bool) {
-        if let Some(pane) = self.wired_pane(shell) {
-            pane.restore(self.backend.as_ref());
-        }
+    /// [`WiredPane::restore`] one of this session's panes, reporting whether
+    /// this call asked.
+    pub fn restore_pane(&self, shell: bool) -> bool {
+        self.wired_pane(shell)
+            .is_some_and(|pane| pane.restore(self.backend.as_ref()))
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.

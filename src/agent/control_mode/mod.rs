@@ -53,7 +53,7 @@ impl From<Vec<u8>> for PaneChunk {
 
 /// A pane's screen and history as tmux holds them, read back through
 /// [`snapshot_commands`] — enough to rebuild a terminal that was dropped (see
-/// `agent::backend::Session::evict`).
+/// `agent::backend::WiredPane::evict`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneSnapshot {
     pub cols: u16,
@@ -61,7 +61,8 @@ pub struct PaneSnapshot {
     /// Where the cursor is, `(column, row)` from the top-left of the screen.
     pub cursor: (u16, u16),
     /// The normal screen's history and then its rows, one entry per line with
-    /// wrapped rows joined, styled with SGR sequences (`capture-pane -e -J`).
+    /// wrapped rows joined (`capture-pane -J`), and styled with SGR sequences
+    /// when the snapshot was asked for styled.
     pub normal: Vec<String>,
     /// The alternate screen's rows, when that is the one showing.
     pub alternate: Option<Vec<String>>,
@@ -163,7 +164,7 @@ impl SnapshotArrived {
 }
 
 /// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
-pub struct PendingSnapshot {
+pub(super) struct PendingSnapshot {
     rx: Receiver<CommandResponse>,
     cmd: String,
     pane: String,
@@ -171,7 +172,7 @@ pub struct PendingSnapshot {
 
 impl PendingSnapshot {
     /// The answer, or the error the command ran into.
-    pub fn wait(self) -> Result<PaneSnapshot> {
+    pub(super) fn wait(self) -> Result<PaneSnapshot> {
         let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
         PaneSnapshot::parse(response.blocks)
             .with_context(|| format!("unexpected answer to a snapshot of {}", self.pane))

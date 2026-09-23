@@ -2065,15 +2065,17 @@ impl Terminals {
         }
 
         // A pane with no grid asks for it — after the resize, so the snapshot
-        // is taken at the size it is about to be shown at — and the frame waits
-        // a moment for it: a first frame of the session as it was, or blank,
-        // is what showing it must never do (#1242). What does not arrive in
-        // time is painted blank and repainted when it lands, which moves the
-        // output generation.
+        // is taken at the size it is about to be shown at. The paint that asks
+        // waits a moment for it, so the first frame is the current screen and
+        // never an old one (#1242). What does not arrive in time is painted
+        // blank and repainted when it lands, which moves the output
+        // generation; later paints do not wait again, or a host that stopped
+        // answering would stall every frame the pane is on screen.
         if !pane.is_resident() {
-            pane.live.session.restore_pane(pane.shell);
-            if let Some(wired) = pane.wired() {
-                wired.wait_resident(RESTORE_WAIT);
+            if pane.live.session.restore_pane(pane.shell) {
+                if let Some(wired) = pane.wired() {
+                    wired.wait_resident(RESTORE_WAIT);
+                }
             }
             if !pane.is_resident() {
                 frame.render_widget(ratatui::widgets::Clear, area);
