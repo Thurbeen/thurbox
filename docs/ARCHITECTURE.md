@@ -2044,7 +2044,9 @@ would get — and none from the other.
 letterboxed view, and switching which one you type into re-wraps the agent once.
 Two instances restarted together find a name left by an instance that is gone,
 and neither is alone, so the pane stays at that size until one of them is typed
-into. A lone instance behaves as it always did, with one difference: its grid
+into. "Alone" counts every client attached to the session, so a plain
+`tmux attach` on thurbox's socket makes a lone instance wait for input the same
+way. A lone instance behaves as it always did, with one difference: its grid
 now takes a new size when tmux reports it (a round trip later) rather than when
 it asked. That frame shows the old grid in the new rect; the bytes that follow
 are laid out for the new size, which is when the grid needs it. psmux has no
