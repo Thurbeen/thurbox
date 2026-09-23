@@ -136,6 +136,11 @@ reap-tmux *ARGS:
 bench:
     cargo bench --bench frame_cost
 
+# raw tmux vs Herdr vs thurbox as hosts for agent sessions (docs/BENCHMARK-MULTIPLEXERS.md).
+# `just bench-multiplexers --quick --reps 1` to try it; the full run takes a while.
+bench-multiplexers *ARGS:
+    scripts/bench/run.sh {{ARGS}}
+
 # Pass -s and -n explicitly: a reading only compares with one at the same size.
 # What the whole binary costs under load: `just perf --idle`, `-n 19 -p 3 -s 255x62`, `-u 0`.
 perf *ARGS:
