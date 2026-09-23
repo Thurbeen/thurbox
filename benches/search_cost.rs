@@ -123,6 +123,7 @@ fn sources(sessions: usize, scrollback: usize) -> Vec<Source> {
                 shell: false,
                 parser: Arc::new(Mutex::new(parser)),
                 stamp: n as u64,
+                restore: None,
             }
         })
         .collect()

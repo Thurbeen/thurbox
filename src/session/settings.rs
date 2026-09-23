@@ -24,6 +24,17 @@ pub struct Settings {
     /// Scrollback lines kept per session terminal (vt100 parser history).
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: usize,
+    /// How long a session's terminal may stay off screen before the interface
+    /// drops its grid and history, in seconds. tmux keeps both anyway, and the
+    /// grid is rebuilt from it the next time the session is shown or searched.
+    /// A session never shown since the interface started holds none at all.
+    /// `0` keeps every session's grid for as long as it runs.
+    ///
+    /// The memory it saves is per session: a grid is 32 bytes a cell, so a
+    /// 200-column session with its default 1,000 lines of history filled holds
+    /// about 6 MiB of them.
+    #[serde(default = "default_hidden_terminal_secs")]
+    pub hidden_terminal_secs: u64,
     /// Terminal width (columns) below which only the terminal pane renders.
     #[serde(default = "default_two_panel_min_cols")]
     pub two_panel_min_cols: u16,
@@ -325,6 +336,9 @@ impl Default for FeatureFlags {
 fn default_scrollback_lines() -> usize {
     1000
 }
+fn default_hidden_terminal_secs() -> u64 {
+    30
+}
 fn default_two_panel_min_cols() -> u16 {
     80
 }
@@ -351,6 +365,7 @@ impl Settings {
     /// the live-reload toast.
     pub fn restart_only_differs(&self, other: &Settings) -> bool {
         self.scrollback_lines != other.scrollback_lines
+            || self.hidden_terminal_secs != other.hidden_terminal_secs
             || self.two_panel_min_cols != other.two_panel_min_cols
             || self.three_panel_min_cols != other.three_panel_min_cols
             || self.audit_retention_days != other.audit_retention_days
@@ -369,6 +384,7 @@ impl Default for Settings {
         Self {
             config_version: None,
             scrollback_lines: default_scrollback_lines(),
+            hidden_terminal_secs: default_hidden_terminal_secs(),
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),

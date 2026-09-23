@@ -426,6 +426,7 @@ all commented so defaults still apply out of the box.
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
+| `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
@@ -439,6 +440,7 @@ config_version = 1
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
+hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
@@ -463,6 +465,26 @@ min_interval_secs   = 5        # per-session floor between notifications
 [remote]
 transitive_sessions = true     # list sessions a host mirrors from hosts of its own
 ```
+
+### `hidden_terminal_secs` — how much memory a session off screen holds
+
+tmux parses every pane and keeps its screen and history. The interface parses
+them a second time to draw them, into a grid of 32 bytes a cell plus
+`scrollback_lines` rows of history, so a 200-column session with a full
+history costs about 6 MiB, whether you look at it or not. With this set, a
+session that has been off screen for this many seconds drops that grid, and
+one not shown since the interface started never builds it. It keeps reading
+its output meanwhile: its title, a bell or notification, and whether it is
+printing are reported as before.
+
+Showing the session, or a search reaching it, reads the pane back from tmux.
+That is a round trip and a parse, about 10 ms for a 200x50 pane with 1,000
+lines of history, so switching to a session hidden longer than this takes that
+long to draw. A search whose strip was just opened reads each such session the
+same way before the first keystroke. `0` keeps every grid for as long as the
+session runs, which is how thurbox behaved before (ADR-P27 in
+[PERFORMANCE.md](PERFORMANCE.md)). psmux (Windows) cannot hand a pane back in
+step with its output, so its sessions always keep their grids. Read at startup.
 
 ### `git_poll_secs` — how much `git` thurbox runs
 

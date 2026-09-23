@@ -41,8 +41,9 @@ thurbox    agent ─pty─ tmux server (parses, keeps the screen) ── control
 
 thurbox with nothing attached **is** tmux, plus an idle placeholder shell and
 the automation heartbeat loop, so headless it costs what tmux costs. Attached,
-it is a second terminal emulator per session and a full-screen application on
-top, and that is where it pays.
+it is a full-screen application on top, and — until
+[lazy session parsing](#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23)
+— a second terminal emulator per session, which is where it paid most.
 
 **Where thurbox loses, plainly:**
 
@@ -57,14 +58,19 @@ top, and that is where it pays.
   runs 27 processes, 20 of them separate `tmux set-option` calls re-applying
   the same server options
   ([#1243](https://github.com/Thurbeen/thurbox/issues/1243)).
-- **Attached, it is the heaviest on memory** (29 MiB with one session, 81 MiB
+- **Attached, it was the heaviest on memory** (29 MiB with one session, 81 MiB
   with 50, about 1 MiB a session) and it is never quite idle (2.8 % of a core
-  with one session, 10 % with 50, where tmux is at 0).
+  with one session, 10 % with 50, where tmux is at 0). The memory half is
+  answered below: a session off screen no longer keeps a terminal grid, which
+  puts 50 attached sessions at about half their old cost and under Herdr's
+  ([revisited](#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23)).
 - **Its first view of a busy session can be stale.** After a headless session
   had printed ~100 lines, the interface's first frame of it lacked the latest
   lines — every repetition, every N, and never on tmux or Herdr — until the
   agent printed again. A correctness bug, not a cost
-  ([#1242](https://github.com/Thurbeen/thurbox/issues/1242)).
+  ([#1242](https://github.com/Thurbeen/thurbox/issues/1242)). Gone since a
+  session's grid is rebuilt from a snapshot taken in step with its output
+  ([revisited](#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23)).
 - **Reading history through the CLI** takes 47 ms against 6–8, most of it
   starting `thurbox-cli`.
 - **Attaching** takes 170–240 ms against tmux's 11.
@@ -238,19 +244,96 @@ can be re-measured with the scenario named.
    a key, arriving within a frame or two of it, is arguably input and could
    take the 16 ms floor — or no floor.
 2. **Stale first view on attach** (`resources`, `first_view_stale`),
-   [#1242](https://github.com/Thurbeen/thurbox/issues/1242): write the
-   end-to-end test that reproduces it (a headless session prints ~100 lines at
-   80 columns; the interface attaches; its first frame lacks the last line),
-   then fix it.
+   [#1242](https://github.com/Thurbeen/thurbox/issues/1242): no longer
+   reproduced by the harness at any N — see the revisit below. The adopt path
+   it came from (a capture taken by a second tmux client, raced by the output
+   already in flight) is now used only with `hidden_terminal_secs = 0`.
 3. **`session create` cost** (`create`),
    [#1243](https://github.com/Thurbeen/thurbox/issues/1243): 20
    `tmux set-option` processes per create re-apply options the server already
    has. One `tmux` invocation, or
    once per server, would remove most of the 92 ms.
 4. **Attached memory and idle CPU per session** (`resources`): ~1 MiB and ~0.15 %
-   of a core per session with the interface up and nothing happening.
+   of a core per session with the interface up and nothing happening. The
+   memory is answered (below); what is left per session is the reader thread
+   each pane gets, ~0.1–0.2 MiB. The CPU is not.
 5. **`session capture` start-up** (`scrollback`): 47 ms to hand back 2 500
    lines, against 8 for `tmux capture-pane`.
+
+## Revisited: a session nobody is looking at keeps no grid (2026-09-23)
+
+The question: *can the interface lazily parse sessions that are not on
+screen?* The answer is yes, and the design and its reasons are ADR-P27 in
+[PERFORMANCE.md](PERFORMANCE.md#adr-p27-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23).
+In short: a session off screen for `hidden_terminal_secs` (default 30), or never
+shown, keeps a two-cell parser that still reads its output for the title,
+bells, notifications and the "printing" stamp; showing or searching it rebuilds
+its grid from a tmux snapshot that travels in the pane's own control-mode
+stream, so the rebuild lands at exactly the byte it describes.
+
+**Where the megabyte went.** Before changing anything, the interface process
+alone at N=50 attached, 200x50, measured with the same harness pieces:
+
+| `scrollback_lines` | nothing scrolled (the benchmark's state) | every history full |
+|---|---|---|
+| 100 | 42.5 MiB | 74 MiB |
+| 1,000 (default) | 42.5 MiB | 350 MiB |
+| 5,000 | 42.7 MiB | 1,576 MiB |
+
+So the benchmark's "about 1 MiB a session" was the screen grid of each session
+(200x50 cells at 32 bytes, sized to the whole terminal) plus a little seeded
+history; a session whose history has filled costs 6.3 KiB more per history
+row, ~6 MiB at the default. Lowering `scrollback_lines` would move only the
+right-hand column, and take history from the session on screen too.
+
+**Before and after**, `resources` and `latency` with all three hosts, 5
+repetitions after a warm-up, on a second, otherwise idle machine of the same
+model (4-core i5-6500T, `powersave`, 15.5 GiB) running Debian 13 and tmux 3.5a
+— so these columns compare with each other and not with the tables above.
+*Before* is `main` at `e6971b29`, *after* is this change at `e4f0549b`; the
+commit after it touches only the search's read path. Raw samples:
+[`benchmark-multiplexers/lazy-parse/`](benchmark-multiplexers/lazy-parse/).
+
+| N | state | thurbox before | thurbox after | Herdr (before run / after run) | tmux |
+|---|---|---|---|---|---|
+| 1 | headless, idle | 5.9 MiB · 0 % | 6.0 MiB · 0 % | 19.7 / 19.7 MiB | 5.2 MiB |
+| 1 | attached, idle | 28.8 MiB · 3.0 % | 29.0 MiB · 3.1 % | 28.3 / 26.6 MiB | 10.7 MiB |
+| 20 | headless, idle | 5.8 MiB · 0 % | 6.0 MiB · 0 % | 28.6 / 28.6 MiB | 5.1 MiB |
+| 20 | attached, idle | 49.0 MiB · 6.0 % | **36.5 MiB** · 6.2 % | 38.7 / 40.7 MiB | 13.2 MiB |
+| 20 | attached, output | 49.3 MiB · 20.5 % | **36.5 MiB** · 20.8 % | 38.7 / 46.7 MiB | 13.2 MiB |
+| 50 | headless, idle | 5.8 MiB · 0 % | 5.9 MiB · 0 % | 42.5 / 45.9 MiB | 5.2 MiB |
+| 50 | attached, idle | 104 (221) MiB · 11.2 % | **48.3 (87.4) MiB** · 11.5 % | 57.4 / 72.6 MiB | 16.0 MiB |
+| 50 | attached, output | 80.3 (128) MiB · 39.7 % | **46.9 (49.0) MiB** · 38.7 % | 57.6 / 80.5 MiB | 16.2 MiB |
+
+Memory is PSS median (worst of 5 in brackets where it differs by more than
+10 %), CPU a percentage of one core, as above. At N=50 attached thurbox now
+holds less than Herdr in either run on this machine, and less than the 53.8 MiB
+Herdr measured on the first. The worst idle sample after (87 MiB) is a
+transient right after attaching: the same repetition read 49 MiB ten seconds
+later. Before, those transients were the norm (80–221 MiB across repetitions).
+Headless nothing changed, and nothing should: headless there is no interface.
+
+| | before | after |
+|---|---|---|
+| keystroke to echo, idle, median (p95) | 23.9 (48.0) ms | 24.8 (48.2) ms |
+| … another session busy | 42.2 (43.0) ms | 42.1 (43.0) ms |
+| first view of session 1 stale (`first_view_stale`), N = 1, 20, 50 | every repetition | none |
+
+Latency and CPU are unchanged within the spread; the echo is still paced by
+the output floor, which is the other half of the list below.
+
+**What it costs**, measured with a release build on 20 sessions of 1,000
+history rows at 200x50 (ADR-P27 has the method):
+
+- Showing a session whose grid was dropped takes 9–11 ms to draw instead of
+  under 1 ms: a control-mode round trip and a parse. Over a slow link the
+  paint waits at most 100 ms, then draws the pane blank and fills it when the
+  snapshot lands.
+- A search opened cold reads each such session back from tmux: ~56 ms for all
+  20 instead of ~35. A keystroke after that is no slower (~6 ms against ~11).
+- `hidden_terminal_secs = 0` keeps every grid, and is exactly the old
+  behaviour. psmux (Windows) cannot hand a pane back in step with its output,
+  so sessions there keep their grids either way.
 
 ## What was measured, and why these
 

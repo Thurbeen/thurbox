@@ -1992,6 +1992,127 @@ held, 50ms per keystroke or 50ms per rescan — by hand, never in CI (ADR-P5).
 
 ---
 
+## ADR-P27: A session nobody is looking at keeps no grid (2026-09-23)
+
+**Context**: every session's pane is parsed twice. tmux parses it and keeps
+its screen and history. The interface parses it again into a `vt100` grid of
+32 bytes a cell, sized to the whole terminal, with `scrollback_lines` rows of
+history, for every attached session whether or not it was ever shown. The
+multiplexer benchmark read that as about 1 MiB a session attached, where
+headless thurbox, which is tmux, holds all 50 in 9 MiB. It is more than that:
+the benchmark's sessions had barely scrolled. Measured on the interface
+process alone, 50 sessions attached at 200x50, once every session had printed
+6,000 lines:
+
+| `scrollback_lines` | idle, nothing scrolled | history full |
+|---|---|---|
+| 100 | 42.5 MiB | 74 MiB |
+| 1,000 (default) | 42.5 MiB | 350 MiB |
+| 5,000 | 42.7 MiB | 1,576 MiB |
+
+That is 6.3 KiB a history row a session (200 columns at 32 bytes), and about
+0.4 MiB a session for the screen itself. Lowering the default buys the history
+half at the price of the history on the one session you *are* looking at, and
+none of the idle half.
+
+**Who reads a session's parser while it is off screen** (traced before any
+change):
+
+| reader | what it needs | answer now |
+|---|---|---|
+| the reader thread | every byte, in order | unchanged: it still reads and feeds every byte |
+| `output_generation`, `millis_since_output`, `sync_printing`, the stuck-`working` quiescence (hook state), notifications | `last_output_at`, `exited` | atomics, untouched by the parser; unchanged |
+| `sync_meta` (the activity line, notification text) | OSC 0/1/2, BEL, OSC 9/777 | the two-cell parser still runs the `TermSignals` callbacks; a title set before the interface attached is replayed from `#{pane_title}` at attach, as the full adopt does |
+| the content search (ADR-P26) | every row of history | reads the pane back from tmux on its worker (below) |
+| `hyperlink_paints`, the link scan, selection, mouse | the visible grid | only painted surfaces, which ask for their grid first |
+| `visible_text` (the Copy command) | the visible grid | a pane with no grid answers "nothing to copy" rather than two blank rows |
+| `thurbox-cli session capture`, `doctor` | history | never the interface: `tmux capture-pane` |
+| the session list, queue and plugin panes | the snapshot | never the parser |
+
+**Weighed**:
+
+- *Lower the default scrollback*: cuts the full-history column to a fifth and
+  leaves the idle one where it is, and takes history away from the session on
+  screen, which is the one it is for.
+- *Shrink*: keep the screen, drop the history. Keeps the 0.4 MiB a session, and
+  vt100 cannot grow a grid back, so the history still has to come from tmux.
+- *Parse on demand from `capture-pane`*: keep nothing, rebuild when needed.
+  The capture is the easy half; the hard half is *where* in the stream it
+  lands. A capture taken by a second tmux client describes some byte position,
+  and the output already in flight on the control-mode connection is either
+  already in it (and would be repeated) or not (and would be lost). A
+  mutation of this change that did exactly that loses lines under steady
+  output (`line-330 follows line-299`).
+- *Evict by recency*: the policy for when to drop, not a way to drop.
+
+**Choice**: parse on demand, made exact, with a recency grace. A pane off
+screen for `hidden_terminal_secs` (default 30), or never shown, swaps its
+parser for a two-cell one that still reads every byte for the callbacks and
+the input modes. Showing it asks tmux, over the control-mode connection, for
+one command list: the pane's size and cursor, its current grid and, when the
+alternate screen is up, the normal grid behind it (`capture-pane -e -J`). tmux
+queues a pane's `%output` in the same callback that parses those bytes into
+its own screen, and queues a command's reply behind every block already
+queued (`window.c`, `control.c`), so the reply sits in the stream at exactly
+the byte it describes. The control-mode reader thread, which sees both in that
+order, puts the snapshot into the pane's own output channel, and the pane's
+reader installs it between two reads. Nothing is lost or repeated because
+nothing about the rebuild depends on timing. The paint that asks waits up to
+`RESTORE_WAIT` (100 ms) for it, then paints blank and repaints when it lands,
+so the first frame is never the old screen. Later paints do not wait again:
+a host that stopped answering would otherwise stall every frame the pane is on
+screen, and the request is only repeated after two seconds without an answer.
+
+Reading replies by content also exposed a framing hole that the snapshot would
+otherwise have fallen into: a `capture-pane` reply is written raw, so a screen
+line reading `%end …` ended the block early and one reading `%output …` was
+dispatched as pane output. A block now ends only at the `%end`/`%error`
+carrying its `%begin`'s time and number; psmux, whose tags are unverified,
+keeps the old framing and, having no snapshots, keeps every grid.
+
+The search reads an off-screen pane back as plain text (no `-e`), asked under
+the backend's control lock and waited for outside it, so its four threads'
+round trips overlap. A hit's `scroll` is exact against the grid a paint then
+rebuilds, since both are built from the same capture layout.
+
+**Measured** (the interface process, same machine and harness as the table
+above): 50 sessions attached and idle, 42.5 → 27.1 MiB; with every history
+full, 350 → 32.6 MiB. One session, 17.8 → 17.5 MiB. What is left per session
+is its reader thread (its stack and malloc arena, ~135 KiB), not its grid.
+On the benchmark harness, same machine before and after, 50 sessions
+attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
+57.4, with CPU and keystroke latency unchanged and the stale first view
+(#1242) gone: see the section revisiting it in
+[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
+
+**Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
+build:
+
+| | every grid kept | grids dropped |
+|---|---|---|
+| first paint of a session | 0.7 ms | 9–11 ms (the rebuild) |
+| search, cold (every history read) | ~35 ms | ~56 ms |
+| search, warm (a keystroke) | ~11 ms | ~6 ms |
+
+The cold read is what an opened strip does before the first keystroke. A
+restore also holds the backend's control lock for the moment it takes to send
+the request, like any other loop command. `hidden_terminal_secs = 0` restores
+the old behaviour exactly, including the history capture at attach.
+
+**Guards**: `tests/lazy_terminals.rs` against a real tmux: a session never
+shown holds a two-cell grid; a grid rebuilt after output arrived while it had
+none equals, cell by cell with colours and wrap flags plus the cursor, a
+parser that saw every byte; a grid dropped and rebuilt over and over while its
+pane prints loses and repeats no line; a search finds and lands on history in
+a pane with no grid; an off-screen pane still reports its title and its
+output. `control_mode::tests` pins that a captured protocol-looking line stays
+content, and `terminal::decoupling` that a snapshot which never arrives costs
+the asking paint its wait and no later paint anything; `search` that a pane
+which could not be read back is tried again rather than cached empty; and
+`lazy_terminals` that a title set before the interface attached is reported.
+
+---
+
 ## Measuring: the bench and the load harness (2026-08-29)
 
 Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"

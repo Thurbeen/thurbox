@@ -26,8 +26,161 @@ use super::transport::TmuxTransport;
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
 
+/// What a pane's reader is handed, in the order the control-mode stream
+/// carried it.
+#[derive(Debug, Clone)]
+pub enum PaneChunk {
+    /// Bytes the pane printed.
+    Output(Vec<u8>),
+    /// The pane as tmux holds it at exactly this point of its output: every
+    /// byte handed over before this chunk is in it, and none handed over after.
+    ///
+    /// It can be exact because of where it travels. tmux queues a pane's
+    /// `%output` in the same callback that parses those bytes into its own
+    /// screen, and queues a command's reply behind every block already queued
+    /// (`window.c`, `control.c`), so the reply to a capture sits in the stream
+    /// at the byte its capture describes. The reader thread sees both in that
+    /// order, which is why it — and not the thread that asked — puts the
+    /// snapshot into the pane's channel.
+    Snapshot(Box<PaneSnapshot>),
+}
+
+impl From<Vec<u8>> for PaneChunk {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Output(bytes)
+    }
+}
+
+/// A pane's screen and history as tmux holds them, read back through
+/// [`snapshot_commands`] — enough to rebuild a terminal that was dropped (see
+/// `agent::backend::WiredPane::evict`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneSnapshot {
+    pub cols: u16,
+    pub rows: u16,
+    /// Where the cursor is, `(column, row)` from the top-left of the screen.
+    pub cursor: (u16, u16),
+    /// The normal screen's history and then its rows, one entry per line with
+    /// wrapped rows joined (`capture-pane -J`), and styled with SGR sequences
+    /// when the snapshot was asked for styled.
+    pub normal: Vec<String>,
+    /// The alternate screen's rows, when that is the one showing.
+    pub alternate: Option<Vec<String>>,
+}
+
+/// The format [`snapshot_commands`] asks `display-message` for, and
+/// [`PaneSnapshot::parse`] reads back.
+const SNAPSHOT_FORMAT: &str =
+    "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on}";
+
+/// The command list whose answer is a [`PaneSnapshot`] of `pane_id`, with at
+/// most `history` rows of history.
+///
+/// One list, so tmux runs it without returning to its event loop and reading
+/// the pane in between: the size, the cursor and both captures describe the
+/// same instant. The current grid is captured without `-a`, which is the
+/// alternate screen while one is up; `-a -q` then yields the normal screen
+/// behind it, or nothing at all when there is no alternate screen.
+///
+/// `styled` keeps the SGR sequences (`-e`), which a rebuilt grid needs and a
+/// reader of text does not: they are most of the bytes of a coloured history.
+pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<String> {
+    let start = format!("-{history}");
+    let e = if styled { " -e" } else { "" };
+    vec![
+        format!("display-message -p -t {pane_id} '{SNAPSHOT_FORMAT}'"),
+        format!("capture-pane -p{e} -J -S {start} -t {pane_id}"),
+        format!("capture-pane -a -q -p{e} -J -S {start} -t {pane_id}"),
+    ]
+}
+
+impl PaneSnapshot {
+    /// Read the answer to [`snapshot_commands`], one entry per `%begin`/`%end`
+    /// block. `None` for anything that is not that answer.
+    pub fn parse(mut blocks: Vec<Vec<String>>) -> Option<Self> {
+        if blocks.len() != 3 {
+            return None;
+        }
+        let saved = blocks.pop()?;
+        let current = blocks.pop()?;
+        let fields: Vec<u16> = blocks
+            .pop()?
+            .first()?
+            .split_whitespace()
+            .map(|field| field.parse().ok())
+            .collect::<Option<_>>()?;
+        let [cols, rows, x, y, alternate] = fields[..] else {
+            return None;
+        };
+        if cols == 0 || rows == 0 {
+            return None;
+        }
+        let (normal, alternate) = if alternate == 1 {
+            (saved, Some(current))
+        } else {
+            (current, None)
+        };
+        Some(Self {
+            cols,
+            rows,
+            cursor: (x, y),
+            normal,
+            alternate,
+        })
+    }
+}
+
+/// How a [`PaneSnapshot`] reaches a `Read`er: [`ControlModeReader::read`]
+/// returns it as an [`std::io::ErrorKind::Interrupted`] error carrying this.
+///
+/// The reader loop reads panes through `Box<dyn Read>` — an adopted pane's
+/// output is its history seed chained ahead of this reader — so an error kind
+/// that means "nothing read, call again" is how an item that is not bytes gets
+/// through without a second channel, and so without a second ordering to keep.
+/// A reader that does not know about snapshots simply retries, as `Interrupted`
+/// asks.
+#[derive(Debug)]
+pub struct SnapshotArrived(pub Box<PaneSnapshot>);
+
+impl std::fmt::Display for SnapshotArrived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a pane snapshot arrived in the output stream")
+    }
+}
+
+impl std::error::Error for SnapshotArrived {}
+
+impl SnapshotArrived {
+    /// The snapshot an error carries, if it is one of these.
+    pub fn take(err: std::io::Error) -> Option<Box<PaneSnapshot>> {
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return None;
+        }
+        err.into_inner()?
+            .downcast::<SnapshotArrived>()
+            .ok()
+            .map(|arrived| arrived.0)
+    }
+}
+
+/// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
+pub(super) struct PendingSnapshot {
+    rx: Receiver<CommandResponse>,
+    cmd: String,
+    pane: String,
+}
+
+impl PendingSnapshot {
+    /// The answer, or the error the command ran into.
+    pub(super) fn wait(self) -> Result<PaneSnapshot> {
+        let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
+        PaneSnapshot::parse(response.blocks)
+            .with_context(|| format!("unexpected answer to a snapshot of {}", self.pane))
+    }
+}
+
 /// Maps pane IDs to sync senders for multi-instance output broadcast.
-pub type PaneSendersMap = HashMap<String, Vec<SyncSender<Vec<u8>>>>;
+pub type PaneSendersMap = HashMap<String, Vec<SyncSender<PaneChunk>>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
 
 /// Which window each registered pane lives in, so a window's closing can be
@@ -43,8 +196,16 @@ pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
 
 /// Response from a tmux control mode command.
 pub struct CommandResponse {
-    pub lines: Vec<String>,
+    /// Every block's lines, in order: one block per command of a list.
+    pub blocks: Vec<Vec<String>>,
     pub is_error: bool,
+}
+
+impl CommandResponse {
+    /// Every line of every block, as one list.
+    fn lines(&self) -> Vec<String> {
+        self.blocks.concat()
+    }
 }
 
 /// A sent line waiting for its answer, and how many `%begin`/`%end` blocks that
@@ -55,6 +216,10 @@ pub struct CommandResponse {
 struct Waiter {
     tx: SyncSender<CommandResponse>,
     blocks: usize,
+    /// For a [`snapshot_commands`] list: the pane whose output stream the
+    /// answer is put into, as a [`PaneChunk::Snapshot`], at the point it
+    /// arrived.
+    splice: Option<String>,
 }
 
 /// The waiters, in the order their lines were written.
@@ -63,7 +228,26 @@ type ResponseQueue = Arc<Mutex<VecDeque<Waiter>>>;
 /// A waiter whose command list has answered some of its blocks.
 struct Answer {
     waiter: Waiter,
-    lines: Vec<String>,
+    blocks: Vec<Vec<String>>,
+}
+
+/// The `<time> <number>` a `%begin`, `%end` or `%error` line carries.
+///
+/// tmux ends a block with the same two numbers it began it with, and that is
+/// the only way to tell a block's end from a line of its body: a command's
+/// output is written raw, so a captured screen line can read `%end …` or
+/// `%output …` as easily as anything else.
+fn block_tag(line: &str) -> Option<(&str, &str)> {
+    let rest = line
+        .strip_prefix("%begin ")
+        .or_else(|| line.strip_prefix("%end "))
+        .or_else(|| line.strip_prefix("%error "))?;
+    let mut fields = rest.split_whitespace();
+    Some((fields.next()?, fields.next()?))
+}
+
+fn joined_tag((time, number): (&str, &str)) -> String {
+    format!("{time} {number}")
 }
 
 /// Parsed notification from the tmux control mode protocol.
@@ -107,14 +291,15 @@ pub enum Notification {
 /// Per-pane reader that receives output via an mpsc channel.
 ///
 /// Implements `Read` so it plugs directly into the existing `Session::reader_loop`.
+/// A [`PaneChunk::Snapshot`] comes out of `read` as a [`SnapshotArrived`] error.
 pub struct ControlModeReader {
-    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+    receiver: std::sync::mpsc::Receiver<PaneChunk>,
     buffer: Vec<u8>,
     pos: usize,
 }
 
 impl ControlModeReader {
-    pub fn new(receiver: std::sync::mpsc::Receiver<Vec<u8>>) -> Self {
+    pub fn new(receiver: std::sync::mpsc::Receiver<PaneChunk>) -> Self {
         Self {
             receiver,
             buffer: Vec::new(),
@@ -140,7 +325,11 @@ impl Read for ControlModeReader {
 
         // Block until the next chunk arrives.
         match self.receiver.recv() {
-            Ok(data) => {
+            Ok(PaneChunk::Snapshot(snapshot)) => Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                SnapshotArrived(snapshot),
+            )),
+            Ok(PaneChunk::Output(data)) => {
                 let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
                 if n < data.len() {
@@ -899,6 +1088,7 @@ impl ControlMode {
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
 
+        let strict_blocks = !transport.uses_psmux();
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
             .spawn(move || {
@@ -909,6 +1099,7 @@ impl ControlMode {
                     reader_pane_windows,
                     reader_queue,
                     reader_sub_events,
+                    strict_blocks,
                 );
                 reader_alive.store(false, Ordering::Relaxed);
             })
@@ -1105,24 +1296,61 @@ impl ControlMode {
         pane_windows: PaneWindowsMapShared,
         response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
+        strict_blocks: bool,
     ) {
-        // Accumulates response lines for the current in-flight block.
-        let mut collecting: Option<Vec<String>> = None;
+        // The in-flight block: the tag its `%begin` carried, and its lines.
+        let mut collecting: Option<(Option<String>, Vec<String>)> = None;
         let mut answering: Option<Answer> = None;
         let mut line_buf = Vec::new();
 
         while let Some(line) = Self::next_control_line(&mut reader, &mut line_buf) {
+            // Inside a block every line is the command's output until the
+            // `%end`/`%error` that carries the `%begin`'s tag — tmux writes a
+            // command's output in one piece, never with a notification in it,
+            // and that output can be anything a pane showed (`capture-pane`).
+            if let Some((Some(tag), lines)) = &mut collecting {
+                let ends = (line.starts_with("%end ") || line.starts_with("%error "))
+                    && block_tag(&line).map(joined_tag).as_ref() == Some(tag);
+                if !ends {
+                    lines.push(line);
+                    continue;
+                }
+                let lines = std::mem::take(lines);
+                collecting = None;
+                let is_error = line.starts_with("%error ");
+                Self::deliver_response(
+                    &response_queue,
+                    &pane_senders,
+                    &mut answering,
+                    lines,
+                    is_error,
+                );
+                continue;
+            }
             match parse_notification(&line) {
                 Notification::Output { pane_id, data } => {
                     Self::dispatch_output(&pane_senders, &pane_id, data);
                 }
                 Notification::Begin => {
-                    collecting = Some(Vec::new());
+                    // psmux's blocks are not known to carry tmux's tag, so
+                    // there a block is framed as it was before tags were read:
+                    // any `%end` ends it.
+                    let tag = block_tag(&line).map(joined_tag).filter(|_| strict_blocks);
+                    collecting = Some((tag, Vec::new()));
                 }
                 end_or_error @ (Notification::End | Notification::Error) => {
-                    let lines = collecting.take().unwrap_or_default();
+                    let lines = collecting
+                        .take()
+                        .map(|(_, lines)| lines)
+                        .unwrap_or_default();
                     let is_error = matches!(end_or_error, Notification::Error);
-                    Self::deliver_response(&response_queue, &mut answering, lines, is_error);
+                    Self::deliver_response(
+                        &response_queue,
+                        &pane_senders,
+                        &mut answering,
+                        lines,
+                        is_error,
+                    );
                 }
                 Notification::Pause { pane_id } => {
                     Self::resume_pane(&stdin, &pane_id);
@@ -1143,7 +1371,7 @@ impl ControlMode {
                     }
                 }
                 Notification::Other(text) => {
-                    if let Some(ref mut lines) = collecting {
+                    if let Some((_, lines)) = &mut collecting {
                         lines.push(text);
                     }
                 }
@@ -1207,23 +1435,33 @@ impl ControlMode {
     ///
     /// Uses `try_send` so the reader thread never blocks: a full channel drops
     /// the chunk rather than stalling (which would deadlock `%pause` handling).
-    fn dispatch_output(pane_senders: &PaneSendersMapShared, pane_id: &str, mut data: Vec<u8>) {
+    fn dispatch_output(pane_senders: &PaneSendersMapShared, pane_id: &str, data: Vec<u8>) {
+        Self::dispatch(pane_senders, pane_id, PaneChunk::Output(data));
+    }
+
+    /// Hand `chunk` to every reader registered for `pane_id`, never blocking —
+    /// see [`Self::dispatch_output`].
+    fn dispatch(pane_senders: &PaneSendersMapShared, pane_id: &str, chunk: PaneChunk) {
         let Ok(senders) = pane_senders.lock() else {
             return;
         };
         let Some(tx_vec) = senders.get(pane_id) else {
             return;
         };
-        // Single-sender is the dominant case (one reader per pane): move `data`
-        // into it instead of cloning. Only fan-out (multiple registered
+        // Single-sender is the dominant case (one reader per pane): move the
+        // chunk into it instead of cloning. Only fan-out (multiple registered
         // instances) pays for a clone.
+        let mut chunk = Some(chunk);
         for (i, tx) in tx_vec.iter().enumerate() {
-            let chunk = if i + 1 == tx_vec.len() {
-                std::mem::take(&mut data)
+            let this = if i + 1 == tx_vec.len() {
+                chunk.take()
             } else {
-                data.clone()
+                chunk.clone()
             };
-            match tx.try_send(chunk) {
+            let Some(this) = this else {
+                return;
+            };
+            match tx.try_send(this) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
                     debug!(pane_id = %pane_id, "Pane output channel full, dropping chunk");
@@ -1242,6 +1480,7 @@ impl ControlMode {
     /// are simply discarded.
     fn deliver_response(
         response_queue: &ResponseQueue,
+        pane_senders: &PaneSendersMapShared,
         answering: &mut Option<Answer>,
         lines: Vec<String>,
         is_error: bool,
@@ -1257,20 +1496,28 @@ impl ControlMode {
                 };
                 Answer {
                     waiter,
-                    lines: Vec::new(),
+                    blocks: Vec::new(),
                 }
             }
         };
-        answer.lines.extend(lines);
+        answer.blocks.push(lines);
         answer.waiter.blocks = answer.waiter.blocks.saturating_sub(1);
-        if is_error || answer.waiter.blocks == 0 {
-            let _ = answer.waiter.tx.send(CommandResponse {
-                lines: answer.lines,
-                is_error,
-            });
-        } else {
+        if !is_error && answer.waiter.blocks > 0 {
             *answering = Some(answer);
+            return;
         }
+        // Here, on this thread, and before the next line is read: every
+        // `%output` ahead of this answer has been handed to the pane already and
+        // none behind it has, which is the one place the snapshot is exact.
+        if let (false, Some(pane)) = (is_error, &answer.waiter.splice) {
+            if let Some(snapshot) = PaneSnapshot::parse(answer.blocks.clone()) {
+                Self::dispatch(pane_senders, pane, PaneChunk::Snapshot(Box::new(snapshot)));
+            }
+        }
+        let _ = answer.waiter.tx.send(CommandResponse {
+            blocks: answer.blocks,
+            is_error,
+        });
     }
 
     /// Drain the queued `(pane_id, state)` remote-hook status events.
@@ -1334,7 +1581,7 @@ impl ControlMode {
         cmd: &str,
         blocks: usize,
     ) -> Result<String> {
-        let rx = Self::enqueue_command_on(stdin, response_queue, cmd, blocks)?;
+        let rx = Self::enqueue_command_on(stdin, response_queue, cmd, blocks, None)?;
         Self::await_response(rx, cmd, COMMAND_TIMEOUT)
     }
 
@@ -1345,11 +1592,15 @@ impl ControlMode {
     /// ([`Self::send_command_within`]) while every caller keeps the one
     /// invariant that matters: a place in the queue per command written, in
     /// the order written.
+    ///
+    /// `splice` names the pane whose output stream the answer is also put
+    /// into, for a [`snapshot_commands`] list (see [`Waiter::splice`]).
     fn enqueue_command_on(
         stdin: &Arc<Mutex<ChildStdin>>,
         response_queue: &ResponseQueue,
         cmd: &str,
         blocks: usize,
+        splice: Option<String>,
     ) -> Result<Receiver<CommandResponse>> {
         let (tx, rx) = sync_channel(1);
 
@@ -1369,7 +1620,7 @@ impl ControlMode {
                 let mut queue = response_queue
                     .lock()
                     .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
-                queue.push_back(Waiter { tx, blocks });
+                queue.push_back(Waiter { tx, blocks, splice });
             }
             if let Err(e) = writeln!(stdin, "{cmd}").and_then(|()| stdin.flush()) {
                 // Un-enqueue our waiter — still under the stdin lock, so no
@@ -1390,15 +1641,28 @@ impl ControlMode {
         cmd: &str,
         budget: std::time::Duration,
     ) -> Result<String> {
+        let response = Self::await_blocks(rx, cmd, budget)?;
+        Ok(response.lines().join("\n"))
+    }
+
+    /// [`Self::await_response`], keeping each command's block apart.
+    fn await_blocks(
+        rx: Receiver<CommandResponse>,
+        cmd: &str,
+        budget: std::time::Duration,
+    ) -> Result<CommandResponse> {
         let response = rx
             .recv_timeout(budget)
             .with_context(|| format!("Timeout waiting for response to: {cmd}"))?;
 
         if response.is_error {
-            bail!("tmux command failed: {cmd}: {}", response.lines.join("\n"));
+            bail!(
+                "tmux command failed: {cmd}: {}",
+                response.lines().join("\n")
+            );
         }
 
-        Ok(response.lines.join("\n"))
+        Ok(response)
     }
 
     /// [`Self::send_command`] on a budget of the caller's choosing.
@@ -1410,8 +1674,41 @@ impl ControlMode {
         cmd: &str,
         budget: std::time::Duration,
     ) -> Result<String> {
-        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1)?;
+        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1, None)?;
         Self::await_response(rx, cmd, budget)
+    }
+
+    /// Ask for a [`PaneSnapshot`] of `pane_id` and do not wait for it: it is
+    /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
+    /// the byte it describes, for that pane's reader to take up in order.
+    pub(super) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
+        let cmds = snapshot_commands(pane_id, history, true);
+        Self::enqueue_command_on(
+            &self.stdin,
+            &self.response_queue,
+            &cmds.join(" ; "),
+            cmds.len(),
+            Some(pane_id.to_string()),
+        )
+        .map(drop)
+    }
+
+    /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to
+    /// the caller rather than put into the stream — for a reader that wants the
+    /// text as it stands (the content search). Returns once asked; the answer
+    /// is [`PendingSnapshot::wait`]ed for separately, so a caller holding the
+    /// backend's control lock can let go of it first and several searches'
+    /// round trips overlap.
+    pub(super) fn ask_snapshot(&self, pane_id: &str, history: usize) -> Result<PendingSnapshot> {
+        let cmds = snapshot_commands(pane_id, history, false);
+        let cmd = cmds.join(" ; ");
+        let rx =
+            Self::enqueue_command_on(&self.stdin, &self.response_queue, &cmd, cmds.len(), None)?;
+        Ok(PendingSnapshot {
+            rx,
+            cmd,
+            pane: pane_id.to_string(),
+        })
     }
 
     /// Send a command and never wait for its answer.
@@ -1442,6 +1739,7 @@ impl ControlMode {
             &self.response_queue,
             &cmds.join(" ; "),
             cmds.len(),
+            None,
         )
         .map(drop)
     }

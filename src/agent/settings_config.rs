@@ -24,6 +24,13 @@ config_version = 1
 # Scrollback lines kept per session terminal.
 # scrollback_lines = 1000
 
+# Seconds a session can be off screen before the interface drops its terminal
+# grid and history (tmux keeps both; they are rebuilt from it when the session
+# is shown or searched again). A session not shown since startup holds none.
+# `0` keeps every session's grid in memory for as long as it runs — about
+# 6 MiB a session once a 200-column terminal's 1000 lines of history fill.
+# hidden_terminal_secs = 30
+
 # Terminal width (columns) below which only the terminal pane renders.
 # two_panel_min_cols = 80
 
@@ -307,6 +314,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
+    doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
@@ -399,6 +407,7 @@ mod tests {
     fn seed_toml_documents_every_field() {
         for field in [
             "scrollback_lines",
+            "hidden_terminal_secs",
             "two_panel_min_cols",
             "three_panel_min_cols",
             "audit_retention_days",

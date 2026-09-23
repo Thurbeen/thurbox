@@ -1176,6 +1176,14 @@ const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// Hard cap on the number of scrollback lines `capture_pane_text` will return.
 const MAX_CAPTURE_LINES: u32 = 10_000;
 
+/// Rows of history a snapshot carries: as many as the rebuilt terminal keeps,
+/// under the same ceiling every capture here has.
+fn snapshot_history() -> usize {
+    crate::session::settings::global()
+        .scrollback_lines
+        .min(MAX_CAPTURE_LINES as usize)
+}
+
 /// Longest agent activity line replayed from a pane title at adopt time.
 ///
 /// A title is one line in the session list, and the value comes back from a
@@ -2338,6 +2346,48 @@ impl SessionBackend for TmuxBackend {
             bail!("refusing to capture invalid pane id: {backend_id:?}");
         }
         self.capture_history_seed(backend_id)
+    }
+
+    fn title_seed(&self, backend_id: &str) -> Vec<u8> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            return Vec::new();
+        }
+        self.pane_title_seed(backend_id)
+    }
+
+    /// Not on psmux: nothing there has verified that a reply queues behind the
+    /// pane output ahead of it, which is the whole of what makes a snapshot
+    /// exact, and its blocks are framed the old way (see
+    /// `ControlMode::reader_thread`).
+    fn supports_snapshots(&self) -> bool {
+        !self.transport.uses_psmux()
+    }
+
+    fn request_snapshot(&self, backend_id: &str) -> Result<()> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to snapshot invalid pane id: {backend_id:?}");
+        }
+        if !self.supports_snapshots() {
+            bail!("psmux cannot snapshot a pane in step with its output");
+        }
+        // Asked on the loop, so it waits for the lock no longer than any other
+        // loop command, and not at all for the answer.
+        self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+            ctrl.request_snapshot(backend_id, snapshot_history())
+        })
+    }
+
+    fn snapshot(&self, backend_id: &str) -> Result<control_mode::PaneSnapshot> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            bail!("refusing to snapshot invalid pane id: {backend_id:?}");
+        }
+        if !self.supports_snapshots() {
+            bail!("psmux cannot snapshot a pane");
+        }
+        // Asked under the control lock, which keeps the answer's place in the
+        // queue, and waited for outside it: a search reads many panes at once.
+        self.with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
+            .wait()
     }
 
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {

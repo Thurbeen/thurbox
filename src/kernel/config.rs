@@ -191,6 +191,9 @@ impl Config {
             // Live: the mirror reads the file itself on every pass.
             remote: fresh.remote,
             scrollback_lines: restart_only.scrollback_lines,
+            // Restart-only because the terminals read it once, when they are
+            // built.
+            hidden_terminal_secs: restart_only.hidden_terminal_secs,
             two_panel_min_cols: restart_only.two_panel_min_cols,
             three_panel_min_cols: restart_only.three_panel_min_cols,
             audit_retention_days: restart_only.audit_retention_days,

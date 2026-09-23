@@ -81,6 +81,8 @@ impl Write for Discard {
 struct Recorder {
     resizes: Mutex<Vec<(String, u16, u16)>>,
     senders: Mutex<Vec<std::sync::mpsc::Sender<()>>>,
+    /// Snapshot requests taken, none of them ever answered.
+    snapshots: std::sync::atomic::AtomicUsize,
 }
 
 impl Recorder {
@@ -173,6 +175,14 @@ impl crate::agent::backend::SessionBackend for Recorder {
     fn default_shell(&self) -> String {
         "/bin/sh".to_string()
     }
+    fn supports_snapshots(&self) -> bool {
+        true
+    }
+    fn request_snapshot(&self, _: &str) -> anyhow::Result<()> {
+        self.snapshots
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 /// A live session with a companion shell, attached to a recording backend.
@@ -223,6 +233,7 @@ impl Harness {
                 agent: Painted {
                     size: std::cell::Cell::new((rows, cols)),
                     rect: std::cell::Cell::new(Rect::default()),
+                    ..Default::default()
                 },
                 shell: Painted::default(),
             },
@@ -760,4 +771,75 @@ async fn only_the_surface_that_takes_the_keys_paints_a_cursor() {
     );
     // A pane without focus, or a float whose keys go to Lua, paints none.
     assert_eq!(paint(None), (" ".into(), " ".into()));
+}
+
+/// A snapshot that never arrives costs the paint that asked for it a short
+/// wait, and no later paint anything: the pane shows blank until the grid
+/// lands and is asked again only once the request has had time to fail.
+/// Waiting on every paint was a stall on every frame for as long as the host
+/// did not answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _paths = crate::paths::TestPathGuard::new(dir.path());
+    let recorder = Arc::new(Recorder::default());
+    let backend: Arc<dyn crate::agent::backend::SessionBackend> = recorder.clone();
+    let provider: Arc<dyn crate::agent::AgentProvider> = Arc::new(
+        crate::agent::GenericProvider::new(crate::session::AgentDef::default()),
+    );
+    let session = crate::agent::Session::adopt_dormant(
+        "probe".to_string(),
+        24,
+        80,
+        AGENT_PANE,
+        &backend,
+        &provider,
+        HashMap::new(),
+    )
+    .expect("adopt");
+    let mut terminals = Terminals::new();
+    let id = "probe-0000".to_string();
+    terminals.live.insert(
+        id.clone(),
+        Live {
+            session,
+            agent: Painted {
+                size: std::cell::Cell::new((24, 80)),
+                ..Default::default()
+            },
+            shell: Painted::default(),
+        },
+    );
+
+    let paint = || {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let started = std::time::Instant::now();
+        terminal
+            .draw(|frame| {
+                use crate::kernel::paint::SurfaceProvider;
+                assert!(terminals.render_session(frame, Rect::new(0, 0, 80, 24), &id, 0));
+            })
+            .expect("draw");
+        started.elapsed()
+    };
+    let first = paint();
+    let later: Vec<_> = (0..5).map(|_| paint()).collect();
+
+    assert!(
+        first >= std::time::Duration::from_millis(50),
+        "the paint that asked waits a moment for the answer: {first:?}"
+    );
+    for elapsed in &later {
+        assert!(
+            *elapsed < std::time::Duration::from_millis(50),
+            "a later paint waited {elapsed:?} for a grid already asked for"
+        );
+    }
+    assert_eq!(
+        recorder
+            .snapshots
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "asked once"
+    );
 }

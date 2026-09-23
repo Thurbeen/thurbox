@@ -237,6 +237,16 @@ const CORE_FIELDS: &[CoreField] = &[
         },
     },
     CoreField {
+        id: "hidden_terminal_secs",
+        description: "seconds off screen before a terminal is dropped; 0 keeps all",
+        get: |s| Value::Number(s.hidden_terminal_secs as f64),
+        set: |s, v| {
+            if let Value::Number(n) = v {
+                s.hidden_terminal_secs = n.max(0.0) as u64;
+            }
+        },
+    },
+    CoreField {
         id: "two_panel_min_cols",
         description: "width at which the session column appears",
         get: |s| Value::Number(s.two_panel_min_cols as f64),

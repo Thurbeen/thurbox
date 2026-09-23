@@ -1,6 +1,6 @@
 ---
 name: thurbox-performance
-description: The thurbox render loop's performance contract: demand-driven redraw and the two frame floors, what marks the screen dirty, reflow full-repaints, the republish change-gates and pure-pane memos, the age-carrying cache rule (a cache here needs a TTL/generation), the vt100 two-row floor, and the perf HUD/histograms. Use when touching the render loop, republish, snapshot caches, adding a cache, or investigating thurbox CPU/frame cost.
+description: The thurbox render loop's performance contract: demand-driven redraw and the two frame floors, what marks the screen dirty, reflow full-repaints, the republish change-gates and pure-pane memos, the age-carrying cache rule (a cache here needs a TTL/generation), the vt100 two-row floor, dropping the grid of a session off screen, and the perf HUD/histograms. Use when touching the render loop, republish, snapshot caches, adding a cache, or investigating thurbox CPU/frame cost.
 ---
 
 # Thurbox render-loop performance
@@ -162,6 +162,19 @@ group and every pure pane for anyone whose agent prints a URL, i.e. all of them
 answer legitimately changes is the way a change-signal moves that nobody is
 looking for; compare-before-store asks whether the value moved, and the missing
 question is whether it was worth asking yet.
+
+**A session off screen has no grid** (ADR-P27). After `hidden_terminal_secs`
+off screen, or from attach when it was never shown, a pane's parser is two
+cells that still read every byte (title, bell, notification, input modes,
+`last_output_at`); `WiredPane::evict` does the swap. A paint of such a pane
+calls `restore`, which asks tmux for a snapshot over control mode; the control
+reader puts the answer into the pane's own output channel (`PaneChunk::Snapshot`)
+so the reader thread installs it at exactly the byte it describes. Never
+rebuild a grid from a capture taken any other way: the output in flight is then
+lost or repeated. Anything that reads a pane's cells must either be a painted
+surface or handle a non-resident pane (the search's `Source::restore`), and
+anything keyed on what was read off a grid keys on `content_stamp`, which moves
+on a rebuild, not `last_output_at`.
 
 **A vt100 grid is never given fewer than two rows or two columns**
 (`agent::backend::vt_floor`). A cramped layout really does compute a one-cell pane,
