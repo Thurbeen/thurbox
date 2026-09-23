@@ -297,6 +297,29 @@ pub trait SessionBackend: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Whether this backend can hand back a pane's screen and history in step
+    /// with its output ([`Self::request_snapshot`]) — the thing that lets a
+    /// session off screen drop its grid ([`WiredPane::evict`]) and get it back
+    /// exactly. Default: no, and such a backend's sessions keep theirs.
+    fn supports_snapshots(&self) -> bool {
+        false
+    }
+
+    /// Ask for the pane's state to arrive **in its own output stream**, at the
+    /// byte it describes, as a
+    /// [`SnapshotArrived`](crate::agent::control_mode::SnapshotArrived) the
+    /// reader loop takes up in order. Returns once asked, not once answered.
+    fn request_snapshot(&self, _backend_id: &str) -> Result<()> {
+        anyhow::bail!("this backend cannot snapshot a pane")
+    }
+
+    /// The pane's state as it stands, answered to the caller rather than put
+    /// into the stream: for a reader that wants the text and has no parser to
+    /// keep in step (the content search of a pane that has no grid).
+    fn snapshot(&self, _backend_id: &str) -> Result<crate::agent::control_mode::PaneSnapshot> {
+        anyhow::bail!("this backend cannot snapshot a pane")
+    }
+
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
 
@@ -439,6 +462,9 @@ struct SessionIo {
     /// Replayed-history bytes at the front of `output`, from
     /// [`AdoptedSession::seed_len`] (always 0 for a spawn).
     seed_len: usize,
+    /// Whether the parser starts with its grid, or without one until it is
+    /// first asked for ([`Session::adopt_dormant`]).
+    resident: bool,
 }
 
 /// Whether we are wiring a freshly-spawned process or reconnecting to an
@@ -511,6 +537,116 @@ impl SignalCells {
     }
 }
 
+/// The grid a pane is left with while it has none of its own ([`WiredPane::evict`]):
+/// the smallest `vt_floor` allows. It still reads every byte, which is what
+/// keeps the title, a bell, a notification and the input modes current.
+const DORMANT_GRID: (u16, u16) = (2, 2);
+
+/// How long an unanswered snapshot request stands before it may be asked
+/// again. The answer comes back on the reader thread, so an answer that never
+/// comes — a full pane channel dropped it, the command failed — shows up only
+/// as this running out.
+const SNAPSHOT_RETRY_MS: u64 = 2_000;
+
+/// Whether a pane's parser holds its grid, and the handshake for getting it
+/// back. Shared by the pane and its reader thread, which is where a snapshot
+/// is installed.
+#[derive(Default)]
+struct Residency {
+    /// Set by [`WiredPane::evict`], cleared when a snapshot is installed.
+    dormant: AtomicBool,
+    /// `now_millis()` of the snapshot request still unanswered; `0` for none.
+    requested_at: AtomicU64,
+    /// Moves every time the grid is rebuilt, so what was read off the grid
+    /// before stops matching ([`WiredPane::content_stamp`]). Not when it is
+    /// dropped: nothing reads a pane off screen off its grid, and a drop that
+    /// moved it would cost a frame for a pane nobody is looking at.
+    changes: AtomicU64,
+    /// Wakes a paint waiting on a snapshot ([`WiredPane::wait_resident`]).
+    landed: (Mutex<()>, std::sync::Condvar),
+}
+
+impl Residency {
+    fn dormant() -> Self {
+        Self {
+            dormant: AtomicBool::new(true),
+            ..Self::default()
+        }
+    }
+
+    fn is_resident(&self) -> bool {
+        !self.dormant.load(Ordering::Acquire)
+    }
+}
+
+/// The state a grid carries that its cells do not: the pen, the input modes a
+/// keystroke is encoded by, whether the cursor is hidden, and which screen is
+/// up. Replayed into a parser that replaces it, in either direction.
+fn carried_state(screen: &vt100::Screen) -> Vec<u8> {
+    let mut out = Vec::new();
+    if screen.alternate_screen() {
+        out.extend_from_slice(b"\x1b[?1049h");
+    }
+    out.extend(screen.input_mode_formatted());
+    if screen.hide_cursor() {
+        out.extend_from_slice(b"\x1b[?25l");
+    }
+    out.extend(screen.attributes_formatted());
+    out
+}
+
+/// Terminal bytes that rebuild the pane `snapshot` describes, on a parser of
+/// its size: the normal screen's history and rows, then the alternate screen
+/// if it is up, then the cursor, then what `dormant` kept track of meanwhile
+/// (the pen, the input modes and the cursor's visibility).
+///
+/// Every row is written, blank ones included, so the last row of the capture
+/// lands on the bottom row of the screen and the rows above it scroll into the
+/// history in order — the screen is the pane's, not the capture's text pushed
+/// to the top. Wrapped rows arrive joined and wrap again at the same width.
+pub fn snapshot_seed(
+    snapshot: &crate::agent::control_mode::PaneSnapshot,
+    dormant: &vt100::Screen,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    let write_rows = |out: &mut Vec<u8>, rows: &[String]| {
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b"\r\n");
+            }
+            out.extend_from_slice(row.as_bytes());
+        }
+    };
+    write_rows(&mut out, &snapshot.normal);
+    if let Some(alternate) = &snapshot.alternate {
+        out.extend_from_slice(b"\x1b[m\x1b[?1049h");
+        write_rows(&mut out, alternate);
+    }
+    let (x, y) = snapshot.cursor;
+    out.extend_from_slice(format!("\x1b[m\x1b[{};{}H", y + 1, x + 1).as_bytes());
+    out.extend(dormant.input_mode_formatted());
+    if dormant.hide_cursor() {
+        out.extend_from_slice(b"\x1b[?25l");
+    }
+    out.extend(dormant.attributes_formatted());
+    out
+}
+
+/// A parser holding the pane `snapshot` describes, for a reader that wants it
+/// as it stands (the content search) and not as the pane's own grid.
+pub fn parser_from_snapshot(snapshot: &crate::agent::control_mode::PaneSnapshot) -> SessionParser {
+    let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
+    let blank = vt100::Parser::new(DORMANT_GRID.0, DORMANT_GRID.1, 0);
+    let mut parser = vt100::Parser::new_with_callbacks(
+        rows,
+        cols,
+        crate::session::settings::global().scrollback_lines,
+        TermSignals::default(),
+    );
+    parser.process(&snapshot_seed(snapshot, blank.screen()));
+    parser
+}
+
 /// The wired I/O every pane kind shares: the vt100 parser the reader loop
 /// feeds, the writer channel, the exit flag, the output stamp, and the backend
 /// pane they belong to. [`ShellPane`], [`ProgramPane`] and [`Session`] each
@@ -533,6 +669,8 @@ pub struct WiredPane {
     last_output_at: Arc<AtomicU64>,
     /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
+    /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
+    residency: Arc<Residency>,
 }
 
 impl WiredPane {
@@ -571,14 +709,100 @@ impl WiredPane {
     ///
     /// Floored for the reason `vt_floor` documents: a cramped layout really
     /// does compute a one-cell rect, and a grid that small is where vt100
-    /// underflows on the next byte written into it.
+    /// underflows on the next byte written into it. A pane with no grid is
+    /// resized at the backend only: its grid comes back at whatever size the
+    /// pane has when it does.
     pub fn resize(&self, backend: &dyn SessionBackend, rows: u16, cols: u16) -> Result<()> {
         let (rows, cols) = vt_floor(rows, cols);
         backend.resize(&self.backend_id, rows, cols)?;
         if let Ok(mut parser) = self.parser.lock() {
-            parser.screen_mut().set_size(rows, cols);
+            if self.residency.is_resident() {
+                parser.screen_mut().set_size(rows, cols);
+            }
         }
         Ok(())
+    }
+
+    /// Whether the parser holds this pane's grid, rather than the two cells it
+    /// is left with off screen ([`Self::evict`]).
+    pub fn is_resident(&self) -> bool {
+        self.residency.is_resident()
+    }
+
+    /// [`Self::last_output_at`], moved as well whenever the grid is rebuilt:
+    /// the stamp for anything read off the grid, which a rebuild changes
+    /// without the pane printing anything.
+    pub fn content_stamp(&self) -> u64 {
+        self.last_output_at()
+            .wrapping_add(self.residency.changes.load(Ordering::Acquire))
+    }
+
+    /// Drop this pane's grid and history, keeping two cells that go on
+    /// reading its output for what does not need a grid: the title, a bell, a
+    /// notification, the input modes, and when it last printed. Returns
+    /// whether there was a grid to drop.
+    ///
+    /// Only for a pane whose backend can give the grid back exactly
+    /// ([`SessionBackend::supports_snapshots`]): [`Self::restore`] asks for it,
+    /// and the reader loop rebuilds it where the answer lands in the stream.
+    pub fn evict(&self) -> bool {
+        let Ok(mut parser) = self.parser.lock() else {
+            return false;
+        };
+        if !self.residency.is_resident() {
+            return false;
+        }
+        let mut signals = std::mem::take(parser.callbacks_mut());
+        // Positions on a grid that is going; the rebuild records them again
+        // from whatever links the capture carries.
+        signals.hyperlinks = HyperlinkTable::default();
+        signals.pending_link = None;
+        let carried = carried_state(parser.screen());
+        let mut dormant =
+            vt100::Parser::new_with_callbacks(DORMANT_GRID.0, DORMANT_GRID.1, 0, signals);
+        dormant.process(&carried);
+        *parser = dormant;
+        self.residency.dormant.store(true, Ordering::Release);
+        true
+    }
+
+    /// Ask for this pane's grid back, unless it has one or has already asked
+    /// within `SNAPSHOT_RETRY_MS`. Returns at once; the grid arrives on the
+    /// reader thread ([`Self::wait_resident`]).
+    pub fn restore(&self, backend: &dyn SessionBackend) {
+        if self.is_resident() {
+            return;
+        }
+        let now = now_millis();
+        let asked = self.residency.requested_at.load(Ordering::Acquire);
+        if asked != 0 && now.saturating_sub(asked) < SNAPSHOT_RETRY_MS {
+            return;
+        }
+        match backend.request_snapshot(&self.backend_id) {
+            Ok(()) => self.residency.requested_at.store(now, Ordering::Release),
+            Err(e) => debug!(pane = %self.backend_id, "could not ask for a snapshot: {e:#}"),
+        }
+    }
+
+    /// Wait up to `budget` for the grid [`Self::restore`] asked for. Returns
+    /// whether the pane has one.
+    pub fn wait_resident(&self, budget: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        let (lock, landed) = &self.residency.landed;
+        let Ok(mut guard) = lock.lock() else {
+            return self.is_resident();
+        };
+        while !self.is_resident() {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            guard = match landed.wait_timeout(guard, left) {
+                Ok((guard, _)) => guard,
+                Err(_) => return self.is_resident(),
+            };
+        }
+        self.is_resident()
     }
 }
 
@@ -649,6 +873,7 @@ impl ProgramPane {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
                 seed_len: 0,
+                resident: true,
             },
             "Program",
         );
@@ -679,6 +904,7 @@ impl ProgramPane {
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
                 seed_len: adopted.seed_len,
+                resident: true,
             },
             "Program",
         );
@@ -840,6 +1066,7 @@ impl Session {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
                 seed_len: 0,
+                resident: true,
             },
             backend,
             provider,
@@ -885,11 +1112,88 @@ impl Session {
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
                 seed_len: adopted.seed_len,
+                resident: true,
             },
             backend,
             provider,
             env,
         ))
+    }
+
+    /// [`Self::adopt`] for a session nobody is looking at: no history is
+    /// captured and no grid is built. The parser starts as the two cells
+    /// [`WiredPane::evict`] leaves, and the grid is fetched on the first
+    /// [`WiredPane::restore`] — which, for a session that is never shown, is
+    /// never. Only for a backend that
+    /// [`supports_snapshots`](SessionBackend::supports_snapshots).
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt_dormant(
+        name: String,
+        rows: u16,
+        cols: u16,
+        backend_id: &str,
+        backend: &Arc<dyn SessionBackend>,
+        provider: &Arc<dyn AgentProvider>,
+        env: HashMap<String, String>,
+    ) -> Result<Self> {
+        // An empty seed, not `None`: `None` is the backend capturing one itself.
+        let adopted = backend.adopt(backend_id, rows, cols, Some(Vec::new()))?;
+        let mut info = SessionInfo::new(name);
+        info.backend_id = Some(backend_id.to_string());
+        info.remote_host = remote_host_from_backend(backend);
+        debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session without a grid");
+        let (wired, signals) = Self::wire_up(
+            rows,
+            cols,
+            SessionIo {
+                output: adopted.output,
+                input: adopted.input,
+                backend_id: backend_id.to_string(),
+                mode: WireMode::Adopt,
+                seed_len: adopted.seed_len,
+                resident: false,
+            },
+            "Session",
+        );
+        Ok(Self {
+            info,
+            wired,
+            backend: Arc::clone(backend),
+            provider: Arc::clone(provider),
+            signals,
+            last_synced_meta_gen: u64::MAX,
+            attention_ack_at: 0,
+            shell_pane: None,
+            env,
+            placeholder: false,
+        })
+    }
+
+    /// Whether this session's backend can give a dropped grid back
+    /// ([`WiredPane::evict`]).
+    pub fn supports_snapshots(&self) -> bool {
+        !self.placeholder && self.backend.supports_snapshots()
+    }
+
+    /// The agent's pane, or its companion shell's.
+    fn wired_pane(&self, shell: bool) -> Option<&WiredPane> {
+        if shell {
+            self.shell_pane.as_ref().map(|pane| &pane.wired)
+        } else {
+            Some(&self.wired)
+        }
+    }
+
+    /// [`WiredPane::evict`] one of this session's panes.
+    pub fn evict_pane(&self, shell: bool) -> bool {
+        self.supports_snapshots() && self.wired_pane(shell).is_some_and(WiredPane::evict)
+    }
+
+    /// [`WiredPane::restore`] one of this session's panes.
+    pub fn restore_pane(&self, shell: bool) {
+        if let Some(pane) = self.wired_pane(shell) {
+            pane.restore(self.backend.as_ref());
+        }
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
@@ -905,10 +1209,20 @@ impl Session {
         // one-column pane would otherwise panic on its first line of output,
         // before any resize could correct it.
         let (rows, cols) = vt_floor(rows, cols);
+        let (residency, (rows, cols), scrollback) = if io.resident {
+            (
+                Residency::default(),
+                (rows, cols),
+                crate::session::settings::global().scrollback_lines,
+            )
+        } else {
+            (Residency::dormant(), DORMANT_GRID, 0)
+        };
+        let residency = Arc::new(residency);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows,
             cols,
-            crate::session::settings::global().scrollback_lines,
+            scrollback,
             signals.term_signals(),
         )));
 
@@ -921,6 +1235,7 @@ impl Session {
         let parser_clone = Arc::clone(&parser);
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
+        let residency_clone = Arc::clone(&residency);
         let seed_len = io.seed_len;
         tokio::task::spawn_blocking(move || {
             Self::reader_loop(
@@ -928,6 +1243,7 @@ impl Session {
                 parser_clone,
                 exited_clone,
                 last_output_clone,
+                residency_clone,
                 seed_len,
             );
         });
@@ -939,6 +1255,7 @@ impl Session {
             exited,
             last_output_at,
             label,
+            residency,
         };
         (wired, signals)
     }
@@ -1018,6 +1335,7 @@ impl Session {
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(0)),
                 label: "Session",
+                residency: Arc::default(),
             },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
@@ -1051,11 +1369,19 @@ impl Session {
     /// scrollback would otherwise look identical to the agent having just
     /// printed, defeating [`initial_output_at`]'s deliberate staleness for
     /// `WireMode::Adopt` the instant the reader's first bytes arrive.
+    ///
+    /// A snapshot the pane asked for ([`WiredPane::restore`]) arrives here too,
+    /// between two reads, at exactly the point of the stream it describes — so
+    /// installing it before the next read is what keeps a rebuilt grid from
+    /// losing or repeating a byte. A partial character held in `carry` stays
+    /// held: its first bytes came before the snapshot, which cannot show a
+    /// character tmux has not finished either, and the rest come after.
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
         exited: Arc<AtomicBool>,
         last_output_at: Arc<AtomicU64>,
+        residency: Arc<Residency>,
         mut seed_len: usize,
     ) {
         let mut buf = [0u8; 4096];
@@ -1086,6 +1412,11 @@ impl Session {
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
+                        Self::install(&parser, &residency, &snapshot);
+                    }
+                }
                 Err(e) => {
                     debug!("Session reader error: {e}");
                     break;
@@ -1096,6 +1427,41 @@ impl Session {
         // since no more bytes are coming to complete it.
         Self::feed_parser(&parser, &carry);
         exited.store(true, Ordering::SeqCst);
+    }
+
+    /// Rebuild a dropped grid from `snapshot`, in place of the two cells that
+    /// stood in for it, and wake whoever is waiting for it.
+    ///
+    /// A pane that has its grid already ignores a snapshot: that grid is
+    /// exact, and one rebuilt from a capture is only as exact as tmux's.
+    fn install(
+        parser: &Mutex<SessionParser>,
+        residency: &Residency,
+        snapshot: &crate::agent::control_mode::PaneSnapshot,
+    ) {
+        if let Ok(mut parser) = parser.lock() {
+            if !residency.is_resident() {
+                let seed = snapshot_seed(snapshot, parser.screen());
+                let signals = std::mem::take(parser.callbacks_mut());
+                let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
+                let mut rebuilt = vt100::Parser::new_with_callbacks(
+                    rows,
+                    cols,
+                    crate::session::settings::global().scrollback_lines,
+                    signals,
+                );
+                rebuilt.process(&seed);
+                *parser = rebuilt;
+                residency.dormant.store(false, Ordering::Release);
+                residency.changes.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+        residency.requested_at.store(0, Ordering::Release);
+        let (lock, landed) = &residency.landed;
+        // Taken so a waiter cannot check the flag, miss this wake-up and then
+        // sleep out its budget.
+        let _guard = lock.lock();
+        landed.notify_all();
     }
 
     /// Hand `bytes` to the parser, unless there are none — which takes no lock.
@@ -1324,6 +1690,7 @@ impl Session {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
                 seed_len: 0,
+                resident: true,
             },
             "Session",
         );
@@ -1407,6 +1774,7 @@ impl Session {
                 backend_id: spawned.backend_id,
                 mode: WireMode::Spawn,
                 seed_len: 0,
+                resident: true,
             },
             "Shell",
         );
@@ -1437,6 +1805,7 @@ impl Session {
                 backend_id: backend_id.to_string(),
                 mode: WireMode::Adopt,
                 seed_len: adopted.seed_len,
+                resident: true,
             },
             "Shell",
         );
@@ -1496,6 +1865,7 @@ impl Session {
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
                 label: "Session",
+                residency: Arc::default(),
             },
             backend: Arc::clone(backend),
             provider: Arc::clone(provider),
@@ -1793,6 +2163,7 @@ mod tests {
             Arc::clone(&parser),
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
+            Arc::default(),
             seed_len,
         );
 
@@ -1825,6 +2196,7 @@ mod tests {
             Arc::clone(&parser),
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
+            Arc::default(),
             0,
         );
 
@@ -1855,6 +2227,7 @@ mod tests {
             Arc::clone(&parser),
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
+            Arc::default(),
             seed_len,
         );
 
@@ -1893,6 +2266,7 @@ mod tests {
             parser,
             exited,
             Arc::clone(&last_output_at),
+            Arc::default(),
             seed_len,
         );
 

@@ -223,6 +223,7 @@ impl Harness {
                 agent: Painted {
                     size: std::cell::Cell::new((rows, cols)),
                     rect: std::cell::Cell::new(Rect::default()),
+                    ..Default::default()
                 },
                 shell: Painted::default(),
             },

@@ -130,6 +130,14 @@ const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// with its own retry.
 const MIRROR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a paint waits for the grid of a pane that had none
+/// ([`Terminals::render_session`]).
+///
+/// A local rebuild is a round trip on an open connection plus parsing the
+/// history — milliseconds — so this is only reached over a slow link, where a
+/// blank pane that fills a moment later beats a frozen interface.
+const RESTORE_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
 
@@ -200,6 +208,9 @@ struct Painted {
     /// into a grid position. Cleared at the start of every frame
     /// ([`Terminals::forget_rects`]), so only what actually painted can be hit.
     rect: Cell<Rect>,
+    /// When the surface was last painted: how long it has been off screen,
+    /// which is what decides when its grid is dropped ([`Terminals::evict_hidden`]).
+    shown_at: Cell<Option<std::time::Instant>>,
 }
 
 impl Painted {
@@ -325,15 +336,29 @@ impl<'a> Pane<'a> {
 
     /// When this pane last produced output, as epoch milliseconds.
     fn last_output_at(&self) -> Option<u64> {
+        Some(self.wired()?.last_output_at())
+    }
+
+    /// [`Self::last_output_at`], moved too when the grid is rebuilt — the
+    /// stamp for what is read off the grid.
+    fn content_stamp(&self) -> Option<u64> {
+        Some(self.wired()?.content_stamp())
+    }
+
+    /// The wired pane behind this surface, or `None` for a shell the session
+    /// does not have.
+    fn wired(&self) -> Option<&'a crate::agent::backend::WiredPane> {
         if self.shell {
-            return self
-                .live
-                .session
-                .shell_pane
-                .as_ref()
-                .map(|pane| pane.last_output_at());
+            return self.live.session.shell_pane.as_deref();
         }
-        Some(self.live.session.last_output_at())
+        Some(&*self.live.session)
+    }
+
+    /// Whether the parser holds this pane's grid. A pane that does not exist
+    /// has nothing to hold, which is the same as holding it.
+    fn is_resident(&self) -> bool {
+        self.wired()
+            .map_or(true, crate::agent::backend::WiredPane::is_resident)
     }
 }
 
@@ -479,6 +504,10 @@ pub struct Terminals {
     /// announced, and the plugin restarts twice for one process
     /// ([`Self::take_program_transitions`]).
     program_transitions: Vec<ProgramTransition>,
+    /// How long a session's pane may be off screen before its grid is dropped
+    /// ([`Self::evict_hidden`]); `None` keeps every grid for as long as the
+    /// pane runs. `settings.toml`'s `hidden_terminal_secs`.
+    keep_hidden: Option<std::time::Duration>,
 }
 
 impl Terminals {
@@ -517,6 +546,10 @@ impl Terminals {
             programs: HashMap::new(),
             program_transitions: Vec::new(),
             rows_cache: RefCell::new(HashMap::new()),
+            keep_hidden: match crate::session::settings::global().hidden_terminal_secs {
+                0 => None,
+                secs => Some(std::time::Duration::from_secs(secs)),
+            },
         }
     }
 
@@ -583,6 +616,7 @@ impl Terminals {
         }
 
         self.attach_unresolved(snapshot, rows, cols);
+        self.evict_hidden();
 
         // Anything no longer in the snapshot has been deleted; dropping the
         // Session detaches it without touching the pane. An attach still in
@@ -598,6 +632,39 @@ impl Terminals {
         self.failed.retain(|id, _| present.contains(id.as_str()));
         if self.failed.len() != failures {
             self.mark_failures_changed();
+        }
+    }
+
+    /// Override `hidden_terminal_secs` for this instance: how long a pane may
+    /// be off screen before its grid is dropped, or `None` to keep every grid.
+    pub fn keep_hidden_for(&mut self, keep: Option<std::time::Duration>) {
+        self.keep_hidden = keep;
+    }
+
+    /// Drop the grid of every session pane that has been off screen for longer
+    /// than `hidden_terminal_secs` — or was never shown — where its backend can
+    /// give it back ([`crate::agent::backend::WiredPane::evict`]).
+    ///
+    /// Off screen means not painted in the last frame *and* not painted for a
+    /// while: frames are drawn on demand, so a session on screen and quiet can
+    /// go a long time between paints, and its rect is what says it is still
+    /// there.
+    fn evict_hidden(&self) {
+        let Some(keep) = self.keep_hidden else {
+            return;
+        };
+        for live in self.live.values() {
+            for shell in [false, true] {
+                let pane = live.pane(shell);
+                if !pane.is_resident() || pane.on_screen() {
+                    continue;
+                }
+                let shown = pane.painted().shown_at.get();
+                if shown.is_some_and(|at| at.elapsed() < keep) {
+                    continue;
+                }
+                live.session.evict_pane(shell);
+            }
         }
     }
 
@@ -751,6 +818,7 @@ impl Terminals {
         let pane = backend_id.clone();
         self.attaching.insert(session.clone(), backend_name.clone());
         let runtime = self.runtime.clone();
+        let lazy = self.keep_hidden.is_some();
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
             let mut readied = already_ready;
@@ -766,9 +834,24 @@ impl Terminals {
             // that is already there rather than a blank screen until the agent
             // next prints. A failure to read it is not a failure to attach.
             let result = session_handle.and_then(|()| {
-                let seed = backend.capture_history(&pane).ok();
                 let provider: Arc<dyn crate::agent::AgentProvider> =
                     Arc::new(crate::agent::GenericProvider::new(def));
+                // Nothing is looking at it yet, so where the grid can be had
+                // back later it is not built now — nor its history captured,
+                // which was a round trip per pane on every start.
+                if lazy && backend.supports_snapshots() {
+                    return crate::agent::Session::adopt_dormant(
+                        name,
+                        rows,
+                        cols,
+                        &pane,
+                        &backend,
+                        &provider,
+                        HashMap::new(),
+                    )
+                    .map_err(|e| e.to_string());
+                }
+                let seed = backend.capture_history(&pane).ok();
                 crate::agent::Session::adopt(
                     name,
                     rows,
@@ -830,6 +913,7 @@ impl Terminals {
                             agent: Painted {
                                 size: Cell::new((rows, cols)),
                                 rect: Cell::new(Rect::default()),
+                                ..Default::default()
                             },
                             shell: Painted::default(),
                         },
@@ -1153,7 +1237,9 @@ impl Terminals {
     /// the arrangement.
     ///
     /// Only sessions with a live pane appear: an unreachable host or a session
-    /// whose pane has not been adopted has no parser to read.
+    /// whose pane has not been adopted has no parser to read. A pane whose grid
+    /// was dropped is searched all the same: its source reads it back from the
+    /// multiplexer, on the worker ([`super::search::Source::restore`]).
     ///
     /// An `Arc` clone and an atomic load per pane — the reading itself happens
     /// on the search worker, under each parser's own lock, which is what the
@@ -1168,11 +1254,29 @@ impl Terminals {
             .flat_map(|(id, live)| {
                 [false, true].into_iter().filter_map(move |shell| {
                     let pane = live.pane(shell);
+                    let wired = pane.wired()?;
+                    let restore = (!wired.is_resident()).then(|| {
+                        let (backend, pane_id) = live.session.backend_handle();
+                        let pane_id = if pane.shell {
+                            wired.backend_id().to_string()
+                        } else {
+                            pane_id
+                        };
+                        let restore: super::search::Restore = Arc::new(move || {
+                            backend
+                                .snapshot(&pane_id)
+                                .map_err(|e| tracing::debug!(pane = %pane_id, "could not read the pane back: {e:#}"))
+                                .ok()
+                                .map(|snapshot| crate::agent::backend::parser_from_snapshot(&snapshot))
+                        });
+                        restore
+                    });
                     Some(super::search::Source {
                         session: id.clone(),
                         shell,
                         parser: Arc::clone(pane.parser()?),
                         stamp: pane.last_output_at()?,
+                        restore,
                     })
                 })
             })
@@ -1609,7 +1713,10 @@ impl Terminals {
     }
 
     /// When the pane behind a surface name last produced output, as epoch
-    /// milliseconds. `None` when nothing is attached there.
+    /// milliseconds — moved as well when its grid is rebuilt, since that
+    /// changes the cells without the pane printing
+    /// ([`crate::agent::backend::WiredPane::content_stamp`]). `None` when
+    /// nothing is attached there. Compare it; do not read it as a time.
     ///
     /// This is the redraw signal for a *surface*: its cells live outside the
     /// node tree, so tree equality cannot tell whether it changed. Comparing
@@ -1626,7 +1733,7 @@ impl Terminals {
                 .get(key)
                 .map(|slot| slot.pane.last_output_at());
         }
-        self.pane(surface)?.last_output_at()
+        self.pane(surface)?.content_stamp()
     }
 
     /// A cheap signature of every live pane's last output.
@@ -1642,14 +1749,16 @@ impl Terminals {
     /// Shell panes are included: a shell is a surface you watch too, and its
     /// output has exactly the same claim on a repaint.
     pub fn output_generation(&self) -> u64 {
+        // Content stamps rather than output stamps, so a pane whose grid was
+        // rebuilt gets the frame that shows it.
         let sessions = self.live.values().fold(0u64, |acc, live| {
             let shell = live
                 .session
                 .shell_pane
                 .as_ref()
-                .map(|pane| pane.last_output_at())
+                .map(|pane| pane.content_stamp())
                 .unwrap_or(0);
-            acc.wrapping_add(live.session.last_output_at())
+            acc.wrapping_add(live.session.content_stamp())
                 .wrapping_add(shell)
         });
         // A plugin's program is summed in too, or a frame would only be painted at
@@ -1949,9 +2058,27 @@ impl Terminals {
         // keeps a tmux round-trip off every frame without ever reading a size
         // that belongs to the other pane.
         painted.rect.set(area);
+        painted.shown_at.set(Some(std::time::Instant::now()));
         let wanted = (area.height, area.width);
         if painted.size.get() != wanted && pane.resize(area.height, area.width) {
             painted.size.set(wanted);
+        }
+
+        // A pane with no grid asks for it — after the resize, so the snapshot
+        // is taken at the size it is about to be shown at — and the frame waits
+        // a moment for it: a first frame of the session as it was, or blank,
+        // is what showing it must never do (#1242). What does not arrive in
+        // time is painted blank and repainted when it lands, which moves the
+        // output generation.
+        if !pane.is_resident() {
+            pane.live.session.restore_pane(pane.shell);
+            if let Some(wired) = pane.wired() {
+                wired.wait_resident(RESTORE_WAIT);
+            }
+            if !pane.is_resident() {
+                frame.render_widget(ratatui::widgets::Clear, area);
+                return true;
+            }
         }
 
         let Ok(mut parser) = parser.lock() else {

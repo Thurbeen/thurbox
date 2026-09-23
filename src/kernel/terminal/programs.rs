@@ -279,6 +279,7 @@ impl Terminals {
                 painted: super::Painted {
                     size: Cell::new((rows, cols)),
                     rect: Cell::new(Rect::default()),
+                    ..Default::default()
                 },
                 program: program.to_string(),
             },

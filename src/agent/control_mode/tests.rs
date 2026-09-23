@@ -859,7 +859,7 @@ fn control_mode_reader_data_delivery() {
     let (tx, rx) = sync_channel(16);
     let mut reader = ControlModeReader::new(rx);
 
-    tx.send(b"hello".to_vec()).unwrap();
+    tx.send(b"hello".to_vec().into()).unwrap();
     let mut buf = [0u8; 16];
     let n = reader.read(&mut buf).unwrap();
     assert_eq!(&buf[..n], b"hello");
@@ -881,7 +881,7 @@ fn control_mode_reader_partial_reads() {
     let (tx, rx) = sync_channel(16);
     let mut reader = ControlModeReader::new(rx);
 
-    tx.send(b"hello world".to_vec()).unwrap();
+    tx.send(b"hello world".to_vec().into()).unwrap();
 
     let mut buf = [0u8; 5];
     let n = reader.read(&mut buf).unwrap();
@@ -899,8 +899,8 @@ fn control_mode_reader_multiple_sends() {
     let (tx, rx) = sync_channel(16);
     let mut reader = ControlModeReader::new(rx);
 
-    tx.send(b"aaa".to_vec()).unwrap();
-    tx.send(b"bbb".to_vec()).unwrap();
+    tx.send(b"aaa".to_vec().into()).unwrap();
+    tx.send(b"bbb".to_vec().into()).unwrap();
 
     let mut buf = [0u8; 16];
     let n = reader.read(&mut buf).unwrap();
@@ -927,7 +927,7 @@ fn control_mode_reader_exact_size_buffer() {
     let (tx, rx) = sync_channel(16);
     let mut reader = ControlModeReader::new(rx);
 
-    tx.send(b"abc".to_vec()).unwrap();
+    tx.send(b"abc".to_vec().into()).unwrap();
     let mut buf = [0u8; 3];
     let n = reader.read(&mut buf).unwrap();
     assert_eq!(n, 3);
@@ -1057,7 +1057,7 @@ mod transport_proptests {
             let expected: Vec<u8> = chunks.iter().flatten().copied().collect();
             let (tx, rx) = channel();
             for c in &chunks {
-                tx.send(c.clone()).unwrap();
+                tx.send(c.clone().into()).unwrap();
             }
             drop(tx);
             let mut reader = ControlModeReader::new(rx);
@@ -1084,7 +1084,7 @@ mod transport_proptests {
                     Notification::Output { pane_id, data } => {
                         prop_assert_eq!(pane_id, "%1");
                         if !data.is_empty() {
-                            tx.send(data).unwrap();
+                            tx.send(data.into()).unwrap();
                         }
                     }
                     other => prop_assert!(false, "expected Output, got {:?}", other),
@@ -1305,4 +1305,139 @@ fn a_psmux_shaped_stream_never_satisfies_the_drain() {
         format!("{err:#}").contains("before sending its implicit attach response"),
         "{err:#}"
     );
+}
+
+// --- pane snapshots ---
+
+/// A command's output is written raw, so a pane showing a line that reads like
+/// the protocol — `%end …`, `%output …` — hands that line to whatever captures
+/// it. Inside a block it is the block's content: it must neither end the block
+/// early (every later answer would go to the wrong waiter) nor be dispatched
+/// as some pane's output.
+#[cfg(unix)]
+#[test]
+fn a_captured_line_that_reads_like_the_protocol_is_only_content() {
+    let Some(server) = ThrowawayServer::start("snap-lines") else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("lines");
+    std::fs::write(
+        &script,
+        "%end 1789657328 7 1\n%output %1 hijacked\n%error 1789657328 8 1\nplain\n",
+    )
+    .expect("write");
+    let out = TmuxTransport::Local
+        .tmux_command(
+            &server.socket,
+            &[
+                "new-window",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-t",
+                ThrowawayServer::SESSION,
+                &format!("sh -c 'cat {}; exec sleep 100'", script.display()),
+            ],
+        )
+        .output()
+        .expect("new-window");
+    let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let ctrl = server.control();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let snapshot = loop {
+        let snapshot = ctrl.snapshot(&pane, 100).expect("the snapshot is answered");
+        if snapshot.normal.iter().any(|line| line.contains("plain"))
+            || std::time::Instant::now() > deadline
+        {
+            break snapshot;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let next = ctrl
+        .send_command("display-message -p after")
+        .expect("the next command runs");
+
+    for line in ["%end 1789657328 7 1", "%output %1 hijacked", "plain"] {
+        assert!(
+            snapshot.normal.iter().any(|l| l.contains(line)),
+            "{line:?} is in the capture: {:?}",
+            snapshot.normal
+        );
+    }
+    assert_eq!(next, "after", "the next command got its own answer");
+}
+
+#[test]
+fn a_snapshot_is_read_from_its_three_blocks() {
+    let blocks = |alternate: &str| {
+        vec![
+            vec![format!("80 24 5 3 {alternate}")],
+            vec!["current".to_string(), "rows".to_string()],
+            vec!["saved".to_string()],
+        ]
+    };
+    let normal = PaneSnapshot::parse(blocks("0")).expect("a normal screen");
+    assert_eq!((normal.cols, normal.rows, normal.cursor), (80, 24, (5, 3)));
+    assert_eq!(normal.normal, vec!["current", "rows"]);
+    assert_eq!(normal.alternate, None);
+
+    // With the alternate screen up, the capture without `-a` is that screen and
+    // the one with it is the normal screen behind.
+    let alternate = PaneSnapshot::parse(blocks("1")).expect("an alternate screen");
+    assert_eq!(alternate.normal, vec!["saved"]);
+    assert_eq!(
+        alternate.alternate,
+        Some(vec!["current".to_string(), "rows".to_string()])
+    );
+}
+
+#[test]
+fn anything_but_a_snapshot_answer_is_not_read_as_one() {
+    assert_eq!(PaneSnapshot::parse(Vec::new()), None);
+    assert_eq!(
+        PaneSnapshot::parse(vec![vec!["80 24".into()], vec![], vec![]]),
+        None,
+        "too few fields"
+    );
+    assert_eq!(
+        PaneSnapshot::parse(vec![vec!["0 24 0 0 0".into()], vec![], vec![]]),
+        None,
+        "no width"
+    );
+    assert_eq!(
+        PaneSnapshot::parse(vec![vec!["80 24 0 0 0".into()], vec![]]),
+        None,
+        "a block short"
+    );
+}
+
+/// A snapshot reaches a pane's reader in the pane's own stream, between the
+/// bytes before it and the bytes after, and comes out of `read` as an
+/// interruption carrying it — so a reader that knows nothing of snapshots just
+/// reads on.
+#[test]
+fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
+    let (tx, rx) = sync_channel(16);
+    let mut reader = ControlModeReader::new(rx);
+    let snapshot = PaneSnapshot {
+        cols: 80,
+        rows: 24,
+        cursor: (0, 0),
+        normal: vec!["x".into()],
+        alternate: None,
+    };
+    tx.send(b"before".to_vec().into()).unwrap();
+    tx.send(PaneChunk::Snapshot(Box::new(snapshot.clone())))
+        .unwrap();
+    tx.send(b"after".to_vec().into()).unwrap();
+
+    let mut buf = [0u8; 16];
+    let n = reader.read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"before");
+    let err = reader.read(&mut buf).expect_err("the snapshot interrupts");
+    assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+    assert_eq!(SnapshotArrived::take(err).as_deref(), Some(&snapshot));
+    let n = reader.read(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"after");
 }

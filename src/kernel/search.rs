@@ -888,6 +888,7 @@ fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<
             crate::agent::TermSignals::default(),
         ))),
         stamp: 0,
+        restore: None,
     }];
     found_in(query, 0, history)
         .into_iter()
@@ -906,7 +907,16 @@ pub struct Source {
     /// When the pane last printed, in epoch milliseconds — both the cache key
     /// for its history and the recency a hit is ranked by.
     pub stamp: u64,
+    /// For a pane whose grid was dropped (`WiredPane::evict`): how to read
+    /// the pane back from the multiplexer, which the worker does in place of
+    /// reading `parser` — two cells that hold nothing. `None` otherwise.
+    pub restore: Option<Restore>,
 }
+
+/// Builds a parser holding a pane as its multiplexer has it — a round trip,
+/// so it is only ever called on the search worker. `None` when the pane could
+/// not be read.
+pub type Restore = Arc<dyn Fn() -> Option<crate::agent::SessionParser> + Send + Sync>;
 
 /// What a plugin asked for: the query text and, optionally, which sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1170,13 +1180,24 @@ fn history_of(
     stats: &mut ReadStats,
 ) -> Arc<History> {
     if let Some((stamp, history)) = &cached {
-        let size = source.parser.lock().ok().map(|p| p.screen().size());
-        if *stamp == source.stamp && size == Some(history.size) {
+        // A pane with no grid has no size here to compare, and none that
+        // changes while it is off screen: its stamp alone says whether it
+        // printed since.
+        let unchanged = *stamp == source.stamp
+            && (source.restore.is_some()
+                || source.parser.lock().ok().map(|p| p.screen().size()) == Some(history.size));
+        if unchanged {
             return Arc::clone(history);
         }
     }
     let previous = cached.as_ref().map(|(_, history)| history.as_ref());
-    match History::read_locked(&source.parser, previous, stats) {
+    let read = match &source.restore {
+        Some(restore) => {
+            restore().and_then(|parser| History::read_locked(&Mutex::new(parser), previous, stats))
+        }
+        None => History::read_locked(&source.parser, previous, stats),
+    };
+    match read {
         Some(history) => Arc::new(history),
         None => cached.map(|(_, h)| h).unwrap_or_default(),
     }
@@ -1522,6 +1543,7 @@ mod tests {
                 crate::agent::TermSignals::default(),
             ))),
             stamp,
+            restore: None,
         }
         .fed(input)
     }
@@ -1637,6 +1659,7 @@ mod tests {
                 crate::agent::TermSignals::default(),
             ))),
             stamp: 1,
+            restore: None,
         };
         print_lines(&source, 0, lines, cols);
         source
@@ -1717,6 +1740,7 @@ mod tests {
                 crate::agent::TermSignals::default(),
             ))),
             stamp: 1,
+            restore: None,
         };
         let mut text = String::new();
         for n in 0..2_000 {
