@@ -1808,16 +1808,21 @@ and a filter would hide exactly the old prompt this search exists to find.
 
 ### Off the render thread
 
-Terminal text is a **want**, not a standing cost: once the query stands still
-for 150ms the pane leaves it in `store` under `want_content` (and any `in:`/
-`repo:` narrowing, as session ids, under `want_content.sessions`), and the kernel
-answers as `thurbox.search` a frame or two later (`kernel::search`). The loop
-only hands a worker thread each terminal's parser handle; the worker reads each
-history under that parser's own lock, caches it until the pane prints again, and
-matches. A query change is served at once; a terminal printing re-runs the same
-query at most once a second. Caps: 50 hits per session, 200 in all, each line
-windowed to 160 characters around its first hit. Measured numbers are in
-`docs/PERFORMANCE.md`.
+Terminal text is a **want**, not a standing cost: on every change of the query
+the pane leaves it in `store` under `want_content` (and any `in:`/`repo:`
+narrowing, as session ids, under `want_content.sessions`), and the kernel answers
+as `thurbox.search` a frame or two later (`kernel::search`). There is no
+debounce: a run the query has moved past gives up before its next terminal. An
+open strip with nothing typed asks with an empty query, which reads every
+history into the cache and matches nothing, so the first keystroke is matched
+against text already read. The loop only hands a worker each terminal's parser
+handle; the worker reads each history under that parser's own lock a chunk of
+rows at a time, so a session's reader and paint never wait on a search for more
+than about a millisecond, caches it until the pane prints again and then reads
+only what was printed, and matches on up to four threads. A terminal printing
+re-runs the same query at most once a second. Caps: 50 hits per session, 200 in
+all, each line windowed to 160 characters around its first hit. Measured
+numbers are in `docs/PERFORMANCE.md`.
 
 ### Live preview, open & cancel
 
