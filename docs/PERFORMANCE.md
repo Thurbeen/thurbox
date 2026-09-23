@@ -2218,6 +2218,14 @@ structural:
   let no plugin claim a key it had not declared — a plugin API change, not a
   pacing one.
 
+**Result** in the multiplexer benchmark, before and after on that machine:
+keystroke to echo 23.7 → 3.5 ms idle (Herdr 2.25) and 42.2 → 1.6 ms with
+another session busy (Herdr 0.45); `session create` 95 → 37 ms (Herdr 57);
+attached CPU and memory unchanged within the run-to-run spread. The kept frame
+costs a screen's worth of cells (~0.4 MiB at 200x50), so it is held only for
+`KEEP_FRAME_WHILE_TYPING` after a keystroke: at rest the interface carries
+neither it nor the copy each full frame would make into it.
+
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
 re-applying the same server options twice (#1243). The options are now one tmux
 command list (`config_command_list`; a best-effort option is given `-q` so an
