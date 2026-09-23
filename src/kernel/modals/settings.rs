@@ -822,7 +822,7 @@ impl SettingsModal {
         // file's details, the footer, and the border. A fixed height left blank
         // rows under a short list.
         let listed = InterfaceTab::listed(files.rows).clamp(1, INTERFACE_MAX_ROWS);
-        let height = u16::try_from(listed + 7)
+        let height = u16::try_from(listed + 8)
             .unwrap_or(u16::MAX)
             .min(area.height.saturating_sub(2))
             .max(6);

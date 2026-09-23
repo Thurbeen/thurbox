@@ -196,36 +196,57 @@ fn trust_word(trust: FileTrust) -> Option<&'static str> {
     }
 }
 
-/// Why the selected file is in the state it is, and — when that is not what
-/// the operator wants — the one thing that changes it.
-fn reason(row: &Row) -> String {
+/// Why the selected file is in the state it is, and — when that is probably
+/// not what the operator wants — the one thing that changes it, as its own line.
+fn reason(row: &Row) -> (String, Option<String>) {
+    let why = |text: &str| text.to_string();
     match row.state {
-        FileState::Failed => match &row.error {
-            Some(error) => error.clone(),
-            None => "did not load; fix it and press F10, or space turns it off".to_string(),
-        },
-        FileState::Removed => "you deleted this shipped file; r puts it back".to_string(),
-        FileState::Unplaced => format!(
-            "layout.lua places no slot \"{0}\" at this size; add {{ slot = \"{0}\" }} to layout.lua",
-            row.slot
+        FileState::Failed => (
+            row.error.clone().unwrap_or_else(|| why("did not load")),
+            Some(why(
+                "fix the file and press F10 to reload, or space turns it off",
+            )),
         ),
-        FileState::Disabled => {
-            "turned off here, the file is untouched; space turns it back on".to_string()
-        }
-        FileState::Visible => "drawn on screen now".to_string(),
-        FileState::OnDemand => "draws when something opens it".to_string(),
-        FileState::Hidden => format!(
-            "slot \"{}\" is placed, but another pane holds it or its column is closed",
-            row.slot
+        FileState::Removed => (
+            why("you deleted this shipped file"),
+            Some(why("r puts it back")),
         ),
-        FileState::Present => match row.kind {
-            Kind::Pane => "draws into another pane rather than a slot of its own",
-            Kind::Module => "loaded when a pane requires it",
-            Kind::Arrangement => "decides where every pane goes",
-            Kind::Manifest => "what `thurbox-cli plugin sync` installs",
-            Kind::Doc => "guidance for whoever edits this directory",
-        }
-        .to_string(),
+        // Hedged, because the inventory cannot tell the two apart: the shipped
+        // layout places the search strip's slot only while it is open, so a
+        // default install reports that pane unplaced while it works as shipped.
+        FileState::Unplaced => (
+            format!(
+                "layout.lua places no slot \"{}\" at this size, or only while it is open",
+                row.slot
+            ),
+            Some(format!(
+                "to always show it, add {{ slot = \"{}\" }} to layout.lua",
+                row.slot
+            )),
+        ),
+        FileState::Disabled => (
+            why("turned off here; the file is untouched"),
+            Some(why("space turns it back on")),
+        ),
+        FileState::Visible => (why("drawn on screen now"), None),
+        FileState::OnDemand => (why("draws when something opens it"), None),
+        FileState::Hidden => (
+            format!(
+                "slot \"{}\" is placed, but another pane holds it or its column is closed",
+                row.slot
+            ),
+            None,
+        ),
+        FileState::Present => (
+            why(match row.kind {
+                Kind::Pane => "draws into another pane rather than a slot of its own",
+                Kind::Module => "loaded when a pane requires it",
+                Kind::Arrangement => "decides where every pane goes",
+                Kind::Manifest => "what `thurbox-cli plugin sync` installs",
+                Kind::Doc => "guidance for whoever edits this directory",
+            }),
+            None,
+        ),
     }
 }
 
@@ -271,7 +292,7 @@ fn restorable(row: &Row) -> bool {
 const PATH_FLOOR: usize = 20;
 
 /// Lines the selected row's details take under the list.
-const DETAILS: u16 = 3;
+const DETAILS: u16 = 4;
 
 /// What a second press of the same key will do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -587,7 +608,7 @@ impl InterfaceTab {
     }
 
     /// The selected row, explained: what it is and where it came from, why it
-    /// is in the state it is with the fix, and what it asks for.
+    /// is in the state it is, the fix, and what it asks for.
     ///
     /// Always [`DETAILS`] lines, so the modal does not change height as the
     /// cursor moves.
@@ -601,16 +622,19 @@ impl InterfaceTab {
         } else {
             chrome.normal_item()
         };
+        let (why, fix) = reason(row);
+        let optional = |text: Option<String>| match text {
+            Some(text) => Line::from(Span::styled(format!(" {text}"), chrome.normal_item())),
+            None => Line::default(),
+        };
         vec![
             Line::from(Span::styled(
                 format!(" {} · {}", what(row), provenance(&row.source)),
                 chrome.muted(),
             )),
-            Line::from(Span::styled(format!(" {}", reason(row)), reason_style)),
-            match asks(row) {
-                Some(asks) => Line::from(Span::styled(format!(" {asks}"), chrome.normal_item())),
-                None => Line::default(),
-            },
+            Line::from(Span::styled(format!(" {why}"), reason_style)),
+            optional(fix),
+            optional(asks(row)),
         ]
     }
 
@@ -1100,6 +1124,14 @@ mod tests {
         assert!(
             text.contains("/home/user/code/thurbox/examples/panes/top"),
             "the full source is in the details, where there is room: {text}"
+        );
+        // The shipped search strip is placed only while it is open, so a
+        // default install reports it unplaced. The reason must not claim the
+        // layout never places it, or the fix reads as "edit your layout" for a
+        // pane that is working as shipped.
+        assert!(
+            text.contains("or only while it is open"),
+            "the reason allows for a pane placed on demand: {text}"
         );
 
         let off = [row(

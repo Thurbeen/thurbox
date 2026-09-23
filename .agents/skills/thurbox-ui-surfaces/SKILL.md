@@ -151,10 +151,11 @@ not survive a restart".
 grouped `PANES` / `LAYOUT` / `MODULES` / `DOCS`, one state word per row (`failed`,
 `deleted`, `not placed`, `off`, `on screen`, `on demand`, `hidden`; no word shared
 with a source or a key), then trust, then origin (`edited` / `yours` /
-`from <package>` — silent for a shipped, untouched file). Three detail lines under
+`from <package>` — silent for a shipped, untouched file). Four detail lines under
 the list explain the selected row: kind, slot and full source; why it is in that
-state and the fix (an unplaced pane gets its `{ slot = "…" }` line); what it asks to
-run and whether that is granted. The footer lists only the keys that act on that
+state; the fix (an unplaced pane gets its `{ slot = "…" }` line, hedged because the
+shipped layout places `search` only while it is open); what it asks to run and
+whether that is granted. The footer lists only the keys that act on that
 row: `r` restore · `d` delete · `space` turn off/on · `t` trust/revoke. `d` always
 asks twice; `r` asks twice on an **edited** file (nothing keeps a pane's edits;
 `layout.lua` goes to `.bak`). The cursor follows its file by path, since an action

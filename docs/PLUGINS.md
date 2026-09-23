@@ -1296,8 +1296,8 @@ its trust stands, then where it came from when that is not "shipped, unchanged"
 | `○` | `hidden` | its slot is placed, but another pane holds it or its column is closed |
 | `·` | `on require`, `in use`, `guide`, `decorates` | not a pane with a slot of its own: a `lib/` module, the layout or manifest, a doc, a decorator |
 
-Under the list, three lines explain the **selected** row: what it is (and the slot a
-pane wants) with its full source; why it is in that state and the one thing that
+Under the list, four lines explain the **selected** row: what it is (and the slot a
+pane wants) with its full source; why it is in that state; the one thing that
 changes it — for a pane that is not placed, the exact `{ slot = "…" }` line to add to
 `layout.lua`; and, for a file that declares capabilities, what it asks to do and
 whether that is granted.
