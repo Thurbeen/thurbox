@@ -12,9 +12,9 @@
 //! selection, and the commands it emits.
 
 use thurbox::kernel::command::Command;
-use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{Epoch, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::search::{Answer, Hit, Request};
+use thurbox::kernel::search::{Answer, Hit, Request, MAX_HITS};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
@@ -390,50 +390,38 @@ fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
     }
 }
 
-/// Render after the debounce has elapsed, which is what makes the pane ask.
-fn render_after_debounce(host: &LuaHost, search: Option<&Answer>) {
+/// Render with `search` as the kernel's published answer.
+fn render_answered(host: &LuaHost, search: Option<&Answer>) {
     PUBLISHED.with(|p| *p.borrow_mut() = search.cloned());
     let index = host.index_of(PLUGIN).expect("no search plugin");
-    // Twice: the first render notices the query changed and starts the clock,
-    // the second finds it unmoved and asks.
-    for elapsed in [0.0_f64, 1.0] {
-        publish_with(host, search);
-        host.render(
-            index,
-            RenderContext {
-                width: 60,
-                height: 12,
-                focused: true,
-                elapsed,
-                frame: 0,
-            },
-        )
-        .expect("render");
-    }
+    publish_with(host, search);
+    host.render(
+        index,
+        RenderContext {
+            width: 60,
+            height: 12,
+            focused: true,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .expect("render");
 }
 
 #[test]
-fn nothing_is_asked_of_the_terminals_until_a_query_settles() {
-    // Every agent's history on every frame is not a thing to read
-    // speculatively, so the search is served only while the pane asks — and it
-    // asks only once the query has stood still.
+fn an_open_strip_warms_the_terminals_and_a_keystroke_asks_at_once() {
+    // Open with nothing typed, the strip asks with an empty query: the kernel
+    // reads every history into its cache and matches nothing, so the first
+    // keystroke is matched against text already read. And a keystroke asks on
+    // the very next frame — the worker gives up a run the moment a newer one
+    // supersedes it, so a debounce would only add its wait to every keystroke.
     let host = host();
     open(&host);
-    assert_eq!(
-        host.shared_string("want_content"),
-        None,
-        "an empty query asks nothing"
-    );
+    render(&host, PLUGIN);
+    assert_eq!(host.shared_string("want_content").as_deref(), Some(""));
 
     type_query(&host, "err");
     render(&host, PLUGIN);
-    assert_eq!(
-        host.shared_string("want_content"),
-        None,
-        "the first frame after a keystroke starts the clock, it does not ask"
-    );
-
-    render_after_debounce(&host, None);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
 }
 
@@ -444,7 +432,7 @@ fn a_session_is_found_by_a_line_in_its_terminal() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer(
             "ENOSPC",
@@ -466,7 +454,7 @@ fn an_answer_to_an_older_query_is_not_shown() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer(
             "ENOSP",
@@ -488,7 +476,7 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
         "ENOSPC",
         &[("ccc", "first ENOSPC", 120), ("aaa", "second ENOSPC", 40)],
     );
-    render_after_debounce(&host, Some(&found));
+    render_answered(&host, Some(&found));
     let _ = host.drain_commands();
 
     press(&host, "down");
@@ -527,7 +515,7 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
     );
@@ -640,7 +628,7 @@ fn a_filter_narrows_the_terminals_searched() {
     let host = host();
     open(&host);
     type_query(&host, "in:docs err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
     assert_eq!(
         host.shared_string("want_content.sessions").as_deref(),
@@ -653,17 +641,17 @@ fn tab_cycles_what_is_searched() {
     let host = host();
     open(&host);
     type_query(&host, "err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     // text only: the terminals are still asked, and no name matches listed.
     press(&host, "tab");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     // names only: nothing is asked of the terminals.
     press(&host, "tab");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert_eq!(host.shared_string("want_content"), None);
 }
 
@@ -672,7 +660,7 @@ fn closing_the_strip_stops_the_terminals_being_read() {
     let host = host();
     open(&host);
     type_query(&host, "err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     press(&host, "esc");
@@ -895,7 +883,7 @@ fn painted_strip(host: &LuaHost, width: u16, height: u16, search: Option<&Answer
     use ratatui::Terminal;
     use thurbox::kernel::paint::{render as paint_render, PlaceholderSurfaces};
 
-    render_after_debounce(host, search);
+    render_answered(host, search);
     publish_with(host, search);
     let index = host.index_of(PLUGIN).expect("no search plugin");
     let node = host
@@ -1033,4 +1021,312 @@ fn an_invalid_regex_says_why() {
     type_query(&host, "/(oops/");
     let strip = painted_strip(&host, 100, 10, Some(&broken));
     assert!(strip.contains("not a valid regex"), "{strip}");
+}
+
+// ── What a frame of the open strip costs ──────────────────────────────────
+//
+// The strip is not `pure`, so it renders on every frame it is open, and while
+// agents print that is every frame there is. Two things made each of those
+// frames expensive, and each is pinned here:
+//
+// * it re-matched every session and rebuilt a row per text hit: ~2.4ms a
+//   frame with twenty sessions. A frame whose inputs did not move now reuses
+//   the last answer;
+// * re-stating its own state (a table) counted as a change on most frames, so
+//   every pure pane's cached tree was dropped with it and the whole interface
+//   re-rendered for as long as search was open.
+//
+// Asserted on work done rather than on a clock (ADR-P5): calls into a counting
+// `lib.fuzzy`, and renders the kernel served from cache. Instruction counts
+// would not do — matching is C string functions and table allocation, one VM
+// instruction apiece.
+
+const MANY_SESSIONS: usize = 24;
+
+/// Where the counting `lib.fuzzy` leaves its tally.
+const CALLS: &str = "test.fuzzy_calls";
+
+/// `lib.fuzzy`, with every function counting its calls into `store`.
+const COUNTING_FUZZY: &str = r#"
+local real = require("lib.fuzzy_real")
+local calls = 0
+local counted = {}
+for name, value in pairs(real) do
+  if type(value) == "function" then
+    counted[name] = function(...)
+      calls = calls + 1
+      store["test.fuzzy_calls"] = tostring(calls)
+      return value(...)
+    end
+  else
+    counted[name] = value
+  end
+end
+return counted
+"#;
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("mkdir");
+    for entry in std::fs::read_dir(from).expect("read_dir") {
+        let entry = entry.expect("entry");
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name())).expect("copy");
+        }
+    }
+}
+
+/// The real interface, with `lib.fuzzy` counting.
+fn counting_interface() -> (tempfile::TempDir, LuaHost) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        dir.path(),
+    );
+    let lib = dir.path().join("lib");
+    std::fs::rename(lib.join("fuzzy.lua"), lib.join("fuzzy_real.lua")).expect("rename");
+    std::fs::write(lib.join("fuzzy.lua"), COUNTING_FUZZY).expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    (dir, host)
+}
+
+fn calls(host: &LuaHost) -> usize {
+    host.shared_string(CALLS)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+fn many_row(n: usize) -> SessionRow {
+    SessionRow {
+        id: format!("id-{n}"),
+        name: format!("worker-{n}-feature-branch"),
+        agent: "claude".into(),
+        status: SessionState::Idle,
+        cwd: Some(std::path::PathBuf::from("/src/thurbox")),
+        repo: Some("thurbox".into()),
+        repos: vec!["thurbox".into()],
+        branch: Some(format!("feat/thing-{n}")),
+        base_branch: None,
+        backend: "local-tmux".into(),
+        backend_id: Some(format!("%{n}")),
+        remote_host: None,
+        agent_session_id: None,
+        parent_id: None,
+        display_order: None,
+        worktree_count: 0,
+        git: None,
+        stopped: false,
+        hook_state: None,
+        reports_as: None,
+        detected_agent: None,
+        shell_backend_id: None,
+        member_dirs: Vec::new(),
+    }
+}
+
+/// A full answer: as many hits as the kernel ever publishes.
+fn full_answer(query: &str) -> Answer {
+    Answer {
+        request: Request {
+            query: query.into(),
+            sessions: None,
+        },
+        hits: (0..MAX_HITS)
+            .map(|n| Hit {
+                session: format!("id-{}", n % MANY_SESSIONS),
+                shell: false,
+                text: format!("error: compile failed in src/main.rs at line {n}"),
+                ranges: vec![(0, 5)],
+                back: n,
+                scroll: n,
+                row: 3,
+                exact: true,
+                score: 130,
+            })
+            .collect(),
+        total: 5_000,
+        sessions: MANY_SESSIONS,
+        lines: 240_000,
+        // As a store hands it out: what the published table is gated on.
+        serial: 1,
+        ..Answer::default()
+    }
+}
+
+fn publish_at(host: &LuaHost, epoch: Epoch, snapshot: &Snapshot, search: &Answer) {
+    let themes = Themes::load(None);
+    let mut registry = Registry::default();
+    let (bindings, settings) = host.declarations();
+    registry.declare(bindings, settings);
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&Published {
+        epoch,
+        snapshot,
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: Some(search),
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+}
+
+fn render_strip(host: &LuaHost) -> Result<(), String> {
+    let index = host.index_of(PLUGIN).expect("no search plugin");
+    host.render(
+        index,
+        RenderContext {
+            width: 120,
+            height: 16,
+            focused: true,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .map(|_| ())
+    .map_err(|e| format!("{e:?}"))
+}
+
+#[test]
+fn a_frame_that_changed_nothing_matches_nothing() {
+    let (_dir, host) = counting_interface();
+    let snapshot = Snapshot {
+        sessions: (0..MANY_SESSIONS).map(many_row).collect(),
+        ..Snapshot::default()
+    };
+    let found = full_answer("error");
+    // One epoch, as the loop holds between changes: the kernel hands back the
+    // same published tables, which is what lets the strip see nothing moved.
+    let settled = Epoch::always_fresh();
+
+    publish_at(&host, settled, &snapshot, &found);
+    press(&host, "ctrl+/");
+    for ch in "error".chars() {
+        press(&host, &ch.to_string());
+    }
+    publish_at(&host, settled, &snapshot, &found);
+    render_strip(&host).expect("render");
+    let after_keystroke = calls(&host);
+    assert!(after_keystroke > 0, "the counting lib.fuzzy is not in use");
+
+    for _ in 0..5 {
+        publish_at(&host, settled, &snapshot, &found);
+        render_strip(&host).expect("render");
+    }
+    assert_eq!(
+        calls(&host),
+        after_keystroke,
+        "a frame whose query, scope and published tables stood still matched again"
+    );
+
+    // Another worker landing moves the data epoch — links, diffs and metrics
+    // do, several times a second under load. The answer did not change, so
+    // neither does anything the strip matches.
+    for data in 1..=5 {
+        let other_worker = Epoch {
+            data: settled.data + data,
+            ..settled
+        };
+        publish_at(&host, other_worker, &snapshot, &found);
+        render_strip(&host).expect("render");
+    }
+    assert_eq!(
+        calls(&host),
+        after_keystroke,
+        "another worker's result re-matched a search whose answer had not changed"
+    );
+
+    // The control: moved inputs are matched afresh, or the count above could
+    // stand still for a reason that has nothing to do with the memo.
+    publish_at(&host, Epoch::always_fresh(), &snapshot, &found);
+    render_strip(&host).expect("render");
+    assert!(
+        calls(&host) > after_keystroke,
+        "a moved input was not matched"
+    );
+}
+
+#[test]
+fn an_open_strip_that_changed_nothing_leaves_every_pure_pane_cached() {
+    // The strip re-states its own state on every frame — the query field, a
+    // table — and the kernel compares a write with what is held so an unmoved
+    // value is no change. A table used to compare in whatever order `pairs`
+    // happened to walk it, which differs between two copies of the same table,
+    // so the field "moved" on most frames and dropped every pure pane's cached
+    // tree with it: the session list re-rendered on every frame search was open.
+    //
+    // Lua seeds its string hash per VM, so which order `pairs` walks a table in
+    // is decided when the VM is made; several are tried, or the one this run
+    // happened to draw could hide the bug.
+    for _ in 0..32 {
+        settled_strip_keeps_the_list_cached();
+    }
+}
+
+fn settled_strip_keeps_the_list_cached() {
+    let host = LuaHost::new(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let snapshot = Snapshot {
+        sessions: (0..MANY_SESSIONS).map(many_row).collect(),
+        ..Snapshot::default()
+    };
+    let found = full_answer("error");
+    let settled = Epoch::always_fresh();
+    let sessions = host.index_of("sessions").expect("no sessions pane");
+    let list = |host: &LuaHost| {
+        host.render(
+            sessions,
+            RenderContext {
+                width: 40,
+                height: 30,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render sessions");
+    };
+
+    publish_at(&host, settled, &snapshot, &found);
+    press(&host, "ctrl+/");
+    for ch in "error".chars() {
+        press(&host, &ch.to_string());
+    }
+    // Let the first frames after the keystrokes settle what they write.
+    for _ in 0..3 {
+        publish_at(&host, settled, &snapshot, &found);
+        render_strip(&host).expect("render");
+        list(&host);
+    }
+
+    let before = host.skipped_renders();
+    for _ in 0..20 {
+        publish_at(&host, settled, &snapshot, &found);
+        render_strip(&host).expect("render");
+        list(&host);
+    }
+    assert_eq!(
+        host.skipped_renders() - before,
+        20,
+        "the session list was re-rendered while nothing it reads changed"
+    );
 }

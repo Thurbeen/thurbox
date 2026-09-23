@@ -66,10 +66,6 @@ local WANT_SESSIONS = "want_content.sessions"
 --- The agent pane's scroll request, and the action that makes it read it.
 local REVEAL = "terminal.reveal"
 
---- How long a query must stand still before terminals are searched. v1 waits
---- the same 150ms (`CONTENT_DEBOUNCE_MS`).
-local CONTENT_DEBOUNCE = 0.15
-
 --- Rows a page key moves through the results.
 local PAGE = 10
 
@@ -92,10 +88,6 @@ local function load()
     -- What the interface looked like when search opened, so cancelling can put
     -- it back. v1 captures the same things in its `SearchSnapshot`.
     snapshot = state.snapshot,
-    -- The ask the debounce is timing, and when it was last seen to change.
-    -- Measured in `ctx.elapsed` seconds: a plugin has no clock of its own.
-    pending = state.pending,
-    pending_at = state.pending_at,
     -- The result this pane last pointed the list at. Kept because the result set
     -- can change without a keystroke: terminal hits arrive a frame after the
     -- query settles, and a preview that only followed the arrows would stay on
@@ -113,8 +105,6 @@ local function save(search)
   state.field = search.field
   state.cursor = search.cursor
   state.snapshot = search.snapshot
-  state.pending = search.pending
-  state.pending_at = search.pending_at
   state.previewed = search.previewed
   state.revealed = search.revealed
   state.scope = search.scope
@@ -179,12 +169,13 @@ local function answer_for(ask)
   return answer
 end
 
---- Every result for the current query, and what the strip should say about it.
+--- Every result for the query `text` in `scope`, and what the strip should
+--- say about it; `results` is the memoised way in.
 ---
 --- An empty query yields every session, which is what makes the strip useful
 --- the moment it opens rather than only once you have typed something.
-local function results(scope)
-  local q = fuzzy.query(query())
+local function compute(text, scope)
+  local q = fuzzy.query(text)
   local sessions = allowed(q)
   local rows = {}
 
@@ -250,6 +241,41 @@ local function results(scope)
       answer = answer,
       searching = ask ~= nil and answer == nil,
     }
+end
+
+--- The last `results` computed, and what it was computed from.
+---
+--- This pane is not pure, so it renders on every frame the strip is open —
+--- and while agents print that is every frame there is. Matching every session
+--- and rebuilding a row per hit on each of them cost ~2ms a frame with twenty
+--- sessions; the inputs are the query, the scope and two published tables,
+--- which the kernel hands back as the SAME table until they change, so a frame
+--- that changed none of them reuses the last answer.
+local memo = {}
+
+--- `compute` for the current query, reused while nothing it reads has moved.
+local function results(scope)
+  local text = query()
+  local sessions_table, answer_table = thurbox.sessions, thurbox and thurbox.search
+  if
+    memo.rows
+    and memo.text == text
+    and memo.scope == scope
+    and memo.sessions == sessions_table
+    and memo.answer == answer_table
+  then
+    return memo.rows, memo.info
+  end
+  local rows, info = compute(text, scope)
+  memo = {
+    text = text,
+    scope = scope,
+    sessions = sessions_table,
+    answer = answer_table,
+    rows = rows,
+    info = info,
+  }
+  return rows, info
 end
 
 --- Scope counts, for the per-section headers.
@@ -345,28 +371,26 @@ local function restore(search)
   end
 end
 
---- Ask the kernel to search terminals once the ask has stood still.
+--- Ask the kernel to search terminals for the ask in force.
 ---
---- Called from render because that is where the clock is: `ctx.elapsed` is the
---- only monotonic reading a plugin gets, and `on_key` has none. An ask still
---- settling asks for nothing, so terminals are searched once per pause rather
---- than once per keystroke.
-local function want_content(search, ask, elapsed)
+--- At once, on every change: the kernel reads and matches on a worker and
+--- gives up a run the moment a newer ask supersedes it, so there is nothing a
+--- debounce would save and 150ms of waiting it would add to every keystroke.
+--- Writing the same ask again is not a change, so a render that re-states it
+--- costs nothing.
+---
+--- An open strip with nothing to search for asks with an empty query, which
+--- the kernel answers by reading every terminal's history into its cache and
+--- matching nothing: the first keystroke then matches cached text instead of
+--- waiting for every scrollback to be read.
+local function want_content(ask, scope)
   if not ask then
-    store[WANT_CONTENT] = nil
+    store[WANT_CONTENT] = scope ~= "names" and "" or nil
     store[WANT_SESSIONS] = nil
-    search.pending, search.pending_at = nil, nil
     return
   end
-  local key = ask.terms .. "\n" .. (ask.within or "*")
-  if search.pending ~= key then
-    search.pending, search.pending_at = key, elapsed
-    return
-  end
-  if elapsed - (search.pending_at or elapsed) >= CONTENT_DEBOUNCE then
-    store[WANT_CONTENT] = ask.terms
-    store[WANT_SESSIONS] = ask.within
-  end
+  store[WANT_CONTENT] = ask.terms
+  store[WANT_SESSIONS] = ask.within
 end
 
 local function close(search, keep)
@@ -376,7 +400,6 @@ local function close(search, keep)
   search.snapshot = nil
   textinput.clear(search.field)
   search.cursor = 1
-  search.pending, search.pending_at = nil, nil
   search.previewed = nil
   search.revealed = nil
   save(search)
@@ -631,10 +654,11 @@ return {
   name = NAME,
   slot = NAME,
   order = 65,
-  -- Deliberately NOT `pure`. This render writes to `store` — the debounced
+  -- Deliberately NOT `pure`. This render writes to `store` — the
   -- `want_content` request and the matched-sessions list — so a frame that
   -- skipped it would skip those writes too, and the search would stop asking
-  -- for the terminal text it matches against.
+  -- for the terminal text it matches against. What keeps it cheap instead is
+  -- the `results` memo.
   -- Focusable, and focused while it is open: that is what routes every typed
   -- character here instead of to the pane underneath. A float would grab input
   -- instead, but a float would also cover the matches — see the header.
@@ -674,10 +698,13 @@ return {
     local width, height = ctx.width or 0, ctx.height or 0
     local search = load()
     local rows, info = results(search.scope)
-    want_content(search, info.ask, ctx.elapsed or 0)
+    want_content(info.ask, search.scope)
     search.cursor = widgets.clamp(search.cursor, #rows)
 
-    local matches = matched_ids(rows)
+    if memo.rows == rows and not memo.matches then
+      memo.matches = matched_ids(rows)
+    end
+    local matches = memo.matches or matched_ids(rows)
     if store[MATCHES] ~= matches then
       store[MATCHES] = matches
     end
@@ -709,8 +736,30 @@ return {
     end
 
     local list_height = math.max(0, height - consumed)
-    local lines, selected_line =
-      result_rows(rows, search.cursor, math.max(0, width - 4), list_height, info, search.scope)
+    local list_width = math.max(0, width - 4)
+    local layout = memo.layout
+    if
+      not layout
+      or layout.rows ~= rows
+      or layout.cursor ~= search.cursor
+      or layout.width ~= list_width
+      or layout.height ~= list_height
+      or layout.theme ~= thurbox.theme
+    then
+      local lines, selected_line =
+        result_rows(rows, search.cursor, list_width, list_height, info, search.scope)
+      layout = {
+        rows = rows,
+        cursor = search.cursor,
+        width = list_width,
+        height = list_height,
+        theme = thurbox.theme,
+        lines = lines,
+        selected = selected_line,
+      }
+      memo.layout = layout
+    end
+    local lines, selected_line = layout.lines, layout.selected
     children[#children + 1] = widgets.list({
       rows = lines,
       selected = selected_line,

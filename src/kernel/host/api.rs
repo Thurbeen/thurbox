@@ -570,9 +570,43 @@ fn from_lua(value: &Value) -> Option<Persisted> {
                     entries.push((key, entry));
                 }
             }
+            // In a canonical order, not the order `pairs` walked it in: that
+            // depends on the VM's string-hash seed and on how the table was
+            // built, so two copies of one table walk differently — and a write
+            // is compared with what is held to decide whether it moved. Held in
+            // `pairs` order, a pane re-stating an unchanged table every frame
+            // moved the state version on most of them, and every pure pane's
+            // cached tree went with it.
+            entries.sort_by(|(a, _), (b, _)| canonical(a, b));
             Some(Persisted::Table(entries))
         }
         _ => None,
+    }
+}
+
+/// A total order over table keys, for [`from_lua`]'s canonical order. Keys
+/// are almost always strings or integers; the rest only need to be consistent.
+fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let rank = |p: &Persisted| match p {
+        Persisted::Bool(_) => 0,
+        Persisted::Int(_) => 1,
+        Persisted::Num(_) => 2,
+        Persisted::Str(_) => 3,
+        Persisted::Table(_) => 4,
+    };
+    match (a, b) {
+        (Persisted::Bool(x), Persisted::Bool(y)) => x.cmp(y),
+        (Persisted::Int(x), Persisted::Int(y)) => x.cmp(y),
+        (Persisted::Num(x), Persisted::Num(y)) => x.total_cmp(y),
+        (Persisted::Str(x), Persisted::Str(y)) => x.cmp(y),
+        (Persisted::Table(x), Persisted::Table(y)) => x
+            .iter()
+            .zip(y)
+            .map(|((xk, xv), (yk, yv))| canonical(xk, yk).then_with(|| canonical(xv, yv)))
+            .find(|order| *order != Ordering::Equal)
+            .unwrap_or_else(|| x.len().cmp(&y.len())),
+        _ => rank(a).cmp(&rank(b)),
     }
 }
 

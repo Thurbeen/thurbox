@@ -187,13 +187,22 @@ hold, **scrollback included**, matched by the kernel on a worker).
   smart case. The terms half mirrors `kernel::search::Query`; keep the two parsers
   in step. Exact (substring/phrase/regex) ranks above subsequence; terminal
   subsequences must be tight (≤ 2× the word).
-- **Terminal text is a *want***: after a 150ms debounce the pane leaves the terms
-  in `store.want_content` (filters resolved to ids in `want_content.sessions`) and
-  the kernel answers as `thurbox.search` (`kernel::search::SearchStore`). The loop
-  only clones parser handles; reading and matching are on a worker, cached per
-  terminal by output stamp, re-run on output at most once a second. Caps: 50 hits
-  per session, 200 total. ADR-P26 has the numbers; `cargo bench --bench search_cost`
-  re-measures them.
+- **Terminal text is a *want***: on every change of the ask (no debounce) the pane
+  leaves the terms in `store.want_content` (filters resolved to ids in
+  `want_content.sessions`) and the kernel answers as `thurbox.search`
+  (`kernel::search::SearchStore`). An open strip with nothing typed asks with `""`,
+  which reads every history into the cache and matches nothing, so the first
+  keystroke is warm. The loop only clones parser handles; reading and matching are
+  on a worker (up to 4 threads), a superseded run gives up, each terminal's lock is
+  held for at most `CHUNK_ROWS` rows at a time, and a history is cached per
+  terminal by output stamp and brought up to date by reading only what was printed
+  since — re-run on output at most once a second. Caps: 50 hits per session, 200
+  total. The pane memoises `results` on (query, scope, `thurbox.sessions`,
+  `thurbox.search`) identity, because it is not pure and renders every frame.
+  ADR-P26 has the numbers; `cargo bench --bench search_cost` re-measures them
+  (`THURBOX_BENCH_CHECK=1` fails over budget), `tests/search.rs` pins the
+  memo, and `scripts/dev/perf-run.sh --search Q [--typing]` measures the whole
+  binary with the strip open.
 - **Preview and land**: moving onto a text hit scrolls its terminal back while
   focus stays in the strip; `enter`/click opens it scrolled to the line with the
   row marked (`surface.mark`). The strip asks the agent pane to do this — it writes

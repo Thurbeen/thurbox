@@ -1850,18 +1850,111 @@ of 9 runs):
 | cold run (read every history + match) | 35–45ms | 330–440ms |
 | warm run (cached histories, new query) | 3–13ms | 29–126ms |
 
-Warm is what a keystroke costs once the 150ms debounce lets it through, and it
-is paid on the worker, not the frame. The slowest queries are the ones whose
-words mostly miss as substrings and have to be tried as subsequences (`cmpile`);
-a quoted phrase is the cheapest. The one cost the render thread can feel is the
-lock: while the worker reads a session's history, that session's reader and its
-paint wait on the same mutex — under 2ms per session at the default scrollback,
-one frame's worth at 10,000.
+Warm is what a keystroke costs once the 150ms debounce lets it through (there is
+no debounce since the revision below), and it is paid on the worker, not the
+frame. The slowest queries are the ones whose words mostly miss as substrings
+and have to be tried as subsequences (`cmpile`); a quoted phrase is the
+cheapest. The one cost the render thread can feel is the lock: while the worker
+reads a session's history, that session's reader and its paint wait on the same
+mutex — under 2ms per session at the default scrollback, one frame's worth at
+10,000.
 
 **Consequences**: results arrive a frame or two after the query settles, and the
 strip says `searching…` until they do. A hit's `scroll`/`row` are exact when the
 worker read them; a terminal that prints afterwards moves the line up by what it
 printed until the next re-run a second later.
+
+### Revisited: search must not slow the interface (2026-09-23)
+
+**Context**: search was reported as slowing the interface a lot, on 2.32.0 — the
+release before this ADR's worker. Both it and this ADR's first cut were measured
+under one load with `scripts/dev/perf-run.sh` (release builds, 20 sessions, 3
+printing at 30 lines/s, every terminal's scrollback full, 200×50, 30s, one
+`perf_window` each), with search closed, open on `e` (matches nearly every line),
+`zzqx` (matches none) and `compile error src/main.rs`, and while retyping
+`compile error` at ~8 keys/s. The same 6-core / 12-thread desktop CPU from 2017.
+
+**What 2.32.0 does**: with any query in the strip, every republish re-read every
+terminal's screen on the loop thread, and every read that found the text moved
+(any printing agent) moved the data epoch. So each frame paid ~33ms of republish
+(p95 66ms) and then re-rendered every pure pane from scratch: the session list
+went from 125 of 129 renders served from cache to 0 of 258. The render thread
+went from 9% of a core to 49%, the same for a query that matched everything or
+nothing. That is the slowness. v2.33.0 (this ADR) removed the screen read from
+the loop, which is most of it.
+
+**What remained on v2.33.0**, found with the same harness:
+
+- **The strip re-matched every session and rebuilt a row per hit on every
+  frame** — it is not `pure`, so it renders on every frame it is open: 2.4ms a
+  render, the most expensive pane on screen; frame p50 went from 4ms to 8ms.
+- **Its own state write dropped every pure pane's cache on most frames.** A table
+  written to `state`/`store` was held as its entries in `pairs` order, and a
+  write is compared with what is held to decide whether it moved. That order
+  depends on the VM's string-hash seed and how the table was built, so the
+  strip re-stating an unchanged query field "moved" it on most frames — in 2.32.0
+  too. Entries are now held in a canonical order (`api.rs::from_lua`).
+- **`thurbox.search` was rebuilt ~8 times a second**, gated on the data epoch
+  every worker moves. It is now gated on the answer's own serial, so it and the
+  strip's memo move only when the answer does.
+- **A history was read under one hold of its parser's lock**: 1.8ms per session
+  at 1,000 rows, 16–18ms at 10,000 — a frame's worth of stall for that session's
+  reader and paint. It is now read [`CHUNK_ROWS`](../src/kernel/search.rs) (128)
+  at a time, letting go between chunks and finding its place again by the rows
+  it read last if the terminal scrolled meanwhile (rows with text on them, found
+  at exactly one place, or the read starts over); a re-run reads only what was
+  printed since the cached read.
+- **Every keystroke waited 150ms** for a debounce, and the first one after
+  opening waited for every history to be read (330–475ms at 10,000 rows). The
+  debounce is gone — a superseded run gives up before its next terminal — the
+  read and match are spread over up to 4 threads, top-K selection replaces a
+  full sort of every match, and an open strip with nothing typed asks with an
+  empty query, which reads every history into the cache and matches nothing.
+
+**Budget**: nothing measurable while closed; no terminal lock held past ~1ms;
+keystroke-to-result well under 100ms with 20+ sessions of full scrollback,
+never on the frame; frame time with the strip open within the closed envelope.
+
+**Measured**, whole binary (`perf-run.sh`, as above; frame percentiles are the
+histogram's buckets, CPU is the whole process including search workers):
+
+| 1,000 rows | 2.32.0 | v2.33.0 | now |
+|---|---|---|---|
+| closed: CPU / frame p50 | 9% / 2ms | 11% / 4ms | 10% / 4ms |
+| open `e`: CPU | 49% | 18% | 14% |
+| open `e`: frame p50 / p95 | 2 / 8ms | 8 / 16ms | 4 / 16ms |
+| open `e`: republish p50 / p95 | 33 / 66ms | 0.5 / 4ms | 0.25 / 1ms |
+| open `e`: search pane per render | 0.3ms | 2.4ms | 0.6ms |
+| open `e`: session list served from cache | 0 of 258 | 118 of 259 | 124 of 255 |
+| open `zzqx`: CPU | 49% | 16% | 11% |
+
+At 10,000 rows it is the same shape: 49% → 22% → 18% with `e` open, frame p50
+8ms → 4ms against v2.33.0. Typing is the one row that costs more CPU than
+before — 28% at 1,000 rows and 53% at 10,000, against 18% and 25% — because
+every keystroke is now matched instead of one per 150ms pause; it is worker
+time, and frame p95 stays at 16ms either way.
+
+And the worker, from `cargo bench --bench search_cost` (median of 9):
+
+| 20 sessions | v2.33.0, 1,000 rows | now | v2.33.0, 10,000 rows | now |
+|---|---|---|---|---|
+| longest one parser is held | 1.84ms | 0.84ms | 16.3ms | 0.76ms |
+| cold: read every history | 36–47ms | 18ms | 342–475ms | 183ms |
+| warm, slowest query (`cmpile`) | 13.3ms | 5.0ms | 133ms | 42ms |
+| warm, typing `compile error`, slowest letter | — | 3.6ms | — | 31ms |
+| rescan after 3 agents printed 30 lines | — | 2.2ms | — | 14ms |
+
+Keystroke-to-result is therefore the warm figure plus a frame: ~5ms at 1,000 rows
+and under 45ms at 10,000, where it was 150ms plus that on v2.33.0 and 150ms plus
+the next republish on 2.32.0.
+
+**Guards**: `tests/search.rs` fails if a frame that changed nothing, or
+one where only another worker's result landed, calls into `lib.fuzzy`, or if an
+open strip leaves the session list re-rendering; `kernel::search`'s tests pin a
+hold at `CHUNK_ROWS` rows plus the screen, a consistent read of a terminal
+printing between holds, and a rescan reading only what was printed.
+`THURBOX_BENCH_CHECK=1 cargo bench --bench search_cost` exits non-zero past 1ms
+held, 50ms per keystroke or 50ms per rescan — by hand, never in CI (ADR-P5).
 
 ---
 
@@ -1898,6 +1991,9 @@ scripts/dev/perf-run.sh --idle                 # the settled floor
 scripts/dev/perf-run.sh -u 0                   # the control for ADR-P20
 scripts/dev/perf-run.sh -w 4                   # sessions reporting `working`, for ADR-P21
 scripts/dev/perf-run.sh --no-perf-log          # is the instrumentation the cost?
+scripts/dev/perf-run.sh -n 20 -p 3 -b 1000 --search e          # search open, for ADR-P26
+scripts/dev/perf-run.sh -n 20 -p 3 -b 1000 --search 'a b' --typing  # while typing
+scripts/dev/perf-run.sh --bin-dir DIR          # another build's binaries, e.g. a release
 ```
 
 Two traps it now handles, both of which report a plausible number rather than
@@ -2163,5 +2259,5 @@ worktree/spawn offload should ride with that branch or follow it.
 | See why `git` keeps running | It is the per-session worktree poll — `git_poll_secs` in `settings.toml` sets its cadence and `0` turns it off (ADR-P25) |
 | Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, below) |
 | See where the time in a frame goes | `cargo bench --bench frame_cost` |
-| Measure the content search | `cargo bench --bench search_cost` (`THURBOX_BENCH_SESSIONS`, `THURBOX_BENCH_SCROLLBACK`) — ADR-P26 |
+| Measure the content search | `cargo bench --bench search_cost` (`THURBOX_BENCH_SESSIONS`, `THURBOX_BENCH_SCROLLBACK`, `THURBOX_BENCH_CHECK=1` to fail over budget); `scripts/dev/perf-run.sh --search Q [--typing]` for the whole binary — ADR-P26 |
 | Attribute a change | Run one of the two above before and after — a paired reading at the same size and session count, never two absolute numbers from different days |

@@ -240,17 +240,13 @@ impl App {
     /// interval would otherwise never have it searched.
     pub(crate) fn serve_search(&mut self) {
         use thurbox::kernel::search::{Request, WANT_CONTENT, WANT_SESSIONS};
-        let request = self
-            .host
-            .shared_string(WANT_CONTENT)
-            .filter(|query| !query.trim().is_empty())
-            .map(|query| Request {
-                query,
-                sessions: self
-                    .host
-                    .shared_string(WANT_SESSIONS)
-                    .map(|ids| ids.split_whitespace().map(str::to_string).collect()),
-            });
+        let request = self.host.shared_string(WANT_CONTENT).map(|query| Request {
+            query,
+            sessions: self
+                .host
+                .shared_string(WANT_SESSIONS)
+                .map(|ids| ids.split_whitespace().map(str::to_string).collect()),
+        });
         let generation = self.terminals.output_generation();
         let (snapshots, terminals) = (&self.snapshots, &self.terminals);
         // Only a dispatch walks the sessions: this runs every iteration.
