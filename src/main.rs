@@ -305,6 +305,9 @@ struct App {
     /// The wheel notch in progress, so the tail of one detent's reports does
     /// not step a selection again. See `coordinator::mouse`.
     wheel_notch: coordinator::mouse::WheelNotch,
+    /// The left presses in progress on one node, so a pane can tell a
+    /// double-click from two clicks. See `coordinator::mouse`.
+    click_train: coordinator::mouse::ClickTrain,
     themes: Themes,
     /// Which occupant of each `switch` slot is visible, by slot name.
     ///

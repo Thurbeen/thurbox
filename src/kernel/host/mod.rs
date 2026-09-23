@@ -360,6 +360,11 @@ pub struct Click {
     /// than the press itself. Set only for a node that declared
     /// [`super::node::Identity::is_drag_handle`].
     pub dragging: bool,
+    /// 2 for the second press on the same node in quick succession, 1 for any
+    /// other press. Counted by the coordinator (`coordinator::mouse::ClickTrain`),
+    /// because a pane has no clock outside `render`. A third quick press is 1
+    /// again, so a pane that opens on 2 opens once.
+    pub clicks: u8,
 }
 
 /// A wheel tick resolved onto the pane under the pointer.
@@ -1969,6 +1974,9 @@ impl LuaHost {
         table.set("h", click.h).map_err(|e| fail(e.to_string()))?;
         table
             .set("dragging", click.dragging)
+            .map_err(|e| fail(e.to_string()))?;
+        table
+            .set("clicks", click.clicks)
             .map_err(|e| fail(e.to_string()))?;
 
         let start = self.call_started();

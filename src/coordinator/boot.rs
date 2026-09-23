@@ -250,6 +250,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         animation_step: 0,
         selection: None,
         wheel_notch: crate::coordinator::mouse::WheelNotch::default(),
+        click_train: crate::coordinator::mouse::ClickTrain::default(),
         notifier: {
             let settings = thurbox::session::settings::global();
             Notifier::new(settings.features.notifications, settings.notifications)

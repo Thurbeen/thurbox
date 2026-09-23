@@ -526,8 +526,9 @@ fn a_session_row_click_lands_on_the_session_under_it() {
 
 // ── the plugins that answer a click themselves ────────────────────────────
 
-#[test]
-fn clicking_a_session_row_selects_that_session() {
+/// The sessions pane, published a two-session snapshot and rendered once, so a
+/// click has rows to land on.
+fn published_sessions_pane() -> (LuaHost, usize, RenderContext) {
     let host = host();
     let themes = Themes::load(None);
     let mut registry = Registry::default();
@@ -574,11 +575,13 @@ fn clicking_a_session_row_selects_that_session() {
         frame: 0,
     };
     host.render(index, ctx).expect("render");
+    (host, index, ctx)
+}
 
-    // The second session, which is not the one the cursor starts on.
-    let wanted = sample().sessions[1].id.clone();
-    let click = thurbox::kernel::host::Click {
-        id: Some(wanted.clone()),
+/// A click on the second session's row — the one the cursor does not start on.
+fn row_click(clicks: u8) -> thurbox::kernel::host::Click {
+    thurbox::kernel::host::Click {
+        id: Some(sample().sessions[1].id.clone()),
         classes: vec!["row".into(), "session-row".into()],
         role: Some("row".into()),
         x: 0,
@@ -586,8 +589,18 @@ fn clicking_a_session_row_selects_that_session() {
         w: 40,
         h: 1,
         dragging: false,
-    };
-    assert!(host.on_click(index, &click).expect("click"), "handled");
+        clicks,
+    }
+}
+
+#[test]
+fn clicking_a_session_row_selects_that_session() {
+    let (host, index, ctx) = published_sessions_pane();
+    let wanted = sample().sessions[1].id.clone();
+    assert!(
+        host.on_click(index, &row_click(1)).expect("click"),
+        "handled"
+    );
 
     // The pane publishes its selection through `store`, which is how the agent
     // pane learns what to show — so re-rendering and reading the tree back is
@@ -606,6 +619,38 @@ fn clicking_a_session_row_selects_that_session() {
                 .find(|hit| hit.identity.id.as_deref() == Some(wanted.as_str()))
         });
     assert!(selected.is_some(), "the clicked row should be on screen");
+}
+
+/// Selecting and opening are two gestures. A single click selects the row and
+/// leaves the keyboard where it is, so the list's own chords keep working after
+/// you point at a session; a double-click is Enter — it also hands focus to the
+/// agent pane that shows it.
+#[test]
+fn only_a_double_click_on_a_session_row_hands_focus_to_the_agent_pane() {
+    let (host, index, _) = published_sessions_pane();
+    host.drain_commands();
+
+    assert!(
+        host.on_click(index, &row_click(1)).expect("click"),
+        "handled"
+    );
+    let issued = host.drain_commands();
+    assert!(
+        issued.iter().all(|command| command.kind() != "focus"),
+        "a single click must not move focus: {issued:?}"
+    );
+
+    assert!(
+        host.on_click(index, &row_click(2)).expect("click"),
+        "handled"
+    );
+    let issued = host.drain_commands();
+    assert!(
+        issued
+            .iter()
+            .any(|command| matches!(command, thurbox::kernel::command::Command::Focus { .. })),
+        "a double-click opens the session in the agent pane: {issued:?}"
+    );
 }
 
 #[test]

@@ -219,6 +219,7 @@
 ---@field w integer
 ---@field h integer
 ---@field dragging boolean
+---@field clicks integer 2 for the second press on the same node in quick succession, else 1.
 
 --- A wheel tick over this plugin's pane. Declining puts it back on the key path.
 ---@class (exact) thurbox.Wheel
