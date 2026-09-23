@@ -937,14 +937,20 @@ return {
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,
-    -- a muted left-aligned " No Session " title, and the hint box.
+    -- a muted left-aligned " No Session " title, and the hint box. Focused, it
+    -- wears the one focus frame instead: this is the pane holding focus at boot
+    -- on a fresh install, and a muted square said nothing about that.
     if not session then
       local body = empty_body(math.max(0, width - 2), math.max(0, height - 2))
-      body.frame = {
-        title = { { text = " No Session " } },
-        border_type = "square",
-        border_style = { fg = theme.muted },
-      }
+      if ctx.focused then
+        body.frame = chrome.frame("No Session", level)
+      else
+        body.frame = {
+          title = { { text = " No Session " } },
+          border_type = "square",
+          border_style = { fg = theme.muted },
+        }
+      end
       return body
     end
 

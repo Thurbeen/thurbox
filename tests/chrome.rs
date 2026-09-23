@@ -1012,6 +1012,45 @@ fn every_focusable_pane_agrees_on_what_unfocused_looks_like() {
 }
 
 #[test]
+fn the_empty_agent_pane_still_says_it_has_focus() {
+    // With no session the agent pane draws its own square frame, and it is
+    // the pane holding focus at boot on a fresh install: without the cue there
+    // no pane on screen looked focused at all.
+    let host = host();
+    let empty = Snapshot {
+        sessions: Vec::new(),
+        ..world(0)
+    };
+    publish(&host, &empty, &Themes::load(None));
+    let paint = |focused| {
+        let node = host
+            .render(
+                host.index_of("agent").expect("agent"),
+                RenderContext {
+                    width: 60,
+                    height: 10,
+                    focused,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        top_row(&paint_node(&node, 60, 10))
+    };
+    assert!(
+        paint(true).starts_with("┏ ▸ No Session ━"),
+        "{}",
+        paint(true)
+    );
+    assert!(
+        paint(false).starts_with("┌ No Session ─"),
+        "{}",
+        paint(false)
+    );
+}
+
+#[test]
 fn a_third_party_pane_calling_ui_panel_gets_the_focus_treatment_for_free() {
     // What a pane must do to opt in is pass `focused = ctx.focused` to
     // `ui.panel`. Nothing else: no border type, no colour, no mark.

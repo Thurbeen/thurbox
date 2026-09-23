@@ -836,14 +836,14 @@ fn the_agent_pane_with_nothing_selected() {
     assert_frame(
         &text(&paint(&host, "agent", 50, 8, true)),
         &[
-            "┌ No Session ────────────────────────────────────┐",
-            "│       ┌───────────────────────────────┐        │",
-            "│       │No active sessions             │        │",
-            "│       │                               │        │",
-            "│       │  F1      Help                 │        │",
-            "│       └───────────────────────────────┘        │",
-            "│                                                │",
-            "└────────────────────────────────────────────────┘",
+            "┏ ▸ No Session ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "┃       ┌───────────────────────────────┐        ┃",
+            "┃       │No active sessions             │        ┃",
+            "┃       │                               │        ┃",
+            "┃       │  F1      Help                 │        ┃",
+            "┃       └───────────────────────────────┘        ┃",
+            "┃                                                ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
 }
@@ -856,10 +856,11 @@ fn the_no_session_title_takes_the_borders_muted_colour_not_the_terminals_default
     // foreground. Routed through frame.title instead, build_block's existing
     // "an unstyled run takes the border's colour" rule now reaches it, so the
     // 'N' of "No Session" carries the same fg as the border it sits in rather
-    // than Color::Reset.
+    // than Color::Reset. Unfocused: focused, the empty pane wears the focus
+    // frame and its badge instead.
     let host = host();
     publish(&host, &snapshot(Vec::new()));
-    let buffer = paint(&host, "agent", 50, 8, true);
+    let buffer = paint(&host, "agent", 50, 8, false);
     let row = text(&buffer);
     let title_x = row[0].find('N').expect("the title is on the top border") as u16;
     let border_x = row[0].find('─').expect("the border has a horizontal rule") as u16;
