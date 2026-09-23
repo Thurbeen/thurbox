@@ -896,7 +896,9 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Shift+PageUp` / `Alt+PageUp` | Focused terminal | Scroll up half page | |
 | `Shift+PageDown` / `Alt+PageDown` | Focused terminal | Scroll down half page | |
 | Mouse wheel | Terminal under the pointer | Scroll its scrollback (agent or shell tab) | |
-| Click | Session/task/automation/file row | Select the row and focus its pane | |
+| Click | Session row | Select the row; the keyboard stays in the list | |
+| Double-click | Session row | Open it: select the row and focus the agent pane, like `Enter` | |
+| Click | Task/automation/file row | Select the row and focus its pane | |
 | Click | Any pane | Focus the pane under the cursor | |
 | Click / drag | Terminal scrollbar | Jump to, or drag to, a place in the scrollback | |
 | Click | Picker modal row | Select and confirm (Enter; repo picker: Space toggle) | |
@@ -2994,10 +2996,11 @@ that the mouse handler hit-tests — first match wins, with rows
 recorded before their pane's whole-rect focus fallback.
 
 - **Click a row** (session list, tasks panel, automations pane,
-  file viewer): selects it and focuses that pane. A session-list
-  group header selects that group's first session. File rows also
-  activate (toggle a directory, open a file in the editor).
-  Clicking into another pane while an in-pane editor has unsaved
+  file viewer): selects it. A session row leaves the keyboard in the
+  list and opens on a double-click (below); the other panes take
+  focus on the click. A session-list group header only focuses the
+  column. File rows also activate (toggle a directory, open a file in
+  the editor). Clicking into another pane while an in-pane editor has unsaved
   edits discards them, exactly like `Esc`/`Ctrl+H`.
 - **Click a pane**: focuses it; terminal and session-list clicks
   still arm drag-selection on the same press.
@@ -3056,6 +3059,16 @@ Dispatch order on click: modal (swallowing what misses its rows) →
 chrome band button → float (swallowing what misses it) →
 `Ctrl+Click` URL → click targets → text selection arming.
 
+- **Double-click**: a second left press on the same node within 400 ms
+  reaches the pane as a click with `hit.clicks = 2`; every other press
+  is `1`, and a third quick press starts over so an "open on 2" pane
+  opens once. Same node means same `id`, so the `selected` class the
+  first press adds does not break the pair, and a press anywhere else in
+  between makes the next one a first again. The session list reads it: a single click selects the
+  row and leaves the keyboard in the column, so `Ctrl+D` and the other
+  list chords act on the session just pointed at; a double-click is
+  Enter, and hands focus to the agent pane. (#1137 moved focus on every
+  click, which made click-then-`Ctrl+D` type `Ctrl+D` into the agent.)
 - **Dragging a control**: a node declaring `role = "drag"` takes hold
   of the pointer for the length of the press — no text selection is
   armed over it, and every move until release is delivered to it as a

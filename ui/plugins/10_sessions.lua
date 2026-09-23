@@ -744,12 +744,13 @@ return {
   -- carries the session id rather than an index, so a list that reordered
   -- between the paint and the press still selects the session you pointed at.
   --
-  -- Selecting is not the end of the gesture: the agent pane is what shows a
-  -- session, so the click then hands focus there, exactly as Enter
-  -- (`sessions.open`) does. Without it the kernel's click-focuses-the-pane
-  -- rule leaves the keyboard in this column, and the next thing typed goes to
-  -- the list instead of the agent just chosen. The `focus` command is applied
-  -- after the press resolves, so the agent wins.
+  -- Selecting and opening are two gestures. A single click leaves the keyboard
+  -- in this column (the kernel's click-focuses-the-pane rule), so Ctrl+D and
+  -- the other list chords act on the row you just pointed at. A double-click
+  -- is Enter (`sessions.open`): it also hands focus to the agent pane that
+  -- shows the session. #1137 moved focus on every click, which made "click a
+  -- session, press Ctrl+D" type Ctrl+D into the agent instead. The `focus`
+  -- command is applied after the press resolves, so the agent wins.
   --
   -- A repo header carries no id — it is drawn as its own line and only session
   -- lines are targets — so a click on one focuses the column and selects
@@ -764,7 +765,9 @@ return {
     if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
       return false
     end
-    command("focus", { text = "agent" })
+    if hit.clicks == 2 then
+      command("focus", { text = "agent" })
+    end
     return true
   end,
 

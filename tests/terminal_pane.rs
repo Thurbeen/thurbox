@@ -646,6 +646,7 @@ fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
             w: 1,
             h: BAR_HEIGHT - 2,
             dragging,
+            clicks: 1,
         },
     )
     .expect("press")

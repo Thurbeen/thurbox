@@ -183,12 +183,17 @@ impl Profile {
 fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     let mut master = -1;
     let mut slave = -1;
-    let size = libc::winsize {
+    let mut size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    // Apple's libc declares openpty's termios and winsize arguments `*mut`,
+    // Linux's `*const`; a `*mut` coerces to either, and a named pointer is
+    // what keeps clippy from reading the `&mut` as an unnecessary one on the
+    // `*const` side.
+    let winsize: *mut libc::winsize = &mut size;
     // SAFETY: openpty writes two valid descriptors into the out-params on
     // success; the name and termios pointers are allowed to be null.
     let rc = unsafe {
@@ -196,8 +201,8 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &size,
+            std::ptr::null_mut(),
+            winsize,
         )
     };
     assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
@@ -2059,38 +2064,140 @@ fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
 }
 
 #[test]
-fn clicking_a_session_row_hands_focus_to_the_agent_pane() {
-    // Choosing a session is one gesture, however it is made: Enter on a row
-    // already moves focus to the agent pane, and a click on one must land in
-    // the same place — the next thing typed belongs to the agent just chosen.
-    // The kernel's click-focuses-the-pane rule runs first and puts the
-    // keyboard in the column, so it is the pane's own follow-up `focus`
-    // command this test pins down; without it the badge below stays
-    // "Sessions" and typing goes to the list.
-    let Some((_profile, mut tui)) = shell_session() else {
+fn a_single_click_selects_a_session_row_and_a_double_click_opens_it() {
+    // Pointing at a session and opening it are two gestures. A single click
+    // selects the row and leaves the keyboard in the column, so Ctrl+D and the
+    // other list chords act on the session just pointed at; a double-click is
+    // Enter, and hands focus to the agent pane. The whole road is asserted
+    // here — SGR reports in, `ClickTrain` counting the two presses, the pane
+    // reading `hit.clicks` — because a wire that dropped the count anywhere
+    // along it would leave every in-process test green and open on one click.
+    let Some((_profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let repo = profile.root.path().join("repo");
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "second",
+                "--repo-path",
+                repo.to_str().expect("utf-8 path"),
+                "--agent",
+                "shell",
+            ]);
+        },
+        |_| {},
+    ) else {
         return;
+    };
+    let badge_reads = |frame: &str, pane: &str| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with(pane))
     };
 
     // 0x08 is Ctrl+H, the kernel's focus-cycle chord.
     tui.send(b"\x08");
     tui.wait_until("the sessions pane to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
+        badge_reads(frame, "Sessions")
     });
 
-    // Aimed by the row's status text because "probe" is also painted in the
-    // chrome line and in the agent pane's title, both above the list, and
-    // `find` answers with the first.
-    let at = tui.find("no status hooks");
-    tui.drag(at, 0);
-    tui.wait_until("the click to hand focus to the agent pane", |frame| {
+    // "second" is on screen only as its row: the chrome and the agent pane's
+    // title both name the selected session, which is still "probe".
+    let at = tui.find("second");
+    tui.press(0, at);
+    tui.wait_until("the click to select the second session", |frame| {
+        frame.contains("second (shell)")
+    });
+    tui.wait_until_quiet();
+    assert!(
+        badge_reads(&tui.frame(), "Sessions"),
+        "a single click must leave the keyboard in the column:\n{}",
+        tui.frame()
+    );
+
+    // Now "probe" is the row that is NOT selected, and its row is the only
+    // "probe" on screen. The first press selects it, and the second is held
+    // back until the repaint has marked the row selected — the case a
+    // double-click exists for, and the one a count keyed on anything but the
+    // node's id reads as two singles. Two presses sent back to back land in
+    // one frame and would miss that transition. The wait is budgeted well
+    // inside the 400 ms window, so a slow repaint fails here, by name, rather
+    // than as a double-click that did not open.
+    let at = tui.find("probe");
+    tui.press(0, at);
+    tui.wait_within(
+        Duration::from_millis(300),
+        "the first press to select probe and repaint its row",
+        |frame| frame.contains("probe (shell)"),
+    );
+    tui.press(0, at);
+    tui.wait_until(
+        "the double-click to hand focus to the agent pane",
+        |frame| badge_reads(frame, "Agent"),
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// A press of any button is a press. Two quick left clicks on a row with a
+/// middle press between them are not a double-click, however fast: the
+/// gesture was interrupted, and the row must only be selected, not opened.
+#[test]
+fn a_press_of_another_button_between_two_clicks_keeps_them_two_clicks() {
+    let Some((_profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let repo = profile.root.path().join("repo");
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "second",
+                "--repo-path",
+                repo.to_str().expect("utf-8 path"),
+                "--agent",
+                "shell",
+            ]);
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    let badge_reads = |frame: &str, pane: &str| {
         frame
             .lines()
             .last()
-            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+            .is_some_and(|band| band.trim_start().starts_with(pane))
+    };
+
+    tui.send(b"\x08");
+    tui.wait_until("the sessions pane to be the focused one", |frame| {
+        badge_reads(frame, "Sessions")
     });
+    // Select "second" so that "probe" is the row that is not selected, and
+    // the only "probe" on screen.
+    tui.press(0, tui.find("second"));
+    tui.wait_until("the click to select the second session", |frame| {
+        frame.contains("second (shell)")
+    });
+    tui.wait_until_quiet();
+
+    // Left, middle (button 1), left — back to back, well inside the window.
+    let at = tui.find("probe");
+    tui.press(0, at);
+    tui.press(1, at);
+    tui.press(0, at);
+    tui.wait_until("the presses to select probe", |frame| {
+        frame.contains("probe (shell)")
+    });
+    tui.wait_until_quiet();
+    assert!(
+        badge_reads(&tui.frame(), "Sessions"),
+        "an interrupted pair of clicks must not open the session:\n{}",
+        tui.frame()
+    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

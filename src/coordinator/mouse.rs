@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 use thurbox::kernel::bands;
 use thurbox::kernel::host::{Click, Scroll};
 use thurbox::kernel::modals::ModalKind;
-use thurbox::kernel::node::ClickVerb;
+use thurbox::kernel::node::{ClickVerb, Identity};
 use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
 use super::{key_event_from_chord, open_url};
@@ -21,6 +21,12 @@ use crate::{App, ClickTarget, PointerGrab};
 
 impl App {
     pub(crate) fn on_mouse(&mut self, mouse: MouseEvent) {
+        // A press of any button is a press: it is what a double-click must
+        // not have between its two halves, whether or not the button below is
+        // one this loop answers.
+        if let MouseEventKind::Down(_) = mouse.kind {
+            self.click_train.begin();
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // A press starts a new gesture wherever it lands, so it also
@@ -355,7 +361,7 @@ impl App {
 
     /// Offer a right press to the plugin that painted the node under it.
     fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
-        let click = self.click_at(&target, x, y, false);
+        let click = self.click_at(&target, x, y, false, 1);
         match self.host.on_context(target.plugin, &click) {
             Ok(handled) => {
                 if handled {
@@ -422,7 +428,10 @@ impl App {
                         identity: target.identity.clone(),
                     });
                 }
-                let click = self.click_at(&target, x, y, false);
+                let clicks =
+                    self.click_train
+                        .count(Instant::now(), target.plugin, &target.identity);
+                let click = self.click_at(&target, x, y, false, clicks);
                 match self.host.on_click(target.plugin, &click) {
                     Ok(handled) => handled,
                     Err(e) => {
@@ -545,7 +554,7 @@ impl App {
     }
 
     /// A press or a move, resolved into the node's own coordinate space.
-    fn click_at(&self, target: &ClickTarget, x: u16, y: u16, dragging: bool) -> Click {
+    fn click_at(&self, target: &ClickTarget, x: u16, y: u16, dragging: bool, clicks: u8) -> Click {
         Click {
             id: target.identity.id.clone(),
             classes: target.identity.classes.clone(),
@@ -555,6 +564,7 @@ impl App {
             w: target.rect.width,
             h: target.rect.height,
             dragging,
+            clicks,
         }
     }
 
@@ -576,7 +586,8 @@ impl App {
         };
         let bounds = PaneBounds::from_rect(grab.rect);
         let (x, y) = bounds.clamp(x, y);
-        let click = self.click_at(&target, x, y, true);
+        // A move under a press is not another press.
+        let click = self.click_at(&target, x, y, true, 1);
         match self.host.on_click(grab.plugin, &click) {
             Ok(_) => {}
             Err(e) => self.errors.push(e),
@@ -889,10 +900,78 @@ impl WheelNotch {
     }
 }
 
+/// How long the second press of a double-click may follow the first. The
+/// desktop default on macOS and Windows is 500 ms; 400 ms leaves a margin so
+/// two deliberate selections a half-second apart are not read as an open.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// One press that reached a node: when, on which pane, on which node, and how
+/// many it made.
+struct Press {
+    at: Instant,
+    plugin: usize,
+    id: String,
+    clicks: u8,
+}
+
+/// The presses in progress on one node, for telling a double-click from two
+/// clicks.
+///
+/// Kept here rather than in Lua because a pane has no clock outside `render`,
+/// and `elapsed` there marks a pure pane as animated. Counting in the
+/// coordinator gives every pane the same answer from one place.
+///
+/// A node is the same node by its **id**, never by its whole identity: the
+/// first click selects the row, and the repaint before the second gives it a
+/// `selected` class — the classes are exactly the half that a click rewrites.
+#[derive(Default)]
+pub(crate) struct ClickTrain {
+    /// The press before the one in progress, when it reached a node.
+    previous: Option<Press>,
+    /// The press in progress, once it has reached a node.
+    last: Option<Press>,
+}
+
+impl ClickTrain {
+    /// Every press starts here, whatever it lands on. What the last press
+    /// reached becomes the only thing this one can repeat, and a press that
+    /// then reaches no node — the chrome, a modal, a terminal, a right press —
+    /// leaves nothing behind, so a click on a row, one elsewhere and one on the
+    /// row again are what they look like: two clicks.
+    pub(crate) fn begin(&mut self) {
+        self.previous = self.last.take();
+    }
+
+    /// How many presses this one makes on its node: 2 for the second press on
+    /// the same node within [`DOUBLE_CLICK`] of the first, 1 otherwise.
+    ///
+    /// A third quick press starts over at 1 rather than counting to 3, so a
+    /// pane that opens on 2 opens once. A node with no id has nothing to be
+    /// the same as, and every press on it is a first.
+    fn count(&mut self, now: Instant, plugin: usize, identity: &Identity) -> u8 {
+        let Some(id) = identity.id.clone() else {
+            return 1;
+        };
+        let repeats = self.previous.as_ref().is_some_and(|press| {
+            press.clicks == 1
+                && press.plugin == plugin
+                && press.id == id
+                && now.duration_since(press.at) < DOUBLE_CLICK
+        });
+        let clicks = if repeats { 2 } else { 1 };
+        self.last = Some(Press {
+            at: now,
+            plugin,
+            id,
+            clicks,
+        });
+        clicks
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thurbox::kernel::node::Identity;
 
     fn painted_by(plugin: usize) -> Option<ClickTarget> {
         Some(ClickTarget {
@@ -976,5 +1055,137 @@ mod tests {
         let mut notch = WheelNotch::default();
         assert!(notch.opens(start, false));
         assert!(notch.opens(start + WHEEL_NOTCH, false));
+    }
+
+    fn row(id: &str) -> Identity {
+        Identity {
+            id: Some(id.into()),
+            classes: vec!["row".into()],
+            role: Some("row".into()),
+        }
+    }
+
+    /// One press, start to finish: it begins wherever it lands and is counted
+    /// on the node it reached.
+    fn press(train: &mut ClickTrain, at: Instant, plugin: usize, identity: &Identity) -> u8 {
+        train.begin();
+        train.count(at, plugin, identity)
+    }
+
+    /// The gesture every desktop teaches: press twice on the same thing, fast,
+    /// and the second press means "open" rather than "select again".
+    #[test]
+    fn a_second_press_on_the_same_node_within_the_window_is_a_double_click() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 1, &row("a")),
+            2
+        );
+    }
+
+    /// The first press selects the row, and the repaint in between gives it a
+    /// `selected` class. The node is the same node: only its id says so, and
+    /// the classes are exactly the half that selection rewrites.
+    #[test]
+    fn a_row_that_gained_a_class_between_two_presses_still_doubles() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        let mut selected = row("a");
+        selected.classes.push("selected".into());
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 1, &selected),
+            2
+        );
+    }
+
+    #[test]
+    fn a_press_after_the_window_starts_over() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(press(&mut train, start + DOUBLE_CLICK, 1, &row("a")), 1);
+    }
+
+    /// Two quick presses on two different rows are two selections, not an
+    /// open of the second — and the second row's own count starts from there.
+    #[test]
+    fn a_press_on_another_node_starts_over() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 1, &row("b")),
+            1
+        );
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(200), 1, &row("b")),
+            2
+        );
+    }
+
+    /// A press that reached no node — the chrome, a modal, a terminal — is
+    /// still a press: two clicks on a row with one of those in between are two
+    /// clicks, not an open.
+    #[test]
+    fn a_press_that_reaches_no_node_between_two_presses_starts_over() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        train.begin();
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(200), 1, &row("a")),
+            1
+        );
+    }
+
+    /// The same node id in another pane is another node.
+    #[test]
+    fn the_same_id_in_another_pane_starts_over() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 2, &row("a")),
+            1
+        );
+    }
+
+    /// A triple-click is a double-click and a fresh single: counting on to 3
+    /// would make a pane that opens on 2 open once, and one that treats
+    /// `>= 2` as open, twice.
+    #[test]
+    fn a_third_quick_press_is_a_new_single() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        assert_eq!(press(&mut train, start, 1, &row("a")), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 1, &row("a")),
+            2
+        );
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(200), 1, &row("a")),
+            1
+        );
+    }
+
+    /// A press on a node with no id has nothing to be the same as: two of them
+    /// in a row are two presses, whatever the pane does with the coordinates.
+    #[test]
+    fn a_node_without_an_id_never_doubles() {
+        let start = Instant::now();
+        let mut train = ClickTrain::default();
+        let bare = Identity {
+            id: None,
+            classes: vec!["row".into()],
+            role: None,
+        };
+        assert_eq!(press(&mut train, start, 1, &bare), 1);
+        assert_eq!(
+            press(&mut train, start + Duration::from_millis(100), 1, &bare),
+            1
+        );
     }
 }

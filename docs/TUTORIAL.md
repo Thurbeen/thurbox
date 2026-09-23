@@ -195,6 +195,11 @@ The ones worth knowing on day one:
 | `F10` | Reload the interface from disk |
 | `Ctrl+Q` | Quit, leaving every agent running |
 
+With the mouse, a click on a session **selects** it and leaves the keyboard in
+the list, so `Ctrl+D` then deletes the one you pointed at; a **double-click**
+opens it, moving the keyboard into its agent pane like `Enter`. The badge at the
+bottom-left always names the pane that has the keyboard.
+
 `Ctrl+/` is the one to remember when the list gets long: it matches names,
 agents, branches and repositories — and the text on each session's screen, which
 is how you find the session with the error in it. Matches highlight **inside**

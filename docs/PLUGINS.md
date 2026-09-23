@@ -822,7 +822,7 @@ it:
 ```lua
 on_click = function(hit)
   -- hit.id, hit.class, hit.role, plus hit.x / hit.y inside the node's own rect
-  -- and hit.w / hit.h, its size
+  -- and hit.w / hit.h, its size; hit.clicks is 2 on a double-click
   if not hit.id then return false end
   state.cursor = index_of(hit.id)
   return true
@@ -832,6 +832,16 @@ end,
 `hit.w` / `hit.h` are there so a coordinate can be resolved against the shape it
 landed in without the pane keeping geometry from its last render — which a
 `pure` pane cannot do at all, since `render` may not write.
+
+`hit.clicks` is `2` for the second press on the same node within 400 ms of the
+first, and `1` for any other press — the kernel counts, because a pane has no
+clock outside `render`. A third quick press is `1` again, so a pane that opens
+on `2` opens once. The bundled session list is the worked example: a single
+click selects the row and leaves the keyboard in the column, a double-click also
+hands focus to the agent pane, exactly as Enter does. The node is the same node
+by its `id`, so a row that gained a `selected` class between the two presses
+still doubles; a node with no `id` never reads `2`, and a press anywhere else in
+between — the chrome, a modal, a terminal — makes the next one a first again.
 
 Return `false` and the press falls through, which is what lets the same click
 that focused a terminal also start a drag-selection over it. A pane needs no
