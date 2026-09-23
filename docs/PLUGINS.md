@@ -516,7 +516,10 @@ clips between the corners, which are never painted over.
 
 `surface` is the exception that proves the rule: it carries **cells**, for
 content positioned by character measurement rather than by structure — a live
-terminal, or a diff body. You place and frame it; the kernel fills it.
+terminal, or a diff body. You place and frame it; the kernel fills it. `scroll`
+sets how far back a terminal is scrolled, and `mark` names one row (from the top of
+the surface) the kernel draws reversed over whatever the cells are — how the
+terminal pane points at the line a search landed it on.
 
 The cost of that split, which is easy to meet as a mystery rather than as a fact:
 **cells never become nodes, so a surface is invisible to anything that walks the node
@@ -986,6 +989,12 @@ notices.
 "action:…"` node runs, so a **key handler** can open help, settings, themes or
 the palette. Before it, those were reachable only by painting a node and waiting
 for a click — which is why three floats rebuilt a modal shell of their own.
+
+The action goes to whichever plugin declared it — as a key **or** as a chord-less
+palette row in `commands` — so it is also how one pane asks another to act. An
+action carries no argument; leave one in `store` first. The search strip asks the
+terminal pane to scroll to a hit this way: it writes `store["terminal.reveal"]`
+and runs `terminal.reveal`, a palette row the terminal pane declares.
 
 ## Floating panes and modals
 

@@ -81,7 +81,7 @@ mkdir -p "$REPO"
 git -C "$REPO" init -q -b main
 git -C "$REPO" -c user.name=demo -c user.email=demo@example.invalid \
     commit -q --allow-empty -m init
-for name in api-refactor login-fix docs-pass; do
+for name in login-fix api-refactor docs-pass; do
     thurbox-cli session create --name "$name" --repo-path "$REPO" --agent demo >/dev/null
 done
 thurbox-cli config accept-interface >/dev/null
@@ -164,17 +164,21 @@ k C-q
 for _ in $(seq 1 20); do [ -s "$CAST" ] && break; sleep 0.5; done
 sleep 1
 
-# Cut the cast where teardown starts (the cursor coming back is the first byte
-# of the exit), so the GIF loops on the landed frame, not a bare shell.
+# Cut the cast where teardown starts, so the GIF loops on the landed frame, not
+# a bare shell. Teardown shows the cursor and then leaves the alternate screen;
+# the first cursor-show after the last cursor-hide is where it begins. (Not the
+# first cursor-show overall: the search strip's input shows the caret while it
+# is open.)
 python3 - "$CAST" <<'TRIM'
 import json, sys
 
 path = sys.argv[1]
 lines = open(path).read().splitlines()
-for i, line in enumerate(lines[1:], start=1):
-    data = json.loads(line)[2]
-    if "\x1b[?25h" in data or "\x1b[?1049l" in data:
-        open(path, "w").write("\n".join(lines[:i]) + "\n")
+events = [json.loads(line)[2] for line in lines[1:]]
+hidden = max((i for i, data in enumerate(events) if "\x1b[?25l" in data), default=0)
+for i in range(hidden + 1, len(events)):
+    if "\x1b[?25h" in events[i] or "\x1b[?1049l" in events[i]:
+        open(path, "w").write("\n".join(lines[: i + 1]) + "\n")
         break
 TRIM
 

@@ -887,3 +887,150 @@ fn a_match_keeps_its_colour_under_the_selection_bar() {
         "an unsearched row has no matched characters to light"
     );
 }
+
+/// The strip as the kernel paints it, at `width`×`height`, after the query has
+/// settled with `search` published.
+fn painted_strip(host: &LuaHost, width: u16, height: u16, search: Option<&Answer>) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use thurbox::kernel::paint::{render as paint_render, PlaceholderSurfaces};
+
+    render_after_debounce(host, search);
+    publish_with(host, search);
+    let index = host.index_of(PLUGIN).expect("no search plugin");
+    let node = host
+        .render(
+            index,
+            RenderContext {
+                width,
+                height,
+                focused: true,
+                elapsed: 2.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| paint_render(frame, frame.area(), &node, &PlaceholderSurfaces))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn hit_row(session: &str, text: &str, back: usize, positions: std::ops::Range<usize>) -> Hit {
+    Hit {
+        session: session.into(),
+        shell: false,
+        text: text.into(),
+        ranges: vec![(positions.start, positions.end)],
+        back,
+        scroll: back,
+        row: 5,
+        exact: true,
+        score: 100,
+    }
+}
+
+#[test]
+fn a_text_result_says_where_it_is_and_keeps_its_line_when_narrow() {
+    let found = Answer {
+        request: Request {
+            query: "flake".into(),
+            sessions: None,
+        },
+        hits: vec![hit_row(
+            "ccc",
+            "why does the login test flake?",
+            112,
+            24..29,
+        )],
+        total: 1,
+        sessions: 3,
+        lines: 3000,
+        ..Answer::default()
+    };
+    let host = host();
+    open(&host);
+    type_query(&host, "flake");
+    let wide = painted_strip(&host, 100, 10, Some(&found));
+    let row = wide
+        .lines()
+        .find(|line| line.contains("112↑"))
+        .unwrap_or_else(|| panic!("no located result\n{wide}"));
+    assert!(row.contains("docs-remote-hooks"), "{wide}");
+    assert!(row.contains("why does the login test flake?"), "{wide}");
+    assert!(
+        wide.contains("text 1 in 3,000 lines of 3 sessions"),
+        "{wide}"
+    );
+
+    // Narrow: the session column goes before the line does.
+    let narrow = painted_strip(&host, 36, 10, Some(&found));
+    let row = narrow
+        .lines()
+        .find(|line| line.contains("112↑"))
+        .unwrap_or_else(|| panic!("no located result\n{narrow}"));
+    assert!(!row.contains("docs-remote"), "{narrow}");
+    assert!(row.contains("why does"), "{narrow}");
+}
+
+#[test]
+fn nothing_found_says_what_was_searched() {
+    let empty = Answer {
+        request: Request {
+            query: "zzqx".into(),
+            sessions: None,
+        },
+        sessions: 3,
+        lines: 3000,
+        ..Answer::default()
+    };
+    let host = host();
+    open(&host);
+    type_query(&host, "zzqx");
+    let strip = painted_strip(&host, 100, 10, Some(&empty));
+    assert!(
+        strip.contains(
+            "no match for zzqx in the names or terminal text of 3 sessions (3,000 lines)"
+        ),
+        "{strip}"
+    );
+    assert!(strip.contains("no matches"), "{strip}");
+}
+
+#[test]
+fn while_the_terminals_are_read_the_strip_says_so() {
+    // The answer lands a frame or two after the query settles; until it does
+    // the strip must not look finished.
+    let host = host();
+    open(&host);
+    type_query(&host, "zzqx");
+    let strip = painted_strip(&host, 100, 10, None);
+    assert!(strip.contains("searching"), "{strip}");
+}
+
+#[test]
+fn an_invalid_regex_says_why() {
+    let broken = Answer {
+        request: Request {
+            query: "/(oops/".into(),
+            sessions: None,
+        },
+        error: Some("not a valid regex: unclosed group".into()),
+        ..Answer::default()
+    };
+    let host = host();
+    open(&host);
+    type_query(&host, "/(oops/");
+    let strip = painted_strip(&host, 100, 10, Some(&broken));
+    assert!(strip.contains("not a valid regex"), "{strip}");
+}

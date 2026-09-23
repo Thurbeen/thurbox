@@ -425,7 +425,7 @@ all commented so defaults still apply out of the box.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `scrollback_lines` | `1000` | terminal scrollback kept per session |
+| `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
