@@ -351,6 +351,9 @@ pub struct HistoryLine {
     pub folded: String,
     /// The row the line starts on, counted from the oldest scrollback row.
     pub row: usize,
+    /// Where each row after the first begins, as a character offset into
+    /// `text` — so a match can be placed on the row it is actually on.
+    pub wraps: Vec<usize>,
 }
 
 /// Everything one terminal still holds, oldest first.
@@ -398,11 +401,15 @@ impl History {
             for (r, text) in screen.rows(0, cols).enumerate().take(last).skip(first) {
                 let row = base + r;
                 match lines.last_mut() {
-                    Some(line) if continues => line.text.push_str(&text),
+                    Some(line) if continues => {
+                        line.wraps.push(line.text.chars().count());
+                        line.text.push_str(&text);
+                    }
                     _ => lines.push(HistoryLine {
                         text,
                         folded: String::new(),
                         row,
+                        wraps: Vec::new(),
                     }),
                 }
                 continues = u16::try_from(r).is_ok_and(|r| screen.row_wrapped(r));
@@ -511,6 +518,8 @@ fn snippet(text: &str, ranges: &[(usize, usize)]) -> (String, Vec<(usize, usize)
 struct Found {
     source: usize,
     line: usize,
+    /// The history row the first hit is on.
+    row: usize,
     matched: LineMatch,
     back: usize,
 }
@@ -526,11 +535,18 @@ impl Found {
             text,
             ranges,
             back: self.back,
-            scroll: history.scroll_to(line.row),
-            row: history.row_on_screen(line.row),
+            scroll: history.scroll_to(self.row),
+            row: history.row_on_screen(self.row),
             exact: self.matched.exact,
             score: self.matched.score,
         }
+    }
+}
+
+impl HistoryLine {
+    /// The row character `at` of this line is on.
+    fn row_of(&self, at: usize) -> usize {
+        self.row + self.wraps.iter().take_while(|&&start| start <= at).count()
     }
 }
 
@@ -541,11 +557,16 @@ fn found_in(query: &Query, source: usize, history: &History) -> Vec<Found> {
         .iter()
         .enumerate()
         .filter_map(|(index, line)| {
+            let matched = query.match_folded(&line.text, &line.folded)?;
+            // The row the first hit is on, not the row the line starts on: a
+            // wrapped line's match can be rows further down.
+            let row = line.row_of(matched.ranges.first().map_or(0, |r| r.0));
             Some(Found {
                 source,
                 line: index,
-                matched: query.match_folded(&line.text, &line.folded)?,
-                back: history.back(line.row),
+                row,
+                matched,
+                back: history.back(row),
             })
         })
         .collect()
@@ -979,6 +1000,28 @@ mod tests {
         let visible: Vec<String> = parser.screen().rows(0, 20).collect();
         assert_eq!(visible[hit.row], "needle", "{visible:?}");
         assert!(hit.back >= 99);
+    }
+
+    #[test]
+    fn a_hit_on_a_wrapped_rows_continuation_lands_on_that_row() {
+        // One logical line over three rows; the needle is on the second. The
+        // hit must point at the row the needle is on, not the line's first.
+        let long = "a".repeat(30) + "NEEDLE" + &"b".repeat(10);
+        let mut text = format!("{long}\r\n");
+        for n in 0..50 {
+            text.push_str(&format!("{n}\r\n"));
+        }
+        let mut parser = screen(5, 20, &text);
+        let history = History::read(parser.screen_mut());
+        let hits = hits_in(&q("needle"), "s", false, &history);
+        let hit = &hits[0];
+        parser.screen_mut().set_scrollback(hit.scroll);
+        let visible: Vec<String> = parser.screen().rows(0, 20).collect();
+        assert!(
+            visible[hit.row].contains("NEEDLE"),
+            "{visible:?} row {}",
+            hit.row
+        );
     }
 
     #[test]
