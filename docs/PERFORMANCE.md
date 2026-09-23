@@ -2183,9 +2183,40 @@ the absolute numbers):
 | … waiting for the output floor | 0–33 ms | 0 |
 | the frame | 1.34 ms | 0.55 ms |
 
-What is left is roughly a third tmux's round trip, a third the frame and its
-flush, and a sixth the key's own dispatch — which republishes and runs the
-focused pane's Lua `on_key` before the key is known to be the terminal's.
+The same hops after the change on the benchmark's own machine (a 4-core i5-6500T
+at the `powersave` governor, idle, the harness's 200x50 client), 109 keys:
+
+| hop | ms |
+|---|---|
+| key read → sent (republish + the focused pane's `on_key`) | 0.50 |
+| writer task → tmux | 0.09 |
+| tmux → agent → tmux → control-mode reader | 0.89 |
+| → the pane's reader has parsed it | 0.18 |
+| → the loop is woken | 0.20 |
+| → the echo frame starts | 0.07 |
+| the echo frame: kept frame in, 0.27 · surface render, 0.66 · width/theme passes, 0.09 · diff and flush, 0.59 · kept frame out, 0.19 | 1.69 |
+| **total** | **3.6** |
+
+That is the floor this architecture has on that machine, and it is above Herdr's
+2.2 ms there. None of it is waiting any more; it is three kinds of work, each
+structural:
+
+- **The frame (~1.4 ms).** thurbox is a second terminal emulator: the echo is
+  re-rendered from its vt100 grid into a ratatui buffer and diffed over the whole
+  screen. Copying the kept frame in and out could be halved by swapping it into
+  ratatui's own buffer rather than copying (~0.2 ms, by bypassing
+  `Terminal::draw`); the render and the diff are per cell of the screen, and
+  getting under them needs a renderer that knows which rows of the grid changed —
+  which vt100 does not track.
+- **tmux in the middle (~1.1 ms).** Control mode, then a thread per pane to parse:
+  the price of sessions that outlive the interface (ARCHITECTURE ADR-12), and of
+  the extra wake-ups a core in a deep idle state pays for each hop. With another
+  session printing, cores stay awake and the whole path measures 1.6 ms.
+- **The key's dispatch (~0.5 ms).** A key is published for and offered to the
+  focused pane's Lua `on_key` before it is known to be the terminal's (the agent
+  pane uses it to snap a scrolled-back view to the live end). Sending first would
+  let no plugin claim a key it had not declared — a plugin API change, not a
+  pacing one.
 
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
 re-applying the same server options twice (#1243). The options are now one tmux
