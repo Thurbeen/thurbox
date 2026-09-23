@@ -274,10 +274,17 @@ impl LuaHost {
 
         // The content search's answer. Absent unless something asked, so an
         // interface that never searches never pays for it — and gated on the
-        // data epoch, which moves exactly when a search lands or is dropped.
-        let search_value = self.group("search", [epoch.snapshot, epoch.data, 0, 0], || {
-            build_search(&self.lua, *search)
-        })?;
+        // answer's own serial, not the data epoch. Every worker moves that
+        // epoch (links, diffs, metrics), eight times a second under load, and
+        // each move rebuilt up to 200 hit tables and handed the strip a new
+        // table, which is how it tells that its answer changed. An answer made
+        // outside a store (a test's) has no serial and keeps the epoch.
+        let search_key = match search {
+            None => [0, 0, 0, 0],
+            Some(answer) if answer.serial > 0 => [1, answer.serial, 0, 0],
+            Some(_) => [2, epoch.snapshot, epoch.data, 0],
+        };
+        let search_value = self.group("search", search_key, || build_search(&self.lua, *search))?;
         set(&table, "search", search_value)?;
 
         // Machine, per-agent and account metrics. Each is absent rather than

@@ -390,50 +390,38 @@ fn answer(query: &str, hits: &[(&str, &str, usize)]) -> Answer {
     }
 }
 
-/// Render after the debounce has elapsed, which is what makes the pane ask.
-fn render_after_debounce(host: &LuaHost, search: Option<&Answer>) {
+/// Render with `search` as the kernel's published answer.
+fn render_answered(host: &LuaHost, search: Option<&Answer>) {
     PUBLISHED.with(|p| *p.borrow_mut() = search.cloned());
     let index = host.index_of(PLUGIN).expect("no search plugin");
-    // Twice: the first render notices the query changed and starts the clock,
-    // the second finds it unmoved and asks.
-    for elapsed in [0.0_f64, 1.0] {
-        publish_with(host, search);
-        host.render(
-            index,
-            RenderContext {
-                width: 60,
-                height: 12,
-                focused: true,
-                elapsed,
-                frame: 0,
-            },
-        )
-        .expect("render");
-    }
+    publish_with(host, search);
+    host.render(
+        index,
+        RenderContext {
+            width: 60,
+            height: 12,
+            focused: true,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .expect("render");
 }
 
 #[test]
-fn nothing_is_asked_of_the_terminals_until_a_query_settles() {
-    // Every agent's history on every frame is not a thing to read
-    // speculatively, so the search is served only while the pane asks — and it
-    // asks only once the query has stood still.
+fn an_open_strip_warms_the_terminals_and_a_keystroke_asks_at_once() {
+    // Open with nothing typed, the strip asks with an empty query: the kernel
+    // reads every history into its cache and matches nothing, so the first
+    // keystroke is matched against text already read. And a keystroke asks on
+    // the very next frame — the worker gives up a run the moment a newer one
+    // supersedes it, so a debounce would only add its wait to every keystroke.
     let host = host();
     open(&host);
-    assert_eq!(
-        host.shared_string("want_content"),
-        None,
-        "an empty query asks nothing"
-    );
+    render(&host, PLUGIN);
+    assert_eq!(host.shared_string("want_content").as_deref(), Some(""));
 
     type_query(&host, "err");
     render(&host, PLUGIN);
-    assert_eq!(
-        host.shared_string("want_content"),
-        None,
-        "the first frame after a keystroke starts the clock, it does not ask"
-    );
-
-    render_after_debounce(&host, None);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
 }
 
@@ -444,7 +432,7 @@ fn a_session_is_found_by_a_line_in_its_terminal() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer(
             "ENOSPC",
@@ -466,7 +454,7 @@ fn an_answer_to_an_older_query_is_not_shown() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer(
             "ENOSP",
@@ -488,7 +476,7 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
         "ENOSPC",
         &[("ccc", "first ENOSPC", 120), ("aaa", "second ENOSPC", 40)],
     );
-    render_after_debounce(&host, Some(&found));
+    render_answered(&host, Some(&found));
     let _ = host.drain_commands();
 
     press(&host, "down");
@@ -527,7 +515,7 @@ fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
     let host = host();
     open(&host);
     type_query(&host, "ENOSPC");
-    render_after_debounce(
+    render_answered(
         &host,
         Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
     );
@@ -640,7 +628,7 @@ fn a_filter_narrows_the_terminals_searched() {
     let host = host();
     open(&host);
     type_query(&host, "in:docs err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert_eq!(host.shared_string("want_content").as_deref(), Some("err"));
     assert_eq!(
         host.shared_string("want_content.sessions").as_deref(),
@@ -653,17 +641,17 @@ fn tab_cycles_what_is_searched() {
     let host = host();
     open(&host);
     type_query(&host, "err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     // text only: the terminals are still asked, and no name matches listed.
     press(&host, "tab");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     // names only: nothing is asked of the terminals.
     press(&host, "tab");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert_eq!(host.shared_string("want_content"), None);
 }
 
@@ -672,7 +660,7 @@ fn closing_the_strip_stops_the_terminals_being_read() {
     let host = host();
     open(&host);
     type_query(&host, "err");
-    render_after_debounce(&host, None);
+    render_answered(&host, None);
     assert!(host.shared_string("want_content").is_some());
 
     press(&host, "esc");
@@ -895,7 +883,7 @@ fn painted_strip(host: &LuaHost, width: u16, height: u16, search: Option<&Answer
     use ratatui::Terminal;
     use thurbox::kernel::paint::{render as paint_render, PlaceholderSurfaces};
 
-    render_after_debounce(host, search);
+    render_answered(host, search);
     publish_with(host, search);
     let index = host.index_of(PLUGIN).expect("no search plugin");
     let node = host

@@ -1,31 +1,39 @@
 //! What a content search costs, over every session's full scrollback.
 //!
-//! Not a gate — ADR-P5 keeps timing out of CI; `kernel::search`'s unit tests
-//! hold the assertions that are deterministic. This is the instrument: it fills
-//! real vt100 parsers with agent-shaped output and times the three things the
-//! search does, so the numbers in `docs/PERFORMANCE.md` can be re-measured
-//! rather than trusted.
+//! Not a gate in CI — ADR-P5 keeps timing out of the suite; `kernel::search`'s
+//! unit tests and `tests/search_budget.rs` hold the assertions that are
+//! deterministic. This is the instrument: it fills real vt100 parsers with
+//! agent-shaped output and times what the search does, so the numbers in
+//! `docs/PERFORMANCE.md` can be re-measured rather than trusted.
 //!
 //! ```sh
 //! cargo bench --bench search_cost                          # 20 sessions × 1000
 //! THURBOX_BENCH_SESSIONS=20 THURBOX_BENCH_SCROLLBACK=10000 cargo bench --bench search_cost
+//! THURBOX_BENCH_CHECK=1 cargo bench --bench search_cost    # exit 1 over budget
 //! ```
 //!
 //! * **loop** — what the render thread pays to start a search: one `Source`
 //!   (an `Arc` clone and a stamp) per terminal. The rest is on the worker.
-//! * **cold** — the worker's first run: every history read under its parser's
-//!   lock, then matched.
-//! * **warm** — a new query over terminals that printed nothing since: the
-//!   histories come from the cache, so this is matching alone. It is what each
-//!   keystroke costs once the debounce lets it through.
 //! * **lock** — the longest one parser was held while its history was read,
 //!   which is how long that session's reader thread (and its paint) could wait.
+//! * **cold** — the worker's first run: every history read, then matched. An
+//!   open strip pays this before anything is typed (it warms the cache).
+//! * **warm** — a new query over terminals that printed nothing since: the
+//!   histories come from the cache, so this is matching alone.
+//! * **typing** — a query typed a letter at a time, each letter a warm run:
+//!   the slowest letter is what keystroke-to-result costs on the worker.
+//! * **rescan** — the same query re-run after three agents printed, which an
+//!   open strip does once a second: only what they printed is read again.
+//!
+//! `THURBOX_BENCH_CHECK=1` exits non-zero when a budget below is exceeded —
+//! the "search must not slow the interface" contract (ADR-P26), as numbers a
+//! run on a quiet machine can be held to.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use thurbox::agent::{SessionParser, TermSignals};
-use thurbox::kernel::search::{run, CacheMap, History, Request, Source};
+use thurbox::kernel::search::{run, CacheMap, History, ReadStats, Request, Source};
 
 fn env(name: &str, fallback: usize) -> usize {
     std::env::var(name)
@@ -33,6 +41,15 @@ fn env(name: &str, fallback: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(fallback)
 }
+
+/// The longest a search may hold one terminal's lock.
+const LOCK_BUDGET: Duration = Duration::from_millis(1);
+
+/// The slowest a keystroke's run may be, once histories are read.
+const KEYSTROKE_BUDGET: Duration = Duration::from_millis(50);
+
+/// The slowest a once-a-second rescan may be.
+const RESCAN_BUDGET: Duration = Duration::from_millis(50);
 
 const ROWS: u16 = 50;
 const COLS: u16 = 200;
@@ -120,11 +137,25 @@ fn ms(d: Duration) -> String {
     format!("{:.2}ms", d.as_secs_f64() * 1000.0)
 }
 
+fn request(query: &str) -> Request {
+    Request {
+        query: query.into(),
+        sessions: None,
+    }
+}
+
 fn main() {
     let sessions = env("THURBOX_BENCH_SESSIONS", 20);
     let scrollback = env("THURBOX_BENCH_SCROLLBACK", 1000);
     let runs = env("THURBOX_BENCH_RUNS", 9);
+    let check = std::env::var_os("THURBOX_BENCH_CHECK").is_some();
     let terminals = sources(sessions, scrollback);
+    let mut over: Vec<String> = Vec::new();
+    let mut budget = |what: &str, took: Duration, limit: Duration| {
+        if took > limit {
+            over.push(format!("{what} {} > {}", ms(took), ms(limit)));
+        }
+    };
 
     println!(
         "content search: {sessions} sessions × {scrollback} scrollback rows ({ROWS}×{COLS} screens), \
@@ -141,9 +172,16 @@ fn main() {
             })
             .collect(),
     );
-    println!("  loop  (hand the worker its sources)   {}", ms(loop_cost));
+    println!(
+        "  loop    (hand the worker its sources)   {}",
+        ms(loop_cost)
+    );
 
-    let lock = terminals
+    let mut read = ReadStats::default();
+    for source in &terminals {
+        std::hint::black_box(History::read_locked(&source.parser, None, &mut read));
+    }
+    let whole = terminals
         .iter()
         .map(|source| {
             let mut parser = source.parser.lock().unwrap();
@@ -153,32 +191,37 @@ fn main() {
         })
         .max()
         .unwrap_or_default();
-    println!("  lock  (longest one parser is held)    {}", ms(lock));
+    println!(
+        "  lock    (longest one parser is held)    {}  ({} rows at most; {} to read a history whole)",
+        ms(read.held),
+        read.widest,
+        ms(whole)
+    );
+    budget("lock", read.held, LOCK_BUDGET);
 
+    let cold = median(
+        (0..runs)
+            .map(|_| {
+                let cache: Mutex<CacheMap> = Mutex::default();
+                let started = Instant::now();
+                std::hint::black_box(run(request(""), &terminals, &cache));
+                started.elapsed()
+            })
+            .collect(),
+    );
+    println!("  cold    (read every history)            {}", ms(cold));
+
+    let cache: Mutex<CacheMap> = Mutex::default();
+    run(request(""), &terminals, &cache);
     for query in [
         "flaky login",
         "login flaky",
         "e",
         "cmpile",
+        "zzqx",
         "\"login test\"",
         "/fa\\w+ed/",
     ] {
-        let request = |q: &str| Request {
-            query: q.into(),
-            sessions: None,
-        };
-        let cold = median(
-            (0..runs)
-                .map(|_| {
-                    let cache: Mutex<CacheMap> = Mutex::default();
-                    let started = Instant::now();
-                    std::hint::black_box(run(request(query), &terminals, &cache));
-                    started.elapsed()
-                })
-                .collect(),
-        );
-        let cache: Mutex<CacheMap> = Mutex::default();
-        run(request("warm-up"), &terminals, &cache);
         let mut answer = None;
         let warm = median(
             (0..runs)
@@ -191,12 +234,69 @@ fn main() {
         );
         let answer = answer.expect("ran");
         println!(
-            "  {query:<14} cold {:>9}  warm {:>9}  {} lines, {} matching, {} shown",
-            ms(cold),
+            "  {query:<14}  warm {:>9}  {} lines, {} matching, {} shown",
             ms(warm),
             answer.lines,
             answer.total,
             answer.hits.len()
         );
+        budget(&format!("warm {query}"), warm, KEYSTROKE_BUDGET);
+    }
+
+    let typed = "compile error";
+    let slowest = (1..=typed.len())
+        .map(|n| {
+            median(
+                (0..runs)
+                    .map(|_| {
+                        let started = Instant::now();
+                        std::hint::black_box(run(request(&typed[..n]), &terminals, &cache));
+                        started.elapsed()
+                    })
+                    .collect(),
+            )
+        })
+        .max()
+        .unwrap_or_default();
+    println!("  typing  (slowest letter of {typed:?})  {}", ms(slowest));
+    budget("typing", slowest, KEYSTROKE_BUDGET);
+
+    // Three agents print a burst, and the open strip re-runs its query.
+    let mut rescans = Vec::new();
+    let mut rows = 0;
+    for round in 0..runs {
+        let printed: Vec<Source> = terminals
+            .iter()
+            .enumerate()
+            .map(|(n, source)| {
+                let mut source = source.clone();
+                if n < 3 {
+                    fill(&mut source.parser.lock().unwrap(), 30, 1000 + round);
+                    source.stamp += 1000 + round as u64;
+                }
+                source
+            })
+            .collect();
+        let started = Instant::now();
+        let answer = run(request("flaky login"), &printed, &cache);
+        rescans.push(started.elapsed());
+        rows = answer.read.rows;
+    }
+    let rescan = median(rescans);
+    println!(
+        "  rescan  (3 agents printed 30 lines)     {}  ({rows} rows read again)",
+        ms(rescan)
+    );
+    budget("rescan", rescan, RESCAN_BUDGET);
+
+    if check {
+        if over.is_empty() {
+            println!("  within budget");
+        } else {
+            for line in &over {
+                println!("  OVER BUDGET: {line}");
+            }
+            std::process::exit(1);
+        }
     }
 }

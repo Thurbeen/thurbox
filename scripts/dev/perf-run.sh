@@ -15,6 +15,7 @@
 #   scripts/dev/perf-run.sh -n 20 -p 3         # 3 of them printing
 #   scripts/dev/perf-run.sh --idle             # nothing printing, for the floor
 #   scripts/dev/perf-run.sh --json             # one machine-readable line
+#   scripts/dev/perf-run.sh -b 1000 --search e # global search open over full scrollback
 #
 # Fully isolated: a private HOME, XDG root and TMUX_TMPDIR (so the cleanup
 # `kill-server` can never reach a real server), the sandbox helper every other
@@ -72,6 +73,19 @@ WORKING=0
 # quiescence bound and well over the printing agents' rate, so a working session
 # costs the animation clock and almost no output.
 WORKING_TICK=4
+# Lines every agent prints the moment it starts, so each terminal begins the
+# run with a full scrollback rather than an empty one -- a search's cost is the
+# history it reads, and a fresh sandbox otherwise has none (ADR-P26).
+BACKFILL=0
+# `scrollback_lines` for the run; empty keeps the built-in default.
+SCROLLBACK=""
+# A query to open global search with before the measurement starts, and whether
+# to keep typing it (erase, retype) for the whole window. Empty = search closed.
+SEARCH=""
+TYPING=0
+# Prebuilt binaries to measure instead of building this checkout -- how an
+# older release is measured with the same harness.
+PREBUILT=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -88,6 +102,11 @@ usage: perf-run.sh [options]
   --debug     measure the dev profile instead of release
   --no-perf-log  run without THURBOX_PERF_LOG (CPU only, no percentiles) --
                  the control for "is the instrumentation the cost?"
+  -b N        every agent prints N lines as it starts, to fill its scrollback
+  --scrollback N  set scrollback_lines for the run
+  --search Q  open global search and type Q before measuring
+  --typing    with --search, keep erasing and retyping Q while measuring
+  --bin-dir D measure the thurbox/thurbox-cli in D instead of building
   --json      one machine-readable line instead of the report
 EOF
     exit 2
@@ -102,6 +121,11 @@ while [ $# -gt 0 ]; do
         -u) URL_EVERY="$2"; shift 2 ;;
         -w) WORKING="$2"; shift 2 ;;
         -s) COLS="${2%x*}"; ROWS="${2#*x}"; shift 2 ;;
+        -b) BACKFILL="$2"; shift 2 ;;
+        --scrollback) SCROLLBACK="$2"; shift 2 ;;
+        --search) SEARCH="$2"; shift 2 ;;
+        --typing) TYPING=1; shift ;;
+        --bin-dir) PREBUILT="$2"; shift 2 ;;
         --idle) PRINTING=0; shift ;;
         --debug) PROFILE=dev; shift ;;
         --no-perf-log) PERF_LOG=0; shift ;;
@@ -158,7 +182,10 @@ fi
 # numbers are not the ones a user sees; `--debug` is for attributing a change
 # quickly, never for a figure worth writing down.
 
-if [ "$PROFILE" = release ]; then
+if [ -n "$PREBUILT" ]; then
+    BIN_DIR="$(cd "$PREBUILT" && pwd)"
+    say "measuring the binaries in $BIN_DIR…"
+elif [ "$PROFILE" = release ]; then
     BIN_DIR="$REPO_ROOT/target/release"
     say "building (release)…"
     cargo build --release --bin thurbox --bin thurbox-cli >/dev/null 2>&1
@@ -182,9 +209,16 @@ trap 'tbx_sandbox_teardown' EXIT
 # whatever the model felt like, which is not a controlled variable.
 AGENT_DIR="$TBX_SANDBOX_ROOT/agent"
 mkdir -p "$AGENT_DIR"
+# Agent-shaped history: varied words, so a query matches some lines and not
+# others, the way it does in a real session.
+BACKFILL_CMD=":"
+if [ "$BACKFILL" -gt 0 ]; then
+    BACKFILL_CMD="awk 'BEGIN { split(\"the session worktree branch failed compile error src/main.rs fn let tests passed running cargo warning: unused variable match diff\", w, \" \"); for (i = 1; i <= $BACKFILL; i++) { line = \"\"; for (j = 0; j < 9; j++) line = line \" \" w[(i * 7 + j * 13) % 19 + 1]; print i line } }'"
+fi
 cat > "$AGENT_DIR/noisy" <<EOF
 #!/bin/sh
 # One printing agent: \$RATE lines a second of plausible agent output, forever.
+$BACKFILL_CMD
 n=0
 while :; do
     n=\$((n + 1))
@@ -195,9 +229,10 @@ while :; do
     sleep $(awk "BEGIN { printf \"%.4f\", 1 / $RATE }")
 done
 EOF
-cat > "$AGENT_DIR/quiet" <<'EOF'
+cat > "$AGENT_DIR/quiet" <<EOF
 #!/bin/sh
 # A session that exists, is attached, and says nothing.
+$BACKFILL_CMD
 while :; do sleep 3600; done
 EOF
 cat > "$AGENT_DIR/ticking" <<EOF
@@ -205,6 +240,7 @@ cat > "$AGENT_DIR/ticking" <<EOF
 # A session that reports itself \`working\` and animates a progress line, which
 # is what every real agent does while a turn runs -- and what keeps thurbox's
 # output-quiescence fallback from folding the state back to idle.
+$BACKFILL_CMD
 n=0
 while :; do
     n=\$((n + 1))
@@ -215,6 +251,10 @@ EOF
 chmod +x "$AGENT_DIR/noisy" "$AGENT_DIR/quiet" "$AGENT_DIR/ticking"
 
 mkdir -p "$XDG_CONFIG_HOME/thurbox-dev"
+if [ -n "$SCROLLBACK" ]; then
+    printf 'config_version = 1\nscrollback_lines = %s\n' "$SCROLLBACK" \
+        > "$XDG_CONFIG_HOME/thurbox-dev/settings.toml"
+fi
 cat > "$XDG_CONFIG_HOME/thurbox-dev/agents.toml" <<EOF
 default = "quiet"
 
@@ -330,6 +370,39 @@ if ! kill -0 "$PID" 2>/dev/null; then
     exit 1
 fi
 
+# Global search, opened the way a person opens it: the chord, then the query.
+# `C-_` is what tmux sends for ctrl+/, and the kernel folds it into that chord.
+TYPER=""
+if [ -n "$SEARCH" ]; then
+    tmux -L "$TBX_DEV_SOCKET" send-keys -t perf-harness C-_
+    sleep 1
+    tmux -L "$TBX_DEV_SOCKET" send-keys -t perf-harness -l "$SEARCH"
+    sleep 3
+    if [ "$TYPING" = "1" ]; then
+        # Erase and retype at a brisk human pace, for as long as the run lasts:
+        # every keystroke is a new query, which is the cost typing pays.
+        (
+            while :; do
+                i=0
+                while [ "$i" -lt "${#SEARCH}" ]; do
+                    tmux -L "$TBX_DEV_SOCKET" send-keys -t perf-harness BSpace
+                    sleep 0.12
+                    i=$((i + 1))
+                done
+                i=1
+                while [ "$i" -le "${#SEARCH}" ]; do
+                    tmux -L "$TBX_DEV_SOCKET" send-keys -t perf-harness -l \
+                        "$(printf '%s' "$SEARCH" | cut -c"$i")"
+                    sleep 0.12
+                    i=$((i + 1))
+                done
+                sleep 0.5
+            done
+        ) &
+        TYPER=$!
+    fi
+fi
+
 jiffies() { awk '{print $14 + $15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
 # Every thread, so a cost moved onto a worker is still counted. Moving work off
 # the render thread is the right fix for a stall and does nothing for a laptop
@@ -348,6 +421,7 @@ BEFORE_ALL="$(tree_jiffies "$PID")"
 sleep "$DURATION"
 AFTER_MAIN="$(jiffies "$PID")"
 AFTER_ALL="$(tree_jiffies "$PID")"
+[ -n "$TYPER" ] && kill "$TYPER" 2>/dev/null
 
 HZ="$(getconf CLK_TCK)"
 main_pct="$(awk "BEGIN { printf \"%.2f\", ($AFTER_MAIN - $BEFORE_MAIN) * 100 / $HZ / $DURATION }")"
@@ -385,6 +459,8 @@ if [ "$JSON" = "1" ]; then
     printf '"frame_p50_us":%s,"frame_p95_us":%s,"republish_p50_us":%s,"tick_p50_us":%s,' \
         "$(field frame_p50_us)" "$(field frame_p95_us)" \
         "$(field republish_p50_us)" "$(field tick_p50_us)"
+    printf '"frame_max_us":%s,"republish_p95_us":%s,"search":"%s","typing":%s,' \
+        "$(field frame_max_us)" "$(field republish_p95_us)" "$SEARCH" "$TYPING"
     printf '"frames":%s,"iterations":%s}\n' \
         "$(field frames)" "$(field iterations)"
     exit 0
