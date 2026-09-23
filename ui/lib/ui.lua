@@ -8,9 +8,9 @@
 -- The conventions, and why they are here rather than in each pane:
 --
 --   * **One focus border.** A panel's border and title come from
---     `lib/chrome`'s three levels. Three panes had grown three different
---     answers to "what does focused look like", and a fourth pane copied
---     whichever it was written next to.
+--     `lib/chrome`: thick and marked with focus, thin and quiet without. Three
+--     panes had grown three different answers to "what does focused look
+--     like", and a fourth pane copied whichever it was written next to.
 --   * **One selection idiom.** A selected row is a full-width bar
 --     (`selection_bg`/`selection_fg`), painted as the row's own `style`, never
 --     a marker glyph eating two columns of every row. Hover is the same band
@@ -812,9 +812,11 @@ end
 
 --- A framed pane, in the one focus convention this interface has.
 ---
---- Focus is communicated by COLOUR — a brighter border and a title badge —
---- never by a marker glyph, which is a rule the agent pane states and one
---- panel builder used to contradict.
+--- Passing `focused = ctx.focused` is the whole of what a pane does to opt in:
+--- the thick border, the ` ▸ ` mark, the title badge and the two border roles
+--- all come from `lib/chrome` (see its "Focus styling" section for why focus is
+--- a shape and a mark as well as a colour). `level` overrides the mapping for a
+--- pane that wants `active` — lit without focus.
 ---
 --- The overlays paint onto the border cells the block already drew, so a status
 --- strip, a scroll count or a scrollbar costs no content row and no content
@@ -829,7 +831,7 @@ end
 ---@param opts table
 ---@return thurbox.BoxNode
 function ui.panel(opts)
-  local level = opts.level or (opts.focused and "focused" or "active")
+  local level = opts.level or chrome.level(opts.focused)
   local body = opts.body
   local children = body
   if body and body.type then
@@ -847,8 +849,11 @@ function ui.panel(opts)
     type = "box",
     children = children,
     frame = {
-      title = { { text = " " .. (opts.title or "") .. " ", style = chrome.title_style(level) } },
+      title = {
+        { text = chrome.label(opts.title or "", level), style = chrome.title_style(level) },
+      },
       title_align = opts.title_align,
+      border_type = chrome.border_type(level),
       border_style = opts.border or chrome.border_style(level),
       overlay = {
         top_left = opts.overlay_left,

@@ -556,7 +556,11 @@ impl App {
             self.last_trees[index] = Some(std::rc::Rc::clone(&node));
         }
         let mut hits = Vec::new();
-        paint::render_recording(frame, rect, &node, &self.terminals, &mut hits);
+        // A terminal paints its cursor only in the pane the keys go to.
+        let unfocused = self.terminals.unfocused();
+        let surfaces: &dyn paint::SurfaceProvider =
+            if focused { &self.terminals } else { &unfocused };
+        paint::render_recording(frame, rect, &node, surfaces, &mut hits);
         // The pane's own rect is only a target when focus can rest on it. A
         // footer click must reach the pill it landed on and nothing else — v1
         // likewise records no `FocusPane` for panes that cannot hold focus.

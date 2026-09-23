@@ -120,7 +120,7 @@ already follow.
   these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
   widgets, theme roles, fuzzy match, text input, trees — plus the extracted
-  pane halves: `chrome` (the two full-height panes' focus styling), `modal`
+  pane halves: `chrome` (every framed pane's focus styling), `modal`
   (frame + footer), `scroll`,
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
@@ -189,8 +189,9 @@ examples to read and copy from, not a catalogue thurbox maintains for anyone —
 failure with no symptom — and prints the `layout.lua` line to add.
 
 **`ui/lib/ui.lua` is the component layer**, and the first thing a pane should
-reach for: `ui.panel` (one focus convention — a brighter border and a title
-badge, never a marker glyph), `ui.list` (variable row heights, a sticky window,
+reach for: `ui.panel` (one focus convention — with focus a thick border and a ` ▸ `
+title badge, without it a thin one in `border_unfocused`; `ui/README.md` →
+Focus), `ui.list` (variable row heights, a sticky window,
 the selection bar as the row's own `style`, overflow either as marker rows or as
 `▲ N`/`▼ N` on the frame), `ui.cursor` (the selection as the **item** it is on
 rather than the row, re-derived on every build so a reordered list keeps it,

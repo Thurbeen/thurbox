@@ -1380,11 +1380,12 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
 
     tui.send(b"\r");
     // Landed: the strip is gone, the terminal is scrolled back (its title
-    // carries the offset) and the printed line is back on screen.
+    // carries the offset) and the printed line is back on screen — beside the
+    // thick border, because opening a result hands the terminal focus.
     tui.wait_until("the session scrolled to the match", |frame| {
         !frame.contains("Search")
             && frame.contains("↑]")
-            && frame.lines().any(|line| line.contains("│tb-findme "))
+            && frame.lines().any(|line| line.contains("┃tb-findme "))
     });
     // And the line is marked, so a long screen of output does not leave you
     // hunting for the row you were brought to.
@@ -1392,9 +1393,9 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     let (y, line) = frame
         .lines()
         .enumerate()
-        .find(|(_, line)| line.contains("│tb-findme "))
+        .find(|(_, line)| line.contains("┃tb-findme "))
         .expect("the landed line");
-    let byte = line.find("│tb-findme").expect("the landed line") + "│".len();
+    let byte = line.find("┃tb-findme").expect("the landed line") + "┃".len();
     let x = line[..byte].chars().count();
     assert!(
         tui.inverse_at(y as u16, x as u16),
@@ -2198,6 +2199,52 @@ fn a_press_of_another_button_between_two_clicks_keeps_them_two_clicks() {
         "an interrupted pair of clicks must not open the session:\n{}",
         tui.frame()
     );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// The top-left corners of the panes, left to right, off the first row that
+/// has any: `┏` is the focused pane's frame and `╭` every other's.
+fn pane_corners(frame: &str) -> String {
+    frame
+        .lines()
+        .find(|line| line.contains('╭') || line.contains('┏'))
+        .map(|line| line.chars().filter(|c| matches!(c, '╭' | '┏')).collect())
+        .unwrap_or_default()
+}
+
+/// The block the agent pane paints at its terminal's cursor.
+fn cursor_block_shown(frame: &str) -> bool {
+    frame.contains('█')
+}
+
+#[test]
+fn the_thick_frame_and_the_terminal_cursor_move_with_focus() {
+    // Focus has to be readable at a glance and without colour: the focused
+    // pane's frame is the thick one, and the terminal paints its cursor only
+    // while it is the pane the keys go to. Both are asserted on the byte
+    // stream, as characters, because that is what survives a monochrome
+    // terminal.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    tui.wait_until("the agent pane to wear the thick frame", |frame| {
+        pane_corners(frame) == "╭┏" && cursor_block_shown(frame)
+    });
+
+    // 0x08 is Ctrl+H, the kernel's focus-cycle chord.
+    tui.send(b"\x08");
+    tui.wait_until("the thick frame to move to the session list", |frame| {
+        pane_corners(frame) == "┏╭" && !cursor_block_shown(frame)
+    });
+
+    // 0x0c is Ctrl+L, the other direction.
+    tui.send(b"\x0c");
+    tui.wait_until("the thick frame to come back to the agent pane", |frame| {
+        pane_corners(frame) == "╭┏" && cursor_block_shown(frame)
+    });
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

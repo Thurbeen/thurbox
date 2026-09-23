@@ -1325,7 +1325,7 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
         .lines()
         // Skip the frame: the top border now carries one status dot per
         // session, so it matches these glyphs too.
-        .filter(|line| !line.contains('╭') && !line.contains('╰'))
+        .filter(|line| !['╭', '╰', '┏', '┗'].iter().any(|c| line.contains(*c)))
         .find(|line| line.contains('○') || line.contains('◆') || line.contains('●'))
         .unwrap_or_default()
         .to_string();

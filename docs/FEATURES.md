@@ -2682,13 +2682,23 @@ the long list rather than scrolling a flat one:
 > focus on "is it drawn?" makes an alternate unreachable. See `docs/V2-KERNEL.md`.
 
 Panels use a tri-state focus system (`Focused`, `Active`,
-`Inactive`) for clear navigation feedback.
+`Inactive`), mapped in `ui/lib/chrome.lua`. The kernel publishes one `focused`
+boolean per pane; `chrome.level` turns it into `Focused` or `Inactive`.
 
 | Level | Border | Title | Meaning |
 |-------|--------|-------|---------|
-| `Focused` | Thick cyan | Bold cyan | Receiving input |
-| `Active` | Plain cyan | Cyan text | Contextually relevant |
-| `Inactive` | Plain gray | Gray text | Background |
+| `Focused` | Thick, `border_focused` | ` ▸ Title `, bold badge | Receiving input |
+| `Active` | Rounded, `accent` | `accent` text | Lit without focus (no bundled pane uses it) |
+| `Inactive` | Rounded, `border_unfocused` | `text_secondary` text | Everything else |
+
+Focus is a **shape and a mark before it is a colour**: the thick border and the
+` ▸ ` survive a monochrome terminal, a colour-blind reader and a low-contrast
+palette, where two border colours alone (the v2 design until this was restored)
+left only a bold title to tell the panes apart. Every unfocused pane is quiet on
+purpose: one accented frame on screen is the one with the keys. A live terminal
+adds a fourth cue — `PseudoTerminal` paints its cursor block only in the focused
+pane (`Terminals::unfocused`), so an unfocused terminal no longer shows a cursor
+it cannot type at.
 
 ---
 

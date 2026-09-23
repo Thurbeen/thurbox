@@ -158,7 +158,7 @@ to `widgets` for the piece it does not cover.
 
 | | what it is |
 |---|---|
-| `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention. Focus is a brighter border and a title badge, never a marker glyph |
+| `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention: with focus a **thick** border and a ` ▸ ` badge on the title, without it a thin border in the theme's unfocused role. Pass `focused = ctx.focused` and that is all — see **Focus** below |
 | `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list. Variable row heights (`header` glues a group heading to its first row), the selection bar, hover, and the window arithmetic |
 | `ui.cursor(key, items, opts)` | the selection over a list, with `move`/`select`/`select_by_id`/`follow`. It remembers the selected **item**, not its row, so a list reordered between two builds keeps the cursor where it was; the row number answers only once that item has gone. `opts.steer` is the `store` key another pane moves this list with; `opts.request` a one-shot "go to this row" |
 | `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match` (search hits), `:trailing` (a note budgeted against what is left), `:spans_list` |
@@ -177,6 +177,29 @@ removed action takes its hint with it.
 
 `10_sessions.lua` and `80_restore.lua` are the two worked examples — a
 full-height pane and a float.
+
+### Focus
+
+Which pane has the keys is said three ways at once, so it survives losing any
+one of them:
+
+| cue | focused | unfocused | survives no colour |
+|---|---|---|---|
+| border glyphs | thick `┏━┓┃` | thin, rounded `╭─╮│` | yes |
+| title | ` ▸ Title `, bold, on a filled badge | ` Title `, plain | yes (the mark and bold) |
+| colour | `border_focused` | `border_unfocused` | no |
+
+A terminal surface adds a fourth: its cursor block is painted only while its pane
+has focus. The kernel does that; the pane does nothing.
+
+**To opt in, pass `focused = ctx.focused` to `ui.panel`.** A pane that builds its
+own `frame` gets the same result from `lib/chrome`: `chrome.frame(title,
+chrome.level(ctx.focused))` for the whole thing, or the parts — `chrome.level`,
+`chrome.border_type`, `chrome.border_style`, `chrome.title_style`,
+`chrome.label` (the padded title, marked when focused) and `chrome.rule` (the
+horizontal glyph, for runs a pane paints over its own top border). Never pick
+the colours yourself: they are the theme's two border roles, so every palette
+restyles every pane.
 
 ## What you have to work with
 

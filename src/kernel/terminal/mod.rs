@@ -1870,12 +1870,24 @@ impl Default for Terminals {
     }
 }
 
-impl SurfaceProvider for Terminals {
-    fn render_program(
+impl Terminals {
+    /// This provider as a pane that does not hold focus paints it: the same
+    /// grids, with no cursor.
+    ///
+    /// `PseudoTerminal` paints the cursor as a block on the grid, and every
+    /// terminal on screen painted one, so the block said nothing about where
+    /// the keys go. Painted only in the focused pane, it is the terminal's own
+    /// focus cue — and one that needs no colour to read.
+    pub fn unfocused(&self) -> Unfocused<'_> {
+        Unfocused(self)
+    }
+
+    fn paint_program(
         &self,
         frame: &mut Frame,
         area: Rect,
         surface: &str,
+        cursor: bool,
     ) -> super::paint::ProgramPaint {
         let Some(key) = self.program_key(surface).cloned() else {
             return super::paint::ProgramPaint::NotStarted;
@@ -1899,14 +1911,18 @@ impl SurfaceProvider for Terminals {
         let Ok(parser) = slot.pane.parser.lock() else {
             return super::paint::ProgramPaint::NotStarted;
         };
-        frame.render_widget(
-            PseudoTerminal::new(parser.screen()).style(Style::default()),
-            area,
-        );
+        frame.render_widget(screen_widget(parser.screen(), cursor), area);
         super::paint::ProgramPaint::Painted
     }
 
-    fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
+    fn paint_session(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        session: &str,
+        scroll: u16,
+        cursor: bool,
+    ) -> bool {
         // A session's shell is addressed as `<id>#shell`, so it is a second
         // surface over the same primitive rather than a second node kind — and
         // ONE path paints either of them, parameterised by which pane the name
@@ -1941,11 +1957,48 @@ impl SurfaceProvider for Terminals {
         // pane is — and it is this surface's offset that is applied here.
         parser.screen_mut().set_scrollback(usize::from(scroll));
         links::clear_uncovered(frame, area, parser.screen());
-        frame.render_widget(
-            PseudoTerminal::new(parser.screen()).style(Style::default()),
-            area,
-        );
+        frame.render_widget(screen_widget(parser.screen(), cursor), area);
         true
+    }
+}
+
+/// A terminal grid as a widget, painting its cursor or not.
+fn screen_widget(screen: &vt100::Screen, cursor: bool) -> PseudoTerminal<'_, vt100::Screen> {
+    PseudoTerminal::new(screen)
+        .style(Style::default())
+        .cursor(tui_term::widget::Cursor::default().visibility(cursor))
+}
+
+impl SurfaceProvider for Terminals {
+    fn render_program(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        surface: &str,
+    ) -> super::paint::ProgramPaint {
+        self.paint_program(frame, area, surface, true)
+    }
+
+    fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
+        self.paint_session(frame, area, session, scroll, true)
+    }
+}
+
+/// [`Terminals`] for a pane without focus: see [`Terminals::unfocused`].
+pub struct Unfocused<'a>(&'a Terminals);
+
+impl SurfaceProvider for Unfocused<'_> {
+    fn render_program(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        surface: &str,
+    ) -> super::paint::ProgramPaint {
+        self.0.paint_program(frame, area, surface, false)
+    }
+
+    fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
+        self.0.paint_session(frame, area, session, scroll, false)
     }
 }
 
@@ -1958,6 +2011,19 @@ mod decoupling;
 mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
+
+    #[test]
+    fn only_a_terminal_that_holds_focus_paints_its_cursor() {
+        use ratatui::widgets::Widget;
+        let mut parser = vt100::Parser::new(2, 8, 0);
+        parser.process(b"$ ");
+        for (cursor, painted) in [(true, "\u{2588}"), (false, " ")] {
+            let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 8, 2));
+            screen_widget(parser.screen(), cursor).render(buffer.area, &mut buffer);
+            assert_eq!(buffer[(2, 0)].symbol(), painted, "cursor shown: {cursor}");
+            assert_eq!(buffer[(0, 0)].symbol(), "$", "the grid paints either way");
+        }
+    }
 
     #[test]
     fn a_mouse_event_is_encoded_the_way_the_pane_asked_for_it() {

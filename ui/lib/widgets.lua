@@ -25,14 +25,15 @@ local theme = require("lib.theme")
 
 local widgets = {}
 
---- A bordered panel. Pass ctx.focused so the focused pane lights up.
+--- A bordered panel's frame. Pass ctx.focused so the focused pane is marked.
+---
+--- Kept for a pane that already calls it; it is `lib/chrome`'s focus
+--- convention (`chrome.frame`), which a new pane reaches through `ui.panel`.
+--- Required here rather than at the top because `lib/chrome` requires this
+--- file.
 function widgets.panel(title, focused)
-  return {
-    title = focused and (" ▸ " .. title .. " ") or (" " .. title .. " "),
-    borders = "all",
-    border_style = focused and theme.accent or theme.muted,
-    padding = 0,
-  }
+  local chrome = require("lib.chrome")
+  return chrome.frame(title, chrome.level(focused))
 end
 
 --- Clamp `value` into [1, count]; returns 1 when the list is empty.

@@ -496,6 +496,7 @@ fn build_block(spec: &NodeFrame) -> Block<'_> {
             .border_type(match spec.border_type {
                 BorderKind::Rounded => BorderType::Rounded,
                 BorderKind::Square => BorderType::Plain,
+                BorderKind::Thick => BorderType::Thick,
             })
             .border_style(spec.border_style),
         Borders::None => block.borders(RatBorders::NONE),

@@ -20,8 +20,8 @@
 --
 -- The chrome here is an ordinary kernel `frame`. It was drawn by hand for as
 -- long as a frame could not express the three things v1's terminal pane needs:
--- a RIGHT-aligned border title, a STYLED one (the focused badge is
--- inverted_fg-on-accent), and a scrollbar overlaid on the right border column
+-- a RIGHT-aligned border title, a STYLED one (the focused badge is inverted_fg
+-- on the focused border colour), and a scrollbar overlaid on the right border column
 -- so it costs zero content columns. `title_align`, styled title runs and
 -- `frame.overlay` are each of those, so the border is one table again and the
 -- surface keeps the whole inner rect.
@@ -326,11 +326,12 @@ end
 
 -- --- focus -----------------------------------------------------------------
 --
--- v1 has THREE levels (`ui::FocusLevel`); this pane's caller only ever produces
--- two, so `inactive` is carried for completeness rather than reached. Focus is
--- communicated by COLOUR, never by a marker glyph or a heavier border — which
--- is why nothing below prefixes the title. The mapping itself is
--- `chrome.border_style` / `chrome.title_style`, shared with the session list.
+-- `lib/chrome`'s convention, shared with every other framed pane: thick and
+-- marked (` ▸ `) with focus, thin and quiet without. This pane assembles its own
+-- frame — the tab strip and the scrollbar ride its border — so it asks chrome
+-- for each part (`level`, `border_type`, `rule`, `label`, the two styles)
+-- rather than for a whole `chrome.frame`. The other half of its focus cue is
+-- the kernel's: the terminal paints its cursor only while this pane has focus.
 
 -- --- the scrollbar ---------------------------------------------------------
 
@@ -566,13 +567,18 @@ local function shortcut_for(action)
   return found
 end
 
---- v1 `button_style`: the active view is the accent-filled "primary" chip, the
---- rest the neutral selection pair every palette guarantees is legible.
+--- The active view is a filled chip in the neutral selection pair every
+--- palette guarantees is legible; the others are plain muted text.
+---
+--- v1 filled the active chip with the accent, which is the focus badge's own
+--- look — so the pane's border carried a second "focused" badge whether it had
+--- focus or not, a few columns from the real one. A tab says which VIEW is up,
+--- which is a different question from which PANE has the keys.
 local function chip_style(primary)
   if primary then
-    return { fg = theme.role("inverted_fg"), bg = theme.role("accent"), bold = true }
+    return { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
   end
-  return { fg = theme.role("selection_fg"), bg = theme.role("selection_bg"), bold = true }
+  return { fg = theme.role("text_muted") }
 end
 
 --- The hovered chip.
@@ -687,7 +693,7 @@ end
 ---
 --- Columns are pane-local and 0-based: the corner sits at 0 and the strip starts
 --- at 1, exactly where v1 puts the chevron rect (`terminal.x + 1`).
-local function border_strip(width, border_style, active)
+local function border_strip(width, border_style, active, rule)
   local runs, cursor = {}, 1
   --- `role`, when given, is the kernel's click verb for this run: a run carries
   --- its own identity and the paint walk registers a hitbox over the columns it
@@ -695,7 +701,7 @@ local function border_strip(width, border_style, active)
   --- the column it belongs at, since the overlay paints its runs consecutively.
   local function put(at, text, style, role)
     if at > cursor then
-      runs[#runs + 1] = { text = string.rep("─", at - cursor), style = border_style }
+      runs[#runs + 1] = { text = string.rep(rule, at - cursor), style = border_style }
     end
     runs[#runs + 1] = { text = text, style = style, role = role }
     cursor = at + widgets.len(text)
@@ -766,6 +772,7 @@ local function border_frame(title, level, border, strip, bar)
   return {
     title = { { text = title, style = chrome.title_style(level) } },
     title_align = "right",
+    border_type = chrome.border_type(level),
     border_style = border,
     overlay = { top_left = strip, right_column = bar },
   }
@@ -925,7 +932,7 @@ return {
 
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
-    local level = ctx.focused and "focused" or "active"
+    local level = chrome.level(ctx.focused)
     local border = chrome.border_style(level)
     local session = selected()
 
@@ -946,17 +953,17 @@ return {
     -- It carries the active tab, so it is the SAME strip on every tab; that is
     -- the whole reason the views share one plugin.
     local tab = tab_of(session.id)
-    local strip, reserved_left = border_strip(width, border, tab)
+    local strip, reserved_left = border_strip(width, border, tab, chrome.rule(level))
     -- Both views are live terminals with a scrollback each, so the offset is
     -- the one this SURFACE is holding — which is also the one the kernel will
     -- set on the parser it draws.
     local surface = surface_of(session.id, tab)
     local scroll, depth = scroll_of(surface)
-    local title = fit_right_title(
-      terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll }),
-      width,
-      reserved_left
-    )
+    -- Marked before it is fitted, so a title cut short for the strip loses
+    -- its tail and never the mark that says this pane has the keys.
+    local base = terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll })
+    local title =
+      fit_right_title(chrome.label(base:match("^%s*(.-)%s*$"), level), width, reserved_left)
 
     -- A dead pane explains itself. "not attached" with no reason is the least
     -- useful thing a terminal can say. v1 has no such state, so this is a
