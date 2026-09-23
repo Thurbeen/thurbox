@@ -226,9 +226,11 @@ hold, **scrollback included**, matched by the kernel on a worker).
 - Keys: `ctrl+/` open (global), `up`/`down`, `pageup`/`pagedown`, `enter`, `tab`
   (everything → text → names), `esc` (puts back selection and scroll). The query
   is a `lib.textinput` field, so it edits like a shell line — `ctrl+a/e/b/f/d/w/u/k`,
-  `alt+b/f/d/backspace`, `ctrl`/`alt` with the arrows and `delete` — and takes a
-  paste: a focused pane whose tree holds a caret-owning `input` is where
-  `on_paste` replays the text (`focused_typing`), before any terminal. One
+  `alt+b/f/d`, `ctrl`/`alt` with the arrows, `backspace` and `delete` (the table in
+  `ui/README.md`; legacy `ctrl+backspace` arrives as reserved `ctrl+h`) — and takes
+  a paste: a focused pane whose tree holds a caret-owning `input` is where
+  `on_paste` replays the text (`focused_typing`), before any terminal, straight to
+  `on_key` so a pasted letter never fires a declared chord. One
   deliberate divergence: no `Ctrl+P`/`Ctrl+N` inside the strip — every chord goes
   through one registry where a plugin-scoped claim does not outrank a global one.
 

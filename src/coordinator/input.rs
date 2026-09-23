@@ -676,9 +676,15 @@ impl App {
         } else {
             None
         };
+        // Straight to `on_key`, past the registry: a paste is text, and a pane
+        // that binds a letter — the new-session float's `j`/`k`/`w`/`d` — would
+        // otherwise run the action for every one pasted instead of typing it.
         if let Some(index) = self.grabbed.or(typing) {
             for ch in text.chars().filter(|ch| !ch.is_control()) {
-                self.dispatch_key_to(index, &KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                let press = to_press(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                if let Err(e) = self.host.on_key(index, &press) {
+                    self.errors.push(e);
+                }
             }
             self.dirty = true;
             return;

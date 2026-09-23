@@ -21,7 +21,10 @@
 --
 -- One chord v1 has is missing, and cannot be had: `ctrl+h` (delete backwards) is
 -- reserved by the kernel for moving focus, so it never reaches a plugin.
--- `backspace` does the same thing and is what a keyboard sends anyway.
+-- `backspace` does the same thing and is what a keyboard sends anyway. It is
+-- also what most terminals send for `ctrl+backspace`, so that chord deletes a
+-- word only where the terminal tells the two apart (the kitty keyboard
+-- protocol); elsewhere `alt+backspace` and `ctrl+w` do it.
 
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
@@ -122,8 +125,9 @@ local function delete_between(field, from, to)
 end
 
 --- The word chords a shell's line editor has taught every hand: `alt` with
---- `b`/`f` (move), `d` (delete forward) and `backspace` (delete back), and
---- `ctrl` or `alt` with the arrows and `delete`. True when it was one.
+--- `b`/`f` (move) and `d` (delete forward), and `ctrl` or `alt` with the
+--- arrows, `backspace` (delete back) and `delete` (delete forward). True when
+--- it was one.
 local function word_edit(field, key)
   local name = key.key
   if name == "left" or (key.alt and name == "b") then
@@ -187,9 +191,9 @@ function textinput.key(field, key)
     return true
   end
   if key.ctrl or key.alt then
-    -- A modifier chord that is not a line edit is still swallowed rather than
-    -- typed, but only for letters: `ctrl+p` and friends belong to the pane, and
-    -- it declares them as actions so they never arrive here at all.
+    -- Any other `ctrl`+letter is swallowed, so a control character is never
+    -- typed. An `alt` chord that is not a word edit is left unconsumed and never
+    -- typed: the pane holding the field may own it (new-session's `alt+p`).
     if key.ctrl and not key.alt and key.char and widgets.chars(key.char) == 1 then
       return control(field, key)
     end

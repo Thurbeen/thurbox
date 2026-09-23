@@ -668,6 +668,64 @@ fn a_paste_lands_in_the_search_strip() {
 }
 
 #[test]
+fn a_paste_into_a_field_is_text_even_where_the_pane_binds_a_letter() {
+    // A paste is typing, never a command: replayed through the registry, a
+    // pasted `x` ran the pane's own `x` action instead of reaching its field.
+    let interface = interface_plus(
+        "91_field.lua",
+        r#"local textinput = require("lib.textinput")
+return {
+  name = "field",
+  slot = "sessions",
+  focusable = true,
+  keys = {
+    { key = "ctrl+g", action = "field.focus", desc = "focus the field", scope = "global" },
+    { key = "x", action = "field.x", desc = "a letter chord" },
+  },
+  render = function()
+    local field = state.field or textinput.new("")
+    return textinput.node(field, { label = state.fired and "FIRED" or "probe", focused = true })
+  end,
+  on_action = function(action)
+    if action == "field.focus" then
+      command("focus", { text = "field" })
+      return true
+    elseif action == "field.x" then
+      state.fired = true
+      return true
+    end
+    return false
+  end,
+  on_key = function(key)
+    local field = state.field or textinput.new("")
+    local consumed = textinput.key(field, key)
+    state.field = field
+    return consumed
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("probe");
+    tui.send(b"\x07");
+    wait_for_view(&tui, "Field");
+    tui.send(b"ok");
+    tui.wait_for("│ok");
+
+    tui.send(b"\x1b[200~axb\x1b[201~");
+    tui.wait_until("the pasted text in the field", |frame| {
+        frame.contains("okaxb")
+    });
+    assert!(
+        !tui.frame().contains("FIRED"),
+        "a pasted letter ran an action"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn the_search_field_edits_by_word_as_a_shell_line_does() {
     // Alt+b, Alt+f, Alt+d and Alt+Backspace are what a shell's line editor
     // has taught every hand; the field swallowed every Alt chord unused.
