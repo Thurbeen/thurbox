@@ -20,7 +20,6 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "agent.py")
 CLK_TCK = os.sysconf("SC_CLK_TCK")
-PAGE = os.sysconf("SC_PAGE_SIZE")
 
 # The size every client is attached at, and every headless session is created
 # at where the host lets us say. One size for all three, so no host draws more
@@ -244,7 +243,6 @@ class Sandbox:
             "TERM": "xterm-256color",
             "LANG": "C.UTF-8",
             "SHELL": "/bin/sh",
-            "BENCH_STATE": self.agents,
         }
         for key in ("BENCH_FLOOD_LINES", "BENCH_TRICKLE_HZ"):
             if key in os.environ:

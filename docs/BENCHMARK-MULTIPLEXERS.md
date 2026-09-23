@@ -409,4 +409,6 @@ checkout it is in, and runs `scripts/bench/run.py`, which writes
 `~/.cache/thurbox-bench/work/results-<timestamp>/`. Each scenario is also a
 script of its own (`python3 scripts/bench/scenarios/latency.py --reps 3`).
 Run it on a machine with nothing else busy, and look at `load1` in the results
-before believing a number.
+before believing a number. Like `scripts/dev/perf-run.sh`, it refuses to run
+where `THURBOX_GATE` is exported: it is a benchmark, not a test, and a
+validation step is the opposite of a quiet machine.

@@ -12,6 +12,7 @@ shell or helper a host keeps beside its sessions is the host's cost, and the
 agents — identical everywhere — are nobody's.
 """
 
+import json
 import os
 import shlex
 import signal
@@ -26,8 +27,6 @@ class Host:
     name = "?"
     #: What a user presses to leave the client with the sessions still running.
     detach_keys = b""
-    #: Whether a session's command runs under a shell the host starts first.
-    shell_wrapped = False
 
     def __init__(self, sandbox, tools):
         self.sb = sandbox
@@ -221,7 +220,6 @@ manifest_check = false
 
 class Herdr(Host):
     name = "herdr"
-    shell_wrapped = True
     detach_keys = b"\x02q"  # ctrl+b q, per Herdr's README
 
     def __init__(self, sandbox, tools):
@@ -258,8 +256,6 @@ class Herdr(Host):
             raise RuntimeError("herdr server API never came up")
 
     def create(self, name):
-        import json
-
         if self.server is None or self.server.poll() is not None:
             self.start_server()
         if self.workspace is None:
@@ -297,8 +293,6 @@ class Herdr(Host):
         return [self.bin, "--session", SESSION]
 
     def held_rows(self, name):
-        import json
-
         pane = json.loads(self.herdr("pane", "get", self.panes[name]).stdout)["result"]["pane"]
         return pane["scroll"]["max_offset_from_bottom"] + pane["scroll"]["viewport_rows"]
 
@@ -327,8 +321,6 @@ class Herdr(Host):
         self.start_server()
 
     def layout_after_restart(self):
-        import json
-
         out = self.herdr("pane", "list", check=False)
         if out.returncode != 0:
             return {"listed": 0}
@@ -415,8 +407,6 @@ class Thurbox(Host):
         return "client"
 
     def layout_after_restart(self):
-        import json
-
         out = self.thurbox("session", "list", "--json", check=False)
         if out.returncode != 0:
             return {"listed": 0}
@@ -425,8 +415,6 @@ class Thurbox(Host):
         return {"listed": len(rows)}
 
     def versions(self):
-        import json
-
         # Only the version and schema: the rest of the answer is paths.
         out = json.loads(self.thurbox("version", "--json").stdout)
         return {"thurbox": f"{out['version']} (schema v{out['schema_version']})"}

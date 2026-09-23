@@ -48,7 +48,6 @@ class Ctx:
         self.tools = tools
         self.root = os.path.join(args.work, "sandbox")
         self.records = []
-        self.current = None
 
     def repetitions(self):
         """(index, is_warmup) for every repetition, warm-up first."""
@@ -232,6 +231,10 @@ def main(argv=None):
     # through every scenario's teardown, so no server outlives the run.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    # The same refusal as run.sh's, for a scenario script run on its own.
+    if os.environ.get("THURBOX_GATE") and not os.environ.get("THURBOX_PERF_ALLOW_IN_GATE"):
+        sys.exit("run.py: refusing to run inside a validation step (THURBOX_GATE is set)")
 
     tools = resolve_tools(args)
     ctx = Ctx(args, tools)
