@@ -80,12 +80,16 @@ const SNAPSHOT_FORMAT: &str =
 /// same instant. The current grid is captured without `-a`, which is the
 /// alternate screen while one is up; `-a -q` then yields the normal screen
 /// behind it, or nothing at all when there is no alternate screen.
-pub fn snapshot_commands(pane_id: &str, history: usize) -> Vec<String> {
+///
+/// `styled` keeps the SGR sequences (`-e`), which a rebuilt grid needs and a
+/// reader of text does not: they are most of the bytes of a coloured history.
+pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<String> {
     let start = format!("-{history}");
+    let e = if styled { " -e" } else { "" };
     vec![
         format!("display-message -p -t {pane_id} '{SNAPSHOT_FORMAT}'"),
-        format!("capture-pane -p -e -J -S {start} -t {pane_id}"),
-        format!("capture-pane -a -q -p -e -J -S {start} -t {pane_id}"),
+        format!("capture-pane -p{e} -J -S {start} -t {pane_id}"),
+        format!("capture-pane -a -q -p{e} -J -S {start} -t {pane_id}"),
     ]
 }
 
@@ -155,6 +159,22 @@ impl SnapshotArrived {
             .downcast::<SnapshotArrived>()
             .ok()
             .map(|arrived| arrived.0)
+    }
+}
+
+/// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
+pub struct PendingSnapshot {
+    rx: Receiver<CommandResponse>,
+    cmd: String,
+    pane: String,
+}
+
+impl PendingSnapshot {
+    /// The answer, or the error the command ran into.
+    pub fn wait(self) -> Result<PaneSnapshot> {
+        let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
+        PaneSnapshot::parse(response.blocks)
+            .with_context(|| format!("unexpected answer to a snapshot of {}", self.pane))
     }
 }
 
@@ -1661,7 +1681,7 @@ impl ControlMode {
     /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
     /// the byte it describes, for that pane's reader to take up in order.
     pub(super) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
-        let cmds = snapshot_commands(pane_id, history);
+        let cmds = snapshot_commands(pane_id, history, true);
         Self::enqueue_command_on(
             &self.stdin,
             &self.response_queue,
@@ -1672,17 +1692,22 @@ impl ControlMode {
         .map(drop)
     }
 
-    /// A [`PaneSnapshot`] of `pane_id`, handed back to the caller — for a
-    /// reader that wants the text as it stands and has no stream to keep in
-    /// step with (the content search).
-    pub(super) fn snapshot(&self, pane_id: &str, history: usize) -> Result<PaneSnapshot> {
-        let cmds = snapshot_commands(pane_id, history);
+    /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to
+    /// the caller rather than put into the stream — for a reader that wants the
+    /// text as it stands (the content search). Returns once asked; the answer
+    /// is [`PendingSnapshot::wait`]ed for separately, so a caller holding the
+    /// backend's control lock can let go of it first and several searches'
+    /// round trips overlap.
+    pub(super) fn ask_snapshot(&self, pane_id: &str, history: usize) -> Result<PendingSnapshot> {
+        let cmds = snapshot_commands(pane_id, history, false);
         let cmd = cmds.join(" ; ");
         let rx =
             Self::enqueue_command_on(&self.stdin, &self.response_queue, &cmd, cmds.len(), None)?;
-        let response = Self::await_blocks(rx, &cmd, COMMAND_TIMEOUT)?;
-        PaneSnapshot::parse(response.blocks)
-            .with_context(|| format!("unexpected answer to a snapshot of {pane_id}"))
+        Ok(PendingSnapshot {
+            rx,
+            cmd,
+            pane: pane_id.to_string(),
+        })
     }
 
     /// Send a command and never wait for its answer.

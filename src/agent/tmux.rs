@@ -2377,7 +2377,10 @@ impl SessionBackend for TmuxBackend {
         if !self.supports_snapshots() {
             bail!("psmux cannot snapshot a pane");
         }
-        self.with_control(|ctrl| ctrl.snapshot(backend_id, snapshot_history()))
+        // Asked under the control lock, which keeps the answer's place in the
+        // queue, and waited for outside it: a search reads many panes at once.
+        self.with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
+            .wait()
     }
 
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {

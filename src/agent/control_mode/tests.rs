@@ -1346,7 +1346,10 @@ fn a_captured_line_that_reads_like_the_protocol_is_only_content() {
     let ctrl = server.control();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let snapshot = loop {
-        let snapshot = ctrl.snapshot(&pane, 100).expect("the snapshot is answered");
+        let snapshot = ctrl
+            .ask_snapshot(&pane, 100)
+            .and_then(PendingSnapshot::wait)
+            .expect("the snapshot is answered");
         if snapshot.normal.iter().any(|line| line.contains("plain"))
             || std::time::Instant::now() > deadline
         {
