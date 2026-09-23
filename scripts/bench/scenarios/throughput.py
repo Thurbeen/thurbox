@@ -1,13 +1,14 @@
 """One session emits a burst of ``BENCH_FLOOD_LINES`` (default 50 000) lines of
-100 bytes as fast as its pty takes them.
+about 107 bytes (5.4 MB) as fast as its pty takes them.
 
 ``producer_ms``: the agent's own clock from first write to last write
 returning — how fast the host drains the pty (a slow reader back-pressures
 the writer). ``settle_ms``: from the first write until the host's processes
 stop using CPU. ``visible_ms`` (attached only): until the end marker reaches
 the client's terminal. ``host_cpu_s``: CPU the host spent on the burst.
-``intact``: the last lines the host reports are the last lines written, in
-order — nothing dropped at the tail. ``pss_after_mib``: host memory after.
+``intact``: the last lines the host reports (up to 120 rows) are the last
+lines written, in order — nothing dropped at the tail. Earlier lines are not
+checked here: each host's history limit has already let most of them go. ``pss_after_mib``: host memory after.
 """
 
 import time

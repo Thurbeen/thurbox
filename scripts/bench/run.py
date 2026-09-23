@@ -22,6 +22,7 @@ import datetime
 import importlib
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -46,7 +47,8 @@ class Ctx:
         self.warmup = args.warmup
         self.quick = args.quick
         self.tools = tools
-        self.root = os.path.join(args.work, "sandbox")
+        # Short on purpose: see Sandbox.SOCKET_SUFFIX.
+        self.root = os.path.join(args.work, "sb")
         self.records = []
 
     def repetitions(self):
@@ -69,6 +71,9 @@ class Ctx:
         host.sb.destroy()
 
     def record(self, scenario, host, variant, rep, warmup, load, **metrics):
+        """``load`` is the load average when the repetition began; the one when
+        this sample ended is taken here, since a repetition can hold several
+        samples and minutes of measuring."""
         row = {
             "scenario": scenario,
             "host": host,
@@ -77,6 +82,7 @@ class Ctx:
             "warmup": warmup,
             "load1": load[0],
             "load5": load[1],
+            "load1_end": bl.load()[0],
             "metrics": metrics,
         }
         self.records.append(row)
@@ -88,13 +94,21 @@ class Ctx:
 
 
 def resolve_tools(args):
-    tools = {"tmux": shutil.which("tmux")}
-    tools["herdr"] = args.herdr or os.path.join(CACHE, "herdr-v0.9.1", "herdr")
-    bindir = args.thurbox_bin or os.path.join(
-        os.path.dirname(os.path.dirname(HERE)), "target", "release"
-    )
-    tools["thurbox"] = os.path.join(bindir, "thurbox")
-    tools["thurbox-cli"] = os.path.join(bindir, "thurbox-cli")
+    """The binaries the selected hosts need, and only those: a run of tmux and
+    thurbox must not fail for want of a Herdr it will never start."""
+    tools = {}
+    if {"tmux", "thurbox"} & set(args.hosts):
+        tools["tmux"] = shutil.which("tmux")
+    if "herdr" in args.hosts:
+        tools["herdr"] = args.herdr or os.path.join(
+            CACHE, f"herdr-v0.9.1-{platform.machine()}", "herdr"
+        )
+    if "thurbox" in args.hosts:
+        bindir = args.thurbox_bin or os.path.join(
+            os.path.dirname(os.path.dirname(HERE)), "target", "release"
+        )
+        tools["thurbox"] = os.path.join(bindir, "thurbox")
+        tools["thurbox-cli"] = os.path.join(bindir, "thurbox-cli")
     for name, path in tools.items():
         if not path or not os.access(path, os.X_OK):
             sys.exit(
@@ -118,6 +132,8 @@ def versions(ctx):
 def thurbox_commit(tools):
     """The commit the thurbox binaries were built from, when they sit in a git
     checkout's target/ (which is how run.sh builds them)."""
+    if "thurbox" not in tools:
+        return None
     repo = os.path.dirname(os.path.dirname(os.path.dirname(tools["thurbox"])))
     try:
         return subprocess.run(
@@ -127,24 +143,21 @@ def thurbox_commit(tools):
         return None
 
 
+CSV_FIELDS = ["scenario", "host", "variant", "rep", "warmup", "load1", "load1_end"]
+
+
 def flatten(records):
+    """One row per value: a metric holding a list of samples (latency) becomes
+    one row per sample, numbered, so the CSV carries every observation."""
     for r in records:
+        base = {k: r.get(k) for k in CSV_FIELDS}
         for metric, value in r["metrics"].items():
-            if isinstance(value, (list, dict)):
+            if isinstance(value, dict):
                 continue
-            yield {k: r[k] for k in ("scenario", "host", "variant", "rep", "warmup", "load1")} | {
-                "metric": metric,
-                "value": value,
-            }
-
-
-def pooled(records):
-    """Metrics whose value is a list of samples (latency) are pooled across
-    repetitions rather than summarized per repetition."""
-    for r in records:
-        for metric, value in r["metrics"].items():
-            if isinstance(value, list):
-                yield r, metric, value
+            values = value if isinstance(value, list) else [value]
+            for i, v in enumerate(values):
+                sample = i if isinstance(value, list) else None
+                yield base | {"metric": metric, "sample": sample, "value": v}
 
 
 def summarize(records):
@@ -155,9 +168,6 @@ def summarize(records):
             groups.setdefault(key, []).append(1.0 if row["value"] else 0.0)
         elif isinstance(row["value"], (int, float)):
             groups.setdefault(key, []).append(float(row["value"]))
-    for r, metric, values in pooled(x for x in records if not x["warmup"]):
-        key = (r["scenario"], r["variant"], metric, r["host"])
-        groups.setdefault(key, []).extend(v for v in values if v is not None)
     return {k: bl.summarize(v) for k, v in groups.items()}
 
 
@@ -225,6 +235,9 @@ def main(argv=None):
     for s in scenarios:
         if s not in SCENARIOS:
             sys.exit(f"unknown scenario {s!r}; known: {', '.join(SCENARIOS)}")
+    for h in args.hosts:
+        if h not in hosts.HOSTS:
+            sys.exit(f"unknown host {h!r}; known: {', '.join(hosts.HOSTS)}")
 
     # Background jobs start with SIGINT ignored, and SIGTERM would end the run
     # without a single `finally`; both are turned into an exit that unwinds
@@ -269,8 +282,7 @@ def main(argv=None):
     meta["load_at_end"] = bl.load()
     bl.dump_json(os.path.join(out, "results.json"), {"meta": meta, "records": ctx.records})
     with open(os.path.join(out, "results.csv"), "w", newline="") as f:
-        fields = ["scenario", "host", "variant", "rep", "warmup", "load1", "metric", "value"]
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS + ["metric", "sample", "value"])
         w.writeheader()
         w.writerows(flatten(ctx.records))
     summary = summarize(ctx.records)

@@ -44,7 +44,8 @@ class Host:
         raise NotImplementedError
 
     def kill_server(self):
-        """SIGKILL the host's long-lived process(es), as a crash would."""
+        """SIGKILL the host's long-lived process(es), as a crash would.
+        ``server_pids`` has just checked each is still the server."""
         for pid in self.server_pids():
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -74,11 +75,13 @@ class Host:
         raise NotImplementedError
 
     def agent_pids(self):
-        """The stand-in agents, by the pid each one wrote when it started."""
+        """The stand-in agents, by the pid each one wrote when it started —
+        each checked to still be that agent, since a pid outlives its process
+        and can be handed to another one."""
         out = []
         for name in self.names:
             ready = self.sb.ready(name)
-            if ready and os.path.exists(f"/proc/{ready[1]}"):
+            if ready and bl.cmdline(ready[1]).endswith(f"{bl.AGENT} {name} {self.sb.agents}"):
                 out.append(ready[1])
         return out
 
@@ -125,14 +128,23 @@ class Host:
         """The pid of the tmux server on ``base``'s socket, asked once and then
         remembered while it lives: asking spawns a tmux client, which would
         otherwise land inside every measurement that looks the server up."""
-        cached = getattr(self, "_server_pid", None)
-        if cached and os.path.exists(f"/proc/{cached}"):
-            return [cached]
+        cached = getattr(self, "_server", None)
+        if cached and bl.start_time(cached[0]) == cached[1]:
+            return [cached[0]]
         out = self.sb.run(base + ["display-message", "-p", "#{pid}"], check=False)
         if out.returncode != 0 or not out.stdout.strip():
             return []
-        self._server_pid = int(out.stdout)
-        return [self._server_pid]
+        pid = int(out.stdout)
+        self._server = (pid, bl.start_time(pid))
+        return [pid]
+
+    def _kill_tmux_server(self, base):
+        """kill-server, then make sure: by pid *and* start time, so a pid the
+        kernel has already handed to somebody else is left alone."""
+        servers = [(pid, bl.start_time(pid)) for pid in self.server_pids()]
+        self.sb.run(base + ["kill-server"], check=False)
+        for pid, started in servers:
+            bl.kill_tree(pid, started=started)
 
 
 # --- raw tmux ------------------------------------------------------------------
@@ -181,10 +193,7 @@ class Tmux(Host):
         return self.tmux("capture-pane", "-p", "-J", "-t", f"{SESSION}:{name}", "-S", start).stdout
 
     def teardown(self):
-        pids = self.server_pids()
-        self.tmux("kill-server", check=False)
-        for pid in pids:
-            bl.kill_tree(pid)
+        self._kill_tmux_server(self.base)
 
     def recover(self):
         # tmux has no memory of its sessions once its server is gone.
@@ -311,7 +320,10 @@ class Herdr(Host):
     def teardown(self):
         if self.server is not None:
             self.herdr("server", "stop", check=False)
-            bl.kill_tree(self.server.pid)
+            # Only while unreaped: a child nobody has waited for keeps its pid,
+            # so this cannot reach a process that inherited it.
+            if self.server.poll() is None:
+                bl.kill_tree(self.server.pid)
             try:
                 self.server.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -396,10 +408,7 @@ class Thurbox(Host):
         return self.thurbox("session", "capture", name, "--lines", n, "--text").stdout
 
     def teardown(self):
-        pids = self.server_pids()
-        self.sb.run(self.tmux_base + ["kill-server"], check=False)
-        for pid in pids:
-            bl.kill_tree(pid)
+        self._kill_tmux_server(self.tmux_base)
 
     def recover(self):
         # What brings a thurbox session back after its tmux server died is the

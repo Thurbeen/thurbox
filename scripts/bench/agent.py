@@ -35,8 +35,9 @@ import tty
 NAME, STATE = sys.argv[1], sys.argv[2]
 FLOOD_LINES = int(os.environ.get("BENCH_FLOOD_LINES", "50000"))
 TRICKLE_HZ = float(os.environ.get("BENCH_TRICKLE_HZ", "10"))
-# 100 bytes a line, the width of a typical log line; no escape sequences, so a
-# host's parser does the same work whatever it is.
+# About 107 bytes a line with the name, counter and CRLF — the width of a
+# typical log line; no escape sequences, so a host's parser does the same work
+# whatever it is.
 FILLER = (
     "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut lab"
 )

@@ -206,7 +206,21 @@ def cpu_over(pids_fn, seconds):
     return {"cpu_s": cpu_s, "cpu_pct": 100.0 * cpu_s / elapsed}
 
 
-def kill_tree(pid, sig=signal.SIGKILL):
+def start_time(pid):
+    """When the process started, in clock ticks since boot, or None if it is
+    gone. A pid and its start time name one process; a pid alone can name a
+    stranger once the kernel reuses it."""
+    stat = _read(f"/proc/{pid}/stat")
+    if not stat:
+        return None
+    return int(stat.rsplit(")", 1)[1].split()[19])
+
+
+def kill_tree(pid, sig=signal.SIGKILL, started=None):
+    """Signal ``pid`` and everything under it — only if it is still the
+    process that started at ``started``, when that is given."""
+    if started is not None and start_time(pid) != started:
+        return
     for p in [pid] + descendants(pid):
         try:
             os.kill(p, sig)
@@ -221,7 +235,17 @@ class Sandbox:
     """One hermetic world: its own HOME, XDG dirs and runtime dir, so a host
     finds none of the operator's config and leaves nothing outside ``root``."""
 
+    # A unix socket path is at most 107 bytes, and the longest one a host makes
+    # in here is Herdr's client socket under XDG_CONFIG_HOME. Past the limit its
+    # server cannot bind and only a timeout says anything, so say it up front.
+    SOCKET_SUFFIX = "/config/herdr/sessions/bench/herdr-client.sock"
+
     def __init__(self, root, extra_path=()):
+        if len(root + self.SOCKET_SUFFIX) > 107:
+            raise SystemExit(
+                f"sandbox path too long for a unix socket: {root!r}; "
+                "pass a shorter --work (or BENCH_CACHE to run.sh)"
+            )
         self.root = root
         shutil.rmtree(root, ignore_errors=True)
         dirs = ["home", "config", "data", "state", "cache", "run", "tmux", "work", "agents"]

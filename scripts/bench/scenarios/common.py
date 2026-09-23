@@ -67,7 +67,7 @@ def announce(host):
     have scrolled it away, and the banner is how a client is seen to draw it.
     Done outside any timed window."""
     ready = host.sb.ready(host.names[0])
-    if ready:
+    if ready and ready[1] in host.agent_pids():
         signal_agents([ready[1]], signal.SIGRTMIN)
         time.sleep(0.3)
 

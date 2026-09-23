@@ -3,8 +3,13 @@
 A byte goes into the client's terminal; the time is until the agent's echo of
 that byte comes back out of it — the whole round trip a user feels
 (terminal -> client -> server -> agent -> server -> client -> terminal).
-Keys are spaced 20-60 ms apart at random, so the samples do not lock onto a
-host's frame clock. ``idle``: nothing else happening. ``other-busy``: session
+Keys go out on a schedule of their own, 60-100 ms apart (send to send, at
+random, so the samples do not lock onto a host's frame clock), and so at the
+same rate on every host. The floor is above the slowest echo measured (~50 ms):
+a key sent before the previous echo was drawn would have its own echo redrawn
+over it in place, and a renderer pacing frames would never show the first one.
+A key whose echo is later than its successor's slot delays that successor
+rather than overlapping it. ``idle``: nothing else happening. ``other-busy``: session
 2, not on screen, is emitting back-to-back bursts the whole time.
 
 Samples are pooled across repetitions; ``timeouts`` counts keys whose echo
@@ -63,15 +68,15 @@ def run(ctx):
                         off = len(client.buf)
                         start = bl.now_ns()
                         client.write(bytes([byte]))
+                        next_send = time.monotonic() + rng.uniform(0.06, 0.10)
                         seen = client.wait_for(bl.token(byte), 2.0, since=off)
                         if i >= 10:  # the first ten warm the path up
                             if seen is None:
                                 timeouts += 1
                             else:
                                 values.append(bl.ms(seen - start))
-                        gap = time.monotonic() + rng.uniform(0.02, 0.06)
-                        while time.monotonic() < gap:
-                            client.pump(max(0.0, gap - time.monotonic()))
+                        while time.monotonic() < next_send:
+                            client.pump(max(0.0, next_send - time.monotonic()))
                     ctx.record(
                         "latency",
                         name,

@@ -4,7 +4,8 @@
 ``server-killed``: the host's server is SIGKILLed (for thurbox that is its tmux
 server — the TUI is only a client); agents still running, of 3.
 ``restart``: server and agents are all SIGTERMed, as a machine shutdown does,
-then the host is started again the way a user would (tmux: nothing to start;
+then the host is started again the way a user would (anything still up after
+10 s is SIGKILLed first, and ``forced_shutdown`` records it) (tmux: nothing to start;
 Herdr: its server; thurbox: its interface, which respawns every session it has
 a record of). ``commands_back``: sessions running their command again within
 30 s, of 3; ``restore_ms``: until the last of them started; ``listed``: sessions
@@ -59,7 +60,15 @@ def run(ctx):
                 agents = host.agent_pids()
                 time.sleep(2.0)
                 signal_agents(host.server_pids() + agents, signal.SIGTERM)
-                bl.wait_until(lambda h=host, a=agents: alive(a + h.server_pids()) == 0, 10)
+                down = bl.wait_until(lambda h=host, a=agents: alive(a + h.server_pids()) == 0, 10)
+                # Whatever outlived SIGTERM would be found running by the
+                # recovery and counted as restored, so it is killed, and the
+                # sample says so.
+                forced = down is None
+                if forced:
+                    host.kill_server()
+                    signal_agents(host.agent_pids(), signal.SIGKILL)
+                    bl.wait_until(lambda a=agents: alive(a) == 0, 5)
                 for n in host.names:
                     host.sb.forget(n)
                 start = bl.now_ns()
@@ -83,6 +92,7 @@ def run(ctx):
                     warm,
                     load,
                     commands_back=len(back),
+                    forced_shutdown=forced,
                     restore_ms=bl.ms(max(back.values()) - start) if len(back) == SESSIONS else None,
                     **host.layout_after_restart(),
                 )
