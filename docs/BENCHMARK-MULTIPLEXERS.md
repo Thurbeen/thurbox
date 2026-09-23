@@ -55,14 +55,16 @@ top, and that is where it pays.
 - **Creating sessions is the slowest of the three**: 92 ms a session against
   Herdr's ~50 and tmux's 8, so 50 sessions take 4.6 s. Every `session create`
   runs 27 processes, 20 of them separate `tmux set-option` calls re-applying
-  the same server options.
+  the same server options
+  ([#1243](https://github.com/Thurbeen/thurbox/issues/1243)).
 - **Attached, it is the heaviest on memory** (29 MiB with one session, 81 MiB
   with 50, about 1 MiB a session) and it is never quite idle (2.8 % of a core
   with one session, 10 % with 50, where tmux is at 0).
 - **Its first view of a busy session can be stale.** After a headless session
   had printed ~100 lines, the interface's first frame of it lacked the latest
   lines — every repetition, every N, and never on tmux or Herdr — until the
-  agent printed again. A correctness bug, not a cost.
+  agent printed again. A correctness bug, not a cost
+  ([#1242](https://github.com/Thurbeen/thurbox/issues/1242)).
 - **Reading history through the CLI** takes 47 ms against 6–8, most of it
   starting `thurbox-cli`.
 - **Attaching** takes 170–240 ms against tmux's 11.
@@ -232,12 +234,15 @@ can be re-measured with the scenario named.
    drawn on the 33 ms output floor. Output from the session that just received
    a key, arriving within a frame or two of it, is arguably input and could
    take the 16 ms floor — or no floor.
-2. **Stale first view on attach** (`resources`, `first_view_stale`): write the
+2. **Stale first view on attach** (`resources`, `first_view_stale`),
+   [#1242](https://github.com/Thurbeen/thurbox/issues/1242): write the
    end-to-end test that reproduces it (a headless session prints ~100 lines at
    80 columns; the interface attaches; its first frame lacks the last line),
    then fix it.
-3. **`session create` cost** (`create`): 20 `tmux set-option` processes per
-   create re-apply options the server already has. One `tmux` invocation, or
+3. **`session create` cost** (`create`),
+   [#1243](https://github.com/Thurbeen/thurbox/issues/1243): 20
+   `tmux set-option` processes per create re-apply options the server already
+   has. One `tmux` invocation, or
    once per server, would remove most of the 92 ms.
 4. **Attached memory and idle CPU per session** (`resources`): ~1 MiB and ~0.15 %
    of a core per session with the interface up and nothing happening.
