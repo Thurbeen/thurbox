@@ -2022,9 +2022,11 @@ queued (`window.c`, `control.c`), so the reply sits in the stream at exactly
 the byte it describes. The control-mode reader thread, which sees both in that
 order, puts the snapshot into the pane's own output channel, and the pane's
 reader installs it between two reads. Nothing is lost or repeated because
-nothing about the rebuild depends on timing. The paint waits up to
+nothing about the rebuild depends on timing. The paint that asks waits up to
 `RESTORE_WAIT` (100 ms) for it, then paints blank and repaints when it lands,
-so the first frame is never the old screen.
+so the first frame is never the old screen. Later paints do not wait again:
+a host that stopped answering would otherwise stall every frame the pane is on
+screen, and the request is only repeated after two seconds without an answer.
 
 Reading replies by content also exposed a framing hole that the snapshot would
 otherwise have fallen into: a `capture-pane` reply is written raw, so a screen
@@ -2069,7 +2071,8 @@ parser that saw every byte; a grid dropped and rebuilt over and over while its
 pane prints loses and repeats no line; a search finds and lands on history in
 a pane with no grid; an off-screen pane still reports its title and its
 output. `control_mode::tests` pins that a captured protocol-looking line stays
-content.
+content, and `terminal::decoupling` that a snapshot which never arrives costs
+the asking paint its wait and no later paint anything.
 
 ---
 
