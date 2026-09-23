@@ -313,9 +313,10 @@ fn a_window_resize_interrupts_its_panes_readers_in_order() {
         .unwrap()
         .insert("%8".to_string(), "@4".to_string());
     let mut reader = ControlModeReader::new(rx);
+    let sizes: PaneSizesMapShared = Arc::default();
 
     ControlMode::dispatch_output(&senders, "%7", b"old".to_vec());
-    ControlMode::dispatch_resize(&senders, &windows, "@3", 30, 100);
+    ControlMode::dispatch_resize(&senders, &windows, &sizes, "@3", 30, 100);
     ControlMode::dispatch_output(&senders, "%7", b"new".to_vec());
 
     let mut buf = [0u8; 16];
@@ -329,6 +330,33 @@ fn a_window_resize_interrupts_its_panes_readers_in_order() {
         other_rx.try_recv().is_err(),
         "another window's pane was told"
     );
+}
+
+/// A size is never dropped. A pane whose channel is full has its size put
+/// straight where its reader applies sizes, at the next read boundary — a
+/// little early for the bytes still queued, where dropping it left a resident
+/// grid at the old size with nothing to correct it.
+#[test]
+fn a_resize_into_a_full_channel_still_reaches_the_reader() {
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, rx) = sync_channel(1);
+    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    windows
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), "@3".to_string());
+    let reader = ControlModeReader::new(rx);
+    let sizes: PaneSizesMapShared = Arc::default();
+    sizes
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), reader.size());
+
+    ControlMode::dispatch_output(&senders, "%7", b"fills it".to_vec());
+    ControlMode::dispatch_resize(&senders, &windows, &sizes, "@3", 30, 100);
+
+    assert_eq!(reader.size().last_reported(), Some((30, 100)));
 }
 
 /// Who sizes a pane is a hint, not a point in the stream: it is noted and the

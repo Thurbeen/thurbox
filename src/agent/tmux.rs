@@ -1995,6 +1995,9 @@ impl TmuxBackend {
             }
         };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
+        let reader = ControlModeReader::new(rx);
+        let reports = window_id.is_some() && !self.transport.uses_psmux();
+        let size = reports.then(|| reader.size());
         self.with_control(|ctrl| {
             let mut senders = ctrl
                 .pane_senders
@@ -2006,26 +2009,29 @@ impl TmuxBackend {
                 .push(tx);
             drop(senders);
             let Some(window_id) = window_id else {
-                return Ok(false);
+                return Ok(());
             };
             let mut windows = ctrl
                 .pane_windows
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
             windows.insert(pane_id.to_string(), window_id);
-            Ok(true)
-        })
-        .map(|mapped| {
-            let reader = ControlModeReader::new(rx);
-            let size = (mapped && !self.transport.uses_psmux()).then(|| reader.size());
-            // Before any byte is read, so the history seed — captured at this
-            // size — is parsed at it.
-            if let (Some(size), Some(((rows, cols), sized_by))) = (&size, learned) {
-                size.report(rows, cols);
-                size.set_sized_elsewhere(sized_by.is_some_and(|name| name != self.sizer));
+            drop(windows);
+            if let Some(size) = &size {
+                ctrl.pane_sizes
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pane_sizes lock: {e}"))?
+                    .insert(pane_id.to_string(), size.clone());
             }
-            (reader, size)
-        })
+            Ok(())
+        })?;
+        // Before any byte is read, so the history seed — captured at this size
+        // — is parsed at it.
+        if let (Some(size), Some(((rows, cols), sized_by))) = (&size, learned) {
+            size.report(rows, cols);
+            size.set_sized_elsewhere(sized_by.is_some_and(|name| name != self.sizer));
+        }
+        Ok((reader, size))
     }
 
     /// Unregister a pane sender (causes the reader to get EOF).
@@ -2044,6 +2050,11 @@ impl TmuxBackend {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("pane_windows lock: {e}"))?;
             windows.remove(pane_id);
+            drop(windows);
+            ctrl.pane_sizes
+                .lock()
+                .map_err(|e| anyhow::anyhow!("pane_sizes lock: {e}"))?
+                .remove(pane_id);
             Ok(())
         })
     }

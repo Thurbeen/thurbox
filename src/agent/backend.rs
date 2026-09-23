@@ -110,6 +110,11 @@ impl PaneSize {
         self.0.current.load(Ordering::Relaxed)
     }
 
+    /// The last size reported, `(rows, cols)`.
+    pub fn last_reported(&self) -> Option<(u16, u16)> {
+        unpack_size(self.current())
+    }
+
     /// Whether the pane was released since this was last asked. A load first,
     /// so the frame that asks and finds nothing writes nothing.
     fn take_released(&self) -> bool {

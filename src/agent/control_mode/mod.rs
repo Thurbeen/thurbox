@@ -228,6 +228,11 @@ pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
 pub type PaneWindowsMap = HashMap<String, String>;
 pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
 
+/// Where each registered pane's reader applies the sizes tmux reports, for a
+/// size its channel had no room for (see `ControlMode::dispatch_resize`).
+pub type PaneSizesMap = HashMap<String, crate::agent::backend::PaneSize>;
+pub type PaneSizesMapShared = Arc<Mutex<PaneSizesMap>>;
+
 /// Response from a tmux control mode command.
 pub struct CommandResponse {
     /// Every block's lines, in order: one block per command of a list.
@@ -1056,6 +1061,9 @@ pub(super) struct ControlMode {
     /// Where each registered pane lives, for turning `%window-close` into EOF.
     /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
     pub(super) pane_windows: PaneWindowsMapShared,
+    /// Where each pane's reader applies a size — written and read as
+    /// `pane_windows` is, and only for a pane whose sizes are reported.
+    pub(super) pane_sizes: PaneSizesMapShared,
     /// FIFO queue of waiters — one per command written, in the order written.
     /// Every sender takes a place, including the ones that will not read the
     /// answer (`send_command_detached`) or will stop waiting for it
@@ -1173,6 +1181,7 @@ impl ControlMode {
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let pane_windows: PaneWindowsMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let pane_sizes: PaneSizesMapShared = Arc::default();
         let response_queue: ResponseQueue = Arc::new(Mutex::new(VecDeque::new()));
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
@@ -1182,6 +1191,7 @@ impl ControlMode {
         let reader_pane_senders = Arc::clone(&pane_senders);
         let reader_sizer = sizer.to_string();
         let reader_pane_windows = Arc::clone(&pane_windows);
+        let reader_pane_sizes = Arc::clone(&pane_sizes);
         let reader_queue = Arc::clone(&response_queue);
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
@@ -1195,6 +1205,7 @@ impl ControlMode {
                     reader_stdin,
                     reader_pane_senders,
                     reader_pane_windows,
+                    reader_pane_sizes,
                     reader_queue,
                     reader_sub_events,
                     strict_blocks,
@@ -1208,6 +1219,7 @@ impl ControlMode {
             stdin,
             pane_senders,
             pane_windows,
+            pane_sizes,
             response_queue,
             sub_events,
             alive,
@@ -1401,6 +1413,7 @@ impl ControlMode {
         stdin: Arc<Mutex<ChildStdin>>,
         pane_senders: PaneSendersMapShared,
         pane_windows: PaneWindowsMapShared,
+        pane_sizes: PaneSizesMapShared,
         response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
         strict_blocks: bool,
@@ -1465,13 +1478,26 @@ impl ControlMode {
                 }
                 Notification::WindowClose { window_id } => {
                     Self::close_window_panes(&pane_senders, &pane_windows, &window_id);
+                    if let Ok(mut sizes) = pane_sizes.lock() {
+                        let windows = pane_windows.lock().ok();
+                        sizes.retain(|pane, _| {
+                            windows.as_ref().is_some_and(|w| w.contains_key(pane))
+                        });
+                    }
                 }
                 Notification::LayoutChange {
                     window_id,
                     rows,
                     cols,
                 } => {
-                    Self::dispatch_resize(&pane_senders, &pane_windows, &window_id, rows, cols);
+                    Self::dispatch_resize(
+                        &pane_senders,
+                        &pane_windows,
+                        &pane_sizes,
+                        &window_id,
+                        rows,
+                        cols,
+                    );
                 }
                 // Consumed even mid-%begin block: tmux never interleaves
                 // notifications inside response bodies, so this can't eat a
@@ -1507,6 +1533,9 @@ impl ControlMode {
         }
         if let Ok(mut windows) = pane_windows.lock() {
             windows.clear();
+        }
+        if let Ok(mut sizes) = pane_sizes.lock() {
+            sizes.clear();
         }
     }
 
@@ -1558,11 +1587,16 @@ impl ControlMode {
     ///
     /// Only a pane registered with its window can be told, which is every pane
     /// this connection wired up once it learnt the window
-    /// ([`crate::agent::tmux`]'s `register_pane`). A full channel drops the size
-    /// as it would drop output: the reader thread must never block.
+    /// ([`crate::agent::tmux`]'s `register_pane`). The reader thread must never
+    /// block, but a size must not be dropped the way output is when a channel is
+    /// full: a resident grid has nothing that would ever correct it. So a size
+    /// with no room in the channel goes straight to where the pane's reader
+    /// applies sizes, at its next read — early for the bytes still queued, and
+    /// the program repaints after a resize anyway.
     fn dispatch_resize(
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
+        pane_sizes: &PaneSizesMapShared,
         window_id: &str,
         rows: u16,
         cols: u16,
@@ -1576,24 +1610,33 @@ impl ControlMode {
             Err(_) => return,
         };
         for pane in &panes {
-            Self::send_event(pane_senders, pane, PaneChunk::Resized { rows, cols });
+            if Self::send_event(pane_senders, pane, PaneChunk::Resized { rows, cols }) {
+                continue;
+            }
+            if let Some(size) = pane_sizes.lock().ok().and_then(|s| s.get(pane).cloned()) {
+                size.report(rows, cols);
+            }
         }
     }
 
     /// Hand one event to every reader of `pane_id`, dropping it for a full
     /// channel as output is dropped: the reader thread must never block.
-    fn send_event(pane_senders: &PaneSendersMapShared, pane_id: &str, event: PaneChunk) {
+    /// Whether every reader took it.
+    fn send_event(pane_senders: &PaneSendersMapShared, pane_id: &str, event: PaneChunk) -> bool {
         let Ok(senders) = pane_senders.lock() else {
-            return;
+            return false;
         };
         let Some(tx_vec) = senders.get(pane_id) else {
-            return;
+            return false;
         };
+        let mut all = true;
         for tx in tx_vec {
             if tx.try_send(event.clone()).is_err() {
                 debug!(pane_id = %pane_id, "Pane channel full or gone, dropping an event");
+                all = false;
             }
         }
+        all
     }
 
     /// Broadcast a `%output` payload to every reader registered for `pane_id`.
