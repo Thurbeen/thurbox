@@ -1,0 +1,1675 @@
+scenario,host,variant,rep,warmup,load1,metric,value
+create,tmux,N=1,0,True,0.31,first_ready_ms,77.799391
+create,tmux,N=1,0,True,0.31,last_create_ms,33.607024
+create,tmux,N=1,0,True,0.31,mean_create_ms,33.607024
+create,tmux,N=1,0,True,0.31,total_ms,77.799391
+create,herdr,N=1,0,True,0.31,first_ready_ms,145.59742
+create,herdr,N=1,0,True,0.31,last_create_ms,119.070274
+create,herdr,N=1,0,True,0.31,mean_create_ms,119.070274
+create,herdr,N=1,0,True,0.31,total_ms,145.59742
+create,thurbox,N=1,0,True,0.31,first_ready_ms,84.40676
+create,thurbox,N=1,0,True,0.31,last_create_ms,111.962946
+create,thurbox,N=1,0,True,0.31,mean_create_ms,111.962946
+create,thurbox,N=1,0,True,0.31,total_ms,84.40676
+create,tmux,N=1,1,False,0.31,first_ready_ms,37.838597
+create,tmux,N=1,1,False,0.31,last_create_ms,13.546096
+create,tmux,N=1,1,False,0.31,mean_create_ms,13.546096
+create,tmux,N=1,1,False,0.31,total_ms,37.838597
+create,herdr,N=1,1,False,0.31,first_ready_ms,148.004205
+create,herdr,N=1,1,False,0.31,last_create_ms,122.123673
+create,herdr,N=1,1,False,0.31,mean_create_ms,122.123673
+create,herdr,N=1,1,False,0.31,total_ms,148.004205
+create,thurbox,N=1,1,False,0.31,first_ready_ms,91.580431
+create,thurbox,N=1,1,False,0.31,last_create_ms,119.431566
+create,thurbox,N=1,1,False,0.31,mean_create_ms,119.431566
+create,thurbox,N=1,1,False,0.31,total_ms,91.580431
+create,tmux,N=1,2,False,0.31,first_ready_ms,37.804803
+create,tmux,N=1,2,False,0.31,last_create_ms,13.497203
+create,tmux,N=1,2,False,0.31,mean_create_ms,13.497203
+create,tmux,N=1,2,False,0.31,total_ms,37.804803
+create,herdr,N=1,2,False,0.31,first_ready_ms,146.918941
+create,herdr,N=1,2,False,0.31,last_create_ms,120.34919
+create,herdr,N=1,2,False,0.31,mean_create_ms,120.34919
+create,herdr,N=1,2,False,0.31,total_ms,146.918941
+create,thurbox,N=1,2,False,0.31,first_ready_ms,88.125268
+create,thurbox,N=1,2,False,0.31,last_create_ms,118.554442
+create,thurbox,N=1,2,False,0.31,mean_create_ms,118.554442
+create,thurbox,N=1,2,False,0.31,total_ms,88.125268
+create,tmux,N=1,3,False,0.31,first_ready_ms,37.865206
+create,tmux,N=1,3,False,0.31,last_create_ms,13.501511
+create,tmux,N=1,3,False,0.31,mean_create_ms,13.501511
+create,tmux,N=1,3,False,0.31,total_ms,37.865206
+create,herdr,N=1,3,False,0.31,first_ready_ms,147.417778
+create,herdr,N=1,3,False,0.31,last_create_ms,120.853383
+create,herdr,N=1,3,False,0.31,mean_create_ms,120.853383
+create,herdr,N=1,3,False,0.31,total_ms,147.417778
+create,thurbox,N=1,3,False,0.31,first_ready_ms,92.062284
+create,thurbox,N=1,3,False,0.31,last_create_ms,118.385248
+create,thurbox,N=1,3,False,0.31,mean_create_ms,118.385248
+create,thurbox,N=1,3,False,0.31,total_ms,92.062284
+create,tmux,N=1,4,False,0.31,first_ready_ms,37.942708
+create,tmux,N=1,4,False,0.31,last_create_ms,13.471288
+create,tmux,N=1,4,False,0.31,mean_create_ms,13.471288
+create,tmux,N=1,4,False,0.31,total_ms,37.942708
+create,herdr,N=1,4,False,0.31,first_ready_ms,147.924842
+create,herdr,N=1,4,False,0.31,last_create_ms,121.170578
+create,herdr,N=1,4,False,0.31,mean_create_ms,121.170578
+create,herdr,N=1,4,False,0.31,total_ms,147.924842
+create,thurbox,N=1,4,False,0.36,first_ready_ms,83.285228
+create,thurbox,N=1,4,False,0.36,last_create_ms,110.970099
+create,thurbox,N=1,4,False,0.36,mean_create_ms,110.970099
+create,thurbox,N=1,4,False,0.36,total_ms,83.285228
+create,tmux,N=1,5,False,0.36,first_ready_ms,37.778926
+create,tmux,N=1,5,False,0.36,last_create_ms,13.572446
+create,tmux,N=1,5,False,0.36,mean_create_ms,13.572446
+create,tmux,N=1,5,False,0.36,total_ms,37.778926
+create,herdr,N=1,5,False,0.36,first_ready_ms,146.862434
+create,herdr,N=1,5,False,0.36,last_create_ms,120.108407
+create,herdr,N=1,5,False,0.36,mean_create_ms,120.108407
+create,herdr,N=1,5,False,0.36,total_ms,146.862434
+create,thurbox,N=1,5,False,0.36,first_ready_ms,79.400949
+create,thurbox,N=1,5,False,0.36,last_create_ms,107.42771
+create,thurbox,N=1,5,False,0.36,mean_create_ms,107.42771
+create,thurbox,N=1,5,False,0.36,total_ms,79.400949
+create,tmux,N=5,0,True,0.36,first_ready_ms,38.965387
+create,tmux,N=5,0,True,0.36,last_create_ms,8.364511
+create,tmux,N=5,0,True,0.36,mean_create_ms,7.4390358
+create,tmux,N=5,0,True,0.36,total_ms,63.755355
+create,herdr,N=5,0,True,0.36,first_ready_ms,151.102211
+create,herdr,N=5,0,True,0.36,last_create_ms,9.299633
+create,herdr,N=5,0,True,0.36,mean_create_ms,33.3623002
+create,herdr,N=5,0,True,0.36,total_ms,193.202309
+create,thurbox,N=5,0,True,0.36,first_ready_ms,77.469326
+create,thurbox,N=5,0,True,0.36,last_create_ms,86.439383
+create,thurbox,N=5,0,True,0.36,mean_create_ms,91.78716320000001
+create,thurbox,N=5,0,True,0.36,total_ms,436.865905
+create,tmux,N=5,1,False,0.36,first_ready_ms,39.093996
+create,tmux,N=5,1,False,0.36,last_create_ms,7.962802
+create,tmux,N=5,1,False,0.36,mean_create_ms,7.2498482
+create,tmux,N=5,1,False,0.36,total_ms,64.259919
+create,herdr,N=5,1,False,0.36,first_ready_ms,153.332258
+create,herdr,N=5,1,False,0.36,last_create_ms,10.373573
+create,herdr,N=5,1,False,0.36,mean_create_ms,33.2252548
+create,herdr,N=5,1,False,0.36,total_ms,196.816826
+create,thurbox,N=5,1,False,0.36,first_ready_ms,153.59857
+create,thurbox,N=5,1,False,0.36,last_create_ms,86.787061
+create,thurbox,N=5,1,False,0.36,mean_create_ms,107.1379902
+create,thurbox,N=5,1,False,0.36,total_ms,513.313189
+create,tmux,N=5,2,False,0.36,first_ready_ms,38.945119
+create,tmux,N=5,2,False,0.36,last_create_ms,11.28616
+create,tmux,N=5,2,False,0.36,mean_create_ms,8.5531258
+create,tmux,N=5,2,False,0.36,total_ms,65.018025
+create,herdr,N=5,2,False,0.36,first_ready_ms,152.288661
+create,herdr,N=5,2,False,0.36,last_create_ms,109.8657
+create,herdr,N=5,2,False,0.36,mean_create_ms,53.5014414
+create,herdr,N=5,2,False,0.36,total_ms,308.298273
+create,thurbox,N=5,2,False,0.36,first_ready_ms,79.453286
+create,thurbox,N=5,2,False,0.36,last_create_ms,88.838941
+create,thurbox,N=5,2,False,0.36,mean_create_ms,93.6449582
+create,thurbox,N=5,2,False,0.36,total_ms,444.332374
+create,tmux,N=5,3,False,0.36,first_ready_ms,48.4109
+create,tmux,N=5,3,False,0.36,last_create_ms,14.760339
+create,tmux,N=5,3,False,0.36,mean_create_ms,10.3466046
+create,tmux,N=5,3,False,0.36,total_ms,73.70038
+create,herdr,N=5,3,False,0.36,first_ready_ms,152.638962
+create,herdr,N=5,3,False,0.36,last_create_ms,9.453894
+create,herdr,N=5,3,False,0.36,mean_create_ms,33.243824
+create,herdr,N=5,3,False,0.36,total_ms,192.629589
+create,thurbox,N=5,3,False,0.36,first_ready_ms,98.836976
+create,thurbox,N=5,3,False,0.36,last_create_ms,86.672893
+create,thurbox,N=5,3,False,0.36,mean_create_ms,95.8255072
+create,thurbox,N=5,3,False,0.36,total_ms,456.875571
+create,tmux,N=5,4,False,0.42,first_ready_ms,39.171711
+create,tmux,N=5,4,False,0.42,last_create_ms,10.135425
+create,tmux,N=5,4,False,0.42,mean_create_ms,7.494989599999999
+create,tmux,N=5,4,False,0.42,total_ms,63.616566
+create,herdr,N=5,4,False,0.42,first_ready_ms,154.933439
+create,herdr,N=5,4,False,0.42,last_create_ms,12.390332
+create,herdr,N=5,4,False,0.42,mean_create_ms,34.502472
+create,herdr,N=5,4,False,0.42,total_ms,197.860828
+create,thurbox,N=5,4,False,0.42,first_ready_ms,85.610525
+create,thurbox,N=5,4,False,0.42,last_create_ms,87.014641
+create,thurbox,N=5,4,False,0.42,mean_create_ms,94.9447376
+create,thurbox,N=5,4,False,0.42,total_ms,452.02195
+create,tmux,N=5,5,False,0.42,first_ready_ms,38.947739
+create,tmux,N=5,5,False,0.42,last_create_ms,11.735595
+create,tmux,N=5,5,False,0.42,mean_create_ms,7.8616708
+create,tmux,N=5,5,False,0.42,total_ms,63.58843
+create,herdr,N=5,5,False,0.42,first_ready_ms,152.997133
+create,herdr,N=5,5,False,0.42,last_create_ms,10.167752
+create,herdr,N=5,5,False,0.42,mean_create_ms,34.179407600000005
+create,herdr,N=5,5,False,0.42,total_ms,197.210446
+create,thurbox,N=5,5,False,0.42,first_ready_ms,130.99327
+create,thurbox,N=5,5,False,0.42,last_create_ms,87.105885
+create,thurbox,N=5,5,False,0.42,mean_create_ms,118.3861088
+create,thurbox,N=5,5,False,0.42,total_ms,568.884994
+create,tmux,N=20,0,True,0.42,first_ready_ms,39.028479
+create,tmux,N=20,0,True,0.42,last_create_ms,11.182734
+create,tmux,N=20,0,True,0.42,mean_create_ms,8.396710449999999
+create,tmux,N=20,0,True,0.42,total_ms,194.370436
+create,herdr,N=20,0,True,0.42,first_ready_ms,149.776067
+create,herdr,N=20,0,True,0.42,last_create_ms,22.23576
+create,herdr,N=20,0,True,0.42,mean_create_ms,54.1720089
+create,herdr,N=20,0,True,0.42,total_ms,1167.035169
+create,thurbox,N=20,0,True,0.42,first_ready_ms,83.869995
+create,thurbox,N=20,0,True,0.42,last_create_ms,88.621424
+create,thurbox,N=20,0,True,0.42,mean_create_ms,89.612902
+create,thurbox,N=20,0,True,0.42,total_ms,1768.451783
+create,tmux,N=20,1,False,0.46,first_ready_ms,38.919556
+create,tmux,N=20,1,False,0.46,last_create_ms,5.843074
+create,tmux,N=20,1,False,0.46,mean_create_ms,8.617975099999999
+create,tmux,N=20,1,False,0.46,total_ms,197.405724
+create,herdr,N=20,1,False,0.46,first_ready_ms,153.83206
+create,herdr,N=20,1,False,0.46,last_create_ms,23.096445
+create,herdr,N=20,1,False,0.46,mean_create_ms,47.6917093
+create,herdr,N=20,1,False,0.46,total_ms,1030.719288
+create,thurbox,N=20,1,False,0.46,first_ready_ms,76.962086
+create,thurbox,N=20,1,False,0.46,last_create_ms,92.64143
+create,thurbox,N=20,1,False,0.46,mean_create_ms,96.39196775
+create,thurbox,N=20,1,False,0.46,total_ms,1900.22823
+create,tmux,N=20,2,False,0.59,first_ready_ms,39.013623
+create,tmux,N=20,2,False,0.59,last_create_ms,8.874316
+create,tmux,N=20,2,False,0.59,mean_create_ms,8.43323785
+create,tmux,N=20,2,False,0.59,total_ms,191.817526
+create,herdr,N=20,2,False,0.59,first_ready_ms,155.216747
+create,herdr,N=20,2,False,0.59,last_create_ms,23.547433
+create,herdr,N=20,2,False,0.59,mean_create_ms,36.59862785
+create,herdr,N=20,2,False,0.59,total_ms,776.175546
+create,thurbox,N=20,2,False,0.59,first_ready_ms,106.63649
+create,thurbox,N=20,2,False,0.59,last_create_ms,99.150705
+create,thurbox,N=20,2,False,0.59,mean_create_ms,91.49573554999999
+create,thurbox,N=20,2,False,0.59,total_ms,1803.844711
+create,tmux,N=20,3,False,0.59,first_ready_ms,38.990604
+create,tmux,N=20,3,False,0.59,last_create_ms,7.35495
+create,tmux,N=20,3,False,0.59,mean_create_ms,8.479851949999999
+create,tmux,N=20,3,False,0.59,total_ms,200.321497
+create,herdr,N=20,3,False,0.59,first_ready_ms,152.474885
+create,herdr,N=20,3,False,0.59,last_create_ms,26.048544
+create,herdr,N=20,3,False,0.59,mean_create_ms,43.865387
+create,herdr,N=20,3,False,0.59,total_ms,952.840137
+create,thurbox,N=20,3,False,0.59,first_ready_ms,99.219152
+create,thurbox,N=20,3,False,0.59,last_create_ms,88.901163
+create,thurbox,N=20,3,False,0.59,mean_create_ms,96.15258155
+create,thurbox,N=20,3,False,0.59,total_ms,1898.848386
+create,tmux,N=20,4,False,0.62,first_ready_ms,38.977127
+create,tmux,N=20,4,False,0.62,last_create_ms,8.943774
+create,tmux,N=20,4,False,0.62,mean_create_ms,8.5197798
+create,tmux,N=20,4,False,0.62,total_ms,195.61296
+create,herdr,N=20,4,False,0.62,first_ready_ms,154.335438
+create,herdr,N=20,4,False,0.62,last_create_ms,14.969744
+create,herdr,N=20,4,False,0.62,mean_create_ms,48.459885799999995
+create,herdr,N=20,4,False,0.62,total_ms,1050.005423
+create,thurbox,N=20,4,False,0.62,first_ready_ms,89.032843
+create,thurbox,N=20,4,False,0.62,last_create_ms,88.894867
+create,thurbox,N=20,4,False,0.62,mean_create_ms,100.76396805
+create,thurbox,N=20,4,False,0.62,total_ms,1991.478665
+create,tmux,N=20,5,False,0.57,first_ready_ms,39.178012
+create,tmux,N=20,5,False,0.57,last_create_ms,5.963955
+create,tmux,N=20,5,False,0.57,mean_create_ms,8.212029450000001
+create,tmux,N=20,5,False,0.57,total_ms,190.584557
+create,herdr,N=20,5,False,0.57,first_ready_ms,152.861768
+create,herdr,N=20,5,False,0.57,last_create_ms,123.080515
+create,herdr,N=20,5,False,0.57,mean_create_ms,54.602059600000004
+create,herdr,N=20,5,False,0.57,total_ms,1151.918513
+create,thurbox,N=20,5,False,0.57,first_ready_ms,86.24259
+create,thurbox,N=20,5,False,0.57,last_create_ms,88.957756
+create,thurbox,N=20,5,False,0.57,mean_create_ms,93.50937490000001
+create,thurbox,N=20,5,False,0.57,total_ms,1846.065157
+create,tmux,N=50,0,True,0.57,first_ready_ms,40.070635
+create,tmux,N=50,0,True,0.57,last_create_ms,6.381945
+create,tmux,N=50,0,True,0.57,mean_create_ms,9.475506339999999
+create,tmux,N=50,0,True,0.57,total_ms,515.39295
+create,herdr,N=50,0,True,1.08,first_ready_ms,156.169667
+create,herdr,N=50,0,True,1.08,last_create_ms,13.830074
+create,herdr,N=50,0,True,1.08,mean_create_ms,48.74003758
+create,herdr,N=50,0,True,1.08,total_ms,2462.252502
+create,thurbox,N=50,0,True,1.08,first_ready_ms,101.972954
+create,thurbox,N=50,0,True,1.08,last_create_ms,91.572945
+create,thurbox,N=50,0,True,1.08,mean_create_ms,93.74159952
+create,thurbox,N=50,0,True,1.08,total_ms,4661.339536
+create,tmux,N=50,1,False,1.08,first_ready_ms,39.044564
+create,tmux,N=50,1,False,1.08,last_create_ms,5.672844
+create,tmux,N=50,1,False,1.08,mean_create_ms,8.60850292
+create,tmux,N=50,1,False,1.08,total_ms,454.405839
+create,herdr,N=50,1,False,1.08,first_ready_ms,147.976777
+create,herdr,N=50,1,False,1.08,last_create_ms,29.151056
+create,herdr,N=50,1,False,1.08,mean_create_ms,44.91914448
+create,herdr,N=50,1,False,1.08,total_ms,2297.666021
+create,thurbox,N=50,1,False,0.99,first_ready_ms,84.597803
+create,thurbox,N=50,1,False,0.99,last_create_ms,91.658429
+create,thurbox,N=50,1,False,0.99,mean_create_ms,92.08594372
+create,thurbox,N=50,1,False,0.99,total_ms,4578.544866
+create,tmux,N=50,2,False,0.99,first_ready_ms,38.876236
+create,tmux,N=50,2,False,0.99,last_create_ms,7.945478
+create,tmux,N=50,2,False,0.99,mean_create_ms,8.539863279999999
+create,tmux,N=50,2,False,0.99,total_ms,460.297988
+create,herdr,N=50,2,False,0.99,first_ready_ms,151.9945
+create,herdr,N=50,2,False,0.99,last_create_ms,116.822932
+create,herdr,N=50,2,False,0.99,mean_create_ms,60.94389488
+create,herdr,N=50,2,False,0.99,total_ms,3087.387197
+create,thurbox,N=50,2,False,1.39,first_ready_ms,104.158048
+create,thurbox,N=50,2,False,1.39,last_create_ms,92.180413
+create,thurbox,N=50,2,False,1.39,mean_create_ms,90.96797504000001
+create,thurbox,N=50,2,False,1.39,total_ms,4522.059353
+create,tmux,N=50,3,False,1.44,first_ready_ms,38.988153
+create,tmux,N=50,3,False,1.44,last_create_ms,9.130738
+create,tmux,N=50,3,False,1.44,mean_create_ms,8.36815156
+create,tmux,N=50,3,False,1.44,total_ms,447.736856
+create,herdr,N=50,3,False,1.44,first_ready_ms,152.969957
+create,herdr,N=50,3,False,1.44,last_create_ms,27.639736
+create,herdr,N=50,3,False,1.44,mean_create_ms,47.35220986
+create,herdr,N=50,3,False,1.44,total_ms,2448.415632
+create,thurbox,N=50,3,False,1.44,first_ready_ms,114.855012
+create,thurbox,N=50,3,False,1.44,last_create_ms,91.227455
+create,thurbox,N=50,3,False,1.44,mean_create_ms,90.70021428
+create,thurbox,N=50,3,False,1.44,total_ms,4509.846306
+create,tmux,N=50,4,False,1.49,first_ready_ms,39.25784
+create,tmux,N=50,4,False,1.49,last_create_ms,5.195923
+create,tmux,N=50,4,False,1.49,mean_create_ms,8.73121296
+create,tmux,N=50,4,False,1.49,total_ms,469.525289
+create,herdr,N=50,4,False,1.77,first_ready_ms,149.747672
+create,herdr,N=50,4,False,1.77,last_create_ms,22.340854
+create,herdr,N=50,4,False,1.77,mean_create_ms,55.28182878
+create,herdr,N=50,4,False,1.77,total_ms,2823.844651
+create,thurbox,N=50,4,False,1.77,first_ready_ms,76.907385
+create,thurbox,N=50,4,False,1.77,last_create_ms,91.545556
+create,thurbox,N=50,4,False,1.77,mean_create_ms,96.99653588
+create,thurbox,N=50,4,False,1.77,total_ms,4823.917745
+create,tmux,N=50,5,False,1.71,first_ready_ms,39.305816
+create,tmux,N=50,5,False,1.71,last_create_ms,13.31088
+create,tmux,N=50,5,False,1.71,mean_create_ms,8.672022779999999
+create,tmux,N=50,5,False,1.71,total_ms,466.683497
+create,herdr,N=50,5,False,1.65,first_ready_ms,147.914561
+create,herdr,N=50,5,False,1.65,last_create_ms,19.883506
+create,herdr,N=50,5,False,1.65,mean_create_ms,50.70911574
+create,herdr,N=50,5,False,1.65,total_ms,2581.953759
+create,thurbox,N=50,5,False,1.65,first_ready_ms,88.965957
+create,thurbox,N=50,5,False,1.65,last_create_ms,91.705733
+create,thurbox,N=50,5,False,1.65,mean_create_ms,104.45793979999999
+create,thurbox,N=50,5,False,1.65,total_ms,5196.946182
+attach,tmux,N=1,0,True,1.6,attach_ms,10.639859
+attach,tmux,N=1,0,True,1.6,detach_ms,2.708743
+attach,tmux,N=1,0,True,1.6,reattach_ms,10.800997
+attach,tmux,N=1,0,True,1.6,survivors,1
+attach,herdr,N=1,0,True,1.47,attach_ms,65.031914
+attach,herdr,N=1,0,True,1.47,detach_ms,11.097817
+attach,herdr,N=1,0,True,1.47,reattach_ms,182.369875
+attach,herdr,N=1,0,True,1.47,survivors,1
+attach,thurbox,N=1,0,True,1.35,attach_ms,150.973092
+attach,thurbox,N=1,0,True,1.35,detach_ms,12.614582
+attach,thurbox,N=1,0,True,1.35,reattach_ms,177.620653
+attach,thurbox,N=1,0,True,1.35,survivors,1
+attach,tmux,N=1,1,False,1.22,attach_ms,10.822678
+attach,tmux,N=1,1,False,1.22,detach_ms,2.660476
+attach,tmux,N=1,1,False,1.22,reattach_ms,10.702405
+attach,tmux,N=1,1,False,1.22,survivors,1
+attach,herdr,N=1,1,False,1.13,attach_ms,67.561986
+attach,herdr,N=1,1,False,1.13,detach_ms,12.359081
+attach,herdr,N=1,1,False,1.13,reattach_ms,182.315318
+attach,herdr,N=1,1,False,1.13,survivors,1
+attach,thurbox,N=1,1,False,1.04,attach_ms,166.151304
+attach,thurbox,N=1,1,False,1.04,detach_ms,12.240708
+attach,thurbox,N=1,1,False,1.04,reattach_ms,177.380866
+attach,thurbox,N=1,1,False,1.04,survivors,1
+attach,tmux,N=1,2,False,0.95,attach_ms,10.813008
+attach,tmux,N=1,2,False,0.95,detach_ms,2.648702
+attach,tmux,N=1,2,False,0.95,reattach_ms,10.020991
+attach,tmux,N=1,2,False,0.95,survivors,1
+attach,herdr,N=1,2,False,0.88,attach_ms,68.712234
+attach,herdr,N=1,2,False,0.88,detach_ms,11.001212
+attach,herdr,N=1,2,False,0.88,reattach_ms,180.382464
+attach,herdr,N=1,2,False,0.88,survivors,1
+attach,thurbox,N=1,2,False,0.81,attach_ms,168.178859
+attach,thurbox,N=1,2,False,0.81,detach_ms,12.507576
+attach,thurbox,N=1,2,False,0.81,reattach_ms,177.367344
+attach,thurbox,N=1,2,False,0.81,survivors,1
+attach,tmux,N=1,3,False,0.74,attach_ms,10.801218
+attach,tmux,N=1,3,False,0.74,detach_ms,2.563538
+attach,tmux,N=1,3,False,0.74,reattach_ms,10.800618
+attach,tmux,N=1,3,False,0.74,survivors,1
+attach,herdr,N=1,3,False,0.68,attach_ms,66.683356
+attach,herdr,N=1,3,False,0.68,detach_ms,11.249066
+attach,herdr,N=1,3,False,0.68,reattach_ms,182.078547
+attach,herdr,N=1,3,False,0.68,survivors,1
+attach,thurbox,N=1,3,False,0.63,attach_ms,178.872009
+attach,thurbox,N=1,3,False,0.63,detach_ms,12.340074
+attach,thurbox,N=1,3,False,0.63,reattach_ms,176.668563
+attach,thurbox,N=1,3,False,0.63,survivors,1
+attach,tmux,N=1,4,False,0.66,attach_ms,10.635389
+attach,tmux,N=1,4,False,0.66,detach_ms,2.648918
+attach,tmux,N=1,4,False,0.66,reattach_ms,8.847879
+attach,tmux,N=1,4,False,0.66,survivors,1
+attach,herdr,N=1,4,False,0.6,attach_ms,66.687492
+attach,herdr,N=1,4,False,0.6,detach_ms,10.553979
+attach,herdr,N=1,4,False,0.6,reattach_ms,183.054544
+attach,herdr,N=1,4,False,0.6,survivors,1
+attach,thurbox,N=1,4,False,0.64,attach_ms,157.280629
+attach,thurbox,N=1,4,False,0.64,detach_ms,12.376975
+attach,thurbox,N=1,4,False,0.64,reattach_ms,186.635667
+attach,thurbox,N=1,4,False,0.64,survivors,1
+attach,tmux,N=1,5,False,0.58,attach_ms,16.191295
+attach,tmux,N=1,5,False,0.58,detach_ms,2.652418
+attach,tmux,N=1,5,False,0.58,reattach_ms,10.080056
+attach,tmux,N=1,5,False,0.58,survivors,1
+attach,herdr,N=1,5,False,0.49,attach_ms,67.860812
+attach,herdr,N=1,5,False,0.49,detach_ms,11.016096
+attach,herdr,N=1,5,False,0.49,reattach_ms,182.373934
+attach,herdr,N=1,5,False,0.49,survivors,1
+attach,thurbox,N=1,5,False,0.45,attach_ms,169.096955
+attach,thurbox,N=1,5,False,0.45,detach_ms,12.053686
+attach,thurbox,N=1,5,False,0.45,reattach_ms,150.151395
+attach,thurbox,N=1,5,False,0.45,survivors,1
+attach,tmux,N=20,0,True,0.42,attach_ms,10.962846
+attach,tmux,N=20,0,True,0.42,detach_ms,5.132776
+attach,tmux,N=20,0,True,0.42,reattach_ms,8.246279
+attach,tmux,N=20,0,True,0.42,survivors,20
+attach,herdr,N=20,0,True,0.38,attach_ms,301.852936
+attach,herdr,N=20,0,True,0.38,detach_ms,10.865347
+attach,herdr,N=20,0,True,0.38,reattach_ms,175.48862
+attach,herdr,N=20,0,True,0.38,survivors,20
+attach,thurbox,N=20,0,True,0.35,attach_ms,190.898184
+attach,thurbox,N=20,0,True,0.35,detach_ms,15.931094
+attach,thurbox,N=20,0,True,0.35,reattach_ms,213.880895
+attach,thurbox,N=20,0,True,0.35,survivors,20
+attach,tmux,N=20,1,False,0.3,attach_ms,11.627979
+attach,tmux,N=20,1,False,0.3,detach_ms,4.904869
+attach,tmux,N=20,1,False,0.3,reattach_ms,8.548605
+attach,tmux,N=20,1,False,0.3,survivors,20
+attach,herdr,N=20,1,False,0.27,attach_ms,304.050924
+attach,herdr,N=20,1,False,0.27,detach_ms,10.879898
+attach,herdr,N=20,1,False,0.27,reattach_ms,168.548645
+attach,herdr,N=20,1,False,0.27,survivors,20
+attach,thurbox,N=20,1,False,0.33,attach_ms,173.191626
+attach,thurbox,N=20,1,False,0.33,detach_ms,16.070188
+attach,thurbox,N=20,1,False,0.33,reattach_ms,164.203897
+attach,thurbox,N=20,1,False,0.33,survivors,20
+attach,tmux,N=20,2,False,0.35,attach_ms,11.83307
+attach,tmux,N=20,2,False,0.35,detach_ms,5.024866
+attach,tmux,N=20,2,False,0.35,reattach_ms,11.058594
+attach,tmux,N=20,2,False,0.35,survivors,20
+attach,herdr,N=20,2,False,0.41,attach_ms,278.24351
+attach,herdr,N=20,2,False,0.41,detach_ms,11.617318
+attach,herdr,N=20,2,False,0.41,reattach_ms,175.372113
+attach,herdr,N=20,2,False,0.41,survivors,20
+attach,thurbox,N=20,2,False,0.37,attach_ms,190.705841
+attach,thurbox,N=20,2,False,0.37,detach_ms,16.127592
+attach,thurbox,N=20,2,False,0.37,reattach_ms,170.131482
+attach,thurbox,N=20,2,False,0.37,survivors,20
+attach,tmux,N=20,3,False,0.32,attach_ms,11.626371
+attach,tmux,N=20,3,False,0.32,detach_ms,5.70279
+attach,tmux,N=20,3,False,0.32,reattach_ms,8.278588
+attach,tmux,N=20,3,False,0.32,survivors,20
+attach,herdr,N=20,3,False,0.29,attach_ms,288.517447
+attach,herdr,N=20,3,False,0.29,detach_ms,11.022955
+attach,herdr,N=20,3,False,0.29,reattach_ms,171.325402
+attach,herdr,N=20,3,False,0.29,survivors,20
+attach,thurbox,N=20,3,False,0.27,attach_ms,165.402911
+attach,thurbox,N=20,3,False,0.27,detach_ms,16.131081
+attach,thurbox,N=20,3,False,0.27,reattach_ms,178.458066
+attach,thurbox,N=20,3,False,0.27,survivors,20
+attach,tmux,N=20,4,False,0.23,attach_ms,11.260641
+attach,tmux,N=20,4,False,0.23,detach_ms,5.043669
+attach,tmux,N=20,4,False,0.23,reattach_ms,8.085731
+attach,tmux,N=20,4,False,0.23,survivors,20
+attach,herdr,N=20,4,False,0.21,attach_ms,200.61986
+attach,herdr,N=20,4,False,0.21,detach_ms,10.739994
+attach,herdr,N=20,4,False,0.21,reattach_ms,169.419296
+attach,herdr,N=20,4,False,0.21,survivors,20
+attach,thurbox,N=20,4,False,0.19,attach_ms,184.703034
+attach,thurbox,N=20,4,False,0.19,detach_ms,16.692061
+attach,thurbox,N=20,4,False,0.19,reattach_ms,183.574073
+attach,thurbox,N=20,4,False,0.19,survivors,20
+attach,tmux,N=20,5,False,0.32,attach_ms,11.664588
+attach,tmux,N=20,5,False,0.32,detach_ms,5.004892
+attach,tmux,N=20,5,False,0.32,reattach_ms,8.264213
+attach,tmux,N=20,5,False,0.32,survivors,20
+attach,herdr,N=20,5,False,0.3,attach_ms,306.330163
+attach,herdr,N=20,5,False,0.3,detach_ms,10.486342
+attach,herdr,N=20,5,False,0.3,reattach_ms,170.298283
+attach,herdr,N=20,5,False,0.3,survivors,20
+attach,thurbox,N=20,5,False,0.27,attach_ms,193.184621
+attach,thurbox,N=20,5,False,0.27,detach_ms,17.202242
+attach,thurbox,N=20,5,False,0.27,reattach_ms,206.046598
+attach,thurbox,N=20,5,False,0.27,survivors,20
+attach,tmux,N=50,0,True,0.25,attach_ms,13.309564
+attach,tmux,N=50,0,True,0.25,detach_ms,7.534485
+attach,tmux,N=50,0,True,0.25,reattach_ms,9.026693
+attach,tmux,N=50,0,True,0.25,survivors,50
+attach,herdr,N=50,0,True,0.65,attach_ms,450.794711
+attach,herdr,N=50,0,True,0.65,detach_ms,10.421772
+attach,herdr,N=50,0,True,0.65,reattach_ms,420.494444
+attach,herdr,N=50,0,True,0.65,survivors,50
+attach,thurbox,N=50,0,True,0.6,attach_ms,250.038526
+attach,thurbox,N=50,0,True,0.6,detach_ms,25.150301
+attach,thurbox,N=50,0,True,0.6,reattach_ms,489.046266
+attach,thurbox,N=50,0,True,0.6,survivors,50
+attach,tmux,N=50,1,False,0.54,attach_ms,13.072243
+attach,tmux,N=50,1,False,0.54,detach_ms,6.067567
+attach,tmux,N=50,1,False,0.54,reattach_ms,9.089522
+attach,tmux,N=50,1,False,0.54,survivors,50
+attach,herdr,N=50,1,False,0.49,attach_ms,412.725485
+attach,herdr,N=50,1,False,0.49,detach_ms,10.753404
+attach,herdr,N=50,1,False,0.49,reattach_ms,340.643487
+attach,herdr,N=50,1,False,0.49,survivors,50
+attach,thurbox,N=50,1,False,0.5,attach_ms,237.877238
+attach,thurbox,N=50,1,False,0.5,detach_ms,26.422826
+attach,thurbox,N=50,1,False,0.5,reattach_ms,282.716387
+attach,thurbox,N=50,1,False,0.5,survivors,50
+attach,tmux,N=50,2,False,0.42,attach_ms,13.370758
+attach,tmux,N=50,2,False,0.42,detach_ms,6.770757
+attach,tmux,N=50,2,False,0.42,reattach_ms,9.011336
+attach,tmux,N=50,2,False,0.42,survivors,50
+attach,herdr,N=50,2,False,0.39,attach_ms,443.533566
+attach,herdr,N=50,2,False,0.39,detach_ms,21.198979
+attach,herdr,N=50,2,False,0.39,reattach_ms,403.314604
+attach,herdr,N=50,2,False,0.39,survivors,50
+attach,thurbox,N=50,2,False,0.47,attach_ms,241.573769
+attach,thurbox,N=50,2,False,0.47,detach_ms,23.582461
+attach,thurbox,N=50,2,False,0.47,reattach_ms,490.314161
+attach,thurbox,N=50,2,False,0.47,survivors,50
+attach,tmux,N=50,3,False,0.55,attach_ms,13.623381
+attach,tmux,N=50,3,False,0.55,detach_ms,6.959499
+attach,tmux,N=50,3,False,0.55,reattach_ms,9.107205
+attach,tmux,N=50,3,False,0.55,survivors,50
+attach,herdr,N=50,3,False,0.5,attach_ms,445.850591
+attach,herdr,N=50,3,False,0.5,detach_ms,10.534409
+attach,herdr,N=50,3,False,0.5,reattach_ms,411.462536
+attach,herdr,N=50,3,False,0.5,survivors,50
+attach,thurbox,N=50,3,False,0.43,attach_ms,254.259462
+attach,thurbox,N=50,3,False,0.43,detach_ms,25.042184
+attach,thurbox,N=50,3,False,0.43,reattach_ms,592.324923
+attach,thurbox,N=50,3,False,0.43,survivors,50
+attach,tmux,N=50,4,False,0.43,attach_ms,13.108203
+attach,tmux,N=50,4,False,0.43,detach_ms,6.976433
+attach,tmux,N=50,4,False,0.43,reattach_ms,8.972707
+attach,tmux,N=50,4,False,0.43,survivors,50
+attach,herdr,N=50,4,False,0.4,attach_ms,427.030788
+attach,herdr,N=50,4,False,0.4,detach_ms,10.612652
+attach,herdr,N=50,4,False,0.4,reattach_ms,430.43805
+attach,herdr,N=50,4,False,0.4,survivors,50
+attach,thurbox,N=50,4,False,0.49,attach_ms,235.851831
+attach,thurbox,N=50,4,False,0.49,detach_ms,23.134661
+attach,thurbox,N=50,4,False,0.49,reattach_ms,236.564152
+attach,thurbox,N=50,4,False,0.49,survivors,50
+attach,tmux,N=50,5,False,2.65,attach_ms,13.267751
+attach,tmux,N=50,5,False,2.65,detach_ms,7.052429
+attach,tmux,N=50,5,False,2.65,reattach_ms,9.089473
+attach,tmux,N=50,5,False,2.65,survivors,50
+attach,herdr,N=50,5,False,2.69,attach_ms,435.416085
+attach,herdr,N=50,5,False,2.69,detach_ms,20.426603
+attach,herdr,N=50,5,False,2.69,reattach_ms,413.452119
+attach,herdr,N=50,5,False,2.69,survivors,50
+attach,thurbox,N=50,5,False,2.47,attach_ms,246.322599
+attach,thurbox,N=50,5,False,2.47,detach_ms,22.491321
+attach,thurbox,N=50,5,False,2.47,reattach_ms,430.573655
+attach,thurbox,N=50,5,False,2.47,survivors,50
+resources,tmux,N=1 headless idle,0,True,0.21,cpu_pct,0.0
+resources,tmux,N=1 headless idle,0,True,0.21,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,0,True,0.21,rss_mib,3.83984375
+resources,tmux,N=1 headless output,0,True,0.21,cpu_pct,0.09999656243658321
+resources,tmux,N=1 headless output,0,True,0.21,pss_mib,3.712890625
+resources,tmux,N=1 headless output,0,True,0.21,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,0,True,0.21,cpu_pct,0.0
+resources,tmux,N=1 attached idle,0,True,0.21,first_view_stale,False
+resources,tmux,N=1 attached idle,0,True,0.21,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,0,True,0.21,rss_mib,9.59375
+resources,tmux,N=1 attached output,0,True,0.21,cpu_pct,0.3989663030888207
+resources,tmux,N=1 attached output,0,True,0.21,pss_mib,6.240234375
+resources,tmux,N=1 attached output,0,True,0.21,rss_mib,9.59375
+resources,herdr,N=1 headless idle,0,True,0.18,cpu_pct,0.4999826195055971
+resources,herdr,N=1 headless idle,0,True,0.18,pss_mib,17.6796875
+resources,herdr,N=1 headless idle,0,True,0.18,rss_mib,17.68359375
+resources,herdr,N=1 headless output,0,True,0.18,cpu_pct,0.9999780667634243
+resources,herdr,N=1 headless output,0,True,0.18,pss_mib,17.69921875
+resources,herdr,N=1 headless output,0,True,0.18,rss_mib,17.703125
+resources,herdr,N=1 attached idle,0,True,0.18,cpu_pct,1.0989555618755555
+resources,herdr,N=1 attached idle,0,True,0.18,first_view_stale,False
+resources,herdr,N=1 attached idle,0,True,0.18,pss_mib,22.625
+resources,herdr,N=1 attached idle,0,True,0.18,rss_mib,32.6953125
+resources,herdr,N=1 attached output,0,True,0.18,cpu_pct,8.5759217608112
+resources,herdr,N=1 attached output,0,True,0.18,pss_mib,22.640625
+resources,herdr,N=1 attached output,0,True,0.18,rss_mib,32.7109375
+resources,thurbox,N=1 headless idle,0,True,0.07,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,0,True,0.07,pss_mib,8.314453125
+resources,thurbox,N=1 headless idle,0,True,0.07,rss_mib,17.08984375
+resources,thurbox,N=1 headless output,0,True,0.07,cpu_pct,0.2999894859135835
+resources,thurbox,N=1 headless output,0,True,0.07,pss_mib,8.314453125
+resources,thurbox,N=1 headless output,0,True,0.07,rss_mib,17.08984375
+resources,thurbox,N=1 attached idle,0,True,0.07,cpu_pct,2.69784734602308
+resources,thurbox,N=1 attached idle,0,True,0.07,first_view_stale,True
+resources,thurbox,N=1 attached idle,0,True,0.07,pss_mib,28.55859375
+resources,thurbox,N=1 attached idle,0,True,0.07,rss_mib,42.80078125
+resources,thurbox,N=1 attached output,0,True,0.07,cpu_pct,7.983211852358384
+resources,thurbox,N=1 attached output,0,True,0.07,pss_mib,28.65234375
+resources,thurbox,N=1 attached output,0,True,0.07,rss_mib,42.89453125
+resources,tmux,N=1 headless idle,1,False,0.03,cpu_pct,0.0
+resources,tmux,N=1 headless idle,1,False,0.03,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,1,False,0.03,rss_mib,3.83984375
+resources,tmux,N=1 headless output,1,False,0.03,cpu_pct,0.09999744558479995
+resources,tmux,N=1 headless output,1,False,0.03,pss_mib,3.712890625
+resources,tmux,N=1 headless output,1,False,0.03,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,1,False,0.03,cpu_pct,0.0
+resources,tmux,N=1 attached idle,1,False,0.03,first_view_stale,False
+resources,tmux,N=1 attached idle,1,False,0.03,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,1,False,0.03,rss_mib,9.59375
+resources,tmux,N=1 attached output,1,False,0.03,cpu_pct,0.29924562873037586
+resources,tmux,N=1 attached output,1,False,0.03,pss_mib,6.240234375
+resources,tmux,N=1 attached output,1,False,0.03,rss_mib,9.59375
+resources,herdr,N=1 headless idle,1,False,0.09,cpu_pct,0.49998976321662136
+resources,herdr,N=1 headless idle,1,False,0.09,pss_mib,17.67578125
+resources,herdr,N=1 headless idle,1,False,0.09,rss_mib,17.6796875
+resources,herdr,N=1 headless output,1,False,0.09,cpu_pct,0.9999653099963273
+resources,herdr,N=1 headless output,1,False,0.09,pss_mib,17.6953125
+resources,herdr,N=1 headless output,1,False,0.09,rss_mib,17.69921875
+resources,herdr,N=1 attached idle,1,False,0.09,cpu_pct,0.9990006708533641
+resources,herdr,N=1 attached idle,1,False,0.09,first_view_stale,False
+resources,herdr,N=1 attached idle,1,False,0.09,pss_mib,22.6328125
+resources,herdr,N=1 attached idle,1,False,0.09,rss_mib,32.703125
+resources,herdr,N=1 attached output,1,False,0.09,cpu_pct,8.281283148195056
+resources,herdr,N=1 attached output,1,False,0.09,pss_mib,22.64453125
+resources,herdr,N=1 attached output,1,False,0.09,rss_mib,32.71484375
+resources,thurbox,N=1 headless idle,1,False,0.04,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,1,False,0.04,pss_mib,8.318359375
+resources,thurbox,N=1 headless idle,1,False,0.04,rss_mib,17.09375
+resources,thurbox,N=1 headless output,1,False,0.04,cpu_pct,0.19999301722439272
+resources,thurbox,N=1 headless output,1,False,0.04,pss_mib,8.318359375
+resources,thurbox,N=1 headless output,1,False,0.04,rss_mib,17.09375
+resources,thurbox,N=1 attached idle,1,False,0.04,cpu_pct,2.9925441698573354
+resources,thurbox,N=1 attached idle,1,False,0.04,first_view_stale,True
+resources,thurbox,N=1 attached idle,1,False,0.04,pss_mib,28.5625
+resources,thurbox,N=1 attached idle,1,False,0.04,rss_mib,42.8046875
+resources,thurbox,N=1 attached output,1,False,0.04,cpu_pct,8.06022181242219
+resources,thurbox,N=1 attached output,1,False,0.04,pss_mib,28.58984375
+resources,thurbox,N=1 attached output,1,False,0.04,rss_mib,42.83203125
+resources,tmux,N=1 headless idle,2,False,0.06,cpu_pct,0.0
+resources,tmux,N=1 headless idle,2,False,0.06,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,2,False,0.06,rss_mib,3.83984375
+resources,tmux,N=1 headless output,2,False,0.06,cpu_pct,0.19999316479622825
+resources,tmux,N=1 headless output,2,False,0.06,pss_mib,3.712890625
+resources,tmux,N=1 headless output,2,False,0.06,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,2,False,0.06,cpu_pct,0.0
+resources,tmux,N=1 attached idle,2,False,0.06,first_view_stale,False
+resources,tmux,N=1 attached idle,2,False,0.06,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,2,False,0.06,rss_mib,9.59375
+resources,tmux,N=1 attached output,2,False,0.06,cpu_pct,0.2992261253860449
+resources,tmux,N=1 attached output,2,False,0.06,pss_mib,6.240234375
+resources,tmux,N=1 attached output,2,False,0.06,rss_mib,9.59375
+resources,herdr,N=1 headless idle,2,False,0.02,cpu_pct,0.5999903260008262
+resources,herdr,N=1 headless idle,2,False,0.02,pss_mib,17.66796875
+resources,herdr,N=1 headless idle,2,False,0.02,rss_mib,17.671875
+resources,herdr,N=1 headless output,2,False,0.02,cpu_pct,0.899984605850403
+resources,herdr,N=1 headless output,2,False,0.02,pss_mib,17.6875
+resources,herdr,N=1 headless output,2,False,0.02,rss_mib,17.69140625
+resources,herdr,N=1 attached idle,2,False,0.02,cpu_pct,0.9982546026391932
+resources,herdr,N=1 attached idle,2,False,0.02,first_view_stale,False
+resources,herdr,N=1 attached idle,2,False,0.02,pss_mib,22.6015625
+resources,herdr,N=1 attached idle,2,False,0.02,rss_mib,32.66015625
+resources,herdr,N=1 attached output,2,False,0.02,cpu_pct,8.67541268671787
+resources,herdr,N=1 attached output,2,False,0.02,pss_mib,22.62109375
+resources,herdr,N=1 attached output,2,False,0.02,rss_mib,32.6796875
+resources,thurbox,N=1 headless idle,2,False,0.01,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,2,False,0.01,pss_mib,8.318359375
+resources,thurbox,N=1 headless idle,2,False,0.01,rss_mib,17.09375
+resources,thurbox,N=1 headless output,2,False,0.01,cpu_pct,0.19999311347921875
+resources,thurbox,N=1 headless output,2,False,0.01,pss_mib,8.318359375
+resources,thurbox,N=1 headless output,2,False,0.01,rss_mib,17.09375
+resources,thurbox,N=1 attached idle,2,False,0.01,cpu_pct,2.6975412211298018
+resources,thurbox,N=1 attached idle,2,False,0.01,first_view_stale,True
+resources,thurbox,N=1 attached idle,2,False,0.01,pss_mib,28.5625
+resources,thurbox,N=1 attached idle,2,False,0.01,rss_mib,42.8046875
+resources,thurbox,N=1 attached output,2,False,0.01,cpu_pct,8.093294702897897
+resources,thurbox,N=1 attached output,2,False,0.01,pss_mib,28.59765625
+resources,thurbox,N=1 attached output,2,False,0.01,rss_mib,42.83984375
+resources,tmux,N=1 headless idle,3,False,0.0,cpu_pct,0.0
+resources,tmux,N=1 headless idle,3,False,0.0,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,3,False,0.0,rss_mib,3.83984375
+resources,tmux,N=1 headless output,3,False,0.0,cpu_pct,0.19999445701479582
+resources,tmux,N=1 headless output,3,False,0.0,pss_mib,3.712890625
+resources,tmux,N=1 headless output,3,False,0.0,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,3,False,0.0,cpu_pct,0.0
+resources,tmux,N=1 attached idle,3,False,0.0,first_view_stale,False
+resources,tmux,N=1 attached idle,3,False,0.0,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,3,False,0.0,rss_mib,9.59375
+resources,tmux,N=1 attached output,3,False,0.0,cpu_pct,0.2992123009350745
+resources,tmux,N=1 attached output,3,False,0.0,pss_mib,6.240234375
+resources,tmux,N=1 attached output,3,False,0.0,rss_mib,9.59375
+resources,herdr,N=1 headless idle,3,False,0.0,cpu_pct,0.5999894110911144
+resources,herdr,N=1 headless idle,3,False,0.0,pss_mib,17.6796875
+resources,herdr,N=1 headless idle,3,False,0.0,rss_mib,17.68359375
+resources,herdr,N=1 headless output,3,False,0.0,cpu_pct,0.999966159653531
+resources,herdr,N=1 headless output,3,False,0.0,pss_mib,17.69921875
+resources,herdr,N=1 headless output,3,False,0.0,rss_mib,17.703125
+resources,herdr,N=1 attached idle,3,False,0.0,cpu_pct,0.9983899221330077
+resources,herdr,N=1 attached idle,3,False,0.0,first_view_stale,False
+resources,herdr,N=1 attached idle,3,False,0.0,pss_mib,22.609375
+resources,herdr,N=1 attached idle,3,False,0.0,rss_mib,32.6796875
+resources,herdr,N=1 attached output,3,False,0.0,cpu_pct,8.675271409463816
+resources,herdr,N=1 attached output,3,False,0.0,pss_mib,22.6328125
+resources,herdr,N=1 attached output,3,False,0.0,rss_mib,32.703125
+resources,thurbox,N=1 headless idle,3,False,0.05,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,3,False,0.05,pss_mib,8.318359375
+resources,thurbox,N=1 headless idle,3,False,0.05,rss_mib,17.09375
+resources,thurbox,N=1 headless output,3,False,0.05,cpu_pct,0.19999307032005567
+resources,thurbox,N=1 headless output,3,False,0.05,pss_mib,8.318359375
+resources,thurbox,N=1 headless output,3,False,0.05,rss_mib,17.09375
+resources,thurbox,N=1 attached idle,3,False,0.05,cpu_pct,2.7967444180660803
+resources,thurbox,N=1 attached idle,3,False,0.05,first_view_stale,True
+resources,thurbox,N=1 attached idle,3,False,0.05,pss_mib,28.546875
+resources,thurbox,N=1 attached idle,3,False,0.05,rss_mib,42.7890625
+resources,thurbox,N=1 attached output,3,False,0.05,cpu_pct,7.992008141272271
+resources,thurbox,N=1 attached output,3,False,0.05,pss_mib,28.58984375
+resources,thurbox,N=1 attached output,3,False,0.05,rss_mib,42.83203125
+resources,tmux,N=1 headless idle,4,False,0.31,cpu_pct,0.0
+resources,tmux,N=1 headless idle,4,False,0.31,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,4,False,0.31,rss_mib,3.83984375
+resources,tmux,N=1 headless output,4,False,0.31,cpu_pct,0.09999719845762149
+resources,tmux,N=1 headless output,4,False,0.31,pss_mib,3.712890625
+resources,tmux,N=1 headless output,4,False,0.31,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,4,False,0.31,cpu_pct,0.0
+resources,tmux,N=1 attached idle,4,False,0.31,first_view_stale,False
+resources,tmux,N=1 attached idle,4,False,0.31,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,4,False,0.31,rss_mib,9.59375
+resources,tmux,N=1 attached output,4,False,0.31,cpu_pct,0.29921009943505783
+resources,tmux,N=1 attached output,4,False,0.31,pss_mib,6.240234375
+resources,tmux,N=1 attached output,4,False,0.31,rss_mib,9.59375
+resources,herdr,N=1 headless idle,4,False,0.13,cpu_pct,0.5999898038395214
+resources,herdr,N=1 headless idle,4,False,0.13,pss_mib,17.67578125
+resources,herdr,N=1 headless idle,4,False,0.13,rss_mib,17.6796875
+resources,herdr,N=1 headless output,4,False,0.13,cpu_pct,0.9999653844969696
+resources,herdr,N=1 headless output,4,False,0.13,pss_mib,17.6953125
+resources,herdr,N=1 headless output,4,False,0.13,rss_mib,17.69921875
+resources,herdr,N=1 attached idle,4,False,0.13,cpu_pct,1.0979273870416162
+resources,herdr,N=1 attached idle,4,False,0.13,first_view_stale,False
+resources,herdr,N=1 attached idle,4,False,0.13,pss_mib,22.6171875
+resources,herdr,N=1 attached idle,4,False,0.13,rss_mib,32.6875
+resources,herdr,N=1 attached output,4,False,0.13,cpu_pct,8.576294172630533
+resources,herdr,N=1 attached output,4,False,0.13,pss_mib,22.6328125
+resources,herdr,N=1 attached output,4,False,0.13,rss_mib,32.703125
+resources,thurbox,N=1 headless idle,4,False,0.06,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,4,False,0.06,pss_mib,8.314453125
+resources,thurbox,N=1 headless idle,4,False,0.06,rss_mib,17.08984375
+resources,thurbox,N=1 headless output,4,False,0.06,cpu_pct,0.299989703304116
+resources,thurbox,N=1 headless output,4,False,0.06,pss_mib,8.314453125
+resources,thurbox,N=1 headless output,4,False,0.06,rss_mib,17.08984375
+resources,thurbox,N=1 attached idle,4,False,0.06,cpu_pct,2.889874706638633
+resources,thurbox,N=1 attached idle,4,False,0.06,first_view_stale,True
+resources,thurbox,N=1 attached idle,4,False,0.06,pss_mib,28.52734375
+resources,thurbox,N=1 attached idle,4,False,0.06,rss_mib,42.76953125
+resources,thurbox,N=1 attached output,4,False,0.06,cpu_pct,7.861765789594808
+resources,thurbox,N=1 attached output,4,False,0.06,pss_mib,28.66015625
+resources,thurbox,N=1 attached output,4,False,0.06,rss_mib,42.90234375
+resources,tmux,N=1 headless idle,5,False,0.1,cpu_pct,0.0
+resources,tmux,N=1 headless idle,5,False,0.1,pss_mib,3.712890625
+resources,tmux,N=1 headless idle,5,False,0.1,rss_mib,3.83984375
+resources,tmux,N=1 headless output,5,False,0.1,cpu_pct,0.09999901942007665
+resources,tmux,N=1 headless output,5,False,0.1,pss_mib,3.712890625
+resources,tmux,N=1 headless output,5,False,0.1,rss_mib,3.83984375
+resources,tmux,N=1 attached idle,5,False,0.1,cpu_pct,0.0
+resources,tmux,N=1 attached idle,5,False,0.1,first_view_stale,False
+resources,tmux,N=1 attached idle,5,False,0.1,pss_mib,6.240234375
+resources,tmux,N=1 attached idle,5,False,0.1,rss_mib,9.59375
+resources,tmux,N=1 attached output,5,False,0.1,cpu_pct,0.2992270415565548
+resources,tmux,N=1 attached output,5,False,0.1,pss_mib,6.240234375
+resources,tmux,N=1 attached output,5,False,0.1,rss_mib,9.59375
+resources,herdr,N=1 headless idle,5,False,0.18,cpu_pct,0.4999911787496956
+resources,herdr,N=1 headless idle,5,False,0.18,pss_mib,17.68359375
+resources,herdr,N=1 headless idle,5,False,0.18,rss_mib,17.6875
+resources,herdr,N=1 headless output,5,False,0.18,cpu_pct,1.0999619339587936
+resources,herdr,N=1 headless output,5,False,0.18,pss_mib,17.703125
+resources,herdr,N=1 headless output,5,False,0.18,rss_mib,17.70703125
+resources,herdr,N=1 attached idle,5,False,0.18,cpu_pct,1.0978083340130853
+resources,herdr,N=1 attached idle,5,False,0.18,first_view_stale,False
+resources,herdr,N=1 attached idle,5,False,0.18,pss_mib,22.61328125
+resources,herdr,N=1 attached idle,5,False,0.18,rss_mib,32.68359375
+resources,herdr,N=1 attached output,5,False,0.18,cpu_pct,8.777093071354043
+resources,herdr,N=1 attached output,5,False,0.18,pss_mib,22.63671875
+resources,herdr,N=1 attached output,5,False,0.18,rss_mib,32.70703125
+resources,thurbox,N=1 headless idle,5,False,0.08,cpu_pct,0.0
+resources,thurbox,N=1 headless idle,5,False,0.08,pss_mib,8.314453125
+resources,thurbox,N=1 headless idle,5,False,0.08,rss_mib,17.08984375
+resources,thurbox,N=1 headless output,5,False,0.08,cpu_pct,0.19999302568486788
+resources,thurbox,N=1 headless output,5,False,0.08,pss_mib,8.314453125
+resources,thurbox,N=1 headless output,5,False,0.08,rss_mib,17.08984375
+resources,thurbox,N=1 attached idle,5,False,0.08,cpu_pct,2.7963486537776427
+resources,thurbox,N=1 attached idle,5,False,0.08,first_view_stale,True
+resources,thurbox,N=1 attached idle,5,False,0.08,pss_mib,28.55078125
+resources,thurbox,N=1 attached idle,5,False,0.08,rss_mib,42.79296875
+resources,thurbox,N=1 attached output,5,False,0.08,cpu_pct,8.385475533746664
+resources,thurbox,N=1 attached output,5,False,0.08,pss_mib,28.59375
+resources,thurbox,N=1 attached output,5,False,0.08,rss_mib,42.8359375
+resources,tmux,N=20 headless idle,0,True,0.15,cpu_pct,0.0
+resources,tmux,N=20 headless idle,0,True,0.15,pss_mib,3.873046875
+resources,tmux,N=20 headless idle,0,True,0.15,rss_mib,4.0
+resources,tmux,N=20 headless output,0,True,0.15,cpu_pct,3.1999479675558016
+resources,tmux,N=20 headless output,0,True,0.15,pss_mib,3.998046875
+resources,tmux,N=20 headless output,0,True,0.15,rss_mib,4.125
+resources,tmux,N=20 attached idle,0,True,0.15,cpu_pct,0.0
+resources,tmux,N=20 attached idle,0,True,0.15,first_view_stale,False
+resources,tmux,N=20 attached idle,0,True,0.15,pss_mib,8.7060546875
+resources,tmux,N=20 attached idle,0,True,0.15,rss_mib,12.0625
+resources,tmux,N=20 attached output,0,True,0.15,cpu_pct,3.1926539997779897
+resources,tmux,N=20 attached output,0,True,0.15,pss_mib,8.7333984375
+resources,tmux,N=20 attached output,0,True,0.15,rss_mib,12.08984375
+resources,herdr,N=20 headless idle,0,True,0.07,cpu_pct,9.199844054494374
+resources,herdr,N=20 headless idle,0,True,0.07,pss_mib,26.84765625
+resources,herdr,N=20 headless idle,0,True,0.07,rss_mib,26.8515625
+resources,herdr,N=20 headless output,0,True,0.07,cpu_pct,21.899773899811755
+resources,herdr,N=20 headless output,0,True,0.07,pss_mib,27.1640625
+resources,herdr,N=20 headless output,0,True,0.07,rss_mib,27.16796875
+resources,herdr,N=20 attached idle,0,True,0.07,cpu_pct,15.98451188856702
+resources,herdr,N=20 attached idle,0,True,0.07,first_view_stale,False
+resources,herdr,N=20 attached idle,0,True,0.07,pss_mib,34.80078125
+resources,herdr,N=20 attached idle,0,True,0.07,rss_mib,44.80859375
+resources,herdr,N=20 attached output,0,True,0.07,cpu_pct,26.59778607744271
+resources,herdr,N=20 attached output,0,True,0.07,pss_mib,34.87109375
+resources,herdr,N=20 attached output,0,True,0.07,rss_mib,44.87890625
+resources,thurbox,N=20 headless idle,0,True,0.09,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,0,True,0.09,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle,0,True,0.09,rss_mib,17.45703125
+resources,thurbox,N=20 headless output,0,True,0.09,cpu_pct,4.199853928652604
+resources,thurbox,N=20 headless output,0,True,0.09,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,0,True,0.09,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,0,True,0.09,cpu_pct,5.288937722873632
+resources,thurbox,N=20 attached idle,0,True,0.09,first_view_stale,True
+resources,thurbox,N=20 attached idle,0,True,0.09,pss_mib,49.134765625
+resources,thurbox,N=20 attached idle,0,True,0.09,rss_mib,63.39453125
+resources,thurbox,N=20 attached output,0,True,0.09,cpu_pct,19.653978538644388
+resources,thurbox,N=20 attached output,0,True,0.09,pss_mib,49.318359375
+resources,thurbox,N=20 attached output,0,True,0.09,rss_mib,63.578125
+resources,tmux,N=20 headless idle,1,False,0.17,cpu_pct,0.0
+resources,tmux,N=20 headless idle,1,False,0.17,pss_mib,3.865234375
+resources,tmux,N=20 headless idle,1,False,0.17,rss_mib,3.9921875
+resources,tmux,N=20 headless output,1,False,0.17,cpu_pct,3.899940113262202
+resources,tmux,N=20 headless output,1,False,0.17,pss_mib,3.998046875
+resources,tmux,N=20 headless output,1,False,0.17,rss_mib,4.125
+resources,tmux,N=20 attached idle,1,False,0.17,cpu_pct,0.0
+resources,tmux,N=20 attached idle,1,False,0.17,first_view_stale,False
+resources,tmux,N=20 attached idle,1,False,0.17,pss_mib,8.7138671875
+resources,tmux,N=20 attached idle,1,False,0.17,rss_mib,12.0703125
+resources,tmux,N=20 attached output,1,False,0.17,cpu_pct,3.9909702028213996
+resources,tmux,N=20 attached output,1,False,0.17,pss_mib,8.7529296875
+resources,tmux,N=20 attached output,1,False,0.17,rss_mib,12.109375
+resources,herdr,N=20 headless idle,1,False,0.19,cpu_pct,8.999701573490567
+resources,herdr,N=20 headless idle,1,False,0.19,pss_mib,26.85546875
+resources,herdr,N=20 headless idle,1,False,0.19,rss_mib,26.859375
+resources,herdr,N=20 headless output,1,False,0.19,cpu_pct,22.19981715584827
+resources,herdr,N=20 headless output,1,False,0.19,pss_mib,27.19140625
+resources,herdr,N=20 headless output,1,False,0.19,rss_mib,27.1953125
+resources,herdr,N=20 attached idle,1,False,0.19,cpu_pct,17.277877899243816
+resources,herdr,N=20 attached idle,1,False,0.19,first_view_stale,False
+resources,herdr,N=20 attached idle,1,False,0.19,pss_mib,34.83203125
+resources,herdr,N=20 attached idle,1,False,0.19,rss_mib,44.83984375
+resources,herdr,N=20 attached output,1,False,0.19,cpu_pct,33.66263537057569
+resources,herdr,N=20 attached output,1,False,0.19,pss_mib,34.8828125
+resources,herdr,N=20 attached output,1,False,0.19,rss_mib,44.890625
+resources,thurbox,N=20 headless idle,1,False,0.31,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,1,False,0.31,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle,1,False,0.31,rss_mib,17.45703125
+resources,thurbox,N=20 headless output,1,False,0.31,cpu_pct,4.299847884739933
+resources,thurbox,N=20 headless output,1,False,0.31,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,1,False,0.31,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,1,False,0.31,cpu_pct,5.185230219227353
+resources,thurbox,N=20 attached idle,1,False,0.31,first_view_stale,True
+resources,thurbox,N=20 attached idle,1,False,0.31,pss_mib,49.150390625
+resources,thurbox,N=20 attached idle,1,False,0.31,rss_mib,63.41015625
+resources,thurbox,N=20 attached output,1,False,0.31,cpu_pct,19.823383390286732
+resources,thurbox,N=20 attached output,1,False,0.31,pss_mib,49.353515625
+resources,thurbox,N=20 attached output,1,False,0.31,rss_mib,63.61328125
+resources,tmux,N=20 headless idle,2,False,0.12,cpu_pct,0.0
+resources,tmux,N=20 headless idle,2,False,0.12,pss_mib,3.869140625
+resources,tmux,N=20 headless idle,2,False,0.12,rss_mib,3.99609375
+resources,tmux,N=20 headless output,2,False,0.12,cpu_pct,4.19985456443171
+resources,tmux,N=20 headless output,2,False,0.12,pss_mib,4.001953125
+resources,tmux,N=20 headless output,2,False,0.12,rss_mib,4.12890625
+resources,tmux,N=20 attached idle,2,False,0.12,cpu_pct,0.0
+resources,tmux,N=20 attached idle,2,False,0.12,first_view_stale,False
+resources,tmux,N=20 attached idle,2,False,0.12,pss_mib,8.7021484375
+resources,tmux,N=20 attached idle,2,False,0.12,rss_mib,12.05859375
+resources,tmux,N=20 attached output,2,False,0.12,cpu_pct,3.990415285829617
+resources,tmux,N=20 attached output,2,False,0.12,pss_mib,8.7177734375
+resources,tmux,N=20 attached output,2,False,0.12,rss_mib,12.07421875
+resources,herdr,N=20 headless idle,2,False,0.13,cpu_pct,8.99968813108675
+resources,herdr,N=20 headless idle,2,False,0.13,pss_mib,26.84765625
+resources,herdr,N=20 headless idle,2,False,0.13,rss_mib,26.8515625
+resources,herdr,N=20 headless output,2,False,0.13,cpu_pct,21.399593863507118
+resources,herdr,N=20 headless output,2,False,0.13,pss_mib,27.1640625
+resources,herdr,N=20 headless output,2,False,0.13,rss_mib,27.16796875
+resources,herdr,N=20 attached idle,2,False,0.13,cpu_pct,18.67535824763814
+resources,herdr,N=20 attached idle,2,False,0.13,first_view_stale,False
+resources,herdr,N=20 attached idle,2,False,0.13,pss_mib,34.83984375
+resources,herdr,N=20 attached idle,2,False,0.13,rss_mib,44.84765625
+resources,herdr,N=20 attached output,2,False,0.13,cpu_pct,34.01468089093189
+resources,herdr,N=20 attached output,2,False,0.13,pss_mib,34.89453125
+resources,herdr,N=20 attached output,2,False,0.13,rss_mib,44.90234375
+resources,thurbox,N=20 headless idle,2,False,0.26,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,2,False,0.26,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle,2,False,0.26,rss_mib,17.45703125
+resources,thurbox,N=20 headless output,2,False,0.26,cpu_pct,4.299964711888182
+resources,thurbox,N=20 headless output,2,False,0.26,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,2,False,0.26,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,2,False,0.26,cpu_pct,5.287606714280375
+resources,thurbox,N=20 attached idle,2,False,0.26,first_view_stale,True
+resources,thurbox,N=20 attached idle,2,False,0.26,pss_mib,49.107421875
+resources,thurbox,N=20 attached idle,2,False,0.26,rss_mib,63.3671875
+resources,thurbox,N=20 attached output,2,False,0.26,cpu_pct,19.94223754423554
+resources,thurbox,N=20 attached output,2,False,0.26,pss_mib,49.306640625
+resources,thurbox,N=20 attached output,2,False,0.26,rss_mib,63.56640625
+resources,tmux,N=20 headless idle,3,False,0.1,cpu_pct,0.0
+resources,tmux,N=20 headless idle,3,False,0.1,pss_mib,3.873046875
+resources,tmux,N=20 headless idle,3,False,0.1,rss_mib,4.0
+resources,tmux,N=20 headless output,3,False,0.1,cpu_pct,4.099931018302413
+resources,tmux,N=20 headless output,3,False,0.1,pss_mib,4.001953125
+resources,tmux,N=20 headless output,3,False,0.1,rss_mib,4.12890625
+resources,tmux,N=20 attached idle,3,False,0.1,cpu_pct,0.0
+resources,tmux,N=20 attached idle,3,False,0.1,first_view_stale,False
+resources,tmux,N=20 attached idle,3,False,0.1,pss_mib,8.7060546875
+resources,tmux,N=20 attached idle,3,False,0.1,rss_mib,12.0625
+resources,tmux,N=20 attached output,3,False,0.1,cpu_pct,4.090652250121751
+resources,tmux,N=20 attached output,3,False,0.1,pss_mib,8.7294921875
+resources,tmux,N=20 attached output,3,False,0.1,rss_mib,12.0859375
+resources,herdr,N=20 headless idle,3,False,0.05,cpu_pct,9.099898266812046
+resources,herdr,N=20 headless idle,3,False,0.05,pss_mib,26.83984375
+resources,herdr,N=20 headless idle,3,False,0.05,rss_mib,26.84375
+resources,herdr,N=20 headless output,3,False,0.05,cpu_pct,17.6997749931424
+resources,herdr,N=20 headless output,3,False,0.05,pss_mib,27.14453125
+resources,herdr,N=20 headless output,3,False,0.05,rss_mib,27.1484375
+resources,herdr,N=20 attached idle,3,False,0.05,cpu_pct,16.381390643535116
+resources,herdr,N=20 attached idle,3,False,0.05,first_view_stale,False
+resources,herdr,N=20 attached idle,3,False,0.05,pss_mib,34.74609375
+resources,herdr,N=20 attached idle,3,False,0.05,rss_mib,44.75390625
+resources,herdr,N=20 attached output,3,False,0.05,cpu_pct,34.242830122543275
+resources,herdr,N=20 attached output,3,False,0.05,pss_mib,34.8125
+resources,herdr,N=20 attached output,3,False,0.05,rss_mib,44.8203125
+resources,thurbox,N=20 headless idle,3,False,0.14,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,3,False,0.14,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle,3,False,0.14,rss_mib,17.45703125
+resources,thurbox,N=20 headless output,3,False,0.14,cpu_pct,4.2998706061471434
+resources,thurbox,N=20 headless output,3,False,0.14,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,3,False,0.14,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,3,False,0.14,cpu_pct,5.299619737481173
+resources,thurbox,N=20 attached idle,3,False,0.14,first_view_stale,True
+resources,thurbox,N=20 attached idle,3,False,0.14,pss_mib,49.142578125
+resources,thurbox,N=20 attached idle,3,False,0.14,rss_mib,63.40234375
+resources,thurbox,N=20 attached output,3,False,0.14,cpu_pct,20.40865620207595
+resources,thurbox,N=20 attached output,3,False,0.14,pss_mib,49.318359375
+resources,thurbox,N=20 attached output,3,False,0.14,rss_mib,63.578125
+resources,tmux,N=20 headless idle,4,False,0.14,cpu_pct,0.0
+resources,tmux,N=20 headless idle,4,False,0.14,pss_mib,3.873046875
+resources,tmux,N=20 headless idle,4,False,0.14,rss_mib,4.0
+resources,tmux,N=20 headless output,4,False,0.14,cpu_pct,3.799931155517001
+resources,tmux,N=20 headless output,4,False,0.14,pss_mib,3.998046875
+resources,tmux,N=20 headless output,4,False,0.14,rss_mib,4.125
+resources,tmux,N=20 attached idle,4,False,0.14,cpu_pct,0.0
+resources,tmux,N=20 attached idle,4,False,0.14,first_view_stale,False
+resources,tmux,N=20 attached idle,4,False,0.14,pss_mib,8.7060546875
+resources,tmux,N=20 attached idle,4,False,0.14,rss_mib,12.0625
+resources,tmux,N=20 attached output,4,False,0.14,cpu_pct,3.991710336038609
+resources,tmux,N=20 attached output,4,False,0.14,pss_mib,8.7412109375
+resources,tmux,N=20 attached output,4,False,0.14,rss_mib,12.09765625
+resources,herdr,N=20 headless idle,4,False,0.12,cpu_pct,8.799691468789527
+resources,herdr,N=20 headless idle,4,False,0.12,pss_mib,26.84375
+resources,herdr,N=20 headless idle,4,False,0.12,rss_mib,26.84765625
+resources,herdr,N=20 headless output,4,False,0.12,cpu_pct,20.999629432192442
+resources,herdr,N=20 headless output,4,False,0.12,pss_mib,27.16796875
+resources,herdr,N=20 headless output,4,False,0.12,rss_mib,27.171875
+resources,herdr,N=20 attached idle,4,False,0.12,cpu_pct,20.47121706756493
+resources,herdr,N=20 attached idle,4,False,0.12,first_view_stale,False
+resources,herdr,N=20 attached idle,4,False,0.12,pss_mib,34.80859375
+resources,herdr,N=20 attached idle,4,False,0.12,rss_mib,44.81640625
+resources,herdr,N=20 attached output,4,False,0.12,cpu_pct,32.974258525159094
+resources,herdr,N=20 attached output,4,False,0.12,pss_mib,34.88671875
+resources,herdr,N=20 attached output,4,False,0.12,rss_mib,44.89453125
+resources,thurbox,N=20 headless idle,4,False,0.33,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,4,False,0.33,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle,4,False,0.33,rss_mib,17.45703125
+resources,thurbox,N=20 headless output,4,False,0.33,cpu_pct,3.5998734931960126
+resources,thurbox,N=20 headless output,4,False,0.33,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,4,False,0.33,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,4,False,0.33,cpu_pct,5.085322431250263
+resources,thurbox,N=20 attached idle,4,False,0.33,first_view_stale,True
+resources,thurbox,N=20 attached idle,4,False,0.33,pss_mib,49.111328125
+resources,thurbox,N=20 attached idle,4,False,0.33,rss_mib,63.37109375
+resources,thurbox,N=20 attached output,4,False,0.33,cpu_pct,19.536400946703175
+resources,thurbox,N=20 attached output,4,False,0.33,pss_mib,49.283203125
+resources,thurbox,N=20 attached output,4,False,0.33,rss_mib,63.54296875
+resources,tmux,N=20 headless idle,5,False,0.43,cpu_pct,0.0
+resources,tmux,N=20 headless idle,5,False,0.43,pss_mib,3.869140625
+resources,tmux,N=20 headless idle,5,False,0.43,rss_mib,3.99609375
+resources,tmux,N=20 headless output,5,False,0.43,cpu_pct,3.699946128804893
+resources,tmux,N=20 headless output,5,False,0.43,pss_mib,3.998046875
+resources,tmux,N=20 headless output,5,False,0.43,rss_mib,4.125
+resources,tmux,N=20 attached idle,5,False,0.43,cpu_pct,0.0
+resources,tmux,N=20 attached idle,5,False,0.43,first_view_stale,False
+resources,tmux,N=20 attached idle,5,False,0.43,pss_mib,8.7060546875
+resources,tmux,N=20 attached idle,5,False,0.43,rss_mib,12.0625
+resources,tmux,N=20 attached output,5,False,0.43,cpu_pct,3.2924777676373163
+resources,tmux,N=20 attached output,5,False,0.43,pss_mib,8.7255859375
+resources,tmux,N=20 attached output,5,False,0.43,rss_mib,12.08203125
+resources,herdr,N=20 headless idle,5,False,0.2,cpu_pct,8.79969156631079
+resources,herdr,N=20 headless idle,5,False,0.2,pss_mib,26.8515625
+resources,herdr,N=20 headless idle,5,False,0.2,rss_mib,26.85546875
+resources,herdr,N=20 headless output,5,False,0.2,cpu_pct,20.799650784521837
+resources,herdr,N=20 headless output,5,False,0.2,pss_mib,27.19140625
+resources,herdr,N=20 headless output,5,False,0.2,rss_mib,27.1953125
+resources,herdr,N=20 attached idle,5,False,0.2,cpu_pct,18.663290505907316
+resources,herdr,N=20 attached idle,5,False,0.2,first_view_stale,False
+resources,herdr,N=20 attached idle,5,False,0.2,pss_mib,34.86328125
+resources,herdr,N=20 attached idle,5,False,0.2,rss_mib,44.87109375
+resources,herdr,N=20 attached output,5,False,0.2,cpu_pct,30.374239135300577
+resources,herdr,N=20 attached output,5,False,0.2,pss_mib,34.93359375
+resources,herdr,N=20 attached output,5,False,0.2,rss_mib,44.94140625
+resources,thurbox,N=20 headless idle,5,False,0.73,cpu_pct,0.0
+resources,thurbox,N=20 headless idle,5,False,0.73,pss_mib,8.662109375
+resources,thurbox,N=20 headless idle,5,False,0.73,rss_mib,17.453125
+resources,thurbox,N=20 headless output,5,False,0.73,cpu_pct,4.099941894455546
+resources,thurbox,N=20 headless output,5,False,0.73,pss_mib,8.744140625
+resources,thurbox,N=20 headless output,5,False,0.73,rss_mib,17.53515625
+resources,thurbox,N=20 attached idle,5,False,0.73,cpu_pct,5.2909960125445545
+resources,thurbox,N=20 attached idle,5,False,0.73,first_view_stale,True
+resources,thurbox,N=20 attached idle,5,False,0.73,pss_mib,49.0634765625
+resources,thurbox,N=20 attached idle,5,False,0.73,rss_mib,63.34375
+resources,thurbox,N=20 attached output,5,False,0.73,cpu_pct,19.537814582975574
+resources,thurbox,N=20 attached output,5,False,0.73,pss_mib,49.275390625
+resources,thurbox,N=20 attached output,5,False,0.73,rss_mib,63.53515625
+resources,tmux,N=50 headless idle,0,True,0.29,cpu_pct,0.0
+resources,tmux,N=50 headless idle,0,True,0.29,pss_mib,4.1650390625
+resources,tmux,N=50 headless idle,0,True,0.29,rss_mib,4.29296875
+resources,tmux,N=50 headless output,0,True,0.29,cpu_pct,7.999723955269751
+resources,tmux,N=50 headless output,0,True,0.29,pss_mib,4.6103515625
+resources,tmux,N=50 headless output,0,True,0.29,rss_mib,4.73828125
+resources,tmux,N=50 attached idle,0,True,0.29,cpu_pct,0.0
+resources,tmux,N=50 attached idle,0,True,0.29,first_view_stale,False
+resources,tmux,N=50 attached idle,0,True,0.29,pss_mib,12.69140625
+resources,tmux,N=50 attached idle,0,True,0.29,rss_mib,16.05078125
+resources,tmux,N=50 attached output,0,True,0.29,cpu_pct,5.890360125278483
+resources,tmux,N=50 attached output,0,True,0.29,pss_mib,12.74609375
+resources,tmux,N=50 attached output,0,True,0.29,rss_mib,16.10546875
+resources,herdr,N=50 headless idle,0,True,0.48,cpu_pct,22.89928653597211
+resources,herdr,N=50 headless idle,0,True,0.48,pss_mib,41.09765625
+resources,herdr,N=50 headless idle,0,True,0.48,rss_mib,41.1015625
+resources,herdr,N=50 headless output,0,True,0.48,cpu_pct,59.899163633952156
+resources,herdr,N=50 headless output,0,True,0.48,pss_mib,41.94140625
+resources,herdr,N=50 headless output,0,True,0.48,rss_mib,41.9453125
+resources,herdr,N=50 attached idle,0,True,0.48,cpu_pct,81.282101310584
+resources,herdr,N=50 attached idle,0,True,0.48,first_view_stale,False
+resources,herdr,N=50 attached idle,0,True,0.48,pss_mib,53.828125
+resources,herdr,N=50 attached idle,0,True,0.48,rss_mib,63.8359375
+resources,herdr,N=50 attached output,0,True,0.48,cpu_pct,83.10435844783973
+resources,herdr,N=50 attached output,0,True,0.48,pss_mib,53.921875
+resources,herdr,N=50 attached output,0,True,0.48,rss_mib,63.9296875
+resources,thurbox,N=50 headless idle,0,True,0.38,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,0,True,0.38,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,0,True,0.38,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,0,True,0.38,cpu_pct,7.799726723279592
+resources,thurbox,N=50 headless output,0,True,0.38,pss_mib,9.421875
+resources,thurbox,N=50 headless output,0,True,0.38,rss_mib,18.2265625
+resources,thurbox,N=50 attached idle,0,True,0.38,cpu_pct,9.585251686036315
+resources,thurbox,N=50 attached idle,0,True,0.38,first_view_stale,True
+resources,thurbox,N=50 attached idle,0,True,0.38,pss_mib,85.98828125
+resources,thurbox,N=50 attached idle,0,True,0.38,rss_mib,112.58203125
+resources,thurbox,N=50 attached output,0,True,0.38,cpu_pct,37.985927349374755
+resources,thurbox,N=50 attached output,0,True,0.38,pss_mib,86.48046875
+resources,thurbox,N=50 attached output,0,True,0.38,rss_mib,112.6796875
+resources,tmux,N=50 headless idle,1,False,7.38,cpu_pct,0.0
+resources,tmux,N=50 headless idle,1,False,7.38,pss_mib,4.1572265625
+resources,tmux,N=50 headless idle,1,False,7.38,rss_mib,4.28515625
+resources,tmux,N=50 headless output,1,False,7.38,cpu_pct,7.89986664555697
+resources,tmux,N=50 headless output,1,False,7.38,pss_mib,4.5986328125
+resources,tmux,N=50 headless output,1,False,7.38,rss_mib,4.7265625
+resources,tmux,N=50 attached idle,1,False,7.38,cpu_pct,0.0
+resources,tmux,N=50 attached idle,1,False,7.38,first_view_stale,False
+resources,tmux,N=50 attached idle,1,False,7.38,pss_mib,12.6796875
+resources,tmux,N=50 attached idle,1,False,7.38,rss_mib,16.0390625
+resources,tmux,N=50 attached output,1,False,7.38,cpu_pct,6.176675821995299
+resources,tmux,N=50 attached output,1,False,7.38,pss_mib,12.74609375
+resources,tmux,N=50 attached output,1,False,7.38,rss_mib,16.10546875
+resources,herdr,N=50 headless idle,1,False,3.2,cpu_pct,23.499599181328122
+resources,herdr,N=50 headless idle,1,False,3.2,pss_mib,41.10546875
+resources,herdr,N=50 headless idle,1,False,3.2,rss_mib,41.109375
+resources,herdr,N=50 headless output,1,False,3.2,cpu_pct,87.89859735896407
+resources,herdr,N=50 headless output,1,False,3.2,pss_mib,41.91015625
+resources,herdr,N=50 headless output,1,False,3.2,rss_mib,41.9140625
+resources,herdr,N=50 attached idle,1,False,3.2,cpu_pct,81.0950690129517
+resources,herdr,N=50 attached idle,1,False,3.2,first_view_stale,False
+resources,herdr,N=50 attached idle,1,False,3.2,pss_mib,53.76171875
+resources,herdr,N=50 attached idle,1,False,3.2,rss_mib,63.76953125
+resources,herdr,N=50 attached output,1,False,3.2,cpu_pct,85.57018467833367
+resources,herdr,N=50 attached output,1,False,3.2,pss_mib,53.94140625
+resources,herdr,N=50 attached output,1,False,3.2,rss_mib,63.94921875
+resources,thurbox,N=50 headless idle,1,False,1.59,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,1,False,1.59,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,1,False,1.59,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,1,False,1.59,cpu_pct,7.6999377436917085
+resources,thurbox,N=50 headless output,1,False,1.59,pss_mib,9.4140625
+resources,thurbox,N=50 headless output,1,False,1.59,rss_mib,18.21875
+resources,thurbox,N=50 attached idle,1,False,1.59,cpu_pct,9.886911407206904
+resources,thurbox,N=50 attached idle,1,False,1.59,first_view_stale,True
+resources,thurbox,N=50 attached idle,1,False,1.59,pss_mib,80.3173828125
+resources,thurbox,N=50 attached idle,1,False,1.59,rss_mib,94.59375
+resources,thurbox,N=50 attached output,1,False,1.59,cpu_pct,38.37815089411807
+resources,thurbox,N=50 attached output,1,False,1.59,pss_mib,90.8046875
+resources,thurbox,N=50 attached output,1,False,1.59,rss_mib,129.375
+resources,tmux,N=50 headless idle,2,False,0.95,cpu_pct,0.0
+resources,tmux,N=50 headless idle,2,False,0.95,pss_mib,4.1572265625
+resources,tmux,N=50 headless idle,2,False,0.95,rss_mib,4.28515625
+resources,tmux,N=50 headless output,2,False,0.95,cpu_pct,7.899727168751475
+resources,tmux,N=50 headless output,2,False,0.95,pss_mib,4.5947265625
+resources,tmux,N=50 headless output,2,False,0.95,rss_mib,4.72265625
+resources,tmux,N=50 attached idle,2,False,0.95,cpu_pct,0.0
+resources,tmux,N=50 attached idle,2,False,0.95,first_view_stale,False
+resources,tmux,N=50 attached idle,2,False,0.95,pss_mib,12.6875
+resources,tmux,N=50 attached idle,2,False,0.95,rss_mib,16.046875
+resources,tmux,N=50 attached output,2,False,0.95,cpu_pct,7.3897195477693005
+resources,tmux,N=50 attached output,2,False,0.95,pss_mib,12.73828125
+resources,tmux,N=50 attached output,2,False,0.95,rss_mib,16.09765625
+resources,herdr,N=50 headless idle,2,False,0.5,cpu_pct,21.599685303012922
+resources,herdr,N=50 headless idle,2,False,0.5,pss_mib,41.10546875
+resources,herdr,N=50 headless idle,2,False,0.5,rss_mib,41.109375
+resources,herdr,N=50 headless output,2,False,0.5,cpu_pct,74.99894800383532
+resources,herdr,N=50 headless output,2,False,0.5,pss_mib,41.93359375
+resources,herdr,N=50 headless output,2,False,0.5,rss_mib,41.9375
+resources,herdr,N=50 attached idle,2,False,0.5,cpu_pct,75.78955184280987
+resources,herdr,N=50 attached idle,2,False,0.5,first_view_stale,False
+resources,herdr,N=50 attached idle,2,False,0.5,pss_mib,53.80859375
+resources,herdr,N=50 attached idle,2,False,0.5,rss_mib,63.81640625
+resources,herdr,N=50 attached output,2,False,0.5,cpu_pct,89.82619396373228
+resources,herdr,N=50 attached output,2,False,0.5,pss_mib,53.87109375
+resources,herdr,N=50 attached output,2,False,0.5,rss_mib,63.87890625
+resources,thurbox,N=50 headless idle,2,False,0.54,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,2,False,0.54,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,2,False,0.54,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,2,False,0.54,cpu_pct,8.699700364036127
+resources,thurbox,N=50 headless output,2,False,0.54,pss_mib,9.41796875
+resources,thurbox,N=50 headless output,2,False,0.54,rss_mib,18.22265625
+resources,thurbox,N=50 attached idle,2,False,0.54,cpu_pct,12.061403042259672
+resources,thurbox,N=50 attached idle,2,False,0.54,first_view_stale,True
+resources,thurbox,N=50 attached idle,2,False,0.54,pss_mib,77.30078125
+resources,thurbox,N=50 attached idle,2,False,0.54,rss_mib,94.67578125
+resources,thurbox,N=50 attached output,2,False,0.54,cpu_pct,38.92932115107405
+resources,thurbox,N=50 attached output,2,False,0.54,pss_mib,82.5693359375
+resources,thurbox,N=50 attached output,2,False,0.54,rss_mib,99.57421875
+resources,tmux,N=50 headless idle,3,False,0.41,cpu_pct,0.0
+resources,tmux,N=50 headless idle,3,False,0.41,pss_mib,4.1611328125
+resources,tmux,N=50 headless idle,3,False,0.41,rss_mib,4.2890625
+resources,tmux,N=50 headless output,3,False,0.41,cpu_pct,7.199818677681697
+resources,tmux,N=50 headless output,3,False,0.41,pss_mib,4.6025390625
+resources,tmux,N=50 headless output,3,False,0.41,rss_mib,4.73046875
+resources,tmux,N=50 attached idle,3,False,0.41,cpu_pct,0.0
+resources,tmux,N=50 attached idle,3,False,0.41,first_view_stale,False
+resources,tmux,N=50 attached idle,3,False,0.41,pss_mib,12.6796875
+resources,tmux,N=50 attached idle,3,False,0.41,rss_mib,16.0390625
+resources,tmux,N=50 attached output,3,False,0.41,cpu_pct,6.489400288181014
+resources,tmux,N=50 attached output,3,False,0.41,pss_mib,12.73046875
+resources,tmux,N=50 attached output,3,False,0.41,rss_mib,16.08984375
+resources,herdr,N=50 headless idle,3,False,0.19,cpu_pct,22.299221239846513
+resources,herdr,N=50 headless idle,3,False,0.19,pss_mib,41.1015625
+resources,herdr,N=50 headless idle,3,False,0.19,rss_mib,41.10546875
+resources,herdr,N=50 headless output,3,False,0.19,cpu_pct,52.99473550360663
+resources,herdr,N=50 headless output,3,False,0.19,pss_mib,41.93359375
+resources,herdr,N=50 headless output,3,False,0.19,rss_mib,41.9375
+resources,herdr,N=50 attached idle,3,False,0.19,cpu_pct,46.83459482782325
+resources,herdr,N=50 attached idle,3,False,0.19,first_view_stale,False
+resources,herdr,N=50 attached idle,3,False,0.19,pss_mib,53.796875
+resources,herdr,N=50 attached idle,3,False,0.19,rss_mib,63.8046875
+resources,herdr,N=50 attached output,3,False,0.19,cpu_pct,91.69104307525254
+resources,herdr,N=50 attached output,3,False,0.19,pss_mib,53.91015625
+resources,herdr,N=50 attached output,3,False,0.19,rss_mib,63.91796875
+resources,thurbox,N=50 headless idle,3,False,0.51,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,3,False,0.51,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,3,False,0.51,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,3,False,0.51,cpu_pct,8.89988950086581
+resources,thurbox,N=50 headless output,3,False,0.51,pss_mib,9.42578125
+resources,thurbox,N=50 headless output,3,False,0.51,rss_mib,18.23046875
+resources,thurbox,N=50 attached idle,3,False,0.51,cpu_pct,10.074347908703148
+resources,thurbox,N=50 attached idle,3,False,0.51,first_view_stale,True
+resources,thurbox,N=50 attached idle,3,False,0.51,pss_mib,89.35546875
+resources,thurbox,N=50 attached idle,3,False,0.51,rss_mib,122.03125
+resources,thurbox,N=50 attached output,3,False,0.51,cpu_pct,38.67855452966248
+resources,thurbox,N=50 attached output,3,False,0.51,pss_mib,80.7353515625
+resources,thurbox,N=50 attached output,3,False,0.51,rss_mib,95.01171875
+resources,tmux,N=50 headless idle,4,False,0.2,cpu_pct,0.0
+resources,tmux,N=50 headless idle,4,False,0.2,pss_mib,4.1572265625
+resources,tmux,N=50 headless idle,4,False,0.2,rss_mib,4.28515625
+resources,tmux,N=50 headless output,4,False,0.2,cpu_pct,6.899882613065988
+resources,tmux,N=50 headless output,4,False,0.2,pss_mib,4.6064453125
+resources,tmux,N=50 headless output,4,False,0.2,rss_mib,4.734375
+resources,tmux,N=50 attached idle,4,False,0.2,cpu_pct,0.0
+resources,tmux,N=50 attached idle,4,False,0.2,first_view_stale,False
+resources,tmux,N=50 attached idle,4,False,0.2,pss_mib,12.71875
+resources,tmux,N=50 attached idle,4,False,0.2,rss_mib,16.078125
+resources,tmux,N=50 attached output,4,False,0.2,cpu_pct,6.170821197914004
+resources,tmux,N=50 attached output,4,False,0.2,pss_mib,12.77734375
+resources,tmux,N=50 attached output,4,False,0.2,rss_mib,16.13671875
+resources,herdr,N=50 headless idle,4,False,0.17,cpu_pct,22.599224338201665
+resources,herdr,N=50 headless idle,4,False,0.17,pss_mib,41.1171875
+resources,herdr,N=50 headless idle,4,False,0.17,rss_mib,41.12109375
+resources,herdr,N=50 headless output,4,False,0.17,cpu_pct,69.99887210830477
+resources,herdr,N=50 headless output,4,False,0.17,pss_mib,41.94140625
+resources,herdr,N=50 headless output,4,False,0.17,rss_mib,41.9453125
+resources,herdr,N=50 attached idle,4,False,0.17,cpu_pct,63.05445664796742
+resources,herdr,N=50 attached idle,4,False,0.17,first_view_stale,False
+resources,herdr,N=50 attached idle,4,False,0.17,pss_mib,53.81640625
+resources,herdr,N=50 attached idle,4,False,0.17,rss_mib,63.82421875
+resources,herdr,N=50 attached output,4,False,0.17,cpu_pct,89.15714429220621
+resources,herdr,N=50 attached output,4,False,0.17,pss_mib,53.9296875
+resources,herdr,N=50 attached output,4,False,0.17,rss_mib,63.9375
+resources,thurbox,N=50 headless idle,4,False,0.38,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,4,False,0.38,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,4,False,0.38,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,4,False,0.38,cpu_pct,8.699807003591815
+resources,thurbox,N=50 headless output,4,False,0.38,pss_mib,9.421875
+resources,thurbox,N=50 headless output,4,False,0.38,rss_mib,18.2265625
+resources,thurbox,N=50 attached idle,4,False,0.38,cpu_pct,9.276591281682947
+resources,thurbox,N=50 attached idle,4,False,0.38,first_view_stale,True
+resources,thurbox,N=50 attached idle,4,False,0.38,pss_mib,87.0
+resources,thurbox,N=50 attached idle,4,False,0.38,rss_mib,113.3046875
+resources,thurbox,N=50 attached output,4,False,0.38,cpu_pct,36.737428901604474
+resources,thurbox,N=50 attached output,4,False,0.38,pss_mib,80.7080078125
+resources,thurbox,N=50 attached output,4,False,0.38,rss_mib,94.984375
+resources,tmux,N=50 headless idle,5,False,0.38,cpu_pct,0.0
+resources,tmux,N=50 headless idle,5,False,0.38,pss_mib,4.1572265625
+resources,tmux,N=50 headless idle,5,False,0.38,rss_mib,4.28515625
+resources,tmux,N=50 headless output,5,False,0.38,cpu_pct,7.199872239096353
+resources,tmux,N=50 headless output,5,False,0.38,pss_mib,4.6064453125
+resources,tmux,N=50 headless output,5,False,0.38,rss_mib,4.734375
+resources,tmux,N=50 attached idle,5,False,0.38,cpu_pct,0.0
+resources,tmux,N=50 attached idle,5,False,0.38,first_view_stale,False
+resources,tmux,N=50 attached idle,5,False,0.38,pss_mib,12.69140625
+resources,tmux,N=50 attached idle,5,False,0.38,rss_mib,16.05078125
+resources,tmux,N=50 attached output,5,False,0.38,cpu_pct,5.676688144316717
+resources,tmux,N=50 attached output,5,False,0.38,pss_mib,12.765625
+resources,tmux,N=50 attached output,5,False,0.38,rss_mib,16.125
+resources,herdr,N=50 headless idle,5,False,0.24,cpu_pct,22.499365850937693
+resources,herdr,N=50 headless idle,5,False,0.24,pss_mib,41.09765625
+resources,herdr,N=50 headless idle,5,False,0.24,rss_mib,41.1015625
+resources,herdr,N=50 headless output,5,False,0.24,cpu_pct,62.39900616585848
+resources,herdr,N=50 headless output,5,False,0.24,pss_mib,41.890625
+resources,herdr,N=50 headless output,5,False,0.24,rss_mib,41.89453125
+resources,herdr,N=50 attached idle,5,False,0.24,cpu_pct,89.1870954249143
+resources,herdr,N=50 attached idle,5,False,0.24,first_view_stale,False
+resources,herdr,N=50 attached idle,5,False,0.24,pss_mib,53.77734375
+resources,herdr,N=50 attached idle,5,False,0.24,rss_mib,63.78515625
+resources,herdr,N=50 attached output,5,False,0.24,cpu_pct,105.82653729212996
+resources,herdr,N=50 attached output,5,False,0.24,pss_mib,53.87109375
+resources,herdr,N=50 attached output,5,False,0.24,rss_mib,63.87890625
+resources,thurbox,N=50 headless idle,5,False,0.46,cpu_pct,0.0
+resources,thurbox,N=50 headless idle,5,False,0.46,pss_mib,9.15625
+resources,thurbox,N=50 headless idle,5,False,0.46,rss_mib,17.9609375
+resources,thurbox,N=50 headless output,5,False,0.46,cpu_pct,7.999723024011555
+resources,thurbox,N=50 headless output,5,False,0.46,pss_mib,9.41796875
+resources,thurbox,N=50 headless output,5,False,0.46,rss_mib,18.22265625
+resources,thurbox,N=50 attached idle,5,False,0.46,cpu_pct,10.162019156628187
+resources,thurbox,N=50 attached idle,5,False,0.46,first_view_stale,True
+resources,thurbox,N=50 attached idle,5,False,0.46,pss_mib,80.4580078125
+resources,thurbox,N=50 attached idle,5,False,0.46,rss_mib,94.734375
+resources,thurbox,N=50 attached output,5,False,0.46,cpu_pct,38.86520259617945
+resources,thurbox,N=50 attached output,5,False,0.46,pss_mib,86.388671875
+resources,thurbox,N=50 attached output,5,False,0.46,rss_mib,112.671875
+resources,tmux,N=20 headless idle-long,0,True,0.44,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,0,True,0.44,pss_mib,3.873046875
+resources,tmux,N=20 headless idle-long,0,True,0.44,rss_mib,4.0
+resources,herdr,N=20 headless idle-long,0,True,0.15,cpu_pct,8.815360922810633
+resources,herdr,N=20 headless idle-long,0,True,0.15,pss_mib,26.83984375
+resources,herdr,N=20 headless idle-long,0,True,0.15,rss_mib,26.84375
+resources,thurbox,N=20 headless idle-long,0,True,0.07,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,0,True,0.07,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,0,True,0.07,rss_mib,17.45703125
+resources,tmux,N=20 headless idle-long,1,False,0.02,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,1,False,0.02,pss_mib,3.873046875
+resources,tmux,N=20 headless idle-long,1,False,0.02,rss_mib,4.0
+resources,herdr,N=20 headless idle-long,1,False,0.29,cpu_pct,8.969183508124996
+resources,herdr,N=20 headless idle-long,1,False,0.29,pss_mib,26.84765625
+resources,herdr,N=20 headless idle-long,1,False,0.29,rss_mib,26.8515625
+resources,thurbox,N=20 headless idle-long,1,False,0.12,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,1,False,0.12,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,1,False,0.12,rss_mib,17.45703125
+resources,tmux,N=20 headless idle-long,2,False,0.04,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,2,False,0.04,pss_mib,3.873046875
+resources,tmux,N=20 headless idle-long,2,False,0.04,rss_mib,4.0
+resources,herdr,N=20 headless idle-long,2,False,0.21,cpu_pct,9.076899228954643
+resources,herdr,N=20 headless idle-long,2,False,0.21,pss_mib,26.84375
+resources,herdr,N=20 headless idle-long,2,False,0.21,rss_mib,26.84765625
+resources,thurbox,N=20 headless idle-long,2,False,0.06,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,2,False,0.06,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,2,False,0.06,rss_mib,17.45703125
+resources,tmux,N=20 headless idle-long,3,False,0.02,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,3,False,0.02,pss_mib,3.873046875
+resources,tmux,N=20 headless idle-long,3,False,0.02,rss_mib,4.0
+resources,herdr,N=20 headless idle-long,3,False,0.11,cpu_pct,9.015336774300568
+resources,herdr,N=20 headless idle-long,3,False,0.11,pss_mib,26.84765625
+resources,herdr,N=20 headless idle-long,3,False,0.11,rss_mib,26.8515625
+resources,thurbox,N=20 headless idle-long,3,False,0.06,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,3,False,0.06,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,3,False,0.06,rss_mib,17.45703125
+resources,tmux,N=20 headless idle-long,4,False,0.07,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,4,False,0.07,pss_mib,3.869140625
+resources,tmux,N=20 headless idle-long,4,False,0.07,rss_mib,3.99609375
+resources,herdr,N=20 headless idle-long,4,False,0.05,cpu_pct,8.56921056237654
+resources,herdr,N=20 headless idle-long,4,False,0.05,pss_mib,26.859375
+resources,herdr,N=20 headless idle-long,4,False,0.05,rss_mib,26.86328125
+resources,thurbox,N=20 headless idle-long,4,False,0.1,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,4,False,0.1,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,4,False,0.1,rss_mib,17.45703125
+resources,tmux,N=20 headless idle-long,5,False,0.08,cpu_pct,0.0
+resources,tmux,N=20 headless idle-long,5,False,0.08,pss_mib,3.873046875
+resources,tmux,N=20 headless idle-long,5,False,0.08,rss_mib,4.0
+resources,herdr,N=20 headless idle-long,5,False,0.02,cpu_pct,8.984566815449003
+resources,herdr,N=20 headless idle-long,5,False,0.02,pss_mib,26.8515625
+resources,herdr,N=20 headless idle-long,5,False,0.02,rss_mib,26.85546875
+resources,thurbox,N=20 headless idle-long,5,False,0.07,cpu_pct,0.0
+resources,thurbox,N=20 headless idle-long,5,False,0.07,pss_mib,8.666015625
+resources,thurbox,N=20 headless idle-long,5,False,0.07,rss_mib,17.45703125
+throughput,tmux,headless,0,True,0.07,host_cpu_s,0.21
+throughput,tmux,headless,0,True,0.07,intact,True
+throughput,tmux,headless,0,True,0.07,producer_ms,210.115826
+throughput,tmux,headless,0,True,0.07,pss_after_mib,5.853515625
+throughput,tmux,headless,0,True,0.07,settle_ms,340.928262
+throughput,tmux,headless,0,True,0.07,visible_ms,
+throughput,herdr,headless,0,True,0.07,host_cpu_s,0.13
+throughput,herdr,headless,0,True,0.07,intact,True
+throughput,herdr,headless,0,True,0.07,producer_ms,128.666083
+throughput,herdr,headless,0,True,0.07,pss_after_mib,24.92578125
+throughput,herdr,headless,0,True,0.07,settle_ms,248.941955
+throughput,herdr,headless,0,True,0.07,visible_ms,
+throughput,thurbox,headless,0,True,0.15,host_cpu_s,0.22
+throughput,thurbox,headless,0,True,0.15,intact,True
+throughput,thurbox,headless,0,True,0.15,producer_ms,223.274358
+throughput,thurbox,headless,0,True,0.15,pss_after_mib,10.005859375
+throughput,thurbox,headless,0,True,0.15,settle_ms,360.726061
+throughput,thurbox,headless,0,True,0.15,visible_ms,
+throughput,tmux,headless,1,False,0.15,host_cpu_s,0.21
+throughput,tmux,headless,1,False,0.15,intact,True
+throughput,tmux,headless,1,False,0.15,producer_ms,217.528697
+throughput,tmux,headless,1,False,0.15,pss_after_mib,5.853515625
+throughput,tmux,headless,1,False,0.15,settle_ms,343.212833
+throughput,tmux,headless,1,False,0.15,visible_ms,
+throughput,herdr,headless,1,False,0.22,host_cpu_s,0.14
+throughput,herdr,headless,1,False,0.22,intact,True
+throughput,herdr,headless,1,False,0.22,producer_ms,125.847722
+throughput,herdr,headless,1,False,0.22,pss_after_mib,23.02734375
+throughput,herdr,headless,1,False,0.22,settle_ms,263.129655
+throughput,herdr,headless,1,False,0.22,visible_ms,
+throughput,thurbox,headless,1,False,0.22,host_cpu_s,0.21
+throughput,thurbox,headless,1,False,0.22,intact,True
+throughput,thurbox,headless,1,False,0.22,producer_ms,214.518696
+throughput,thurbox,headless,1,False,0.22,pss_after_mib,10.009765625
+throughput,thurbox,headless,1,False,0.22,settle_ms,353.14362
+throughput,thurbox,headless,1,False,0.22,visible_ms,
+throughput,tmux,headless,2,False,0.22,host_cpu_s,0.2
+throughput,tmux,headless,2,False,0.22,intact,True
+throughput,tmux,headless,2,False,0.22,producer_ms,217.95174
+throughput,tmux,headless,2,False,0.22,pss_after_mib,5.853515625
+throughput,tmux,headless,2,False,0.22,settle_ms,351.513226
+throughput,tmux,headless,2,False,0.22,visible_ms,
+throughput,herdr,headless,2,False,0.2,host_cpu_s,0.13
+throughput,herdr,headless,2,False,0.2,intact,True
+throughput,herdr,headless,2,False,0.2,producer_ms,127.588032
+throughput,herdr,headless,2,False,0.2,pss_after_mib,24.921875
+throughput,herdr,headless,2,False,0.2,settle_ms,248.796671
+throughput,herdr,headless,2,False,0.2,visible_ms,
+throughput,thurbox,headless,2,False,0.2,host_cpu_s,0.23
+throughput,thurbox,headless,2,False,0.2,intact,True
+throughput,thurbox,headless,2,False,0.2,producer_ms,221.258555
+throughput,thurbox,headless,2,False,0.2,pss_after_mib,10.013671875
+throughput,thurbox,headless,2,False,0.2,settle_ms,354.987727
+throughput,thurbox,headless,2,False,0.2,visible_ms,
+throughput,tmux,headless,3,False,0.26,host_cpu_s,0.22
+throughput,tmux,headless,3,False,0.26,intact,True
+throughput,tmux,headless,3,False,0.26,producer_ms,215.101427
+throughput,tmux,headless,3,False,0.26,pss_after_mib,5.853515625
+throughput,tmux,headless,3,False,0.26,settle_ms,352.367377
+throughput,tmux,headless,3,False,0.26,visible_ms,
+throughput,herdr,headless,3,False,0.26,host_cpu_s,0.16
+throughput,herdr,headless,3,False,0.26,intact,True
+throughput,herdr,headless,3,False,0.26,producer_ms,131.147982
+throughput,herdr,headless,3,False,0.26,pss_after_mib,18.515625
+throughput,herdr,headless,3,False,0.26,settle_ms,1262.336004
+throughput,herdr,headless,3,False,0.26,visible_ms,
+throughput,thurbox,headless,3,False,0.26,host_cpu_s,0.22
+throughput,thurbox,headless,3,False,0.26,intact,True
+throughput,thurbox,headless,3,False,0.26,producer_ms,216.914905
+throughput,thurbox,headless,3,False,0.26,pss_after_mib,10.009765625
+throughput,thurbox,headless,3,False,0.26,settle_ms,341.618867
+throughput,thurbox,headless,3,False,0.26,visible_ms,
+throughput,tmux,headless,4,False,0.24,host_cpu_s,0.21
+throughput,tmux,headless,4,False,0.24,intact,True
+throughput,tmux,headless,4,False,0.24,producer_ms,210.508726
+throughput,tmux,headless,4,False,0.24,pss_after_mib,5.853515625
+throughput,tmux,headless,4,False,0.24,settle_ms,342.356544
+throughput,tmux,headless,4,False,0.24,visible_ms,
+throughput,herdr,headless,4,False,0.24,host_cpu_s,0.13
+throughput,herdr,headless,4,False,0.24,intact,True
+throughput,herdr,headless,4,False,0.24,producer_ms,126.670508
+throughput,herdr,headless,4,False,0.24,pss_after_mib,23.40234375
+throughput,herdr,headless,4,False,0.24,settle_ms,263.313603
+throughput,herdr,headless,4,False,0.24,visible_ms,
+throughput,thurbox,headless,4,False,0.22,host_cpu_s,0.21
+throughput,thurbox,headless,4,False,0.22,intact,True
+throughput,thurbox,headless,4,False,0.22,producer_ms,215.174202
+throughput,thurbox,headless,4,False,0.22,pss_after_mib,10.013671875
+throughput,thurbox,headless,4,False,0.22,settle_ms,353.360203
+throughput,thurbox,headless,4,False,0.22,visible_ms,
+throughput,tmux,headless,5,False,0.22,host_cpu_s,0.21
+throughput,tmux,headless,5,False,0.22,intact,True
+throughput,tmux,headless,5,False,0.22,producer_ms,210.024028
+throughput,tmux,headless,5,False,0.22,pss_after_mib,5.853515625
+throughput,tmux,headless,5,False,0.22,settle_ms,338.739235
+throughput,tmux,headless,5,False,0.22,visible_ms,
+throughput,herdr,headless,5,False,0.22,host_cpu_s,0.14
+throughput,herdr,headless,5,False,0.22,intact,True
+throughput,herdr,headless,5,False,0.22,producer_ms,126.249203
+throughput,herdr,headless,5,False,0.22,pss_after_mib,24.92578125
+throughput,herdr,headless,5,False,0.22,settle_ms,258.311512
+throughput,herdr,headless,5,False,0.22,visible_ms,
+throughput,thurbox,headless,5,False,0.28,host_cpu_s,0.21
+throughput,thurbox,headless,5,False,0.28,intact,True
+throughput,thurbox,headless,5,False,0.28,producer_ms,211.40948
+throughput,thurbox,headless,5,False,0.28,pss_after_mib,10.013671875
+throughput,thurbox,headless,5,False,0.28,settle_ms,353.248411
+throughput,thurbox,headless,5,False,0.28,visible_ms,
+throughput,tmux,attached,0,True,0.28,host_cpu_s,0.23
+throughput,tmux,attached,0,True,0.28,intact,True
+throughput,tmux,attached,0,True,0.28,producer_ms,234.80233
+throughput,tmux,attached,0,True,0.28,pss_after_mib,8.341796875
+throughput,tmux,attached,0,True,0.28,settle_ms,446.14874
+throughput,tmux,attached,0,True,0.28,visible_ms,332.386239
+throughput,herdr,attached,0,True,0.26,host_cpu_s,0.18
+throughput,herdr,attached,0,True,0.26,intact,True
+throughput,herdr,attached,0,True,0.26,producer_ms,142.941257
+throughput,herdr,attached,0,True,0.26,pss_after_mib,23.14453125
+throughput,herdr,attached,0,True,0.26,settle_ms,655.066105
+throughput,herdr,attached,0,True,0.26,visible_ms,157.888072
+throughput,thurbox,attached,0,True,0.26,host_cpu_s,0.39
+throughput,thurbox,attached,0,True,0.26,intact,True
+throughput,thurbox,attached,0,True,0.26,producer_ms,242.322076
+throughput,thurbox,attached,0,True,0.26,pss_after_mib,36.4716796875
+throughput,thurbox,attached,0,True,0.26,settle_ms,497.274561
+throughput,thurbox,attached,0,True,0.26,visible_ms,261.637409
+throughput,tmux,attached,1,False,0.32,host_cpu_s,0.23
+throughput,tmux,attached,1,False,0.32,intact,True
+throughput,tmux,attached,1,False,0.32,producer_ms,233.425626
+throughput,tmux,attached,1,False,0.32,pss_after_mib,8.369140625
+throughput,tmux,attached,1,False,0.32,settle_ms,445.227532
+throughput,tmux,attached,1,False,0.32,visible_ms,333.422645
+throughput,herdr,attached,1,False,0.32,host_cpu_s,0.2
+throughput,herdr,attached,1,False,0.32,intact,True
+throughput,herdr,attached,1,False,0.32,producer_ms,142.589592
+throughput,herdr,attached,1,False,0.32,pss_after_mib,23.19140625
+throughput,herdr,attached,1,False,0.32,settle_ms,786.268461
+throughput,herdr,attached,1,False,0.32,visible_ms,158.590602
+throughput,thurbox,attached,1,False,0.38,host_cpu_s,0.38
+throughput,thurbox,attached,1,False,0.38,intact,True
+throughput,thurbox,attached,1,False,0.38,producer_ms,241.064771
+throughput,thurbox,attached,1,False,0.38,pss_after_mib,36.4755859375
+throughput,thurbox,attached,1,False,0.38,settle_ms,442.170481
+throughput,thurbox,attached,1,False,0.38,visible_ms,259.298642
+throughput,tmux,attached,2,False,0.38,host_cpu_s,0.23
+throughput,tmux,attached,2,False,0.38,intact,True
+throughput,tmux,attached,2,False,0.38,producer_ms,233.60885
+throughput,tmux,attached,2,False,0.38,pss_after_mib,8.357421875
+throughput,tmux,attached,2,False,0.38,settle_ms,447.044693
+throughput,tmux,attached,2,False,0.38,visible_ms,334.635344
+throughput,herdr,attached,2,False,0.35,host_cpu_s,0.2
+throughput,herdr,attached,2,False,0.35,intact,True
+throughput,herdr,attached,2,False,0.35,producer_ms,142.054574
+throughput,herdr,attached,2,False,0.35,pss_after_mib,23.15625
+throughput,herdr,attached,2,False,0.35,settle_ms,665.955173
+throughput,herdr,attached,2,False,0.35,visible_ms,157.855756
+throughput,thurbox,attached,2,False,0.4,host_cpu_s,0.38
+throughput,thurbox,attached,2,False,0.4,intact,True
+throughput,thurbox,attached,2,False,0.4,producer_ms,243.079226
+throughput,thurbox,attached,2,False,0.4,pss_after_mib,36.4755859375
+throughput,thurbox,attached,2,False,0.4,settle_ms,584.81699
+throughput,thurbox,attached,2,False,0.4,visible_ms,260.869158
+throughput,tmux,attached,3,False,0.4,host_cpu_s,0.23
+throughput,tmux,attached,3,False,0.4,intact,True
+throughput,tmux,attached,3,False,0.4,producer_ms,233.405469
+throughput,tmux,attached,3,False,0.4,pss_after_mib,8.318359375
+throughput,tmux,attached,3,False,0.4,settle_ms,445.877128
+throughput,tmux,attached,3,False,0.4,visible_ms,333.058166
+throughput,herdr,attached,3,False,0.37,host_cpu_s,0.2
+throughput,herdr,attached,3,False,0.37,intact,True
+throughput,herdr,attached,3,False,0.37,producer_ms,143.180476
+throughput,herdr,attached,3,False,0.37,pss_after_mib,23.17578125
+throughput,herdr,attached,3,False,0.37,settle_ms,789.610542
+throughput,herdr,attached,3,False,0.37,visible_ms,158.129576
+throughput,thurbox,attached,3,False,0.37,host_cpu_s,0.41
+throughput,thurbox,attached,3,False,0.37,intact,True
+throughput,thurbox,attached,3,False,0.37,producer_ms,246.277482
+throughput,thurbox,attached,3,False,0.37,pss_after_mib,36.4833984375
+throughput,thurbox,attached,3,False,0.37,settle_ms,583.357957
+throughput,thurbox,attached,3,False,0.37,visible_ms,260.235403
+throughput,tmux,attached,4,False,0.34,host_cpu_s,0.23
+throughput,tmux,attached,4,False,0.34,intact,True
+throughput,tmux,attached,4,False,0.34,producer_ms,234.318419
+throughput,tmux,attached,4,False,0.34,pss_after_mib,8.376953125
+throughput,tmux,attached,4,False,0.34,settle_ms,449.152155
+throughput,tmux,attached,4,False,0.34,visible_ms,336.662236
+throughput,herdr,attached,4,False,0.31,host_cpu_s,0.2
+throughput,herdr,attached,4,False,0.31,intact,True
+throughput,herdr,attached,4,False,0.31,producer_ms,143.426805
+throughput,herdr,attached,4,False,0.31,pss_after_mib,23.16015625
+throughput,herdr,attached,4,False,0.31,settle_ms,1036.108002
+throughput,herdr,attached,4,False,0.31,visible_ms,157.515435
+throughput,thurbox,attached,4,False,0.31,host_cpu_s,0.39
+throughput,thurbox,attached,4,False,0.31,intact,True
+throughput,thurbox,attached,4,False,0.31,producer_ms,247.003953
+throughput,thurbox,attached,4,False,0.31,pss_after_mib,36.4833984375
+throughput,thurbox,attached,4,False,0.31,settle_ms,302.210937
+throughput,thurbox,attached,4,False,0.31,visible_ms,251.638677
+throughput,tmux,attached,5,False,0.28,host_cpu_s,0.23
+throughput,tmux,attached,5,False,0.28,intact,True
+throughput,tmux,attached,5,False,0.28,producer_ms,229.720323
+throughput,tmux,attached,5,False,0.28,pss_after_mib,8.349609375
+throughput,tmux,attached,5,False,0.28,settle_ms,447.291305
+throughput,tmux,attached,5,False,0.28,visible_ms,326.411296
+throughput,herdr,attached,5,False,0.28,host_cpu_s,0.19
+throughput,herdr,attached,5,False,0.28,intact,True
+throughput,herdr,attached,5,False,0.28,producer_ms,142.032437
+throughput,herdr,attached,5,False,0.28,pss_after_mib,23.16796875
+throughput,herdr,attached,5,False,0.28,settle_ms,790.459131
+throughput,herdr,attached,5,False,0.28,visible_ms,158.846379
+throughput,thurbox,attached,5,False,0.34,host_cpu_s,0.37
+throughput,thurbox,attached,5,False,0.34,intact,True
+throughput,thurbox,attached,5,False,0.34,producer_ms,248.275775
+throughput,thurbox,attached,5,False,0.34,pss_after_mib,36.4755859375
+throughput,thurbox,attached,5,False,0.34,settle_ms,317.849074
+throughput,thurbox,attached,5,False,0.34,visible_ms,262.861473
+scrollback,tmux,after 1 burst,0,True,0.34,held_mib,2.10546875
+scrollback,tmux,after 1 burst,0,True,0.34,read_all_ms,7.520558
+scrollback,tmux,after 1 burst,0,True,0.34,readable_lines,2001
+scrollback,tmux,after 1 burst,0,True,0.34,retained_lines,2001
+scrollback,herdr,after 1 burst,0,True,0.31,held_mib,6.5859375
+scrollback,herdr,after 1 burst,0,True,0.31,read_all_ms,6.298962
+scrollback,herdr,after 1 burst,0,True,0.31,readable_lines,998
+scrollback,herdr,after 1 burst,0,True,0.31,retained_lines,5502
+scrollback,thurbox,after 1 burst,0,True,0.31,held_mib,1.65625
+scrollback,thurbox,after 1 burst,0,True,0.31,read_all_ms,53.613374
+scrollback,thurbox,after 1 burst,0,True,0.31,readable_lines,2500
+scrollback,thurbox,after 1 burst,0,True,0.31,retained_lines,2500
+scrollback,tmux,after 1 burst,1,False,0.29,held_mib,2.10546875
+scrollback,tmux,after 1 burst,1,False,0.29,read_all_ms,7.490376
+scrollback,tmux,after 1 burst,1,False,0.29,readable_lines,2001
+scrollback,tmux,after 1 burst,1,False,0.29,retained_lines,2001
+scrollback,herdr,after 1 burst,1,False,0.29,held_mib,6.96484375
+scrollback,herdr,after 1 burst,1,False,0.29,read_all_ms,5.250996
+scrollback,herdr,after 1 burst,1,False,0.29,readable_lines,998
+scrollback,herdr,after 1 burst,1,False,0.29,retained_lines,5502
+scrollback,thurbox,after 1 burst,1,False,0.29,held_mib,1.66015625
+scrollback,thurbox,after 1 burst,1,False,0.29,read_all_ms,42.805483
+scrollback,thurbox,after 1 burst,1,False,0.29,readable_lines,2500
+scrollback,thurbox,after 1 burst,1,False,0.29,retained_lines,2500
+scrollback,tmux,after 1 burst,2,False,0.27,held_mib,2.10546875
+scrollback,tmux,after 1 burst,2,False,0.27,read_all_ms,7.639262
+scrollback,tmux,after 1 burst,2,False,0.27,readable_lines,2001
+scrollback,tmux,after 1 burst,2,False,0.27,retained_lines,2001
+scrollback,herdr,after 1 burst,2,False,0.27,held_mib,6.19921875
+scrollback,herdr,after 1 burst,2,False,0.27,read_all_ms,6.274387
+scrollback,herdr,after 1 burst,2,False,0.27,readable_lines,998
+scrollback,herdr,after 1 burst,2,False,0.27,retained_lines,5502
+scrollback,thurbox,after 1 burst,2,False,0.24,held_mib,1.66015625
+scrollback,thurbox,after 1 burst,2,False,0.24,read_all_ms,47.393077
+scrollback,thurbox,after 1 burst,2,False,0.24,readable_lines,2500
+scrollback,thurbox,after 1 burst,2,False,0.24,retained_lines,2500
+scrollback,tmux,after 1 burst,3,False,0.24,held_mib,2.10546875
+scrollback,tmux,after 1 burst,3,False,0.24,read_all_ms,7.824216
+scrollback,tmux,after 1 burst,3,False,0.24,readable_lines,2001
+scrollback,tmux,after 1 burst,3,False,0.24,retained_lines,2001
+scrollback,herdr,after 1 burst,3,False,0.24,held_mib,0.55859375
+scrollback,herdr,after 1 burst,3,False,0.24,read_all_ms,5.996361
+scrollback,herdr,after 1 burst,3,False,0.24,readable_lines,998
+scrollback,herdr,after 1 burst,3,False,0.24,retained_lines,5502
+scrollback,thurbox,after 1 burst,3,False,0.22,held_mib,1.66015625
+scrollback,thurbox,after 1 burst,3,False,0.22,read_all_ms,47.384967
+scrollback,thurbox,after 1 burst,3,False,0.22,readable_lines,2500
+scrollback,thurbox,after 1 burst,3,False,0.22,retained_lines,2500
+scrollback,tmux,after 1 burst,4,False,0.22,held_mib,2.10546875
+scrollback,tmux,after 1 burst,4,False,0.22,read_all_ms,7.82951
+scrollback,tmux,after 1 burst,4,False,0.22,readable_lines,2001
+scrollback,tmux,after 1 burst,4,False,0.22,retained_lines,2001
+scrollback,herdr,after 1 burst,4,False,0.29,held_mib,6.96484375
+scrollback,herdr,after 1 burst,4,False,0.29,read_all_ms,6.251187
+scrollback,herdr,after 1 burst,4,False,0.29,readable_lines,998
+scrollback,herdr,after 1 burst,4,False,0.29,retained_lines,5502
+scrollback,thurbox,after 1 burst,4,False,0.29,held_mib,1.66015625
+scrollback,thurbox,after 1 burst,4,False,0.29,read_all_ms,42.614171
+scrollback,thurbox,after 1 burst,4,False,0.29,readable_lines,2500
+scrollback,thurbox,after 1 burst,4,False,0.29,retained_lines,2500
+scrollback,tmux,after 1 burst,5,False,0.29,held_mib,2.10546875
+scrollback,tmux,after 1 burst,5,False,0.29,read_all_ms,9.147113
+scrollback,tmux,after 1 burst,5,False,0.29,readable_lines,2001
+scrollback,tmux,after 1 burst,5,False,0.29,retained_lines,2001
+scrollback,herdr,after 1 burst,5,False,0.26,held_mib,6.96484375
+scrollback,herdr,after 1 burst,5,False,0.26,read_all_ms,6.292455
+scrollback,herdr,after 1 burst,5,False,0.26,readable_lines,998
+scrollback,herdr,after 1 burst,5,False,0.26,retained_lines,5502
+scrollback,thurbox,after 1 burst,5,False,0.26,held_mib,1.66015625
+scrollback,thurbox,after 1 burst,5,False,0.26,read_all_ms,49.740754
+scrollback,thurbox,after 1 burst,5,False,0.26,readable_lines,2500
+scrollback,thurbox,after 1 burst,5,False,0.26,retained_lines,2500
+latency,tmux,idle,0,True,0.24,timeouts,0
+latency,herdr,idle,0,True,0.22,timeouts,0
+latency,thurbox,idle,0,True,0.2,timeouts,0
+latency,tmux,idle,1,False,0.19,timeouts,0
+latency,herdr,idle,1,False,0.17,timeouts,0
+latency,thurbox,idle,1,False,0.15,timeouts,0
+latency,tmux,idle,2,False,0.13,timeouts,0
+latency,herdr,idle,2,False,0.12,timeouts,0
+latency,thurbox,idle,2,False,0.11,timeouts,0
+latency,tmux,idle,3,False,0.1,timeouts,0
+latency,herdr,idle,3,False,0.09,timeouts,0
+latency,thurbox,idle,3,False,0.08,timeouts,0
+latency,tmux,idle,4,False,0.07,timeouts,0
+latency,herdr,idle,4,False,0.06,timeouts,0
+latency,thurbox,idle,4,False,0.06,timeouts,0
+latency,tmux,idle,5,False,0.05,timeouts,0
+latency,herdr,idle,5,False,0.05,timeouts,0
+latency,thurbox,idle,5,False,0.11,timeouts,0
+latency,tmux,other-busy,0,True,0.1,timeouts,0
+latency,herdr,other-busy,0,True,0.18,timeouts,0
+latency,thurbox,other-busy,0,True,0.16,timeouts,0
+latency,tmux,other-busy,1,False,0.29,timeouts,0
+latency,herdr,other-busy,1,False,0.67,timeouts,0
+latency,thurbox,other-busy,1,False,0.81,timeouts,0
+latency,tmux,other-busy,2,False,0.9,timeouts,0
+latency,herdr,other-busy,2,False,0.91,timeouts,0
+latency,thurbox,other-busy,2,False,0.77,timeouts,0
+latency,tmux,other-busy,3,False,1.03,timeouts,0
+latency,herdr,other-busy,3,False,1.03,timeouts,0
+latency,thurbox,other-busy,3,False,0.94,timeouts,0
+latency,tmux,other-busy,4,False,0.95,timeouts,0
+latency,herdr,other-busy,4,False,1.04,timeouts,0
+latency,thurbox,other-busy,4,False,1.19,timeouts,0
+latency,tmux,other-busy,5,False,1.25,timeouts,0
+latency,herdr,other-busy,5,False,1.23,timeouts,0
+latency,thurbox,other-busy,5,False,1.29,timeouts,0
+survival,tmux,crash,0,True,1.25,alive_after_client_kill,3
+survival,tmux,crash,0,True,1.25,alive_after_server_kill,0
+survival,tmux,restart,0,True,1.15,commands_back,0
+survival,tmux,restart,0,True,1.15,listed,0
+survival,tmux,restart,0,True,1.15,restore_ms,
+survival,herdr,crash,0,True,0.69,alive_after_client_kill,3
+survival,herdr,crash,0,True,0.69,alive_after_server_kill,0
+survival,herdr,restart,0,True,0.64,commands_back,0
+survival,herdr,restart,0,True,0.64,listed,3
+survival,herdr,restart,0,True,0.64,restore_ms,
+survival,thurbox,crash,0,True,0.39,alive_after_client_kill,3
+survival,thurbox,crash,0,True,0.39,alive_after_server_kill,0
+survival,thurbox,restart,0,True,0.35,commands_back,3
+survival,thurbox,restart,0,True,0.35,listed,3
+survival,thurbox,restart,0,True,0.35,restore_ms,246.477709
+survival,tmux,crash,1,False,0.35,alive_after_client_kill,3
+survival,tmux,crash,1,False,0.35,alive_after_server_kill,0
+survival,tmux,restart,1,False,0.33,commands_back,0
+survival,tmux,restart,1,False,0.33,listed,0
+survival,tmux,restart,1,False,0.33,restore_ms,
+survival,herdr,crash,1,False,0.2,alive_after_client_kill,3
+survival,herdr,crash,1,False,0.2,alive_after_server_kill,0
+survival,herdr,restart,1,False,0.18,commands_back,0
+survival,herdr,restart,1,False,0.18,listed,3
+survival,herdr,restart,1,False,0.18,restore_ms,
+survival,thurbox,crash,1,False,0.11,alive_after_client_kill,3
+survival,thurbox,crash,1,False,0.11,alive_after_server_kill,0
+survival,thurbox,restart,1,False,0.1,commands_back,3
+survival,thurbox,restart,1,False,0.1,listed,3
+survival,thurbox,restart,1,False,0.1,restore_ms,215.013891
+survival,tmux,crash,2,False,0.1,alive_after_client_kill,3
+survival,tmux,crash,2,False,0.1,alive_after_server_kill,0
+survival,tmux,restart,2,False,0.09,commands_back,0
+survival,tmux,restart,2,False,0.09,listed,0
+survival,tmux,restart,2,False,0.09,restore_ms,
+survival,herdr,crash,2,False,0.05,alive_after_client_kill,3
+survival,herdr,crash,2,False,0.05,alive_after_server_kill,0
+survival,herdr,restart,2,False,0.05,commands_back,0
+survival,herdr,restart,2,False,0.05,listed,3
+survival,herdr,restart,2,False,0.05,restore_ms,
+survival,thurbox,crash,2,False,0.09,alive_after_client_kill,3
+survival,thurbox,crash,2,False,0.09,alive_after_server_kill,0
+survival,thurbox,restart,2,False,0.08,commands_back,3
+survival,thurbox,restart,2,False,0.08,listed,3
+survival,thurbox,restart,2,False,0.08,restore_ms,223.881979
+survival,tmux,crash,3,False,0.08,alive_after_client_kill,3
+survival,tmux,crash,3,False,0.08,alive_after_server_kill,0
+survival,tmux,restart,3,False,0.08,commands_back,0
+survival,tmux,restart,3,False,0.08,listed,0
+survival,tmux,restart,3,False,0.08,restore_ms,
+survival,herdr,crash,3,False,0.1,alive_after_client_kill,3
+survival,herdr,crash,3,False,0.1,alive_after_server_kill,0
+survival,herdr,restart,3,False,0.09,commands_back,0
+survival,herdr,restart,3,False,0.09,listed,3
+survival,herdr,restart,3,False,0.09,restore_ms,
+survival,thurbox,crash,3,False,0.05,alive_after_client_kill,3
+survival,thurbox,crash,3,False,0.05,alive_after_server_kill,0
+survival,thurbox,restart,3,False,0.37,commands_back,3
+survival,thurbox,restart,3,False,0.37,listed,3
+survival,thurbox,restart,3,False,0.37,restore_ms,221.166167
+survival,tmux,crash,4,False,0.37,alive_after_client_kill,3
+survival,tmux,crash,4,False,0.37,alive_after_server_kill,0
+survival,tmux,restart,4,False,0.34,commands_back,0
+survival,tmux,restart,4,False,0.34,listed,0
+survival,tmux,restart,4,False,0.34,restore_ms,
+survival,herdr,crash,4,False,0.21,alive_after_client_kill,3
+survival,herdr,crash,4,False,0.21,alive_after_server_kill,0
+survival,herdr,restart,4,False,0.19,commands_back,0
+survival,herdr,restart,4,False,0.19,listed,3
+survival,herdr,restart,4,False,0.19,restore_ms,
+survival,thurbox,crash,4,False,0.18,alive_after_client_kill,3
+survival,thurbox,crash,4,False,0.18,alive_after_server_kill,0
+survival,thurbox,restart,4,False,0.25,commands_back,3
+survival,thurbox,restart,4,False,0.25,listed,3
+survival,thurbox,restart,4,False,0.25,restore_ms,222.201105
+survival,tmux,crash,5,False,0.31,alive_after_client_kill,3
+survival,tmux,crash,5,False,0.31,alive_after_server_kill,0
+survival,tmux,restart,5,False,0.31,commands_back,0
+survival,tmux,restart,5,False,0.31,listed,0
+survival,tmux,restart,5,False,0.31,restore_ms,
+survival,herdr,crash,5,False,0.25,alive_after_client_kill,3
+survival,herdr,crash,5,False,0.25,alive_after_server_kill,0
+survival,herdr,restart,5,False,0.23,commands_back,0
+survival,herdr,restart,5,False,0.23,listed,3
+survival,herdr,restart,5,False,0.23,restore_ms,
+survival,thurbox,crash,5,False,0.13,alive_after_client_kill,3
+survival,thurbox,crash,5,False,0.13,alive_after_server_kill,0
+survival,thurbox,restart,5,False,0.13,commands_back,3
+survival,thurbox,restart,5,False,0.13,listed,3
+survival,thurbox,restart,5,False,0.13,restore_ms,270.16941
