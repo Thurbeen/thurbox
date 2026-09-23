@@ -459,8 +459,10 @@ if [ "$JSON" = "1" ]; then
     printf '"frame_p50_us":%s,"frame_p95_us":%s,"republish_p50_us":%s,"tick_p50_us":%s,' \
         "$(field frame_p50_us)" "$(field frame_p95_us)" \
         "$(field republish_p50_us)" "$(field tick_p50_us)"
+    # A query is free text -- `"a phrase"`, `/\d+/` -- so it is escaped for JSON.
+    search_json="$(printf '%s' "$SEARCH" | sed 's/\\/\\\\/g; s/"/\\"/g')"
     printf '"frame_max_us":%s,"republish_p95_us":%s,"search":"%s","typing":%s,' \
-        "$(field frame_max_us)" "$(field republish_p95_us)" "$SEARCH" "$TYPING"
+        "$(field frame_max_us)" "$(field republish_p95_us)" "$search_json" "$TYPING"
     printf '"frames":%s,"iterations":%s}\n' \
         "$(field frames)" "$(field iterations)"
     exit 0

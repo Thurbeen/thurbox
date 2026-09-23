@@ -452,9 +452,11 @@ impl History {
 /// which is read with the last of them.
 ///
 /// A row costs about 1.7µs to read at 200 columns on the machine ADR-P26 was
-/// measured on, so a chunk is well under a millisecond: short enough that the
-/// terminal's reader and its paint never wait a frame for a search.
-pub const CHUNK_ROWS: usize = 256;
+/// measured on, and a hold may also try as many places as that to find
+/// where the last one left off, so a chunk of 128 keeps a hold near half a
+/// millisecond: the terminal's reader and its paint never wait a frame for a
+/// search.
+pub const CHUNK_ROWS: usize = 128;
 
 /// How far a terminal may scroll between two holds and still be found again.
 ///
@@ -465,9 +467,13 @@ pub const CHUNK_ROWS: usize = 256;
 /// place never costs a hold more than reading does.
 const MAX_SHIFT: usize = CHUNK_ROWS;
 
-/// Rows compared to find where a read left off: enough that a run of blank
-/// rows does not match itself one row further up.
+/// Rows with text on them that are compared to find where a read left off.
+/// Blank rows are all alike, so they do not count: a run of them would match
+/// itself however far the terminal had scrolled.
 const ANCHOR_ROWS: usize = 4;
+
+/// The most rows an anchor reaches back for its [`ANCHOR_ROWS`] rows of text.
+const ANCHOR_SPAN: usize = 64;
 
 /// Times a read starts over before it stops insisting on a consistent picture.
 /// A terminal flooding faster than the read can keep up would otherwise never
@@ -539,20 +545,15 @@ impl Reading {
         }
         reading.lines = cached.lines[..keep].to_vec();
         reading.next = cached.lines[keep].row;
-        let mut rows: Vec<String> = Vec::new();
-        for line in reading.lines.iter().rev() {
-            for text in line.row_texts().into_iter().rev() {
-                rows.push(text);
-                if rows.len() == ANCHOR_ROWS {
-                    break;
-                }
-            }
-            if rows.len() == ANCHOR_ROWS {
-                break;
-            }
-        }
-        rows.reverse();
-        reading.anchor = Some((reading.next - rows.len(), rows));
+        // The rows just above `next`, newest first, out of the lines kept.
+        let mut above = reading
+            .lines
+            .iter()
+            .rev()
+            .flat_map(|line| line.row_texts().into_iter().rev());
+        reading.anchor = Some(anchor_before(reading.next, |_| {
+            above.next().unwrap_or_default()
+        }));
         reading
     }
 
@@ -634,11 +635,9 @@ impl Reading {
         self.rows_read += start - from;
         self.widest = self.widest.max(start - from);
         self.anchor = (start < total && start > 0).then(|| {
-            let first = start.saturating_sub(ANCHOR_ROWS);
-            let texts = (first..start)
-                .map(|row| row_text(screen, scrollback, row).unwrap_or_default())
-                .collect();
-            (first, texts)
+            anchor_before(start, |row| {
+                row_text(screen, scrollback, row).unwrap_or_default()
+            })
         });
         screen.set_scrollback(offset);
         start >= total
@@ -651,12 +650,20 @@ impl Reading {
         let Some((first, texts)) = self.anchor.take() else {
             return true;
         };
-        let found = (0..=MAX_SHIFT.min(first)).find(|&shift| {
-            texts.iter().enumerate().all(|(i, text)| {
-                row_text(screen, scrollback, first - shift + i).as_deref() == Some(text.as_str())
+        // Rows with text first: a wrong shift is then turned away by the
+        // first comparison instead of after a run of matching blank rows.
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| texts[i].trim().is_empty());
+        let mut found = (0..=MAX_SHIFT.min(first)).filter(|&shift| {
+            order.iter().all(|&i| {
+                row_text(screen, scrollback, first - shift + i).as_deref()
+                    == Some(texts[i].as_str())
             })
         });
-        let Some(shift) = found else {
+        // The rows must be found at exactly one place. Repeated output can
+        // match at two, and picking the nearest would carry on from the wrong
+        // row as surely as not looking at all.
+        let (Some(shift), None) = (found.next(), found.next()) else {
             return false;
         };
         if shift > 0 {
@@ -697,6 +704,23 @@ fn row_text(screen: &mut vt100::Screen, scrollback: usize, row: usize) -> Option
     screen.set_scrollback(k);
     let base = scrollback - k;
     screen.rows(0, screen.size().1).nth(row.checked_sub(base)?)
+}
+
+/// An anchor for a read that stops at `end`: the rows just above it, reaching
+/// back until [`ANCHOR_ROWS`] of them hold text or [`ANCHOR_SPAN`] rows have
+/// been taken. `text_of` is asked for rows newest first, `end - 1` downwards.
+fn anchor_before(end: usize, mut text_of: impl FnMut(usize) -> String) -> (usize, Vec<String>) {
+    let mut texts = Vec::new();
+    let mut solid = 0;
+    let mut row = end;
+    while row > 0 && solid < ANCHOR_ROWS && texts.len() < ANCHOR_SPAN {
+        row -= 1;
+        let text = text_of(row);
+        solid += usize::from(!text.trim().is_empty());
+        texts.push(text);
+    }
+    texts.reverse();
+    (row, texts)
 }
 
 impl HistoryLine {
@@ -1676,6 +1700,48 @@ mod tests {
         let source = filled(20, 60, 5_000, 1_500);
         let history = read_while_printing(&source, 7, 60);
         assert_eq!(history, read_whole(&source));
+    }
+
+    #[test]
+    fn runs_of_blank_rows_do_not_pass_for_the_place_a_read_left_off() {
+        // Blank rows all look alike, so a read that left off in a run of them
+        // would find "its" rows unmoved however far the terminal scrolled, and
+        // carry on from the wrong row.
+        let source = Source {
+            session: "s".into(),
+            shell: false,
+            parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+                20,
+                60,
+                1_000,
+                crate::agent::TermSignals::default(),
+            ))),
+            stamp: 1,
+        };
+        let mut text = String::new();
+        for n in 0..2_000 {
+            text.push_str(&format!("line {n}\r\n"));
+            if n % 5 == 0 {
+                text.push_str(&"\r\n".repeat(12));
+            }
+        }
+        source.parser.lock().unwrap().process(text.as_bytes());
+        let size = source.parser.lock().unwrap().screen().size();
+        let mut reading = Reading::fresh(size);
+        let mut printed = 0;
+        loop {
+            let done = reading.step(source.parser.lock().unwrap().screen_mut(), 64);
+            if done {
+                break;
+            }
+            let mut more = String::new();
+            for _ in 0..3 {
+                more.push_str(&format!("more {printed}\r\n"));
+                printed += 1;
+            }
+            source.parser.lock().unwrap().process(more.as_bytes());
+        }
+        assert_eq!(reading.finish(), read_whole(&source));
     }
 
     #[test]

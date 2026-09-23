@@ -1899,9 +1899,10 @@ the loop, which is most of it.
   strip's memo move only when the answer does.
 - **A history was read under one hold of its parser's lock**: 1.8ms per session
   at 1,000 rows, 16–18ms at 10,000 — a frame's worth of stall for that session's
-  reader and paint. It is now read [`CHUNK_ROWS`](../src/kernel/search.rs) (256)
+  reader and paint. It is now read [`CHUNK_ROWS`](../src/kernel/search.rs) (128)
   at a time, letting go between chunks and finding its place again by the rows
-  it read last if the terminal scrolled meanwhile; a re-run reads only what was
+  it read last if the terminal scrolled meanwhile (rows with text on them, found
+  at exactly one place, or the read starts over); a re-run reads only what was
   printed since the cached read.
 - **Every keystroke waited 150ms** for a debounce, and the first one after
   opening waited for every history to be read (330–475ms at 10,000 rows). The
@@ -1937,14 +1938,14 @@ And the worker, from `cargo bench --bench search_cost` (median of 9):
 
 | 20 sessions | v2.33.0, 1,000 rows | now | v2.33.0, 10,000 rows | now |
 |---|---|---|---|---|
-| longest one parser is held | 1.84ms | 0.63ms | 16.3ms | 0.83ms |
-| cold: read every history | 36–47ms | 9.9ms | 342–475ms | 93ms |
-| warm, slowest query (`cmpile`) | 13.3ms | 4.3ms | 133ms | 38ms |
-| warm, typing `compile error`, slowest letter | — | 3.4ms | — | 27ms |
-| rescan after 3 agents printed 30 lines | — | 1.9ms | — | 13ms |
+| longest one parser is held | 1.84ms | 0.84ms | 16.3ms | 0.76ms |
+| cold: read every history | 36–47ms | 18ms | 342–475ms | 183ms |
+| warm, slowest query (`cmpile`) | 13.3ms | 5.0ms | 133ms | 42ms |
+| warm, typing `compile error`, slowest letter | — | 3.6ms | — | 31ms |
+| rescan after 3 agents printed 30 lines | — | 2.2ms | — | 14ms |
 
 Keystroke-to-result is therefore the warm figure plus a frame: ~5ms at 1,000 rows
-and under 40ms at 10,000, where it was 150ms plus that on v2.33.0 and 150ms plus
+and under 45ms at 10,000, where it was 150ms plus that on v2.33.0 and 150ms plus
 the next republish on 2.32.0.
 
 **Guards**: `tests/search.rs` fails if a frame that changed nothing, or
