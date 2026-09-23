@@ -2696,9 +2696,10 @@ Focus is a **shape and a mark before it is a colour**: the thick border and the
 palette, where two border colours alone (the v2 design until this was restored)
 left only a bold title to tell the panes apart. Every unfocused pane is quiet on
 purpose: one accented frame on screen is the one with the keys. A live terminal
-adds a fourth cue — `PseudoTerminal` paints its cursor block only in the focused
-pane (`Terminals::unfocused`), so an unfocused terminal no longer shows a cursor
-it cannot type at.
+adds a fourth cue — `PseudoTerminal` paints its cursor block only on the surface
+the keys go to, the focused pane's first live one (`Terminals::cursor_on`), so a
+terminal nothing can type into — in an unfocused pane, second in a pane, or in a
+float — shows no cursor.
 
 ---
 

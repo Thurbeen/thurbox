@@ -1012,6 +1012,54 @@ fn every_focusable_pane_agrees_on_what_unfocused_looks_like() {
 }
 
 #[test]
+fn widgets_panel_keeps_the_shape_it_always_returned() {
+    // `lib/` results keep their fields and their types (ui/AGENTS.md): a pane
+    // preserved across an upgrade may read `title` as a string or copy
+    // `borders` and `padding`. The focus frame is added beside them.
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = home.path().join("ui");
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins").join("50_shape.lua"),
+        r#"local widgets = require("lib.widgets")
+return {
+  name = "shape",
+  slot = "sessions",
+  render = function()
+    local parts = {}
+    for _, focused in ipairs({ true, false }) do
+      local f = widgets.panel("T", focused)
+      parts[#parts + 1] = type(f.title) .. ":" .. f.title .. ":" .. tostring(f.borders)
+        .. ":" .. tostring(f.padding) .. ":" .. tostring(f.border_type)
+    end
+    return { type = "text", text = table.concat(parts, "|") }
+  end,
+}"#,
+    )
+    .expect("write");
+    let host = LuaHost::new(ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &world(0), &Themes::load(None));
+    let node = host
+        .render(
+            host.index_of("shape").expect("shape"),
+            RenderContext {
+                width: 80,
+                height: 1,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node;
+    assert_eq!(
+        top_row(&paint_node(&node, 80, 1)).trim_end(),
+        "string: ▸ T :all:0:thick|string: T :all:0:rounded"
+    );
+}
+
+#[test]
 fn the_empty_agent_pane_still_says_it_has_focus() {
     // With no session the agent pane draws its own square frame, and it is
     // the pane holding focus at boot on a fresh install: without the cue there

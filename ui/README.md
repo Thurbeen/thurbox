@@ -189,8 +189,9 @@ one of them:
 | title | ` ▸ Title `, bold, on a filled badge | ` Title `, plain | yes (the mark and bold) |
 | colour | `border_focused` | `border_unfocused` | no |
 
-A terminal surface adds a fourth: its cursor block is painted only while its pane
-has focus. The kernel does that; the pane does nothing.
+A terminal surface adds a fourth: its cursor block is painted only on the surface
+the keys go to — the focused pane's first live one. The kernel does that; the
+pane does nothing.
 
 **To opt in, pass `focused = ctx.focused` to `ui.panel`.** A pane that builds its
 own `frame` gets the same result from `lib/chrome`: `chrome.frame(title,

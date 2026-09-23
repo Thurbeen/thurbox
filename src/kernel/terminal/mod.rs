@@ -1871,15 +1871,21 @@ impl Default for Terminals {
 }
 
 impl Terminals {
-    /// This provider as a pane that does not hold focus paints it: the same
-    /// grids, with no cursor.
+    /// This provider painting a cursor on `input` alone: the same grids, and
+    /// the block only on the surface the keys go to.
     ///
     /// `PseudoTerminal` paints the cursor as a block on the grid, and every
     /// terminal on screen painted one, so the block said nothing about where
-    /// the keys go. Painted only in the focused pane, it is the terminal's own
-    /// focus cue — and one that needs no colour to read.
-    pub fn unfocused(&self) -> Unfocused<'_> {
-        Unfocused(self)
+    /// the keys go. `input` is the focused pane's first live surface — the one
+    /// the keyboard routes to (`Node::first_live_surface`) — and `None` for a
+    /// pane without focus or a float, whose keys go to its Lua. Painted there
+    /// only, the cursor is the terminal's own focus cue, and one that needs no
+    /// colour to read.
+    pub fn cursor_on<'a>(&'a self, input: Option<&'a str>) -> CursorOn<'a> {
+        CursorOn {
+            terminals: self,
+            input,
+        }
     }
 
     fn paint_program(
@@ -1984,21 +1990,27 @@ impl SurfaceProvider for Terminals {
     }
 }
 
-/// [`Terminals`] for a pane without focus: see [`Terminals::unfocused`].
-pub struct Unfocused<'a>(&'a Terminals);
+/// [`Terminals`] with the cursor on one surface: see [`Terminals::cursor_on`].
+pub struct CursorOn<'a> {
+    terminals: &'a Terminals,
+    input: Option<&'a str>,
+}
 
-impl SurfaceProvider for Unfocused<'_> {
+impl SurfaceProvider for CursorOn<'_> {
     fn render_program(
         &self,
         frame: &mut Frame,
         area: Rect,
         surface: &str,
     ) -> super::paint::ProgramPaint {
-        self.0.paint_program(frame, area, surface, false)
+        let cursor = self.input == Some(surface);
+        self.terminals.paint_program(frame, area, surface, cursor)
     }
 
     fn render_session(&self, frame: &mut Frame, area: Rect, session: &str, scroll: u16) -> bool {
-        self.0.paint_session(frame, area, session, scroll, false)
+        let cursor = self.input == Some(session);
+        self.terminals
+            .paint_session(frame, area, session, scroll, cursor)
     }
 }
 

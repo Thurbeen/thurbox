@@ -723,3 +723,41 @@ async fn links_are_found_on_the_surface_that_printed_them() {
     assert_eq!(agent, vec!["https://example.invalid/agent".to_string()]);
     assert_eq!(shell, vec!["https://example.invalid/shell".to_string()]);
 }
+
+#[tokio::test]
+async fn only_the_surface_that_takes_the_keys_paints_a_cursor() {
+    // Keys reach the focused pane's FIRST live surface, so that is the one
+    // cursor on screen. A pane showing both of a session's surfaces used to
+    // paint a cursor in each, one of them a pane nothing could type into.
+    let harness = Harness::new(4, 10);
+    for shell in [false, true] {
+        let live = harness.terminals.live.get(&harness.id).expect("live");
+        let parser = live.pane(shell).parser().expect("parser");
+        parser.lock().expect("lock").process(b"$ ");
+    }
+    let agent = harness.surface_in("agent").expect("agent");
+    let shell = harness.surface_in("shell").expect("shell");
+    let paint = |input: Option<&str>| {
+        let provider = harness.terminals.cursor_on(input);
+        let mut terminal = Terminal::new(TestBackend::new(20, 4)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render(frame, Rect::new(0, 0, 10, 4), &agent, &provider);
+                render(frame, Rect::new(10, 0, 10, 4), &shell, &provider);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (
+            buffer[(2, 0)].symbol().to_string(),
+            buffer[(12, 0)].symbol().to_string(),
+        )
+    };
+
+    assert_eq!(paint(Some(&harness.id)), ("\u{2588}".into(), " ".into()));
+    assert_eq!(
+        paint(Some(&harness.shell())),
+        (" ".into(), "\u{2588}".into())
+    );
+    // A pane without focus, or a float whose keys go to Lua, paints none.
+    assert_eq!(paint(None), (" ".into(), " ".into()));
+}
