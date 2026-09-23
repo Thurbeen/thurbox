@@ -460,9 +460,10 @@ pub const CHUNK_ROWS: usize = 256;
 ///
 /// Between chunks the terminal can print, and once its scrollback is full every
 /// line it adds pushes the oldest out, moving every row up. The read finds its
-/// place again by looking for the rows it read last; beyond this many it starts
-/// over instead.
-const MAX_SHIFT: usize = 512;
+/// place again by looking for the rows it read last, a row per place it tries;
+/// beyond this many it starts over instead. A chunk's worth, so finding its
+/// place never costs a hold more than reading does.
+const MAX_SHIFT: usize = CHUNK_ROWS;
 
 /// Rows compared to find where a read left off: enough that a run of blank
 /// rows does not match itself one row further up.
@@ -1174,6 +1175,9 @@ pub struct SearchStore {
     generation: u64,
     /// The last [`Answer::serial`] handed out.
     serial: u64,
+    /// Whether anything may be cached or held: from a dispatch until a call
+    /// asking for nothing finds no run left on the worker.
+    holding: bool,
 }
 
 impl Default for SearchStore {
@@ -1195,6 +1199,7 @@ impl SearchStore {
             dispatched: None,
             generation: 0,
             serial: 0,
+            holding: false,
         }
     }
 
@@ -1218,14 +1223,18 @@ impl SearchStore {
         sources: impl FnOnce(&Request) -> Vec<Source>,
     ) -> bool {
         let Some(request) = request else {
-            if self.running.is_some() {
-                self.ticket.fetch_add(1, Ordering::Relaxed);
-            }
-            if self.answer.is_none() && self.dispatched.is_none() {
+            if !self.holding {
                 return false;
             }
             // Nobody is searching: let go of every history read, so a closed
-            // strip does not hold thousands of lines per session.
+            // strip does not hold thousands of lines per session. Again on
+            // every call until the last run has landed, since it caches the
+            // terminal it was reading when it was told to stop.
+            if self.running.is_some() {
+                self.ticket.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.holding = false;
+            }
             if let Ok(mut cache) = self.cache.lock() {
                 cache.clear();
             }
@@ -1252,6 +1261,7 @@ impl SearchStore {
         self.generation = generation;
         self.dispatched = Some(Instant::now());
         self.running = Some(request.clone());
+        self.holding = true;
         let sources = sources(&request);
         let tx = self.tx.clone();
         let cache = Arc::clone(&self.cache);
@@ -1493,6 +1503,11 @@ mod tests {
     }
 
     impl Source {
+        fn renamed(mut self, session: &str) -> Self {
+            self.session = session.into();
+            self
+        }
+
         fn fed(self, input: &str) -> Self {
             self.parser.lock().unwrap().process(input.as_bytes());
             self
@@ -1720,5 +1735,25 @@ mod tests {
         assert!(answer.hits.is_empty() && answer.error.is_none());
         assert_eq!(cache.lock().unwrap().len(), 2);
         assert_eq!(answer.sessions, 2);
+    }
+
+    #[test]
+    fn closing_mid_run_still_lets_go_of_every_history() {
+        // The run on the worker finishes the terminal it is reading after the
+        // strip closes, and caches it. Clearing the cache once, at the close,
+        // left that history held for as long as the strip stayed closed.
+        let sources: Vec<Source> = (0..8)
+            .map(|n| filled(50, 80, 10_000, 9_000).renamed(&format!("s{n}")))
+            .collect();
+        let mut store = SearchStore::new();
+        store.serve(Some(Request::default()), 1, |_| sources.clone());
+        assert!(store.running());
+        // Into its first terminals, each of which takes several milliseconds;
+        // the assertion below holds however the timing falls.
+        std::thread::sleep(Duration::from_millis(5));
+        store.serve(None, 1, |_| Vec::new());
+        settle(&mut store);
+        store.serve(None, 1, |_| Vec::new());
+        assert!(store.cache.lock().unwrap().is_empty());
     }
 }

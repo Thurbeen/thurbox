@@ -1947,7 +1947,7 @@ Keystroke-to-result is therefore the warm figure plus a frame: ~5ms at 1,000 row
 and under 40ms at 10,000, where it was 150ms plus that on v2.33.0 and 150ms plus
 the next republish on 2.32.0.
 
-**Guards**: `tests/search_budget.rs` fails if a frame that changed nothing, or
+**Guards**: `tests/search.rs` fails if a frame that changed nothing, or
 one where only another worker's result landed, calls into `lib.fuzzy`, or if an
 open strip leaves the session list re-rendering; `kernel::search`'s tests pin a
 hold at `CHUNK_ROWS` rows plus the screen, a consistent read of a terminal

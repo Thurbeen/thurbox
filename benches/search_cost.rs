@@ -1,7 +1,7 @@
 //! What a content search costs, over every session's full scrollback.
 //!
 //! Not a gate in CI — ADR-P5 keeps timing out of the suite; `kernel::search`'s
-//! unit tests and `tests/search_budget.rs` hold the assertions that are
+//! unit tests and `tests/search.rs` hold the assertions that are
 //! deterministic. This is the instrument: it fills real vt100 parsers with
 //! agent-shaped output and times what the search does, so the numbers in
 //! `docs/PERFORMANCE.md` can be re-measured rather than trusted.

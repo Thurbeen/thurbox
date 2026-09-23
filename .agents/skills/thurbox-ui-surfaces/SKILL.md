@@ -200,7 +200,7 @@ hold, **scrollback included**, matched by the kernel on a worker).
   total. The pane memoises `results` on (query, scope, `thurbox.sessions`,
   `thurbox.search`) identity, because it is not pure and renders every frame.
   ADR-P26 has the numbers; `cargo bench --bench search_cost` re-measures them
-  (`THURBOX_BENCH_CHECK=1` fails over budget), `tests/search_budget.rs` pins the
+  (`THURBOX_BENCH_CHECK=1` fails over budget), `tests/search.rs` pins the
   memo, and `scripts/dev/perf-run.sh --search Q [--typing]` measures the whole
   binary with the strip open.
 - **Preview and land**: moving onto a text hit scrolls its terminal back while
