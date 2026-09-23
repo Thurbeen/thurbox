@@ -208,7 +208,9 @@ local function reveal()
           set_tab(id, AGENT_TAB)
         end
       elseif not shell or shell_enabled() then
-        local scroll = tonumber(offset) or 0
+        -- The surface node's `scroll` is 16 bits; a scrollback configured past
+        -- that is reached as far as it can be rather than failing the render.
+        local scroll = math.min(tonumber(offset) or 0, 65535)
         set_tab(id, shell and SHELL_TAB or AGENT_TAB)
         set_scroll(surface, scroll, math.max(scroll_max, scroll))
         state["mark:" .. surface] = tonumber(row)
