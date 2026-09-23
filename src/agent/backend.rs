@@ -799,6 +799,9 @@ pub struct WiredPane {
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    /// How many chunks of output the parser has taken — see
+    /// [`Self::output_seq`].
+    output_seq: Arc<AtomicU64>,
     /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
     /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
@@ -887,6 +890,20 @@ impl WiredPane {
     /// spot new output without locking the vt100 parser.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
+    }
+
+    /// A count that moves every time the parser has taken more output,
+    /// replayed history included.
+    ///
+    /// **The redraw signal**, where [`Self::last_output_at`] is the activity
+    /// one. A millisecond stamp cannot tell two chunks inside one millisecond
+    /// apart, so a frame painted between them never learnt of the second; and
+    /// it was stored *before* the parse, so a loop that woke on it quickly
+    /// enough painted the grid without the bytes that woke it. This is bumped
+    /// after the parse, once per chunk, so a changed count always means a grid
+    /// with more in it.
+    pub fn output_seq(&self) -> u64 {
+        self.output_seq.load(Ordering::Acquire)
     }
 
     /// Whether the pane's process/stream has ended.
@@ -1414,6 +1431,7 @@ impl Session {
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
+        let output_seq = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
@@ -1422,6 +1440,7 @@ impl Session {
         let exited_clone = Arc::clone(&exited);
         let last_output_clone = Arc::clone(&last_output_at);
         let residency_clone = Arc::clone(&residency);
+        let output_seq_clone = Arc::clone(&output_seq);
         let seed_len = io.seed_len;
         let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
@@ -1431,6 +1450,7 @@ impl Session {
                 exited_clone,
                 last_output_clone,
                 residency_clone,
+                output_seq_clone,
                 seed_len,
                 size,
             );
@@ -1442,6 +1462,7 @@ impl Session {
             backend_id: io.backend_id,
             exited,
             last_output_at,
+            output_seq,
             label,
             residency,
             backend: Some(Arc::clone(backend)),
@@ -1527,6 +1548,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(0)),
+                output_seq: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -1578,6 +1600,7 @@ impl Session {
         exited: Arc<AtomicBool>,
         last_output_at: Arc<AtomicU64>,
         residency: Arc<Residency>,
+        output_seq: Arc<AtomicU64>,
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
@@ -1611,21 +1634,30 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not.
-                    if seed_len < n {
-                        last_output_at.store(now_millis(), Ordering::Relaxed);
-                    }
-                    seed_len = seed_len.saturating_sub(n);
                     let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
+                    // Both signals after the parse, so whoever reads either
+                    // finds these bytes already in the grid.
+                    //
+                    // Bytes beyond the seed boundary are live activity; a chunk
+                    // that is entirely within the seed is not. It is still new
+                    // content to paint, so the sequence moves either way.
+                    if seed_len < n {
+                        last_output_at.store(now_millis(), Ordering::Relaxed);
+                    }
+                    seed_len = seed_len.saturating_sub(n);
+                    output_seq.fetch_add(1, Ordering::Release);
+                    crate::agent::output_wake::notify();
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
                         Self::install(&parser, &residency, &snapshot);
+                        // A rebuilt grid is new content to paint, like output.
+                        output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify();
                     }
                 }
                 Err(e) => {
@@ -1637,6 +1669,7 @@ impl Session {
         // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
         // since no more bytes are coming to complete it.
         Self::feed_parser(&parser, &carry);
+        output_seq.fetch_add(1, Ordering::Release);
         exited.store(true, Ordering::SeqCst);
     }
 
@@ -2057,6 +2090,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
+                output_seq: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -2091,6 +2125,7 @@ impl Session {
         if let Ok(mut p) = self.wired.parser.lock() {
             p.process(bytes);
         }
+        self.wired.output_seq.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -2360,6 +2395,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2429,6 +2465,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicU64::new(0)),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             0,
             Some(size.clone()),
         );
@@ -2438,6 +2475,43 @@ mod tests {
         let rows: Vec<String> = parser.screen().rows(0, 10).collect();
         assert_eq!(rows[..3], ["aaaaaaaaaa", "bbbbbbbbbb", "bbbbb"]);
         assert_eq!(size.current(), pack_size(4, 10));
+    }
+
+    /// The redraw signal moves for the replayed seed too, and only once the
+    /// bytes are in the grid: an attach that parsed its history after the first
+    /// frame must still be painted, and a count read as "moved" must never
+    /// describe a grid that does not have the bytes yet.
+    #[test]
+    fn reader_loop_moves_the_output_seq_after_each_parse_seed_included() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let seq = Arc::new(AtomicU64::new(0));
+        let seed = b"replayed history\r\n$ ".to_vec();
+        let seed_len = seed.len();
+        Session::reader_loop(
+            Box::new(Cursor::new(seed)),
+            Arc::clone(&parser),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt))),
+            Arc::default(),
+            Arc::clone(&seq),
+            seed_len,
+            None,
+        );
+        assert!(
+            seq.load(Ordering::Acquire) > 0,
+            "the seed is content to paint"
+        );
+        assert!(parser
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .contains("replayed history"));
     }
 
     /// A character split across two reads reaches the parser whole, and the
@@ -2463,6 +2537,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             0,
             None,
         );
@@ -2495,6 +2570,7 @@ mod tests {
             Arc::clone(&exited),
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2535,6 +2611,7 @@ mod tests {
             exited,
             Arc::clone(&last_output_at),
             Arc::default(),
+            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );

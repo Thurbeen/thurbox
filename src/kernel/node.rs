@@ -462,6 +462,23 @@ impl Node {
         }
     }
 
+    /// The scroll and mark of the surface showing session `id` in this tree,
+    /// if one does.
+    pub fn session_surface(&self, id: &str) -> Option<(u16, Option<u16>)> {
+        match self {
+            Node::Surface {
+                source: SurfaceSource::Session(shown),
+                scroll,
+                mark,
+                ..
+            } if shown == id => Some((*scroll, *mark)),
+            Node::Box { children, .. } => {
+                children.iter().find_map(|child| child.session_surface(id))
+            }
+            _ => None,
+        }
+    }
+
     /// An empty placeholder, used where a plugin produced nothing.
     pub fn empty() -> Self {
         Node::Text {

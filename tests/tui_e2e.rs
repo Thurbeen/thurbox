@@ -3053,3 +3053,206 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
 
     assert!(tui.quit().success());
 }
+/// A stand-in agent that echoes each key it reads as `[k]`, redrawn in place,
+/// a few milliseconds after reading it.
+///
+/// The delay is what makes the echo scenarios mean something. An echo that
+/// arrives before the interface has started painting the keystroke's own frame
+/// rides in that frame for free, however the loop paces output; one that
+/// arrives *after* it — which is the case for any agent slower than a frame to
+/// answer, real agents included — is paced by whatever floor output gets.
+const DELAYED_ECHO: &str =
+    "printf 'ready> '; while IFS= read -rs -n1 c; do sleep 0.005; printf '\\r[%s]' \"$c\"; done";
+
+/// Keystroke-to-echo samples, in milliseconds, for keys typed into the focused
+/// [`DELAYED_ECHO`] session at a person's pace.
+fn echo_latencies(tui: &mut Tui, keys: usize) -> Vec<f64> {
+    let mut samples = Vec::with_capacity(keys);
+    for i in 0..keys {
+        let key = b'a' + (i % 26) as u8;
+        let token = format!("[{}]", key as char);
+        let sent = Instant::now();
+        tui.send(&[key]);
+        let deadline = sent + Duration::from_secs(2);
+        loop {
+            if tui.frame().contains(&token) {
+                samples.push(sent.elapsed().as_secs_f64() * 1000.0);
+                break;
+            }
+            if Instant::now() > deadline {
+                tui.give_up(&format!("the echo {token}"));
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        // 60–100 ms between keys, varied so the samples cannot lock onto the
+        // loop's own clock — the benchmark's typing rate.
+        std::thread::sleep(Duration::from_millis(60 + (i as u64 * 37) % 41));
+    }
+    samples
+}
+
+fn median(samples: &[f64]) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted[sorted.len() / 2]
+}
+
+/// A profile with a [`DELAYED_ECHO`] session named `echo` (plus whatever
+/// `extra` creates after it), attached and focused.
+fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    let repo = repo(profile.root.path());
+    let repo_path = repo.to_str().expect("utf-8 path");
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "echo",
+        "--repo-path",
+        repo_path,
+        "--command",
+        "bash",
+        "--arg",
+        "-c",
+        "--arg",
+        DELAYED_ECHO,
+    ]);
+    // After, so `echo` is the first row, which is the one selected at boot.
+    extra(&profile, &repo);
+    profile.cli(&["config", "accept-interface"]);
+    let tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("ready> ");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    Some((profile, tui))
+}
+
+/// The echo budget the two scenarios below hold the loop to. The output floor
+/// they guard against is 33 ms, so a regression lands well above it; a slow CI
+/// runner adds a few milliseconds, and the median shrugs off a stall.
+const ECHO_BUDGET_MS: f64 = 20.0;
+
+#[test]
+fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
+    // Output is paced at 30 frames a second (ADR-P17) because nobody reads a
+    // scrolling log faster. The echo of a key is output too, and pacing it
+    // put 25–48 ms on every keystroke (docs/BENCHMARK-MULTIPLEXERS.md): the
+    // keystroke's own frame paints at once, the echo lands just after it and
+    // then waits out the floor from that frame.
+    let Some((_profile, mut tui)) = echo_session(|_, _| {}) else {
+        return;
+    };
+    let samples = echo_latencies(&mut tui, 30);
+    let median = median(&samples);
+    assert!(
+        median < ECHO_BUDGET_MS,
+        "keystroke-to-echo median {median:.1} ms (budget {ECHO_BUDGET_MS} ms, the agent itself \
+         takes ~5): {samples:.1?}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_keystrokes_echo_stays_fast_while_another_session_prints() {
+    // The same, with a second session printing the whole time. Its output
+    // keeps the loop painting at the output floor, which is exactly the clock
+    // an echo must not be put on.
+    let Some((_profile, mut tui)) = echo_session(|profile, repo| {
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            "busy",
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--command",
+            "bash",
+            "--arg",
+            "-c",
+            "--arg",
+            "while :; do echo \"busy $RANDOM $RANDOM $RANDOM\"; sleep 0.002; done",
+        ]);
+    }) else {
+        return;
+    };
+    let samples = echo_latencies(&mut tui, 30);
+    let median = median(&samples);
+    assert!(
+        median < ECHO_BUDGET_MS,
+        "keystroke-to-echo median {median:.1} ms with another session printing (budget \
+         {ECHO_BUDGET_MS} ms, the agent itself takes ~5): {samples:.1?}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn creating_a_session_runs_a_handful_of_tmux_processes() {
+    // `session create` re-applies the server's options on every call, and did
+    // it as one `tmux set-option` process each: 27 processes and ~92 ms a
+    // session, most of the gap to Herdr and raw tmux (#1243). What is counted
+    // here is the processes, not the milliseconds — a count is the same on
+    // every machine.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let repo = repo(profile.root.path());
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .expect("find tmux")
+            .stdout,
+    )
+    .expect("utf-8 path");
+    let log = profile.path("tmux-calls.log");
+    let shim = profile.bin.join("tmux");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            real.trim()
+        ),
+    )
+    .expect("write tmux shim");
+    let mut perms = std::fs::metadata(&shim).expect("shim").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&shim, perms).expect("chmod shim");
+
+    let create = |name: &str| {
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            name,
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--command",
+            "sleep",
+            "--arg",
+            "600",
+        ]);
+    };
+    // The first one starts the server, which is a cost paid once.
+    create("first");
+    std::fs::write(&log, "").expect("reset log");
+    create("second");
+
+    let calls = std::fs::read_to_string(&log).expect("read log");
+    let count = calls.lines().count();
+    assert!(
+        count <= 3,
+        "one `session create` on a running server ran {count} tmux processes (budget 3: \
+         configure, create, check for a duplicate):\n{calls}"
+    );
+}

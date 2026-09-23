@@ -137,6 +137,36 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// frame.
 const OUTPUT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
+/// How long after a keystroke reaches a terminal its echo is watched for.
+///
+/// The echo of a key is agent output, so it used to be painted on
+/// [`OUTPUT_FRAME_INTERVAL`] — measured from the keystroke's own frame, which
+/// had just painted. That put 25–48 ms on every key (the multiplexer benchmark,
+/// against 1–2 ms for tmux and Herdr). Output that answers a key is the one
+/// kind somebody is waiting for, so the first of it after a keystroke gets a
+/// frame with no floor, and the loop watches for it at [`ECHO_POLL`] rather
+/// than at [`TICK`], since nothing wakes the input poll when output lands.
+///
+/// One floor-free frame per keystroke, not per chunk: an agent streaming while
+/// you type would otherwise be painted at the poll rate. Long enough for a slow
+/// agent or a remote host to answer; an echo later than this is painted on the
+/// ordinary floors, as all output was before.
+const ECHO_WINDOW: Duration = Duration::from_millis(150);
+
+/// How long the keystroke's own frame waits for the echo.
+///
+/// A key sent to a terminal changes nothing on screen by itself; what shows it
+/// is the echo. Painted at once, that frame was a paint per key that showed
+/// nothing new, and an echo arriving during it waited for it to finish. Held
+/// this long, the two are one frame whenever the agent answers in time, and
+/// a key that is never echoed is painted one input frame late.
+const ECHO_HOLD: Duration = MIN_FRAME_INTERVAL;
+
+/// The input poll's slice while an echo is owed: the most the echo can wait
+/// before the loop notices it. Only an owed echo pays for it, and between two
+/// slices it costs one atomic load.
+const ECHO_POLL: Duration = Duration::from_millis(1);
+
 /// Consecutive input-read failures tolerated before the loop gives up.
 ///
 /// One is a terminal handing crossterm bytes it cannot parse, which is a
@@ -276,6 +306,15 @@ struct App {
     /// resize, a worker result they asked for — rather than to an agent
     /// printing. Only the first kind gets [`MIN_FRAME_INTERVAL`].
     input_dirty: bool,
+    /// The echo a keystroke sent to a terminal is owed, until it arrives or
+    /// [`ECHO_WINDOW`] runs out. See `App::settle_echo`.
+    echo: Option<coordinator::EchoWait>,
+    /// The surface an owed echo has arrived from: the next frame is painted at
+    /// once, with no floor at all.
+    echo_due: Option<String>,
+    /// The last full frame, kept while it can be reused as the ground of an
+    /// echo frame (see `App::paint_echo_frame`).
+    last_frame: Option<ratatui::buffer::Buffer>,
     /// When anything last happened — input, output, a worker result, a repaint
     /// that changed something. Drives the poll timeout, nothing else.
     last_activity: Instant,

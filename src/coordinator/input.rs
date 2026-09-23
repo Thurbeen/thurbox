@@ -62,13 +62,19 @@ impl App {
             // Only the first read waits; the rest take what is already queued —
             // except while the paste coalescer holds a key it cannot yet
             // decide about, which is worth a few milliseconds of the batch.
+            let waited_before = waited;
             let timeout = if waited {
                 self.paste_burst.drain_timeout()
             } else {
                 self.poll_timeout()
             };
             waited = true;
-            let event = match next_event(timeout) {
+            let read = if waited_before {
+                next_event(timeout)
+            } else {
+                self.wait_for_input(timeout)
+            };
+            let event = match read {
                 Ok(Some(event)) => {
                     *input_failures = 0;
                     // Anything the user does puts the loop back on the fast
@@ -755,10 +761,16 @@ impl App {
     /// paste cannot land somewhere a keystroke would not — and a pane with
     /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
-        match self.terminals.program_key(surface).cloned() {
+        let echo = self.expect_echo(surface);
+        let delivered = match self.terminals.program_key(surface).cloned() {
             Some(program) => self.terminals.send_to_program(&program, bytes).is_ok(),
             None => self.terminals.send(surface, bytes),
+        };
+        if delivered && echo.is_some() {
+            thurbox::agent::output_wake::arm(true);
+            self.echo = echo;
         }
+        delivered
     }
 
     /// Claim this press and put the question to Windows, remembering where the

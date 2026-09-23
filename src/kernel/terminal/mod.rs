@@ -386,6 +386,12 @@ impl<'a> Pane<'a> {
         self.wired()
             .map_or(true, crate::agent::backend::WiredPane::is_resident)
     }
+
+    /// How much output this pane's parser has taken — see
+    /// [`crate::agent::backend::WiredPane::output_seq`].
+    fn output_seq(&self) -> Option<u64> {
+        Some(self.wired()?.output_seq())
+    }
 }
 
 /// One surface's extracted rows and the output stamp they were read at.
@@ -1784,36 +1790,54 @@ impl Terminals {
         self.pane(surface)?.content_stamp()
     }
 
-    /// A cheap signature of every live pane's last output.
+    /// The [`output_seq`](crate::agent::backend::WiredPane::output_seq) of the
+    /// pane behind a surface name, `<id>#shell` and program surfaces included.
+    /// `None` when nothing is attached there.
+    ///
+    /// Exact where [`Self::output_stamp`] is not: it moves once per chunk the
+    /// parser took, and only after taking it. What an echo is waited on by.
+    pub fn output_seq(&self, surface: &str) -> Option<u64> {
+        if let Some(key) = self.program_key(surface) {
+            return self.programs.get(key).map(|slot| slot.pane.output_seq());
+        }
+        self.pane(surface)?.output_seq()
+    }
+
+    /// A cheap signature of every live pane's output so far.
     ///
     /// **The redraw signal for the loop**, and the reason it exists rather than
     /// the per-surface stamp below: a frame is only painted when something marked
     /// the screen dirty, and nothing marked it dirty when an agent printed. The
     /// per-surface check runs *inside* the paint, so it could say a frame had
     /// changed but never cause one — leaving output to appear at the 250ms floor
-    /// instead of at once. v1 sums the same atomics in its loop
-    /// (`App::detect_output_redraw`); this is that.
+    /// instead of at once. v1 sums its panes' output stamps in its loop the same
+    /// way (`App::detect_output_redraw`).
     ///
     /// Shell panes are included: a shell is a surface you watch too, and its
     /// output has exactly the same claim on a repaint.
+    ///
+    /// Summed from each pane's output sequence rather than its millisecond
+    /// stamp: the stamp could not move for a second chunk inside the same
+    /// millisecond, so a frame painted between the two left the second one
+    /// undrawn until something else printed.
     pub fn output_generation(&self) -> u64 {
-        // Content stamps rather than output stamps, so a pane whose grid was
-        // rebuilt gets the frame that shows it.
+        // The sequence moves when a grid is rebuilt too, so a pane shown again
+        // gets the frame that shows it.
         let sessions = self.live.values().fold(0u64, |acc, live| {
             let shell = live
                 .session
                 .shell_pane
                 .as_ref()
-                .map(|pane| pane.content_stamp())
+                .map(|pane| pane.output_seq())
                 .unwrap_or(0);
-            acc.wrapping_add(live.session.content_stamp())
+            acc.wrapping_add(live.session.output_seq())
                 .wrapping_add(shell)
         });
         // A plugin's program is summed in too, or a frame would only be painted at
         // the forced-redraw floor while it produced output — which for a full-screen program is
         // the difference between playable and not.
         self.programs.values().fold(sessions, |acc, slot| {
-            acc.wrapping_add(slot.pane.last_output_at())
+            acc.wrapping_add(slot.pane.output_seq())
         })
     }
 

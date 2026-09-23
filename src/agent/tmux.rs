@@ -1160,6 +1160,35 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
+/// One `set-option` of the session config, and whether failing to set it means
+/// the server cannot host sessions.
+struct ConfigOption {
+    args: Vec<String>,
+    fatal: bool,
+}
+
+/// `prefix` then every option in `config`, as one tmux command list.
+///
+/// tmux skips the rest of a list after a command fails, so a best-effort
+/// option is given `-q`: an option this tmux does not know is then not an
+/// error, and cannot stop the options after it (tmux 3.2 has no
+/// `extended-keys-format`).
+fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Vec<&'a str> {
+    let mut list = prefix.to_vec();
+    for option in config {
+        if !list.is_empty() {
+            list.push(";");
+        }
+        let (verb, rest) = option.args.split_first().expect("a set-option verb");
+        list.push(verb.as_str());
+        if !option.fatal {
+            list.push("-q");
+        }
+        list.extend(rest.iter().map(String::as_str));
+    }
+    list
+}
+
 /// The `set-option` flag for a server-wide option. psmux 3.3.8 refuses `-s`
 /// ("unknown flag -s") and keeps one option table anyway, so it gets `-g`,
 /// which 3.3.7 and 3.3.8 both take.
@@ -1438,7 +1467,39 @@ impl TmuxBackend {
     /// [`ensure_ready`](Self::ensure_ready) — the session may have been created
     /// elsewhere (e.g. a headless spawn) without these options, and re-applying
     /// is the single source of truth for both the TUI and headless paths.
+    ///
+    /// On tmux the whole config is **one** invocation (#1243): it runs on every
+    /// `session create`, and as ten processes it was most of that command's
+    /// cost. A failure in the list is then re-run one option at a time, which is
+    /// what tells a fatal option from a best-effort one.
     fn apply_session_config(&self) -> Result<()> {
+        let config = self.session_config();
+        if !self.transport.uses_psmux() && self.tmux_run(&config_command_list(&[], &config)).is_ok()
+        {
+            return Ok(());
+        }
+        for option in &config {
+            let args: Vec<&str> = option.args.iter().map(String::as_str).collect();
+            match self.tmux_run(&args) {
+                Ok(()) => {}
+                Err(e) if option.fatal => return Err(e),
+                Err(e) => debug!("tmux option {} not set: {e}", option.args.join(" ")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Every `set-option` [`apply_session_config`](Self::apply_session_config)
+    /// runs, in order.
+    fn session_config(&self) -> Vec<ConfigOption> {
+        let psmux = self.transport.uses_psmux();
+        let scope = server_option_scope(psmux);
+        let mut config = Vec::new();
+        let mut set = |args: &[&str], fatal: bool| {
+            let mut all = vec!["set-option".to_string()];
+            all.extend(args.iter().map(|a| a.to_string()));
+            config.push(ConfigOption { args: all, fatal });
+        };
         // Use a non-login shell so that macOS path_helper (/etc/zprofile)
         // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
         // For a remote backend the local `$SHELL` path may not exist on the
@@ -1450,23 +1511,15 @@ impl TmuxBackend {
         // use its native ConPTY default shell is the safe choice. Decided by the
         // multiplexer, not by the OS thurbox runs on: a Linux thurbox driving a
         // psmux host used to pin `/bin/sh` there.
-        let psmux = self.transport.uses_psmux();
-        let scope = server_option_scope(psmux);
         #[cfg(not(windows))]
         if !psmux {
-            let shell = self.config_shell();
-            self.tmux_run(&["set-option", scope, "default-command", &shell])?;
+            set(&[scope, "default-command", &self.config_shell()], true);
         }
 
         // Server-wide options every supported tmux understands. A failure here
         // means the server can't host sessions, so it is propagated.
-        let server_opts = [
-            ("default-terminal", "xterm-256color"),
-            ("extended-keys", "on"),
-        ];
-        for (key, val) in &server_opts {
-            self.tmux_run(&["set-option", scope, key, val])?;
-        }
+        set(&[scope, "default-terminal", "xterm-256color"], true);
+        set(&[scope, "extended-keys", "on"], true);
 
         // `extended-keys-format csi-u` is best-effort: the option landed in tmux
         // 3.3, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
@@ -1477,64 +1530,46 @@ impl TmuxBackend {
         // unless it is `csi-u`. Ignoring the error keeps a 3.2 host working (pi
         // users there simply miss the hint) while 3.3+ hosts get the preferred
         // format.
-        if let Err(e) = self.tmux_run(&["set-option", scope, "extended-keys-format", "csi-u"]) {
-            debug!("extended-keys-format=csi-u not set (likely tmux < 3.3): {e}");
+        set(&[scope, "extended-keys-format", "csi-u"], false);
+
+        // The two silent gates that would otherwise drop an OSC 52 clipboard
+        // write originating **inside** a pane (thurbox's own copy, or an
+        // agent's). Both are no-ops-on-failure by design, hence best-effort:
+        //
+        // 1. `set-clipboard` must be exactly `on`. tmux's `input_osc_52_parse`
+        //    bails on `!= 2`, and the shipped default is `external` (1) — which
+        //    forwards tmux's *own* copy-mode yanks but **discards** an
+        //    application's OSC 52 with no error and no visual artifact. This is
+        //    the default-broken case: without it every other part of the
+        //    clipboard path is dead under tmux.
+        // 2. The `Ms` terminfo capability must be present, or
+        //    `tty_set_selection` returns early — a second, independent silent
+        //    drop. `terminal-features ,*:clipboard` injects it for every
+        //    terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2 form was
+        //    a raw `terminal-overrides` Ms= string).
+        //
+        // Security tradeoff: `set-clipboard on` lets any process in a pane set
+        // the user's system clipboard — an exfiltration channel, and why tmux
+        // moved the default to `external` in 2.6. Scoped here to thurbox's own
+        // socket, and the price of copy working at all over SSH.
+        //
+        // Skipped on psmux, which has no OSC 52 clipboard forwarding (a local
+        // Windows session copies via the native clipboard path instead).
+        if !psmux {
+            set(&["-s", "set-clipboard", "on"], false);
+            set(&["-as", "terminal-features", ",*:clipboard"], false);
         }
 
-        self.apply_clipboard_config();
-
-        // Session-level options
         for (key, val) in SESSION_OPTS {
-            self.tmux_run(&["set-option", "-t", &self.session, key, val])?;
+            set(&["-t", &self.session, key, val], true);
         }
 
         // Window-level options — see `WINDOW_OPTS` for why these are global to
         // the server and why failing to set one is not fatal.
         for (key, val) in WINDOW_OPTS {
-            if let Err(e) = self.tmux_run(&["set-option", "-w", "-g", key, val]) {
-                debug!("window option {key}={val} not set: {e}");
-            }
+            set(&["-w", "-g", key, val], false);
         }
-
-        Ok(())
-    }
-
-    /// Open the two silent gates that would otherwise drop an OSC 52 clipboard
-    /// write originating **inside** a pane (thurbox's own copy, or an agent's).
-    ///
-    /// Both are no-ops-on-failure by design, hence best-effort:
-    ///
-    /// 1. `set-clipboard` must be exactly `on`. tmux's `input_osc_52_parse`
-    ///    bails on `!= 2`, and the shipped default is `external` (1) — which
-    ///    forwards tmux's *own* copy-mode yanks but **discards** an
-    ///    application's OSC 52 with no error and no visual artifact. This is
-    ///    the default-broken case: without it every other part of the
-    ///    clipboard path is dead under tmux.
-    /// 2. The `Ms` terminfo capability must be present, or `tty_set_selection`
-    ///    returns early — a second, independent silent drop. `terminal-features
-    ///    ,*:clipboard` injects it for every terminal (tmux 3.2+, matching
-    ///    thurbox's floor; the pre-3.2 form was a raw `terminal-overrides` Ms=
-    ///    string).
-    ///
-    /// Security tradeoff: `set-clipboard on` lets any process in a pane set the
-    /// user's system clipboard — an exfiltration channel, and why tmux moved
-    /// the default to `external` in 2.6. Scoped here to thurbox's own socket,
-    /// and the price of copy working at all over SSH.
-    ///
-    /// Skipped on psmux, which has no OSC 52 clipboard forwarding (a local
-    /// Windows session copies via the native clipboard path instead).
-    fn apply_clipboard_config(&self) {
-        if self.transport.uses_psmux() {
-            return;
-        }
-        for args in [
-            ["set-option", "-s", "set-clipboard", "on"],
-            ["set-option", "-as", "terminal-features", ",*:clipboard"],
-        ] {
-            if let Err(e) = self.tmux_run(&args) {
-                debug!("clipboard option {} not set: {e}", args[2]);
-            }
-        }
+        config
     }
 
     /// Ensure the thurbox tmux session exists and its options are applied,
@@ -1545,6 +1580,16 @@ impl TmuxBackend {
     /// [`ensure_automation_heartbeat`]) that drive tmux via one-shot commands and
     /// must not open a control-mode connection.
     fn ensure_session_configured(&self) -> Result<()> {
+        // The common case — the session is there — asked and configured in one
+        // process: `has-session` failing stops the list before any option is
+        // set, and the path below then says why.
+        if !self.transport.uses_psmux() {
+            let config = self.session_config();
+            let list = config_command_list(&["has-session", "-t", &self.session], &config);
+            if self.tmux_run(&list).is_ok() {
+                return Ok(());
+            }
+        }
         if !self.session_exists() {
             // No session to ask for `#{version}` yet, and creating one may start
             // a server — with an idle shell in it — that every spawn would then
@@ -3803,6 +3848,21 @@ pub fn spawn_window(
         format!("{TMUX_SESSION}:{{end}}")
     };
     let mut tmux = new_window_command(&window_name, &create_target, command, args, cwd, env);
+    // The stamp rides in the same command list as the creation, like the birth
+    // options: two `set-option` processes fewer on every `session create`
+    // (#1243). `{end}` still names the new window here, and the pane id it
+    // would otherwise be written against is not known until the list returns.
+    let stamped = !local_mux_is_psmux();
+    if stamped {
+        for (option, value) in [
+            (WINDOW_SESSION_OPTION, session_id),
+            (WINDOW_ROLE_OPTION, WindowRole::Agent.as_str()),
+        ] {
+            if !value.is_empty() {
+                tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
+            }
+        }
+    }
 
     let output = tmux
         .output()
@@ -3855,7 +3915,12 @@ pub fn spawn_window(
     } else {
         pane_id.clone()
     };
-    stamp_local_window(&target, session_id, WindowRole::Agent);
+    if stamped {
+        // What `stamp_local_window` does after writing the stamp.
+        let _ = retire_duplicate_windows(session_id, WindowRole::Agent);
+    } else {
+        stamp_local_window(&target, session_id, WindowRole::Agent);
+    }
     Ok(pane_id)
 }
 

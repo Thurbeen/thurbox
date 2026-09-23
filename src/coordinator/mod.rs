@@ -37,13 +37,32 @@ use thurbox::kernel::bands::Level;
 use thurbox::kernel::perf::Counters;
 
 use crate::{
-    App, DEBOUNCE, IDLE_TICK, PERF_PUBLISH_INTERVAL, PERF_WINDOW_TICKS, QUIESCENT_AFTER,
-    REAP_INTERVAL, TICK,
+    App, DEBOUNCE, ECHO_HOLD, ECHO_POLL, ECHO_WINDOW, IDLE_TICK, PERF_PUBLISH_INTERVAL,
+    PERF_WINDOW_TICKS, QUIESCENT_AFTER, REAP_INTERVAL, TICK,
 };
 
 // The chrome helpers keep their bare names at every call site in this
 // directory, which is where all of them live.
 pub(crate) use chrome::*;
+
+/// A keystroke's echo, owed by the terminal it was sent to.
+pub(crate) struct EchoWait {
+    /// The surface the key went to.
+    surface: String,
+    /// Its output sequence before the key was sent; any move past it is the
+    /// answer.
+    seq: u64,
+    /// When the key was sent.
+    sent: Instant,
+}
+
+impl EchoWait {
+    /// Until when the keystroke's own frame waits for the echo, so that the
+    /// two are painted as one — see [`ECHO_HOLD`].
+    pub(crate) fn hold_until(&self) -> Instant {
+        self.sent + ECHO_HOLD
+    }
+}
 
 impl App {
     pub(crate) fn run(&mut self, mut terminal: DefaultTerminal) -> Result<(), Box<dyn Error>> {
@@ -128,6 +147,126 @@ impl App {
         } else {
             TICK
         }
+    }
+
+    /// Start waiting for the echo of input about to be sent to `surface`.
+    ///
+    /// Called *before* the send, so the sequence it records cannot already
+    /// include the answer.
+    pub(crate) fn expect_echo(&mut self, surface: &str) -> Option<EchoWait> {
+        Some(EchoWait {
+            surface: surface.to_string(),
+            seq: self.terminals.output_seq(surface)?,
+            sent: Instant::now(),
+        })
+    }
+
+    fn echo_arrived(&self) -> bool {
+        self.echo.as_ref().is_some_and(|echo| {
+            self.terminals
+                .output_seq(&echo.surface)
+                .is_some_and(|seq| seq != echo.seq)
+        })
+    }
+
+    /// Owe the next frame to an echo that has arrived, or stop waiting for one
+    /// that is not coming — see [`ECHO_WINDOW`].
+    pub(crate) fn settle_echo(&mut self) {
+        let Some(echo) = &self.echo else {
+            return;
+        };
+        if self.echo_arrived() {
+            self.echo_due = self.echo.take().map(|echo| echo.surface);
+            self.dirty = true;
+        } else if echo.sent.elapsed() >= ECHO_WINDOW {
+            self.echo = None;
+        }
+        if self.echo.is_none() {
+            thurbox::agent::output_wake::arm(false);
+        }
+    }
+
+    /// The first read of an input batch: wait up to `timeout` for an event —
+    /// or, while an echo is owed, until it arrives, whichever is first.
+    ///
+    /// `event::poll` is woken by the terminal and nothing else, so an echo that
+    /// lands mid-wait would sit out the rest of it: at the 10 ms tick that was
+    /// most of a keystroke's latency once the output floor was out of the way.
+    pub(crate) fn wait_for_input(
+        &self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<crossterm::event::Event>> {
+        let Some(echo) = &self.echo else {
+            return next_event(timeout);
+        };
+        // Back in time to paint the held keystroke frame if no echo came.
+        let now = Instant::now();
+        let hold = echo.hold_until();
+        let deadline = if hold > now {
+            (now + timeout).min(hold)
+        } else {
+            now + timeout
+        };
+        loop {
+            if self.echo_arrived() {
+                return Ok(None);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(None);
+            }
+            if let Some(event) = self.sleep_until_input_or_output(left)? {
+                return Ok(Some(event));
+            }
+        }
+    }
+
+    /// Sleep up to `left` for a terminal event or armed agent output
+    /// (`agent::output_wake`), returning the event if it was one.
+    #[cfg(unix)]
+    fn sleep_until_input_or_output(
+        &self,
+        left: Duration,
+    ) -> std::io::Result<Option<crossterm::event::Event>> {
+        // crossterm reads the terminal from stdin when stdin is one; polling
+        // any other descriptor would be polling the wrong thing.
+        // SAFETY: `isatty` only inspects a descriptor number.
+        let tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+        let Some(wake) = thurbox::agent::output_wake::read_fd().filter(|_| tty) else {
+            return next_event(left.min(ECHO_POLL));
+        };
+        // An event crossterm has already read and queued would not make stdin
+        // readable again.
+        if let Some(event) = next_event(Duration::ZERO)? {
+            return Ok(Some(event));
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wake,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // Rounded up: a zero timeout would spin until the deadline.
+        let ms = left.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+        // SAFETY: `fds` is a valid array of two pollfds for the duration of the
+        // call.
+        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
+        thurbox::agent::output_wake::drain();
+        next_event(Duration::ZERO)
+    }
+
+    #[cfg(not(unix))]
+    fn sleep_until_input_or_output(
+        &self,
+        left: Duration,
+    ) -> std::io::Result<Option<crossterm::event::Event>> {
+        next_event(left.min(ECHO_POLL))
     }
 
     /// Whether the wall-clock timing of ADR-P11 is being collected.
@@ -453,6 +592,7 @@ impl App {
             // make the whole gate worthless.
             self.dirty = true;
         }
+        self.settle_echo();
         // The stuck-`working` fallback, run here because it asks the
         // terminals a question and they have just been synced — and run
         // every tick rather than at refresh, because output moves between

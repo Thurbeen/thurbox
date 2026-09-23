@@ -8,7 +8,7 @@
 //! after every frame and stopped the loop settling at all.
 
 use std::error::Error;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
@@ -39,15 +39,27 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> Result<(), Box<dyn Error>> {
         let since_paint = self.last_paint.elapsed();
-        let floor = if self.input_dirty {
+        let floor = if self.echo_due.is_some() {
+            // Someone is waiting on exactly this output (`ECHO_WINDOW`).
+            Duration::ZERO
+        } else if self.input_dirty {
             MIN_FRAME_INTERVAL
         } else {
             OUTPUT_FRAME_INTERVAL
         };
-        let due = self.dirty && since_paint >= floor;
+        let held = self
+            .echo
+            .as_ref()
+            .is_some_and(|echo| Instant::now() < echo.hold_until());
+        let due = self.dirty && since_paint >= floor && !held;
         if !due && since_paint < FORCE_REDRAW_INTERVAL {
             Counters::bump(&self.perf.skipped);
             return Ok(());
+        }
+        if let Some(surface) = self.echo_due.take() {
+            if self.paint_echo_frame(terminal, &surface)? {
+                return Ok(());
+            }
         }
         // Published HERE rather than every iteration: a plugin only reads
         // `thurbox.*` while it renders, so rebuilding those tables on a tick
@@ -64,11 +76,22 @@ impl App {
             self.timings.republish.record(start.elapsed());
         }
         let draw_start = timing.then(Instant::now);
+        let placed_before = self.last_placed.clone();
         let painted = terminal.draw(|frame| self.draw(frame))?;
         if let Some(start) = draw_start {
             let took = start.elapsed();
             self.timings.frame.record(took);
             self.host.note_frame(took);
+        }
+        // Kept for the next echo frame only when nothing in it covers a
+        // surface or forces a full print — see `paint_echo_frame`.
+        let reusable = self.last_placed == placed_before && !self.covered();
+        match &mut self.last_frame {
+            Some(kept) if reusable && kept.area == painted.buffer.area => {
+                kept.content.clone_from_slice(&painted.buffer.content);
+            }
+            _ if reusable => self.last_frame = Some(painted.buffer.clone()),
+            _ => self.last_frame = None,
         }
         // While `painted` still borrows the terminal — it only needs `&self` and
         // the cells, and this order is what lets the frame buffer be read in
@@ -85,6 +108,84 @@ impl App {
         Counters::bump(&self.perf.frames);
         self.log_first_frame();
         Ok(())
+    }
+
+    /// Whether anything is drawn over the panes: a modal, a float, a text
+    /// selection, the perf HUD or an error panel.
+    fn covered(&self) -> bool {
+        self.modals.is_open()
+            || !self.drawn_floats.is_empty()
+            || self.selection.is_some()
+            || self.hud
+            || !self.errors.is_empty()
+            || self.host.error.is_some()
+            || self.layout_error.is_some()
+            || self.floor.is_some()
+    }
+
+    /// Paint an echo: the last full frame again, with only the surface the echo
+    /// came from repainted. `false` when this frame cannot be one, and the
+    /// caller paints a full frame instead.
+    ///
+    /// A full frame republishes every table and walks every pane, which was
+    /// most of a keystroke's latency once nothing else stood in the way — and
+    /// an echo moves one grid and nothing else. What else moved since the last
+    /// full frame is still owed one: `dirty` is left set, so it follows at the
+    /// ordinary floor.
+    ///
+    /// Only a session surface, only on the frame it was painted into last
+    /// time, and only when nothing was or is drawn over it: a highlighted row
+    /// (`mark`), a float, a modal, a selection. Those are the cells this would
+    /// paint the grid over.
+    fn paint_echo_frame(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        surface: &str,
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.covered() || self.terminals.program_key(surface).is_some() {
+            return Ok(false);
+        }
+        let Some(rect) = self.terminals.last_rect(surface) else {
+            return Ok(false);
+        };
+        let shown = self
+            .last_trees
+            .iter()
+            .flatten()
+            .find_map(|tree| tree.session_surface(surface));
+        let Some((scroll, None)) = shown else {
+            return Ok(false);
+        };
+        let size = terminal.size()?;
+        let Some(kept) = self
+            .last_frame
+            .as_ref()
+            .filter(|kept| kept.area == Rect::new(0, 0, size.width, size.height))
+        else {
+            return Ok(false);
+        };
+        let painted = terminal.draw(|frame| {
+            frame.buffer_mut().content.clone_from_slice(&kept.content);
+            // `render_session` answers `false` only for a surface with nothing
+            // live behind it, which `last_rect` has already ruled out.
+            let _ = thurbox::kernel::paint::SurfaceProvider::render_session(
+                &self.terminals,
+                frame,
+                rect,
+                surface,
+                scroll,
+            );
+            paint::normalize_ambiguous_width(frame.buffer_mut());
+            self.repaint_theme_background(frame);
+        })?;
+        if let Some(kept) = self.last_frame.as_mut() {
+            kept.content.clone_from_slice(&painted.buffer.content);
+        }
+        self.paint_outer_hyperlinks(painted.buffer);
+        self.last_paint = Instant::now();
+        self.frames += 1;
+        Counters::bump(&self.perf.frames);
+        Ok(true)
     }
 
     /// A modal captures input, so it owns the caret — or nothing does.
