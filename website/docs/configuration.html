@@ -684,6 +684,15 @@ timeout_secs = 120</code></pre>
                 <td>terminal scrollback kept per session</td>
               </tr>
               <tr>
+                <td><code>hidden_terminal_secs</code></td>
+                <td><code>30</code></td>
+                <td>
+                  seconds a session can be off screen before its terminal grid
+                  is dropped (rebuilt from tmux when shown); <code>0</code> keeps
+                  every grid
+                </td>
+              </tr>
+              <tr>
                 <td><code>two_panel_min_cols</code></td>
                 <td><code>80</code></td>
                 <td>width below which only the terminal renders</td>
@@ -719,6 +728,7 @@ timeout_secs = 120</code></pre>
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
+hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # width unlocking the optional third column
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
