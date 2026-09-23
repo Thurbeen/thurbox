@@ -109,7 +109,7 @@ fn publish_with(
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content: &Default::default(),
+        search: None,
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows,

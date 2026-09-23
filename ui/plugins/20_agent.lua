@@ -63,6 +63,13 @@ local SCROLL_UP, SCROLL_DOWN = "terminal.scroll_up", "terminal.scroll_down"
 local SCROLL_LINES = 10
 --- Bring the input focus onto this pane, from anywhere.
 local FOCUS = "terminal.focus"
+--- Scroll a terminal to where another pane asks — the search strip landing on a
+--- hit it found in the scrollback. The request is left in `store` under the
+--- same name, because an action carries no argument: `"<surface> <offset>
+--- <row>"` scrolls back by `offset` and marks screen row `row` (from the top),
+--- `"-<surface>"` puts that terminal back at the bottom, and several are
+--- `;`-separated.
+local REVEAL = "terminal.reveal"
 
 --- The session the list published, resolved against the current snapshot.
 local function selected()
@@ -129,6 +136,14 @@ local function set_scroll(surface, scroll, scroll_max)
   end
   state["scroll:" .. surface] = scroll ~= 0 and scroll or nil
   state["scrollmax:" .. surface] = scroll_max ~= 0 and scroll_max or nil
+  -- Any move by hand leaves the line a search landed on; its mark goes with it.
+  state["mark:" .. surface] = nil
+end
+
+--- The screen row a search landed this surface on, from the top — see
+--- `reveal`. Drawn as the surface's `mark` until the view moves.
+local function mark_of(surface)
+  return surface and state["mark:" .. surface] or nil
 end
 
 --- Move a surface's scrollback by `lines`. `true` when it actually moved.
@@ -169,6 +184,39 @@ local function scroll_by(id, lines)
   -- handing a PageDown at the live bottom back to the kernel would offer it to
   -- the pty this action exists to keep it away from.
   return true
+end
+
+--- Apply the scroll requests `store[REVEAL]` carries.
+---
+--- A request selects the tab its surface is on, so a hit in the companion shell
+--- is shown in the shell, and a reset puts the agent tab back. Focus does not
+--- move, so the search strip can preview through this and keep the keyboard.
+local function reveal()
+  local spec = store[REVEAL]
+  if type(spec) ~= "string" then
+    return
+  end
+  for request in spec:gmatch("[^;]+") do
+    local reset, surface, offset, row = request:match("^(%-?)(%S+)%s*(%d*)%s*(%d*)$")
+    if surface then
+      local id = surface:gsub("#shell$", "")
+      local shell = id ~= surface
+      local _, scroll_max = scroll_of(surface)
+      if reset == "-" then
+        set_scroll(surface, 0, scroll_max)
+        if shell then
+          set_tab(id, AGENT_TAB)
+        end
+      elseif not shell or shell_enabled() then
+        -- The surface node's `scroll` is 16 bits; a scrollback configured past
+        -- that is reached as far as it can be rather than failing the render.
+        local scroll = math.min(tonumber(offset) or 0, 65535)
+        set_tab(id, shell and SHELL_TAB or AGENT_TAB)
+        set_scroll(surface, scroll, math.max(scroll_max, scroll))
+        state["mark:" .. surface] = tonumber(row)
+      end
+    end
+  end
 end
 
 --- Put the view back at the live bottom of the stream.
@@ -940,10 +988,17 @@ return {
 
     -- The shell is a second surface over the same primitive, addressed as
     -- `<id>#shell` — no new node kind, and the kernel resolves the suffix.
+    -- The row a search landed on, while it is still inside the grid.
+    local mark = mark_of(surface)
+    if mark and mark >= height - 2 then
+      mark = nil
+    end
+
     return {
       type = "surface",
       session = surface,
       scroll = scroll,
+      mark = mark,
       fill = 1,
       frame = border_frame(title, level, border, strip, rows),
     }
@@ -956,6 +1011,7 @@ return {
     { action = FOCUS, desc = "focus the agent terminal" },
     { action = SELECT_AGENT, desc = "show the agent tab" },
     { action = SELECT_SHELL, desc = "show the shell tab" },
+    { action = REVEAL, desc = "scroll back to the last search result" },
   },
 
   -- A wheel tick, which is NOT the page keys above.
@@ -979,7 +1035,12 @@ return {
   -- belongs at the live end of the stream: the offset is dropped and the key
   -- is DECLINED, so it still reaches the pty.
   on_key = function()
-    snap_to_bottom(store.selected)
+    local id = store.selected
+    snap_to_bottom(id)
+    local surface = surface_of(id, tab_of(id))
+    if surface then
+      state["mark:" .. surface] = nil
+    end
     return false
   end,
 
@@ -1000,6 +1061,10 @@ return {
     end
     if action == SCROLL_DOWN then
       return scroll_by(id, -SCROLL_LINES)
+    end
+    if action == REVEAL then
+      reveal()
+      return true
     end
     if action == FOCUS then
       -- Where `sessions.open` sends focus too: the pane that shows the session.

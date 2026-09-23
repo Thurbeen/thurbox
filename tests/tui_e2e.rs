@@ -302,6 +302,17 @@ impl Tui {
             .collect()
     }
 
+    /// Whether the cell at `(y, x)` is drawn reversed — how the kernel marks a
+    /// surface row.
+    fn inverse_at(&self, y: u16, x: u16) -> bool {
+        self.screen
+            .lock()
+            .unwrap()
+            .screen()
+            .cell(y, x)
+            .is_some_and(vt100::Cell::inverse)
+    }
+
     fn raw_len(&self) -> usize {
         self.raw.lock().unwrap().len()
     }
@@ -1236,6 +1247,57 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
+    // The failure search was rebuilt for: a prompt typed earlier has scrolled
+    // off the screen, and searching for it found nothing, because only the
+    // visible screen was searched. So the marker is printed and then pushed
+    // three hundred lines up, found from the strip, and opened — and opening
+    // it has to land ON it, scrolled back, not merely focus the session.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    // Quoted apart on the command line, so the only line that spells the
+    // marker whole is the one the shell prints.
+    tui.send(b"echo tb-\"\"findme; seq 1 300\r");
+    tui.wait_for("300");
+    tui.wait_gone("tb-findme");
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"tb-findme");
+    // A result row names its session, how far back the hit is, and the line.
+    tui.wait_until("a result row for the scrolled-away line", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("probe") && line.contains('↑') && line.contains("tb-findme"))
+    });
+
+    tui.send(b"\r");
+    // Landed: the strip is gone, the terminal is scrolled back (its title
+    // carries the offset) and the printed line is back on screen.
+    tui.wait_until("the session scrolled to the match", |frame| {
+        !frame.contains("Search")
+            && frame.contains("↑]")
+            && frame.lines().any(|line| line.contains("│tb-findme "))
+    });
+    // And the line is marked, so a long screen of output does not leave you
+    // hunting for the row you were brought to.
+    let frame = tui.frame();
+    let (y, line) = frame
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("│tb-findme "))
+        .expect("the landed line");
+    let byte = line.find("│tb-findme").expect("the landed line") + "│".len();
+    let x = line[..byte].chars().count();
+    assert!(
+        tui.inverse_at(y as u16, x as u16),
+        "the landed line is not highlighted:\n{frame}"
+    );
+    assert!(tui.quit().success());
 }
 
 #[test]

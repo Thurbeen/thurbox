@@ -238,7 +238,10 @@ binding, rather than spending a row of its own on a message line.
 `command("action", { text = "help.open" })` runs a declared action exactly as its
 chord or a click on it would, which is how a **key handler** reaches help,
 settings, themes or the palette. Before these two, both were reachable only by
-painting a node with `role = "action:…"` and waiting for a click.
+painting a node with `role = "action:…"` and waiting for a click. It reaches the
+plugin that declared the action — as a key or as a palette row in `commands` — so
+it is also how one pane asks another to act, with any argument left in `store`
+first (the search strip scrolls the terminal pane this way, via `terminal.reveal`).
 
 **Events**: declare `events = { "session.status", … }` and an `on_event(name,
 payload)` and the kernel calls you once per change, with the same environment a

@@ -354,6 +354,9 @@ impl App {
         if self.diffs.poll() {
             self.note_data_change();
         }
+        // The content search: dispatch what the strip asks for, fold in what
+        // the worker finished.
+        self.serve_search();
 
         // The creation flow's reads. It asks by leaving a key in `store`,
         // which is written the moment its handler runs, so a request made

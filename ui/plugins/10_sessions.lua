@@ -142,32 +142,41 @@ local function search_query()
 end
 
 --- Where the query hits a session's name, or nil when the row does not match at
---- all. `false` means it matched on something else — the row stays lit but its
---- name carries no marks.
+--- all. `false` means it matched on something else — its terminal text, or a
+--- field other than the name — so the row stays lit but its name carries no
+--- marks.
 ---
---- `search` is the render-level `{ text, needle }` pair: the needle is compiled
---- once per render rather than re-split per field per row.
+--- Whether a row matched at all is the search strip's answer, not this pane's:
+--- the strip publishes the sessions it found (`search.matches`), which is the
+--- only way a session found by its terminal text can be lit here. Before the
+--- strip has published — the frame a query is typed — the row's own fields
+--- decide, through the same `lib.fuzzy` grammar.
+---
+--- `search` is the render-level `{ q, matches }` pair: the query is parsed once
+--- per render rather than per row.
 local function name_hits(session, search)
   if not search then
     return nil
   end
-  local positions = fuzzy.match(search.needle, session.name or "")
-  if positions then
-    return positions
+  if search.matches and not search.matches[session.id] then
+    return nil
   end
-  -- `or ""` on every element, because `ipairs` STOPS AT THE FIRST NIL. A session
-  -- with no worktree has `session.branch == nil` in the middle of this list, so
-  -- the scan halted after `agent` and its repository was never tested — the row
-  -- was then dimmed as a non-match while the search strip counted it as a match
-  -- and annotated it `repo: …`. The two halves of one feature disagreed on the
-  -- same frame, and only for sessions without a branch, which is why the one
-  -- worktree session in a review capture looked like the only correct row.
-  for _, field in ipairs({ session.agent or "", session.branch or "", session.repo or "" }) do
-    if field ~= "" and fuzzy.match(search.needle, field) then
-      return false
-    end
+  local name = fuzzy.match_fields(search.q, { { name = "name", text = session.name or "" } })
+  if name then
+    return name.positions
   end
-  return nil
+  if search.matches then
+    return false
+  end
+  -- `or ""` on every field, so a session with no branch still has its
+  -- repository tested.
+  local fields = {
+    { name = "name", text = session.name or "" },
+    { name = "agent", text = session.agent or "" },
+    { name = "branch", text = session.branch or "" },
+    { name = "repo", text = session.repo or "" },
+  }
+  return fuzzy.match_fields(search.q, fields) and false or nil
 end
 
 --- The spans of one session row.
@@ -613,11 +622,21 @@ return {
 
     local items = session_model.build(sessions())
     local busy = session_model.pending()
-    -- The live query, read once per render and compiled once: `session_line`
+    -- The live query, read once per render and parsed once: `session_line`
     -- runs per visible row, and each used to re-read the store and re-split
     -- the query per field.
     local query = search_query()
-    local search = query and { text = query, needle = fuzzy.compile(query) } or nil
+    local search = nil
+    if query then
+      local matches = nil
+      if type(store["search.matches"]) == "string" then
+        matches = {}
+        for id in store["search.matches"]:gmatch("%S+") do
+          matches[id] = true
+        end
+      end
+      search = { q = fuzzy.query(query), matches = matches }
+    end
 
     -- The cursor is re-derived from the SESSION it was on rather than restored
     -- as a row number, is steered by another pane writing `store.selected`, and

@@ -178,30 +178,36 @@ live half and toasts, noting a restart when `restart_only_differs` says so.
 ## Global search
 
 `ui/plugins/65_search.lua` — a full-width strip above the chrome bands (v1 floated
-it). It searches sessions by name, agent, branch and repo, **and by the text on
-their screens**, which is the half that finds a session by the error in it.
+it). Two result sections: **sessions** (name, agent, branch, repo — matched in Lua
+every frame) and **text** (every line each session's agent pane and shell still
+hold, **scrollback included**, matched by the kernel on a worker).
 
-- **Matching**: subsequence via `ui/lib/fuzzy.lua`, shared with the session list so
-  the two cannot disagree. Screen text is matched as a **substring**, not a
-  subsequence — fuzzy over a whole screen matches nearly everything — and is
-  skipped for a session whose metadata already matched.
-- **Terminal text is a *want***: the pane leaves its query in `store` under
-  `want_content` and the kernel serves `thurbox.content` only while it is asking, so
-  no interface pays for every agent's screen on every frame
-  (`kernel::terminal::WANT_CONTENT`, capped at `CONTENT_LINE_CAP` = 500 lines, the
-  same bound v1 used).
-- **Highlighting is in place**: matches highlight *inside* the panes being searched
-  and non-matching rows dim, rather than being reprinted in the strip. Moving the
-  selection previews it in the owning pane; `Esc` puts back what you were looking
-  at.
-- Sessions is the only scope with a pane today. A result carries the pane it
-  belongs to, so a returning surface is a scope added and nothing else changed.
-- One deliberate divergence: v1 also took `Ctrl+P`/`Ctrl+N` inside the strip
-  because its search focus captured input ahead of the keybinding table. Here
-  every chord goes through one registry
-  where a plugin-scoped claim does not outrank a global one, so declaring them
-  would take `Ctrl+N` from new-session everywhere.
-
+- **Query grammar** is `lib.fuzzy.query`, shared with the session list: words (all
+  must match, any order), `"phrase"`, `/regex/` (text only), `in:`/`repo:` filters,
+  smart case. The terms half mirrors `kernel::search::Query`; keep the two parsers
+  in step. Exact (substring/phrase/regex) ranks above subsequence; terminal
+  subsequences must be tight (≤ 2× the word).
+- **Terminal text is a *want***: after a 150ms debounce the pane leaves the terms
+  in `store.want_content` (filters resolved to ids in `want_content.sessions`) and
+  the kernel answers as `thurbox.search` (`kernel::search::SearchStore`). The loop
+  only clones parser handles; reading and matching are on a worker, cached per
+  terminal by output stamp, re-run on output at most once a second. Caps: 50 hits
+  per session, 200 total. ADR-P26 has the numbers; `cargo bench --bench search_cost`
+  re-measures them.
+- **Preview and land**: moving onto a text hit scrolls its terminal back while
+  focus stays in the strip; `enter`/click opens it scrolled to the line with the
+  row marked (`surface.mark`). The strip asks the agent pane to do this — it writes
+  `"<surface> <offset> <row>"` (`;`-separated, `-<surface>` resets) to
+  `store["terminal.reveal"]` and runs `command("action", {text = "terminal.reveal"})`,
+  which reaches `20_agent.lua` because a chord-less palette command now routes to
+  its owner like a bound one (`coordinator/mouse.rs::run_clicked_action`).
+- **In-place highlighting**: the strip publishes the ids it found as
+  `store["search.matches"]`; the session list dims every other row and lights its
+  own name matches through the same grammar.
+- Keys: `ctrl+/` open (global), `up`/`down`, `pageup`/`pagedown`, `enter`, `tab`
+  (everything → text → names), `esc` (puts back selection and scroll). One
+  deliberate divergence: no `Ctrl+P`/`Ctrl+N` inside the strip — every chord goes
+  through one registry where a plugin-scoped claim does not outrank a global one.
 
 ## Code review
 

@@ -48,7 +48,7 @@ impl LuaHost {
             registry,
             diffs,
             links,
-            content,
+            search,
             meta,
             metrics,
             status_rows,
@@ -272,15 +272,13 @@ impl LuaHost {
         })?;
         set(&table, "links", links_value)?;
 
-        // What each terminal is showing, for a content search. Empty unless
-        // something asked, so an interface that never searches never pays for
-        // it — and gated on the data epoch, which refresh_search_content bumps
-        // exactly when the scanned text actually changed: each entry is a full
-        // copy of a screen, up to CONTENT_LINE_CAP lines per session.
-        let content_value = self.group("content", [epoch.snapshot, epoch.data, 0, 0], || {
-            build_content(&self.lua, content)
+        // The content search's answer. Absent unless something asked, so an
+        // interface that never searches never pays for it — and gated on the
+        // data epoch, which moves exactly when a search lands or is dropped.
+        let search_value = self.group("search", [epoch.snapshot, epoch.data, 0, 0], || {
+            build_search(&self.lua, *search)
         })?;
-        set(&table, "content", content_value)?;
+        set(&table, "search", search_value)?;
 
         // Machine, per-agent and account metrics. Each is absent rather than
         // zero when it has not been sampled, so a panel can distinguish "no
@@ -1095,14 +1093,53 @@ fn build_links(
     Ok(Value::Table(links_table))
 }
 
-fn build_content(lua: &Lua, content: &HashMap<String, String>) -> Result<Value, String> {
-    let content_table = lua.create_table().map_err(|e| e.to_string())?;
-    for (session, text) in content.iter() {
-        content_table
-            .raw_set(session.clone(), text.clone())
-            .map_err(|e| e.to_string())?;
+fn build_search(
+    lua: &Lua,
+    answer: Option<&crate::kernel::search::Answer>,
+) -> Result<Value, String> {
+    let Some(answer) = answer else {
+        return Ok(Value::Nil);
+    };
+    let err = |e: mlua::Error| e.to_string();
+    let table = lua.create_table().map_err(err)?;
+    set(&table, "query", answer.request.query.as_str())?;
+    if let Some(ids) = &answer.request.sessions {
+        set(&table, "within", ids.join(" "))?;
     }
-    Ok(Value::Table(content_table))
+    set(&table, "total", answer.total)?;
+    set(&table, "sessions", answer.sessions)?;
+    set(&table, "lines", answer.lines)?;
+    set(&table, "ms", answer.elapsed.as_secs_f64() * 1000.0)?;
+    if let Some(error) = &answer.error {
+        set(&table, "error", error.as_str())?;
+    }
+    let hits = lua
+        .create_table_with_capacity(answer.hits.len(), 0)
+        .map_err(err)?;
+    for (index, hit) in answer.hits.iter().enumerate() {
+        let entry = lua.create_table().map_err(err)?;
+        set(&entry, "session", hit.session.as_str())?;
+        set(&entry, "shell", hit.shell)?;
+        set(&entry, "text", hit.text.as_str())?;
+        // 1-based character indices, the shape `lib.fuzzy.spans` lights.
+        let positions = lua.create_table().map_err(err)?;
+        let mut n = 0;
+        for &(start, end) in &hit.ranges {
+            for at in start..end {
+                n += 1;
+                positions.raw_set(n, at + 1).map_err(err)?;
+            }
+        }
+        set(&entry, "positions", positions)?;
+        set(&entry, "back", hit.back)?;
+        set(&entry, "scroll", hit.scroll)?;
+        set(&entry, "row", hit.row)?;
+        set(&entry, "exact", hit.exact)?;
+        set(&entry, "score", hit.score)?;
+        hits.raw_set(index + 1, entry).map_err(err)?;
+    }
+    set(&table, "hits", hits)?;
+    Ok(Value::Table(table))
 }
 
 fn build_metrics(lua: &Lua, snapshot: &Snapshot, metrics: &Metrics) -> Result<Value, String> {

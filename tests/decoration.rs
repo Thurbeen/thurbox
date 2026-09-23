@@ -224,6 +224,7 @@ fn every_field_survives_the_trip_out_and_back() {
                 size: Default::default(),
                 frame: None,
                 scroll: 2,
+                mark: None,
                 source: SurfaceSource::Cells(vec![vec![
                     Run {
                         text: "+ added".into(),

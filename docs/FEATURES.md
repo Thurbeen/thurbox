@@ -51,8 +51,8 @@ worktree), and cwd.
 Searching is unified into the **global search** (`Ctrl+/`) — see the
 *Global Search* section below. There is no separate per-list `/`
 filter; instead the global strip highlights matches live across the
-session list, tasks panel, and automations pane at once. Sessions are
-matched on name, agent, branch name, and cwd.
+session list at once. Sessions are matched on name, agent, branch and
+repository, and on every line their terminals still hold.
 
 **Why all four fields?** Users remember sessions by whichever
 attribute is most distinctive — sometimes the branch name, often
@@ -872,8 +872,11 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Esc` | F1 editor | Close (or cancel an in-progress capture) | |
 | `j` / `Down` | Lists | Next item | |
 | `k` / `Up` | Lists | Previous item | |
-| `Enter` | Global search | Jump to selected result | |
-| `Esc` | Global search | Close search | |
+| `Up` / `Down` | Global search | Previous / next result, previewed in place | |
+| `PageUp` / `PageDown` | Global search | A page of results up / down | |
+| `Tab` | Global search | Search everything → terminal text → names | |
+| `Enter` / click | Global search | Open the result, scrolled to the line | |
+| `Esc` | Global search | Close search and put back what was on screen | |
 | `Enter` | Session list | Focus terminal | |
 | `j` / `Down` | Repo picker | Next repo | |
 | `k` / `Up` | Repo picker | Previous repo | |
@@ -1757,37 +1760,94 @@ chord, through the registry the F1 help renders.
 
 ### Scopes
 
-- **Sessions** — name, agent, branch and repo (fuzzy), plus the live terminal
-  **screen text** so you can find *which session* mentioned a string ("deploy
-  failed", an error, a file path) and switch straight to it.
+- **Sessions** — name, agent, branch and repo.
+- **Terminal text** — every line each session's terminals still hold: the agent
+  pane **and** its companion shell, **scrollback included**, not only what is on
+  screen. This is the half that finds a prompt you typed an hour ago, or the
+  error that scrolled past: until it read the scrollback, a line that had
+  scrolled off could not be found at all.
 
 A result carries the pane it belongs to, so a returning surface is a scope added
-and nothing else changed.
+and nothing else changed. `Tab` cycles what is searched: everything, terminal
+text only, names only.
 
-Matching is subsequence via `ui/lib/fuzzy.lua`, shared with the session list so
-the two cannot disagree. Screen text is matched as a **substring** rather than a
-subsequence — fuzzy over a whole screen matches nearly everything — and is
-skipped for a session whose metadata already matched.
+What is **not** searched, and why: an agent's own transcript on disk (a Claude
+Code `.jsonl`, a Codex session log). thurbox is agent-neutral — it knows how to
+launch a CLI, not where each one keeps its history or in what format — and a hit
+there could not be opened *on the line*, which is the point of a text result.
+What the terminal held is what can be scrolled to. The reach is the
+`scrollback_lines` setting (1000 rows per terminal by default); raise it to
+search further back. A full-screen program on the alternate screen keeps no
+scrollback, so only its current screen is searched.
 
-Terminal text is a **want**, not a standing cost: the pane leaves its query in
-`store` under `want_content` and the kernel serves `thurbox.content` only while it
-is asking (`kernel::terminal::WANT_CONTENT`, capped at `CONTENT_LINE_CAP` = 500
-lines, the bound v1 used). No interface pays for every agent's screen on every
-frame.
+### The query
 
-### Live preview & cancel
+Parsed once, by `lib.fuzzy.query`, and shared with the session list so the strip
+and the rows it lights cannot disagree; the kernel parses the terms the same way
+(`kernel::search::Query`).
 
-Moving through results (`↑`/`↓`) **previews** the selection in place: the owning
-pane's cursor follows the highlighted result, so you see where `Enter` would land
-without leaving the search box. `Esc` puts back what you were looking at; `Enter`
-commits the jump and focuses the result's pane.
+| You type | It means |
+|---|---|
+| `flake login` | Every word must match, **in any order** — on one line of terminal text, or across a session's fields |
+| `cnfg` | A word matches as a **substring** first, and failing that as a **subsequence** — `cnfg` finds `config`. On terminal text the subsequence must be tight (within twice the word's length), or a three-letter word would match most lines on a screen |
+| `"run the tests"` | A **phrase**: verbatim, substring only |
+| `/fn \w+_test/` | A **regular expression** (Rust `regex` syntax), terminal text only |
+| `Login` | **Smart case**: case is ignored until the query holds a capital letter |
+| `in:api` | Only sessions whose name contains `api` |
+| `repo:thurbox` | Only sessions whose repository contains `thurbox` |
+
+**Ranking**: a result where every term matched exactly (substring, phrase or
+regex) ranks above any that needed a subsequence; then by score — a word
+standing alone (`err` in `err: …`) above one inside another (`stderr`), and a
+line containing the whole query as typed above one with the words apart; then
+the session that printed most recently; then the line nearest the bottom. The
+strip counts what it shows and what it found (`text 200 of 8,631`).
+
+There is deliberately **no recency filter**: recency is the ranking's third key,
+and a filter would hide exactly the old prompt this search exists to find.
+
+### Off the render thread
+
+Terminal text is a **want**, not a standing cost: once the query stands still
+for 150ms the pane leaves it in `store` under `want_content` (and any `in:`/
+`repo:` narrowing, as session ids, under `want_content.sessions`), and the kernel
+answers as `thurbox.search` a frame or two later (`kernel::search`). The loop
+only hands a worker thread each terminal's parser handle; the worker reads each
+history under that parser's own lock, caches it until the pane prints again, and
+matches. A query change is served at once; a terminal printing re-runs the same
+query at most once a second. Caps: 50 hits per session, 200 in all, each line
+windowed to 160 characters around its first hit. Measured numbers are in
+`docs/PERFORMANCE.md`.
+
+### Live preview, open & cancel
+
+Moving through results (`↑`/`↓`, `PageUp`/`PageDown`) **previews** in place: the
+session list's cursor follows, and for a text result the terminal **scrolls back
+to the line** while focus stays in the strip. `Enter` (or a click) opens it:
+the strip closes, focus lands in the terminal, still scrolled to the line, and
+that row is **marked** (drawn reversed) until you scroll or type. `Esc` puts back
+the selection and scrolls a previewed terminal back to the bottom.
+
+The scroll is a request to the agent pane, not something search does to it: it
+leaves `"<surface> <offset> <row>"` in `store` under `terminal.reveal` and runs
+that pane's `terminal.reveal` action (a palette row too: "scroll back to the last
+search result").
 
 ### Live in-place highlighting
 
 As you type, matches highlight **where they live**: the session list highlights
-the matched characters on matching rows and **dims** the rows that don't match —
-the same treatment the list's own filter uses. Nothing is reprinted in the strip,
-which is the point of a strip rather than a float.
+the matched characters on matching rows and **dims** the rows that don't match.
+Which rows matched is the strip's answer, published as `store["search.matches"]`,
+so a session found only by its terminal text stays lit.
+
+### What the strip says
+
+The line under the query says what was searched and how it went — `names 1 ·
+text 3 in 20,552 lines of 20 sessions (4.8ms)` — so an empty result is an answer
+("no match for … in the names or terminal text of 20 sessions (20,552 lines)")
+rather than a blank. While the terminals are being read it says `searching…`,
+and an invalid regex says why. Below 40 columns a text result drops its session
+column and keeps the line.
 
 ### One deliberate divergence from v1
 

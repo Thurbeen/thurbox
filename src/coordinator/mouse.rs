@@ -454,12 +454,23 @@ impl App {
             self.toggle_modal(kind);
             return;
         }
+        // A chord-less palette command has an owner too, and it is the only
+        // way one pane can ask another to act on something it cannot bind a
+        // key to — the search strip asking the agent pane to scroll to a hit.
         let owner = self
             .registry
             .bindings()
             .iter()
             .find(|binding| binding.action == action)
-            .and_then(|binding| self.host.index_of(&binding.plugin))
+            .map(|binding| binding.plugin.as_str())
+            .or_else(|| {
+                self.registry
+                    .commands()
+                    .iter()
+                    .find(|command| command.action == action)
+                    .map(|command| command.plugin.as_str())
+            })
+            .and_then(|plugin| self.host.index_of(plugin))
             .unwrap_or(clicked);
         if let Err(e) = self.host.on_action(owner, action) {
             self.errors.push(e);

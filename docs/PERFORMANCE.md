@@ -1148,7 +1148,7 @@ second, each one draining in the same batch:
 | Read | What it did per event | What gates it now |
 |---|---|---|
 | `Terminals::links` | walked every cell of **every** live session's grid, building a `String` per row, to find OSC 8 targets and bare URLs | that session's `output_stamp` — the same atomic the redraw signal reads |
-| `Terminals::screens` (search content) | re-read every grid again, capped at `CONTENT_LINE_CAP` | `output_generation`, plus the existing "is anything asking" check |
+| `Terminals::screens` (search content; replaced by `kernel::search` in ADR-P26) | re-read every grid again, capped at `CONTENT_LINE_CAP` | `output_generation`, plus the existing "is anything asking" check |
 | the interface inventory | `read_to_string` + digest of **every file** in the interface directory, and a `plugins.lock` TOML parse, to answer "is this file still the one that was trusted" | a `trust_stale` flag set by `refresh_sources`, which every path that changes the directory or a grant already calls |
 
 The rows of the inventory are still assembled every publish: which pane is *on
@@ -1189,7 +1189,7 @@ stall as its worst case), and every ssh invocation paid a full handshake.
 **Choice**: one pass, four families, no new mechanism — the existing signals
 were enough:
 
-- **Every published group is gated.** `diffs`, `links`, `content`, `commands`
+- **Every published group is gated.** `diffs`, `links`, `content` (`search` since ADR-P26), `commands`
   and `metrics` key on the data epoch (which moves on every worker result and
   command transition, and deliberately never on agent output — so a streaming
   turn reuses them all) paired with the snapshot version; the creation flow's
@@ -1814,6 +1814,57 @@ and `…::a_backed_off_session_is_not_asked_again_inside_its_interval`.
 
 ---
 
+## ADR-P26: Search every line of every terminal, on a worker (2026-09-23)
+
+**Context**: the search strip matched terminal text against what each screen was
+*showing* — `Terminals::screens`, a walk of the visible grid on the loop thread,
+capped at 500 lines. A prompt typed a few minutes earlier had scrolled into the
+vt100 scrollback and could not be found. Reading the scrollback too is a
+different order of cost: 20 sessions at the default `scrollback_lines = 1000` is
+~20,000 lines, at 10,000 it is ~200,000, and matching them per keystroke on the
+render thread would stall the interface exactly while someone is typing.
+
+**Choice**: the read and the match move to a worker (`kernel::search`, the
+`kernel::diff` shape). The loop's whole share is `SearchStore::serve`: compare
+the request against the one last answered and, when a run is due, hand the
+worker one `Source` per terminal — an `Arc` clone of its parser and its output
+stamp. The worker reads each history under that parser's own mutex (the lock the
+reader thread already feeds it through), folds each line's case once, and keeps
+the result keyed on the output stamp and grid size, so a query narrowed a letter
+at a time re-matches cached text instead of re-reading grids. Only the hits that
+survive ranking (50 per session, 200 in all) get their snippet built. A new query
+dispatches at once; output alone re-runs the same query at most once a second
+(`RESCAN_INTERVAL`), so a streaming agent does not keep a core busy for as long as
+the strip is open. The answer is published as `thurbox.search`, gated on the data
+epoch like every other worker result, and dropped — cache and all — the moment
+nothing asks.
+
+**Measured** with `cargo bench --bench search_cost` (release build, a 6-core /
+12-thread desktop CPU from 2017, 50×200 screens of agent-shaped output, median
+of 9 runs):
+
+| | 20 × 1,000 rows (default) | 20 × 10,000 rows |
+|---|---|---|
+| loop: hand the worker its sources | < 0.01ms | < 0.01ms |
+| longest one parser is held | 1.7ms | 17.5ms |
+| cold run (read every history + match) | 35–45ms | 330–440ms |
+| warm run (cached histories, new query) | 3–13ms | 29–126ms |
+
+Warm is what a keystroke costs once the 150ms debounce lets it through, and it
+is paid on the worker, not the frame. The slowest queries are the ones whose
+words mostly miss as substrings and have to be tried as subsequences (`cmpile`);
+a quoted phrase is the cheapest. The one cost the render thread can feel is the
+lock: while the worker reads a session's history, that session's reader and its
+paint wait on the same mutex — under 2ms per session at the default scrollback,
+one frame's worth at 10,000.
+
+**Consequences**: results arrive a frame or two after the query settles, and the
+strip says `searching…` until they do. A hit's `scroll`/`row` are exact when the
+worker read them; a terminal that prints afterwards moves the line up by what it
+printed until the next re-run a second later.
+
+---
+
 ## Measuring: the bench and the load harness (2026-08-29)
 
 Two instruments, because "a frame costs 2ms" and "thurbox costs 8% of a core"
@@ -2112,4 +2163,5 @@ worktree/spawn offload should ride with that branch or follow it.
 | See why `git` keeps running | It is the per-session worktree poll — `git_poll_secs` in `settings.toml` sets its cadence and `0` turns it off (ADR-P25) |
 | Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, below) |
 | See where the time in a frame goes | `cargo bench --bench frame_cost` |
+| Measure the content search | `cargo bench --bench search_cost` (`THURBOX_BENCH_SESSIONS`, `THURBOX_BENCH_SCROLLBACK`) — ADR-P26 |
 | Attribute a change | Run one of the two above before and after — a paired reading at the same size and session count, never two absolute numbers from different days |

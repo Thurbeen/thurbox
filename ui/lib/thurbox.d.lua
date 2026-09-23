@@ -141,6 +141,7 @@
 ---@field program? string
 ---@field cells? thurbox.Line[]
 ---@field scroll? integer
+---@field mark? integer A row to highlight, counted from the top of the surface — where a pane that scrolled a terminal to a line points at it.
 
 ---@alias thurbox.Node thurbox.TextNode|thurbox.BoxNode|thurbox.InputNode|thurbox.SurfaceNode
 
@@ -472,6 +473,29 @@
 ---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 
+--- One line a content search found, in a session's agent pane or its shell.
+---@class (exact) thurbox.SearchHit
+---@field session string
+---@field shell boolean Found in the companion shell rather than the agent.
+---@field text string The line, trimmed and windowed around the match.
+---@field positions integer[] 1-based character indices of `text` that matched — what `lib.fuzzy.spans` lights.
+---@field back integer Rows between the line and the bottom of its terminal.
+---@field scroll integer The scrollback offset that puts the line on screen; 0 when it already is.
+---@field row integer The screen row, from the top, the line is on once scrolled to `scroll`.
+---@field exact boolean Every term matched as a substring, phrase or regex — none only as a subsequence.
+---@field score integer Higher is better; hits arrive already ranked.
+
+--- A finished content search (`kernel::search::Answer`).
+---@class (exact) thurbox.SearchAnswer
+---@field query string The `store.want_content` it answers.
+---@field within? string The `store["want_content.sessions"]` it was limited to, if any.
+---@field hits thurbox.SearchHit[] Best first, at most 200 (50 per session).
+---@field total integer Matching lines found, before the cap.
+---@field sessions integer Sessions whose terminals were read.
+---@field lines integer Lines searched.
+---@field ms number Time the worker took.
+---@field error? string Why the query could not run — an invalid regex.
+
 ---@class (exact) thurbox.DiffFile
 ---@field path string
 ---@field added integer
@@ -712,7 +736,7 @@
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>
 ---@field links table<string, thurbox.Link[]> Keyed by SURFACE, not by session: a session's companion shell is `<id>#shell` and has links of its own.
----@field content table<string, string> Keyed by session, and carrying BOTH its panes' screens. Served while `store.want_content` asks.
+---@field search? thurbox.SearchAnswer The content search's answer, while `store.want_content` asks. Nil until one lands.
 ---@field printing table<string, boolean> Sessions whose pane is producing output right now, keyed by id. The evidence `running` animates on — see `ui.status`.
 ---@field runs table<string, thurbox.Run> Answers to THIS plugin's runs.
 ---@field granted thurbox.Granted

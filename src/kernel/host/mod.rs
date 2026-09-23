@@ -605,10 +605,10 @@ pub struct Published<'a> {
     pub diffs: &'a super::diff::DiffStore,
     /// Links visible in each session's terminal, keyed by session.
     pub links: &'a std::collections::HashMap<String, Vec<(String, usize, usize)>>,
-    /// What each session's terminal is showing, keyed by session — empty unless
-    /// a plugin asked (`kernel::terminal::WANT_CONTENT`). Serving it only on
-    /// demand is what keeps every agent's screen off every frame.
-    pub content: &'a std::collections::HashMap<String, String>,
+    /// The last finished content search — `None` unless a plugin asked
+    /// (`kernel::search::WANT_CONTENT`). Serving it only on demand is what keeps
+    /// every agent's history off every frame.
+    pub search: Option<&'a super::search::Answer>,
     /// Machine, per-agent and account metrics, as far as they have been sampled.
     pub metrics: &'a super::metrics::Metrics,
     /// Rows the message band needs — 0 while it has nothing to say.

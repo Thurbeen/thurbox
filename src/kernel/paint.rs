@@ -224,8 +224,23 @@ pub fn render_recording(
             style,
             ..
         } => paint_input(frame, inner, value, placeholder, *cursor, *focused, *style),
-        Node::Surface { source, scroll, .. } => {
-            paint_surface(frame, inner, source, *scroll, surfaces)
+        Node::Surface {
+            source,
+            scroll,
+            mark,
+            ..
+        } => {
+            paint_surface(frame, inner, source, *scroll, surfaces);
+            if let Some(row) = mark.filter(|row| *row < inner.height) {
+                let line = Rect {
+                    y: inner.y + row,
+                    height: 1,
+                    ..inner
+                };
+                frame
+                    .buffer_mut()
+                    .set_style(line, Style::default().add_modifier(Modifier::REVERSED));
+            }
         }
     }
 }
@@ -1034,6 +1049,7 @@ mod tests {
         let program = |id: &str| Node::Surface {
             source: SurfaceSource::Program(id.into()),
             scroll: 0,
+            mark: None,
             frame: None,
             size: Size::default(),
             identity: Identity::default(),

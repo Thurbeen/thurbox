@@ -99,7 +99,7 @@ fn publish_with(host: &LuaHost, snapshot: &Snapshot, registry: Registry) {
         registry: &registry,
         diffs: &diffs,
         links: &Default::default(),
-        content: &Default::default(),
+        search: None,
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows: 0,
