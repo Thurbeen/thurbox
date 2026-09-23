@@ -2348,6 +2348,13 @@ impl SessionBackend for TmuxBackend {
         self.capture_history_seed(backend_id)
     }
 
+    fn title_seed(&self, backend_id: &str) -> Vec<u8> {
+        if !control_mode::is_valid_pane_id(backend_id) {
+            return Vec::new();
+        }
+        self.pane_title_seed(backend_id)
+    }
+
     /// Not on psmux: nothing there has verified that a reply queues behind the
     /// pane output ahead of it, which is the whole of what makes a snapshot
     /// exact, and its blocks are framed the old way (see

@@ -320,6 +320,15 @@ pub trait SessionBackend: Send + Sync {
         anyhow::bail!("this backend cannot snapshot a pane")
     }
 
+    /// The pane's current title replayed as terminal bytes, or nothing — the
+    /// part of [`Self::capture_history`] that is not history, for an adopt
+    /// that captures no history ([`Session::adopt_dormant`]). An agent's title
+    /// is its activity line, and one set before the interface attached exists
+    /// nowhere else. Default: nothing.
+    fn title_seed(&self, _backend_id: &str) -> Vec<u8> {
+        Vec::new()
+    }
+
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
 
@@ -1128,7 +1137,7 @@ impl Session {
     }
 
     /// [`Self::adopt`] for a session nobody is looking at: no history is
-    /// captured and no grid is built. The parser starts as the two cells
+    /// captured and no grid is built — only its title is replayed. The parser starts as the two cells
     /// [`WiredPane::evict`] leaves, and the grid is fetched on the first
     /// [`WiredPane::restore`] — which, for a session that is never shown, is
     /// never. Only for a backend that
@@ -1143,8 +1152,12 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
         env: HashMap<String, String>,
     ) -> Result<Self> {
-        // An empty seed, not `None`: `None` is the backend capturing one itself.
-        let adopted = backend.adopt(backend_id, rows, cols, Some(Vec::new()))?;
+        // Only the title, not `None`: `None` is the backend capturing the
+        // whole history itself. The title goes through the stream like any
+        // other, so the two cells' callbacks report it and `seed_len` keeps it
+        // from reading as output.
+        let adopted =
+            backend.adopt(backend_id, rows, cols, Some(backend.title_seed(backend_id)))?;
         let mut info = SessionInfo::new(name);
         info.backend_id = Some(backend_id.to_string());
         info.remote_host = remote_host_from_backend(backend);

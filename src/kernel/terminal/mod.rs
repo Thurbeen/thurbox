@@ -1215,6 +1215,11 @@ impl Terminals {
     /// behind its own mutex, which is what lets the content search read the
     /// same parsers on a worker instead ([`Self::search_sources`]).
     pub fn visible_text(&self, session: &str) -> Option<String> {
+        // A pane off screen long enough holds two cells rather than its
+        // screen; "nothing to copy" is the honest answer, not two blank rows.
+        if !self.pane(session)?.is_resident() {
+            return None;
+        }
         let (_, parser) = self.surface_parser(session)?;
         let parser = parser.lock().ok()?;
         let screen = parser.screen();

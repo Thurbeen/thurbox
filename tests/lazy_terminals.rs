@@ -593,3 +593,42 @@ async fn a_session_off_screen_still_reports_its_title_and_its_output() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_set_before_the_interface_attached_is_still_reported() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    // The title is set once, before anything attaches, and never again: the
+    // only place it still exists is tmux's `#{pane_title}`.
+    let pane =
+        pane_running("sh -c 'printf \"\\033]2;reviewing the diff\\007\"; exec sleep 100000'");
+    wait_for("tmux to have the title", || {
+        tmux(&["display-message", "-p", "-t", &pane, "#{pane_title}"]).trim()
+            == "reviewing the diff"
+    });
+
+    let mut terminals = Terminals::new();
+    let snap = snapshot(&pane);
+    attach(&mut terminals, &snap).await;
+    assert!(grid_size(&terminals) <= (2, 2), "attached without a grid");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        terminals.sync_meta();
+        let activity = terminals
+            .meta_map()
+            .get(ID)
+            .and_then(|meta| meta.activity.clone());
+        if activity.as_deref() == Some("reviewing the diff") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the title tmux kept never reached the session list: {activity:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

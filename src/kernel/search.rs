@@ -1146,10 +1146,18 @@ fn search_one(
     let key = (source.session.clone(), source.shell);
     let cached = cache.lock().ok().and_then(|c| c.get(&key).cloned());
     let mut stats = ReadStats::default();
-    let history = history_of(source, cached, &mut stats);
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(key, (source.stamp, Arc::clone(&history)));
-    }
+    // A read that failed keeps whatever the cache held, and is not stored:
+    // stored under this stamp, it would be taken for a good read until the
+    // pane printed again.
+    let history = match history_of(source, cached.clone(), &mut stats) {
+        Some(history) => {
+            if let Ok(mut cache) = cache.lock() {
+                cache.insert(key, (source.stamp, Arc::clone(&history)));
+            }
+            history
+        }
+        None => cached.map(|(_, history)| history).unwrap_or_default(),
+    };
     let found = query.map_or_else(Vec::new, |query| found_in(query, index, &history));
     Some(Searched {
         history,
@@ -1173,12 +1181,14 @@ pub type CacheMap = HashMap<(String, bool), (u64, Arc<History>)>;
 
 /// A terminal's history: the cached read while the pane has printed nothing
 /// since and its size has not changed; otherwise the cached read brought up to
-/// date, which reads only what was printed since and the screen.
+/// date, which reads only what was printed since and the screen. `None` when
+/// the terminal could not be read — its lock poisoned, or a pane with no grid
+/// that could not be read back.
 fn history_of(
     source: &Source,
     cached: Option<(u64, Arc<History>)>,
     stats: &mut ReadStats,
-) -> Arc<History> {
+) -> Option<Arc<History>> {
     if let Some((stamp, history)) = &cached {
         // A pane with no grid has no size here to compare, and none that
         // changes while it is off screen: its stamp alone says whether it
@@ -1187,7 +1197,7 @@ fn history_of(
             && (source.restore.is_some()
                 || source.parser.lock().ok().map(|p| p.screen().size()) == Some(history.size));
         if unchanged {
-            return Arc::clone(history);
+            return Some(Arc::clone(history));
         }
     }
     let previous = cached.as_ref().map(|(_, history)| history.as_ref());
@@ -1197,10 +1207,7 @@ fn history_of(
         }
         None => History::read_locked(&source.parser, previous, stats),
     };
-    match read {
-        Some(history) => Arc::new(history),
-        None => cached.map(|(_, h)| h).unwrap_or_default(),
-    }
+    read.map(Arc::new)
 }
 
 /// Serves search requests on a worker, one at a time, newest wins.
@@ -1644,6 +1651,42 @@ mod tests {
         run(request, &sources, &cache);
         let second = Arc::clone(&cache.lock().unwrap()[&("s".to_string(), false)].1);
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// A pane with no grid that could not be read back this time is read again
+    /// on the next run: a failed read is not a read, and caching it under the
+    /// pane's stamp would leave the pane unsearchable until it printed again.
+    #[test]
+    fn a_pane_that_could_not_be_read_back_is_tried_again() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tries = Arc::clone(&attempts);
+        let restore: Restore = Arc::new(move || {
+            if tries.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                return None;
+            }
+            let mut parser = vt100::Parser::new_with_callbacks(
+                10,
+                40,
+                1000,
+                crate::agent::TermSignals::default(),
+            );
+            parser.process(b"needle\r\n");
+            Some(parser)
+        });
+        let sources = vec![Source {
+            restore: Some(restore),
+            ..source("s", 7, "")
+        }];
+        let cache: Mutex<CacheMap> = Mutex::default();
+        let request = Request {
+            query: "needle".into(),
+            sessions: None,
+        };
+        let failed = run(request.clone(), &sources, &cache);
+        let retried = run(request, &sources, &cache);
+
+        assert!(failed.hits.is_empty());
+        assert_eq!(retried.hits.len(), 1, "the second run read the pane back");
     }
 
     /// A terminal whose scrollback holds `lines` numbered lines, most wrapped
