@@ -1146,3 +1146,49 @@ async fn a_replacement_that_fails_to_spawn_still_waits_before_the_next_ask() {
     harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
     assert!(harness.terminals.take_wanted_shells().is_empty());
 }
+
+#[tokio::test]
+async fn a_shell_just_opened_keeps_its_grid_until_it_has_been_shown() {
+    // A grid is dropped for a pane nobody is looking at, and a pane never shown
+    // counts as one — but a shell only ever opens because a pane painted its
+    // surface and asked for it, so it is about to be shown. Dropped in the tick
+    // between, its first output (the prompt) went into the two cells a dormant
+    // pane keeps, and the tab showed an empty screen.
+    let mut harness = Harness::without_shell(HEIGHT, WIDTH);
+    harness
+        .terminals
+        .keep_hidden_for(Some(std::time::Duration::from_secs(60)));
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+
+    harness.terminals.evict_hidden();
+    let live = harness.terminals.live.get(&id).expect("live");
+    assert!(
+        live.pane(true)
+            .parser()
+            .map(|parser| parser.lock().expect("lock").screen().size())
+            .expect("a shell")
+            > (2, 2),
+        "the shell's grid was dropped before it was ever shown"
+    );
+
+    // The rule it rests on: a pane nobody asked for and nobody has drawn is
+    // still dropped at once.
+    harness
+        .terminals
+        .live
+        .get(&id)
+        .expect("live")
+        .agent
+        .shown_at
+        .set(None);
+    harness.terminals.evict_hidden();
+    assert_eq!(
+        harness.grid(false),
+        (2, 2),
+        "a pane never shown keeps its grid"
+    );
+}

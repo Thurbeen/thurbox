@@ -1443,6 +1443,12 @@ impl Terminals {
         if replaced {
             live.shell.size.set((0, 0));
         }
+        // Counted as shown from here. A shell opens only because a pane painted
+        // its surface and asked for one, so it is about to be drawn — while a
+        // pane never shown is what `evict_hidden` drops the grid of. Dropped in
+        // the tick between, the prompt it prints next lands in the two cells a
+        // dormant pane keeps, and the pane that asked shows an empty screen.
+        live.shell.shown_at.set(Some(std::time::Instant::now()));
         Ok(())
     }
 
