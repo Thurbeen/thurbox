@@ -1108,8 +1108,7 @@ impl Terminals {
     /// Where a surface was painted, and the parser it is showing.
     ///
     /// Every reader of a grid goes through [`Self::pane`] by way of this, so a
-    /// copy, a click on a link and a content search all read the pane they were
-    /// asked about.
+    /// copy and a click on a link read the pane they were asked about.
     fn surface_parser(
         &self,
         surface: &str,
@@ -1128,9 +1127,9 @@ impl Terminals {
     /// already spells that surface to render it — rather than relying on the
     /// kernel to guess which of the two the user is reading.
     ///
-    /// Read here rather than in a worker because the parser lives beside a
-    /// `!Send` VM — which is the compile-time guarantee working, not an
-    /// inconvenience.
+    /// Read on the loop because its caller wants the answer now; the parser is
+    /// behind its own mutex, which is what lets the content search read the
+    /// same parsers on a worker instead ([`Self::search_sources`]).
     pub fn visible_text(&self, session: &str) -> Option<String> {
         let (_, parser) = self.surface_parser(session)?;
         let parser = parser.lock().ok()?;

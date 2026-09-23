@@ -354,12 +354,9 @@ impl App {
         if self.diffs.poll() {
             self.note_data_change();
         }
-        // A finished content search. Always a repaint, even when the answer
-        // did not change: the strip may have moved on to a newer query while
-        // this one ran, and the republish is what dispatches it.
-        if self.search.poll() {
-            self.note_data_change();
-        }
+        // The content search: dispatch what the strip asks for, fold in what
+        // the worker finished.
+        self.serve_search();
 
         // The creation flow's reads. It asks by leaving a key in `store`,
         // which is written the moment its handler runs, so a request made

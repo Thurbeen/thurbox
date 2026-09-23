@@ -611,6 +611,18 @@ pub struct Answer {
     pub error: Option<String>,
 }
 
+impl Answer {
+    /// The same answer, timing aside — what a pane would draw is unchanged.
+    fn same(&self, other: &Self) -> bool {
+        self.request == other.request
+            && self.hits == other.hits
+            && self.total == other.total
+            && self.sessions == other.sessions
+            && self.lines == other.lines
+            && self.error == other.error
+    }
+}
+
 type Cache = Arc<Mutex<CacheMap>>;
 
 /// Run one search over `sources`. Called on a worker thread; public so a
@@ -807,17 +819,20 @@ impl SearchStore {
         false
     }
 
-    /// Fold a finished run in. True when one finished, whether or not its
-    /// answer differs: the request may have moved on while it ran, and the
-    /// caller's next [`Self::serve`] is what dispatches the newer one.
+    /// Fold a finished run in. True only when the answer changed: a re-run
+    /// on output that found the same lines moves nothing a pane reads, and
+    /// moving the data epoch for it would drop every pure pane's cached tree
+    /// once a second while an agent prints.
     pub fn poll(&mut self) -> bool {
-        let mut finished = false;
+        let mut changed = false;
         while let Ok(answer) = self.rx.try_recv() {
             self.running = None;
-            self.answer = Some(answer);
-            finished = true;
+            if !self.answer.as_ref().is_some_and(|held| held.same(&answer)) {
+                self.answer = Some(answer);
+                changed = true;
+            }
         }
-        finished
+        changed
     }
 
     /// Whether a run is on the worker.
@@ -1026,6 +1041,57 @@ mod tests {
         let order: Vec<&str> = answer.hits.iter().map(|h| h.session.as_str()).collect();
         assert_eq!(order[..2], ["new", "old"]);
         assert_eq!(answer.sessions, 3);
+    }
+
+    /// Wait for the worker, the way the loop's next iteration would.
+    fn settle(store: &mut SearchStore) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while store.running() && Instant::now() < deadline {
+            if store.poll() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        store.poll()
+    }
+
+    #[test]
+    fn the_store_runs_a_request_once_and_reports_only_a_changed_answer() {
+        let sources = vec![source("s", 1, "needle\r\n")];
+        let request = Request {
+            query: "needle".into(),
+            sessions: None,
+        };
+        let mut store = SearchStore::new();
+        let mut asked = 0;
+        store.serve(Some(request.clone()), 1, |_| {
+            asked += 1;
+            sources.clone()
+        });
+        assert!(settle(&mut store), "the first answer is news");
+        assert_eq!(store.answer().map(|a| a.hits.len()), Some(1));
+
+        // Asked again with nothing printed: no second run.
+        store.serve(Some(request.clone()), 1, |_| {
+            asked += 1;
+            sources.clone()
+        });
+        assert!(!store.running());
+        assert_eq!(asked, 1);
+
+        // Something printed and the pacing interval passed: it runs again, and
+        // finding the same lines is not news — no epoch moves for it.
+        std::thread::sleep(RESCAN_INTERVAL);
+        store.serve(Some(request.clone()), 2, |_| {
+            asked += 1;
+            sources.clone()
+        });
+        assert_eq!(asked, 2);
+        assert!(!settle(&mut store), "an identical answer is not a change");
+
+        // Asked for nothing: the answer is let go, and saying so is news.
+        assert!(store.serve(None, 1, |_| Vec::new()));
+        assert!(store.answer().is_none());
     }
 
     #[test]

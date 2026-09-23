@@ -39,7 +39,6 @@ impl App {
             .flat_map(|id| [id.clone(), thurbox::kernel::terminal::shell_surface(id)])
             .collect();
         self.refresh_links(&surfaces);
-        self.refresh_search_content(&sessions);
         // Generation-gated, so an idle session costs one atomic load. The
         // mutating half runs here; the map itself is borrowed below, after the
         // last `&mut self` call — cloning it to end this borrow cost two
@@ -233,8 +232,13 @@ impl App {
     /// The reading and matching happen on the search worker; this only compares
     /// the request against the one last answered and, when a run is due, clones
     /// each terminal's parser handle. The answer comes back through
-    /// `serve_worker_stores`, a frame or two later.
-    pub(crate) fn refresh_search_content(&mut self, sessions: &[String]) {
+    /// `poll`, a frame or two later.
+    ///
+    /// Called every loop iteration rather than from `republish`: the output
+    /// re-run is paced by the clock, and a republish only happens when a frame
+    /// is owed — an agent that printed a match and went quiet inside the pacing
+    /// interval would otherwise never have it searched.
+    pub(crate) fn serve_search(&mut self) {
         use thurbox::kernel::search::{Request, WANT_CONTENT, WANT_SESSIONS};
         let request = self
             .host
@@ -248,20 +252,29 @@ impl App {
                     .map(|ids| ids.split_whitespace().map(str::to_string).collect()),
             });
         let generation = self.terminals.output_generation();
-        let terminals = &self.terminals;
+        let (snapshots, terminals) = (&self.snapshots, &self.terminals);
+        // Only a dispatch walks the sessions: this runs every iteration.
         let dropped = self.search.serve(request, generation, |request| {
-            let wanted: Vec<String> = match &request.sessions {
-                Some(only) => sessions
-                    .iter()
-                    .filter(|id| only.contains(id))
-                    .cloned()
-                    .collect(),
-                None => sessions.to_vec(),
-            };
+            let wanted: Vec<String> = snapshots
+                .current()
+                .sessions
+                .iter()
+                .map(|row| &row.id)
+                .filter(|id| {
+                    request
+                        .sessions
+                        .as_ref()
+                        .map_or(true, |only| only.contains(id))
+                })
+                .cloned()
+                .collect();
             terminals.search_sources(&wanted)
         });
         if dropped {
-            self.note_published_change();
+            self.note_data_change();
+        }
+        if self.search.poll() {
+            self.note_data_change();
         }
     }
 
