@@ -249,6 +249,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         echo: None,
         echo_due: None,
         last_frame: None,
+        last_keystroke: None,
         animation_tick: 0,
         animation_step: 0,
         selection: None,

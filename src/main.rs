@@ -162,6 +162,15 @@ const ECHO_WINDOW: Duration = Duration::from_millis(150);
 /// a key that is never echoed is painted one input frame late.
 const ECHO_HOLD: Duration = MIN_FRAME_INTERVAL;
 
+/// How long after the last keystroke into a terminal the last full frame is
+/// kept for the next echo frame.
+///
+/// A copy of the screen is a cell per column and row — ~0.4 MiB at 200x50 —
+/// and a copy made on every full frame. Kept only while someone types, an
+/// interface at rest carries neither; the first key after a pause has its echo
+/// painted as a full frame, and every key after it as an echo frame.
+const KEEP_FRAME_WHILE_TYPING: Duration = Duration::from_secs(2);
+
 /// The input poll's slice while an echo is owed: the most the echo can wait
 /// before the loop notices it. Only an owed echo pays for it, and between two
 /// slices it costs one atomic load.
@@ -313,8 +322,10 @@ struct App {
     /// once, with no floor at all.
     echo_due: Option<String>,
     /// The last full frame, kept while it can be reused as the ground of an
-    /// echo frame (see `App::paint_echo_frame`).
+    /// echo frame (see `App::paint_echo_frame`) and somebody is typing.
     last_frame: Option<ratatui::buffer::Buffer>,
+    /// When a keystroke last reached a terminal — see [`KEEP_FRAME_WHILE_TYPING`].
+    last_keystroke: Option<Instant>,
     /// When anything last happened — input, output, a worker result, a repaint
     /// that changed something. Drives the poll timeout, nothing else.
     last_activity: Instant,

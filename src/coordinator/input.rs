@@ -766,6 +766,9 @@ impl App {
             Some(program) => self.terminals.send_to_program(&program, bytes).is_ok(),
             None => self.terminals.send(surface, bytes),
         };
+        if delivered {
+            self.last_keystroke = Some(Instant::now());
+        }
         if delivered && echo.is_some() {
             thurbox::agent::output_wake::arm(true);
             self.echo = echo;

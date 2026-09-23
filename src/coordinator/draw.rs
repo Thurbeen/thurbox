@@ -24,8 +24,8 @@ use super::{
     clamp_span, error_area, hud_area, plugin_hud_area, read_cells, render_hud, render_plugin_hud,
 };
 use crate::{
-    App, ClickTarget, FORCE_REDRAW_INTERVAL, MIN_FRAME_INTERVAL, OUTPUT_FRAME_INTERVAL,
-    QUIESCENT_AFTER, STATUS_TTL,
+    App, ClickTarget, FORCE_REDRAW_INTERVAL, KEEP_FRAME_WHILE_TYPING, MIN_FRAME_INTERVAL,
+    OUTPUT_FRAME_INTERVAL, QUIESCENT_AFTER, STATUS_TTL,
 };
 
 impl App {
@@ -83,9 +83,13 @@ impl App {
             self.timings.frame.record(took);
             self.host.note_frame(took);
         }
-        // Kept for the next echo frame only when nothing in it covers a
-        // surface or forces a full print — see `paint_echo_frame`.
-        let reusable = self.last_placed == placed_before && !self.covered();
+        // Kept for the next echo frame only while someone is typing, and only
+        // when nothing in it covers a surface or forces a full print — see
+        // `paint_echo_frame`.
+        let typing = self
+            .last_keystroke
+            .is_some_and(|at| at.elapsed() < KEEP_FRAME_WHILE_TYPING);
+        let reusable = typing && self.last_placed == placed_before && !self.covered();
         match &mut self.last_frame {
             Some(kept) if reusable && kept.area == painted.buffer.area => {
                 kept.content.clone_from_slice(&painted.buffer.content);
