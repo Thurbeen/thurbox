@@ -147,14 +147,23 @@ proposes reverting every such change already saved — one visit saved
 thirds of the core rows are restart-only, which made it read as "my settings do
 not survive a restart".
 
-`]` switches to the **Interface tab** (`kernel::modals::interface`): every file, where
-it came from (bundled / edited / yours / installed / removed), whether it is on
-screen, and `r` restore · `d` delete · `space` turn off · `t` trust. It was a pane
+`]` switches to the **Interface tab** (`kernel::modals::interface`): every file,
+grouped `PANES` / `LAYOUT` / `MODULES` / `DOCS`, one state word per row (`failed`,
+`deleted`, `not placed`, `off`, `on screen`, `on demand`, `hidden`; no word shared
+with a source or a key), then trust, then origin (`edited` / `yours` /
+`from <package>` — silent for a shipped, untouched file). Three detail lines under
+the list explain the selected row: kind, slot and full source; why it is in that
+state and the fix (an unplaced pane gets its `{ slot = "…" }` line); what it asks to
+run and whether that is granted. The footer lists only the keys that act on that
+row: `r` restore · `d` delete · `space` turn off/on · `t` trust/revoke. `d` always
+asks twice; `r` asks twice on an **edited** file (nothing keeps a pane's edits;
+`layout.lua` goes to `.bak`). The cursor follows its file by path, since an action
+re-sorts the list. It was a pane
 once — an honest test of whether the plugin API could build a pane that lists panes
 — and is chrome now because a recovery tool must not be the thing that is broken.
 
 It is therefore **the recovery path for a broken interface**, and the shape of that
-is not symmetric: a `failed` row sorts to the top with its load error in the footer,
+is not symmetric: a `failed` row sorts to the top with its load error under the list,
 but `r` only writes back a copy thurbox *ships* — it refuses for a file the user
 wrote ("thurbox ships no version of it") and points an installed pane at
 `thurbox-cli plugin sync`. For a pane of the user's own the way back is `space`:
