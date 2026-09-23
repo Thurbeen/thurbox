@@ -2941,3 +2941,115 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
     link.heal();
     assert!(tui.quit().success());
 }
+
+// --- links handed back to the terminal thurbox itself runs in ----------------
+
+impl Tui {
+    /// A `Ctrl`-modified press and release at a 0-based cell. SGR adds 16 to
+    /// the button number for Control, which is what a terminal sends for the
+    /// chord thurbox answers as a link open.
+    fn ctrl_press(&mut self, (x, y): (u16, u16)) {
+        let (px, py) = (x + 1, y + 1);
+        self.send(format!("\x1b[<16;{px};{py}M").as_bytes());
+        self.send(format!("\x1b[<16;{px};{py}m").as_bytes());
+        // The frame that answers the press is the one that raises the message.
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    /// Poll the bytes written from `since` on until `needle` is among them.
+    ///
+    /// The frame assertions elsewhere cannot serve here: an OSC 8 wrapper
+    /// changes no glyph, so it exists only in the raw stream.
+    fn wait_for_raw(&self, since: usize, needle: &str) {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            if self.raw_since(since).contains(needle) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        self.give_up(&format!("{needle:?} to be written to the terminal"));
+    }
+
+    /// The message band: the row above the action band.
+    fn message_band(&self) -> String {
+        let lines: Vec<String> = self.frame().lines().map(str::to_string).collect();
+        lines
+            .get(lines.len().wrapping_sub(2))
+            .cloned()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+}
+
+/// On a host with no browser, both kinds of link are handed to the outer
+/// terminal — and the chord thurbox keeps for itself says what it did instead.
+///
+/// The escape is the only route to a browser for a thurbox reached over ssh:
+/// the machine it runs on has none, so the terminal the user is sitting at has
+/// to be told the cells are a link. That worked for an agent's OSC 8 runs and
+/// not for the bare URLs agents print far more often, which left the common
+/// case with nothing for the local terminal to open.
+///
+/// It has to be asserted out here. `hyperlink_paints` can be handed a link list
+/// in process and answer perfectly while the coordinator passes it none — the
+/// bytes on the pty are the only place the wiring shows.
+#[test]
+fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        // A bare remote: no display and no BROWSER, so `open_url` refuses and
+        // the outer terminal is the only leg left.
+        cmd.env_remove("DISPLAY");
+        cmd.env_remove("WAYLAND_DISPLAY");
+        cmd.env_remove("BROWSER");
+    }) else {
+        return;
+    };
+
+    // Both kinds, printed by the "agent". The label and the host go through
+    // shell variables so the line the shell ECHOES back does not carry the text
+    // the presses below are aimed at — a press landing on the echo would be
+    // resolving the command, not its output.
+    tui.send(b"L=RICH; H=example.test; printf \"rich \\033]8;;https://$H/rich\\007${L}LINK\\033]8;;\\007 bare https://$H/bare\\n\"\r");
+    tui.wait_for("RICHLINK");
+    tui.wait_for("https://example.test/bare");
+
+    let mark = tui.raw_len();
+    tui.wait_for_raw(mark, "\x1b]8;;https://example.test/bare");
+
+    // 1. Both runs go out wrapped in OSC 8, so the user's own terminal can open
+    //    either one.
+    let out = tui.raw_since(mark);
+    assert!(
+        out.contains("\x1b]8;;https://example.test/rich"),
+        "the OSC 8 run must be re-printed for the outer terminal"
+    );
+    assert!(
+        out.contains("\x1b]8;;https://example.test/bare"),
+        "the bare URL must be re-printed for the outer terminal too"
+    );
+
+    // 2. The chord thurbox does answer is never silent: it cannot open a
+    //    browser here, so it carries the URL back over OSC 52 and says so.
+    for (needle, offset, url) in [
+        ("RICHLINK", 0, "https://example.test/rich"),
+        ("https://example.test/bare", 4, "https://example.test/bare"),
+    ] {
+        let (x, y) = tui.find(needle);
+        let mark = tui.raw_len();
+        tui.ctrl_press((x + offset, y));
+        assert_eq!(
+            osc52_payload(&tui.raw_since(mark)).as_deref(),
+            Some(url),
+            "{needle}: the URL must reach the user's clipboard"
+        );
+        let band = tui.message_band();
+        assert!(
+            band.contains("No display to open a browser on") && band.contains(url),
+            "{needle}: the band must say what happened instead, got {band:?}"
+        );
+    }
+
+    assert!(tui.quit().success());
+}

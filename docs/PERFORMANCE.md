@@ -70,13 +70,36 @@ asserts the first frame, every post-keystroke frame, and that a reflow repaints
 without clearing the screen.
 
 **One pass rides along after each paint**:
-`App::paint_outer_hyperlinks` re-emits the frame's OSC 8 hyperlinks so the
-outer terminal can offer its own open-link gesture (see the Clickable URLs
-section of `docs/FEATURES.md`). It is bound to the *painted* frames — ratatui
-rewrites the cells, so the escapes must follow each draw — and is gated on
-`HyperlinkTable::is_empty()` **before** it computes layout or extracts screen
-rows, so a session whose agent never printed a link pays a single emptiness
-check per frame. The pane half (a `url:` node, `ClickVerb::Url`) walks the
+`App::paint_outer_hyperlinks` re-emits the frame's links — the agent's OSC 8
+runs and the plain-text URLs alike — so the outer terminal can offer its own
+open-link gesture (see the Clickable URLs section of `docs/FEATURES.md`). It is
+bound to the *painted* frames — ratatui rewrites the cells, so the escapes must
+follow each draw — and is gated on `HyperlinkTable::is_empty()` **and** an empty
+scanned-URL list **before** it computes layout or extracts screen rows, so a
+session showing no link of either kind pays a single emptiness check per frame.
+The plain-text leg adds no scan of its own: it is handed the list
+`refresh_links` already keeps for `thurbox.links`, and only validates each
+position against the cells the frame drew — the URL's own cells plus the one
+past its end. It carries its own cap (`SCANNED_LINK_LIMIT`, 128) for the reason
+the run scan does, but on the output rather than the input: every accepted
+position is re-printed over the ssh link this pass exists to serve.
+
+The escapes go out **once per change**, not once per painted frame
+(`App::last_link_paints`). OSC 8 binds a URL to the *cells*, so an unchanged
+frame owes the terminal nothing — the links are still attached to the cells it
+was told about. Sending them per frame regardless is a cost that scales with
+what is on screen rather than with what moved, and on a real pty it measured
+**65kB/s indefinitely** for twenty bare URLs on a settled screen, against 100
+bytes a second for the same screen with no URL on it. With the comparison in,
+the two are equal: 100 bytes a second, the URLs costing nothing once drawn.
+(The waste predates the plain-text leg — the runs and `url:` nodes paid it too
+— but that leg is what makes a screen full of links the ordinary case.) The one
+frame that must re-send identical paints is the **reflow**: it reprints every
+cell, and a reprinted cell loses its hyperlink, so `App::draw` drops the memo
+there — as does `apply_editor_command`, since returning from an external editor
+clears the screen and reprints it whole.
+
+The pane half (a `url:` node, `ClickVerb::Url`) walks the
 hitboxes the paint just recorded, which costs one `split_once` per target — no
 allocation unless a role actually is a verb — and reads cells only for the
 targets that are one. When links are present the scan is bounded (the newest 128
@@ -1342,12 +1365,23 @@ settled exactly, and for free, forever. The stamp is deliberately not recorded o
 a skipped pass, so the next publish after the interval does the scan and a
 settled screen converges back onto the stamp.
 
-250ms because nothing acts on a link's *position* faster than that, and nothing
-reads the published map to act at all: a click resolves against the live grid
-(`Terminals::url_at`) and the OSC 8 repaint recomputes from `cached_rows`
-(`hyperlink_paints`). `thurbox.links` exists for a plugin to draw, and no bundled
-pane reads it. So the interval bounds staleness in the published map and nothing
-else.
+250ms because nothing acts on a link's *position* faster than that: a click
+resolves against the live grid (`Terminals::url_at`), and the OSC 8 repaint
+recomputes its runs from `cached_rows` (`hyperlink_paints`). The repaint's
+plain-text leg is the one reader that does act on the published positions, so
+the interval bounds how late a bare URL becomes clickable in the outer terminal
+— and nothing else, because that leg does not trust the positions it is given.
+
+It cannot: the interval does **not** bound their staleness. This pass is gated
+on the surface's *output* stamp, and scrolling the pane moves every row without
+producing a byte of output, so a scrolled screen holds its pre-scroll positions
+for as long as the agent stays quiet. What makes the leg correct is therefore
+the check against the drawn frame, not the age — and a glyph-for-glyph match is
+not enough for it either, since a stale target can be a *prefix* of the URL the
+row now carries, which matches every glyph it has. Reading the cell one past the
+end is what separates those; `drawn_url_cells` owns both that and the
+soft-wrapped case, and its unit tests are the record of which inputs it must
+refuse.
 
 **Measured**, the same run before and after, each paired with its own no-URL
 control so the machine's mood is not part of the claim:

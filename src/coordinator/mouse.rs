@@ -778,17 +778,25 @@ impl App {
     /// point of the verb: a plugin hands the kernel cells and can emit no
     /// escape of its own, so this is the only place its content can become a
     /// link the outer terminal knows about.
-    pub(crate) fn paint_outer_hyperlinks(&self, buf: &ratatui::buffer::Buffer) {
+    ///
+    /// `self.links` — already maintained for `thurbox.links`, and paced by its
+    /// own stamp and age — is handed over so a **plain-text** URL is offered
+    /// too, not only an OSC 8 run. Nothing rescans here: the list is the one
+    /// [`Self::refresh_links`] built before this frame was drawn.
+    pub(crate) fn paint_outer_hyperlinks(&mut self, buf: &ratatui::buffer::Buffer) {
         let mut paints = Vec::new();
         for row in &self.snapshots.current().sessions {
             // Both panes: a shell in a slot of its own paints links the outer
             // terminal should know about exactly as the agent's does, and a
             // surface not painted this frame contributes nothing anyway.
-            paints.extend(self.terminals.hyperlink_paints(&row.id, buf));
-            paints.extend(
-                self.terminals
-                    .hyperlink_paints(&thurbox::kernel::terminal::shell_surface(&row.id), buf),
-            );
+            // `refresh_links` scans both, so each gets its own scanned list.
+            for surface in [
+                row.id.clone(),
+                thurbox::kernel::terminal::shell_surface(&row.id),
+            ] {
+                let scanned = self.links.get(&surface).map_or(&[][..], Vec::as_slice);
+                paints.extend(self.terminals.hyperlink_paints(&surface, buf, scanned));
+            }
         }
         // A band's hit carries no plugin, which is also what makes it unable to
         // be its own float — hence the `Option`.
@@ -811,8 +819,17 @@ impl App {
                 buf, rect, &url,
             ));
         }
-        if !paints.is_empty() {
-            let _ = thurbox::kernel::terminal::paint_hyperlinks(&paints);
+        // OSC 8 binds the URL to the cells, not to the frame, so an unchanged
+        // frame owes the terminal nothing: the links it was told about last
+        // time are still attached to those cells. Re-sending them anyway is
+        // what a settled screen full of bare URLs used to cost over ssh — see
+        // `App::last_link_paints`, which also owns the one case where
+        // identical paints must still be sent.
+        if paints != self.last_link_paints {
+            if !paints.is_empty() {
+                let _ = thurbox::kernel::terminal::paint_hyperlinks(&paints);
+            }
+            self.last_link_paints = paints;
         }
     }
 

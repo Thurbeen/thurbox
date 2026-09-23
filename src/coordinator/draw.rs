@@ -173,6 +173,12 @@ impl App {
         if reflowed {
             self.last_placed = placed.clone();
             self.changed_this_frame = true;
+            // A reflow reprints every cell (`force_full_repaint` below), and a
+            // reprinted cell loses the hyperlink the terminal attached to it.
+            // So the outer-terminal pass may not skip this frame for looking
+            // like the last one — the links it drew are gone from the terminal
+            // even though the glyphs are identical.
+            self.last_link_paints.clear();
         }
         self.visible_slots = placed.iter().map(|s| s.slot.clone()).collect();
         // A focus request that named a slot this layout has only just placed —

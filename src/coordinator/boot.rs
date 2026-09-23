@@ -281,6 +281,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         links: std::collections::HashMap::new(),
         link_stamps: std::collections::HashMap::new(),
         link_scans: std::collections::HashMap::new(),
+        last_link_paints: Vec::new(),
         search: thurbox::kernel::search::SearchStore::new(),
         trust: std::collections::HashMap::new(),
         trust_stale: true,
