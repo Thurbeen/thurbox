@@ -1276,6 +1276,15 @@ fn shell_session() -> Option<(Profile, Tui)> {
 /// The same, with the binary's environment adjusted — for the cases where what
 /// is being tested is what thurbox does with the machine it thinks it is on.
 fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {
+    shell_session_prepared(|_| {}, adjust)
+}
+
+/// The same, with `prepare` run over the profile after the session exists and
+/// before the binary starts — for a scenario about what a start finds on disk.
+fn shell_session_prepared(
+    prepare: impl FnOnce(&Profile),
+    adjust: impl FnOnce(&mut Command),
+) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -1302,6 +1311,7 @@ fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui
     // gate can tell, and a gate on a pty is a real prompt; this is the
     // headless answer to it.
     profile.cli(&["config", "accept-interface"]);
+    prepare(&profile);
 
     let tui = Tui::spawn_with(&profile, 40, 120, adjust);
     tui.wait_for("probe");
@@ -1500,6 +1510,7 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         "the landed line is not highlighted:\n{frame}"
     );
     assert!(tui.quit().success());
+}
 
 #[test]
 fn focus_shows_the_agent_alone_and_f9_brings_the_session_list_back() {
@@ -1567,13 +1578,13 @@ fn ide_shows_the_list_left_and_the_shell_along_the_bottom() {
         "the agent pane still offers a Shell tab:\n{frame}"
     );
     // The agent's frame runs to the last column: its title row ends in the
-    // top-right corner at the screen's edge.
+    // top-right corner at the screen's edge — heavy while the pane holds focus.
     let title_line = frame
         .lines()
         .nth(usize::from(agent_row))
         .expect("title row");
     assert!(
-        title_line.trim_end().ends_with('╮') || title_line.trim_end().ends_with('┐'),
+        ['╮', '┐', '┓', '┑'].contains(&title_line.trim_end().chars().last().expect("a corner")),
         "no right column is reserved when nothing fills it:\n{frame}"
     );
     assert_eq!(

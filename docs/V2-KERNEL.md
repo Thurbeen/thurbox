@@ -360,7 +360,7 @@ conversion less often:
   a pane showing one was treated as changed every frame and the whole
   demand-driven scheme collapsed to a steady 60fps whenever a terminal was
   visible. It is now gated on the pane's own output count
-  (`Terminals::output_stamp`, over `WiredPane::output_count`), so a quiet agent
+  (`Terminals::output_stamp`, over `WiredPane::content_stamp`), so a quiet agent
   settles at the redraw floor.
 - **Read less.** The snapshot rebuild is gated on `PRAGMA data_version`, so an
   idle thurbox stops re-reading five tables (plus one query per automation)

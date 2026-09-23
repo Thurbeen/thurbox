@@ -881,6 +881,7 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
                 ..Default::default()
             },
             shell: Painted::default(),
+            shell_asked: std::cell::RefCell::new(None),
         },
     );
 

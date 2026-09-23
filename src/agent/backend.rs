@@ -2574,6 +2574,7 @@ mod tests {
                     parser,
                     Arc::new(AtomicBool::new(false)),
                     stamp,
+                    Arc::default(),
                     count,
                     0,
                 );
@@ -2641,6 +2642,7 @@ mod tests {
             parser,
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&last_output_at),
+            Arc::default(),
             Arc::clone(&output_count),
             0,
         );
