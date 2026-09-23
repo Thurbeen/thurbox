@@ -1148,7 +1148,7 @@ second, each one draining in the same batch:
 | Read | What it did per event | What gates it now |
 |---|---|---|
 | `Terminals::links` | walked every cell of **every** live session's grid, building a `String` per row, to find OSC 8 targets and bare URLs | that session's `output_stamp` — the same atomic the redraw signal reads |
-| `Terminals::screens` (search content) | re-read every grid again, capped at `CONTENT_LINE_CAP` | `output_generation`, plus the existing "is anything asking" check |
+| `Terminals::screens` (search content; replaced by `kernel::search` in ADR-P26) | re-read every grid again, capped at `CONTENT_LINE_CAP` | `output_generation`, plus the existing "is anything asking" check |
 | the interface inventory | `read_to_string` + digest of **every file** in the interface directory, and a `plugins.lock` TOML parse, to answer "is this file still the one that was trusted" | a `trust_stale` flag set by `refresh_sources`, which every path that changes the directory or a grant already calls |
 
 The rows of the inventory are still assembled every publish: which pane is *on
