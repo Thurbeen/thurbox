@@ -21,7 +21,7 @@ it says otherwise. Raw samples: [`benchmark-multiplexers/`](benchmark-multiplexe
 
 | | tmux | Herdr | thurbox |
 |---|---|---|---|
-| keystroke to echo, idle | **1.0 ms** | 2.2 ms | 24 ms (p95 48) |
+| keystroke to echo, idle | **1.0 ms** | 2.2 ms | 25 ms (p95 48) |
 | create 50 sessions | **0.46 s** | 2.6 s | 4.6 s |
 | host memory, 50 sessions, nothing attached | **4.2 MiB** | 41 MiB | 9.2 MiB |
 | host CPU, 50 idle sessions, nothing attached | **0 %** | 22.5 % | **0 %** |
@@ -46,7 +46,7 @@ top, and that is where it pays.
 
 **Where thurbox loses, plainly:**
 
-- **Typing feels slower.** A keystroke comes back in 24 ms (p95 48 ms), and
+- **Typing feels slower.** A keystroke comes back in 25 ms (p95 48 ms), and
   42 ms whenever another session is busy — against 1–2 ms for tmux and Herdr.
   The samples cluster rather than spread, which points at the render loop's
   pacing rather than at work — most likely the 33 ms output floor (ADR-P17):
@@ -151,8 +151,8 @@ between the other two on CPU.
 
 ### Throughput: a 50 000-line burst
 
-One session prints 50 000 lines of 100 bytes (5 MB) as fast as its pty takes
-them.
+One session prints 50 000 lines of about 107 bytes (5.4 MB) as fast as its pty
+takes them.
 
 | | metric | tmux | Herdr | thurbox |
 |---|---|---|---|---|
@@ -165,8 +165,10 @@ them.
 | attached | host CPU spent | 0.23 (0.23) s | 0.20 (0.20) s | 0.38 (0.41) s |
 | attached | host memory after | 8.4 MiB | 23.2 MiB | 36.5 MiB |
 
-Nothing was dropped: on every host and every repetition, the last lines the
-host reported were the last lines written, in order. For a user: a log-dumping
+Nothing was dropped at the tail: on every host and every repetition, the last
+rows the host reported (up to 120) were the last lines written, in order.
+Earlier lines were not checked; each host's history limit has let most of them
+go anyway (see scrollback). For a user: a log-dumping
 agent is never slowed by any of the three; Herdr drains fastest, and thurbox
 shows the end of a burst sooner than `tmux attach` does, at about 1.6 times
 the CPU.
@@ -191,17 +193,18 @@ thurbox's CLI is the slowest to hand it over.
 
 ### Keystroke to echo
 
-Through the attached client, 500 keys per cell (5 repetitions of 100), spaced
-20–60 ms apart at random.
+Through the attached client, 500 keys per cell (5 repetitions of 100), sent
+60–100 ms apart at random, send to send, so every host gets the same typing
+rate.
 
 | | tmux | Herdr | thurbox |
 |---|---|---|---|
-| idle, median (p95) | 1.04 (1.09) ms | 2.23 (2.34) ms | 24.0 (48.3) ms |
-| another session busy, median (p95) | 0.77 (0.98) ms | 0.45 (0.55) ms | 42.2 (43.1) ms |
+| idle, median (p95) | 1.03 (1.09) ms | 2.19 (2.34) ms | 25.4 (48.5) ms |
+| another session busy, median (p95) | 0.74 (0.98) ms | 0.44 (0.52) ms | 42.2 (43.1) ms |
 
 No key was lost on any host. thurbox's samples are not spread but clustered:
-idle at about 4, 13, 24 and 47 ms; with another session busy at about 11 and
-42 ms. For a user: 1–2 ms is imperceptible; 24–48 ms is the difference between
+idle at about 4, 13, 24 and 47 ms; with another session busy at about 11, 21
+and 42 ms. For a user: 1–2 ms is imperceptible; 25–48 ms is the difference between
 a local shell and a slightly laggy remote one, and it is there on every key.
 Herdr getting faster while another session is busy was not investigated.
 
@@ -284,7 +287,7 @@ Left out, on purpose:
 **The stand-in agent** (`scripts/bench/agent.py`) is one Python process per
 session, identical on every host. It writes the monotonic time it started to
 a file, then waits. Every byte typed at it is answered with a four-letter token
-redrawn in place; a signal makes it print a burst of 50 000 lines of 100 bytes,
+redrawn in place; a signal makes it print a burst of 50 000 lines of ~107 bytes,
 another starts or stops a trickle of 10 lines a second. Signals rather than
 typed commands, so starting a burst does not go through the input path being
 measured. Readiness and burst timing come from the agent's own clock, never
@@ -337,8 +340,10 @@ with `CLOCK_MONOTONIC`; `hyperfine` was not used, because most of these are
 not "run a command N times".
 
 **Niceness and load.** The timed runs ran at niceness 0; only the thurbox build
-before them ran under `nice -n 10`. The load average is recorded next to every
-sample in the raw results.
+before them ran under `nice -n 10`. Every sample in the raw results carries the
+1-minute load average at the start of its repetition (`load1`); the harness now
+also records it when each sample ends (`load1_end`), which the latency re-run
+below has and the other scenarios' committed data predates.
 
 ## The machine
 
@@ -393,11 +398,13 @@ the results.
   whichever mode came up.
 - **p95 over 5 repetitions is the maximum.** Treat the p95 columns as "worst
   seen" everywhere except latency, where it is over 500 pooled samples.
-- **Two invocations.** `create` and `attach` come from one run and the other
-  five scenarios from a second, the same day on the same machine and build
-  (87 minutes of machine time between them). The first run stopped on a
-  harness bug — a banner scrolled off screen before a client attached — fixed
-  before the second.
+- **Three invocations.** `create` and `attach` come from one run, `latency`
+  from a third and the other four scenarios from a second, the same day on the
+  same machine and build. The first run stopped on a harness bug — a banner
+  scrolled off screen before a client attached — fixed before the second.
+  Latency was re-measured after review: the first method waited 20–60 ms after
+  each echo, so a slower host was typed at more slowly. The fixed schedule
+  moved no median by more than 1.4 ms (thurbox idle: 24.0 then 25.4).
 
 ## Re-running it
 
