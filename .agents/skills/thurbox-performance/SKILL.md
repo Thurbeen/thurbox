@@ -33,7 +33,7 @@ frame is agent output. Applying the tight floor to both made a chatty agent driv
 60 paints a second to show 30 lines; the split is worth 30% of the loaded cost
 (ADR-P17). **A keystroke's echo is on neither floor** (ADR-P28): a key sent to a
 terminal owes an echo (`EchoWait`), the loop sleeps in `poll(2)` on the terminal
-and on the `agent::output_wake` self-pipe until it comes, holds the key's own
+and on the `agent::output_wake` self-pipe (poked only by that pane's reader) until it comes, holds the key's own
 frame for it (`ECHO_HOLD`), and paints it at once as the last full frame with
 only that surface repainted (`paint_echo_frame`) — one such frame per key, and
 declined whenever anything is drawn over the panes. What marks the screen dirty:

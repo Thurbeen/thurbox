@@ -880,14 +880,13 @@ impl WiredPane {
         self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
-    /// When this pane last produced output, as epoch milliseconds.
+    /// When this pane last produced live output, as epoch milliseconds.
     ///
-    /// The lock-free redraw signal: a renderer compares it against the stamp
-    /// it last painted at, so a quiet pane costs one atomic load instead of a
-    /// repaint. Monotonic non-decreasing — the reader thread only ever stores
-    /// `now` — which is what lets the render loop's cheap output-change
-    /// detector ([`crate::kernel::terminal::Terminals::output_generation`])
-    /// spot new output without locking the vt100 parser.
+    /// The *activity* signal — quiescence, "printing", how long a pane has
+    /// been quiet — stored after the parse and monotonic non-decreasing, since
+    /// the reader thread only ever stores `now`. Not the loop's redraw signal:
+    /// that is [`Self::output_seq`], because a millisecond cannot tell two
+    /// chunks apart.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
     }
@@ -904,6 +903,12 @@ impl WiredPane {
     /// with more in it.
     pub fn output_seq(&self) -> u64 {
         self.output_seq.load(Ordering::Acquire)
+    }
+
+    /// The cell behind [`Self::output_seq`], which is how
+    /// [`crate::agent::output_wake::arm`] names this pane.
+    pub fn output_seq_cell(&self) -> &AtomicU64 {
+        &self.output_seq
     }
 
     /// Whether the pane's process/stream has ended.
@@ -1650,14 +1655,14 @@ impl Session {
                     }
                     seed_len = seed_len.saturating_sub(n);
                     output_seq.fetch_add(1, Ordering::Release);
-                    crate::agent::output_wake::notify();
+                    crate::agent::output_wake::notify(&output_seq);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
                         Self::install(&parser, &residency, &snapshot);
                         // A rebuilt grid is new content to paint, like output.
                         output_seq.fetch_add(1, Ordering::Release);
-                        crate::agent::output_wake::notify();
+                        crate::agent::output_wake::notify(&output_seq);
                     }
                 }
                 Err(e) => {

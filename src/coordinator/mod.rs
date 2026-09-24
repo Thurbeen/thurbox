@@ -182,7 +182,7 @@ impl App {
             self.echo = None;
         }
         if self.echo.is_none() {
-            thurbox::agent::output_wake::arm(false);
+            thurbox::agent::output_wake::arm(None);
         }
     }
 

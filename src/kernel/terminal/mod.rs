@@ -392,6 +392,10 @@ impl<'a> Pane<'a> {
     fn output_seq(&self) -> Option<u64> {
         Some(self.wired()?.output_seq())
     }
+
+    fn output_seq_cell(&self) -> Option<&'a std::sync::atomic::AtomicU64> {
+        Some(self.wired()?.output_seq_cell())
+    }
 }
 
 /// One surface's extracted rows and the output stamp they were read at.
@@ -1801,6 +1805,18 @@ impl Terminals {
             return self.programs.get(key).map(|slot| slot.pane.output_seq());
         }
         self.pane(surface)?.output_seq()
+    }
+
+    /// The cell behind [`Self::output_seq`] for a surface, which is how a
+    /// wake-up is armed for that pane alone (`agent::output_wake`).
+    pub fn output_seq_cell(&self, surface: &str) -> Option<&std::sync::atomic::AtomicU64> {
+        if let Some(key) = self.program_key(surface) {
+            return self
+                .programs
+                .get(key)
+                .map(|slot| slot.pane.output_seq_cell());
+        }
+        self.pane(surface)?.output_seq_cell()
     }
 
     /// A cheap signature of every live pane's output so far.

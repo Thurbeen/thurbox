@@ -2149,10 +2149,12 @@ for, so it gets its own path, and the floors keep pacing everything else.
   such frame per keystroke, not per chunk, so an agent streaming while you type
   is still painted at 30 fps.
 - **The loop is woken by it.** `WiredPane::output_seq` counts chunks the parser
-  has taken, bumped *after* the parse, and every reader loop then pokes a
-  self-pipe (`agent::output_wake`) — only while an echo is owed, so otherwise it
-  is one atomic load. While owed, the loop sleeps in `poll(2)` on the terminal
-  and that pipe instead of in crossterm's poll. Elsewhere than Unix it polls the
+  has taken, bumped *after* the parse, and the reader loop of the pane the echo
+  is owed by then pokes a self-pipe (`agent::output_wake`, armed with that
+  pane's counter). Every other pane, and every pane while nothing is owed, pays
+  one atomic load: a session flooding output beside the one being typed into
+  does not wake the loop per chunk. While owed, the loop sleeps in `poll(2)` on
+  the terminal and that pipe instead of in crossterm's poll. Elsewhere than Unix it polls the
   terminal in 1 ms slices (`ECHO_POLL`).
 - **The keystroke's own frame waits for it** (`ECHO_HOLD`, one input frame), so
   the two are one paint whenever the agent answers in time, and an echo never

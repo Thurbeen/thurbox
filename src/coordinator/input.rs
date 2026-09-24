@@ -770,7 +770,7 @@ impl App {
             self.last_keystroke = Some(Instant::now());
         }
         if delivered && echo.is_some() {
-            thurbox::agent::output_wake::arm(true);
+            thurbox::agent::output_wake::arm(self.terminals.output_seq_cell(surface));
             self.echo = echo;
         }
         delivered
