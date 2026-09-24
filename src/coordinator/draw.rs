@@ -57,7 +57,9 @@ impl App {
             return Ok(());
         }
         if let Some(surface) = self.echo_due.take() {
+            Counters::bump(&self.perf.echoes);
             if self.paint_echo_frame(terminal, &surface)? {
+                Counters::bump(&self.perf.echo_frames);
                 return Ok(());
             }
         }

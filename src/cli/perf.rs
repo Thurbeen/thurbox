@@ -103,6 +103,14 @@ fn render_human(s: &Value) -> String {
         ("iterations", u(s, &["counters", "iterations"]).to_string()),
         ("frames", u(s, &["counters", "frames"]).to_string()),
         ("idle skips", u(s, &["counters", "skipped"]).to_string()),
+        (
+            "echoes / echo frames",
+            format!(
+                "{} / {}",
+                u(s, &["counters", "echoes"]),
+                u(s, &["counters", "echo_frames"])
+            ),
+        ),
         ("plugin renders", u(s, &["counters", "renders"]).to_string()),
         (
             "plugin failures",

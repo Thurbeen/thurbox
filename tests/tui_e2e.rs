@@ -3053,6 +3053,7 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
 
     assert!(tui.quit().success());
 }
+
 /// A stand-in agent that echoes each key it reads as `[k]`, redrawn in place,
 /// a few milliseconds after reading it.
 ///
@@ -3060,45 +3061,55 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
 /// arrives before the interface has started painting the keystroke's own frame
 /// rides in that frame for free, however the loop paces output; one that
 /// arrives *after* it — which is the case for any agent slower than a frame to
-/// answer, real agents included — is paced by whatever floor output gets.
+/// answer, real agents included — used to be paced by the output floor.
 const DELAYED_ECHO: &str =
     "printf 'ready> '; while IFS= read -rs -n1 c; do sleep 0.005; printf '\\r[%s]' \"$c\"; done";
 
-/// Keystroke-to-echo samples, in milliseconds, for keys typed into the focused
-/// [`DELAYED_ECHO`] session at a person's pace.
-fn echo_latencies(tui: &mut Tui, keys: usize) -> Vec<f64> {
-    let mut samples = Vec::with_capacity(keys);
+/// Type `keys` letters into the focused [`DELAYED_ECHO`] session at a person's
+/// pace, each one only after the last one's echo is on screen.
+fn type_and_see_echoes(tui: &mut Tui, keys: usize) {
     for i in 0..keys {
         let key = b'a' + (i % 26) as u8;
         let token = format!("[{}]", key as char);
-        let sent = Instant::now();
         tui.send(&[key]);
-        let deadline = sent + Duration::from_secs(2);
-        loop {
-            if tui.frame().contains(&token) {
-                samples.push(sent.elapsed().as_secs_f64() * 1000.0);
-                break;
-            }
-            if Instant::now() > deadline {
-                tui.give_up(&format!("the echo {token}"));
-            }
-            std::thread::sleep(Duration::from_micros(200));
-        }
-        // 60–100 ms between keys, varied so the samples cannot lock onto the
+        tui.wait_within(
+            Duration::from_secs(5),
+            &format!("the echo {token}"),
+            |frame| frame.contains(&token),
+        );
+        // 60–100 ms between keys, varied so the keys cannot lock onto the
         // loop's own clock — the benchmark's typing rate.
         std::thread::sleep(Duration::from_millis(60 + (i as u64 * 37) % 41));
     }
-    samples
 }
 
-fn median(samples: &[f64]) -> f64 {
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    sorted[sorted.len() / 2]
+/// The loop's `(echoes, echo_frames)` counters, once its published perf
+/// snapshot has counted at least `at_least` echoes — or as they stand when it
+/// gives up. Published every few seconds while `THURBOX_PERF_LOG` is set.
+fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
+    let deadline = Instant::now() + WAIT;
+    let mut seen = (0, 0);
+    while Instant::now() < deadline {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let out = cmd
+            .args(["perf", "--json"])
+            .output()
+            .expect("thurbox-cli perf");
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            let counter = |name: &str| json["counters"][name].as_u64().unwrap_or(0);
+            seen = (counter("echoes"), counter("echo_frames"));
+            if seen.0 >= at_least {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    seen
 }
 
 /// A profile with a [`DELAYED_ECHO`] session named `echo` (plus whatever
-/// `extra` creates after it), attached and focused.
+/// `extra` creates after it), attached and focused, with the loop counting.
 fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
@@ -3124,7 +3135,9 @@ fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
     // After, so `echo` is the first row, which is the one selected at boot.
     extra(&profile, &repo);
     profile.cli(&["config", "accept-interface"]);
-    let tui = Tui::spawn(&profile, 40, 120);
+    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_PERF_LOG", "1");
+    });
     tui.wait_for("ready> ");
     tui.wait_until("the agent pane to be the focused one", |frame| {
         frame
@@ -3135,37 +3148,50 @@ fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
     Some((profile, tui))
 }
 
-/// The echo budget the two scenarios below hold the loop to. The output floor
-/// they guard against is 33 ms, so a regression lands well above it; a slow CI
-/// runner adds a few milliseconds, and the median shrugs off a stall.
-const ECHO_BUDGET_MS: f64 = 20.0;
+/// Keys typed in the two scenarios below.
+const ECHO_KEYS: u64 = 20;
+
+/// What both scenarios assert: every key's echo was painted with no frame
+/// floor, and all but the first as a frame that redrew only the pane — the
+/// first key after a pause has no kept frame to redraw over (see
+/// `KEEP_FRAME_WHILE_TYPING`).
+///
+/// Asserted on the loop's counters rather than on the clock (ADR-P5): the
+/// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
+/// and this pins that nothing puts it back on a floor.
+fn assert_every_echo_painted_at_once(profile: &Profile) {
+    let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
+    assert_eq!(
+        echoes, ECHO_KEYS,
+        "every keystroke's echo is painted with no floor ({echo_frames} of them as echo frames)"
+    );
+    assert!(
+        echo_frames >= ECHO_KEYS - 1,
+        "{echo_frames} of {echoes} echoes were painted by redrawing only the pane"
+    );
+}
 
 #[test]
 fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
     // Output is paced at 30 frames a second (ADR-P17) because nobody reads a
     // scrolling log faster. The echo of a key is output too, and pacing it
     // put 25–48 ms on every keystroke (docs/BENCHMARK-MULTIPLEXERS.md): the
-    // keystroke's own frame paints at once, the echo lands just after it and
-    // then waits out the floor from that frame.
-    let Some((_profile, mut tui)) = echo_session(|_, _| {}) else {
+    // keystroke's own frame painted at once, the echo landed just after it and
+    // then waited out the floor from that frame (ADR-P28).
+    let Some((profile, mut tui)) = echo_session(|_, _| {}) else {
         return;
     };
-    let samples = echo_latencies(&mut tui, 30);
-    let median = median(&samples);
-    assert!(
-        median < ECHO_BUDGET_MS,
-        "keystroke-to-echo median {median:.1} ms (budget {ECHO_BUDGET_MS} ms, the agent itself \
-         takes ~5): {samples:.1?}"
-    );
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    assert_every_echo_painted_at_once(&profile);
     assert!(tui.quit().success());
 }
 
 #[test]
-fn a_keystrokes_echo_stays_fast_while_another_session_prints() {
+fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
     // The same, with a second session printing the whole time. Its output
     // keeps the loop painting at the output floor, which is exactly the clock
-    // an echo must not be put on.
-    let Some((_profile, mut tui)) = echo_session(|profile, repo| {
+    // an echo must not be put on — and it must not be counted as an echo.
+    let Some((profile, mut tui)) = echo_session(|profile, repo| {
         profile.cli(&[
             "session",
             "create",
@@ -3183,13 +3209,8 @@ fn a_keystrokes_echo_stays_fast_while_another_session_prints() {
     }) else {
         return;
     };
-    let samples = echo_latencies(&mut tui, 30);
-    let median = median(&samples);
-    assert!(
-        median < ECHO_BUDGET_MS,
-        "keystroke-to-echo median {median:.1} ms with another session printing (budget \
-         {ECHO_BUDGET_MS} ms, the agent itself takes ~5): {samples:.1?}"
-    );
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    assert_every_echo_painted_at_once(&profile);
     assert!(tui.quit().success());
 }
 

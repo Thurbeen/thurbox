@@ -46,6 +46,11 @@ pub struct Counters {
     pub renders_skipped: AtomicU64,
     /// Published `thurbox.*` groups reused instead of rebuilt.
     pub groups_reused: AtomicU64,
+    /// Keystroke echoes painted with no frame floor (ADR-P28).
+    pub echoes: AtomicU64,
+    /// Of those, the ones painted as the last frame with only the echoing
+    /// surface redrawn, rather than as a full frame.
+    pub echo_frames: AtomicU64,
 }
 
 impl Counters {
@@ -68,6 +73,8 @@ impl Counters {
             reloads: Self::get(&self.reloads),
             renders_skipped: Self::get(&self.renders_skipped),
             groups_reused: Self::get(&self.groups_reused),
+            echoes: Self::get(&self.echoes),
+            echo_frames: Self::get(&self.echo_frames),
         }
     }
 }
@@ -83,6 +90,8 @@ pub struct Snapshot {
     pub reloads: u64,
     pub renders_skipped: u64,
     pub groups_reused: u64,
+    pub echoes: u64,
+    pub echo_frames: u64,
 }
 
 impl Snapshot {
@@ -98,6 +107,8 @@ impl Snapshot {
             reloads: self.reloads.saturating_sub(earlier.reloads),
             renders_skipped: self.renders_skipped.saturating_sub(earlier.renders_skipped),
             groups_reused: self.groups_reused.saturating_sub(earlier.groups_reused),
+            echoes: self.echoes.saturating_sub(earlier.echoes),
+            echo_frames: self.echo_frames.saturating_sub(earlier.echo_frames),
         }
     }
 }
@@ -792,6 +803,8 @@ pub fn snapshot_json(
             "reloads": counters.reloads,
             "renders_skipped": counters.renders_skipped,
             "groups_reused": counters.groups_reused,
+            "echoes": counters.echoes,
+            "echo_frames": counters.echo_frames,
         },
         "frame": histogram_json(&timings.frame),
         "tick": histogram_json(&timings.tick),
