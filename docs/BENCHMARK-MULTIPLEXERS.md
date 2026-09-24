@@ -50,7 +50,7 @@ it is a full-screen application on top, and — until
 - **Typing feels slower.** A keystroke came back in 25 ms (p95 48 ms), and
   42 ms whenever another session was busy — against 1–2 ms for tmux and Herdr.
   The samples clustered rather than spread: the echo arrives as agent output,
-  so it waited out the 33 ms output floor (ADR-P17). Now 3.4 ms idle and 1.6 ms
+  so it waited out the 33 ms output floor (ADR-P17). Now 4.2 ms idle and 1.9 ms
   busy ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)): no longer paced, but still behind Herdr's 2.1 and
   tmux's 1.0 when the machine is quiet.
 - **Creating sessions was the slowest of the three**: 92 ms a session against
@@ -248,7 +248,7 @@ has been done since.
    drawn on the 33 ms output floor. Output from the session that just received
    a key, arriving within a frame or two of it, is arguably input and could
    take the 16 ms floor — or no floor. Now no floor, and a frame that redraws
-   only that pane: 3.4 ms idle ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
+   only that pane: 4.2 ms idle ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
 2. **Stale first view on attach** (`resources`, `first_view_stale`),
    [#1242](https://github.com/Thurbeen/thurbox/issues/1242): no longer
    reproduced by the harness at any N — see the revisit below. The adopt path
@@ -367,12 +367,14 @@ launch of the same run killed seconds earlier), 0.22 when it ended; 0.11 and
 | reattach, N=50 | 13 ms | 323 ms | 249 (494) ms | **152 (184) ms** |
 | sessions back after a restart | — | — | 231 (242) ms | **167 (172) ms** |
 
-Latency is median (p95) of 500 keys; the rest median (worst of 5). Two
-commits came after the *after* build: counters for the tests, and a narrower
-wake-up (only the pane that owes an echo wakes the loop). The latency scenario
-alone, re-run on that final head (`21e90d40`, load 1.25 at the start, the
-residue of the memory rounds below): 3.47 (4.86) ms idle and 1.73 (2.37) ms
-busy, against Herdr's 2.16 and 0.45 in the same run
+Latency is median (p95) of 500 keys; the rest median (worst of 5). Three
+code commits came after the *after* build: counters for the tests, a narrower
+wake-up (only the pane that owes an echo wakes the loop), and a queue that
+keeps every wait when one input batch contains several keys. The latency
+scenario alone, re-run on that final code head (`b889b337`), measured 4.20
+(5.44) ms idle and 1.94 (3.12) ms busy, against Herdr's 2.23 (2.36) and 0.46
+(0.55) in the same run; neither lost a key. Load was 0.88 at the start and
+1.22 at the end, with measured samples spanning 0.42–1.39
 ([`echo-and-create/head/`](benchmark-multiplexers/echo-and-create/head/)).
 
 **Typing.** The echo of a key is agent output, and was painted on the 33 ms
@@ -384,11 +386,11 @@ frame for it, and paints it at once by redrawing only that pane over the last
 frame
 ([ADR-P28](PERFORMANCE.md#adr-p28-a-keystrokes-echo-is-painted-at-once-2026-09-23)).
 It is still slower than Herdr and tmux when nothing else is happening. A trace
-of one key on this machine puts the 3.4 ms at ~1.4 ms re-rendering the pane and
+of one key from the earlier 3.4 ms run puts ~1.4 ms in re-rendering the pane and
 flushing the frame, ~1.1 ms through tmux's control mode and the threads between
 it and the screen (each waking a core from idle), and ~0.5 ms offering the key
 to the focused pane's Lua before it goes out; ADR-P28 says what removing each
-would cost. With another session printing, cores stay awake and it is 1.6 ms —
+would cost. With another session printing, cores stay awake and it is 1.9 ms —
 under Herdr's idle figure, above its busy one.
 
 **Creating.** A `session create` ran 27 processes, 20 of them `tmux set-option`

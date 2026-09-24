@@ -1,6 +1,6 @@
 # Multiplexer benchmark — summary
 
-Run 20260924T012237Z · reps 5 (+1 warm-up discarded)
+Run 20260924T214854Z · reps 5 (+1 warm-up discarded)
 
 ```json
 {
@@ -13,7 +13,6 @@ Run 20260924T012237Z · reps 5 (+1 warm-up discarded)
     "governor": "powersave"
   },
   "versions": {
-    "tmux": "tmux 3.7c",
     "herdr": "herdr 0.9.1",
     "thurbox": "0.0.0-dev (schema v47)",
     "python": "3.13.15"
@@ -23,9 +22,9 @@ Run 20260924T012237Z · reps 5 (+1 warm-up discarded)
 
 ## latency
 
-| variant | metric | tmux median | tmux p95 | herdr median | herdr p95 | thurbox median | thurbox p95 |
-|---|---|---|---|---|---|---|---|
-| idle | echo_ms | 1.02 | 1.08 | 2.16 | 2.33 | 3.47 | 4.86 |
-| idle | timeouts | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| other-busy | echo_ms | 0.74 | 0.93 | 0.45 | 0.52 | 1.73 | 2.37 |
-| other-busy | timeouts | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| variant | metric | herdr median | herdr p95 | thurbox median | thurbox p95 |
+|---|---|---|---|---|---|
+| idle | echo_ms | 2.23 | 2.36 | 4.20 | 5.44 |
+| idle | timeouts | 0.00 | 0.00 | 0.00 | 0.00 |
+| other-busy | echo_ms | 0.46 | 0.55 | 1.94 | 3.12 |
+| other-busy | timeouts | 0.00 | 0.00 | 0.00 | 0.00 |
