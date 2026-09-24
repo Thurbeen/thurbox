@@ -49,9 +49,8 @@ pub(crate) use chrome::*;
 pub(crate) struct EchoWait {
     /// The surface the key went to.
     surface: String,
-    /// Its output sequence before the key was sent; any move past it is the
-    /// answer.
-    seq: u64,
+    /// The first output sequence this key may claim as its answer.
+    target_seq: u64,
     /// When the key was sent.
     sent: Instant,
 }
@@ -154,36 +153,54 @@ impl App {
     /// Called *before* the send, so the sequence it records cannot already
     /// include the answer.
     pub(crate) fn expect_echo(&mut self, surface: &str) -> Option<EchoWait> {
+        let current = self.terminals.output_seq(surface)?;
+        let after_queued = self
+            .echo
+            .iter()
+            .rev()
+            .find(|echo| echo.surface == surface)
+            .map_or(current, |echo| echo.target_seq);
         Some(EchoWait {
             surface: surface.to_string(),
-            seq: self.terminals.output_seq(surface)?,
+            // A previous key may still be waiting when this one is sent. Its
+            // answer is not this key's answer, so reserve the following move.
+            target_seq: current.max(after_queued).saturating_add(1),
             sent: Instant::now(),
         })
     }
 
     fn echo_arrived(&self) -> bool {
-        self.echo.as_ref().is_some_and(|echo| {
+        self.echo.front().is_some_and(|echo| {
             self.terminals
                 .output_seq(&echo.surface)
-                .is_some_and(|seq| seq != echo.seq)
+                .is_some_and(|seq| seq >= echo.target_seq)
         })
+    }
+
+    /// Wake the loop only for the oldest echo still owed.
+    pub(crate) fn arm_echo_wake(&self) {
+        let seq = self
+            .echo
+            .front()
+            .and_then(|echo| self.terminals.output_seq_cell(&echo.surface));
+        thurbox::agent::output_wake::arm(seq);
     }
 
     /// Owe the next frame to an echo that has arrived, or stop waiting for one
     /// that is not coming — see [`ECHO_WINDOW`].
     pub(crate) fn settle_echo(&mut self) {
-        let Some(echo) = &self.echo else {
-            return;
-        };
-        if self.echo_arrived() {
-            self.echo_due = self.echo.take().map(|echo| echo.surface);
-            self.dirty = true;
-        } else if echo.sent.elapsed() >= ECHO_WINDOW {
-            self.echo = None;
+        while let Some(echo) = self.echo.front() {
+            if self.echo_arrived() {
+                self.echo_due = self.echo.pop_front().map(|echo| echo.surface);
+                self.dirty = true;
+                break;
+            }
+            if echo.sent.elapsed() < ECHO_WINDOW {
+                break;
+            }
+            self.echo.pop_front();
         }
-        if self.echo.is_none() {
-            thurbox::agent::output_wake::arm(None);
-        }
+        self.arm_echo_wake();
     }
 
     /// The first read of an input batch: wait up to `timeout` for an event —
@@ -196,7 +213,7 @@ impl App {
         &self,
         timeout: Duration,
     ) -> std::io::Result<Option<crossterm::event::Event>> {
-        let Some(echo) = &self.echo else {
+        let Some(echo) = self.echo.front() else {
             return next_event(timeout);
         };
         // Back in time to paint the held keystroke frame if no echo came.

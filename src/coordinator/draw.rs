@@ -47,10 +47,14 @@ impl App {
         } else {
             OUTPUT_FRAME_INTERVAL
         };
-        let held = self
-            .echo
-            .as_ref()
-            .is_some_and(|echo| Instant::now() < echo.hold_until());
+        // A newer key may still be in its hold while an older key's echo is
+        // already due. The hold only suppresses the empty keystroke frame; it
+        // must never suppress output that has arrived.
+        let held = self.echo_due.is_none()
+            && self
+                .echo
+                .front()
+                .is_some_and(|echo| Instant::now() < echo.hold_until());
         let due = self.dirty && since_paint >= floor && !held;
         if !due && since_paint < FORCE_REDRAW_INTERVAL {
             Counters::bump(&self.perf.skipped);

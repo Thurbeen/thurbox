@@ -246,7 +246,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         data_epoch: 0,
         last_activity: Instant::now(),
         input_dirty: true,
-        echo: None,
+        echo: std::collections::VecDeque::new(),
         echo_due: None,
         last_frame: None,
         last_keystroke: None,

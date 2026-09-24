@@ -768,10 +768,10 @@ impl App {
         };
         if delivered {
             self.last_keystroke = Some(Instant::now());
-        }
-        if delivered && echo.is_some() {
-            thurbox::agent::output_wake::arm(self.terminals.output_seq_cell(surface));
-            self.echo = echo;
+            if let Some(echo) = echo {
+                self.echo.push_back(echo);
+                self.arm_echo_wake();
+            }
         }
         delivered
     }

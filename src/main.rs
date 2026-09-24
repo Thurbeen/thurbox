@@ -315,9 +315,9 @@ struct App {
     /// resize, a worker result they asked for — rather than to an agent
     /// printing. Only the first kind gets [`MIN_FRAME_INTERVAL`].
     input_dirty: bool,
-    /// The echo a keystroke sent to a terminal is owed, until it arrives or
+    /// The echoes keystrokes sent to terminals are owed, until each arrives or
     /// [`ECHO_WINDOW`] runs out. See `App::settle_echo`.
-    echo: Option<coordinator::EchoWait>,
+    echo: std::collections::VecDeque<coordinator::EchoWait>,
     /// The surface an owed echo has arrived from: the next frame is painted at
     /// once, with no floor at all.
     echo_due: Option<String>,

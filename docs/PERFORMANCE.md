@@ -2144,10 +2144,11 @@ time went, and none of it was work:
 for, so it gets its own path, and the floors keep pacing everything else.
 
 - **An echo is owed.** A key delivered to a terminal (`send_to_surface`) records
-  the surface and its output sequence (`EchoWait`). The first output from that
-  surface within `ECHO_WINDOW` (150 ms) is painted with no floor at all — one
-  such frame per keystroke, not per chunk, so an agent streaming while you type
-  is still painted at 30 fps.
+  the surface and its output sequence (`EchoWait`). Rapid keys queue those waits,
+  each reserving the next output sequence instead of replacing the one before
+  it. The first eligible output from that surface within `ECHO_WINDOW` (150 ms)
+  is painted with no floor at all — one such frame per keystroke, not per chunk,
+  so an agent streaming while you type is still painted at 30 fps.
 - **The loop is woken by it.** `WiredPane::output_seq` counts chunks the parser
   has taken, bumped *after* the parse, and the reader loop of the pane the echo
   is owed by then pokes a self-pipe (`agent::output_wake`, armed with that
@@ -2234,7 +2235,8 @@ neither it nor the copy each full frame would make into it.
 the perf snapshot and the HUD, and `tests/tui_e2e.rs` types twenty keys into a
 stand-in agent that answers each 5 ms late — the case the floor used to catch —
 and fails unless every one was counted, alone and with another session
-printing.
+printing. The idle case then sends two keys in one input burst and separates
+the agent's replies, so replacing a pending wait fails the counter assertion.
 
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
 re-applying the same server options twice (#1243). The options are now one tmux

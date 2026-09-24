@@ -3108,9 +3108,9 @@ fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
     seen
 }
 
-/// A profile with a [`DELAYED_ECHO`] session named `echo` (plus whatever
+/// A profile with a session named `echo` running `command` (plus whatever
 /// `extra` creates after it), attached and focused, with the loop counting.
-fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
+fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -3130,7 +3130,7 @@ fn echo_session(extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
         "--arg",
         "-c",
         "--arg",
-        DELAYED_ECHO,
+        command,
     ]);
     // After, so `echo` is the first row, which is the one selected at boot.
     extra(&profile, &repo);
@@ -3178,11 +3178,37 @@ fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
     // put 25–48 ms on every keystroke (docs/BENCHMARK-MULTIPLEXERS.md): the
     // keystroke's own frame painted at once, the echo landed just after it and
     // then waited out the floor from that frame (ADR-P28).
-    let Some((profile, mut tui)) = echo_session(|_, _| {}) else {
+    // After the 20 ordinary keys, answer the first key of a two-key batch at
+    // once and the second 75 ms later. That keeps the two output chunks well
+    // inside the echo window but far enough apart that tmux cannot coalesce
+    // them into one read.
+    const DELAY_SECOND_BATCH_ECHO: &str = "printf 'ready> '; i=0; while IFS= read -rs -n1 c; do i=$((i + 1)); if [ \"$i\" -le 20 ]; then sleep 0.005; elif [ \"$i\" -eq 22 ]; then sleep 0.075; fi; printf '\\r[%s]' \"$c\"; done";
+    let Some((profile, mut tui)) = echo_session(DELAY_SECOND_BATCH_ECHO, |_, _| {}) else {
         return;
     };
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
     assert_every_echo_painted_at_once(&profile);
+
+    // Crossterm can hand one input poll several rapid or repeated keys. The
+    // agent answers them one at a time, so each send must keep its own wait
+    // instead of replacing the wait the previous key left behind.
+    const BATCHED_KEYS: u64 = 2;
+    let keys: Vec<u8> = (0..BATCHED_KEYS).map(|i| b'a' + (i % 26) as u8).collect();
+    let last = format!("[{}]", keys.last().copied().expect("a key") as char);
+    tui.send(&keys);
+    tui.wait_within(Duration::from_secs(5), "the last batched echo", |frame| {
+        frame.contains(&last)
+    });
+    let expected = ECHO_KEYS + BATCHED_KEYS;
+    let (echoes, echo_frames) = echo_counters(&profile, expected);
+    assert_eq!(echoes, expected, "every batched key retained its echo wait");
+    // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
+    // so the batch's first echo may need a full frame; its second must reuse
+    // that frame.
+    assert!(
+        echo_frames >= expected - 2,
+        "{echo_frames} of {echoes} batched echoes redrew only the pane"
+    );
     assert!(tui.quit().success());
 }
 
@@ -3191,7 +3217,7 @@ fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
     // The same, with a second session printing the whole time. Its output
     // keeps the loop painting at the output floor, which is exactly the clock
     // an echo must not be put on — and it must not be counted as an echo.
-    let Some((profile, mut tui)) = echo_session(|profile, repo| {
+    let Some((profile, mut tui)) = echo_session(DELAYED_ECHO, |profile, repo| {
         profile.cli(&[
             "session",
             "create",
