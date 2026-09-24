@@ -423,6 +423,67 @@ fn layout_set_backs_up_a_hand_edited_layout_and_says_so() {
     assert_eq!(std::fs::read_to_string(backup).expect("backup"), mine);
 }
 
+#[cfg(unix)]
+#[test]
+fn switching_presets_restores_an_edited_layout_when_the_preset_cannot_be_written() {
+    use std::os::unix::process::CommandExt;
+
+    if let Some(dir) = std::env::var_os("THURBOX_PRESET_WRITE_FAILURE_DIR") {
+        let error = presets::apply(Path::new(&dir), "split-shell")
+            .expect_err("the file-size limit must refuse the preset write");
+        assert!(error.contains("layout.lua"), "{error}");
+        return;
+    }
+
+    let dir = delivered("classic");
+    let mine = "-- my own arrangement\nreturn { children = { { slot = \"center\" } } }\n";
+    std::fs::write(dir.path().join("layout.lua"), mine).expect("edit layout.lua");
+
+    let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+    command
+        .args([
+            "--exact",
+            "switching_presets_restores_an_edited_layout_when_the_preset_cannot_be_written",
+            "--nocapture",
+        ])
+        .env("THURBOX_PRESET_WRITE_FAILURE_DIR", dir.path());
+    // SAFETY: signal disposition and resource limits are process-local,
+    // async-signal-safe changes made in the child immediately before exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let output = command
+        .output()
+        .expect("run the isolated write-failure probe");
+
+    assert!(
+        output.status.success(),
+        "the probe did not reach the expected write failure:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("layout.lua"))
+            .expect("the edited layout is restored"),
+        mine
+    );
+    assert!(
+        !dir.path().join("layout.lua.bak").exists(),
+        "restoring the edit consumes the temporary backup"
+    );
+}
+
 #[test]
 fn layout_set_refuses_a_preset_that_does_not_exist() {
     let root = profile();
