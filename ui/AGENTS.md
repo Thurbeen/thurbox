@@ -237,9 +237,16 @@ pin to. The thurbox repository's test suite holds `lib/` to this promise. It
 loads edited files frozen from an old release, and it pins a list of every
 exported name.
 
-The promise runs one way: **do not edit a `lib/` file.** An edited one stops
-receiving updates too, and the next release's panes will call names it lacks.
-Put your own helpers in a module of your own, such as `lib/mine.lua`.
+The promise runs one way in a user's installed interface: **do not edit a `lib/`
+file there.** An edited one stops receiving updates too, and the next release's
+panes will call names it lacks. Put your own helpers in a module of your own, such
+as `lib/mine.lua`.
+
+Repository development is the exception, not a contradiction: `ui/lib/` is
+Thurbox's implementation source and may be extended while keeping every promise
+above; `tests/edited_interface.rs` and `lib_surface.txt` hold that boundary.
+`thurbox.d.lua` is the checked API declaration rather than a loaded module, and
+must change when the kernel API it describes changes.
 
 ## Do not break the way back
 

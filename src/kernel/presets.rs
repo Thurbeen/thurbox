@@ -181,7 +181,34 @@ pub fn apply(dir: &Path, name: &str) -> Result<Applied, String> {
         _ => None,
     };
 
-    std::fs::write(&path, preset.layout).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(write_error) = std::fs::write(&path, preset.layout) {
+        if let Some(backup) = &backup {
+            // A failed write can leave a partial destination behind, and Windows
+            // will not rename over it. The edit remains safe at `backup` if either
+            // cleanup step fails, so report that path in the recovery error.
+            if let Err(remove_error) = std::fs::remove_file(&path) {
+                if remove_error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(format!(
+                        "{}: {write_error}; could not restore it from {}: {remove_error}; \
+                         your edited layout is still in {}",
+                        path.display(),
+                        backup.display(),
+                        backup.display()
+                    ));
+                }
+            }
+            if let Err(restore_error) = std::fs::rename(backup, &path) {
+                return Err(format!(
+                    "{}: {write_error}; could not restore it from {}: {restore_error}; \
+                     your edited layout is still in {}",
+                    path.display(),
+                    backup.display(),
+                    backup.display()
+                ));
+            }
+        }
+        return Err(format!("{}: {write_error}", path.display()));
+    }
     bundled::record_written(dir, bundled::LAYOUT, preset.layout)?;
     Ok(Applied {
         preset: preset.name,
