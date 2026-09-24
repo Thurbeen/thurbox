@@ -37,7 +37,7 @@ jobs:
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2
+        uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       # Reports the gate on the commit, so a red `main` is visible in GitHub and
