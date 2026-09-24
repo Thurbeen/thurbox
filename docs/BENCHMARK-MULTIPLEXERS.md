@@ -47,17 +47,19 @@ it is a full-screen application on top, and — until
 
 **Where thurbox loses, plainly:**
 
-- **Typing feels slower.** A keystroke comes back in 25 ms (p95 48 ms), and
-  42 ms whenever another session is busy — against 1–2 ms for tmux and Herdr.
-  The samples cluster rather than spread, which points at the render loop's
-  pacing rather than at work — most likely the 33 ms output floor (ADR-P17):
-  the echo arrives as agent output, not as input, so it does not get the
-  16 ms input floor.
-- **Creating sessions is the slowest of the three**: 92 ms a session against
-  Herdr's ~50 and tmux's 8, so 50 sessions take 4.6 s. Every `session create`
-  runs 27 processes, 20 of them separate `tmux set-option` calls re-applying
+- **Typing feels slower.** A keystroke came back in 25 ms (p95 48 ms), and
+  42 ms whenever another session was busy — against 1–2 ms for tmux and Herdr.
+  The samples clustered rather than spread: the echo arrives as agent output,
+  so it waited out the 33 ms output floor (ADR-P17). Now 3.4 ms idle and 1.6 ms
+  busy ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)): no longer paced, but still behind Herdr's 2.1 and
+  tmux's 1.0 when the machine is quiet.
+- **Creating sessions was the slowest of the three**: 92 ms a session against
+  Herdr's ~50 and tmux's 8, so 50 sessions took 4.6 s. Every `session create`
+  ran 27 processes, 20 of them separate `tmux set-option` calls re-applying
   the same server options
-  ([#1243](https://github.com/Thurbeen/thurbox/issues/1243)).
+  ([#1243](https://github.com/Thurbeen/thurbox/issues/1243)). Now six
+  processes, 36 ms a session and 1.8 s for 50 — faster than Herdr, still
+  behind tmux ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
 - **Attached, it was the heaviest on memory** (29 MiB with one session, 81 MiB
   with 50, about 1 MiB a session) and it is never quite idle (2.8 % of a core
   with one session, 10 % with 50, where tmux is at 0). The memory half is
@@ -73,7 +75,9 @@ it is a full-screen application on top, and — until
   ([revisited](#revisited-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23)).
 - **Reading history through the CLI** takes 47 ms against 6–8, most of it
   starting `thurbox-cli`.
-- **Attaching** takes 170–240 ms against tmux's 11.
+- **Attaching** takes 170–240 ms against tmux's 11 (90–180 ms since the
+  interface's own session setup became one tmux call,
+  [revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
 
 **Where thurbox wins:** it is the only one of the three that brings the
 sessions' commands back after a shutdown (in 0.22 s); with nothing attached it
@@ -237,12 +241,14 @@ back nothing.
 ## What this points at in thurbox
 
 Recorded, not fixed here — the benchmark does not tune what it measures. Each
-can be re-measured with the scenario named.
+can be re-measured with the scenario named; the two revisits below say what
+has been done since.
 
 1. **Echo latency** (`latency`): a keystroke's echo is agent output, so it is
    drawn on the 33 ms output floor. Output from the session that just received
    a key, arriving within a frame or two of it, is arguably input and could
-   take the 16 ms floor — or no floor.
+   take the 16 ms floor — or no floor. Now no floor, and a frame that redraws
+   only that pane: 3.4 ms idle ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
 2. **Stale first view on attach** (`resources`, `first_view_stale`),
    [#1242](https://github.com/Thurbeen/thurbox/issues/1242): no longer
    reproduced by the harness at any N — see the revisit below. The adopt path
@@ -252,7 +258,8 @@ can be re-measured with the scenario named.
    [#1243](https://github.com/Thurbeen/thurbox/issues/1243): 20
    `tmux set-option` processes per create re-apply options the server already
    has. One `tmux` invocation, or
-   once per server, would remove most of the 92 ms.
+   once per server, would remove most of the 92 ms. Now one invocation: 36 ms
+   ([revisited](#revisited-a-keystrokes-echo-and-session-creation-2026-09-24)).
 4. **Attached memory and idle CPU per session** (`resources`): ~1 MiB and ~0.15 %
    of a core per session with the interface up and nothing happening. The
    memory is answered (below); what is left per session is the reader thread
@@ -334,6 +341,79 @@ history rows at 200x50 (ADR-P27 has the method):
 - `hidden_terminal_secs = 0` keeps every grid, and is exactly the old
   behaviour. psmux (Windows) cannot hand a pane back in step with its output,
   so sessions there keep their grids either way.
+
+## Revisited: a keystroke's echo, and session creation (2026-09-24)
+
+The two costs a user feels most — typing latency and creating sessions — worked
+on, and measured the way everything above was: two complete runs of every
+scenario, one after the other, on the machine of the first table (the 4-core
+i5-6500T, NixOS, tmux 3.7c). *Before* is `main` at `171f4a10`, which already
+has lazy session parsing; *after* adds this work at `1a6b60c0`. tmux's and
+Herdr's columns are from the *after* run and agree with the *before* run's
+within the spread. 1-minute load: 0.84 when the *before* run started (a
+launch of the same run killed seconds earlier), 0.22 when it ended; 0.11 and
+0.08 for *after*. Raw samples:
+[`benchmark-multiplexers/echo-and-create/`](benchmark-multiplexers/echo-and-create/).
+
+| | tmux | Herdr | thurbox before | thurbox after |
+|---|---|---|---|---|
+| keystroke to echo, idle | 0.97 (1.05) ms | 2.06 (2.20) ms | 24.7 (48.3) ms | **3.37 (4.66) ms** |
+| … another session busy | 0.74 (0.98) ms | 0.45 (0.57) ms | 42.1 (43.2) ms | **1.65 (2.48) ms** |
+| create 50 sessions | 454 (467) ms | 2.66 (2.80) s | 4.74 (5.02) s | **1.81 (1.84) s** |
+| one create command, mean, N=50 | 8.5 (8.7) ms | 52 (55) ms | 95 (101) ms | **36 (37) ms** |
+| create 20 sessions | 200 (203) ms | 1.09 (1.18) s | 1.95 (2.63) s | **730 (776) ms** |
+| first agent running (cold) | 38 (38) ms | 149 (149) ms | 94 (104) ms | **80 (88) ms** |
+| attach, N=1 / N=50 | 11 / 13 ms | 243 / 433 ms | 162 / 210 ms | **88 / 178 ms** |
+| reattach, N=50 | 13 ms | 323 ms | 249 (494) ms | **152 (184) ms** |
+| sessions back after a restart | — | — | 231 (242) ms | **167 (172) ms** |
+
+Latency is median (p95) of 500 keys; the rest median (worst of 5). Two
+commits came after the *after* build: counters for the tests, and a narrower
+wake-up (only the pane that owes an echo wakes the loop). The latency scenario
+alone, re-run on that final head (`21e90d40`, load 1.25 at the start, the
+residue of the memory rounds below): 3.47 (4.86) ms idle and 1.73 (2.37) ms
+busy, against Herdr's 2.16 and 0.45 in the same run
+([`echo-and-create/head/`](benchmark-multiplexers/echo-and-create/head/)).
+
+**Typing.** The echo of a key is agent output, and was painted on the 33 ms
+output floor measured from the frame the keystroke itself had just painted,
+then noticed only at the next 10 ms input-poll tick, since nothing woke the loop
+when output landed. Now a key sent to a terminal owes an echo: the loop sleeps
+on the terminal *and* on a pipe that pane's output reader pokes, holds the key's own
+frame for it, and paints it at once by redrawing only that pane over the last
+frame
+([ADR-P28](PERFORMANCE.md#adr-p28-a-keystrokes-echo-is-painted-at-once-2026-09-23)).
+It is still slower than Herdr and tmux when nothing else is happening. A trace
+of one key on this machine puts the 3.4 ms at ~1.4 ms re-rendering the pane and
+flushing the frame, ~1.1 ms through tmux's control mode and the threads between
+it and the screen (each waking a core from idle), and ~0.5 ms offering the key
+to the focused pane's Lua before it goes out; ADR-P28 says what removing each
+would cost. With another session printing, cores stay awake and it is 1.6 ms —
+under Herdr's idle figure, above its busy one.
+
+**Creating.** A `session create` ran 27 processes, 20 of them `tmux set-option`
+re-applying the same options twice. The options are now one tmux command list,
+sent in the same process as the `has-session` that precedes it, and the window's
+identity is stamped in `new-window`'s own command list: six processes. Attaching
+and restarting got faster for the same reason — the interface runs the same
+setup when it starts. What is left of the 36 ms is mostly starting `thurbox-cli`.
+
+**What it cost.** CPU is unchanged: attached and idle, 2.90 → 2.89 % at N=1 and
+9.9 → 9.7 % at N=50; under output 35.9 → 36.0 % at N=50; the 50 000-line burst
+0.39 → 0.37 s of CPU. Attached memory is unchanged at the median (N=50 idle
+46.0 → 46.2 MiB, output 46.6 → 46.7) but one row moved in the full run: 50
+idle sessions measured 52 MiB after against 46, three of five repetitions high.
+Four more rounds of that row alone, alternating the two builds (20 repetitions
+each), put both medians at 46 MiB and the high samples right after attaching:
+the new build read above 47 MiB five times in 20, up to 55, the old one once,
+at 47.6, and the output window measured ten seconds later in the same session
+never passed 47.0 on either. A transient, then, which the new build shows more
+often — plausibly because it is ready sooner after attaching, so the window
+opens earlier; that was not proven. The echo path keeps a copy of the screen
+(~0.4 MiB at 200x50) only while someone types, so none of it is at rest.
+Headless memory moved by 0.14 MiB at every N, inside the 7.89–8.03 MiB that
+five runs of three builds measured at N=1 — tmux's own allocations, not this
+change.
 
 ## What was measured, and why these
 
