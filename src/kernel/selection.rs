@@ -188,6 +188,18 @@ pub fn extract_text_from_screen(
     selection: &Selection,
     pane_origin: (u16, u16),
 ) -> String {
+    extract_text_from_rows(screen, selection, pane_origin, 0)
+}
+
+/// [`extract_text_from_screen`] for a grid painted from row `top` down, which
+/// is how a grid taller than its pane is shown (the terminal kernel's
+/// `Painted::top`).
+pub fn extract_text_from_rows(
+    screen: &vt100::Screen,
+    selection: &Selection,
+    pane_origin: (u16, u16),
+    top: u16,
+) -> String {
     let (grid_rows, grid_cols) = screen.size();
     let (ox, oy) = pane_origin;
 
@@ -200,7 +212,11 @@ pub fn extract_text_from_screen(
         // A selection may extend past the grid (a short session in a tall
         // pane). Rows are yielded in ascending order, so nothing further can
         // be in range.
-        let Some(grid_row) = (row as u16).checked_sub(oy).filter(|r| *r < grid_rows) else {
+        let Some(grid_row) = (row as u16)
+            .checked_sub(oy)
+            .map(|r| r.saturating_add(top))
+            .filter(|r| *r < grid_rows)
+        else {
             break;
         };
 

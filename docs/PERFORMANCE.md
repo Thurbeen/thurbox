@@ -1676,6 +1676,14 @@ is unmeasured".
   `send_command_nowait`, whose documented hazard is exactly its absence (with no
   place of its own, an answer is handed to the next waiter in line and every
   later response is delivered one command off for the life of the connection).
+  Since ADR-27 (`docs/ARCHITECTURE.md`) the same list also has tmux decide
+  whether this instance may size the pane at all — a `set-option -F` and two
+  `if-shell`s, still one list, still sent. Its answer is five blocks whichever
+  way the decision goes, and `send_command_detached` is told that count, since
+  an `if-shell` answers with one block per command it runs on top of its own.
+  What the paint gained is one atomic load per painted terminal
+  (`WiredPane::retake_size`, the take-back when another instance leaves) and a
+  compare of the grid's size against the rect, on a grid it already holds.
 - **The deadness question is bounded** (`LOOP_COMMAND_BUDGET`, 250 ms). When the
   host says nothing inside it, the answer is the one every caller already reads
   an error as: not known to be dead, so the chord goes to the agent as it would

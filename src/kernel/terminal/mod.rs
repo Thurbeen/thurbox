@@ -25,7 +25,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
@@ -211,6 +211,12 @@ struct Painted {
     /// When the surface was last painted: how long it has been off screen,
     /// which is what decides when its grid is dropped ([`Terminals::evict_hidden`]).
     shown_at: Cell<Option<std::time::Instant>>,
+    /// The grid row painted at the rect's top edge: 0, except when the grid is
+    /// taller than the rect — another instance sizes the pane
+    /// ([`paint_sized_elsewhere`]) — and its bottom rows are the ones shown,
+    /// since that is where a terminal's newest output and its prompt are. Every
+    /// conversion from a screen row to a grid row adds it.
+    top: Cell<u16>,
 }
 
 impl Painted {
@@ -293,6 +299,26 @@ impl<'a> Pane<'a> {
             (true, Some(pane)) => Some(&pane.parser),
             (true, None) => None,
             (false, _) => Some(&self.live.session.parser),
+        }
+    }
+
+    /// Whether another thurbox is sizing this pane — see
+    /// [`paint_sized_elsewhere`].
+    fn sized_elsewhere(&self) -> bool {
+        match (self.shell, &self.live.session.shell_pane) {
+            (true, Some(pane)) => pane.sized_elsewhere(),
+            (true, None) => false,
+            (false, _) => self.live.session.sized_elsewhere(),
+        }
+    }
+
+    /// Take this pane's size back if the thurbox sizing it has gone — see
+    /// `WiredPane::retake_size`.
+    fn retake_size(&self) {
+        match (self.shell, &self.live.session.shell_pane) {
+            (true, Some(pane)) => pane.retake_size(),
+            (true, None) => {}
+            (false, _) => self.live.session.retake_size(),
         }
     }
 
@@ -1433,6 +1459,21 @@ impl Terminals {
             .map(|pane| pane.painted().rect.get())
     }
 
+    /// The grid row a surface painted at the top of its rect: 0, unless its
+    /// grid is taller than the rect and its bottom rows are what is shown
+    /// (another instance sizes the pane). A caller turning a point into a grid
+    /// position adds it.
+    pub fn last_top(&self, surface: &str) -> u16 {
+        if let Some(key) = self.program_key(surface) {
+            return self
+                .programs
+                .get(key)
+                .map_or(0, |slot| slot.painted.top.get());
+        }
+        self.pane(surface)
+            .map_or(0, |pane| pane.painted().top.get())
+    }
+
     /// The pane under `(x, y)`: the session it belongs to, and which of that
     /// session's two it is.
     ///
@@ -1483,7 +1524,7 @@ impl Terminals {
         // 1-based.
         let rect = pane.painted().rect.get();
         let col = u32::from(x - rect.x) + 1;
-        let row = u32::from(y - rect.y) + 1;
+        let row = u32::from(y - rect.y) + u32::from(pane.painted().top.get()) + 1;
         let button = if up { 64 } else { 65 };
         let Some(bytes) = mouse_report(encoding, button, col, row, true) else {
             return false;
@@ -1595,7 +1636,9 @@ impl Terminals {
         }
         let rect = pane.painted().rect.get();
         let col = u32::from(x.clamp(rect.x, rect.x + rect.width - 1) - rect.x) + 1;
-        let row = u32::from(y.clamp(rect.y, rect.y + rect.height - 1) - rect.y) + 1;
+        let row = u32::from(y.clamp(rect.y, rect.y + rect.height - 1) - rect.y)
+            + u32::from(pane.painted().top.get())
+            + 1;
         let Some(bytes) = mouse_report(encoding, button, col, row, press) else {
             return false;
         };
@@ -2028,10 +2071,20 @@ impl Terminals {
         if slot.painted.size.get() != wanted && slot.pane.resize(area.height, area.width) {
             slot.painted.size.set(wanted);
         }
+        slot.pane.retake_size();
         let Ok(parser) = slot.pane.parser.lock() else {
             return super::paint::ProgramPaint::NotStarted;
         };
-        frame.render_widget(screen_widget(parser.screen(), cursor), area);
+        let top = grid_top(parser.screen(), area);
+        slot.painted.top.set(top);
+        let view = FromRow {
+            screen: parser.screen(),
+            top,
+        };
+        frame.render_widget(screen_widget(&view, cursor), area);
+        if parser.screen().size() != wanted && slot.pane.sized_elsewhere() {
+            paint_sized_elsewhere(frame, area, parser.screen().size());
+        }
         super::paint::ProgramPaint::Painted
     }
 
@@ -2068,6 +2121,7 @@ impl Terminals {
         if painted.size.get() != wanted && pane.resize(area.height, area.width) {
             painted.size.set(wanted);
         }
+        pane.retake_size();
 
         // A pane with no grid asks for it — after the resize, so the snapshot
         // is taken at the size it is about to be shown at. The paint that asks
@@ -2097,16 +2151,82 @@ impl Terminals {
         // pane is — and it is this surface's offset that is applied here.
         parser.screen_mut().set_scrollback(usize::from(scroll));
         links::clear_uncovered(frame, area, parser.screen());
-        frame.render_widget(screen_widget(parser.screen(), cursor), area);
+        let top = grid_top(parser.screen(), area);
+        painted.top.set(top);
+        let view = FromRow {
+            screen: parser.screen(),
+            top,
+        };
+        frame.render_widget(screen_widget(&view, cursor), area);
+        if parser.screen().size() != wanted && pane.sized_elsewhere() {
+            paint_sized_elsewhere(frame, area, parser.screen().size());
+        }
         true
     }
 }
 
+/// Say why a terminal is not the size of the rect it is painted into.
+///
+/// On a server several thurbox instances share, one of them sizes each pane
+/// (`TmuxBackend::resize`) and the others show that pane's screen as it is —
+/// with blank margins when their rect is bigger, cropped when it is smaller —
+/// rather than parsing its output into a grid of their own size. Without a word
+/// on it that reads as a rendering bug, so the bottom row says whose size this
+/// is and how to take it: typing into the pane hands the size over.
+fn paint_sized_elsewhere(frame: &mut Frame, area: Rect, (rows, cols): (u16, u16)) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let text =
+        format!(" {cols}\u{d7}{rows} \u{b7} sized by another thurbox \u{b7} type here to resize ");
+    let width = u16::try_from(text.chars().count())
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let row = Rect {
+        x: area.right() - width,
+        y: area.bottom() - 1,
+        width,
+        height: 1,
+    };
+    let style = Style::default().add_modifier(Modifier::DIM | Modifier::REVERSED);
+    frame.render_widget(ratatui::widgets::Paragraph::new(text).style(style), row);
+}
+
+/// The grid row to paint at the top of `area`: the bottom rows of a grid
+/// taller than the rect, see [`Painted::top`].
+fn grid_top(screen: &vt100::Screen, area: Rect) -> u16 {
+    screen.size().0.saturating_sub(area.height)
+}
+
 /// A terminal grid as a widget, painting its cursor or not.
-fn screen_widget(screen: &vt100::Screen, cursor: bool) -> PseudoTerminal<'_, vt100::Screen> {
-    PseudoTerminal::new(screen)
+fn screen_widget<'a>(view: &'a FromRow<'a>, cursor: bool) -> PseudoTerminal<'a, FromRow<'a>> {
+    PseudoTerminal::new(view)
         .style(Style::default())
         .cursor(tui_term::widget::Cursor::default().visibility(cursor))
+}
+
+/// A grid read from row `top` down, so its bottom rows fill a shorter rect.
+struct FromRow<'a> {
+    screen: &'a vt100::Screen,
+    top: u16,
+}
+
+impl tui_term::widget::Screen for FromRow<'_> {
+    type C = vt100::Cell;
+
+    fn cell(&self, row: u16, col: u16) -> Option<&Self::C> {
+        tui_term::widget::Screen::cell(self.screen, row.checked_add(self.top)?, col)
+    }
+
+    fn hide_cursor(&self) -> bool {
+        let (row, _) = tui_term::widget::Screen::cursor_position(self.screen);
+        tui_term::widget::Screen::hide_cursor(self.screen) || row < self.top
+    }
+
+    fn cursor_position(&self) -> (u16, u16) {
+        let (row, col) = tui_term::widget::Screen::cursor_position(self.screen);
+        (row.saturating_sub(self.top), col)
+    }
 }
 
 impl SurfaceProvider for Terminals {
@@ -2158,6 +2278,70 @@ mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
 
+    /// A grid taller than its rect shows its bottom rows — where the newest
+    /// output and the prompt are — and a selection over them copies those rows.
+    #[test]
+    fn a_grid_taller_than_its_rect_shows_its_bottom() {
+        use ratatui::widgets::Widget;
+        let mut parser = vt100::Parser::new(6, 4, 0);
+        parser.process(b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5");
+        let area = Rect::new(0, 0, 4, 4);
+        let top = grid_top(parser.screen(), area);
+        assert_eq!(top, 2);
+        let view = FromRow {
+            screen: parser.screen(),
+            top,
+        };
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        screen_widget(&view, true).render(area, &mut buffer);
+        let rows: Vec<String> = (0..4)
+            .map(|y| (0..2).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        assert_eq!(rows, ["r2", "r3", "r4", "r5"]);
+        assert_eq!(
+            buffer[(2, 3)].symbol(),
+            "\u{2588}",
+            "the cursor, moved up by top"
+        );
+
+        use crate::kernel::selection::{PaneBounds, Selection, TermPos};
+        let selection = Selection {
+            anchor: TermPos { row: 0, col: 0 },
+            cursor: TermPos { row: 1, col: 3 },
+            dragging: false,
+            pane: PaneBounds::from_rect(area),
+        };
+        assert_eq!(
+            crate::kernel::selection::extract_text_from_rows(
+                parser.screen(),
+                &selection,
+                (0, 0),
+                top
+            ),
+            "r2\nr3"
+        );
+    }
+
+    /// A grid another instance sizes says so on its bottom row, right-aligned,
+    /// and a rect too narrow for the whole sentence gets as much as fits.
+    #[test]
+    fn a_pane_sized_elsewhere_says_whose_size_it_is() {
+        for width in [80u16, 12] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 5)).unwrap();
+            terminal
+                .draw(|frame| paint_sized_elsewhere(frame, frame.area(), (3, 60)))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let bottom: String = (0..width).map(|x| buffer[(x, 4)].symbol()).collect();
+            let full = " 60\u{d7}3 \u{b7} sized by another thurbox \u{b7} type here to resize ";
+            let shown: String = full.chars().take(usize::from(width)).collect();
+            assert!(bottom.trim_end().ends_with(shown.trim_end()), "{bottom:?}");
+            let above: String = (0..width).map(|x| buffer[(x, 3)].symbol()).collect();
+            assert_eq!(above.trim(), "", "only the bottom row is painted");
+        }
+    }
+
     #[test]
     fn only_a_terminal_that_holds_focus_paints_its_cursor() {
         use ratatui::widgets::Widget;
@@ -2165,7 +2349,11 @@ mod tests {
         parser.process(b"$ ");
         for (cursor, painted) in [(true, "\u{2588}"), (false, " ")] {
             let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 8, 2));
-            screen_widget(parser.screen(), cursor).render(buffer.area, &mut buffer);
+            let view = FromRow {
+                screen: parser.screen(),
+                top: 0,
+            };
+            screen_widget(&view, cursor).render(buffer.area, &mut buffer);
             assert_eq!(buffer[(2, 0)].symbol(), painted, "cursor shown: {cursor}");
             assert_eq!(buffer[(0, 0)].symbol(), "$", "the grid paints either way");
         }

@@ -484,9 +484,11 @@ bugs (#641, #2989), required 3 external deps in the data path
   only sets the reported format, not the bytes agents receive. Best-effort: the
   option is tmux 3.3+ while thurbox's floor is 3.2, so a 3.2 host silently skips it
 - `window-size manual` — each window sizes independently of the smallest
-  attached client. A *window* option, so it is set globally for thurbox's own
-  server (`WINDOW_OPTS`): `set-option -t <session>` on a window option lands on
-  the session's current window, not on the session (measured, tmux 3.2a)
+  attached client. Said **per window, as it is born** (`birth_options`), never
+  server-wide: tmux asks a window's size before the window exists, and a
+  server-wide `manual` dereferences a NULL window there and takes the server
+  down (measured, tmux 3.5a). Which of several attached thurbox instances
+  sizes a window is ADR-27
 - `pause-after 5` — flow control (auto-resumed by reader)
 
 `remain-on-exit` is **not** set here: it is a window option whose right value
@@ -1976,3 +1978,77 @@ the reads that fed a relaunch stopped failing open: the `stop` guard, the launch
 recipe and the recorded `--env` are read strictly, because a DB error there
 relaunched a parked session or launched the default coding agent in place of a
 `--command` session's recorded command.
+
+## ADR-27: Several instances on one server — the one being typed into sizes a pane
+
+**Choice**: a pane is the size of the rect **one** instance paints it into, and
+every other instance shows that pane's screen as it is. The window names its
+sizer in a window option, `@thurbox_sizer`, and a paint's resize
+(`TmuxBackend::resize`) is honoured only for a window that is this instance's to
+size: one nobody names, one it already names, or any window while it is the only
+client attached. Input is what hands the size over — a keystroke, paste or
+forwarded click into a pane that is not at this instance's size claims it
+outright (`claim_size`), which is tmux's own `window-size latest` with typing as
+the activity. Every instance's vt100 grid follows the pane's **real** size, read
+from `%layout-change` and delivered to the pane's reader in the same channel as
+its output (`PaneEvent`), so the size changes between the last byte written for
+the old one and the first written for the new. An instance whose rect differs
+from the grid paints the bottom rows of a taller grid and blank margins around a
+smaller one, and says on its bottom row that another thurbox is sizing the pane
+and that typing takes it. When the other instance goes, the one left takes its
+own size back once, unprompted.
+
+The decision is **tmux's**, in the command list that carries the resize, so it
+costs no round trip and two instances cannot both win it: a `set-option -F`
+settles the name (`#{?<may>,<me>,<current>}`), then each resize is an
+`if-shell -F` on "the name is me". That shape is fixed on purpose. The control
+connection pairs each waiter with a known number of `%begin` blocks, and an
+`if-shell` answers with one more block per command it runs — four taken, one
+declined for a two-command body (measured, tmux 3.7c). So each `if-shell` wraps
+one command and has a one-command `else`: five blocks whichever way it goes.
+An inner command that fails does **not** stop the list the way a failing
+top-level one does, so the sizes are clamped to what `resize-window` accepts.
+
+Who is sizing is read over a format subscription on
+`#{?#{==:#{session_attached},1},,#{@thurbox_sizer}}` — the name while more
+than one client is attached, nothing once one is alone. That is what clears the
+hint and triggers the take-back when an instance quits or crashes: v2 has no
+per-pane teardown at quit to release a name from, and a crashed instance could
+not run one anyway, so the release is computed rather than sent.
+
+**Why**: with two instances on one server — a lead over ssh and one locally, in
+terminals of different sizes — each resized every pane to its own rect whenever
+that rect changed, including a toast taking a row. The agent re-wrapped at
+whichever painted last, and the other instance kept parsing its output into a
+grid of its own, different size. Measured on a sandboxed server with two
+instances of 100×30 and 160×45: twelve SIGWINCHes in twelve seconds of
+alternating rect changes, the agent bouncing between 26×73 and 41×118. After:
+six, all from the sizing instance's own rect changes — what a lone instance
+would get — and none from the other.
+
+**Rejected alternatives**:
+
+- **Negotiate the minimum** (each instance publishes its viewport, all set the
+  smallest). Deterministic, but every instance gets the smallest screen all the
+  time, and a published viewport needs pruning when its instance dies without
+  saying so — the same staleness problem, with a worse steady state.
+- **A fixed size for shared sessions.** Simple, and the agent never re-wraps,
+  but it changes a lone instance's behaviour and asks the operator to pick a
+  number that is wrong for one of their terminals.
+- **First attached owns it.** Never hands over: the instance you are actually
+  working in stays letterboxed for as long as the other one lives.
+- **Keep the grid at the rect and resize nothing.** The grid then parses output
+  laid out for another width — the garbling this replaces.
+
+**Consequences**: the instance not being typed into shows a cropped or
+letterboxed view, and switching which one you type into re-wraps the agent once.
+Two instances restarted together find a name left by an instance that is gone,
+and neither is alone, so the pane stays at that size until one of them is typed
+into. "Alone" counts every client attached to the session, so a plain
+`tmux attach` on thurbox's socket makes a lone instance wait for input the same
+way. A lone instance behaves as it always did, with one difference: its grid
+now takes a new size when tmux reports it (a round trip later) rather than when
+it asked. That frame shows the old grid in the new rect; the bytes that follow
+are laid out for the new size, which is when the grid needs it. psmux has no
+`if-shell -F`, no format subscriptions and no `%layout-change` to read, so on a
+Windows host the last instance to paint still wins, as before.

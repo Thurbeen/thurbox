@@ -700,7 +700,7 @@ impl App {
         let Some((session, rect)) = self.surface_at(x, y) else {
             return;
         };
-        let row = usize::from(y.saturating_sub(rect.y));
+        let row = usize::from(y.saturating_sub(rect.y) + self.terminals.last_top(&session));
         let col = usize::from(x.saturating_sub(rect.x));
         if let Some(url) = self.terminals.url_at(&session, row, col) {
             self.open_or_copy_link(&url);
