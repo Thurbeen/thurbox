@@ -979,7 +979,7 @@ fn run_send(
     no_enter: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     if text.trim().is_empty() {
         return Err("text must not be empty".into());
     }
@@ -993,7 +993,7 @@ fn run_send(
         return Ok(remote);
     }
     let submit = !no_enter;
-    crate::agent::tmux::send_text_now(&session.id.to_string(), &session.name, &text, submit)
+    crate::agent::tmux::send_text_now(&mux, &session.id.to_string(), &session.name, &text, submit)
         .map_err(|e| format!("send_text_now: {e}"))?;
     let human = if submit {
         format!("Sent to '{}'.", session.name)
@@ -1013,14 +1013,14 @@ fn run_send(
 
 fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     let resolved = crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, &resolved.name])? {
         return Ok(remote);
     }
-    crate::agent::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
+    crate::agent::tmux::send_key_now(&mux, &session.id.to_string(), &session.name, &resolved.tmux)
         .map_err(|e| format!("send_key_now: {e}"))?;
     Ok(CommandOutput::new(
         json!({
@@ -1178,8 +1178,8 @@ fn run_signal(
     }
     // The same state on the pane, for a peer's live subscription:
     // best-effort, and nothing at all outside tmux.
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
-    if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&target.backend_type)?;
+    if let Err(e) = crate::agent::tmux::set_own_pane_state(&mux, &state) {
         tracing::debug!("could not set the pane state option: {e:#}");
     }
     Ok(CommandOutput::new(
@@ -1210,7 +1210,7 @@ fn capture_pane(
     ansi: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     let line_count = lines.to_string();
@@ -1221,13 +1221,18 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output =
-        crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
-            .map_err(|e| format!("capture_pane_text: {e}"))?;
+    let output = crate::agent::tmux::capture_pane_text(
+        &mux,
+        &session.id.to_string(),
+        &session.name,
+        lines,
+        ansi,
+    )
+    .map_err(|e| format!("capture_pane_text: {e}"))?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.
-    let state = crate::agent::tmux::pane_state(&session.id.to_string(), &session.name);
+    let state = crate::agent::tmux::pane_state(&mux, &session.id.to_string(), &session.name);
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -2182,14 +2187,16 @@ impl SessionFacts {
         if crate::session::is_remote_backend(&s.backend_type) {
             return hook.pane_unavailable();
         }
-        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&s.backend_type);
+        let Ok(mux) = crate::agent::tmux::LocalMuxContext::for_backend(&s.backend_type) else {
+            return hook.pane_unavailable();
+        };
         // The agent *binary*, not the agent name: `antigravity` runs `agy`, and
         // the pane's foreground process is spelled the way it was invoked.
         let command = registry
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let pane = crate::agent::tmux::pane_state(&s.id.to_string(), &s.name);
+        let pane = crate::agent::tmux::pane_state(&mux, &s.id.to_string(), &s.name);
         hook.with_pane(
             &command,
             registry,
@@ -2260,7 +2267,7 @@ fn register_running_session(
     row: crate::session_ops::mirror::HostRow,
 ) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     if db
         .get_session_by_id(session.id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
@@ -2282,7 +2289,7 @@ fn register_running_session(
     // for its id yet; passing the real id (rather than "") still lets the
     // by-name fallback require the sole match to be unstamped, refusing to
     // steal a window already stamped for a different, live session.
-    let pane = crate::agent::tmux::agent_window(None, &session.id.to_string(), &session.name)
+    let pane = crate::agent::tmux::agent_window(&mux, None, &session.id.to_string(), &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
         .pane()
         .ok_or_else(|| {
@@ -2296,6 +2303,7 @@ fn register_running_session(
     // Adopted, so stamp it: the row now owns that window by id rather than by
     // a name a later namesake could take.
     crate::agent::tmux::stamp_local_window(
+        &mux,
         &pane,
         &session.id.to_string(),
         crate::agent::tmux::WindowRole::Agent,

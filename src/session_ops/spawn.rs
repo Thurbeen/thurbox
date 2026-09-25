@@ -208,7 +208,7 @@ pub fn spawn_session_headless_with_progress(
     // Resolve the optional remote host and selected local multiplexer before
     // any one-shot commands run; later operations use the persisted backend.
     let (backend_type, host) = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
-    let _local_mux = crate::agent::tmux::LocalMuxScope::for_backend(&backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&backend_type)?;
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -378,6 +378,7 @@ pub fn spawn_session_headless_with_progress(
     let stamp = session_id.to_string();
     let backend_id = launch_window(
         host.as_ref(),
+        &mux,
         &stamp,
         &req.name,
         &command,
@@ -415,7 +416,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(host.as_ref(), &mux, &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -505,8 +506,10 @@ fn missing_agent_warning(
 
 /// Open the session's window, on its host or here, and return the new pane's
 /// id.
+#[allow(clippy::too_many_arguments)]
 fn launch_window(
     host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
     stamp: &str,
     name: &str,
     command: &str,
@@ -526,7 +529,7 @@ fn launch_window(
                     },
                 )
         }
-        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
+        None => crate::agent::tmux::spawn_window(mux, stamp, name, command, args, Some(cwd), env)
             .map_err(
                 |e| match crate::agent::preflight::is_missing_dependency(&e) {
                     // Already a sentence naming the binary, the search and the fix;
@@ -540,7 +543,13 @@ fn launch_window(
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
     // spawned. `kill_window`'s resolution would reach the `tb-<name>`
@@ -555,7 +564,7 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
             name,
             crate::agent::tmux::SessionPanes::agent(backend_id),
         ),
-        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
+        None => crate::agent::tmux::kill_window(mux, stamp, name).map(|()| true),
     };
     match cleanup {
         Ok(true) => {}
@@ -1443,23 +1452,14 @@ fn resolve_backend(
     let (backend, host_def) = resolve_host(host)?;
     match multiplexer {
         None => Ok((backend, host_def)),
-        Some("rmux") if host_def.is_some() => {
-            Err("--multiplexer rmux currently supports local sessions only".into())
-        }
-        Some("rmux") if cfg!(windows) => {
-            Err("--multiplexer rmux currently supports POSIX systems only".into())
-        }
-        Some("rmux") => {
-            if crate::agent::preflight::look_up("rmux")
-                == crate::agent::preflight::Presence::Missing
-            {
-                return Err(crate::agent::preflight::Dependency::Rmux.missing_message());
+        Some(choice) => {
+            if host_def.is_some() {
+                return Err("--multiplexer currently supports local sessions only".into());
             }
-            Ok((crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE.into(), None))
+            let mux = crate::agent::tmux::LocalMuxContext::for_choice(choice)?;
+            mux.ensure_available()?;
+            Ok((mux.backend_type().into(), None))
         }
-        Some(other) => Err(format!(
-            "Unknown multiplexer '{other}'. Choose rmux or omit the option."
-        )),
     }
 }
 

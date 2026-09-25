@@ -309,10 +309,11 @@ fn enqueue_and_wake(
     let mut woke = false;
     if !no_wake {
         {
-            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&recipient.backend_type);
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&recipient.backend_type)?;
             // Best-effort nudge: a missing/dead window must not fail the send (the
             // message is already durably queued for the next drain).
             match crate::agent::tmux::send_prompt_now(
+                &mux,
                 &recipient.id.to_string(),
                 &recipient.name,
                 WAKE_TOKEN,

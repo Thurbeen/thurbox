@@ -49,6 +49,7 @@ fn have_tmux() -> bool {
 /// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
     tmux::spawn_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
         session_id,
         name,
         "sh",
@@ -113,7 +114,8 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
     // the restart is still creating.
     let second = spawn(SESSION, NAME);
 
-    let index = tmux::local_window_index().expect("list windows");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(second.clone()),
@@ -129,8 +131,14 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
 
     // The symptom as the operator meets it: an unresolvable session is one
     // nothing can be sent to.
-    tmux::send_text_now(SESSION, NAME, "true", false)
-        .unwrap_or_else(|e| panic!("send to a session with one window: {e:#}"));
+    tmux::send_text_now(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        SESSION,
+        NAME,
+        "true",
+        false,
+    )
+    .unwrap_or_else(|e| panic!("send to a session with one window: {e:#}"));
 }
 
 #[test]
@@ -145,8 +153,14 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
     spawn(SESSION, NAME);
 
     // `respawn_local` is kill → spawn, and this is the moment between them.
-    tmux::kill_window(SESSION, NAME).expect("the restart's kill");
-    let index = tmux::local_window_index().expect("list windows");
+    tmux::kill_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        SESSION,
+        NAME,
+    )
+    .expect("the restart's kill");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert!(
         index.live_agent_window(SESSION, NAME).is_absent(),
         "the premise: a repairer asks whether the window is gone and is told yes"
@@ -164,15 +178,22 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
          server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(restarted),
         "one window, so the session resolves again; server holds:\n{}",
         listing(&server)
     );
-    tmux::send_text_now(SESSION, NAME, "true", false)
-        .unwrap_or_else(|e| panic!("send after a relaunch inside a restart: {e:#}"));
+    tmux::send_text_now(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        SESSION,
+        NAME,
+        "true",
+        false,
+    )
+    .unwrap_or_else(|e| panic!("send after a relaunch inside a restart: {e:#}"));
 }
 
 #[test]
@@ -196,7 +217,11 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                let _ = tmux::kill_window(SESSION, NAME);
+                let _ = tmux::kill_window(
+                    &thurbox::agent::tmux::LocalMuxContext::default_local(),
+                    SESSION,
+                    NAME,
+                );
                 spawn(SESSION, NAME)
             })
         })
@@ -214,15 +239,22 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
          and the server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(survivors[0].clone()),
         "the surviving window must be the one the session resolves to; server holds:\n{}",
         listing(&server)
     );
-    tmux::send_text_now(SESSION, NAME, "true", false)
-        .unwrap_or_else(|e| panic!("send after two overlapping restarts: {e:#}"));
+    tmux::send_text_now(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        SESSION,
+        NAME,
+        "true",
+        false,
+    )
+    .unwrap_or_else(|e| panic!("send after two overlapping restarts: {e:#}"));
 }
 
 #[test]
@@ -251,8 +283,14 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
 
     // Acting on the session is what repairs it — the same verb the operator
     // found refused ("has no window of its own here").
-    tmux::send_text_now(SESSION, NAME, "true", false)
-        .unwrap_or_else(|e| panic!("send to a session a pair had locked out: {e:#}"));
+    tmux::send_text_now(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        SESSION,
+        NAME,
+        "true",
+        false,
+    )
+    .unwrap_or_else(|e| panic!("send to a session a pair had locked out: {e:#}"));
 
     assert_eq!(
         stamped_panes(&server),
@@ -261,7 +299,8 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
          server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert!(
         matches!(index.agent_window(SESSION, NAME), Located::At(_)),
         "and the session resolves on its own from then on; server holds:\n{}",
@@ -285,7 +324,8 @@ fn the_listing_itself_still_refuses_a_pair() {
     let impostor = spawn(OTHER, "other");
     plant_stamp(&server, &impostor);
 
-    let index = tmux::local_window_index().expect("list windows");
+    let index = tmux::local_window_index(&thurbox::agent::tmux::LocalMuxContext::default_local())
+        .expect("list windows");
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::Unknown,

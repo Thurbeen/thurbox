@@ -540,8 +540,14 @@ fn poll_local_pane_states(db: &Database) -> usize {
     backends.sort_unstable();
     backends.dedup();
     for backend in backends {
-        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend);
-        let states = match crate::agent::tmux::list_local_hook_states() {
+        let mux = match crate::agent::tmux::LocalMuxContext::for_backend(backend) {
+            Ok(mux) => mux,
+            Err(e) => {
+                tracing::warn!("{e}");
+                continue;
+            }
+        };
+        let states = match crate::agent::tmux::list_local_hook_states(&mux) {
             Ok(states) => states,
             Err(e) => {
                 tracing::debug!("{backend} pane status poll skipped: {e:#}");
@@ -638,15 +644,23 @@ fn fire_send(
             )
         }
     };
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
-    if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
+    let mux = match crate::agent::tmux::LocalMuxContext::for_backend(&target.backend_type) {
+        Ok(mux) => mux,
+        Err(e) => return (AutomationRunStatus::Error, e, None),
+    };
+    if !crate::agent::tmux::window_exists(&mux, &target.id.to_string(), &target.name) {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
             None,
         );
     }
-    match crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &auto.prompt) {
+    match crate::agent::tmux::send_prompt_now(
+        &mux,
+        &target.id.to_string(),
+        &target.name,
+        &auto.prompt,
+    ) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
@@ -669,6 +683,7 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
+    let mux = crate::agent::tmux::LocalMuxContext::default_local();
     // This action creates on the default local backend, so a same-named RMUX
     // session is not an earlier run of this automation.
     let existing = db
@@ -677,13 +692,12 @@ fn fire_spawn(
         .into_iter()
         .find(|row| {
             row.name == name && row.backend_type == crate::session::LOCAL_BACKEND_TYPE && {
-                let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
-                crate::agent::tmux::window_exists(&row.id.to_string(), &row.name)
+                crate::agent::tmux::window_exists(&mux, &row.id.to_string(), &row.name)
             }
         });
     if let Some(session) = existing {
-        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
         return match crate::agent::tmux::send_prompt_now(
+            &mux,
             &session.id.to_string(),
             &name,
             &auto.prompt,
@@ -694,8 +708,8 @@ fn fire_spawn(
     }
     // An older automation may still have a live tmux window with no active
     // row. Keep the original name-only reuse path for that recovery case.
-    if crate::agent::tmux::window_exists("", &name) {
-        return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
+    if crate::agent::tmux::window_exists(&mux, "", &name) {
+        return match crate::agent::tmux::send_prompt_now(&mux, "", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };

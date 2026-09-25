@@ -155,8 +155,8 @@ pub(super) fn execute(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
-            crate::agent::tmux::send_prompt_now(&session.id.to_string(), &session.name, text)
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
+            crate::agent::tmux::send_prompt_now(&mux, &session.id.to_string(), &session.name, text)
                 .map_err(|e| format!("send: {e}"))
         }
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
@@ -605,9 +605,14 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
-            crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &prompt)
-                .map_err(|e| format!("send: {e}"))?;
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&target.backend_type)?;
+            crate::agent::tmux::send_prompt_now(
+                &mux,
+                &target.id.to_string(),
+                &target.name,
+                &prompt,
+            )
+            .map_err(|e| format!("send: {e}"))?;
         }
         None => {
             // Create a session for the task, then hand it the prompt once its
@@ -621,10 +626,11 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 ..Default::default()
             };
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
-            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&spawned.backend_type);
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&spawned.backend_type)?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
             crate::agent::tmux::send_prompt_after_delay(
+                &mux,
                 &spawned.session_id.to_string(),
                 &spawned.name,
                 &prompt,

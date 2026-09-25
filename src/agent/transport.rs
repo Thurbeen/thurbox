@@ -166,6 +166,21 @@ impl TmuxTransport {
     pub fn uses_psmux(&self) -> bool {
         self.mux() == "psmux"
     }
+
+    /// RMUX does not implement tmux's client refresh commands.
+    pub fn supports_client_refresh(&self) -> bool {
+        !matches!(self, Self::LocalRmux)
+    }
+
+    /// Format subscriptions are available only on tmux.
+    pub fn supports_format_subscriptions(&self) -> bool {
+        !self.uses_psmux() && self.supports_client_refresh()
+    }
+
+    /// Exact pane snapshots require tmux's control-mode snapshot semantics.
+    pub fn supports_exact_snapshots(&self) -> bool {
+        self.supports_format_subscriptions()
+    }
 }
 
 #[cfg(test)]

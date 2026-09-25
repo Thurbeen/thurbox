@@ -555,9 +555,12 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// that rate for the life of the process — spawning `wsl.exe` from the
 /// interface's own loop and writing 3.9 MB of log in a day (issue #1182).
 fn window_index_on(db: &Database, backend_type: &str) -> crate::agent::tmux::WindowIndex {
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend_type);
+    let Ok(mux) = crate::agent::tmux::LocalMuxContext::for_backend(backend_type) else {
+        tracing::warn!("unsupported backend while listing windows: {backend_type}");
+        return crate::agent::tmux::WindowIndex::default();
+    };
     if !crate::session::is_remote_backend(backend_type) {
-        return crate::agent::tmux::local_window_index().unwrap_or_default();
+        return crate::agent::tmux::local_window_index(&mux).unwrap_or_default();
     }
     if !claim_listing(db, backend_type) {
         return crate::agent::tmux::WindowIndex::default();
@@ -707,7 +710,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     if row.force_deleted {
         return Ok(false);
     }
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&row.backend_type)?;
 
     // A remote session's windows live on its host, so the reap goes there.
     // Leaving them was the old answer, and it meant every soft delete of a
@@ -721,7 +724,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         // that is how deleting a frozen session came to kill its replacement
         // 30-60s later, and why each delete-and-recreate made the next one die
         // sooner.
-        let owned = owned_windows(&row);
+        let owned = owned_windows(&row)?;
         if owned.is_empty() {
             // The windows may already be gone — the agent exited, or a previous
             // reap got there first. Logged rather than silent: owning nothing is
@@ -735,7 +738,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
         }
         for target in owned {
             // Not worth failing a cleanup over if the window went away underneath.
-            if let Err(e) = crate::agent::tmux::kill_window_at(&target) {
+            if let Err(e) = crate::agent::tmux::kill_window_at(&mux, &target) {
                 tracing::debug!("kill_window_at({target}) during reap: {e}");
             }
         }
@@ -770,11 +773,11 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
 ///
 /// Conservatively owns nothing when the listing fails or cannot tell: leaking a
 /// window costs a stale agent, killing the wrong one costs live work.
-fn owned_windows(row: &DeletedSessionInfo) -> Vec<String> {
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
-    match crate::agent::tmux::local_window_index() {
-        Ok(index) => owned_windows_in(&index, row),
-        Err(_) => Vec::new(),
+fn owned_windows(row: &DeletedSessionInfo) -> Result<Vec<String>, String> {
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&row.backend_type)?;
+    match crate::agent::tmux::local_window_index(&mux) {
+        Ok(index) => Ok(owned_windows_in(&index, row)),
+        Err(_) => Ok(Vec::new()),
     }
 }
 
@@ -839,20 +842,27 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
         .map_err(|e| format!("host '{}': {e:#}", host.name))
 }
 
-/// Kill the session's window on the local tmux server, reaping the pane's child
+/// Kill the session's window on its local server, reaping the pane's child
 /// process on Windows (where a live process's cwd blocks the later rmdir).
 fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
-    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+    let Ok(mux) = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type) else {
+        tracing::warn!(
+            "unsupported backend while deleting window: {}",
+            session.backend_type
+        );
+        return;
+    };
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /
     // extension home; Unix has no such restriction, so this is Windows-only.
     #[cfg(windows)]
-    let pane_pid = crate::agent::tmux::window_pane_pid(&session.id.to_string(), &session.name)
-        .ok()
-        .flatten();
+    let pane_pid =
+        crate::agent::tmux::window_pane_pid(&mux, &session.id.to_string(), &session.name)
+            .ok()
+            .flatten();
 
-    match crate::agent::tmux::kill_window(&session.id.to_string(), &session.name) {
+    match crate::agent::tmux::kill_window(&mux, &session.id.to_string(), &session.name) {
         Ok(()) => report.killed_window = true,
         Err(e) => tracing::warn!("kill_window({}) failed: {e}", session.name),
     }
@@ -860,7 +870,9 @@ fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDel
     // The companion shell is the session's second window and nothing else ever
     // takes it down — leaving it is how a force-deleted session kept a live
     // `tbs-` window on the server for good.
-    if let Err(e) = crate::agent::tmux::kill_shell_window(&session.id.to_string(), &session.name) {
+    if let Err(e) =
+        crate::agent::tmux::kill_shell_window(&mux, &session.id.to_string(), &session.name)
+    {
         tracing::warn!("kill_shell_window({}) failed: {e}", session.name);
     }
 

@@ -630,8 +630,15 @@ impl PaneProbe {
         );
         let registry = std::sync::Arc::clone(registry);
         std::thread::spawn(move || {
-            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&backend_type);
-            let pane = crate::agent::tmux::pane_state(&session, &name);
+            let mux = match crate::agent::tmux::LocalMuxContext::for_backend(&backend_type) {
+                Ok(mux) => mux,
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    let _ = tx.send((session, crate::session::Corroboration::Unknown));
+                    return;
+                }
+            };
+            let pane = crate::agent::tmux::pane_state(&mux, &session, &name);
             // Classified on the worker rather than at the fold, so the argv the
             // verdict was read from — a driver's brief runs to kilobytes — never
             // crosses the channel or lands in the snapshot.

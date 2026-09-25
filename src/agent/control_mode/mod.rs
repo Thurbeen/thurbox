@@ -1230,7 +1230,7 @@ impl ControlMode {
         // Enable flow control (pause-after=5 seconds of buffered output).
         // RMUX 0.10.0 streams pane output in control mode but does not attach
         // the control client for `refresh-client -f` (verified on its daemon).
-        if !matches!(transport, TmuxTransport::LocalRmux) {
+        if transport.supports_client_refresh() {
             control.send_command("refresh-client -f pause-after=5")?;
         }
 
@@ -1241,7 +1241,7 @@ impl ControlMode {
         // refusal must not brick the whole backend, status just stays dark.
         // Armed here — not per pane — so `reconnect_control` re-arms for free
         // and panes created later are covered (`%*` is session-scoped).
-        if !transport.uses_psmux() && !matches!(transport, TmuxTransport::LocalRmux) {
+        if transport.supports_format_subscriptions() {
             let arm = format!(
                 "refresh-client -B '{}:%*:#{{{}}}'",
                 crate::session::REMOTE_HOOK_SUBSCRIPTION,

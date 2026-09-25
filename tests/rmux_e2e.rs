@@ -113,6 +113,15 @@ fn rmux_binary() -> Option<PathBuf> {
 }
 
 #[test]
+fn unknown_persisted_local_backend_is_rejected() {
+    let error = thurbox::agent::tmux::LocalMuxContext::for_backend("local-future")
+        .expect_err("unknown local backend must not resolve to tmux");
+    assert!(error.contains("local-future"), "{error}");
+    assert!(thurbox::agent::tmux::LocalMuxContext::for_backend("ssh:remote").is_ok());
+    assert!(thurbox::agent::tmux::LocalMuxContext::for_backend("").is_ok());
+}
+
+#[test]
 fn missing_rmux_is_reported_before_a_session_is_created() {
     let root = tempfile::tempdir().expect("private instance");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
@@ -187,6 +196,17 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
     assert!(rows.status.success(), "session list failed");
     let rows: serde_json::Value = serde_json::from_slice(&rows.stdout).expect("list JSON");
     assert_eq!(rows[0]["backend_type"], "local-rmux");
+    let verified = instance.cli(&["session", "get", id, "--json"]);
+    assert!(verified.status.success(), "session get failed");
+    let verified: serde_json::Value =
+        serde_json::from_slice(&verified.stdout).expect("verified session JSON");
+    assert_eq!(verified["backend_type"], "local-rmux");
+    assert!(
+        verified["foreground_process"]
+            .as_str()
+            .is_some_and(|process| process.ends_with("/cat")),
+        "RMUX pane probe must reach the recorded server: {verified}"
+    );
     let adopted_create = instance.cli(&[
         "session",
         "create",
@@ -330,11 +350,10 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
         .expect("adopt after reconnect");
     drop(adopted);
     backend.detach(pane).expect("detach after reconnect");
-    {
-        let _mux = thurbox::agent::tmux::LocalMuxScope::for_backend("local-rmux");
-        thurbox::agent::tmux::send_prompt_after_delay(id, "probe", "RMUX_DELAYED_MARKER", 0)
-            .expect("schedule RMUX prompt");
-    }
+    let mux = thurbox::agent::tmux::LocalMuxContext::for_backend("local-rmux")
+        .expect("recorded RMUX backend");
+    mux.send_prompt_after_delay(id, "probe", "RMUX_DELAYED_MARKER", 0)
+        .expect("schedule RMUX prompt");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let captured = instance.cli(&["session", "capture", id, "--json"]);
