@@ -883,10 +883,10 @@ impl WiredPane {
     /// When this pane last produced live output, as epoch milliseconds.
     ///
     /// The *activity* signal — quiescence, "printing", how long a pane has
-    /// been quiet — stored after the parse and monotonic non-decreasing, since
-    /// the reader thread only ever stores `now`. Not the loop's redraw signal:
-    /// that is [`Self::output_seq`], because a millisecond cannot tell two
-    /// chunks apart.
+    /// been quiet — stored after a read of live bytes and monotonic
+    /// non-decreasing, since the reader thread only ever stores `now`. Not the
+    /// loop's redraw signal: that is [`Self::output_seq`], because a
+    /// millisecond cannot tell two chunks apart.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
     }
@@ -1644,18 +1644,19 @@ impl Session {
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
-                    // Both signals after the parse, so whoever reads either
-                    // finds these bytes already in the grid.
-                    //
                     // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not. It is still new
-                    // content to paint, so the sequence moves either way.
+                    // that is entirely within the seed is not. Activity records
+                    // the read even when its trailing character is still
+                    // buffered. The redraw sequence moves only when the parser
+                    // has taken a complete prefix, and after it has done so.
                     if seed_len < n {
                         last_output_at.store(now_millis(), Ordering::Relaxed);
                     }
                     seed_len = seed_len.saturating_sub(n);
-                    output_seq.fetch_add(1, Ordering::Release);
-                    crate::agent::output_wake::notify(&output_seq);
+                    if ready > 0 {
+                        output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify(&output_seq);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
@@ -2517,6 +2518,81 @@ mod tests {
             .screen()
             .contents()
             .contains("replayed history"));
+    }
+
+    /// A read boundary may split a UTF-8 character. Until its remaining bytes
+    /// arrive the parser has taken nothing, so the redraw sequence must not
+    /// claim that an echo is drawable yet.
+    #[test]
+    fn reader_loop_waits_for_a_split_character_before_moving_output_seq() {
+        struct SplitReader {
+            step: u8,
+            split: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+
+        impl Read for SplitReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.step {
+                    0 => {
+                        self.step = 1;
+                        buf[0] = 0xc3;
+                        Ok(1)
+                    }
+                    1 => {
+                        self.split.send(()).expect("announce split");
+                        self.release.recv().expect("release split");
+                        self.step = 2;
+                        buf[0] = 0xa9;
+                        Ok(1)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+
+        let (split_tx, split_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let seq = Arc::new(AtomicU64::new(0));
+        let parser_in_reader = Arc::clone(&parser);
+        let seq_in_reader = Arc::clone(&seq);
+        let reader = std::thread::spawn(move || {
+            Session::reader_loop(
+                Box::new(SplitReader {
+                    step: 0,
+                    split: split_tx,
+                    release: release_rx,
+                }),
+                parser_in_reader,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU64::new(0)),
+                Arc::default(),
+                seq_in_reader,
+                0,
+                None,
+            );
+        });
+
+        split_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reader reached the split");
+        assert_eq!(
+            seq.load(Ordering::Acquire),
+            0,
+            "a buffered character is not parsed output"
+        );
+        assert!(parser.lock().unwrap().screen().contents().is_empty());
+
+        release_tx.send(()).expect("finish character");
+        reader.join().expect("reader loop");
+        assert!(parser.lock().unwrap().screen().contents().contains('é'));
+        assert!(seq.load(Ordering::Acquire) > 0);
     }
 
     /// A character split across two reads reaches the parser whole, and the
