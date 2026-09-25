@@ -1,6 +1,6 @@
 # Multiplexer benchmark — summary
 
-Run 20260925T083849Z · reps 5 (+1 warm-up discarded)
+Run 20260925T085213Z · reps 5 (+1 warm-up discarded)
 
 ```json
 {
@@ -24,7 +24,7 @@ Run 20260925T083849Z · reps 5 (+1 warm-up discarded)
 
 | variant | metric | herdr median | herdr p95 | thurbox median | thurbox p95 |
 |---|---|---|---|---|---|
-| idle | echo_ms | 2.18 | 2.34 | 3.85 | 5.55 |
+| idle | echo_ms | 2.14 | 2.32 | 4.18 | 5.38 |
 | idle | timeouts | 0.00 | 0.00 | 0.00 | 0.00 |
-| other-busy | echo_ms | 0.45 | 0.54 | 1.84 | 2.96 |
+| other-busy | echo_ms | 0.45 | 0.55 | 1.88 | 3.36 |
 | other-busy | timeouts | 0.00 | 0.00 | 0.00 | 0.00 |
