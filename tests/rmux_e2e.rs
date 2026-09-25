@@ -187,6 +187,27 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
     assert!(rows.status.success(), "session list failed");
     let rows: serde_json::Value = serde_json::from_slice(&rows.stdout).expect("list JSON");
     assert_eq!(rows[0]["backend_type"], "local-rmux");
+    let adopted_create = instance.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().unwrap(),
+        "--command",
+        "cat",
+        "--multiplexer",
+        "rmux",
+        "--on-existing",
+        "adopt",
+        "--json",
+    ]);
+    assert!(adopted_create.status.success(), "adopt create failed");
+    let adopted_create: serde_json::Value =
+        serde_json::from_slice(&adopted_create.stdout).expect("adopt create JSON");
+    assert_eq!(adopted_create["created"], false);
+    assert_eq!(adopted_create["id"], id);
+    assert_eq!(adopted_create["backend_type"], "local-rmux");
     let windows = instance.rmux(&["list-windows", "-t", "thurbox-dev", "-F", "#{window_name}"]);
     assert!(windows.status.success(), "RMUX list-windows failed");
     assert!(String::from_utf8_lossy(&windows.stdout).contains("tb-probe"));
@@ -379,6 +400,27 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
     } else {
         None
     };
+
+    let forked = instance.cli(&["session", "fork", id, "--name", "probe-fork", "--json"]);
+    assert!(
+        forked.status.success(),
+        "fork failed: {}",
+        String::from_utf8_lossy(&forked.stdout)
+    );
+    let forked: serde_json::Value = serde_json::from_slice(&forked.stdout).expect("fork JSON");
+    let fork_id = forked["id"].as_str().expect("fork id");
+    assert_eq!(forked["backend_type"], "local-rmux");
+    let rows = instance.cli(&["session", "list", "--json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&rows.stdout).expect("fork list JSON");
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| { row["id"] == fork_id && row["backend_type"] == "local-rmux" }));
+    let windows = instance.rmux(&["list-windows", "-t", "thurbox-dev", "-F", "#{window_name}"]);
+    assert!(String::from_utf8_lossy(&windows.stdout).contains("tb-probe-fork"));
+    let deleted_fork = instance.cli(&["session", "delete", fork_id, "--force", "--json"]);
+    assert!(deleted_fork.status.success(), "fork delete failed");
 
     let stopped = instance.cli(&["session", "stop", id, "--json"]);
     assert!(

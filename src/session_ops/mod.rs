@@ -523,6 +523,8 @@ pub fn fork_session_headless(
         host: resolve_host(&source.backend_type)
             .flatten()
             .map(|host| host.name),
+        multiplexer: (source.backend_type == crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE)
+            .then(|| "rmux".to_string()),
         parent_session_id: Some(source.id),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).
