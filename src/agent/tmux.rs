@@ -1497,7 +1497,7 @@ impl TmuxBackend {
         let mut config = Vec::new();
         let mut set = |args: &[&str], fatal: bool| {
             let mut all = vec!["set-option".to_string()];
-            all.extend(args.iter().map(|a| a.to_string()));
+            all.extend(args.iter().map(ToString::to_string));
             config.push(ConfigOption { args: all, fatal });
         };
         // Use a non-login shell so that macOS path_helper (/etc/zprofile)
