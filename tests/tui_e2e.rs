@@ -1362,7 +1362,10 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     // visible screen was searched. So the marker is printed and then pushed
     // three hundred lines up, found from the strip, and opened — and opening
     // it has to land ON it, scrolled back, not merely focus the session.
-    let Some((_profile, mut tui)) = shell_session() else {
+    // Colour suppression must not erase the inverse mark when the line lands.
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("NO_COLOR", "1");
+    }) else {
         return;
     };
     // Quoted apart on the command line, so the only line that spells the
@@ -1390,6 +1393,17 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
             && frame.contains("↑]")
             && frame.lines().any(|line| line.contains("┃tb-findme "))
     });
+    tui.wait_until("the landed line to be highlighted", |frame| {
+        frame
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("┃tb-findme "))
+            .is_some_and(|(row, line)| {
+                let byte = line.find("┃tb-findme").expect("the landed line") + "┃".len();
+                let column = unicode_width::UnicodeWidthStr::width(&line[..byte]);
+                tui.inverse_at(row as u16, column as u16)
+            })
+    });
     // And the line is marked, so a long screen of output does not leave you
     // hunting for the row you were brought to.
     let frame = tui.frame();
@@ -1399,14 +1413,7 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         .find(|(_, line)| line.contains("┃tb-findme "))
         .expect("the landed line");
     let byte = line.find("┃tb-findme").expect("the landed line") + "┃".len();
-    let x = line[..byte].chars().count();
-    tui.wait_until("the landed line to be highlighted", |frame| {
-        frame
-            .lines()
-            .enumerate()
-            .find(|(_, line)| line.contains("┃tb-findme "))
-            .is_some_and(|(row, _)| tui.inverse_at(row as u16, x as u16))
-    });
+    let x = unicode_width::UnicodeWidthStr::width(&line[..byte]);
     assert!(
         tui.inverse_at(y as u16, x as u16),
         "the landed line is not highlighted:\n{frame}"
