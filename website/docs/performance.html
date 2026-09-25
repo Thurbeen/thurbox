@@ -1,253 +1,258 @@
 ---
 layout: docs.njk
 title: 'Performance — Thurbox Docs'
-description: 'Thurbox performance: demand-driven rendering, deterministic perf counters, caching, and measuring startup time, CPU, and binary size.'
+description: 'Measured costs of 50 agent sessions in Thurbox, Herdr, and tmux, plus a practical F12 performance walkthrough.'
 currentPage: 'performance'
 breadcrumb: 'Performance'
 ---
-<h1>Performance</h1>
+<h1>Performance at 50 sessions</h1>
 <p>
-  How thurbox stays responsive and light, across four dimensions: input latency, runtime CPU /
-  render cost, startup time, and memory / binary size. The guiding principle is
-  <strong>measure first</strong> &mdash; every optimization is backed by a deterministic counter or
-  a concrete code fact, and proven by a test that fails if it regresses. Full rationale lives in
-  <code>docs/PERFORMANCE.md</code>.
-</p>
-
-<h2 id="rendering">
-  Demand-Driven Rendering
-  <a href="#rendering" class="heading-anchor">#</a>
-</h2>
-<p>
-  The render loop paints a frame only when the UI is <em>dirty</em> or a forced-redraw floor
-  elapsed &mdash; not on every iteration. The previous loop called
-  <code>terminal.draw</code> unconditionally at ~100 fps even on a completely idle screen, the
-  single largest idle-CPU cost in a long-lived TUI. State now drives the paint:
+  Same-machine measurements of what it costs to start, keep, and show agent sessions.
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md">Read the benchmark report</a>.
 </p>
 <ul>
-  <li><strong>Input</strong> marks the UI dirty, so a keypress paints on the next iteration (latency unchanged).</li>
-  <li>
-    <strong>Agent output</strong> marks it dirty via a lock-free rolling signature over each
-    session's <code>last_output_at</code> atomic &mdash; no vt100 lock needed to notice new output.
-  </li>
-  <li><strong>Status transitions</strong> (a quiet <code>Busy &rarr; Waiting</code> produces no output) request a redraw explicitly.</li>
-  <li>
-    <strong>Everything time-driven</strong> &mdash; the live clock/metrics, cursor blink, an
-    expiring toast &mdash; is covered by a 250&nbsp;ms forced-redraw floor.
-  </li>
+  <li><strong>After closing the interface:</strong> 50 idle Thurbox sessions used 0% host CPU and about 9&nbsp;MiB of measured host memory; Herdr used 22.5% and about 41&nbsp;MiB.</li>
+  <li><strong>Creating:</strong> 50 sessions took 1.81&nbsp;s in Thurbox, 2.66&nbsp;s in Herdr, and 0.45&nbsp;s in plain tmux.</li>
+  <li><strong>Typing:</strong> Herdr echoed sooner: 2.23 versus 4.13&nbsp;ms at rest, and 0.45 versus 1.90&nbsp;ms with another session busy.</li>
 </ul>
-<p>
-  The loop still spins every &le;10&nbsp;ms (poll input, check output, tick), but the expensive work
-  &mdash; layout, the vt100 render, panel rebuilds &mdash; is skipped when idle. Idle paints drop
-  from ~100 fps to ~4 fps while input and output repaints stay immediate: responsiveness is
-  unchanged and idle CPU drops by roughly 25&times;.
-</p>
-
-<h2 id="counters">
-  Perf Counters
-  <a href="#counters" class="heading-anchor">#</a>
-</h2>
-<p>
-  Performance regressions are caught by <strong>counting</strong>, not timing. Wall-clock benchmarks
-  are flaky on shared CI runners; a counter assertion is exact and reproducible, and proves the
-  <em>mechanism</em> (work was skipped) rather than a wobbly proxy (it was fast today). The
-  in-process acceptance harness asserts on these wall-clock-free counters, gating the normal
-  <code>cargo nextest run --all</code>.
-</p>
-<table>
+<table id="comparison">
+  <caption class="performance-table-hint">Swipe the table sideways to compare all three.</caption>
   <thead>
     <tr>
-      <th>Counter</th>
-      <th>Meaning</th>
+      <th scope="col">Scenario</th>
+      <th scope="col">Thurbox</th>
+      <th scope="col">Herdr</th>
+      <th scope="col">tmux</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td><code>frames_rendered</code></td>
-      <td>a frame painted</td>
+      <th scope="row">Create 50 sessions</th>
+      <td>1.81 s</td>
+      <td>2.66 s</td>
+      <td>0.45 s</td>
     </tr>
     <tr>
-      <td><code>redraws_requested</code> / <code>redraws_skipped</code></td>
-      <td>loop iterations that painted vs. skipped</td>
+      <th scope="row">Key to echo, idle</th>
+      <td>4.13 ms</td>
+      <td>2.23 ms</td>
+      <td>1.04 ms</td>
     </tr>
     <tr>
-      <td><code>ordered_sessions_rebuilds</code></td>
-      <td>session-list order rebuilt vs. served from cache</td>
+      <th scope="row">Key to echo, another session busy</th>
+      <td>1.90 ms</td>
+      <td>0.45 ms</td>
+      <td>0.76 ms</td>
     </tr>
     <tr>
-      <td><code>parser_locks_render</code></td>
-      <td>central pane locked a vt100 parser to render</td>
+      <th scope="row">Visible 50k-line burst</th>
+      <td>269 ms</td>
+      <td>158 ms</td>
+      <td>334 ms</td>
     </tr>
     <tr>
-      <td><code>hook_state_loads</code></td>
-      <td>the session-status rows were actually reloaded from the DB (gated on a <code>data_version</code> change &mdash; stays flat while idle)</td>
+      <th scope="row">50 idle, no UI</th>
+      <td>0% / 9.06 MiB</td>
+      <td>22.5% / 41.1 MiB</td>
+      <td>0% / 3.55 MiB</td>
     </tr>
     <tr>
-      <td><code>external_poll_checks</code> / <code>external_poll_reloads</code></td>
-      <td>the cross-instance <code>PRAGMA data_version</code> poll ran / found a change and reloaded shared state</td>
+      <th scope="row">50 printing, no UI</th>
+      <td>8.90% / 9.33 MiB</td>
+      <td>93.1% / 41.9 MiB</td>
+      <td>7.40% / 3.99 MiB</td>
+    </tr>
+    <tr>
+      <th scope="row">50 idle, UI open</th>
+      <td>9.45% / 46.9 MiB</td>
+      <td>86.7% / 53.8 MiB</td>
+      <td>0% / 12.1 MiB</td>
+    </tr>
+    <tr>
+      <th scope="row">50 printing, UI open</th>
+      <td>35.3% / 47.2 MiB</td>
+      <td>104% / 53.9 MiB</td>
+      <td>5.87% / 12.1 MiB</td>
     </tr>
   </tbody>
 </table>
-
-<h2 id="caching">
-  Session-Order Cache
-  <a href="#caching" class="heading-anchor">#</a>
+<h2 id="workload">
+  What each session runs
+  <a href="#workload" class="heading-anchor">#</a>
 </h2>
 <p>
-  The session-list ordering (grouping, sorting, parent/child nesting) is a pure function of four
-  per-session fields &mdash; repo names, manual order, id, and parent &mdash; and
-  <strong>never</strong> of status. It is cached, keyed by a content signature (a hash of exactly
-  those fields). On a frame where the signature is unchanged, the order is reused, skipping the
-  grouping HashMap, two sort passes, nest recursion, and label allocations; only the cheap O(n)
-  remap of refs and selection runs each frame.
-</p>
-<p>
-  Being content-derived, the cache is <strong>self-invalidating</strong>: any change that alters the
-  order alters the hash, so there is no manual &ldquo;mark dirty&rdquo; call site to forget. This
-  matters most while an agent streams output and the screen repaints every frame.
-</p>
-
-<h2 id="status-cache">
-  Session-Status Cache
-  <a href="#status-cache" class="heading-anchor">#</a>
-</h2>
-<p>
-  Session status (working / blocked / done / idle) is driven by agent hooks persisted in SQLite.
-  Deriving it used to re-scan the <code>sessions</code> table on <em>every</em> tick (~100&times;/s),
-  even on an idle screen where nothing changed. The rows are now <strong>cached</strong> and reloaded
-  only when the database's <code>PRAGMA data_version</code> moves &mdash; a single in-memory counter
-  read, far cheaper than an indexed scan plus row mapping. The per-tick <em>derivation</em> (the
-  Working spinner, the output-quiescence fallback, the done/seen logic) still runs every tick against
-  the cache, so status latency is unchanged.
-</p>
-<p>
-  An external <code>thurbox-cli session signal</code> commits on another connection, which bumps
-  <code>data_version</code> and is picked up on the next tick. The two writes that don't move
-  <em>this</em> connection's version &mdash; marking a <code>done</code> session
-  <code>seen</code>, and clearing state on restart &mdash; are handled explicitly (write-through and
-  cache invalidation), so the cache can never serve a stale status. The
-  <code>hook_state_loads</code> counter proves it: flat while idle, +1 per external signal.
-</p>
-
-<figure class="perf-figure">
-  <svg viewBox="0 0 660 250" role="img" aria-labelledby="idle-title idle-desc">
-    <title id="idle-title">Idle work per second, before vs. after</title>
-    <desc id="idle-desc">
-      On a fully idle screen, frame paints drop from about 100 to 4 per second, and session-status
-      table scans drop from about 100 to near zero per second.
-    </desc>
-    <!-- gridlines + y-axis -->
-    <line class="perf-grid" x1="56" y1="40" x2="620" y2="40" />
-    <line class="perf-grid" x1="56" y1="120" x2="620" y2="120" />
-    <line class="perf-grid" x1="56" y1="200" x2="620" y2="200" />
-    <text class="perf-axis" x="48" y="44" text-anchor="end">100</text>
-    <text class="perf-axis" x="48" y="124" text-anchor="end">50</text>
-    <text class="perf-axis" x="48" y="204" text-anchor="end">0</text>
-    <!-- legend -->
-    <rect x="430" y="6" width="12" height="12" fill="var(--text-muted)" />
-    <text class="perf-axis" x="448" y="16">before</text>
-    <rect x="520" y="6" width="12" height="12" fill="var(--green)" />
-    <text class="perf-axis" x="538" y="16">after (idle)</text>
-    <!-- group 1: frame paints -->
-    <rect x="120" y="40" width="80" height="160" fill="var(--text-muted)" />
-    <rect x="220" y="194" width="80" height="6" fill="var(--green)" />
-    <text class="perf-value" x="160" y="34" text-anchor="middle">100</text>
-    <text class="perf-value" x="260" y="188" text-anchor="middle">~4</text>
-    <text class="perf-axis" x="210" y="222" text-anchor="middle">frame paints / s</text>
-    <!-- group 2: status scans -->
-    <rect x="400" y="40" width="80" height="160" fill="var(--text-muted)" />
-    <rect x="500" y="197" width="80" height="3" fill="var(--green)" />
-    <text class="perf-value" x="440" y="34" text-anchor="middle">100</text>
-    <text class="perf-value" x="540" y="191" text-anchor="middle">&#8776;0</text>
-    <text class="perf-axis" x="490" y="222" text-anchor="middle">DB status scans / s</text>
-  </svg>
-  <figcaption>
-    Idle-screen work per second. Demand-driven rendering (ADR-P1) takes paints from ~100&nbsp;fps to
-    the 4&nbsp;fps forced-redraw floor; the session-status cache (ADR-P6) takes the per-tick
-    <code>sessions</code>-table scan to near zero. Input and output latency are unchanged &mdash; the
-    loop still wakes every &le;10&nbsp;ms, it just does less.
-  </figcaption>
-</figure>
-
-<h2 id="not-optimized">
-  Deliberately Not Optimized
-  <a href="#not-optimized" class="heading-anchor">#</a>
-</h2>
-<p>Measuring first also means not adding complexity where the data says it won't pay off:</p>
-<ul>
-  <li>
-    <strong>Scrollback round-trip</strong> &mdash; vt100's <code>set_scrollback</code> /
-    <code>scrollback</code> are O(1), and demand-driven rendering already bounds how often it runs.
-    Caching it would add borrow complexity for no measurable gain.
-  </li>
-  <li>
-    <strong>vt100 parser lock contention</strong> &mdash; demand-driven rendering collapses
-    idle-frame UI locks to near zero, shrinking the contention window for free. Cloning the (large)
-    vt100 screen for lock-free rendering would cost more than the brief lock it removes.
-  </li>
-</ul>
-
-<h2 id="measuring">
-  Measuring Performance
-  <a href="#measuring" class="heading-anchor">#</a>
-</h2>
-<p>
-  The gating automated tests are the counter assertions above. Heavier measurement is opt-in and
-  local, so the PR gate stays fast and free of flaky timing or extra dependencies:
+  Every session runs the same lightweight Python stand-in, not Claude Code or Codex. It records
+  when it starts, prints a ready line, then waits for input or a signal. This keeps agent behavior
+  the same across Thurbox, Herdr, and tmux. The host CPU and memory measurements exclude these
+  Python processes, so they show the multiplexers' own costs. Creation time still includes the
+  stand-in's identical startup on each host. See the
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md#method">method</a>
+  and <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/scripts/bench/agent.py">stand-in code</a>.
 </p>
 <ul>
+  <li><strong>Create 50:</strong> starts 50 stand-ins one after another, with no client attached.</li>
   <li>
-    <strong>Startup</strong> &mdash; launch with <code>THURBOX_PERF_LOG=1</code>; a
-    <code>startup</code> line is logged to <code>thurbox.log</code> with a phase breakdown
-    (<code>config_init_ms</code> / <code>db_open_ms</code> / <code>extension_heal_ms</code> /
-    <code>restore_ms</code>) that sums to <code>first_frame_ms</code>, plus per-backend
-    <code>restore_discover</code> and per-session <code>restore_adopt</code> / <code>adopt_split</code>
-    lines when session restore is the long pole.
+    <strong>Idle or printing:</strong> 50 stand-ins wait quietly or each print 10 lines per second.
+    &ldquo;No UI&rdquo; means no client is attached. &ldquo;UI open&rdquo; means one client shows
+    session 1.
   </li>
   <li>
-    <strong>Binary size</strong> &mdash; a non-gating CI job records the release
-    <code>thurbox</code> / <code>thurbox-cli</code> sizes to the job summary and an artifact, so
-    growth is visible without blocking merges. The release profile is already LTO-tuned and stripped.
+    <strong>Typing:</strong> one attached client shows session 1 of two. Each typed byte makes its
+    stand-in redraw a four-letter token in place. In the busy row, off-screen session 2 emits
+    repeated bursts.
   </li>
   <li>
-    <strong>CPU / size attribution</strong> &mdash; run <code>cargo flamegraph</code> (with the
-    <code>release-with-debug</code> profile) and <code>cargo bloat --release --crates</code> ad hoc;
-    neither is a project dependency.
+    <strong>Burst:</strong> one stand-in prints 50,000 lines of about 107 bytes each as fast as its
+    terminal accepts them; one attached client shows when the final marker appears.
   </li>
 </ul>
-<figure class="perf-figure">
-  <svg viewBox="0 0 660 210" role="img" aria-labelledby="startup-title startup-desc">
-    <title id="startup-title">Startup time to first frame, by phase</title>
-    <desc id="startup-desc">
-      A representative cold start restoring five sessions reaches the first frame in about 226
-      milliseconds; session restore is roughly 71 percent of it, while config load, database open,
-      and extension heal are a few milliseconds each.
-    </desc>
-    <!-- stacked bar: config | db | heal | restore | init+paint -->
-    <rect x="20" y="30" width="82" height="40" fill="var(--yellow)" />
-    <rect x="102" y="30" width="3" height="40" fill="var(--purple)" />
-    <rect x="105" y="30" width="5" height="40" fill="var(--cyan)" />
-    <rect x="110" y="30" width="439" height="40" fill="var(--blue)" />
-    <rect x="549" y="30" width="91" height="40" fill="var(--text-muted)" />
-    <text class="perf-value" x="329" y="55" text-anchor="middle" fill="var(--bg-primary)">
-      restore &#8776; 71%
-    </text>
-    <!-- legend -->
-    <rect x="20" y="96" width="11" height="11" fill="var(--yellow)" />
-    <text class="perf-axis" x="37" y="105">config load &#8212; 30 ms</text>
-    <rect x="20" y="114" width="11" height="11" fill="var(--purple)" />
-    <text class="perf-axis" x="37" y="123">db open &#8212; 1 ms</text>
-    <rect x="20" y="132" width="11" height="11" fill="var(--cyan)" />
-    <text class="perf-axis" x="37" y="141">extension heal &#8212; 2 ms</text>
-    <rect x="20" y="150" width="11" height="11" fill="var(--blue)" />
-    <text class="perf-axis" x="37" y="159">session restore &#8212; 160 ms</text>
-    <rect x="20" y="168" width="11" height="11" fill="var(--text-muted)" />
-    <text class="perf-axis" x="37" y="177">init + first paint &#8212; 33 ms</text>
-  </svg>
-  <figcaption>
-    Where startup time goes, from a real <code>THURBOX_PERF_LOG=1</code> run restoring five sessions
-    (~226&nbsp;ms to first frame). The breakdown is what motivated measuring restore before any
-    parallelization &mdash; and what showed it is bounded by tmux's serialized control-mode
-    connection rather than by parallelizable work. Numbers vary with session count and scrollback.
-  </figcaption>
-</figure>
+<p>
+  Each cell is a median; lower is better for time, CPU, and memory. The 50-session resource cells
+  show CPU as a share of one core, then PSS memory in MiB. CPU is the host's processing time in a
+  fixed window (100% means one core was busy). PSS counts each host process's fair share of shared
+  memory, so a library used by two processes is counted only once.
+</p>
+<p>
+  The resource rows combine a
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Thurbox-only rerun</a>
+  on source <code>78ca3f93</code> (25 September) with Herdr and tmux from the
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">earlier three-host run</a>
+  (23 September, Thurbox build <code>1a6b60c0</code>). They used the same machine but were not
+  interleaved with each other. The typing and burst rows come from a separate
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">three-host final-source run</a>
+  (25 September).
+</p>
+<p>
+  Attached idle Thurbox memory
+  measured 46.9&nbsp;MiB at the final-head median and 56.7&nbsp;MiB at p95 (the worst of five
+  repetitions): a short spike after attach remains. The
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/before/summary.md">earlier full run before the echo change</a>
+  read 46.0&nbsp;MiB, and its
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">after run</a>
+  read 52.3&nbsp;MiB. Those earlier values are not final-head results.
+</p>
+<p>
+  Thurbox still loses to Herdr on typing: 4.13 versus 2.23&nbsp;ms at rest, and 1.90 versus
+  0.45&nbsp;ms with another session busy. In the final-source burst run, the last of 50,000 lines
+  appeared at 269&nbsp;ms in Thurbox and 158&nbsp;ms in Herdr. In the
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">same raw run</a>,
+  that attached burst also spent
+  0.38&nbsp;s of host CPU and left 37.1&nbsp;MiB PSS in Thurbox, versus 0.19&nbsp;s and
+  23.2&nbsp;MiB in Herdr. The steady 50-session resource result does not describe every output
+  shape.
+</p>
+<h2 id="choice">
+  Which to choose
+  <a href="#choice" class="heading-anchor">#</a>
+</h2>
+<p>
+  Pick plain tmux when the smallest host cost and quickest local echo matter most. Pick Herdr when
+  typing latency or fast burst display matters most. Thurbox fits when you want its session
+  workflow, low unattended CPU cost, and diagnostics for your own interface panes. The resource
+  advantage at 50 sessions does not hold at every size: with one attached idle session in the
+  earlier full run, Herdr used 1.10% CPU and 22.6&nbsp;MiB PSS, versus Thurbox's 2.89% and
+  28.2&nbsp;MiB.
+</p>
+
+<h2 id="hud">
+  Inspect your interface with F12
+  <a href="#hud" class="heading-anchor">#</a>
+</h2>
+<ol>
+  <li>
+    Open Thurbox and press <kbd>F12</kbd>. A <strong>perf</strong> overlay and a ranked
+    <strong>panes</strong> table appear. Press <kbd>F12</kbd> again to close them. The HUD is on by
+    default; if the key does nothing, set <code>perf_hud = true</code> under
+    <code>[features]</code> in <code>settings.toml</code> in your
+    <a href="configuration.html">Thurbox config directory</a>. This setting applies when you save it.
+  </li>
+  <li>
+    Leave the interface alone for several seconds. <code>frames</code> counts painted screens;
+    <code>skipped</code> counts loop passes that avoided a paint. A slowly rising frame count and
+    rising skips are normal at rest. <code>renders</code> counts pane render calls, and
+    <code>reused r/g</code> shows reused pane trees and published groups. The
+    <code>frame</code>, <code>republ</code>, and <code>tick</code> rows show median and maximum
+    time for drawing, rebuilding shared data, and loop work. <code>slow</code> names a recent slow
+    operation or pane.
+  </li>
+  <li>
+    Read the <strong>panes</strong> table, ranked by total time. <code>p95</code> is the
+    95th-percentile render time: 95 of 100 renders finish at or below it. <code>share</code> is
+    the pane's portion of measured frame time, and
+    <code>rend/reuse</code> separates renders from cache reuse. The costliest row is red; a
+    <code>!</code> marks a diagnostic hint. If a pane's render count keeps climbing while you are
+    idle, read that hint and check whether the pane has a clock, animation, or changing data that
+    calls for those renders.
+  </li>
+  <li>
+    While the HUD is open, run <code>thurbox-cli perf --plugins</code> in another terminal for
+    every loaded pane, longer names, handler and render times, cache reuse, and the hints in full.
+    The TUI publishes a snapshot every few seconds while timing is active; the CLI reads the latest
+    snapshot. Use <code>--json</code> for a script.
+  </li>
+</ol>
+<p>
+  These counters diagnose your own interface. They are not the multiplexer benchmark above, and
+  a busy pane can be doing useful work.
+</p>
+
+<h2 id="method">
+  How to read the results
+  <a href="#method" class="heading-anchor">#</a>
+</h2>
+<p>These rows come from different builds on the same machine:</p>
+<ul>
+  <li>
+    <strong>23 September 2026, Thurbox <code>1a6b60c0</code>:</strong> creation, plus the
+    Herdr/tmux resource comparators and the one-session example.
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">Summary</a>
+    and
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/results.csv">raw CSV</a>.
+  </li>
+  <li>
+    <strong>25 September 2026, Thurbox <code>78ca3f93</code>:</strong> resource-only rerun
+    (<code>--hosts thurbox --scenarios resources</code>).
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Summary</a>
+    and
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/results.csv">raw CSV</a>.
+  </li>
+  <li>
+    <strong>25 September 2026, Thurbox <code>78ca3f93</code>:</strong> three-host typing and
+    burst rerun.
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">Summary</a>
+    and
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">raw CSV</a>.
+  </li>
+</ul>
+<p>
+  The comparison used a four-core Intel Core i5-6500T (2.5&nbsp;GHz), 15.5&nbsp;GiB RAM, NixOS
+  26.05, tmux 3.7c, and
+  <a href="https://github.com/herdrdev/herdr/releases/tag/v0.9.1">Herdr 0.9.1</a>, the latest
+  stable release checked on 25 September 2026.
+  Thurbox was built in release mode from the commits named in the report. The same Python stand-in
+  agent ran on every host. Each scenario used five measured repetitions after one discarded
+  warm-up; latency sent 100 keys per repetition. In the raw summaries, <code>p95</code> means the
+  95th percentile: the worst of five scenario repetitions, or the 95th-percentile key among 500
+  latency samples. Hosts were interleaved within each three-host run; the final resource rerun
+  included only Thurbox. Herdr's documented creation path uses a shell and two CLI calls per
+  session, which affects its creation result.
+</p>
+<p>
+  A real coding agent, a different terminal, remote SSH, macOS, or Windows can change the result.
+  The terminal emulator's own cost was outside the harness. The
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md">full benchmark report</a>
+  and the linked raw data include the commands, per-run samples, defaults, and threats to validity.
+  The report also records the different headless grid sizes and the limits of a terminal harness.
+</p>
+
+<h2 id="implementation">
+  Why the cost changes
+  <a href="#implementation" class="heading-anchor">#</a>
+</h2>
+<p>
+  When its interface is closed, Thurbox leaves the sessions in tmux. When it is open, it also
+  paints an editable Lua interface, so CPU and memory rise. It avoids painting unchanged frames
+  and releases the terminal grid of a session that has been off screen. The
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/PERFORMANCE.md">technical performance report</a>
+  explains those decisions, the F12 counters, and the tests behind them.
+</p>

@@ -237,6 +237,10 @@ h3:hover .heading-anchor {
   font-size: 0.8rem;
 }
 
+.performance-table-hint {
+  display: none;
+}
+
 /* ---- Docs hub cards ---- */
 .docs-hub-grid {
   display: grid;
@@ -490,6 +494,14 @@ h3:hover .heading-anchor {
 
 /* ---- Mobile reading ---- */
 @media (max-width: 639px) {
+  .performance-table-hint {
+    display: block;
+    padding-bottom: var(--space-xs);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    text-align: left;
+  }
+
   .docs-content {
     padding-top: var(--space-lg);
     font-size: 0.95rem;
