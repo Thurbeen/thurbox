@@ -1502,6 +1502,13 @@ impl TmuxBackend {
         learned_host_socket(&self.name).unwrap_or_else(|| self.socket.clone())
     }
 
+    fn ensure_supported_transport(&self) -> Result<()> {
+        if self.transport.is_remote() && self.transport.mux() == "rmux" {
+            bail!(REMOTE_RMUX_UNSUPPORTED);
+        }
+        Ok(())
+    }
+
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
         let output = self.run_tmux(args)?;
@@ -1540,6 +1547,7 @@ impl TmuxBackend {
     /// Also one round trip instead of two: `list-windows` on an absent server
     /// gives exactly the refusal `has-session` was asked for.
     fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
+        self.ensure_supported_transport()?;
         let args = ["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT];
         // Run it here rather than through `run_tmux`, which formats the
         // failure into a message: the whole point is to keep the exit status,
@@ -1595,6 +1603,7 @@ impl TmuxBackend {
 
     /// Execute a tmux command on the thurbox socket and check for errors.
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
+        self.ensure_supported_transport()?;
         let output = self
             .transport
             .tmux_command(&self.socket(), args)
@@ -2410,9 +2419,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn check_available(&self) -> Result<()> {
-        if self.transport.is_remote() && self.transport.mux() == "rmux" {
-            bail!(REMOTE_RMUX_UNSUPPORTED);
-        }
+        self.ensure_supported_transport()?;
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
@@ -2435,9 +2442,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
-        if self.transport.is_remote() && self.transport.mux() == "rmux" {
-            bail!(REMOTE_RMUX_UNSUPPORTED);
-        }
+        self.ensure_supported_transport()?;
         self.ensure_session_configured()?;
 
         // Start control mode if not already running.
@@ -2740,6 +2745,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.ensure_supported_transport()?;
         if !self.session_exists() {
             return Ok(Vec::new());
         }

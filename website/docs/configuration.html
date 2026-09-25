@@ -53,8 +53,11 @@ thurbox-cli session create --name demo --repo-path . --command sh --multiplexer 
             and extension sessions retain the platform default. Each session keeps its recorded backend, shown by
             <code>thurbox-cli session list --json</code>; existing
             tmux and RMUX sessions continue on their own servers. RMUX is currently local and
-            POSIX only. A host configured with <code>multiplexer = "rmux"</code> is rejected
-            before connecting; SSH/WSL hosts use tmux or psmux, and native Windows keeps psmux.
+            POSIX only. New session creation on a host configured with
+            <code>multiplexer = "rmux"</code> is rejected before connecting, and existing remote
+            rows cannot run RMUX control commands or delegate to the host CLI. Force-delete leaves
+            their remote resources untouched and reports the teardown as owed. SSH/WSL hosts use
+            tmux or psmux, and native Windows keeps psmux.
             Install RMUX again before opening an existing RMUX session if you
             removed its binary.
           </p>

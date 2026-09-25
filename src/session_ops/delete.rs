@@ -276,7 +276,9 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
 /// **Backend-aware.** The window kills and each worktree removal run on the
 /// server the session actually lives on, resolved from `session.backend_type`:
 /// a local backend uses the local tmux socket + local `git`; an `ssh:`/`wsl:`
-/// backend kills the panes and removes the worktrees over that host's launcher.
+/// backend uses that host's launcher when its multiplexer is supported. A
+/// host configured for RMUX is left untouched, with the teardown recorded as
+/// owed, because the remote RMUX path has not been validated.
 /// The symlink workspace is always local (a spawn-time process-cwd detail under
 /// the local data dir), so it is torn down regardless of backend.
 pub fn teardown_runtime_resources(
@@ -288,6 +290,11 @@ pub fn teardown_runtime_resources(
         // unresolvable/unreachable host is expected — record it, never abort.
         let registry = crate::agent::host_config::load_all();
         match registry.get_by_backend(&session.backend_type) {
+            Some(host) if host.mux() == "rmux" => {
+                let msg = crate::agent::tmux::REMOTE_RMUX_UNSUPPORTED.to_string();
+                tracing::warn!("{msg}");
+                report.remote_teardown_error = Some(msg);
+            }
             Some(host) => {
                 kill_remote_window(host, session, report);
                 for wt in &session.worktrees {

@@ -1199,10 +1199,8 @@ fn run_signal(
 /// foreground process and live cwd are additive JSON fields, so a caller that
 /// only ever read `output` sees exactly what it always did.
 ///
-/// Refuses a remote session up front. `capture` has only ever read the *local*
-/// multiplexer, so a `--host` session's pane — which lives on that host's own
-/// tmux server — was already unreachable here; saying so beats the "can't find
-/// window" tmux reports for a window that was never meant to be local.
+/// A remote session is delegated to its host CLI. The local pane helpers only
+/// address local servers; unsupported remote RMUX hosts fail before delegation.
 fn capture_pane(
     db: &Database,
     uuid: &str,
@@ -2055,13 +2053,15 @@ fn delegate_to_host(
                 session.name, session.backend_type
             )
         })?;
-    let cli = crate::session_ops::host_cli::delegated(&host).ok_or_else(|| {
-        format!(
-            "session '{}' runs on '{}', and no thurbox-cli could be reached there — \
-             run this command on that host",
-            session.name, host.name
-        )
-    })?;
+    let cli = match crate::session_ops::host_cli::usable(&host) {
+        crate::session_ops::host_cli::Usable::Yes(cli) => cli,
+        crate::session_ops::host_cli::Usable::No(reason) => {
+            return Err(format!(
+                "session '{}' runs on '{}': {reason}",
+                session.name, host.name
+            ));
+        }
+    };
     let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
     let human = answer
         .get("output")

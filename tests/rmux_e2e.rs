@@ -145,6 +145,104 @@ fn remote_rmux_host_is_rejected_before_contacting_ssh() {
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error JSON");
     let error = answer["error"].as_str().expect("error text");
     assert!(error.contains("Remote RMUX is not supported"), "{error}");
+
+    let db = thurbox::storage::Database::open(&root.path().join("data/thurbox.db"))
+        .expect("instance database");
+    let row = thurbox::sync::SharedSession {
+        id: thurbox::session::SessionId::default(),
+        name: "existing-remote".into(),
+        agent: "shell".into(),
+        backend_id: "%1".into(),
+        backend_type: "ssh:remote".into(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: vec![thurbox::sync::SharedWorktree {
+            repo_path: root.path().join("repo"),
+            worktree_path: root.path().join("worktree"),
+            branch: "test".into(),
+            created_by_thurbox: true,
+        }],
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    };
+    db.upsert_session(&row).expect("existing remote session");
+    let fake_bin = root.path().join("fake-bin");
+    std::fs::create_dir(&fake_bin).expect("fake SSH bin");
+    let fake_ssh = fake_bin.join("ssh");
+    std::fs::write(
+        &fake_ssh,
+        "#!/bin/sh\ntouch \"$RMUX_SSH_MARKER\"\nexit 99\n",
+    )
+    .expect("fake SSH launcher");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755))
+        .expect("executable SSH launcher");
+    let marker = root.path().join("ssh-called");
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .expect("PATH with fake SSH");
+    let mut capture = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    capture.args(["session", "capture", &row.id.to_string(), "--json"]);
+    capture
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("THURBOX_CONFIG_DIR", &config)
+        .env("THURBOX_DATA_DIR", root.path().join("data"))
+        .env("PATH", &path)
+        .env("RMUX_SSH_MARKER", &marker);
+    let out = capture.output().expect("thurbox-cli capture");
+    assert!(!out.status.success());
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error JSON");
+    let error = answer["error"].as_str().expect("error text");
+    assert!(error.contains("Remote RMUX is not supported"), "{error}");
+    assert!(!marker.exists(), "existing-session operation contacted SSH");
+
+    let hosts: thurbox::session::HostRegistry =
+        toml::from_str(&std::fs::read_to_string(config.join("hosts.toml")).unwrap())
+            .expect("configured host");
+    let backend = thurbox::agent::tmux::TmuxBackend::from_host(&hosts.hosts[0]);
+    std::env::set_var("PATH", path);
+    std::env::set_var("RMUX_SSH_MARKER", &marker);
+    use thurbox::agent::SessionBackend;
+    let error = match backend.discover() {
+        Ok(_) => panic!("remote RMUX discovery must refuse"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("Remote RMUX is not supported"));
+    assert!(!marker.exists(), "backend discovery contacted SSH");
+
+    let mut delete = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    delete.args([
+        "session",
+        "delete",
+        &row.id.to_string(),
+        "--force",
+        "--json",
+    ]);
+    delete
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("THURBOX_CONFIG_DIR", &config)
+        .env("THURBOX_DATA_DIR", root.path().join("data"))
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("RMUX_SSH_MARKER", &marker);
+    let out = delete.output().expect("thurbox-cli force delete");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).expect("delete JSON");
+    assert!(answer["remote_teardown_error"]
+        .as_str()
+        .is_some_and(|error| error.contains("Remote RMUX is not supported")));
+    assert!(answer["removed_worktrees"].as_array().unwrap().is_empty());
+    assert!(!marker.exists(), "remote RMUX force-delete contacted SSH");
 }
 
 #[test]

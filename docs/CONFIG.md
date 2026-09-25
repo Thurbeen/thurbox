@@ -261,8 +261,11 @@ sessions unavailable until it is installed again; switch-back does not convert
 them.
 
 RMUX selection is currently local and POSIX only. `--multiplexer` cannot be
-combined with `--host`, and a host configured with `multiplexer = "rmux"` is
-rejected before connecting: the remote RMUX control path is not yet supported.
+combined with `--host`. New session creation on a host configured with
+`multiplexer = "rmux"` is rejected before connecting; existing remote rows
+also refuse RMUX control commands and host CLI delegation. The remote RMUX
+spawn and control path is not yet supported. Force-delete leaves remote
+windows and worktrees untouched and reports the teardown as owed.
 SSH and WSL backends still use tmux or psmux as configured for their host;
 native Windows still defaults to psmux. RMUX v0.10.0 supports the control stream
 used for local pane I/O, but not
