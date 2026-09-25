@@ -161,6 +161,7 @@ pub(crate) fn spawn_and_deliver(
     let spawned =
         crate::session_ops::spawn_session_headless(db, req).map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&spawned.backend_type);
     crate::agent::tmux::send_prompt_after_delay(
         &session_id.to_string(),
         name,

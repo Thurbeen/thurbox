@@ -527,36 +527,47 @@ fn tick(db: &Database) -> Result<Value, String> {
 /// Write the `@thurbox_state` pane option of every live local pane into the
 /// hook columns, for sessions whose rows are here. Returns how many changed.
 fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::agent::tmux::list_local_hook_states() {
-        Ok(states) if !states.is_empty() => states,
-        Ok(_) => return 0,
-        Err(e) => {
-            tracing::debug!("local pane status poll skipped: {e:#}");
-            return 0;
-        }
-    };
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let mut written = 0;
-    for (pane, state) in states {
-        if !crate::session::HOOK_STATES.contains(&state.as_str()) {
+    for backend in [
+        crate::session::LOCAL_BACKEND_TYPE,
+        crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE,
+    ] {
+        if backend == crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE && cfg!(windows) {
             continue;
         }
-        let Some(session) = sessions
-            .iter()
-            .find(|s| !crate::session::is_remote_backend(&s.backend_type) && s.backend_id == pane)
-        else {
-            continue;
+        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend);
+        let states = match crate::agent::tmux::list_local_hook_states() {
+            Ok(states) => states,
+            Err(e) => {
+                tracing::debug!("{backend} pane status poll skipped: {e:#}");
+                continue;
+            }
         };
-        if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
-            continue;
-        }
-        // `Ok(false)` is a parked session refusing a state it has no process
-        // to be in — not a write that failed, and not one that happened.
-        if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
-            written += 1;
+        for (pane, state) in states {
+            if !crate::session::HOOK_STATES.contains(&state.as_str()) {
+                continue;
+            }
+            let Some(session) = sessions.iter().find(|s| {
+                (s.backend_type == backend
+                    || (backend == crate::session::LOCAL_BACKEND_TYPE
+                        && s.backend_type != crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE
+                        && !crate::session::is_remote_backend(&s.backend_type)))
+                    && s.backend_id == pane
+            }) else {
+                continue;
+            };
+            if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
+                continue;
+            }
+            // `Ok(false)` is a parked session refusing a state it has no process
+            // to be in — not a write that failed, and not one that happened.
+            if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
+                written += 1;
+            }
         }
     }
     written
@@ -629,6 +640,7 @@ fn fire_send(
             )
         }
     };
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
     if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
         return (
             AutomationRunStatus::Skipped,
@@ -659,13 +671,31 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
-    // Reuse an existing session window (later fires / restored sessions).
-    // Name-only targeting: the reused window's session row has no cheap lookup
-    // here, and `auto-<id>` names don't collide.
+    // Reuse a recorded session on the server that owns it.
+    let existing = db
+        .list_active_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|row| {
+            row.name == name && {
+                let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
+                crate::agent::tmux::window_exists(&row.id.to_string(), &row.name)
+            }
+        });
+    if let Some(session) = existing {
+        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
+        return match crate::agent::tmux::send_prompt_now(
+            &session.id.to_string(),
+            &name,
+            &auto.prompt,
+        ) {
+            Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
+            Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+        };
+    }
+    // An older automation may still have a live tmux window with no active
+    // row. Keep the original name-only reuse path for that recovery case.
     if crate::agent::tmux::window_exists("", &name) {
-        // The reused window's session id has no cheap lookup here, so it is
-        // addressed by name — which resolves only while `auto-<id>` is the sole
-        // window with that name, and they do not collide.
         return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),

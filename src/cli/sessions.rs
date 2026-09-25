@@ -119,6 +119,10 @@ pub enum Action {
         /// worktree and tmux window are created on that host over SSH.
         #[arg(long)]
         host: Option<String>,
+        /// Use RMUX for this local session. Existing sessions keep their
+        /// recorded multiplexer; omitting this option uses tmux/psmux.
+        #[arg(long, value_parser = ["rmux"], conflicts_with = "host")]
+        multiplexer: Option<String>,
         /// Parent session UUID (lead/worker relationship for orchestration).
         /// Must reference an existing active session.
         #[arg(long)]
@@ -560,6 +564,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             worktree_branch,
             base_branch,
             host,
+            multiplexer,
             parent,
             add_repo,
             add_dir,
@@ -578,6 +583,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 worktree_branch,
                 base_branch,
                 host,
+                multiplexer,
                 parent,
                 add_repo,
                 add_dir,
@@ -752,6 +758,7 @@ struct CreateArgs {
     worktree_branch: Option<String>,
     base_branch: Option<String>,
     host: Option<String>,
+    multiplexer: Option<String>,
     parent: Option<String>,
     add_repo: Vec<String>,
     add_dir: Vec<String>,
@@ -771,6 +778,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         worktree_branch,
         base_branch,
         host,
+        multiplexer,
         parent,
         add_repo,
         add_dir,
@@ -798,7 +806,10 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
     // caller makes rather than something thurbox assumes — and it is a
     // decision about *this* backend, since a mirrored host's rows share
     // the namespace.
-    let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
+    let backend = crate::session_ops::spawn::backend_type_for_choice(
+        host.as_deref(),
+        multiplexer.as_deref(),
+    )?;
     let existing = resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
     if let Existing::Answered(output) = existing {
         return Ok(*output);
@@ -810,6 +821,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         base_branch,
         agent,
         host,
+        multiplexer,
         parent_session_id,
         extra_repos,
         command,
@@ -878,6 +890,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
             // caller would otherwise have to come back for with a
             // second `session get`, and poll for until it appeared.
             "backend_id": res.backend_id,
+            "backend_type": res.backend_type,
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
             "tmux_socket": crate::agent::tmux::local_socket_name(),
             "cwd": res.cwd.display().to_string(),
@@ -966,6 +979,7 @@ fn run_send(
     no_enter: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     if text.trim().is_empty() {
         return Err("text must not be empty".into());
     }
@@ -999,6 +1013,7 @@ fn run_send(
 
 fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     let resolved = crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
@@ -1162,6 +1177,7 @@ fn run_signal(
     }
     // The same state on the pane, for a peer's live subscription:
     // best-effort, and nothing at all outside tmux.
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
     if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
         tracing::debug!("could not set the pane state option: {e:#}");
     }
@@ -1193,6 +1209,7 @@ fn capture_pane(
     ansi: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     let line_count = lines.to_string();
@@ -2163,6 +2180,7 @@ impl SessionFacts {
         if crate::session::is_remote_backend(&s.backend_type) {
             return hook.pane_unavailable();
         }
+        let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&s.backend_type);
         // The agent *binary*, not the agent name: `antigravity` runs `agy`, and
         // the pane's foreground process is spelled the way it was invoked.
         let command = registry
@@ -2240,6 +2258,7 @@ fn register_running_session(
     row: crate::session_ops::mirror::HostRow,
 ) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     if db
         .get_session_by_id(session.id)
         .map_err(|e| format!("get_session_by_id: {e}"))?

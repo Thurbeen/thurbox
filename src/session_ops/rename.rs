@@ -42,6 +42,7 @@ pub fn rename_session_headless(
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     if session.name == name {
         return Ok(RenameReport {
             previous: session.name,

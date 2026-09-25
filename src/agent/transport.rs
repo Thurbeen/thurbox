@@ -1,11 +1,10 @@
-//! Transport seam for the tmux backend.
+//! Transport seam for the tmux-compatible session backends.
 //!
-//! The tmux control-mode protocol is identical whether tmux runs on the local
-//! machine or on a remote host reached over SSH (see [`crate::agent::control_mode`]).
-//! The *only* thing that differs is how the `tmux` process is launched: a bare
-//! `Command::new("tmux")` locally, or `ssh <dest> tmux …` remotely.
+//! The control-mode protocol is shared by local tmux, local RMUX, and remote
+//! tmux/psmux (see [`crate::agent::control_mode`]). The transport selects the
+//! process to launch; RMUX-specific control commands are handled by the backend.
 //!
-//! [`TmuxTransport`] captures exactly that difference and nothing else. It builds
+//! [`TmuxTransport`] captures the launch choice and nothing else. It builds
 //! [`Command`]s; it never touches I/O, threading, or the protocol.
 
 use std::process::Command;
@@ -23,6 +22,8 @@ pub const DEFAULT_MUX: &str = if cfg!(windows) { "psmux" } else { "tmux" };
 pub enum TmuxTransport {
     /// Run the multiplexer ([`DEFAULT_MUX`]) on the local machine.
     Local,
+    /// Run an opt-in local RMUX server, separate from the default server.
+    LocalRmux,
     /// Run the multiplexer on a remote host over SSH. `destination` is an ssh
     /// target (resolved via the user's `~/.ssh/config`); `ssh_opts` are extra
     /// flags (e.g. `-o ControlMaster=auto`) inserted before the destination;
@@ -80,8 +81,8 @@ impl TmuxTransport {
     /// command targets thurbox's own server even when thurbox runs inside a pane.
     pub fn tmux_command(&self, socket: &str, args: &[&str]) -> Command {
         let mut cmd = match self {
-            TmuxTransport::Local => {
-                let mut cmd = Command::new(DEFAULT_MUX);
+            TmuxTransport::Local | TmuxTransport::LocalRmux => {
+                let mut cmd = Command::new(self.mux());
                 cmd.arg("-L").arg(socket).args(args);
                 cmd
             }
@@ -125,6 +126,7 @@ impl TmuxTransport {
     pub fn mux(&self) -> &str {
         match self {
             TmuxTransport::Local => DEFAULT_MUX,
+            TmuxTransport::LocalRmux => "rmux",
             TmuxTransport::Ssh { mux, .. } | TmuxTransport::Wsl { mux, .. } => mux,
         }
     }
@@ -139,6 +141,7 @@ impl TmuxTransport {
     pub fn launcher(&self) -> &str {
         match self {
             TmuxTransport::Local => DEFAULT_MUX,
+            TmuxTransport::LocalRmux => "rmux",
             TmuxTransport::Ssh { .. } => "ssh",
             TmuxTransport::Wsl { .. } => "wsl.exe",
         }

@@ -583,6 +583,7 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     if remote {
         return HookCli::Remote;
     }
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     // Spelled out at every mention rather than imported: `cli` may reach
     // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
     // that holds for a `use` inside a function too.

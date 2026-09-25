@@ -237,6 +237,29 @@ than a guessed invocation. A missing **agent** is answered with the `agents.toml
 entry that decides what gets run, because thurbox bakes in no knowledge of any
 agent's installer.
 
+### Opt-in local RMUX sessions
+
+On Linux or macOS, install [RMUX](https://github.com/Helvesec/rmux/releases)
+and put its `rmux` binary on `PATH`. The tested release is v0.10.0. Create a
+session with `thurbox-cli session create --name demo --repo-path . --command sh
+--multiplexer rmux`. Run `thurbox-cli doctor --multiplexer rmux` to check the
+selected binary; a missing RMUX also fails creation before it writes a session.
+
+Omit `--multiplexer` on the next create to switch back to the platform default:
+tmux on POSIX, psmux on native Windows. The choice is per session, not a global
+setting. Existing rows retain `local-tmux` or `local-rmux` in `backend_type`, so
+send, capture, restart, discovery and deletion continue to reach the server
+that owns each pane after switching. `thurbox-cli session list --json` shows the
+recorded type. Removing RMUX while its sessions still exist leaves those
+sessions unavailable until it is installed again; switch-back does not convert
+them.
+
+RMUX selection is currently local and POSIX only. SSH and WSL backends still
+use the multiplexer configured for their host; native Windows still defaults
+to psmux. RMUX v0.10.0 supports the control stream used for pane I/O, but not
+tmux's `refresh-client` flow-control and format subscriptions, so RMUX panes
+do not use those features or terminal snapshot eviction.
+
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose

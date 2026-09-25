@@ -448,6 +448,15 @@ code.
 
 ## ADR-12: Local tmux as default backend
 
+**Optional peer**: A POSIX CLI create may select `--multiplexer rmux`, registered
+as `local-rmux`. It uses the same local socket name on RMUX's separate server,
+and the persisted `backend_type` selects that server for subsequent operations.
+The default remains `local-tmux` (psmux on native Windows). RMUX v0.10.0's
+control mode carries pane I/O but rejects tmux's `refresh-client` flow-control
+command and format subscriptions. The RMUX adapter omits those commands and
+keeps its terminal grids live rather than evicting and rebuilding them from a
+snapshot. Remote hosts remain on their configured tmux/psmux transport.
+
 **Choice**: The default `SessionBackend` is `TmuxBackend`
 parameterized over its `Local` transport (`TmuxTransport::Local`)
 and registered as `local-tmux`, using a dedicated tmux server

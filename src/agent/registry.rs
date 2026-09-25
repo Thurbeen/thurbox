@@ -44,8 +44,11 @@ impl BackendRegistry {
     /// read of `hosts.toml`. The warnings are that read's, for callers that
     /// surface them.
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
-        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
+        let local: Arc<dyn SessionBackend> =
+            Arc::new(crate::agent::tmux::TmuxBackend::local_tmux());
         let mut backends = Self::new(local);
+        #[cfg(unix)]
+        backends.register(Arc::new(crate::agent::tmux::TmuxBackend::local_rmux()));
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {

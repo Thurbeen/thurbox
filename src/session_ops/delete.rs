@@ -555,6 +555,7 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// that rate for the life of the process — spawning `wsl.exe` from the
 /// interface's own loop and writing 3.9 MB of log in a day (issue #1182).
 fn window_index_on(db: &Database, backend_type: &str) -> crate::agent::tmux::WindowIndex {
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend_type);
     if !crate::session::is_remote_backend(backend_type) {
         return crate::agent::tmux::local_window_index().unwrap_or_default();
     }
@@ -706,6 +707,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     if row.force_deleted {
         return Ok(false);
     }
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
 
     // A remote session's windows live on its host, so the reap goes there.
     // Leaving them was the old answer, and it meant every soft delete of a
@@ -769,6 +771,7 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
 /// Conservatively owns nothing when the listing fails or cannot tell: leaking a
 /// window costs a stale agent, killing the wrong one costs live work.
 fn owned_windows(row: &DeletedSessionInfo) -> Vec<String> {
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
     match crate::agent::tmux::local_window_index() {
         Ok(index) => owned_windows_in(&index, row),
         Err(_) => Vec::new(),
@@ -839,6 +842,7 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
 /// Kill the session's window on the local tmux server, reaping the pane's child
 /// process on Windows (where a live process's cwd blocks the later rmdir).
 fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /

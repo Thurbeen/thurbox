@@ -290,7 +290,11 @@ pub enum Command {
     /// The companion to `session doctor`, which asks whether an *existing*
     /// session's status hooks are wired. This one names no session, so it
     /// answers on a machine where nothing has been created yet.
-    Doctor,
+    Doctor {
+        /// Check the optional RMUX choice instead of the platform default.
+        #[arg(long, value_parser = ["rmux"])]
+        multiplexer: Option<String>,
+    },
 }
 
 /// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
@@ -441,7 +445,7 @@ fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandErr
         Command::Plugin { action } => plugins::run(action)?,
         // Reads the machine, not the database: what is installed is not
         // something thurbox recorded.
-        Command::Doctor => doctor::run()?,
+        Command::Doctor { multiplexer } => doctor::run(multiplexer.as_deref())?,
     })
 }
 

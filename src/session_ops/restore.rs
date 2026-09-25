@@ -177,6 +177,7 @@ pub fn restore_session_headless(
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
         .ok_or_else(|| format!("deleted session not found: {id}"))?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&deleted.backend_type);
 
     // Recovery the caller would not want is a decision, not a discovery: they
     // have to have been told before it happens. v1's confirm modal and the
@@ -384,6 +385,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
         .ok_or_else(|| format!("restored session not found: {id}"))?;
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //

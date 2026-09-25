@@ -378,6 +378,7 @@ fn assess(
     if crate::session::is_remote_backend(backend_type) {
         return hook.pane_unavailable();
     }
+    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend_type);
     // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the
     // pane's foreground process is spelled the way it was invoked.
     let command = registry

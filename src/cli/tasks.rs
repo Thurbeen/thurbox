@@ -340,6 +340,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
+            let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&target.backend_type);
             if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
                 return Err("target session not running".into());
             }
@@ -364,10 +365,12 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
                 .find(|s| {
+                    let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&s.backend_type);
                     task.matches_spawn_session(&s.name)
                         && crate::agent::tmux::window_exists(&s.id.to_string(), &s.name)
                 });
             if let Some(session) = existing {
+                let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&session.backend_type);
                 crate::agent::tmux::send_prompt_now(
                     &session.id.to_string(),
                     &session.name,

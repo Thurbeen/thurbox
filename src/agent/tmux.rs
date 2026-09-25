@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,44 @@ use crate::agent::control_mode::{
     ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
+
+pub const LOCAL_RMUX_BACKEND_TYPE: &str = "local-rmux";
+
+thread_local! {
+    static LOCAL_MUX: Cell<&'static str> = const { Cell::new(DEFAULT_MUX) };
+}
+
+fn local_mux() -> &'static str {
+    LOCAL_MUX.with(Cell::get)
+}
+
+/// Select the local server for synchronous one-shot helpers on this thread.
+/// Callers use the session's persisted backend, never a new-session preference.
+pub struct LocalMuxScope {
+    previous: &'static str,
+    _not_send: std::marker::PhantomData<*mut ()>,
+}
+
+impl LocalMuxScope {
+    pub fn for_backend(backend_type: &str) -> Self {
+        let mux = if backend_type == LOCAL_RMUX_BACKEND_TYPE {
+            "rmux"
+        } else {
+            DEFAULT_MUX
+        };
+        let previous = LOCAL_MUX.with(|slot| slot.replace(mux));
+        Self {
+            previous,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for LocalMuxScope {
+    fn drop(&mut self) {
+        LOCAL_MUX.with(|slot| slot.set(self.previous));
+    }
+}
 
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
@@ -198,12 +237,12 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 };
 
 /// Build a [`Command`] for the local multiplexer on the thurbox socket:
-/// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
+/// `<selected mux> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
 /// (send/capture/spawn/kill/heartbeat) bypass the [`TmuxTransport`] seam — they
-/// are local-only — so this centralizes the binary name (`tmux`, or `psmux` on
-/// Windows) and socket instead of hardcoding `tmux` at each call site.
+/// are local-only — so this centralizes the selected binary and socket
+/// instead of hardcoding `tmux` at each call site.
 fn local_mux_command(args: &[&str]) -> Command {
-    let mut cmd = Command::new(DEFAULT_MUX);
+    let mut cmd = Command::new(local_mux());
     cmd.arg("-L").arg(local_socket()).args(args);
     // Strip nesting env so these one-shots target thurbox's own socket even when
     // thurbox is launched inside a tmux/psmux pane (see `strip_mux_nesting_env`).
@@ -218,7 +257,12 @@ fn local_mux_command(args: &[&str]) -> Command {
 /// [`crate::agent::preflight::launch_failure`] for why a `NotFound` is answered
 /// with a sentence rather than with `os error 2`.
 fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
-    crate::agent::preflight::launch_failure(&TmuxTransport::Local, context, err)
+    let transport = if local_mux() == "rmux" {
+        TmuxTransport::LocalRmux
+    } else {
+        TmuxTransport::Local
+    };
+    crate::agent::preflight::launch_failure(&transport, context, err)
 }
 
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
@@ -1007,7 +1051,7 @@ fn mux_answered_absent(error: &str) -> bool {
 /// namesakes are genuinely indistinguishable, and refusing to act would be a
 /// regression on Windows rather than the safety it is everywhere else.
 fn local_mux_is_psmux() -> bool {
-    DEFAULT_MUX == "psmux"
+    local_mux() == "psmux"
 }
 
 /// Resolve the local tmux target for acting on a session's agent pane, or
@@ -1280,13 +1324,35 @@ impl TmuxBackend {
         Self::local()
     }
 
-    /// Build the local tmux backend, named `local-tmux`.
+    /// Build the local backend selected by the current one-shot scope.
     pub fn local() -> Self {
+        if local_mux() == "rmux" {
+            return Self::local_rmux();
+        }
+        Self::local_tmux()
+    }
+
+    /// Build the platform-default local backend independently of a one-shot
+    /// operation's scope.
+    pub fn local_tmux() -> Self {
         Self {
             transport: TmuxTransport::Local,
             socket: local_socket(),
             session: TMUX_SESSION.to_string(),
             name: "local-tmux".to_string(),
+            control: Mutex::new(None),
+            sizer: sizer_name(),
+        }
+    }
+
+    /// Build the opt-in local RMUX backend. Existing local-tmux rows retain
+    /// their original backend and are always registered separately.
+    pub fn local_rmux() -> Self {
+        Self {
+            transport: TmuxTransport::LocalRmux,
+            socket: local_socket(),
+            session: TMUX_SESSION.to_string(),
+            name: LOCAL_RMUX_BACKEND_TYPE.to_string(),
             control: Mutex::new(None),
             sizer: sizer_name(),
         }
@@ -2135,10 +2201,12 @@ impl TmuxBackend {
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
-        self.ctrl_command(&format!(
-            "refresh-client -A '{}:on'",
-            pane_id.replace('\'', "'\\''")
-        ))?;
+        if !matches!(self.transport, TmuxTransport::LocalRmux) {
+            self.ctrl_command(&format!(
+                "refresh-client -A '{}:on'",
+                pane_id.replace('\'', "'\\''")
+            ))?;
+        }
 
         // Resize to the TUI panel dimensions. force_resize triggers a
         // SIGWINCH, making TUI applications (like claude) repaint at the
@@ -2490,7 +2558,7 @@ impl SessionBackend for TmuxBackend {
     /// exact, and its blocks are framed the old way (see
     /// `ControlMode::reader_thread`).
     fn supports_snapshots(&self) -> bool {
-        !self.transport.uses_psmux()
+        !self.transport.uses_psmux() && !matches!(self.transport, TmuxTransport::LocalRmux)
     }
 
     fn request_snapshot(&self, backend_id: &str) -> Result<()> {
@@ -2735,11 +2803,13 @@ impl SessionBackend for TmuxBackend {
 
     fn detach(&self, backend_id: &str) -> Result<()> {
         // Disable output monitoring for this pane.
-        if let Err(e) = self.ctrl_command_nowait(&format!(
-            "refresh-client -A '{}:off'",
-            backend_id.replace('\'', "'\\''")
-        )) {
-            warn!("Failed to disable output monitoring during detach: {e}");
+        if !matches!(self.transport, TmuxTransport::LocalRmux) {
+            if let Err(e) = self.ctrl_command_nowait(&format!(
+                "refresh-client -A '{}:off'",
+                backend_id.replace('\'', "'\\''")
+            )) {
+                warn!("Failed to disable output monitoring during detach: {e}");
+            }
         }
         // Remove the pane sender — the ControlModeReader gets EOF.
         let _ = self.unregister_pane(backend_id);
@@ -2915,13 +2985,13 @@ pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: b
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
-    let paste = paste_prompt_args(&target, text, DEFAULT_MUX == "psmux");
+    let paste = paste_prompt_args(&target, text, local_mux_is_psmux());
     let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
     let out = local_mux_command(&paste_argv)
         .output()
         .context("Failed to paste prompt text into the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} {} {}", paste[0], mux_failure(&out));
+        bail!("{} {} {}", local_mux(), paste[0], mux_failure(&out));
     }
 
     if !submit {
@@ -2934,7 +3004,7 @@ pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: b
         .output()
         .context("Failed to send Enter to the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys (Enter) {}", mux_failure(&out));
+        bail!("{} send-keys (Enter) {}", local_mux(), mux_failure(&out));
     }
     Ok(())
 }
@@ -3065,7 +3135,11 @@ pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Res
         .output()
         .context("Failed to send a key to the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) {}", mux_failure(&out));
+        bail!(
+            "{} send-keys ({tmux_key}) {}",
+            local_mux(),
+            mux_failure(&out)
+        );
     }
     Ok(())
 }
@@ -3138,14 +3212,15 @@ pub fn send_prompt_after_delay(
 #[cfg(not(windows))]
 fn deferred_prompt_script(target: &str, text: &str) -> String {
     let escaped_target = shell_escape(target);
+    let mux = local_mux();
     let socket = local_socket();
     // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
     // submit early; `-l` makes the multiplexer deliver the bytes literally.
     let escaped_text = shell_escape(&bracketed_paste(text));
     format!(
-        "{DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
+        "{mux} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
          sleep 0.2; \
-         {DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} Enter"
+         {mux} -L {socket} send-keys -t {escaped_target} Enter"
     )
 }
 
@@ -3459,7 +3534,7 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
     .join(&PANE_STATE_SEP.to_string());
 
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if !local_mux_is_psmux() {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3521,7 +3596,7 @@ pub fn agent_pane_path(session_id: &str, session_name: &str) -> PanePath {
     };
     let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if !local_mux_is_psmux() {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3904,7 +3979,7 @@ pub fn spawn_window(
             output.status,
             window_name,
             pane_id,
-            DEFAULT_MUX,
+            local_mux(),
             local_socket()
         );
     }
@@ -4325,7 +4400,7 @@ pub fn set_own_pane_state(state: &str) -> Result<()> {
     if !control_mode::is_valid_pane_id(&pane) {
         return Ok(());
     }
-    let status = Command::new(DEFAULT_MUX)
+    let status = Command::new(local_mux())
         .args([
             "-S",
             &socket_path,
