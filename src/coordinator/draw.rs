@@ -755,16 +755,26 @@ impl App {
         }
     }
 
-    /// Repaint cells that fell back to terminal-default colours with the active
-    /// theme's background and primary text.
+    /// Finish the frame's colours before the terminal backend sees them.
     ///
     /// v1 `App::repaint_theme_background`. Without it a theme only tints what a
     /// pane explicitly styled, and every gap between panes keeps the user's own
     /// terminal background — so 30 of the 36 presets rendered as a patchwork.
     ///
-    /// Themes whose `app_bg` is `Reset` (the ANSI-based Default preset) skip it
-    /// deliberately, so they keep honouring the terminal palette.
+    /// Themes whose `app_bg` is `Reset` (the ANSI-based Default preset) skip
+    /// the fill deliberately, so they keep honouring the terminal palette.
     pub(crate) fn repaint_theme_background(&self, frame: &mut Frame) {
+        // Crossterm suppresses colour values under NO_COLOR but still emits an
+        // empty SetColors sequence when a cell changes colour. That sequence
+        // resets attributes too, erasing a search mark's reverse video. With
+        // colours absent from the buffer, no SetColors is queued at all.
+        if crossterm::style::Colored::ansi_color_disabled_memoized() {
+            for cell in &mut frame.buffer_mut().content {
+                cell.fg = ratatui::style::Color::Reset;
+                cell.bg = ratatui::style::Color::Reset;
+            }
+            return;
+        }
         let palette = &self.themes.active().palette;
         if palette.app_bg == ratatui::style::Color::Reset {
             return;
