@@ -239,15 +239,21 @@ agent's installer.
 
 ### Opt-in local RMUX sessions
 
-On Linux or macOS, install [RMUX](https://github.com/Helvesec/rmux/releases)
-and put its `rmux` binary on `PATH`. The tested release is v0.10.0. Create a
-session with `thurbox-cli session create --name demo --repo-path . --command sh
---multiplexer rmux`. Run `thurbox-cli doctor --multiplexer rmux` to check the
-selected binary; a missing RMUX also fails creation before it writes a session.
+On Linux or macOS, install the complete [RMUX](https://github.com/Helvesec/rmux/releases)
+package, including its `libexec/rmux` helper, and put its `bin/rmux` on `PATH`.
+The tested release is v0.10.0. Set the top-level `multiplexer = "rmux"` in
+`settings.toml` to use RMUX for new local sessions created by the TUI or CLI.
+Restart a running TUI after editing this startup setting; each new CLI command
+reads the file on launch. `thurbox-cli doctor` reports the configured choice,
+and a missing RMUX fails creation before it writes a session.
 
-Omit `--multiplexer` on the next create to switch back to the platform default:
-tmux on POSIX, psmux on native Windows. The choice is per session, not a global
-setting. Existing rows retain `local-tmux` or `local-rmux` in `backend_type`, so
+For one session, `thurbox-cli session create --name demo --repo-path .
+--command sh --multiplexer rmux` overrides the setting. Set
+`multiplexer = "default"` to switch future creates back to tmux on POSIX or
+psmux on native Windows, or pass `--multiplexer default` for one create. Spawn
+automations, task runs, and extension sessions continue to use the platform
+default. Existing rows retain
+`local-tmux` or `local-rmux` in `backend_type`, so
 send, capture, restart, discovery and deletion continue to reach the server
 that owns each pane after switching. `thurbox-cli session list --json` shows the
 recorded type. Removing RMUX while its sessions still exist leaves those

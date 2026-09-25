@@ -1072,7 +1072,8 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
           <p>
             Local sessions use a dedicated tmux server by default (
             <code>tmux -L thurbox</code>
-            ). CLI-created sessions can opt into a separate RMUX server on POSIX. Both survive
+            ). New local sessions can select a separate RMUX server on POSIX through
+            <code>settings.toml</code> or a CLI flag. Both survive
             crashes, restarts, and multiple concurrent instances.
           </p>
 
