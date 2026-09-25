@@ -720,6 +720,38 @@ impl Residency {
     }
 }
 
+/// Everything the blocking output reader shares with the rest of a pane.
+/// Keeping it together prevents the reader's redraw, activity, residency and
+/// backend-size signals from drifting apart as those contracts evolve.
+struct ReaderState {
+    parser: Arc<Mutex<SessionParser>>,
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    residency: Arc<Residency>,
+    output_count: Arc<AtomicU64>,
+    size: Option<PaneSize>,
+}
+
+impl ReaderState {
+    fn new(
+        parser: Arc<Mutex<SessionParser>>,
+        exited: Arc<AtomicBool>,
+        last_output_at: Arc<AtomicU64>,
+        residency: Arc<Residency>,
+        output_count: Arc<AtomicU64>,
+        size: Option<PaneSize>,
+    ) -> Self {
+        Self {
+            parser,
+            exited,
+            last_output_at,
+            residency,
+            output_count,
+            size,
+        }
+    }
+}
+
 /// The state a grid carries that its cells do not: the pen, the input modes a
 /// keystroke is encoded by, whether the cursor is hidden, and which screen is
 /// up. Replayed into a parser that replaces it, in either direction.
@@ -1446,24 +1478,17 @@ impl Session {
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
 
-        let parser_clone = Arc::clone(&parser);
-        let exited_clone = Arc::clone(&exited);
-        let last_output_clone = Arc::clone(&last_output_at);
-        let residency_clone = Arc::clone(&residency);
-        let output_count_clone = Arc::clone(&output_count);
+        let reader_state = ReaderState::new(
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&last_output_at),
+            Arc::clone(&residency),
+            Arc::clone(&output_count),
+            io.size.clone(),
+        );
         let seed_len = io.seed_len;
-        let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(
-                io.output,
-                parser_clone,
-                exited_clone,
-                last_output_clone,
-                residency_clone,
-                output_count_clone,
-                seed_len,
-                size,
-            );
+            Self::reader_loop(io.output, reader_state, seed_len);
         });
 
         let wired = WiredPane {
@@ -1604,16 +1629,15 @@ impl Session {
     /// losing or repeating a byte. A partial character held in `carry` stays
     /// held: its first bytes came before the snapshot, which cannot show a
     /// character tmux has not finished either, and the rest come after.
-    fn reader_loop(
-        mut reader: Box<dyn Read + Send>,
-        parser: Arc<Mutex<SessionParser>>,
-        exited: Arc<AtomicBool>,
-        last_output_at: Arc<AtomicU64>,
-        residency: Arc<Residency>,
-        output_count: Arc<AtomicU64>,
-        mut seed_len: usize,
-        size: Option<PaneSize>,
-    ) {
+    fn reader_loop(mut reader: Box<dyn Read + Send>, state: ReaderState, mut seed_len: usize) {
+        let ReaderState {
+            parser,
+            exited,
+            last_output_at,
+            residency,
+            output_count,
+            size,
+        } = state;
         let mut buf = [0u8; 4096];
         // Bytes of a trailing, not-yet-complete UTF-8 character held back from
         // the previous read. The agent's output is a single byte stream, but
@@ -2425,13 +2449,15 @@ mod tests {
         let seed_len = seed.len();
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
-            Arc::new(AtomicU64::new(0)),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         assert_eq!(
@@ -2495,12 +2521,15 @@ mod tests {
         );
         Session::reader_loop(
             Box::new(script),
-            Arc::clone(&parser),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU64::new(0)),
-            Arc::default(),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU64::new(0)),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                Some(size.clone()),
+            ),
             0,
-            Some(size.clone()),
         );
 
         let parser = parser.lock().unwrap();
@@ -2529,13 +2558,15 @@ mod tests {
         let reader = Cursor::new(b"f\xc3".to_vec()).chain(Cursor::new(b"\xa9\r\nok\xe6".to_vec()));
         Session::reader_loop(
             Box::new(reader),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
-            Arc::new(AtomicU64::new(0)),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             0,
-            None,
         );
 
         let screen = parser.lock().unwrap().screen().contents();
@@ -2571,11 +2602,14 @@ mod tests {
             std::thread::spawn(move || {
                 Session::reader_loop(
                     Box::new(Cursor::new(b"CHANGELOG".to_vec())),
-                    parser,
-                    Arc::new(AtomicBool::new(false)),
-                    stamp,
-                    Arc::default(),
-                    count,
+                    ReaderState::new(
+                        parser,
+                        Arc::new(AtomicBool::new(false)),
+                        stamp,
+                        Arc::default(),
+                        count,
+                        None,
+                    ),
                     0,
                 );
             })
@@ -2639,11 +2673,14 @@ mod tests {
                 count: Arc::clone(&output_count),
                 seen: Arc::clone(&seen),
             }),
-            parser,
-            Arc::new(AtomicBool::new(false)),
-            Arc::clone(&last_output_at),
-            Arc::default(),
-            Arc::clone(&output_count),
+            ReaderState::new(
+                parser,
+                Arc::new(AtomicBool::new(false)),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::clone(&output_count),
+                None,
+            ),
             0,
         );
         let seen = seen.lock().unwrap().clone();
@@ -2673,13 +2710,15 @@ mod tests {
         let reader = Cursor::new(seed).chain(Cursor::new(b"fresh agent output\r\n".to_vec()));
         Session::reader_loop(
             Box::new(reader),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
-            Arc::new(AtomicU64::new(0)),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         let stamped = last_output_at.load(Ordering::Relaxed);
@@ -2714,13 +2753,15 @@ mod tests {
         let seed_len = seed.len();
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
-            parser,
-            exited,
-            Arc::clone(&last_output_at),
-            Arc::default(),
-            Arc::new(AtomicU64::new(0)),
+            ReaderState::new(
+                parser,
+                exited,
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));

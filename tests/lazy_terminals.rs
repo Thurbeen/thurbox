@@ -347,8 +347,9 @@ fn numbered_lines(terminals: &Terminals) -> Vec<u64> {
     let parser = agent_parser(terminals);
     let mut parser = parser.lock().expect("parser");
     let mut rows = all_rows(&mut parser);
+    let screen = parser.screen();
     rows.truncate(
-        rows.len() - usize::from(ROWS) + usize::from(parser.screen().cursor_position().0),
+        rows.len() - usize::from(screen.size().0) + usize::from(screen.cursor_position().0),
     );
     rows.into_iter()
         .filter_map(|(cells, _)| {

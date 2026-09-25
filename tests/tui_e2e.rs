@@ -157,6 +157,9 @@ impl Profile {
             ),
         );
         cmd.env("TERM", "xterm-256color");
+        // This harness asserts the TUI's styles as well as its text. Do not let
+        // the shell running the suite silently turn Crossterm's colours off.
+        cmd.env_remove("NO_COLOR");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
         // Git exports these to hook processes, so a suite running under this
