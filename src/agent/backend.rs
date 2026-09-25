@@ -120,6 +120,10 @@ impl PaneSize {
     fn take_released(&self) -> bool {
         self.0.released.load(Ordering::Relaxed) && self.0.released.swap(false, Ordering::Relaxed)
     }
+
+    fn retry_released(&self) {
+        self.0.released.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Length of the prefix of `buf` that is safe to feed to the vt100 parser
@@ -910,6 +914,7 @@ impl WiredPane {
             return;
         }
         if let Err(e) = backend.resize(&self.backend_id, rows, cols) {
+            size.retry_released();
             debug!(pane = %self.backend_id, "could not take the pane's size back: {e:#}");
         }
     }

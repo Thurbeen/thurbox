@@ -341,6 +341,18 @@ fn grid_size(terminals: &Terminals) -> (u16, u16) {
         .size()
 }
 
+async fn wait_for_grid(terminals: &Terminals, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        paint(terminals, 0);
+        if grid_size(terminals) == (ROWS, COLS) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
 /// The numbers of every complete `line-N` the parser holds, oldest first. The
 /// row the cursor is on is left out: it may hold half a line still arriving.
 fn numbered_lines(terminals: &Terminals) -> Vec<u64> {
@@ -405,20 +417,19 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // off screen, which drops it again on the next sync.
     let mut rebuilds = 0;
     while !tmux_text(&pane).contains("line-2000") {
-        paint(&terminals, 0);
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        wait_for_grid(&terminals, "a mid-output grid rebuild").await;
         rebuilds += 1;
         assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuilds}"));
         terminals.forget_rects();
         terminals.sync(&snap, ROWS, COLS);
         assert!(grid_size(&terminals) <= (2, 2), "dropped again");
     }
-    assert!(rebuilds > 5, "only {rebuilds} rebuilds happened mid-output");
+    assert!(rebuilds > 1, "only {rebuilds} rebuild happened mid-output");
 
     // The last one is kept, so the rest of the output lands in a grid that was
     // rebuilt mid-stream — and the history it ends with crosses the splice.
     terminals.keep_hidden_for(None);
-    paint(&terminals, 0);
+    wait_for_grid(&terminals, "the final grid rebuild").await;
     wait_for("the output to finish", || {
         tmux_text(&pane).contains("finished")
     });

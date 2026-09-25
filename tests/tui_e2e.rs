@@ -181,6 +181,23 @@ impl Profile {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    fn wait_for_pane_text(&self, needle: &str) {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            let panes = self.server.tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
+            if String::from_utf8_lossy(&panes.stdout).lines().any(|pane| {
+                let capture =
+                    self.server
+                        .tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane]);
+                String::from_utf8_lossy(&capture.stdout).contains(needle)
+            }) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        panic!("timed out waiting for {needle:?} to reach tmux");
+    }
 }
 
 /// A pseudo-terminal pair at the given size.
@@ -2444,10 +2461,15 @@ impl Tui {
 ///
 /// The marker being off screen is the precondition every scroll assertion
 /// below rests on, so it is waited for rather than assumed.
-fn bury_a_marker(tui: &mut Tui, marker: &str) {
+fn bury_a_marker(profile: &Profile, tui: &mut Tui, marker: &str) {
     tui.send(format!("echo {marker}\r").as_bytes());
     tui.wait_for(marker);
     tui.send(b"i=1; while [ $i -le 100 ]; do echo tb-fill-$i; i=$((i+1)); done\r");
+    profile.wait_for_pane_text("tb-fill-100");
+    // A key forwarded to a terminal returns it to the live bottom. Make that
+    // precondition explicit before the wheel test starts, even if output and a
+    // slow frame briefly left the parser holding an older scrollback offset.
+    tui.send(b"\r");
     tui.wait_for("tb-fill-100");
     tui.wait_gone(marker);
 }
@@ -2461,10 +2483,10 @@ fn the_wheel_scrolls_the_agents_output_back() {
     // did nothing at all. An agent that turns on mouse tracking hid it (the
     // tick is forwarded to the pty instead), which is why it looked like it
     // only happened to some people.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
-    bury_a_marker(&mut tui, "tb-scroll-marker");
+    bury_a_marker(&profile, &mut tui, "tb-scroll-marker");
 
     let at = tui.find("tb-fill-100");
     tui.wheel(at, true, 90);
@@ -2486,7 +2508,7 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     // half that never honoured a scroll offset: the pane refused to hold one
     // for it and the kernel never set it on the shell's parser, so the wheel
     // over an open shell moved nothing.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
 
@@ -2502,7 +2524,7 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     // The pane paints before the shell inside it has drawn a prompt, and a
     // keystroke sent in between is lost.
     tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-shell-marker");
+    bury_a_marker(&profile, &mut tui, "tb-shell-marker");
 
     let at = tui.find("tb-fill-100");
     tui.wheel(at, true, 90);
@@ -2661,7 +2683,7 @@ fn the_scrollbar_can_be_pressed_and_dragged() {
     //
     // Driven on the SHELL tab, which is where it was reported and the harder of
     // the two: the shell is a second surface over the same primitive.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
     tui.send(b"\x14");
@@ -2672,7 +2694,7 @@ fn the_scrollbar_can_be_pressed_and_dragged() {
             .is_some_and(|band| band.trim_start().starts_with("Shell"))
     });
     tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-bar-marker");
+    bury_a_marker(&profile, &mut tui, "tb-bar-marker");
 
     // A wheel scroll is what gives the bar a depth to be scaled against, and
     // leaves the thumb at the top of its track.
