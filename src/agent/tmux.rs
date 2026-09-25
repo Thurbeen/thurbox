@@ -69,6 +69,12 @@ impl LocalMuxContext {
         Self { mux: DEFAULT_MUX }
     }
 
+    /// Legacy persisted ids and the current default all name the same server.
+    pub fn is_default_local_backend(backend_type: &str) -> bool {
+        !crate::session::is_remote_backend(backend_type)
+            && Self::for_backend(backend_type).is_ok_and(|mux| mux.choice().is_none())
+    }
+
     pub fn backend_type(self) -> &'static str {
         if self.mux == "rmux" {
             LOCAL_RMUX_BACKEND_TYPE

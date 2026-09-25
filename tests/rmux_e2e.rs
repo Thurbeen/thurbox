@@ -491,6 +491,60 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
             deleted_collision.status.success(),
             "RMUX namesake delete failed"
         );
+
+        let task = instance.cli(&[
+            "task",
+            "create",
+            "--title",
+            "legacy reuse",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--agent",
+            "shell",
+            "--json",
+        ]);
+        assert!(task.status.success(), "task create failed");
+        let task: serde_json::Value = serde_json::from_slice(&task.stdout).expect("task JSON");
+        let task_id = task["id"].as_i64().expect("task id");
+        let legacy_name = format!("task-{task_id}");
+        let legacy = instance.cli(&[
+            "session",
+            "create",
+            "--name",
+            &legacy_name,
+            "--repo-path",
+            repo.to_str().unwrap(),
+            "--command",
+            "cat",
+            "--json",
+        ]);
+        assert!(legacy.status.success(), "legacy task session create failed");
+        let legacy: serde_json::Value =
+            serde_json::from_slice(&legacy.stdout).expect("legacy session JSON");
+        let legacy_id = legacy["id"].as_str().expect("legacy session id");
+        let mut legacy_row = db
+            .get_session_by_id(legacy_id.parse().expect("session id"))
+            .expect("load legacy row")
+            .expect("legacy row exists");
+        legacy_row.backend_type = "tmux".into();
+        db.upsert_session(&legacy_row)
+            .expect("persist legacy backend");
+        let run = instance.cli(&["task", "run", &task_id.to_string(), "--json"]);
+        assert!(
+            run.status.success(),
+            "task run failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let run: serde_json::Value = serde_json::from_slice(&run.stdout).expect("task run JSON");
+        assert_eq!(
+            run["reused"], legacy_name,
+            "legacy tmux row should be reused: {run}"
+        );
+        let deleted_legacy = instance.cli(&["session", "delete", legacy_id, "--force", "--json"]);
+        assert!(
+            deleted_legacy.status.success(),
+            "legacy task session delete failed"
+        );
         Some(default_id)
     } else {
         None
@@ -529,6 +583,36 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
         "start failed: {}",
         String::from_utf8_lossy(&started.stdout)
     );
+    let db = thurbox::storage::Database::open(&instance.path("data/thurbox.db"))
+        .expect("instance database");
+    let mut row = db
+        .get_session_by_id(id.parse().expect("session id"))
+        .expect("load RMUX row")
+        .expect("RMUX row exists");
+    row.backend_type = "local-future".into();
+    db.upsert_session(&row)
+        .expect("persist unsupported backend");
+    let message = instance.cli(&[
+        "message",
+        "send",
+        "--to",
+        id,
+        "--kind",
+        "probe",
+        "--body",
+        "queued once",
+        "--json",
+    ]);
+    assert!(
+        message.status.success(),
+        "durable enqueue must succeed despite wake failure: {}",
+        String::from_utf8_lossy(&message.stdout)
+    );
+    let message: serde_json::Value = serde_json::from_slice(&message.stdout).expect("message JSON");
+    assert_eq!(message["enqueued"], true);
+    assert_eq!(message["woke"], false);
+    row.backend_type = "local-rmux".into();
+    db.upsert_session(&row).expect("restore RMUX backend");
     let deleted = instance.cli(&["session", "delete", id, "--force", "--json"]);
     assert!(
         deleted.status.success(),

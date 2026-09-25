@@ -691,9 +691,9 @@ fn fire_spawn(
         .unwrap_or_default()
         .into_iter()
         .find(|row| {
-            row.name == name && row.backend_type == crate::session::LOCAL_BACKEND_TYPE && {
-                crate::agent::tmux::window_exists(&mux, &row.id.to_string(), &row.name)
-            }
+            row.name == name
+                && crate::agent::tmux::LocalMuxContext::is_default_local_backend(&row.backend_type)
+                && { crate::agent::tmux::window_exists(&mux, &row.id.to_string(), &row.name) }
         });
     if let Some(session) = existing {
         return match crate::agent::tmux::send_prompt_now(

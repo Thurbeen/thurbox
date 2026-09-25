@@ -371,7 +371,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
                 .find(|s| {
-                    s.backend_type == crate::session::LOCAL_BACKEND_TYPE
+                    crate::agent::tmux::LocalMuxContext::is_default_local_backend(&s.backend_type)
                         && task.matches_spawn_session(&s.name)
                         && crate::agent::tmux::window_exists(&mux, &s.id.to_string(), &s.name)
                 });
