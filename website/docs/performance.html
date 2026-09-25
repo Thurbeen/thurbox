@@ -76,13 +76,41 @@ breadcrumb: 'Performance'
     </tr>
   </tbody>
 </table>
+<h2 id="workload">
+  What each session runs
+  <a href="#workload" class="heading-anchor">#</a>
+</h2>
+<p>
+  Every session runs the same lightweight Python stand-in, not Claude Code or Codex. It records
+  when it starts, prints a ready line, then waits for input or a signal. This keeps agent behavior
+  the same across Thurbox, Herdr, and tmux. The host CPU and memory measurements exclude these
+  Python processes, so they show the multiplexers' own costs. Creation time still includes the
+  stand-in's identical startup on each host. See the
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md#method">method</a>
+  and <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/scripts/bench/agent.py">stand-in code</a>.
+</p>
+<ul>
+  <li><strong>Create 50:</strong> starts 50 stand-ins one after another, with no client attached.</li>
+  <li>
+    <strong>Idle or printing:</strong> 50 stand-ins wait quietly or each print 10 lines per second.
+    &ldquo;No UI&rdquo; means no client is attached. &ldquo;UI open&rdquo; means one client shows
+    session 1.
+  </li>
+  <li>
+    <strong>Typing:</strong> one attached client shows session 1 of two. Each typed byte makes its
+    stand-in redraw a four-letter token in place. In the busy row, off-screen session 2 emits
+    repeated bursts.
+  </li>
+  <li>
+    <strong>Burst:</strong> one stand-in prints 50,000 lines of about 107 bytes each as fast as its
+    terminal accepts them; one attached client shows when the final marker appears.
+  </li>
+</ul>
 <p>
   Each cell is a median; lower is better for time, CPU, and memory. The 50-session resource cells
   show CPU as a share of one core, then PSS memory in MiB. CPU is the host's processing time in a
   fixed window (100% means one core was busy). PSS counts each host process's fair share of shared
-  memory, so a library used by two processes is counted only once. Both exclude the identical
-  stand-in agents. &ldquo;Printing&rdquo; means every agent wrote 10 lines per second; with the UI
-  open, the client displayed one session.
+  memory, so a library used by two processes is counted only once.
 </p>
 <p>
   The resource rows combine a
