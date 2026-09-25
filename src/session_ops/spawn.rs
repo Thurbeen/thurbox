@@ -1450,7 +1450,10 @@ fn resolve_backend(
     multiplexer: Option<&str>,
 ) -> Result<(String, Option<HostDef>), String> {
     let (backend, host_def) = resolve_host(host)?;
-    if host_def.is_some() {
+    if let Some(remote) = host_def.as_ref() {
+        if remote.mux() == "rmux" {
+            return Err(crate::agent::tmux::REMOTE_RMUX_UNSUPPORTED.into());
+        }
         if multiplexer.is_some() {
             return Err("--multiplexer currently supports local sessions only".into());
         }

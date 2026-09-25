@@ -113,6 +113,41 @@ fn rmux_binary() -> Option<PathBuf> {
 }
 
 #[test]
+fn remote_rmux_host_is_rejected_before_contacting_ssh() {
+    let root = tempfile::tempdir().expect("private instance");
+    let config = root.path().join("config");
+    std::fs::create_dir(&config).expect("config directory");
+    std::fs::write(
+        config.join("hosts.toml"),
+        "[[hosts]]\nname = \"remote\"\ndestination = \"localhost\"\nssh_opts = [\"-p\", \"1\"]\nmultiplexer = \"rmux\"\n",
+    )
+    .expect("RMUX host configuration");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    cmd.args([
+        "session",
+        "create",
+        "--name",
+        "remote-rmux",
+        "--repo-path",
+        root.path().to_str().unwrap(),
+        "--host",
+        "remote",
+        "--command",
+        "cat",
+        "--json",
+    ]);
+    cmd.env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("THURBOX_CONFIG_DIR", &config)
+        .env("THURBOX_DATA_DIR", root.path().join("data"));
+    let out = cmd.output().expect("thurbox-cli");
+    assert!(!out.status.success());
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).expect("error JSON");
+    let error = answer["error"].as_str().expect("error text");
+    assert!(error.contains("Remote RMUX is not supported"), "{error}");
+}
+
+#[test]
 fn unknown_persisted_local_backend_is_rejected() {
     let error = thurbox::agent::tmux::LocalMuxContext::for_backend("local-future")
         .expect_err("unknown local backend must not resolve to tmux");

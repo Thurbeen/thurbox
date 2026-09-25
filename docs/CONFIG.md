@@ -260,9 +260,12 @@ recorded type. Removing RMUX while its sessions still exist leaves those
 sessions unavailable until it is installed again; switch-back does not convert
 them.
 
-RMUX selection is currently local and POSIX only. SSH and WSL backends still
-use the multiplexer configured for their host; native Windows still defaults
-to psmux. RMUX v0.10.0 supports the control stream used for pane I/O, but not
+RMUX selection is currently local and POSIX only. `--multiplexer` cannot be
+combined with `--host`, and a host configured with `multiplexer = "rmux"` is
+rejected before connecting: the remote RMUX control path is not yet supported.
+SSH and WSL backends still use tmux or psmux as configured for their host;
+native Windows still defaults to psmux. RMUX v0.10.0 supports the control stream
+used for local pane I/O, but not
 tmux's `refresh-client` flow-control and format subscriptions, so RMUX panes
 do not use those features or terminal snapshot eviction.
 

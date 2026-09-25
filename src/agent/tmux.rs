@@ -21,6 +21,8 @@ use crate::agent::control_mode::{
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
 
 pub const LOCAL_RMUX_BACKEND_TYPE: &str = "local-rmux";
+pub(crate) const REMOTE_RMUX_UNSUPPORTED: &str =
+    "Remote RMUX is not supported yet; use tmux or psmux for this host";
 
 thread_local! {
     static ACTIVE_LOCAL_MUX: Cell<Option<&'static str>> = const { Cell::new(None) };
@@ -2408,6 +2410,9 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn check_available(&self) -> Result<()> {
+        if self.transport.is_remote() && self.transport.mux() == "rmux" {
+            bail!(REMOTE_RMUX_UNSUPPORTED);
+        }
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
@@ -2430,6 +2435,9 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
+        if self.transport.is_remote() && self.transport.mux() == "rmux" {
+            bail!(REMOTE_RMUX_UNSUPPORTED);
+        }
         self.ensure_session_configured()?;
 
         // Start control mode if not already running.
