@@ -1717,8 +1717,9 @@ fn an_exited_shell_comes_back_in_the_shell_pane() {
     tui.send(F8);
     wait_for_view(&tui, "Shell");
     tui.wait_until_quiet();
-    tui.send(b"echo tb-first-\"\"shell; exit\r");
+    tui.send(b"echo tb-first-\"\"shell\r");
     tui.wait_for("tb-first-shell");
+    tui.send(b"exit\r");
     tui.wait_gone("tb-first-shell");
     tui.wait_until_quiet();
     tui.send(b"echo tb-second-\"\"shell\r");
@@ -1741,8 +1742,9 @@ fn an_exited_shell_tab_opens_a_new_shell() {
     tui.send(b"\x14");
     wait_for_view(&tui, "Shell");
     tui.wait_until_quiet();
-    tui.send(b"echo tb-first-\"\"shell; exit\r");
+    tui.send(b"echo tb-first-\"\"shell\r");
     tui.wait_for("tb-first-shell");
+    tui.send(b"exit\r");
     tui.wait_gone("tb-first-shell");
     tui.wait_until_quiet();
     tui.send(b"echo tb-second-\"\"shell\r");
