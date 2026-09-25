@@ -377,6 +377,27 @@ measured 4.18 (5.38) ms idle and 1.88 (3.36) ms busy, against Herdr's 2.14
 the start and 1.92 at the end, with measured samples spanning 0.41–2.01
 ([`echo-and-create/head/`](benchmark-multiplexers/echo-and-create/head/)).
 
+A second latency-only run on the same code (`60c81b6c`), from an otherwise idle
+machine on 2026-09-25, confirmed the remaining gap. The 1-minute load was 0.08
+at the start and 1.52 at the end; the 36 host/variant repetitions started at
+0.02–1.50 and ended at 0.02–1.52 as the harness itself ran. All three used the
+same defaults and 100 keys per repetition; no key timed out. These are medians
+(p95) of 500 measured keys per host and variant, after one warm-up repetition.
+The complete raw results are in
+[`echo-and-create/quiet-head/`](benchmark-multiplexers/echo-and-create/quiet-head/).
+
+| keystroke to echo | tmux | Herdr | thurbox |
+|---|---:|---:|---:|
+| idle | 1.04 (1.10) ms | 2.21 (2.35) ms | **4.14 (5.15) ms** |
+| another session busy | 0.76 (0.96) ms | 0.45 (0.55) ms | **1.91 (3.15) ms** |
+
+No simple wait remains to remove from the idle path: the earlier trace below
+puts roughly 1.4 ms in painting and flushing a pane, 1.1 ms in tmux control
+mode and thread hand-offs, and 0.5 ms in the focused plugin's key handler. A
+change large enough to beat Herdr's 2.21 ms idle median would have to cut into
+those costs while retaining plugin key handling, output ordering and the
+bounded output rate. This run supplies no evidence for claiming an idle win.
+
 **Typing.** The echo of a key is agent output, and was painted on the 33 ms
 output floor measured from the frame the keystroke itself had just painted,
 then noticed only at the next 10 ms input-poll tick, since nothing woke the loop
