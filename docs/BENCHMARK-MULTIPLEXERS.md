@@ -371,10 +371,10 @@ Latency is median (p95) of 500 keys; the rest median (worst of 5). Three
 code commits came after the *after* build: counters for the tests, a narrower
 wake-up (only the pane that owes an echo wakes the loop), and a queue that
 keeps every wait when one input batch contains several keys. The latency
-scenario alone, re-run on that final code head (`b889b337`), measured 4.20
-(5.44) ms idle and 1.94 (3.12) ms busy, against Herdr's 2.23 (2.36) and 0.46
-(0.55) in the same run; neither lost a key. Load was 0.88 at the start and
-1.22 at the end, with measured samples spanning 0.42–1.39
+scenario alone, re-run after the rebase on the final code head (`909d725c`),
+measured 4.26 (5.45) ms idle and 1.90 (3.21) ms busy, against Herdr's 2.19
+(2.35) and 0.45 (0.54) in the same run; neither lost a key. Load was 1.51 at
+the start and 1.35 at the end, with measured samples spanning 0.28–1.51
 ([`echo-and-create/head/`](benchmark-multiplexers/echo-and-create/head/)).
 
 **Typing.** The echo of a key is agent output, and was painted on the 33 ms
