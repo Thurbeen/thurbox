@@ -786,6 +786,12 @@ pub fn parser_from_snapshot(snapshot: &crate::agent::control_mode::PaneSnapshot)
 /// `Deref` to it, so existing call sites (`session.parser`,
 /// `shell.backend_id`, `pane.send_input(..)`) keep working unchanged while
 /// the accessors exist once.
+struct ReaderSignals {
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    output_seq: Arc<AtomicU64>,
+}
+
 pub struct WiredPane {
     pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::Sender<Vec<u8>>,
@@ -1442,20 +1448,20 @@ impl Session {
         tokio::spawn(Self::writer_loop(io.input, input_rx));
 
         let parser_clone = Arc::clone(&parser);
-        let exited_clone = Arc::clone(&exited);
-        let last_output_clone = Arc::clone(&last_output_at);
         let residency_clone = Arc::clone(&residency);
-        let output_seq_clone = Arc::clone(&output_seq);
+        let reader_signals = ReaderSignals {
+            exited: Arc::clone(&exited),
+            last_output_at: Arc::clone(&last_output_at),
+            output_seq: Arc::clone(&output_seq),
+        };
         let seed_len = io.seed_len;
         let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
             Self::reader_loop(
                 io.output,
                 parser_clone,
-                exited_clone,
-                last_output_clone,
+                reader_signals,
                 residency_clone,
-                output_seq_clone,
                 seed_len,
                 size,
             );
@@ -1602,10 +1608,8 @@ impl Session {
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
-        exited: Arc<AtomicBool>,
-        last_output_at: Arc<AtomicU64>,
+        signals: ReaderSignals,
         residency: Arc<Residency>,
-        output_seq: Arc<AtomicU64>,
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
@@ -1650,20 +1654,22 @@ impl Session {
                     // buffered. The redraw sequence moves only when the parser
                     // has taken a complete prefix, and after it has done so.
                     if seed_len < n {
-                        last_output_at.store(now_millis(), Ordering::Relaxed);
+                        signals
+                            .last_output_at
+                            .store(now_millis(), Ordering::Relaxed);
                     }
                     seed_len = seed_len.saturating_sub(n);
                     if ready > 0 {
-                        output_seq.fetch_add(1, Ordering::Release);
-                        crate::agent::output_wake::notify(&output_seq);
+                        signals.output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify(&signals.output_seq);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
                         Self::install(&parser, &residency, &snapshot);
                         // A rebuilt grid is new content to paint, like output.
-                        output_seq.fetch_add(1, Ordering::Release);
-                        crate::agent::output_wake::notify(&output_seq);
+                        signals.output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify(&signals.output_seq);
                     }
                 }
                 Err(e) => {
@@ -1675,8 +1681,8 @@ impl Session {
         // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
         // since no more bytes are coming to complete it.
         Self::feed_parser(&parser, &carry);
-        output_seq.fetch_add(1, Ordering::Release);
-        exited.store(true, Ordering::SeqCst);
+        signals.output_seq.fetch_add(1, Ordering::Release);
+        signals.exited.store(true, Ordering::SeqCst);
     }
 
     /// Rebuild a dropped grid from `snapshot`, in place of the two cells that
@@ -2398,10 +2404,12 @@ mod tests {
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
-            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2468,10 +2476,12 @@ mod tests {
         Session::reader_loop(
             Box::new(script),
             Arc::clone(&parser),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU64::new(0)),
+            ReaderSignals {
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(0)),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
-            Arc::new(AtomicU64::new(0)),
             0,
             Some(size.clone()),
         );
@@ -2501,10 +2511,12 @@ mod tests {
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
             Arc::clone(&parser),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt))),
+            ReaderSignals {
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt))),
+                output_seq: Arc::clone(&seq),
+            },
             Arc::default(),
-            Arc::clone(&seq),
             seed_len,
             None,
         );
@@ -2570,10 +2582,12 @@ mod tests {
                     release: release_rx,
                 }),
                 parser_in_reader,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(AtomicU64::new(0)),
+                ReaderSignals {
+                    exited: Arc::new(AtomicBool::new(false)),
+                    last_output_at: Arc::new(AtomicU64::new(0)),
+                    output_seq: seq_in_reader,
+                },
                 Arc::default(),
-                seq_in_reader,
                 0,
                 None,
             );
@@ -2615,10 +2629,12 @@ mod tests {
         Session::reader_loop(
             Box::new(reader),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
-            Arc::new(AtomicU64::new(0)),
             0,
             None,
         );
@@ -2648,10 +2664,12 @@ mod tests {
         Session::reader_loop(
             Box::new(reader),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
-            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
@@ -2689,10 +2707,12 @@ mod tests {
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
             parser,
-            exited,
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited,
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
-            Arc::new(AtomicU64::new(0)),
             seed_len,
             None,
         );
