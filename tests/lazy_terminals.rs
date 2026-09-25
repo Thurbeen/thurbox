@@ -404,7 +404,10 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // off screen, which drops it again on the next sync.
     let mut rebuilds = 0;
     while !tmux_text(&pane).contains("line-2000") {
-        paint(&terminals, 0);
+        wait_for("the rebuilt grid", || {
+            paint(&terminals, 0);
+            grid_size(&terminals) == (ROWS, COLS)
+        });
         tokio::time::sleep(Duration::from_millis(30)).await;
         rebuilds += 1;
         assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuilds}"));
@@ -417,7 +420,10 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // The last one is kept, so the rest of the output lands in a grid that was
     // rebuilt mid-stream — and the history it ends with crosses the splice.
     terminals.keep_hidden_for(None);
-    paint(&terminals, 0);
+    wait_for("the final rebuilt grid", || {
+        paint(&terminals, 0);
+        grid_size(&terminals) == (ROWS, COLS)
+    });
     wait_for("the output to finish", || {
         tmux_text(&pane).contains("finished")
     });

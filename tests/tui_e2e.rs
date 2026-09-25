@@ -156,6 +156,9 @@ impl Profile {
             ),
         );
         cmd.env("TERM", "xterm-256color");
+        // These tests assert terminal colours and reverse video. An inherited
+        // NO_COLOR makes Crossterm omit colour escapes and reset attributes.
+        cmd.env_remove("NO_COLOR");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
         // Git exports these to hook processes, so a suite running under this
@@ -1397,6 +1400,13 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         .expect("the landed line");
     let byte = line.find("┃tb-findme").expect("the landed line") + "┃".len();
     let x = line[..byte].chars().count();
+    tui.wait_until("the landed line to be highlighted", |frame| {
+        frame
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("┃tb-findme "))
+            .is_some_and(|(row, _)| tui.inverse_at(row as u16, x as u16))
+    });
     assert!(
         tui.inverse_at(y as u16, x as u16),
         "the landed line is not highlighted:\n{frame}"
