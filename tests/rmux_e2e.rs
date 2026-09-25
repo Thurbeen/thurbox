@@ -396,6 +396,82 @@ fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
             "RMUX send after default: {}",
             String::from_utf8_lossy(&sent.stdout)
         );
+
+        std::fs::write(
+            instance.path("config/agents.toml"),
+            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+        )
+        .expect("shell agent config");
+        let db = thurbox::storage::Database::open(&instance.path("data/thurbox.db"))
+            .expect("instance database");
+        let auto_id = db
+            .create_automation(&thurbox::storage::automations::NewAutomation {
+                name: "spawn-probe".into(),
+                enabled: true,
+                schedule: thurbox::session::AutomationSchedule::Once { at: 1 },
+                timezone: None,
+                action: thurbox::session::AutomationAction::Spawn {
+                    repo_path: repo.clone(),
+                    worktree_branch: None,
+                    base_branch: None,
+                    agent: Some("shell".into()),
+                    extra_repos: Vec::new(),
+                },
+                prompt: "AUTO_E2E_MARKER".into(),
+                next_run_at: Some(1),
+            })
+            .expect("automation row");
+        let collision_name = format!("auto-{auto_id}");
+        let collision = instance.cli(&[
+            "session",
+            "create",
+            "--name",
+            &collision_name,
+            "--repo-path",
+            repo.to_str().unwrap(),
+            "--command",
+            "cat",
+            "--multiplexer",
+            "rmux",
+            "--json",
+        ]);
+        assert!(collision.status.success(), "RMUX namesake create failed");
+        let collision: serde_json::Value =
+            serde_json::from_slice(&collision.stdout).expect("collision JSON");
+        let tick = instance.cli(&["automation", "tick", "--json"]);
+        assert!(tick.status.success(), "automation tick failed");
+        let tick: serde_json::Value = serde_json::from_slice(&tick.stdout).expect("tick JSON");
+        assert_eq!(
+            tick["fired"][0]["detail"],
+            format!("spawned {collision_name}")
+        );
+        let rows = instance.cli(&["session", "list", "--json"]);
+        let rows: serde_json::Value = serde_json::from_slice(&rows.stdout).expect("list JSON");
+        let auto_session = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == collision_name && row["backend_type"] == "local-tmux");
+        let auto_session = auto_session.expect("automation session on default backend");
+        let auto_session_id = auto_session["id"].as_str().unwrap();
+        assert_ne!(auto_session_id, collision["id"]);
+        let deleted_auto =
+            instance.cli(&["session", "delete", auto_session_id, "--force", "--json"]);
+        assert!(
+            deleted_auto.status.success(),
+            "automation session delete failed"
+        );
+        let deleted_collision = instance.cli(&[
+            "session",
+            "delete",
+            collision["id"].as_str().unwrap(),
+            "--force",
+            "--json",
+        ]);
+        assert!(
+            deleted_collision.status.success(),
+            "RMUX namesake delete failed"
+        );
         Some(default_id)
     } else {
         None

@@ -532,13 +532,14 @@ fn poll_local_pane_states(db: &Database) -> usize {
     };
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let mut written = 0;
-    for backend in [
-        crate::session::LOCAL_BACKEND_TYPE,
-        crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE,
-    ] {
-        if backend == crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE && cfg!(windows) {
-            continue;
-        }
+    let mut backends: Vec<&str> = sessions
+        .iter()
+        .filter(|session| !crate::session::is_remote_backend(&session.backend_type))
+        .map(|session| session.backend_type.as_str())
+        .collect();
+    backends.sort_unstable();
+    backends.dedup();
+    for backend in backends {
         let _mux = crate::agent::tmux::LocalMuxScope::for_backend(backend);
         let states = match crate::agent::tmux::list_local_hook_states() {
             Ok(states) => states,
@@ -551,13 +552,10 @@ fn poll_local_pane_states(db: &Database) -> usize {
             if !crate::session::HOOK_STATES.contains(&state.as_str()) {
                 continue;
             }
-            let Some(session) = sessions.iter().find(|s| {
-                (s.backend_type == backend
-                    || (backend == crate::session::LOCAL_BACKEND_TYPE
-                        && s.backend_type != crate::agent::tmux::LOCAL_RMUX_BACKEND_TYPE
-                        && !crate::session::is_remote_backend(&s.backend_type)))
-                    && s.backend_id == pane
-            }) else {
+            let Some(session) = sessions
+                .iter()
+                .find(|s| s.backend_type == backend && s.backend_id == pane)
+            else {
                 continue;
             };
             if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
@@ -671,13 +669,14 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
-    // Reuse a recorded session on the server that owns it.
+    // This action creates on the default local backend, so a same-named RMUX
+    // session is not an earlier run of this automation.
     let existing = db
         .list_active_sessions()
         .unwrap_or_default()
         .into_iter()
         .find(|row| {
-            row.name == name && {
+            row.name == name && row.backend_type == crate::session::LOCAL_BACKEND_TYPE && {
                 let _mux = crate::agent::tmux::LocalMuxScope::for_backend(&row.backend_type);
                 crate::agent::tmux::window_exists(&row.id.to_string(), &row.name)
             }
