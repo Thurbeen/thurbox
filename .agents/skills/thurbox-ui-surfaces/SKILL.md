@@ -177,10 +177,18 @@ goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.
 
+The `layout` row is the one core row whose save *does* something beyond the file:
+`App::apply_settings` runs `presets::apply` on the interface directory — the same
+act as `thurbox-cli layout set`, backup of an edited `layout.lua` included — and the
+reload puts the new arrangement on screen. An outside edit of `layout` does not
+(delivery applies it on the next start), and neither does a save while
+`THURBOX_UI_DIR` points at a checkout — `presets::may_switch` is the one rule the
+row and `thurbox-cli layout set` share.
+
 > `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
-> `global_search` gated surfaces the interface no longer draws, and
-> `three_panel_min_cols` sized a column that no longer exists. None of the six is
-> read by anything: they are parsed so an existing `settings.toml` keeps loading
+> `global_search` gated surfaces the interface no longer draws. None of the five
+> is read by anything (`three_panel_min_cols`, once in this list, now sizes the
+> right-hand column of the `split-shell` and `ide` presets): they are parsed so an existing `settings.toml` keeps loading
 > rather than failing on an unknown key, and setting one does nothing in either
 > direction. The settings panel does not offer them.
 

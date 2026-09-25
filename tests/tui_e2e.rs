@@ -62,6 +62,7 @@ const F12: &[u8] = b"\x1b[24~";
 const F6: &[u8] = b"\x1b[17~";
 const F10: &[u8] = b"\x1b[21~";
 const F9: &[u8] = b"\x1b[20~";
+const F8: &[u8] = b"\x1b[19~";
 
 /// The `GIT_*` location variables git exports to hook processes — the list
 /// `git::GIT_LOCATION_ENV` scrubs, which is crate-private. A suite running
@@ -156,6 +157,9 @@ impl Profile {
             ),
         );
         cmd.env("TERM", "xterm-256color");
+        // This harness asserts the TUI's styles as well as its text. Do not let
+        // the shell running the suite silently turn Crossterm's colours off.
+        cmd.env_remove("NO_COLOR");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
         // Git exports these to hook processes, so a suite running under this
@@ -176,6 +180,23 @@ impl Profile {
             "thurbox-cli {args:?} failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn wait_for_pane_text(&self, needle: &str) {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            let panes = self.server.tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
+            if String::from_utf8_lossy(&panes.stdout).lines().any(|pane| {
+                let capture =
+                    self.server
+                        .tmux(&["capture-pane", "-p", "-J", "-S", "-", "-t", pane]);
+                String::from_utf8_lossy(&capture.stdout).contains(needle)
+            }) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        panic!("timed out waiting for {needle:?} to reach tmux");
     }
 }
 
@@ -1352,6 +1373,113 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// Whether the action band names `pane` as the focused one.
+fn band_names(frame: &str, pane: &str) -> bool {
+    frame
+        .lines()
+        .last()
+        .is_some_and(|band| band.trim_start().starts_with(pane))
+}
+
+/// A `probe` session whose agent is `sh`, under the layout preset `layout`
+/// chosen the way an install chooses it, on the real binary at 120×40.
+fn session_under_layout(layout: &str) -> Option<(Profile, Tui)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"probe-agent\"\n\n[[agents]]\nname = \"probe-agent\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    // The companion shell is the user's `$SHELL`, which under this profile's
+    // empty HOME can be an interactive first-run wizard that eats keystrokes.
+    // Pinned for every process here, since whichever starts the multiplexer
+    // server hands it the default shell.
+    let cli = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        command.env("SHELL", "/bin/sh");
+        let output = command.args(args).output().expect("run thurbox-cli");
+        assert!(
+            output.status.success(),
+            "thurbox-cli {args:?} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "probe-agent",
+    ]);
+    cli(&["config", "accept-interface"]);
+    cli(&["layout", "set", layout]);
+
+    let tui = Tui::spawn_with(&profile, 40, 120, |command| {
+        command.env("SHELL", "/bin/sh");
+    });
+    tui.wait_for("(probe-agent)");
+    Some((profile, tui))
+}
+
+#[test]
+fn split_shell_shows_the_agent_and_its_shell_at_once_and_f8_moves_between_them() {
+    // The `split-shell` preset, chosen the way an install chooses it, on the real
+    // binary: the agent and the same session's shell are both painted, the
+    // agent pane no longer offers a Shell tab, and F8 walks focus into the shell
+    // pane — where keystrokes reach the shell — and back out.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
+    tui.wait_for("(probe-agent)");
+    tui.wait_for("probe (shell)");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        band_names(frame, "Agent")
+    });
+    let (_, agent_title) = tui.find("(probe-agent)");
+    let (_, shell_title) = tui.find("probe (shell)");
+    assert!(
+        shell_title > agent_title,
+        "the shell pane sits below the agent:\n{}",
+        tui.frame()
+    );
+    assert!(
+        !tui.frame().contains("Shell ·"),
+        "the agent pane still offers a Shell tab:\n{}",
+        tui.frame()
+    );
+
+    tui.send(F8);
+    tui.wait_until("the shell pane to take focus", |frame| {
+        band_names(frame, "Shell")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-split-\"\"marker\r");
+    tui.wait_for("tb-split-marker");
+    let (_, marker) = tui.find("tb-split-marker");
+    assert!(
+        marker > shell_title,
+        "typed into the shell pane, not the agent:\n{}",
+        tui.frame()
+    );
+
+    tui.send(F8);
+    tui.wait_until("focus to return to the agent", |frame| {
+        band_names(frame, "Agent")
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 #[test]
 fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     // The failure search was rebuilt for: a prompt typed earlier has scrolled
@@ -1402,6 +1530,273 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         "the landed line is not highlighted:\n{frame}"
     );
     assert!(tui.quit().success());
+}
+
+#[test]
+fn focus_shows_the_agent_alone_and_f9_brings_the_session_list_back() {
+    // `focus`, on the real binary: the agent pane has the whole width and the
+    // list is hidden, and F9 — the same toggle as everywhere else — brings it
+    // back on its first press and hides it again on the second.
+    let Some((_profile, mut tui)) = session_under_layout("focus") else {
+        return;
+    };
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        band_names(frame, "Agent")
+    });
+    assert!(
+        !tui.frame().contains("Sessions"),
+        "the list starts hidden:\n{}",
+        tui.frame()
+    );
+    // Still a tab of the agent pane: this preset places no shell pane.
+    assert!(tui.frame().contains("Shell ·"), "{}", tui.frame());
+
+    tui.send(F9);
+    tui.wait_for("Sessions");
+    let (list_col, _) = tui.find("Sessions");
+    let (agent_col, _) = tui.find("(probe-agent)");
+    assert!(
+        list_col < agent_col,
+        "the list opens on the left:\n{}",
+        tui.frame()
+    );
+
+    tui.send(F9);
+    tui.wait_until("the list to hide again", |frame| {
+        !frame.contains("Sessions")
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ide_shows_the_list_left_and_the_shell_along_the_bottom() {
+    // `ide`, on the real binary: the list on the left, the same session's shell
+    // as a panel under the agent, and — with no plugin filling a right-hand
+    // slot — no right column reserved for nothing.
+    let Some((_profile, mut tui)) = session_under_layout("ide") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.wait_for("Sessions");
+    let (list_col, _) = tui.find("Sessions");
+    let (agent_col, agent_row) = tui.find("(probe-agent)");
+    let (shell_col, shell_row) = tui.find("probe (shell)");
+    let frame = tui.frame();
+    assert!(list_col < agent_col, "the list is on the left:\n{frame}");
+    assert!(
+        shell_row > agent_row,
+        "the shell sits below the agent:\n{frame}"
+    );
+    assert!(
+        shell_col > list_col,
+        "beside the list, not under it:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Shell ·"),
+        "the agent pane still offers a Shell tab:\n{frame}"
+    );
+    // The agent's frame runs to the last column: its title row ends in the
+    // top-right corner at the screen's edge — heavy while the pane holds focus.
+    let title_line = frame
+        .lines()
+        .nth(usize::from(agent_row))
+        .expect("title row");
+    assert!(
+        ['╮', '┐', '┓', '┑'].contains(&title_line.trim_end().chars().last().expect("a corner")),
+        "no right column is reserved when nothing fills it:\n{frame}"
+    );
+    assert_eq!(
+        title_line.trim_end().chars().count(),
+        120,
+        "the agent reaches the right edge:\n{frame}"
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn ide_f8_moves_focus_into_the_shell_panel_and_back() {
+    let Some((_profile, mut tui)) = session_under_layout("ide") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        band_names(frame, "Agent")
+    });
+    tui.send(F8);
+    tui.wait_until("the shell panel to take focus", |frame| {
+        band_names(frame, "Shell")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-ide-\"\"marker\r");
+    tui.wait_for("tb-ide-marker");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, marker) = tui.find("tb-ide-marker");
+    assert!(
+        marker > shell_title,
+        "typed into the panel:\n{}",
+        tui.frame()
+    );
+    tui.send(F8);
+    tui.wait_until("focus to return to the agent", |frame| {
+        band_names(frame, "Agent")
+    });
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// Ctrl+T there and back twice, typing into each side: the shell is its own
+/// live terminal, and what it printed is still there after the agent has had
+/// the pane.
+fn exercise_the_shell_tab(tui: &mut Tui) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    // The pane paints before the shell inside it has drawn a prompt, and a
+    // keystroke sent in between is lost.
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-in-\"\"shell\r");
+    tui.wait_for("tb-in-shell");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Agent");
+    tui.wait_gone("tb-in-shell");
+    tui.send(b"echo tb-in-\"\"agent\r");
+    tui.wait_for("tb-in-agent");
+
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_for("tb-in-shell");
+    assert!(
+        !tui.frame().contains("tb-in-agent"),
+        "the Shell tab must show the shell, not the agent's terminal:\n{}",
+        tui.frame()
+    );
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-still-\"\"live\r");
+    tui.wait_for("tb-still-live");
+}
+
+fn wait_for_view(tui: &Tui, view: &str) {
+    tui.wait_until(
+        &format!("the {view} view to be the one on screen"),
+        |frame| band_names(frame, view),
+    );
+}
+
+#[test]
+fn classic_keeps_the_shell_a_tab_that_switches_and_holds_a_working_shell() {
+    // `classic` is the unchanged default: the companion shell is a tab of the
+    // agent pane that Ctrl+T raises and lowers, and no shell pane appears.
+    let Some((_profile, mut tui)) = session_under_layout("classic") else {
+        return;
+    };
+    assert!(
+        !tui.frame().contains("probe (shell)"),
+        "classic places no shell pane:\n{}",
+        tui.frame()
+    );
+    exercise_the_shell_tab(&mut tui);
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_exited_shell_comes_back_in_the_shell_pane() {
+    // `exit` typed into the shell pane used to leave its last screen frozen
+    // there for good: keystrokes went nowhere, and neither F8 nor a restart of
+    // the pane's focus brought a shell back.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.send(F8);
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-first-\"\"shell\r");
+    tui.wait_for("tb-first-shell");
+    tui.send(b"exit\r");
+    tui.wait_gone("tb-first-shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-second-\"\"shell\r");
+    tui.wait_for("tb-second-shell");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, marker) = tui.find("tb-second-shell");
+    assert!(marker > shell_title, "in the shell pane:\n{}", tui.frame());
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_exited_shell_tab_opens_a_new_shell() {
+    // The same dead shell under `classic`: its tab kept painting the frozen
+    // screen and Ctrl+T toggled between that and the agent forever.
+    let Some((_profile, mut tui)) = session_under_layout("classic") else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-first-\"\"shell\r");
+    tui.wait_for("tb-first-shell");
+    tui.send(b"exit\r");
+    tui.wait_gone("tb-first-shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-second-\"\"shell\r");
+    tui.wait_for("tb-second-shell");
+    assert!(tui.frame().contains("probe (shell)"), "{}", tui.frame());
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn the_shell_keeps_the_keyboard_when_the_screen_narrows_and_widens() {
+    // Typing in the shell pane, then narrowing the terminal, took the shell
+    // pane off screen and dropped focus onto the agent pane showing the AGENT:
+    // the next line typed went to the agent. And the other way round: on the
+    // agent's Shell tab, widening gave the agent back its own view.
+    let Some((_profile, mut tui)) = session_under_layout("split-shell") else {
+        return;
+    };
+    tui.wait_for("probe (shell)");
+    tui.send(F8);
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+
+    tui.resize(40, 70);
+    tui.wait_until("the agent pane to show the shell", |frame| {
+        frame.contains("probe (shell)") && !frame.contains("(probe-agent)")
+    });
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-narrow-\"\"marker\r");
+    tui.wait_for("tb-narrow-marker");
+
+    tui.resize(40, 120);
+    tui.wait_until("both panes to be back", |frame| {
+        frame.contains("probe (shell)") && frame.contains("(probe-agent)")
+    });
+    wait_for_view(&tui, "Shell");
+    tui.wait_until_quiet();
+    tui.send(b"echo tb-wide-\"\"marker\r");
+    tui.wait_for("tb-wide-marker");
+    let (_, shell_title) = tui.find("probe (shell)");
+    let (_, narrow) = tui.find("tb-narrow-marker");
+    let (_, wide) = tui.find("tb-wide-marker");
+    assert!(
+        narrow > shell_title && wide > shell_title,
+        "both lines went to the shell, none to the agent:\n{}",
+        tui.frame()
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
 }
 
 #[test]
@@ -1506,211 +1901,6 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// Wait until the action band names `view` as the focused pane's view.
-fn wait_for_view(tui: &Tui, view: &str) {
-    tui.wait_until(
-        &format!("the {view} view to be the one on screen"),
-        |frame| {
-            frame
-                .lines()
-                .last()
-                .is_some_and(|band| band.trim_start().starts_with(view))
-        },
-    );
-}
-
-/// The companion shell is the user's `$SHELL`, and a zsh started in the
-/// profile's empty HOME opens its first-run wizard instead of a prompt.
-fn plain_shell(cmd: &mut Command) {
-    cmd.env("SHELL", "/bin/sh");
-}
-
-/// Ctrl+T there and back twice, typing into each side: the shell is its own
-/// live terminal, and what it printed is still there after the agent has had
-/// the pane.
-fn exercise_the_shell_tab(tui: &mut Tui) {
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    // The pane paints before the shell inside it has drawn a prompt, and a
-    // keystroke sent in between is lost.
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-in-\"\"shell\r");
-    tui.wait_for("tb-in-shell");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Agent");
-    tui.wait_gone("tb-in-shell");
-    tui.send(b"echo tb-in-\"\"agent\r");
-    tui.wait_for("tb-in-agent");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    tui.wait_for("tb-in-shell");
-    assert!(
-        !tui.frame().contains("tb-in-agent"),
-        "the Shell tab must show the shell, not the agent's terminal:\n{}",
-        tui.frame()
-    );
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-still-\"\"live\r");
-    tui.wait_for("tb-still-live");
-}
-
-#[test]
-fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
-    // The classic arrangement's companion shell: a tab of the agent pane that
-    // Ctrl+T raises and lowers. #1227 swapped it for a pane of its own under a
-    // split layout; this pins the tab its rollback brings back.
-    let Some((_profile, mut tui)) = shell_session_with(plain_shell) else {
-        return;
-    };
-    exercise_the_shell_tab(&mut tui);
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// Leave `profile` as v2.32.0 left someone who chose the `split-shell` preset:
-/// that release's layout, shell pane, agent pane and `lib/panels.lua` on disk,
-/// the delivery manifest recording them as written, and `layout` in
-/// settings.toml. `edited` adds a line of the user's own to the layout and to
-/// the shell pane, so delivery must keep both rather than refresh them.
-fn as_v2_32_0_split_shell(profile: &Profile, edited: bool) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_32_0_split_shell");
-    let ui = profile.path("config/ui");
-    let report = thurbox::kernel::bundled::materialize(&ui);
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-
-    let manifest_path = ui.join(".bundled.json");
-    let mut manifest: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
-            .expect("manifest is a map");
-    for relative in [
-        "layout.lua",
-        "plugins/25_shell.lua",
-        "plugins/20_agent.lua",
-        "lib/panels.lua",
-    ] {
-        let shipped = std::fs::read_to_string(fixture.join(relative)).expect("fixture");
-        manifest.insert(
-            relative.to_string(),
-            thurbox::kernel::bundled::digest(&shipped).into(),
-        );
-        let on_disk = if edited && matches!(relative, "layout.lua" | "plugins/25_shell.lua") {
-            format!("{shipped}-- my own line\n")
-        } else {
-            shipped
-        };
-        std::fs::write(ui.join(relative), on_disk).expect("write fixture");
-    }
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_string(&manifest).expect("manifest"),
-    )
-    .expect("write manifest");
-
-    let settings = profile.path("config/settings.toml");
-    let body = std::fs::read_to_string(&settings).expect("settings");
-    std::fs::write(&settings, format!("layout = \"split-shell\"\n{body}")).expect("settings");
-}
-
-/// What every v2.32.0 split-shell profile must come back to after upgrading:
-/// the one-time note, the classic Shell tab working, the shell pane taken back
-/// and the settings key gone — and, started again, nothing more said.
-fn assert_back_to_classic(profile: &Profile, mut tui: Tui) {
-    tui.wait_for("layout presets");
-    exercise_the_shell_tab(&mut tui);
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-
-    let ui = profile.path("config/ui");
-    assert!(
-        !ui.join("plugins/25_shell.lua").exists(),
-        "the shell pane must be taken back"
-    );
-    let shipped = |relative: &str| {
-        std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join(relative),
-        )
-        .expect("shipped")
-    };
-    for relative in ["plugins/20_agent.lua", "lib/panels.lua"] {
-        assert_eq!(
-            std::fs::read_to_string(ui.join(relative)).expect("delivered"),
-            shipped(relative),
-            "{relative} must be refreshed to this release's copy"
-        );
-    }
-    let settings: toml::Table = std::fs::read_to_string(profile.path("config/settings.toml"))
-        .expect("settings")
-        .parse()
-        .expect("settings.toml still parses");
-    assert!(
-        !settings.contains_key("layout"),
-        "the withdrawn key must be gone"
-    );
-    assert!(
-        settings.contains_key("features"),
-        "the rest of settings.toml must survive"
-    );
-
-    let tui = Tui::spawn(profile, 40, 120);
-    tui.wait_for("probe");
-    tui.wait_until_quiet();
-    assert!(
-        !tui.frame().contains("layout presets"),
-        "the note is said once:\n{}",
-        tui.frame()
-    );
-}
-
-#[test]
-fn a_v2_32_0_split_shell_profile_upgrades_to_the_classic_layout() {
-    // Layout presets shipped in v2.32.0 and were rolled back. Someone who picked
-    // `split-shell` has its layout.lua, its shell pane and the agent pane that
-    // dropped its Shell tab for it — all untouched, so all refreshed or retired.
-    let Some((profile, tui)) =
-        shell_session_prepared(|p| as_v2_32_0_split_shell(p, false), plain_shell)
-    else {
-        return;
-    };
-    assert_back_to_classic(&profile, tui);
-    assert_eq!(
-        std::fs::read_to_string(profile.path("config/ui/layout.lua")).expect("layout"),
-        include_str!("../ui/layout.lua"),
-        "an untouched split-shell layout is refreshed to classic"
-    );
-}
-
-#[test]
-fn a_layout_edited_from_the_split_shell_preset_is_kept_and_still_works() {
-    // Their edits are theirs and are kept. The layout still names a `shell`
-    // slot, which nothing fills once the shell pane is set aside — so the arrangement's own
-    // `filled` check leaves it out and the Shell tab is where the shell is.
-    let Some((profile, tui)) =
-        shell_session_prepared(|p| as_v2_32_0_split_shell(p, true), plain_shell)
-    else {
-        return;
-    };
-    assert_back_to_classic(&profile, tui);
-    assert!(
-        std::fs::read_to_string(profile.path("config/ui/layout.lua"))
-            .expect("layout")
-            .ends_with("-- my own line\n"),
-        "an edited layout is never overwritten"
-    );
-    // The edited shell pane is kept too, but aside: loaded, it would be a pane
-    // with a slot no arrangement places, which `plugin check` rejects.
-    assert!(
-        std::fs::read_to_string(profile.path("config/ui/plugins/25_shell.lua.bak"))
-            .expect("the edit is kept beside the pane")
-            .ends_with("-- my own line\n")
-    );
-    profile.cli(&["plugin", "check"]);
 }
 
 #[test]
@@ -2273,10 +2463,15 @@ impl Tui {
 ///
 /// The marker being off screen is the precondition every scroll assertion
 /// below rests on, so it is waited for rather than assumed.
-fn bury_a_marker(tui: &mut Tui, marker: &str) {
+fn bury_a_marker(profile: &Profile, tui: &mut Tui, marker: &str) {
     tui.send(format!("echo {marker}\r").as_bytes());
     tui.wait_for(marker);
     tui.send(b"i=1; while [ $i -le 100 ]; do echo tb-fill-$i; i=$((i+1)); done\r");
+    profile.wait_for_pane_text("tb-fill-100");
+    // A key forwarded to a terminal returns it to the live bottom. Make that
+    // precondition explicit before the wheel test starts, even if output and a
+    // slow frame briefly left the parser holding an older scrollback offset.
+    tui.send(b"\r");
     tui.wait_for("tb-fill-100");
     tui.wait_gone(marker);
 }
@@ -2290,10 +2485,10 @@ fn the_wheel_scrolls_the_agents_output_back() {
     // did nothing at all. An agent that turns on mouse tracking hid it (the
     // tick is forwarded to the pty instead), which is why it looked like it
     // only happened to some people.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
-    bury_a_marker(&mut tui, "tb-scroll-marker");
+    bury_a_marker(&profile, &mut tui, "tb-scroll-marker");
 
     let at = tui.find("tb-fill-100");
     tui.wheel(at, true, 90);
@@ -2315,7 +2510,7 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     // half that never honoured a scroll offset: the pane refused to hold one
     // for it and the kernel never set it on the shell's parser, so the wheel
     // over an open shell moved nothing.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
 
@@ -2331,7 +2526,7 @@ fn the_wheel_scrolls_the_companion_shell_too() {
     // The pane paints before the shell inside it has drawn a prompt, and a
     // keystroke sent in between is lost.
     tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-shell-marker");
+    bury_a_marker(&profile, &mut tui, "tb-shell-marker");
 
     let at = tui.find("tb-fill-100");
     tui.wheel(at, true, 90);
@@ -2490,7 +2685,7 @@ fn the_scrollbar_can_be_pressed_and_dragged() {
     //
     // Driven on the SHELL tab, which is where it was reported and the harder of
     // the two: the shell is a second surface over the same primitive.
-    let Some((_profile, mut tui)) = shell_session() else {
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
     tui.send(b"\x14");
@@ -2501,7 +2696,7 @@ fn the_scrollbar_can_be_pressed_and_dragged() {
             .is_some_and(|band| band.trim_start().starts_with("Shell"))
     });
     tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-bar-marker");
+    bury_a_marker(&profile, &mut tui, "tb-bar-marker");
 
     // A wheel scroll is what gives the bar a depth to be scaled against, and
     // leaves the thumb at the top of its track.

@@ -285,6 +285,7 @@
 ---@field focusable? boolean
 ---@field pure? boolean Cache the tree until an input changes.
 ---@field floats? boolean
+---@field optional? boolean A pane only some layouts place; `plugin check` does not require its slot.
 ---@field input? "session"
 ---@field size? thurbox.Size
 ---@field decorates? string A slot whose tree this plugin transforms.

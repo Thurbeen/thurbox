@@ -101,10 +101,17 @@ changed — which is most of them, and is the single largest saving available in
 frame. But nothing checks the claim, and getting it wrong gives you a pane
 painted from a stale tree, with no error anywhere. Two things disqualify a pane:
 
-- **It writes `store` or `state` from inside `render`.** Those writes stop
+- **It writes `store` or `state` from inside `render`** — unless the write
+  only ever answers something the cache key already carries. Those writes stop
   happening on the frames the render is skipped. This is why the bundled search
   strip is deliberately *not* pure — it leaves its content request in `store`
-  while rendering.
+  while rendering. The exception is a write (or a `command`) whose trigger is
+  itself part of the key — `ctx.focused`, the size, a changed snapshot, or a
+  shared value that bumps the state version — because then no frame on which it
+  would act is skipped: the shell pane records `store["shell.focused"]` when its
+  focus changes, and the agent pane acts on a focus request or a moved shell
+  pane the frame it sees one. Check the trigger against the key before relying
+  on this.
 - **It animates from `ctx.frame`, or from `ctx.elapsed` faster than the shared
   widgets do.** Animating at the shared rate is fine — the working spinner does,
   and the session list is pure — because the kernel keys a cached tree on that
@@ -298,13 +305,129 @@ What an upgrade does to each file follows from the same record:
 - **removed** → left removed;
 - **yours** → not touched, ever. Delivery writes only files it ships;
 - **no longer shipped** → taken back if you never changed it, kept if you did.
-  The one exception is `plugins/25_shell.lua`, from v2.32.0's rolled-back layout
-  presets: an edited copy is moved to `plugins/25_shell.lua.bak`, because loaded
-  it fills a slot the classic layout never places.
 
 Removing every pane is allowed and does what it says: nothing draws, the chrome
 still works, and the Interface tab still lists what you removed. It is not treated as a broken
 directory.
+
+### Layout presets
+
+`layout.lua` is delivered from one of the arrangements thurbox ships, and which one
+is `layout` in `settings.toml`:
+
+| Preset | Arranges |
+|---|---|
+| `classic` (default) | the session list beside the agent pane; the shell is the agent pane's tab |
+| `split-shell` | the same, with the selected session's shell in its own pane below the agent, and installed panes in a right column |
+| `focus` | the agent pane alone, full width; F9 and each pane's own toggle bring columns back |
+| `ide` | sessions left, the shell along the bottom of the agent, every other installed pane stacked in a right column |
+
+```bash
+thurbox-cli layout list              # the presets, the chosen one, and whether yours is edited
+thurbox-cli layout set split-shell   # choose one (settings → layout does the same)
+```
+
+`classic`, as a 92×22 terminal draws it (header band omitted):
+
+```text
+╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ─ Shell · F8 ──────────────── api (demo) [Uncovered] ╮
+│── repo ─────────────││sh-5.3$ █                                                          │
+│ ◌ api  no status ho…││                                                                   │
+│ ◌ docs  no status h…││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q
+```
+
+`split-shell`, same terminal and session:
+
+```text
+╭ Sessions ─────────◌◌╮╭ ◀ F9 ─ Agent ───────────────────────────── api (demo) [Uncovered] ╮
+│── repo ─────────────││sh-5.3$ █                                                          │
+│ ◌ api  no status ho…││                                                                   │
+│ ◌ docs  no status h…││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     │╰───────────────────────────────────────────────────────────────────╯
+│                     │╭────────────────────────────────────────────────────── api (shell) ╮
+│                     ││sh-5.3$ █                                                          │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+│                     ││                                                                   │
+╰─────────────────────╯╰───────────────────────────────────────────────────────────────────╯
+ Agent  2 session(s)  ^H/^L Focus ^O     Help · F1   Theme · F4   Settings · F6   Quit · ^Q
+```
+
+A preset is only the text delivery writes to `layout.lua`, so every rule above
+holds: untouched, an upgrade refreshes it to the new release's copy of **the same
+preset**; edited, it is yours and left alone. Switching is the one act that
+replaces a file you may have edited, so it backs yours up first — to
+`layout.lua.bak`, then `.bak.2`, never over an earlier backup — and says where.
+Changing `layout` in `settings.toml` by hand applies on the next start and, like
+any delivery, leaves an edited `layout.lua` alone — and that start says so in the
+message band (`presets::not_in_force`), since the setting then names an arrangement
+nobody is looking at.
+
+Keeping your own arrangement and gaining the shell pane is one edit to it: where
+it places `{ slot = "center" }`, place the centre and the shell in a column
+instead, as `split-shell` does (`ui/layouts/split-shell.lua`):
+
+```lua
+{ axis = "vertical", children = { { slot = "center" }, { slot = "shell", len = 12 } } }
+```
+
+Each preset has a recording in `ui/README.md` (made by
+`scripts/demo/layouts/record.sh`). Each borrows a known shape:
+
+- **`split-shell`** is a terminal split the way tmux or Warp split one. Its
+  right-hand column works as `ide`'s does, below.
+- **`focus`** is VS Code's Zen mode and JetBrains' Distraction-Free mode: the
+  agent alone. The list starts hidden through `lib.panels.starts("sessions",
+  false)` rather than a reading of its own, so F9 shows it on the first press
+  and the agent pane's chevron agrees. A third-party column stays closed until
+  its own toggle opens it, and then sits right of the agent.
+- **`ide`** is the default VS Code and JetBrains window: the list where the
+  explorer is, the shell as the bottom panel under the agent only, and a
+  right-hand column (VS Code's secondary side bar). That column takes every
+  filled slot the preset does not place by name, sorted, stacked, and declared
+  open with `lib.panels.starts`, so a pane's toggle closes it on one press. It
+  exists only while one is filled, and goes first below `three_panel_min_cols`.
+
+A preset that places the session list nowhere still has a selection: the list
+owns `store.selected` and writes it from its render, so while it is off screen
+the agent pane keeps it — it spends a `focus_session` request and, with nothing
+selected, selects the list's first row.
+
+The shell keeps the keyboard when the arrangement moves it. `plugins/25_shell.lua`
+records `store["shell.focused"]` from its render; when a narrow or short screen
+takes the pane away while it has focus, the agent pane opens its Shell tab and takes
+focus (the kernel may have handed it to the list), and when the pane comes back
+while the agent pane is focused on that tab, focus goes back to the pane. One
+terminal is also painted into one rect a frame — the first — so an agent pane
+edited before shell panes existed, still offering its tab under a layout that
+places the shell pane, cannot resize the shell to two sizes. And a shell you
+`exit` is replaced the next time its surface is painted, in a pane or a tab.
 
 ## The smallest plugin
 
@@ -553,6 +676,7 @@ arrangement is two columns:
 |---|---|---|
 | `sessions` | far left | width ≥ 80 **and** toggled open (F9) |
 | `center` | the remainder | always |
+| `shell` | below `center` | only in the `split-shell` and `ide` [layout presets](#layout-presets), at width ≥ 80 with 20+ rows for the two panes |
 
 A pane that only ever floats — the new-session flow is the bundled example —
 names a slot nothing places, so it never competes for the centre.
@@ -562,6 +686,13 @@ A slot exists because a plugin fills it, not the other way round: v1's `info`,
 plugins, and their slots went too — a slot nothing can fill would reserve a rect
 for nothing. **Adding a pane means adding its slot to `layout.lua`**, which is a
 file you edit rather than a layout compiled into the binary.
+
+The one exception is a pane that declares **`optional = true`**: it ships to
+everyone, but only some arrangements place it, and leaving it out is a choice
+rather than a mistake — so `plugin check` does not report its slot, and the
+Interface tab lists it as `hidden` rather than `no slot`. The companion shell pane
+(`plugins/25_shell.lua`, slot `shell`) is the bundled one: `split-shell` and `ide`
+place it, `classic` and every layout written before it existed do not.
 
 Several plugins may name the same slot. `center` is a **switch** slot — one
 occupant is visible at a time and focusing one brings it forward, so the focus
@@ -590,7 +721,14 @@ local panels = require("lib.panels")
 
 panels.shown("sessions")   -- is the column open?
 panels.toggle("sessions")  -- flip it, returns the new state
+panels.placed("shell")     -- did the last arrangement put this slot on screen?
 ```
+
+`placed` is the other direction: the kernel writes it after arranging and before
+any pane renders, so a pane can ask whether a *sibling* is on screen this frame.
+The agent pane asks it about `shell` and drops its Shell tab while the shell pane
+is showing — one terminal cannot be drawn at two sizes — and gets the tab back
+wherever the arrangement leaves the shell out, a narrow screen included.
 
 ## Colour: name roles, never values
 
@@ -1731,7 +1869,8 @@ Three rules it will not break, all of them the ones delivery already follows:
   `kept`, never overwritten — even when the source has moved on.
 - **A deletion is remembered.** Delete a managed pane and `sync` leaves it deleted.
   That is how you remove one.
-- **Your arrangement is yours.** Nothing here writes `layout.lua`. Editing Lua is
+- **Your arrangement is yours.** Nothing here writes `layout.lua` (only a
+  [layout switch](#layout-presets) you ask for does, backing yours up). Editing Lua is
   what a coding agent is good at; noticing that a pane silently is not drawing is
   what it cannot do, so the effort went into `check` instead.
 

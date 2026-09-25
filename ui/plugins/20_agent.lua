@@ -30,12 +30,16 @@ local chrome = require("lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
 local plugin_settings = require("lib.settings")
+local session_model = require("lib.session_model")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
 --- What this plugin is called. Declared once because the pane has to name
 --- ITSELF to bring itself forward (`command("focus", …)`).
 local NAME = "agent"
+
+--- The shell pane's name, and the slot it is shown in.
+local SHELL_PANE = "shell"
 
 --- The tabs this pane owns, and the actions that select each. The chips select
 --- (v1 `select_central_tab`, idempotent); the `shell.open` chord toggles (v1
@@ -51,6 +55,17 @@ local NAME = "agent"
 --- owns all three in v2, so it is the thing that has to ask.
 local function shell_enabled()
   return plugin_settings.feature("shell_pane", true) ~= false
+end
+
+--- Is the shell showing in a pane of its own (`plugins/25_shell.lua`)?
+---
+--- Then this pane is the agent's alone: no Shell tab, and `shell.open` moves
+--- focus there instead. Asked of the arrangement every frame rather than of the
+--- chosen preset, so a layout that drops the shell pane — `split-shell` on a
+--- narrow screen, or any layout.lua that never places it — gets the tab back and
+--- the shell is always reachable.
+local function shell_below()
+  return panels.placed(SHELL_PANE)
 end
 
 local AGENT_TAB, SHELL_TAB = "agent", "shell"
@@ -85,6 +100,46 @@ local function selected()
   return nil
 end
 
+--- Keep the selection alive while the session list is off screen.
+---
+--- The list owns `store.selected` and writes it from its own render, which is
+--- also where it spends a `focus_session` request (a clicked notification,
+--- `thurbox-cli session focus`). A list that is not placed never renders — the
+--- `focus` preset starts it hidden, and F9 hides it anywhere — so this pane
+--- stands in for it: the request lands, and with nothing selected the list's
+--- first row is, the one its cursor would start on. Written only on a change,
+--- like the list's own writes, and the list adopts it through its `steer` the
+--- moment it is shown again.
+local function select_without_the_list()
+  if panels.placed("sessions") then
+    return
+  end
+  local rows = thurbox and thurbox.sessions or {}
+  -- Spent only once its row exists: a request can arrive before the snapshot
+  -- that carries the session, and the list's cursor waits for it the same way.
+  local request = store.focus_session
+  if request then
+    for _, row in ipairs(rows) do
+      if row.id == request then
+        store.focus_session = nil
+        if store.selected ~= request then
+          store.selected = request
+        end
+        break
+      end
+    end
+  end
+  if selected() then
+    return
+  end
+  for _, item in ipairs(session_model.build(rows)) do
+    if item.target then
+      store.selected = item.target
+      return
+    end
+  end
+end
+
 --- The tab a session is showing.
 ---
 --- Keyed per session because v1 keys it per session
@@ -92,7 +147,7 @@ end
 --- not flip it on the next one you select. Absent = the agent, so a session
 --- that never switched costs no state at all.
 local function tab_of(id)
-  if not id then
+  if not id or shell_below() then
     return AGENT_TAB
   end
   return state["tab:" .. id] or AGENT_TAB
@@ -100,6 +155,32 @@ end
 
 local function set_tab(id, tab)
   state["tab:" .. id] = tab ~= AGENT_TAB and tab or nil
+end
+
+--- Keep the keyboard on the shell when the arrangement moves it.
+---
+--- A layout that places the shell pane leaves it out when the screen is
+--- narrow or short, and puts it back when there is room. Either way the shell
+--- someone was typing into must keep the keyboard: off screen, it carries on as
+--- this pane's Shell tab (and this pane takes focus, which the kernel may have
+--- given the list); back on screen, a focused Shell tab hands over to it.
+local function follow_the_shell(ctx, id)
+  if not id or not shell_enabled() then
+    return
+  end
+  if shell_below() then
+    if ctx.focused and state["tab:" .. id] == SHELL_TAB then
+      set_tab(id, AGENT_TAB)
+      command("focus", { text = SHELL_PANE })
+    end
+  elseif store["shell.focused"] then
+    store["shell.focused"] = nil
+    set_tab(id, SHELL_TAB)
+    command("shell", { session = id })
+    if not ctx.focused then
+      command("focus", { text = NAME })
+    end
+  end
 end
 
 --- The surface a tab addresses: the session itself, or its `#shell` sibling.
@@ -622,7 +703,7 @@ local function tab_specs(active)
   -- `[features] shell_pane` off means there is no second view, so there is no
   -- chip for one either: an affordance for a disabled feature is the clutter the
   -- switch was flipped to avoid.
-  if shell_enabled() then
+  if shell_enabled() and not shell_below() then
     specs[#specs + 1] = {
       name = "Shell",
       active = active == SHELL_TAB,
@@ -867,6 +948,11 @@ end
 --- use (v1 `show_shell_view`); `ensure_shell_pane` behind the command is
 --- idempotent, so asking again on every switch costs nothing.
 local function show_tab(id, tab)
+  if tab == SHELL_TAB and shell_below() then
+    command("shell", { session = id })
+    command("focus", { text = SHELL_PANE })
+    return
+  end
   set_tab(id, tab)
   if tab == SHELL_TAB then
     command("shell", { session = id })
@@ -881,7 +967,10 @@ return {
   -- Pure: the tree is a surface node naming a session, not the terminal's
   -- contents. What moves under a printing agent is the vt100 grid the surface
   -- is painted from, which is not in the tree at all — so the tree can be
-  -- reused every frame and the pane still repaints.
+  -- reused every frame and the pane still repaints. What render writes
+  -- (`select_without_the_list`, `follow_the_shell`) acts only on things the cache
+  -- key carries — focus, a shared value, the snapshot — so no frame on which it
+  -- would act is skipped (docs/PLUGINS.md, the `pure` trap).
   pure = true,
   -- Keys this plugin does not handle go straight to the pty of whichever view
   -- is showing. That is what makes this an ordinary plugin rather than a kernel
@@ -934,6 +1023,8 @@ return {
     local width, height = ctx.width or 0, ctx.height or 0
     local level = chrome.level(ctx.focused)
     local border = chrome.border_style(level)
+    select_without_the_list()
+    follow_the_shell(ctx, store.selected)
     local session = selected()
 
     -- No session: v1 switches to a different frame entirely — SQUARE borders,
@@ -1088,7 +1179,12 @@ return {
       -- v1 `toggle_shell_view`: the chord flips between the two views, where
       -- the chips select outright. Swallowed without a session, because there
       -- is no terminal for anything else to do it to either.
-      if id and shell_enabled() then
+      if id and shell_enabled() and shell_below() then
+        -- With the shell in its own pane the chord is a focus toggle instead:
+        -- pressed again from there, it returns to wherever focus was.
+        command("shell", { session = id })
+        command("focus", { text = SHELL_PANE, toggle = true })
+      elseif id and shell_enabled() then
         show_tab(id, tab_of(id) == SHELL_TAB and AGENT_TAB or SHELL_TAB)
       end
       return true

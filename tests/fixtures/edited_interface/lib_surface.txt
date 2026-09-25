@@ -25,9 +25,11 @@ modal.frame function
 order.move_block function
 order.sorted_within_groups function
 panels.hide function
+panels.others function
 panels.placed function
 panels.show function
 panels.shown function
+panels.starts function
 panels.toggle function
 pathpicker.entries function
 pathpicker.split_typed function

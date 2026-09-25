@@ -195,7 +195,10 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
         grid_size(&a) == (41, 120)
     })
     .await;
-    assert_eq!(grid_size(&b), (41, 120));
+    until("B's grid to follow its own claim", || {
+        grid_size(&b) == (41, 120)
+    })
+    .await;
 
     // And now it is A that cannot move it by painting.
     assert!(a.resize(26, 80));
@@ -228,6 +231,71 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     assert!(a.resize(27, 80));
     until("the lone instance to size the pane", || {
         pane_size(&server, &id) == (27, 80)
+    })
+    .await;
+    a.kill();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_retake_is_retried_after_the_backend_recovers() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = TmuxServer::pin(SOCKET);
+    thurbox::paths::set_test_dir(dir.path());
+    if !start(&server) {
+        return;
+    }
+
+    let a_backend = instance();
+    let a = ProgramPane::spawn(
+        Arc::clone(&a_backend),
+        "tbp-retry-released-size",
+        "sh",
+        &wrapper_args(),
+        Some(dir.path()),
+        &Default::default(),
+        24,
+        80,
+    )
+    .expect("spawn in A");
+    let id = a.backend_id().to_string();
+    until("A's size to reach the pane", || {
+        pane_size(&server, &id) == (24, 80)
+    })
+    .await;
+
+    let b_backend = instance();
+    let b = ProgramPane::adopt(Arc::clone(&b_backend), &id, "sh", 40, 120).expect("adopt in B");
+    assert!(b.resize(40, 120));
+    b.send_input(b"\n".to_vec()).expect("input to B");
+    until("B's claim to reach the pane", || {
+        pane_size(&server, &id) == (40, 120)
+    })
+    .await;
+    until("A to hear that B sizes the pane", || a.sized_elsewhere()).await;
+
+    assert!(a.resize(26, 80));
+    drop(b);
+    b_backend.shutdown();
+    drop(b_backend);
+    until("A to hear that B released the pane", || {
+        !a.sized_elsewhere()
+    })
+    .await;
+
+    // Lose the control connection for the frame that first sees the release,
+    // then restore it. The next frame must retry the retake even though this
+    // instance's rect has not changed.
+    a_backend.shutdown();
+    a.retake_size();
+    assert_eq!(pane_size(&server, &id), (40, 120));
+    a_backend.ensure_ready().expect("restore A's control mode");
+    until("the recovered instance to retry its retake", || {
+        a.retake_size();
+        pane_size(&server, &id) == (26, 80)
     })
     .await;
     a.kill();

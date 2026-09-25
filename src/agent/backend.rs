@@ -120,6 +120,10 @@ impl PaneSize {
     fn take_released(&self) -> bool {
         self.0.released.load(Ordering::Relaxed) && self.0.released.swap(false, Ordering::Relaxed)
     }
+
+    fn retry_released(&self) {
+        self.0.released.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Length of the prefix of `buf` that is safe to feed to the vt100 parser
@@ -486,6 +490,15 @@ pub trait SessionBackend: Send + Sync {
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
 
+    /// Whether a pane is dead *or no longer exists* — `Ok(true)` only on the
+    /// multiplexer's word, `Err` when it could not be asked. Distinct from
+    /// [`Self::is_dead`] because tmux answers that one for a pane it no longer
+    /// has with an empty line, which reads as alive. Called from the interface's
+    /// loop, so an implementation that reaches a remote host bounds the wait.
+    fn pane_gone(&self, backend_id: &str) -> Result<bool> {
+        self.is_dead(backend_id)
+    }
+
     /// Kill/destroy a session (for Ctrl+X close).
     fn kill(&self, backend_id: &str) -> Result<()>;
 
@@ -711,6 +724,38 @@ impl Residency {
     }
 }
 
+/// Everything the blocking output reader shares with the rest of a pane.
+/// Keeping it together prevents the reader's redraw, activity, residency and
+/// backend-size signals from drifting apart as those contracts evolve.
+struct ReaderState {
+    parser: Arc<Mutex<SessionParser>>,
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    residency: Arc<Residency>,
+    output_count: Arc<AtomicU64>,
+    size: Option<PaneSize>,
+}
+
+impl ReaderState {
+    fn new(
+        parser: Arc<Mutex<SessionParser>>,
+        exited: Arc<AtomicBool>,
+        last_output_at: Arc<AtomicU64>,
+        residency: Arc<Residency>,
+        output_count: Arc<AtomicU64>,
+        size: Option<PaneSize>,
+    ) -> Self {
+        Self {
+            parser,
+            exited,
+            last_output_at,
+            residency,
+            output_count,
+            size,
+        }
+    }
+}
+
 /// The state a grid carries that its cells do not: the pen, the input modes a
 /// keystroke is encoded by, whether the cursor is hidden, and which screen is
 /// up. Replayed into a parser that replaces it, in either direction.
@@ -799,6 +844,8 @@ pub struct WiredPane {
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    /// Chunks of live output fed to the parser so far — the redraw signal.
+    output_count: Arc<AtomicU64>,
     /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
     /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
@@ -867,6 +914,7 @@ impl WiredPane {
             return;
         }
         if let Err(e) = backend.resize(&self.backend_id, rows, cols) {
+            size.retry_released();
             debug!(pane = %self.backend_id, "could not take the pane's size back: {e:#}");
         }
     }
@@ -877,16 +925,22 @@ impl WiredPane {
         self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
-    /// When this pane last produced output, as epoch milliseconds.
-    ///
-    /// The lock-free redraw signal: a renderer compares it against the stamp
-    /// it last painted at, so a quiet pane costs one atomic load instead of a
-    /// repaint. Monotonic non-decreasing — the reader thread only ever stores
-    /// `now` — which is what lets the render loop's cheap output-change
-    /// detector ([`crate::kernel::terminal::Terminals::output_generation`])
-    /// spot new output without locking the vt100 parser.
+    /// When this pane last produced output, as epoch milliseconds — a clock,
+    /// read as "how long has it been quiet" (the printing spinner, the
+    /// stuck-`working` fallback), stored only once the parser holds that output.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
+    }
+
+    /// How many chunks of live output the parser has taken, which is the
+    /// lock-free redraw signal: a renderer compares it against the count it last
+    /// painted at, so a quiet pane costs one atomic load instead of a repaint.
+    /// A count and not the clock above, because two chunks inside one
+    /// millisecond are two changes, and moved only after the parser holds the
+    /// chunk, so a paint it triggers never shows the grid from before it. What
+    /// [`crate::kernel::terminal::Terminals::output_generation`] sums.
+    pub fn output_count(&self) -> u64 {
+        self.output_count.load(Ordering::Acquire)
     }
 
     /// Whether the pane's process/stream has ended.
@@ -897,6 +951,12 @@ impl WiredPane {
     /// behind.
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Force the "stream ended" state, for tests of what replaces a shell.
+    #[cfg(test)]
+    pub fn mark_exited_for_test(&self) {
+        self.exited.store(true, Ordering::SeqCst);
     }
 
     /// The backend-specific pane identifier.
@@ -937,11 +997,15 @@ impl WiredPane {
         self.residency.is_resident()
     }
 
-    /// [`Self::last_output_at`], moved as well whenever the grid is rebuilt:
-    /// the stamp for anything read off the grid, which a rebuild changes
-    /// without the pane printing anything.
+    /// [`Self::output_count`], moved as well whenever the grid is rebuilt: the
+    /// stamp for anything read off the grid, which a rebuild changes without
+    /// the pane printing anything.
+    ///
+    /// Over the count rather than the `last_output_at` clock, for the reason
+    /// the count exists: two chunks inside one millisecond are two changes, and
+    /// the count moves only once the parser holds the chunk.
     pub fn content_stamp(&self) -> u64 {
-        self.last_output_at()
+        self.output_count()
             .wrapping_add(self.residency.changes.load(Ordering::Acquire))
     }
 
@@ -1414,26 +1478,22 @@ impl Session {
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
+        let output_count = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
 
-        let parser_clone = Arc::clone(&parser);
-        let exited_clone = Arc::clone(&exited);
-        let last_output_clone = Arc::clone(&last_output_at);
-        let residency_clone = Arc::clone(&residency);
+        let reader_state = ReaderState::new(
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&last_output_at),
+            Arc::clone(&residency),
+            Arc::clone(&output_count),
+            io.size.clone(),
+        );
         let seed_len = io.seed_len;
-        let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
-            Self::reader_loop(
-                io.output,
-                parser_clone,
-                exited_clone,
-                last_output_clone,
-                residency_clone,
-                seed_len,
-                size,
-            );
+            Self::reader_loop(io.output, reader_state, seed_len);
         });
 
         let wired = WiredPane {
@@ -1442,6 +1502,7 @@ impl Session {
             backend_id: io.backend_id,
             exited,
             last_output_at,
+            output_count,
             label,
             residency,
             backend: Some(Arc::clone(backend)),
@@ -1527,6 +1588,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(0)),
+                output_count: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -1572,15 +1634,15 @@ impl Session {
     /// losing or repeating a byte. A partial character held in `carry` stays
     /// held: its first bytes came before the snapshot, which cannot show a
     /// character tmux has not finished either, and the rest come after.
-    fn reader_loop(
-        mut reader: Box<dyn Read + Send>,
-        parser: Arc<Mutex<SessionParser>>,
-        exited: Arc<AtomicBool>,
-        last_output_at: Arc<AtomicU64>,
-        residency: Arc<Residency>,
-        mut seed_len: usize,
-        size: Option<PaneSize>,
-    ) {
+    fn reader_loop(mut reader: Box<dyn Read + Send>, state: ReaderState, mut seed_len: usize) {
+        let ReaderState {
+            parser,
+            exited,
+            last_output_at,
+            residency,
+            output_count,
+            size,
+        } = state;
         let mut buf = [0u8; 4096];
         // Bytes of a trailing, not-yet-complete UTF-8 character held back from
         // the previous read. The agent's output is a single byte stream, but
@@ -1611,17 +1673,21 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not.
-                    if seed_len < n {
-                        last_output_at.store(now_millis(), Ordering::Relaxed);
-                    }
-                    seed_len = seed_len.saturating_sub(n);
                     let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
+                    // Bytes beyond the seed boundary are live activity; a chunk
+                    // that is entirely within the seed is not. Marked after the
+                    // feed, never before: the count is the loop's cue to repaint,
+                    // and a paint between the two would show the old grid with
+                    // the cue already spent.
+                    if seed_len < n {
+                        last_output_at.store(now_millis(), Ordering::Relaxed);
+                        output_count.fetch_add(1, Ordering::Release);
+                    }
+                    seed_len = seed_len.saturating_sub(n);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
@@ -1956,8 +2022,38 @@ impl Session {
         cols: u16,
         cwd: Option<&std::path::Path>,
     ) -> Result<()> {
-        if self.shell_pane.is_some() {
-            return Ok(());
+        match &self.shell_pane {
+            Some(pane) if !pane.has_exited() => return Ok(()),
+            // Its stream ended. A shell kept in that state paints its last
+            // screen forever and swallows every keystroke, so asking for the
+            // shell is asking for a live one — but an ended stream is not an
+            // ended shell: a dropped ssh link ends it with the window still
+            // running whatever was in it. That window is reattached, not
+            // orphaned beside a new one. One that is dead, or that the
+            // multiplexer no longer knows (`exit` closed it), is killed as far as
+            // it still exists and replaced.
+            Some(pane) => {
+                let old = pane.backend_id().to_string();
+                // Replaced only on the multiplexer's word that it is gone: a
+                // host that cannot be asked keeps its pane (the error says why),
+                // and a live one is reattached, keeping the pane if that fails —
+                // dropping it there would let the next ask spawn a second window
+                // beside one that never died.
+                if !self.backend.pane_gone(&old)? {
+                    let kept = self.shell_pane.take();
+                    return match self.adopt_shell_pane(&old, rows, cols) {
+                        Ok(()) => Ok(()),
+                        Err(e) => {
+                            self.shell_pane = kept;
+                            Err(e)
+                        }
+                    };
+                }
+                let _ = self.backend.kill(&old);
+                self.shell_pane = None;
+                self.info.shell_backend_id = None;
+            }
+            None => {}
         }
 
         let shell_cmd = self.backend.default_shell();
@@ -2057,6 +2153,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
+                output_count: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -2082,8 +2179,8 @@ impl Session {
     /// detector, OSC title/bell signals, and buffer-content search.
     #[cfg(test)]
     pub fn feed_output_for_test(&self, bytes: &[u8]) {
-        // Strictly-increasing bump: two feeds within the same millisecond must
-        // still read as *new* output to `App::detect_output_redraw`'s signature.
+        // Strictly-increasing bump, like a live chunk's: two feeds within the
+        // same millisecond must still read as *new* output to the loop.
         let prev = self.wired.last_output_at.load(Ordering::Relaxed);
         self.wired
             .last_output_at
@@ -2091,6 +2188,7 @@ impl Session {
         if let Ok(mut p) = self.wired.parser.lock() {
             p.process(bytes);
         }
+        self.wired.output_count.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -2356,12 +2454,15 @@ mod tests {
         let seed_len = seed.len();
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         assert_eq!(
@@ -2425,12 +2526,15 @@ mod tests {
         );
         Session::reader_loop(
             Box::new(script),
-            Arc::clone(&parser),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU64::new(0)),
-            Arc::default(),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU64::new(0)),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                Some(size.clone()),
+            ),
             0,
-            Some(size.clone()),
         );
 
         let parser = parser.lock().unwrap();
@@ -2459,18 +2563,138 @@ mod tests {
         let reader = Cursor::new(b"f\xc3".to_vec()).chain(Cursor::new(b"\xa9\r\nok\xe6".to_vec()));
         Session::reader_loop(
             Box::new(reader),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             0,
-            None,
         );
 
         let screen = parser.lock().unwrap().screen().contents();
         assert!(screen.starts_with("fé\nok"), "{screen:?}");
         assert!(exited.load(Ordering::SeqCst));
         assert!(last_output_at.load(Ordering::Relaxed) > 0);
+    }
+
+    /// The count is the loop's cue to repaint, so it must not move before the
+    /// parser holds what moved it: a frame painted in between shows the old grid,
+    /// and with the cue already spent nothing repaints until the next output —
+    /// seen as a shell's `ls` missing from the screen until something else
+    /// printed.
+    #[test]
+    fn reader_loop_marks_output_only_once_the_parser_has_it() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+        let output_count = Arc::new(AtomicU64::new(0));
+
+        // Held as a paint holds it, so the reader has to wait to feed it.
+        let held = parser.lock().unwrap();
+        let reader = {
+            let (parser, stamp, count) = (
+                Arc::clone(&parser),
+                Arc::clone(&last_output_at),
+                Arc::clone(&output_count),
+            );
+            std::thread::spawn(move || {
+                Session::reader_loop(
+                    Box::new(Cursor::new(b"CHANGELOG".to_vec())),
+                    ReaderState::new(
+                        parser,
+                        Arc::new(AtomicBool::new(false)),
+                        stamp,
+                        Arc::default(),
+                        count,
+                        None,
+                    ),
+                    0,
+                );
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            output_count.load(Ordering::SeqCst),
+            0,
+            "marked while the parser did not yet hold the bytes"
+        );
+        assert_eq!(last_output_at.load(Ordering::SeqCst), 0);
+        drop(held);
+        reader.join().unwrap();
+        assert_eq!(output_count.load(Ordering::SeqCst), 1);
+        assert!(last_output_at.load(Ordering::SeqCst) > 0);
+        assert!(parser
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .starts_with("CHANGELOG"));
+    }
+
+    /// Two chunks inside one millisecond must still read as two changes, since
+    /// the loop repaints on a changed count — while the clock beside it stays a
+    /// clock: a flood of chunks must not push it past now, where "quiet for"
+    /// would read zero long after the output stopped.
+    #[test]
+    fn reader_loop_counts_every_chunk_and_keeps_the_clock_honest() {
+        struct Chunks {
+            left: Vec<&'static [u8]>,
+            count: Arc<AtomicU64>,
+            seen: Arc<Mutex<Vec<u64>>>,
+        }
+        impl Read for Chunks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push(self.count.load(Ordering::SeqCst));
+                let Some(chunk) = self.left.pop() else {
+                    return Ok(0);
+                };
+                buf[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals::default(),
+        )));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+        let output_count = Arc::new(AtomicU64::new(0));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let chunks: Vec<&'static [u8]> = vec![b"x"; 500];
+        Session::reader_loop(
+            Box::new(Chunks {
+                left: chunks,
+                count: Arc::clone(&output_count),
+                seen: Arc::clone(&seen),
+            }),
+            ReaderState::new(
+                parser,
+                Arc::new(AtomicBool::new(false)),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::clone(&output_count),
+                None,
+            ),
+            0,
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen[..3], [0, 1, 2], "one step per chunk");
+        assert_eq!(output_count.load(Ordering::SeqCst), 500);
+        assert!(
+            last_output_at.load(Ordering::SeqCst) <= now_millis(),
+            "the clock ran ahead of now"
+        );
     }
 
     /// The other half: once the seed is exhausted, genuinely live bytes still
@@ -2491,12 +2715,15 @@ mod tests {
         let reader = Cursor::new(seed).chain(Cursor::new(b"fresh agent output\r\n".to_vec()));
         Session::reader_loop(
             Box::new(reader),
-            Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
-            Arc::default(),
+            ReaderState::new(
+                Arc::clone(&parser),
+                Arc::clone(&exited),
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         let stamped = last_output_at.load(Ordering::Relaxed);
@@ -2531,12 +2758,15 @@ mod tests {
         let seed_len = seed.len();
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
-            parser,
-            exited,
-            Arc::clone(&last_output_at),
-            Arc::default(),
+            ReaderState::new(
+                parser,
+                exited,
+                Arc::clone(&last_output_at),
+                Arc::default(),
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
             seed_len,
-            None,
         );
 
         let quiet_for_ms = now_millis().saturating_sub(last_output_at.load(Ordering::Relaxed));

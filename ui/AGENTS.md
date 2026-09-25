@@ -144,6 +144,20 @@ pills = { { action = "mine.open", label = "Mine", priority = 10 } },
 `plugin check` warns about a pane in that state and `plugin install` says it when you
 install one — neither fails, because you may have meant it.
 
+## `layout.lua` came from a preset
+
+The arrangement is one of the presets thurbox ships — `classic`; `split-shell`
+with the session's shell in a pane below the agent; `focus`, the agent alone; or
+`ide`, with the shell below the agent and other panes in a right column — chosen with
+`thurbox-cli layout set <name>` (or `layout` in settings). If the user asks for a
+different *arrangement*, check `thurbox-cli layout list` first: switching presets
+may be the whole answer. A switch replaces `layout.lua` and backs up an edited
+copy as `layout.lua.bak`, so tell the user where their version went.
+
+To give an arrangement the shell pane instead, place slot `shell` below `center`
+(`{ axis = "vertical", children = { { slot = "center" }, { slot = "shell", len = 12 } } }`).
+It is declared `optional`, so an arrangement without it is not an error.
+
 ## Make the pane cost what changed, not what exists
 
 `render` runs on the UI thread up to thirty times a second. Three habits keep a
@@ -223,9 +237,16 @@ pin to. The thurbox repository's test suite holds `lib/` to this promise. It
 loads edited files frozen from an old release, and it pins a list of every
 exported name.
 
-The promise runs one way: **do not edit a `lib/` file.** An edited one stops
-receiving updates too, and the next release's panes will call names it lacks.
-Put your own helpers in a module of your own, such as `lib/mine.lua`.
+The promise runs one way in a user's installed interface: **do not edit a `lib/`
+file there.** An edited one stops receiving updates too, and the next release's
+panes will call names it lacks. Put your own helpers in a module of your own, such
+as `lib/mine.lua`.
+
+Repository development is the exception, not a contradiction: `ui/lib/` is
+Thurbox's implementation source and may be extended while keeping every promise
+above; `tests/edited_interface.rs` and `lib_surface.txt` hold that boundary.
+`thurbox.d.lua` is the checked API declaration rather than a loaded module, and
+must change when the kernel API it describes changes.
 
 ## Do not break the way back
 

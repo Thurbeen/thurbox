@@ -50,7 +50,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    convert   table <-> node              lib/ui        panel, list, cursor, row…
                                          lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     3 panes + 3 floats
+   host      VM, reload, isolation       plugins/*     4 panes + 4 floats
    registry  keys, settings, commands
    modals    help, settings, theme, files, palette
    events    derived from the snapshot
@@ -359,9 +359,9 @@ conversion less often:
   A **surface** used to defeat this outright: its cells live outside the tree, so
   a pane showing one was treated as changed every frame and the whole
   demand-driven scheme collapsed to a steady 60fps whenever a terminal was
-  visible. It is now gated on the pane's own output stamp
-  (`Terminals::output_stamp`), the same atomic v1 reads in
-  `detect_output_redraw`, so a quiet agent settles at the redraw floor.
+  visible. It is now gated on the pane's own output count
+  (`Terminals::output_stamp`, over `WiredPane::content_stamp`), so a quiet agent
+  settles at the redraw floor.
 - **Read less.** The snapshot rebuild is gated on `PRAGMA data_version`, so an
   idle thurbox stops re-reading five tables (plus one query per automation)
   every 400ms. Git stats are folded in either way — they arrive from workers,

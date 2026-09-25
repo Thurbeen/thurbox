@@ -178,10 +178,8 @@ tempfile = "3"
 # the normal `cargo nextest --all`.
 proptest = "1"
 
-# Two test-only uses, both of the C runtime rather than a wrapper crate:
-# `atexit`, which is what removes `paths`' unit-test sandbox when a test process
-# ends (a `static` is never dropped, so nothing else runs there); and the PTY
-# e2e (tests/tui_e2e.rs, `#![cfg(unix)]`), which drives the real `thurbox`
-# binary on a pseudo-terminal and needs only `openpty`, `setsid`, `TIOCSCTTY`
-# and `TIOCSWINSZ` — no PTY crate. `libc` is already in the tree either way.
+# Test-only C runtime calls: `atexit` removes `paths`' static sandbox;
+# tests/tui_e2e.rs drives the binary on a PTY; and tests/layout_presets.rs caps
+# one subprocess's file size to exercise a failed write. No wrapper crate is
+# needed for those small platform calls, and `libc` is already in the tree.
 libc = "0.2"

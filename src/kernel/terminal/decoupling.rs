@@ -83,6 +83,16 @@ struct Recorder {
     senders: Mutex<Vec<std::sync::mpsc::Sender<()>>>,
     /// Snapshot requests taken, none of them ever answered.
     snapshots: std::sync::atomic::AtomicUsize,
+    /// Every spawn, adopt and kill, in order, as `"<verb> <pane>"`.
+    calls: Mutex<Vec<String>>,
+    /// What `is_dead` answers.
+    dead: std::sync::atomic::AtomicBool,
+    /// The multiplexer cannot be asked: `is_dead` errors.
+    unreachable: std::sync::atomic::AtomicBool,
+    /// `adopt` fails.
+    adopt_fails: std::sync::atomic::AtomicBool,
+    /// `spawn` fails.
+    spawn_fails: std::sync::atomic::AtomicBool,
 }
 
 impl Recorder {
@@ -129,6 +139,13 @@ impl crate::agent::backend::SessionBackend for Recorder {
         _: u16,
         _: u16,
     ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("spawn {SHELL_PANE}"));
+        if self.spawn_fails.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("spawn failed");
+        }
         let (output, input) = self.io();
         Ok(crate::agent::backend::SpawnedSession {
             backend_id: SHELL_PANE.to_string(),
@@ -139,11 +156,18 @@ impl crate::agent::backend::SessionBackend for Recorder {
     }
     fn adopt(
         &self,
-        _: &str,
+        backend_id: &str,
         _: u16,
         _: u16,
         _: Option<Vec<u8>>,
     ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("adopt {backend_id}"));
+        if self.adopt_fails.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("adopt failed");
+        }
         let (output, input) = self.io();
         Ok(crate::agent::backend::AdoptedSession {
             output,
@@ -163,16 +187,23 @@ impl crate::agent::backend::SessionBackend for Recorder {
         Ok(())
     }
     fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
-        Ok(false)
+        if self.unreachable.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("the host did not answer");
+        }
+        Ok(self.dead.load(std::sync::atomic::Ordering::SeqCst))
     }
-    fn kill(&self, _: &str) -> anyhow::Result<()> {
+    fn kill(&self, backend_id: &str) -> anyhow::Result<()> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("kill {backend_id}"));
         Ok(())
     }
     fn detach(&self, _: &str) -> anyhow::Result<()> {
         Ok(())
     }
     fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
-        Ok(None)
+        Ok(Some(1))
     }
     fn default_shell(&self) -> String {
         "/bin/sh".to_string()
@@ -204,6 +235,15 @@ impl Harness {
     /// size — the state the interface is in the moment before the first frame
     /// of an arrangement that shows both.
     fn new(rows: u16, cols: u16) -> Self {
+        Self::build(rows, cols, true)
+    }
+
+    /// The same session with no companion shell opened yet.
+    fn without_shell(rows: u16, cols: u16) -> Self {
+        Self::build(rows, cols, false)
+    }
+
+    fn build(rows: u16, cols: u16, open_shell: bool) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = crate::paths::TestPathGuard::new(dir.path());
         let recorder = Arc::new(Recorder::default());
@@ -222,9 +262,11 @@ impl Harness {
             None,
         )
         .expect("adopt the agent pane");
-        session
-            .ensure_shell_pane(rows, cols, None)
-            .expect("open the companion shell");
+        if open_shell {
+            session
+                .ensure_shell_pane(rows, cols, None)
+                .expect("open the companion shell");
+        }
 
         let mut terminals = Terminals::new();
         let id = "probe-0000".to_string();
@@ -238,6 +280,7 @@ impl Harness {
                     ..Default::default()
                 },
                 shell: Painted::default(),
+                shell_asked: std::cell::RefCell::new(None),
             },
         );
         // Both panes were born at the terminal's size; the arrangement is what
@@ -317,7 +360,9 @@ impl Harness {
     fn surface_in(&self, slot: &str) -> Option<Node> {
         let session = match slot {
             "center" | "agent" => self.id.clone(),
-            "shell" => self.shell(),
+            // The agent pane on its Shell tab: the same shell surface, in the
+            // agent's slot.
+            "shell" | "shell-tab" => self.shell(),
             _ => return None,
         };
         Some(Node::Surface {
@@ -498,6 +543,32 @@ async fn each_rect_shows_the_pane_that_owns_it() {
 
     assert_eq!(screen.first_row("center"), "AGENT-SCREEN");
     assert_eq!(screen.first_row("shell"), "SHELL-SCREEN");
+}
+
+#[tokio::test]
+async fn a_shell_surface_painted_before_its_shell_exists_asks_for_one_once() {
+    // A layout that gives the shell a pane of its own paints `<id>#shell` before
+    // anything opened the shell. The pane must not have to ask from its render,
+    // so the paint notes it — once per attach, since a shell that fails to open
+    // repaints every frame.
+    let harness = Harness::without_shell(HEIGHT, WIDTH);
+    harness.frame(&one_pane("center"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "painting the agent asks for no shell"
+    );
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert_eq!(
+        harness.terminals.take_wanted_shells(),
+        vec![harness.id.clone()]
+    );
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "asked once per attach, not once per frame"
+    );
 }
 
 #[tokio::test]
@@ -810,6 +881,7 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
                 ..Default::default()
             },
             shell: Painted::default(),
+            shell_asked: std::cell::RefCell::new(None),
         },
     );
 
@@ -843,5 +915,280 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
             .load(std::sync::atomic::Ordering::Relaxed),
         1,
         "asked once"
+    );
+}
+
+#[tokio::test]
+async fn one_shell_painted_in_two_rects_in_one_frame_keeps_the_first() {
+    // An agent pane edited before shell panes existed still offers its Shell
+    // tab, and a layout that also places the shell pane then painted one
+    // terminal into two rects every frame: the pty took whichever size came
+    // last, and the other rect showed it wrapped at the wrong width.
+    let harness = Harness::new(HEIGHT, WIDTH);
+    let both = column_and_centre("sessions", "shell", "shell-tab");
+    let screen = harness.frame(&both, WIDTH, HEIGHT);
+    let first = screen.rect("shell");
+    let second = screen.rect("shell-tab");
+    assert_ne!((first.height, first.width), (second.height, second.width));
+
+    harness.frame(&both, WIDTH, HEIGHT);
+    let sizes = harness.backend.sizes(SHELL_PANE);
+    assert!(
+        sizes
+            .iter()
+            .all(|size| *size == (first.height, first.width)),
+        "the shell is sized to one rect, not both: {sizes:?}"
+    );
+    assert_eq!(harness.grid(true), (first.height, first.width));
+}
+
+/// The shell's stream ended, as `exit` ends it — and as a dropped ssh link ends
+/// it too, with the window still running whatever was in it.
+fn shell_stream_ended(harness: &Harness) {
+    let live = harness.terminals.live.get(&harness.id).expect("live");
+    live.session
+        .shell_pane
+        .as_ref()
+        .expect("a shell")
+        .mark_exited_for_test();
+    harness.backend.calls.lock().expect("calls").clear();
+}
+
+#[tokio::test]
+async fn a_shell_whose_stream_ended_but_whose_pane_lives_is_reattached_not_orphaned() {
+    // A remote shell's ssh stream can drop while its window runs on, a build in
+    // it. Spawning a second shell there left the first running with nothing
+    // recording its id, so teardown never reached it.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("adopt {SHELL_PANE}")]
+    );
+}
+
+#[tokio::test]
+async fn a_dead_shell_is_killed_before_it_is_replaced() {
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .dead
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
+    );
+}
+
+fn has_shell(harness: &Harness) -> bool {
+    harness
+        .terminals
+        .live
+        .get(&harness.id)
+        .is_some_and(|live| live.session.shell_pane.is_some())
+}
+
+#[tokio::test]
+async fn a_shell_nobody_can_ask_about_is_kept_rather_than_replaced() {
+    // A stalled link ends the stream and then leaves every question about the
+    // pane unanswered. Replacing it on that silence orphaned a window that never
+    // died.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+    assert!(harness.backend.calls.lock().expect("calls").is_empty());
+    assert!(has_shell(&harness), "the pane is still the session's");
+}
+
+#[tokio::test]
+async fn a_reattach_that_fails_keeps_the_pane_to_try_again() {
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .adopt_fails
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = harness.id.clone();
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+    assert!(
+        has_shell(&harness),
+        "not dropped, so the next ask cannot spawn"
+    );
+
+    harness
+        .backend
+        .adopt_fails
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("reattached");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("adopt {SHELL_PANE}"), format!("adopt {SHELL_PANE}")]
+    );
+}
+
+#[tokio::test]
+async fn a_shell_that_could_not_be_replaced_is_asked_for_again_by_a_later_paint() {
+    // "control mode is busy" is an answer to take and try again on: kept after
+    // one, an exited shell was never asked about by a paint again, and its pane
+    // sat on the dead screen until someone pressed F8.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::ZERO;
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness
+        .backend
+        .unreachable
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    harness
+        .backend
+        .dead
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert_eq!(
+        harness.terminals.take_wanted_shells(),
+        vec![id.clone()],
+        "the paint asks again"
+    );
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("replaced");
+    assert_eq!(
+        *harness.backend.calls.lock().expect("calls"),
+        vec![format!("kill {SHELL_PANE}"), format!("spawn {SHELL_PANE}")]
+    );
+}
+
+#[tokio::test]
+async fn the_wait_before_asking_again_starts_when_the_open_failed() {
+    // An open can block for as long as a stalled link takes to time out. Timed
+    // from the ask, every wait shorter than that had already run out by the
+    // next paint, so the asks — and the freezes — came back to back.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::from_millis(200);
+    shell_stream_ended(&harness);
+    harness
+        .backend
+        .unreachable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    // The open takes longer than the wait.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(
+        harness.terminals.take_wanted_shells().is_empty(),
+        "asked again the moment the slow open returned"
+    );
+}
+
+#[tokio::test]
+async fn a_replacement_that_fails_to_spawn_still_waits_before_the_next_ask() {
+    // The dead shell is gone once it is killed, so the next paint's ask named a
+    // different shell ("none") and started the backoff over — one more blocking
+    // spawn straight after the first.
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    harness.terminals.shell_retry = std::time::Duration::from_secs(60);
+    shell_stream_ended(&harness);
+    for flag in [&harness.backend.dead, &harness.backend.spawn_fails] {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let id = harness.id.clone();
+    assert_eq!(harness.terminals.take_wanted_shells(), vec![id.clone()]);
+    assert!(harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .is_err());
+
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    assert!(harness.terminals.take_wanted_shells().is_empty());
+}
+
+#[tokio::test]
+async fn a_shell_just_opened_keeps_its_grid_until_it_has_been_shown() {
+    // A grid is dropped for a pane nobody is looking at, and a pane never shown
+    // counts as one — but a shell only ever opens because a pane painted its
+    // surface and asked for it, so it is about to be shown. Dropped in the tick
+    // between, its first output (the prompt) went into the two cells a dormant
+    // pane keeps, and the tab showed an empty screen.
+    let mut harness = Harness::without_shell(HEIGHT, WIDTH);
+    harness
+        .terminals
+        .keep_hidden_for(Some(std::time::Duration::from_secs(60)));
+    let id = harness.id.clone();
+    harness
+        .terminals
+        .open_shell(&id, HEIGHT, WIDTH, None)
+        .expect("open the shell");
+
+    harness.terminals.evict_hidden();
+    let live = harness.terminals.live.get(&id).expect("live");
+    assert!(
+        live.pane(true)
+            .parser()
+            .map(|parser| parser.lock().expect("lock").screen().size())
+            .expect("a shell")
+            > (2, 2),
+        "the shell's grid was dropped before it was ever shown"
+    );
+
+    // The rule it rests on: a pane nobody asked for and nobody has drawn is
+    // still dropped at once.
+    harness
+        .terminals
+        .live
+        .get(&id)
+        .expect("live")
+        .agent
+        .shown_at
+        .set(None);
+    harness.terminals.evict_hidden();
+    assert_eq!(
+        harness.grid(false),
+        (2, 2),
+        "a pane never shown keeps its grid"
     );
 }

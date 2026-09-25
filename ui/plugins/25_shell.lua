@@ -2,8 +2,8 @@
 -- the `shell` slot.
 --
 -- The agent pane already shows this shell as its Shell tab. This file exists
--- for arrangements that want both on screen at once — the `split-shell` layout
--- puts it below the agent — and it is the same `<id>#shell` surface over the
+-- for arrangements that want both on screen at once — the `split-shell` and
+-- `ide` layouts put it below the agent — and it is the same `<id>#shell` surface over the
 -- same live terminal, so a keystroke typed here reaches the same shell the tab
 -- would have shown.
 --
@@ -15,8 +15,10 @@
 -- two sizes.
 --
 -- Nothing here asks for the shell to be opened: painting a `<id>#shell` surface
--- for a session that has none is what opens it, so this render writes nothing
--- and the pane can be `pure`.
+-- for a session that has none (or whose shell exited) is what opens it. The one
+-- write this render makes, `store["shell.focused"]`, answers `ctx.focused`,
+-- which is part of the cache key — so the pane can still be `pure`: no frame
+-- on which that write would change anything is ever skipped.
 
 local chrome = require("lib.chrome")
 local plugin_settings = require("lib.settings")
@@ -92,6 +94,14 @@ return {
 
   render = function(ctx)
     local level = ctx.focused and "focused" or "active"
+    -- Whether the keyboard is here, for the agent pane: when an arrangement
+    -- takes this pane off screen while it has focus, the shell goes on in the
+    -- agent pane's Shell tab rather than handing the next keystroke to the
+    -- agent. Only while drawn, so the last frame this pane painted is what
+    -- answers. Written on change, like every other shared value.
+    if (store["shell.focused"] == true) ~= ctx.focused then
+      store["shell.focused"] = ctx.focused or nil
+    end
     local session = selected()
 
     if not session then

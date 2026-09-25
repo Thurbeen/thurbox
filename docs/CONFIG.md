@@ -410,11 +410,6 @@ lists the hooks in force.
 > `thurbox-cli config validate`, and simply not listed in the panel, since a
 > row that gates nothing reads as broken. `automations` is honoured, but it
 > arms the headless heartbeat rather than an in-TUI scheduler.
->
-> A top-level `layout` key is the one v2.32.0 wrote for its layout presets,
-> which the next release rolled back (#1227). The interface removes that key at
-> start (the key and its value, however spelt; the comments around it stay) and, unless it named
-> `classic`, says once in the message band that the classic layout is back.
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly
@@ -428,9 +423,10 @@ all commented so defaults still apply out of the box.
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
-| `three_panel_min_cols` | `120` | width unlocking the optional third column |
+| `three_panel_min_cols` | `120` | width unlocking the right-hand column of installed panes in the `split-shell` and `ide` presets |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
+| `layout` | `"classic"` | the layout preset delivered as the interface's `layout.lua`: `classic`, `split-shell`, `focus` or `ide` (see below) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -442,9 +438,10 @@ config_version = 1
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
+three_panel_min_cols  = 120    # width for split-shell's and ide's right column
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
+layout                = "classic"  # layout preset: classic | split-shell | focus | ide
 
 [features]
 shell_pane    = true
@@ -485,6 +482,23 @@ same way before the first keystroke. `0` keeps every grid for as long as the
 session runs, which is how thurbox behaved before (ADR-P27 in
 [PERFORMANCE.md](PERFORMANCE.md)). psmux (Windows) cannot hand a pane back in
 step with its output, so its sessions always keep their grids. Read at startup.
+
+### `layout` — which arrangement the interface is delivered with
+
+The interface's `layout.lua` is written from one of the presets thurbox ships,
+and this key names which: `classic` (the session list beside the agent pane, the
+shell a tab of it), `split-shell` (the same, with the selected session's shell
+in its own pane below the agent, installed panes in a right-hand column),
+`focus` (the agent pane alone, full width; F9 brings the list back) or `ide`
+(the list left, the shell along the bottom of the agent, other installed panes
+in a right-hand column). `thurbox-cli layout set <name>`, the settings panel's
+`layout` row, and the installers (`--layout` / `-Layout` / `THURBOX_LAYOUT`) all
+write it *and* rewrite `layout.lua` on the spot, backing up an edited copy as
+`layout.lua.bak` first. Editing the key by hand applies on the next start,
+through ordinary delivery — so an untouched `layout.lua` switches and an edited
+one is left alone, which the start says in the message band (`thurbox-cli layout
+list` says which you have). An unknown name delivers `classic`. Full rules:
+`docs/PLUGINS.md` → Layout presets.
 
 ### `git_poll_secs` — how much `git` thurbox runs
 
@@ -547,7 +561,7 @@ that give `code_review` and `info_panel` back
 which are switched on and off from the Interface tab like any other pane.
 They are still parsed rather than rejected, so an existing `settings.toml`
 keeps loading instead of failing on an unknown key — but setting one has no
-effect in either direction. Same for `three_panel_min_cols` above.
+effect in either direction.
 
 | Key | Default | Controls |
 |-----|---------|----------|

@@ -484,16 +484,20 @@ struct App {
     dirty: bool,
     /// Set while drawing when any plugin's tree differed from last frame.
     changed_this_frame: bool,
-    /// Output stamp each surface was last painted at, keyed by surface name.
+    /// Content stamp each surface was last painted at, keyed by surface name.
     /// What makes a quiet terminal settle rather than repaint every frame.
     last_output_painted: std::collections::HashMap<String, u64>,
-    /// Every live pane's last-output stamp, summed, as of the last check.
+    /// Every live pane's `WiredPane::content_stamp`, summed, as of the last
+    /// check.
     ///
     /// Compared each iteration so that new agent output *causes* a frame. The
     /// per-surface map above only decides whether a frame that is already
     /// happening counts as a change — which is why, without this, a printing
     /// agent was drawn at the 250ms floor rather than at once.
     last_output_gen: u64,
+    /// The last error a paint-driven shell open reported, per session, so a
+    /// retry that fails the same way says nothing new (`open_wanted_shells`).
+    shell_errors: std::collections::HashMap<String, String>,
     /// Plugin holding an exclusive key grab this frame, if any.
     grabbed: Option<usize>,
     /// The node holding the pointer between a press and its release, if any.

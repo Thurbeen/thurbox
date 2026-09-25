@@ -250,6 +250,29 @@ pub fn shell_surface(session: &str) -> String {
     format!("{session}{SHELL_SUFFIX}")
 }
 
+/// How long a paint first waits before asking again for a shell it did not get:
+/// short enough that "control mode is busy" is gone before anyone wonders why
+/// the shell has not come back. Doubled on each further failure up to
+/// [`SHELL_RETRY_CAP`] ([`retry_after`]), because an ask can end in a spawn that
+/// waits out a stalled link on the loop, and a fixed interval would freeze the
+/// interface again every couple of seconds for as long as the link stayed down.
+const SHELL_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+const SHELL_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The wait before the next ask, after `attempts` asks for the same shell.
+fn retry_after(base: std::time::Duration, attempts: u32) -> std::time::Duration {
+    let doublings = attempts.saturating_sub(1).min(16);
+    base.saturating_mul(1 << doublings).min(SHELL_RETRY_CAP)
+}
+
+/// A paint's ask for a live shell: which one it replaces (`""` for none), when
+/// it last asked, and how many times.
+struct ShellAsk {
+    shell: String,
+    at: std::time::Instant,
+    attempts: u32,
+}
+
 /// A session we have attached to, and the painted state of each of its panes.
 struct Live {
     session: crate::agent::Session,
@@ -258,6 +281,17 @@ struct Live {
     /// The companion shell's, independent of the agent's in every respect —
     /// which slot it sits in, how big it is, and whether it is on screen at all.
     shell: Painted,
+    /// The shell painting last asked a replacement for, and when
+    /// ([`Terminals::take_wanted_shells`]): `""` for none at all, or the backend
+    /// id of one that exited. Backed off from [`SHELL_RETRY`], not per frame: a shell
+    /// that fails to open repaints its surface every frame, and re-asking each
+    /// time would be a multiplexer round trip and an error per frame — but an ask
+    /// that failed ("control mode is busy") is asked again, or the pane would sit
+    /// on a dead screen until somebody pressed F8. Cleared whenever the shell is
+    /// seen live, so one that later ends is asked for at once. Kept here so a
+    /// restarted or reattached session, a new `Live`, asks again. The explicit
+    /// chord asks as often as it is pressed.
+    shell_asked: RefCell<Option<ShellAsk>>,
 }
 
 impl Live {
@@ -415,6 +449,13 @@ pub struct Terminals {
     /// blocking (an ssh connect for a remote host), so it happens once, lazily,
     /// and only for a backend a session actually lives on.
     ready: RefCell<std::collections::HashSet<String>>,
+    /// Attached sessions whose `<id>#shell` surface a pane painted while they
+    /// had no shell. Drained by the loop, which opens each one
+    /// ([`Self::take_wanted_shells`]).
+    wanted_shells: RefCell<std::collections::BTreeSet<String>>,
+    /// The first wait before a paint asks again for a shell it did not get
+    /// ([`retry_after`]).
+    pub(crate) shell_retry: std::time::Duration,
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
     failed: HashMap<String, Failure>,
@@ -550,6 +591,8 @@ impl Terminals {
             agents: crate::agent::agent_config::load_or_seed(),
             live: HashMap::new(),
             ready: RefCell::new(std::collections::HashSet::new()),
+            wanted_shells: RefCell::new(std::collections::BTreeSet::new()),
+            shell_retry: SHELL_RETRY,
             failed: HashMap::new(),
             discovered: HashMap::new(),
             discovery_due: HashMap::new(),
@@ -942,6 +985,7 @@ impl Terminals {
                                 ..Default::default()
                             },
                             shell: Painted::default(),
+                            shell_asked: RefCell::new(None),
                         },
                     );
                     if self.failed.remove(&done.session).is_some() {
@@ -1368,9 +1412,44 @@ impl Terminals {
         // always `None` here — v2 attaches rather than restoring the persisted
         // row. Without passing one the shell inherits the multiplexer's
         // directory, which is wherever thurbox was started.
-        live.session
-            .ensure_shell_pane(rows, cols, cwd)
-            .map_err(|e| e.to_string())
+        let replaced = live
+            .session
+            .shell_pane
+            .as_ref()
+            .is_some_and(|pane| pane.has_exited());
+        if let Err(e) = live.session.ensure_shell_pane(rows, cols, cwd) {
+            // The wait before a paint asks again runs from here, not from the
+            // ask: this open may have blocked for as long as a stalled link
+            // takes to time out, and a wait timed from before it would already
+            // be over.
+            // And it names the shell as it now stands: a dead one killed on
+            // the way is "none", which the next paint would otherwise take for
+            // a new shell and ask about at once.
+            let now_names = live
+                .session
+                .shell_pane
+                .as_ref()
+                .map(|pane| pane.backend_id().to_string())
+                .unwrap_or_default();
+            if let Some(ask) = live.shell_asked.get_mut().as_mut() {
+                ask.at = std::time::Instant::now();
+                ask.shell = now_names;
+            }
+            return Err(e.to_string());
+        }
+        // A shell replacing one that exited is born at the terminal's size,
+        // and the memo still holds the old one's: forgotten, or the first frame
+        // would find the rect unchanged and never size the new pty to it.
+        if replaced {
+            live.shell.size.set((0, 0));
+        }
+        // Counted as shown from here. A shell opens only because a pane painted
+        // its surface and asked for one, so it is about to be drawn — while a
+        // pane never shown is what `evict_hidden` drops the grid of. Dropped in
+        // the tick between, the prompt it prints next lands in the two cells a
+        // dormant pane keeps, and the pane that asked shows an empty screen.
+        live.shell.shown_at.set(Some(std::time::Instant::now()));
+        Ok(())
     }
 
     /// The pane id of a session's companion shell, once it has one.
@@ -1410,6 +1489,48 @@ impl Terminals {
                 false
             }
         }
+    }
+
+    /// Queue a replacement for `live`'s shell if it has none or it exited,
+    /// again only after [`retry_after`] ([`Live::shell_asked`]).
+    fn want_a_live_shell(&self, id: &str, live: &Live) {
+        let current = match &live.session.shell_pane {
+            // Live: whatever was asked for came, so a later end is asked about
+            // again — even of a pane reattached under the same id.
+            Some(pane) if !pane.has_exited() => {
+                if live.shell_asked.borrow().is_some() {
+                    live.shell_asked.replace(None);
+                }
+                return;
+            }
+            Some(pane) => pane.backend_id().to_string(),
+            None => String::new(),
+        };
+        let mut asked = live.shell_asked.borrow_mut();
+        let attempts = match asked.as_ref() {
+            Some(ask) if ask.shell == current => {
+                if ask.at.elapsed() < retry_after(self.shell_retry, ask.attempts) {
+                    return;
+                }
+                ask.attempts + 1
+            }
+            _ => 1,
+        };
+        *asked = Some(ShellAsk {
+            shell: current,
+            at: std::time::Instant::now(),
+            attempts,
+        });
+        drop(asked);
+        self.wanted_shells.borrow_mut().insert(id.to_string());
+    }
+
+    /// Sessions whose shell surface painted with no shell behind it since the
+    /// last call, emptied as they are handed over.
+    pub fn take_wanted_shells(&self) -> Vec<String> {
+        std::mem::take(&mut *self.wanted_shells.borrow_mut())
+            .into_iter()
+            .collect()
     }
 
     /// Whether a session has a shell pane open.
@@ -1768,31 +1889,27 @@ impl Terminals {
     ///
     /// This is the redraw signal for a *surface*: its cells live outside the
     /// node tree, so tree equality cannot tell whether it changed. Comparing
-    /// this stamp against the one a renderer last painted at can — and it is a
-    /// single atomic load, which is why v1 reads the same field rather than
-    /// diffing screens.
+    /// this count against the one a renderer last painted at can — and it is a
+    /// single atomic load rather than a diff of screens.
     ///
     /// Accepts the `<id>#shell` spelling, so the view you are looking at is the
     /// pane whose output is checked.
     pub fn output_stamp(&self, surface: &str) -> Option<u64> {
         if let Some(key) = self.program_key(surface) {
-            return self
-                .programs
-                .get(key)
-                .map(|slot| slot.pane.last_output_at());
+            return self.programs.get(key).map(|slot| slot.pane.output_count());
         }
         self.pane(surface)?.content_stamp()
     }
 
-    /// A cheap signature of every live pane's last output.
+    /// A cheap signature of every live pane's output so far.
     ///
     /// **The redraw signal for the loop**, and the reason it exists rather than
     /// the per-surface stamp below: a frame is only painted when something marked
     /// the screen dirty, and nothing marked it dirty when an agent printed. The
     /// per-surface check runs *inside* the paint, so it could say a frame had
     /// changed but never cause one — leaving output to appear at the 250ms floor
-    /// instead of at once. v1 sums the same atomics in its loop
-    /// (`App::detect_output_redraw`); this is that.
+    /// instead of at once. v1 summed the output clocks in its loop
+    /// (`App::detect_output_redraw`); this is that, summing counts instead.
     ///
     /// Shell panes are included: a shell is a surface you watch too, and its
     /// output has exactly the same claim on a repaint.
@@ -1813,7 +1930,7 @@ impl Terminals {
         // the forced-redraw floor while it produced output — which for a full-screen program is
         // the difference between playable and not.
         self.programs.values().fold(sessions, |acc, slot| {
-            acc.wrapping_add(slot.pane.last_output_at())
+            acc.wrapping_add(slot.pane.output_count())
         })
     }
 
@@ -2106,10 +2223,27 @@ impl Terminals {
         let Some(pane) = self.pane(session) else {
             return false;
         };
+        // A shell surface painted with no live shell behind it — never opened,
+        // or `exit`ed — asks for one: a layout that gives the shell a pane of
+        // its own shows it without anyone asking, and a tab showing a dead
+        // shell would otherwise show it for good. Noted rather than opened
+        // here, because opening is a round trip to the multiplexer and this is
+        // the paint.
+        if pane.shell {
+            self.want_a_live_shell(split_surface(session).0, pane.live);
+        }
         let Some(parser) = pane.parser() else {
             return false;
         };
         let painted = pane.painted();
+        // One terminal has one size, so it is painted into one rect a frame:
+        // the first. A second — an agent pane edited before shell panes existed
+        // still offering its Shell tab under a layout that places the shell
+        // pane — would resize the pty to its own rect every frame and leave the
+        // other showing it wrapped at the wrong width (the #1220 class).
+        if painted.on_screen() && painted.rect.get() != area {
+            return false;
+        }
 
         // The pane must match the rect it is painted into, or its program wraps
         // at the wrong width. The memo is this surface's own, so the comparison
@@ -2357,6 +2491,25 @@ mod tests {
             assert_eq!(buffer[(2, 0)].symbol(), painted, "cursor shown: {cursor}");
             assert_eq!(buffer[(0, 0)].symbol(), "$", "the grid paints either way");
         }
+    }
+
+    #[test]
+    fn a_shell_that_keeps_failing_is_asked_for_less_and_less_often() {
+        // Each ask can end in a spawn that waits out a stalled link on the loop,
+        // so a fixed interval froze the interface again every couple of seconds.
+        let base = std::time::Duration::from_secs(2);
+        assert_eq!(retry_after(base, 1), base);
+        assert_eq!(retry_after(base, 2), base * 2);
+        assert_eq!(retry_after(base, 3), base * 4);
+        assert_eq!(
+            retry_after(base, 40),
+            SHELL_RETRY_CAP,
+            "capped, never overflowing"
+        );
+        assert_eq!(
+            retry_after(std::time::Duration::ZERO, 5),
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]
