@@ -61,7 +61,12 @@ struct Finding {
 /// or no registered agent that resolves anywhere. A partially-installed
 /// registry is a `warn` and exits 0 — having `claude` but not `aider` is an
 /// ordinary machine, not breakage.
-pub fn run(multiplexer: Option<&str>) -> Result<CommandOutput, CommandError> {
+pub fn run() -> Result<CommandOutput, CommandError> {
+    run_for(None)
+}
+
+/// Report readiness for an explicitly selected local multiplexer.
+pub fn run_for(multiplexer: Option<&str>) -> Result<CommandOutput, CommandError> {
     let mux = multiplexer.unwrap_or(crate::agent::preflight::local_multiplexer());
     let mut findings = vec![multiplexer_finding(mux)];
     findings.extend(agent_findings());

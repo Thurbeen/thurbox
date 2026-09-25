@@ -445,7 +445,7 @@ fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandErr
         Command::Plugin { action } => plugins::run(action)?,
         // Reads the machine, not the database: what is installed is not
         // something thurbox recorded.
-        Command::Doctor { multiplexer } => doctor::run(multiplexer.as_deref())?,
+        Command::Doctor { multiplexer } => doctor::run_for(multiplexer.as_deref())?,
     })
 }
 
