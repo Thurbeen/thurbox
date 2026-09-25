@@ -786,6 +786,12 @@ pub fn parser_from_snapshot(snapshot: &crate::agent::control_mode::PaneSnapshot)
 /// `Deref` to it, so existing call sites (`session.parser`,
 /// `shell.backend_id`, `pane.send_input(..)`) keep working unchanged while
 /// the accessors exist once.
+struct ReaderSignals {
+    exited: Arc<AtomicBool>,
+    last_output_at: Arc<AtomicU64>,
+    output_seq: Arc<AtomicU64>,
+}
+
 pub struct WiredPane {
     pub parser: Arc<Mutex<SessionParser>>,
     input_tx: mpsc::Sender<Vec<u8>>,
@@ -799,6 +805,9 @@ pub struct WiredPane {
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
     last_output_at: Arc<AtomicU64>,
+    /// How many chunks of output the parser has taken — see
+    /// [`Self::output_seq`].
+    output_seq: Arc<AtomicU64>,
     /// Which pane kind this is, for input-channel error messages.
     label: &'static str,
     /// Whether `parser` holds this pane's grid right now — see [`Self::evict`].
@@ -877,16 +886,35 @@ impl WiredPane {
         self.size.as_ref().is_some_and(PaneSize::sized_elsewhere)
     }
 
-    /// When this pane last produced output, as epoch milliseconds.
+    /// When this pane last produced live output, as epoch milliseconds.
     ///
-    /// The lock-free redraw signal: a renderer compares it against the stamp
-    /// it last painted at, so a quiet pane costs one atomic load instead of a
-    /// repaint. Monotonic non-decreasing — the reader thread only ever stores
-    /// `now` — which is what lets the render loop's cheap output-change
-    /// detector ([`crate::kernel::terminal::Terminals::output_generation`])
-    /// spot new output without locking the vt100 parser.
+    /// The *activity* signal — quiescence, "printing", how long a pane has
+    /// been quiet — stored after a read of live bytes and monotonic
+    /// non-decreasing, since the reader thread only ever stores `now`. Not the
+    /// loop's redraw signal: that is [`Self::output_seq`], because a
+    /// millisecond cannot tell two chunks apart.
     pub fn last_output_at(&self) -> u64 {
         self.last_output_at.load(Ordering::Relaxed)
+    }
+
+    /// A count that moves every time the parser has taken more output,
+    /// replayed history included.
+    ///
+    /// **The redraw signal**, where [`Self::last_output_at`] is the activity
+    /// one. A millisecond stamp cannot tell two chunks inside one millisecond
+    /// apart, so a frame painted between them never learnt of the second; and
+    /// it was stored *before* the parse, so a loop that woke on it quickly
+    /// enough painted the grid without the bytes that woke it. This is bumped
+    /// after the parse, once per chunk, so a changed count always means a grid
+    /// with more in it.
+    pub fn output_seq(&self) -> u64 {
+        self.output_seq.load(Ordering::Acquire)
+    }
+
+    /// The cell behind [`Self::output_seq`], which is how
+    /// [`crate::agent::output_wake::arm`] names this pane.
+    pub fn output_seq_cell(&self) -> &AtomicU64 {
+        &self.output_seq
     }
 
     /// Whether the pane's process/stream has ended.
@@ -1414,22 +1442,25 @@ impl Session {
 
         let exited = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(initial_output_at(io.mode)));
+        let output_seq = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         tokio::spawn(Self::writer_loop(io.input, input_rx));
 
         let parser_clone = Arc::clone(&parser);
-        let exited_clone = Arc::clone(&exited);
-        let last_output_clone = Arc::clone(&last_output_at);
         let residency_clone = Arc::clone(&residency);
+        let reader_signals = ReaderSignals {
+            exited: Arc::clone(&exited),
+            last_output_at: Arc::clone(&last_output_at),
+            output_seq: Arc::clone(&output_seq),
+        };
         let seed_len = io.seed_len;
         let size = io.size.clone();
         tokio::task::spawn_blocking(move || {
             Self::reader_loop(
                 io.output,
                 parser_clone,
-                exited_clone,
-                last_output_clone,
+                reader_signals,
                 residency_clone,
                 seed_len,
                 size,
@@ -1442,6 +1473,7 @@ impl Session {
             backend_id: io.backend_id,
             exited,
             last_output_at,
+            output_seq,
             label,
             residency,
             backend: Some(Arc::clone(backend)),
@@ -1527,6 +1559,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(0)),
+                output_seq: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -1575,8 +1608,7 @@ impl Session {
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
-        exited: Arc<AtomicBool>,
-        last_output_at: Arc<AtomicU64>,
+        signals: ReaderSignals,
         residency: Arc<Residency>,
         mut seed_len: usize,
         size: Option<PaneSize>,
@@ -1611,21 +1643,33 @@ impl Session {
                     break;
                 }
                 Ok(n) => {
-                    // Bytes beyond the seed boundary are live activity; a chunk
-                    // that is entirely within the seed is not.
-                    if seed_len < n {
-                        last_output_at.store(now_millis(), Ordering::Relaxed);
-                    }
-                    seed_len = seed_len.saturating_sub(n);
                     let mut data = std::mem::take(&mut carry);
                     data.extend_from_slice(&buf[..n]);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
+                    // Bytes beyond the seed boundary are live activity; a chunk
+                    // that is entirely within the seed is not. Activity records
+                    // the read even when its trailing character is still
+                    // buffered. The redraw sequence moves only when the parser
+                    // has taken a complete prefix, and after it has done so.
+                    if seed_len < n {
+                        signals
+                            .last_output_at
+                            .store(now_millis(), Ordering::Relaxed);
+                    }
+                    seed_len = seed_len.saturating_sub(n);
+                    if ready > 0 {
+                        signals.output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify(&signals.output_seq);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
                         Self::install(&parser, &residency, &snapshot);
+                        // A rebuilt grid is new content to paint, like output.
+                        signals.output_seq.fetch_add(1, Ordering::Release);
+                        crate::agent::output_wake::notify(&signals.output_seq);
                     }
                 }
                 Err(e) => {
@@ -1637,7 +1681,8 @@ impl Session {
         // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
         // since no more bytes are coming to complete it.
         Self::feed_parser(&parser, &carry);
-        exited.store(true, Ordering::SeqCst);
+        signals.output_seq.fetch_add(1, Ordering::Release);
+        signals.exited.store(true, Ordering::SeqCst);
     }
 
     /// Rebuild a dropped grid from `snapshot`, in place of the two cells that
@@ -2057,6 +2102,7 @@ impl Session {
                 backend_id: String::new(),
                 exited: Arc::new(AtomicBool::new(false)),
                 last_output_at: Arc::new(AtomicU64::new(now_millis())),
+                output_seq: Arc::new(AtomicU64::new(0)),
                 label: "Session",
                 residency: Arc::default(),
                 backend: None,
@@ -2091,6 +2137,7 @@ impl Session {
         if let Ok(mut p) = self.wired.parser.lock() {
             p.process(bytes);
         }
+        self.wired.output_seq.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -2357,8 +2404,11 @@ mod tests {
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
             seed_len,
             None,
@@ -2426,8 +2476,11 @@ mod tests {
         Session::reader_loop(
             Box::new(script),
             Arc::clone(&parser),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicU64::new(0)),
+            ReaderSignals {
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(0)),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
             0,
             Some(size.clone()),
@@ -2438,6 +2491,122 @@ mod tests {
         let rows: Vec<String> = parser.screen().rows(0, 10).collect();
         assert_eq!(rows[..3], ["aaaaaaaaaa", "bbbbbbbbbb", "bbbbb"]);
         assert_eq!(size.current(), pack_size(4, 10));
+    }
+
+    /// The redraw signal moves for the replayed seed too, and only once the
+    /// bytes are in the grid: an attach that parsed its history after the first
+    /// frame must still be painted, and a count read as "moved" must never
+    /// describe a grid that does not have the bytes yet.
+    #[test]
+    fn reader_loop_moves_the_output_seq_after_each_parse_seed_included() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let seq = Arc::new(AtomicU64::new(0));
+        let seed = b"replayed history\r\n$ ".to_vec();
+        let seed_len = seed.len();
+        Session::reader_loop(
+            Box::new(Cursor::new(seed)),
+            Arc::clone(&parser),
+            ReaderSignals {
+                exited: Arc::new(AtomicBool::new(false)),
+                last_output_at: Arc::new(AtomicU64::new(initial_output_at(WireMode::Adopt))),
+                output_seq: Arc::clone(&seq),
+            },
+            Arc::default(),
+            seed_len,
+            None,
+        );
+        assert!(
+            seq.load(Ordering::Acquire) > 0,
+            "the seed is content to paint"
+        );
+        assert!(parser
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .contains("replayed history"));
+    }
+
+    /// A read boundary may split a UTF-8 character. Until its remaining bytes
+    /// arrive the parser has taken nothing, so the redraw sequence must not
+    /// claim that an echo is drawable yet.
+    #[test]
+    fn reader_loop_waits_for_a_split_character_before_moving_output_seq() {
+        struct SplitReader {
+            step: u8,
+            split: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+
+        impl Read for SplitReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.step {
+                    0 => {
+                        self.step = 1;
+                        buf[0] = 0xc3;
+                        Ok(1)
+                    }
+                    1 => {
+                        self.split.send(()).expect("announce split");
+                        self.release.recv().expect("release split");
+                        self.step = 2;
+                        buf[0] = 0xa9;
+                        Ok(1)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+
+        let (split_tx, split_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            24,
+            80,
+            0,
+            TermSignals::default(),
+        )));
+        let seq = Arc::new(AtomicU64::new(0));
+        let parser_in_reader = Arc::clone(&parser);
+        let seq_in_reader = Arc::clone(&seq);
+        let reader = std::thread::spawn(move || {
+            Session::reader_loop(
+                Box::new(SplitReader {
+                    step: 0,
+                    split: split_tx,
+                    release: release_rx,
+                }),
+                parser_in_reader,
+                ReaderSignals {
+                    exited: Arc::new(AtomicBool::new(false)),
+                    last_output_at: Arc::new(AtomicU64::new(0)),
+                    output_seq: seq_in_reader,
+                },
+                Arc::default(),
+                0,
+                None,
+            );
+        });
+
+        split_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reader reached the split");
+        assert_eq!(
+            seq.load(Ordering::Acquire),
+            0,
+            "a buffered character is not parsed output"
+        );
+        assert!(parser.lock().unwrap().screen().contents().is_empty());
+
+        release_tx.send(()).expect("finish character");
+        reader.join().expect("reader loop");
+        assert!(parser.lock().unwrap().screen().contents().contains('é'));
+        assert!(seq.load(Ordering::Acquire) > 0);
     }
 
     /// A character split across two reads reaches the parser whole, and the
@@ -2460,8 +2629,11 @@ mod tests {
         Session::reader_loop(
             Box::new(reader),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
             0,
             None,
@@ -2492,8 +2664,11 @@ mod tests {
         Session::reader_loop(
             Box::new(reader),
             Arc::clone(&parser),
-            Arc::clone(&exited),
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited: Arc::clone(&exited),
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
             seed_len,
             None,
@@ -2532,8 +2707,11 @@ mod tests {
         Session::reader_loop(
             Box::new(Cursor::new(seed)),
             parser,
-            exited,
-            Arc::clone(&last_output_at),
+            ReaderSignals {
+                exited,
+                last_output_at: Arc::clone(&last_output_at),
+                output_seq: Arc::new(AtomicU64::new(0)),
+            },
             Arc::default(),
             seed_len,
             None,

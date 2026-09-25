@@ -31,10 +31,18 @@ something — a key, a resize, a worker result they asked for, tracked by
 never alone — and `OUTPUT_FRAME_INTERVAL` (33 ms) when the only thing owing a
 frame is agent output. Applying the tight floor to both made a chatty agent drive
 60 paints a second to show 30 lines; the split is worth 30% of the loaded cost
-(ADR-P17). What marks the screen dirty:
+(ADR-P17). **A keystroke's echo is on neither floor** (ADR-P28): a key sent to a
+terminal owes an echo (`EchoWait`), the loop sleeps in `poll(2)` on the terminal
+and on the `agent::output_wake` self-pipe (poked only by that pane's reader) until it comes, holds the key's own
+frame for it (`ECHO_HOLD`), and paints it at once as the last full frame with
+only that surface repainted (`paint_echo_frame`) — rapid keys queue successive
+output sequences rather than replacing one pending wait; one such frame per
+key, and declined whenever anything is drawn over the panes. What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
 `Terminals::output_generation` is summed each iteration, which is what stops a
-printing agent being drawn at 4 fps. What does **not**: background housekeeping.
+printing agent being drawn at 4 fps. It sums each pane's `output_seq`, bumped
+after the parse, never the millisecond `last_output_at`: that stamp was stored
+before the parse and cannot tell two chunks in one millisecond apart. What does **not**: background housekeeping.
 A command answering `Command::is_housekeeping()` (the 5-second deleted-session
 sweep, and nothing else) is dispatched to a worker with no in-flight record at
 all, so it reaches neither `thurbox.commands`, nor the message band, nor the
@@ -211,4 +219,3 @@ handler time, `run` asks, render-time `store` writes and tree size into a
 `panes` table, the snapshot's `plugins` array and `thurbox-cli perf --plugins`
 read; `time_op` names the plugin whose call was longest. Full rationale:
 `docs/PERFORMANCE.md`.
-

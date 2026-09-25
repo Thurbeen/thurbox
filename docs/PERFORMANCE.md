@@ -1131,6 +1131,9 @@ almost every cell is one.
 | the output floor alone | 11.36 | 13.20 |
 | both | 11.12 | **12.92** |
 
+The output floor turned out to pace a keystroke's echo too, since an echo is
+output: ADR-P28 takes that one kind of output off it.
+
 **-31% overall.** Worth recording honestly: the paint changes were predicted at
 ~13% and delivered **~2%**. `Clear` writes blank cells, which is cheap beside the
 terminal widget's per-cell read-convert-style work that still happens; and any
@@ -2120,6 +2123,129 @@ which could not be read back is tried again rather than cached empty; and
 `lazy_terminals` that a title set before the interface attached is reported.
 
 ---
+
+## ADR-P28: A keystroke's echo is painted at once (2026-09-23)
+
+**Context**: the multiplexer benchmark (`docs/BENCHMARK-MULTIPLEXERS.md`) put a
+keystroke's round trip at 25 ms (p95 48) and 42 ms while another session was
+busy, against 1–2 ms for tmux and Herdr, with the samples clustered rather than
+spread. Timestamping each hop of one keystroke inside the binary showed where the
+time went, and none of it was work:
+
+1. The keystroke's own frame painted at once (it had the 16 ms input floor), but
+   a key sent to a terminal changes nothing on screen by itself.
+2. The echo arrived a millisecond later as agent output, and output is paced by
+   ADR-P17's 33 ms floor — measured from the frame the key had just painted.
+3. Nothing wakes the loop when output lands. It sleeps in the terminal's input
+   poll, woken only by the terminal, so the echo was noticed at the next 10 ms
+   `TICK`: hence clusters at 11, 21 and 42 ms (33 + a tick) rather than a spread.
+
+**Choice**: output that answers a keystroke is the one kind somebody is waiting
+for, so it gets its own path, and the floors keep pacing everything else.
+
+- **An echo is owed.** A key delivered to a terminal (`send_to_surface`) records
+  the surface and its output sequence (`EchoWait`). Rapid keys queue those waits,
+  each reserving the next output sequence instead of replacing the one before
+  it. The first eligible output from that surface within `ECHO_WINDOW` (150 ms)
+  is painted with no floor at all — one such frame per keystroke, not per chunk,
+  so an agent streaming while you type is still painted at 30 fps.
+- **The loop is woken by it.** `WiredPane::output_seq` counts chunks the parser
+  has taken, bumped *after* the parse, and the reader loop of the pane the echo
+  is owed by then pokes a self-pipe (`agent::output_wake`, armed with that
+  pane's counter). Every other pane, and every pane while nothing is owed, pays
+  one atomic load: a session flooding output beside the one being typed into
+  does not wake the loop per chunk. While owed, the loop sleeps in `poll(2)` on
+  the terminal and that pipe instead of in crossterm's poll. Elsewhere than Unix it polls the
+  terminal in 1 ms slices (`ECHO_POLL`).
+- **The keystroke's own frame waits for it** (`ECHO_HOLD`, one input frame), so
+  the two are one paint whenever the agent answers in time, and an echo never
+  waits behind a frame that shows nothing new.
+- **The echo frame repaints one surface.** It is the last full frame's buffer
+  with only the echoing surface painted over it (`paint_echo_frame`): no
+  republish, no pane walk, no bands. Anything else that moved since is still
+  owed a full frame — `dirty` stays set — and follows at the ordinary floor. It
+  is declined, and a full frame painted instead, whenever something is or was
+  drawn over the panes (a float, a modal, a selection, the HUD, an error panel,
+  a highlighted row), the layout moved, or the surface is a program's.
+
+The output sequence also replaces the millisecond stamp as the loop's redraw
+signal (`Terminals::output_generation`). The stamp was stored *before* the parse,
+so a loop woken quickly enough painted the grid without the bytes that woke it;
+and two chunks inside one millisecond left it unmoved, so the second was not drawn
+until something else printed. The stamp stays as the *activity* signal.
+
+**Measured**, one keystroke's hops inside the binary, idle, median, on a 6-core /
+12-thread desktop CPU from 2017 shared with other builds (so read the shape, not
+the absolute numbers):
+
+| hop | before | after |
+|---|---|---|
+| key read → sent to tmux | 0.26 ms | 0.20 ms |
+| tmux → agent → tmux → parsed | 0.48 ms | 0.45 ms |
+| parsed → the loop notices | 0.59 ms | 0.04 ms |
+| … waiting for the output floor | 0–33 ms | 0 |
+| the frame | 1.34 ms | 0.55 ms |
+
+The same hops after the change on the benchmark's own machine (a 4-core i5-6500T
+at the `powersave` governor, idle, the harness's 200x50 client), 109 keys:
+
+| hop | ms |
+|---|---|
+| key read → sent (republish + the focused pane's `on_key`) | 0.50 |
+| writer task → tmux | 0.09 |
+| tmux → agent → tmux → control-mode reader | 0.89 |
+| → the pane's reader has parsed it | 0.18 |
+| → the loop is woken | 0.20 |
+| → the echo frame starts | 0.07 |
+| the echo frame: kept frame in, 0.27 · surface render, 0.66 · width/theme passes, 0.09 · diff and flush, 0.59 · kept frame out, 0.19 | 1.69 |
+| **total** | **3.6** |
+
+That is the floor this architecture has on that machine, and it is above Herdr's
+2.2 ms there. None of it is waiting any more; it is three kinds of work, each
+structural:
+
+- **The frame (~1.4 ms).** thurbox is a second terminal emulator: the echo is
+  re-rendered from its vt100 grid into a ratatui buffer and diffed over the whole
+  screen. Copying the kept frame in and out could be halved by swapping it into
+  ratatui's own buffer rather than copying (~0.2 ms, by bypassing
+  `Terminal::draw`); the render and the diff are per cell of the screen, and
+  getting under them needs a renderer that knows which rows of the grid changed —
+  which vt100 does not track.
+- **tmux in the middle (~1.1 ms).** Control mode, then a thread per pane to parse:
+  the price of sessions that outlive the interface (ARCHITECTURE ADR-12), and of
+  the extra wake-ups a core in a deep idle state pays for each hop. With another
+  session printing, cores stay awake and the whole path measures 1.6 ms.
+- **The key's dispatch (~0.5 ms).** A key is published for and offered to the
+  focused pane's Lua `on_key` before it is known to be the terminal's (the agent
+  pane uses it to snap a scrolled-back view to the live end). Sending first would
+  let no plugin claim a key it had not declared — a plugin API change, not a
+  pacing one.
+
+**Result** in the multiplexer benchmark, before and after on that machine
+(`docs/BENCHMARK-MULTIPLEXERS.md`, the 2026-09-24 revisit): keystroke to echo
+24.7 → 3.4 ms idle (Herdr 2.1) and 42.1 → 1.6 ms with another session busy
+(Herdr 0.45); `session create` 95 → 36 ms (Herdr 52); attached CPU unchanged
+within the run-to-run spread. The kept frame
+costs a screen's worth of cells (~0.4 MiB at 200x50), so it is held only for
+`KEEP_FRAME_WHILE_TYPING` after a keystroke: at rest the interface carries
+neither it nor the copy each full frame would make into it.
+
+**Guarded** on counters, not the clock (ADR-P5): the loop counts `echoes`
+(painted with no floor) and `echo_frames` (of those, one-surface frames) into
+the perf snapshot and the HUD, and `tests/tui_e2e.rs` types twenty keys into a
+stand-in agent that answers each 5 ms late — the case the floor used to catch —
+and fails unless every one was counted, alone and with another session
+printing. The idle case then sends two keys in one input burst and separates
+the agent's replies, so replacing a pending wait fails the counter assertion.
+
+**Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
+re-applying the same server options twice (#1243). The options are now one tmux
+command list (`config_command_list`; a best-effort option is given `-q` so an
+option an older tmux lacks cannot stop the ones after it), and on the common path
+that list rides behind `has-session` in the same process. The window stamps ride
+in `new-window`'s own command list, as its birth options already did. Six
+processes, and `tests/tui_e2e.rs` fails if one create on a running server runs
+more than three of tmux.
 
 ## Measuring: the bench and the load harness (2026-08-29)
 

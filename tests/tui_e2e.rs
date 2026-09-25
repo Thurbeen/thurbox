@@ -156,6 +156,9 @@ impl Profile {
             ),
         );
         cmd.env("TERM", "xterm-256color");
+        // These tests assert terminal colours and reverse video. An inherited
+        // NO_COLOR makes Crossterm omit colour escapes and reset attributes.
+        cmd.env_remove("NO_COLOR");
         // A test run inside tmux must not look like one to the binary.
         cmd.env_remove("TMUX");
         // Git exports these to hook processes, so a suite running under this
@@ -1397,6 +1400,13 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         .expect("the landed line");
     let byte = line.find("┃tb-findme").expect("the landed line") + "┃".len();
     let x = line[..byte].chars().count();
+    tui.wait_until("the landed line to be highlighted", |frame| {
+        frame
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("┃tb-findme "))
+            .is_some_and(|(row, _)| tui.inverse_at(row as u16, x as u16))
+    });
     assert!(
         tui.inverse_at(y as u16, x as u16),
         "the landed line is not highlighted:\n{frame}"
@@ -3052,4 +3062,254 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     }
 
     assert!(tui.quit().success());
+}
+
+/// A stand-in agent that echoes each key it reads as `[k]`, redrawn in place,
+/// a few milliseconds after reading it.
+///
+/// The delay is what makes the echo scenarios mean something. An echo that
+/// arrives before the interface has started painting the keystroke's own frame
+/// rides in that frame for free, however the loop paces output; one that
+/// arrives *after* it — which is the case for any agent slower than a frame to
+/// answer, real agents included — used to be paced by the output floor.
+const DELAYED_ECHO: &str =
+    "printf 'ready> '; while IFS= read -rs -n1 c; do sleep 0.005; printf '\\r[%s]' \"$c\"; done";
+
+/// Type `keys` letters into the focused [`DELAYED_ECHO`] session at a person's
+/// pace, each one only after the last one's echo is on screen.
+fn type_and_see_echoes(tui: &mut Tui, keys: usize) {
+    for i in 0..keys {
+        let key = b'a' + (i % 26) as u8;
+        let token = format!("[{}]", key as char);
+        tui.send(&[key]);
+        tui.wait_within(
+            Duration::from_secs(5),
+            &format!("the echo {token}"),
+            |frame| frame.contains(&token),
+        );
+        // 60–100 ms between keys, varied so the keys cannot lock onto the
+        // loop's own clock — the benchmark's typing rate.
+        std::thread::sleep(Duration::from_millis(60 + (i as u64 * 37) % 41));
+    }
+}
+
+/// The loop's `(echoes, echo_frames)` counters, once its published perf
+/// snapshot has counted at least `at_least` echoes — or as they stand when it
+/// gives up. Published every few seconds while `THURBOX_PERF_LOG` is set.
+fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
+    let deadline = Instant::now() + WAIT;
+    let mut seen = (0, 0);
+    while Instant::now() < deadline {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let out = cmd
+            .args(["perf", "--json"])
+            .output()
+            .expect("thurbox-cli perf");
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            let counter = |name: &str| json["counters"][name].as_u64().unwrap_or(0);
+            seen = (counter("echoes"), counter("echo_frames"));
+            if seen.0 >= at_least {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    seen
+}
+
+/// A profile with a session named `echo` running `command` (plus whatever
+/// `extra` creates after it), attached and focused, with the loop counting.
+fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    let repo = repo(profile.root.path());
+    let repo_path = repo.to_str().expect("utf-8 path");
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "echo",
+        "--repo-path",
+        repo_path,
+        "--command",
+        "bash",
+        "--arg",
+        "-c",
+        "--arg",
+        command,
+    ]);
+    // After, so `echo` is the first row, which is the one selected at boot.
+    extra(&profile, &repo);
+    profile.cli(&["config", "accept-interface"]);
+    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_PERF_LOG", "1");
+    });
+    tui.wait_for("ready> ");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    Some((profile, tui))
+}
+
+/// Keys typed in the two scenarios below.
+const ECHO_KEYS: u64 = 20;
+
+/// What both scenarios assert: every key's echo was painted with no frame
+/// floor, and all but the first as a frame that redrew only the pane — the
+/// first key after a pause has no kept frame to redraw over (see
+/// `KEEP_FRAME_WHILE_TYPING`).
+///
+/// Asserted on the loop's counters rather than on the clock (ADR-P5): the
+/// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
+/// and this pins that nothing puts it back on a floor.
+fn assert_every_echo_painted_at_once(profile: &Profile) {
+    let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
+    assert_eq!(
+        echoes, ECHO_KEYS,
+        "every keystroke's echo is painted with no floor ({echo_frames} of them as echo frames)"
+    );
+    assert!(
+        echo_frames >= ECHO_KEYS - 1,
+        "{echo_frames} of {echoes} echoes were painted by redrawing only the pane"
+    );
+}
+
+#[test]
+fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
+    // Output is paced at 30 frames a second (ADR-P17) because nobody reads a
+    // scrolling log faster. The echo of a key is output too, and pacing it
+    // put 25–48 ms on every keystroke (docs/BENCHMARK-MULTIPLEXERS.md): the
+    // keystroke's own frame painted at once, the echo landed just after it and
+    // then waited out the floor from that frame (ADR-P28).
+    // After the 20 ordinary keys, answer the first key of a two-key batch at
+    // once and the second 75 ms later. That keeps the two output chunks well
+    // inside the echo window but far enough apart that tmux cannot coalesce
+    // them into one read.
+    const DELAY_SECOND_BATCH_ECHO: &str = "printf 'ready> '; i=0; while IFS= read -rs -n1 c; do i=$((i + 1)); if [ \"$i\" -le 20 ]; then sleep 0.005; elif [ \"$i\" -eq 22 ]; then sleep 0.075; fi; printf '\\r[%s]' \"$c\"; done";
+    let Some((profile, mut tui)) = echo_session(DELAY_SECOND_BATCH_ECHO, |_, _| {}) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    assert_every_echo_painted_at_once(&profile);
+
+    // Crossterm can hand one input poll several rapid or repeated keys. The
+    // agent answers them one at a time, so each send must keep its own wait
+    // instead of replacing the wait the previous key left behind.
+    const BATCHED_KEYS: u64 = 2;
+    let keys: Vec<u8> = (0..BATCHED_KEYS).map(|i| b'a' + (i % 26) as u8).collect();
+    let last = format!("[{}]", keys.last().copied().expect("a key") as char);
+    tui.send(&keys);
+    tui.wait_within(Duration::from_secs(5), "the last batched echo", |frame| {
+        frame.contains(&last)
+    });
+    let expected = ECHO_KEYS + BATCHED_KEYS;
+    let (echoes, echo_frames) = echo_counters(&profile, expected);
+    assert_eq!(echoes, expected, "every batched key retained its echo wait");
+    // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
+    // so the batch's first echo may need a full frame; its second must reuse
+    // that frame.
+    assert!(
+        echo_frames >= expected - 2,
+        "{echo_frames} of {echoes} batched echoes redrew only the pane"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
+    // The same, with a second session printing the whole time. Its output
+    // keeps the loop painting at the output floor, which is exactly the clock
+    // an echo must not be put on — and it must not be counted as an echo.
+    let Some((profile, mut tui)) = echo_session(DELAYED_ECHO, |profile, repo| {
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            "busy",
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--command",
+            "bash",
+            "--arg",
+            "-c",
+            "--arg",
+            "while :; do echo \"busy $RANDOM $RANDOM $RANDOM\"; sleep 0.002; done",
+        ]);
+    }) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    assert_every_echo_painted_at_once(&profile);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn creating_a_session_runs_a_handful_of_tmux_processes() {
+    // `session create` re-applies the server's options on every call, and did
+    // it as one `tmux set-option` process each: 27 processes and ~92 ms a
+    // session, most of the gap to Herdr and raw tmux (#1243). What is counted
+    // here is the processes, not the milliseconds — a count is the same on
+    // every machine.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let repo = repo(profile.root.path());
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .expect("find tmux")
+            .stdout,
+    )
+    .expect("utf-8 path");
+    let log = profile.path("tmux-calls.log");
+    let shim = profile.bin.join("tmux");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            real.trim()
+        ),
+    )
+    .expect("write tmux shim");
+    let mut perms = std::fs::metadata(&shim).expect("shim").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&shim, perms).expect("chmod shim");
+
+    let create = |name: &str| {
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            name,
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--command",
+            "sleep",
+            "--arg",
+            "600",
+        ]);
+    };
+    // The first one starts the server, which is a cost paid once.
+    create("first");
+    std::fs::write(&log, "").expect("reset log");
+    create("second");
+
+    let calls = std::fs::read_to_string(&log).expect("read log");
+    let count = calls.lines().count();
+    assert!(
+        count <= 3,
+        "one `session create` on a running server ran {count} tmux processes (budget 3: \
+         configure, create, check for a duplicate):\n{calls}"
+    );
 }

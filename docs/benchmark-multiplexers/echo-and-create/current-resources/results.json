@@ -1,0 +1,1142 @@
+{
+  "meta": {
+    "hosts": [
+      "thurbox"
+    ],
+    "load_at_end": [
+      2.51,
+      1.25,
+      0.62
+    ],
+    "load_at_start": [
+      1.4,
+      0.79,
+      0.34
+    ],
+    "machine": {
+      "cpu_model": "Intel(R) Core(TM) i5-6500T CPU @ 2.50GHz",
+      "cpus": 4,
+      "governor": "powersave",
+      "kernel": "6.18.48",
+      "os": "NixOS 26.05 (Yarara)",
+      "ram_gib": 15.5
+    },
+    "niceness": 0,
+    "quick": false,
+    "reps": 5,
+    "scenario_seconds": {
+      "resources": 861.4
+    },
+    "scenarios": [
+      "resources"
+    ],
+    "started": "20260925T102629Z",
+    "thurbox_commit": "78ca3f9356d0fdc38d1dab47cff03b345d8aa79b",
+    "timing": "in-harness, CLOCK_MONOTONIC (hyperfine not used)",
+    "versions": {
+      "python": "3.13.15",
+      "thurbox": "0.0.0-dev (schema v47)"
+    },
+    "warmup": 1
+  },
+  "records": [
+    {
+      "host": "thurbox",
+      "load1": 1.4,
+      "load1_end": 1.09,
+      "load5": 0.79,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 1.4,
+      "load1_end": 0.92,
+      "load5": 0.79,
+      "metrics": {
+        "cpu_pct": 0.19999304430187353,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 1.4,
+      "load1_end": 0.72,
+      "load5": 0.79,
+      "metrics": {
+        "cpu_pct": 3.0972311852748007,
+        "first_view_stale": false,
+        "pss_mib": 28.5498046875,
+        "rss_mib": 42.609375
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 1.4,
+      "load1_end": 0.61,
+      "load5": 0.79,
+      "metrics": {
+        "cpu_pct": 7.797209002278654,
+        "pss_mib": 28.7841796875,
+        "rss_mib": 42.84375
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.61,
+      "load1_end": 0.51,
+      "load5": 0.67,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.61,
+      "load1_end": 0.43,
+      "load5": 0.67,
+      "metrics": {
+        "cpu_pct": 0.19999308869901677,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.61,
+      "load1_end": 0.34,
+      "load5": 0.67,
+      "metrics": {
+        "cpu_pct": 2.887074726104781,
+        "first_view_stale": false,
+        "pss_mib": 28.5537109375,
+        "rss_mib": 42.61328125
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.61,
+      "load1_end": 0.28,
+      "load5": 0.67,
+      "metrics": {
+        "cpu_pct": 8.097940152051459,
+        "pss_mib": 28.7880859375,
+        "rss_mib": 42.84765625
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.28,
+      "load1_end": 0.24,
+      "load5": 0.57,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.28,
+      "load1_end": 0.25,
+      "load5": 0.57,
+      "metrics": {
+        "cpu_pct": 0.19999262665166745,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.28,
+      "load1_end": 0.21,
+      "load5": 0.57,
+      "metrics": {
+        "cpu_pct": 3.0966403588794615,
+        "first_view_stale": false,
+        "pss_mib": 28.5419921875,
+        "rss_mib": 42.6015625
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.28,
+      "load1_end": 0.18,
+      "load5": 0.57,
+      "metrics": {
+        "cpu_pct": 7.799986077032341,
+        "pss_mib": 28.7724609375,
+        "rss_mib": 42.83203125
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.18,
+      "load1_end": 0.14,
+      "load5": 0.51,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.18,
+      "load1_end": 0.12,
+      "load5": 0.51,
+      "metrics": {
+        "cpu_pct": 0.09999656356806236,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.18,
+      "load1_end": 0.09,
+      "load5": 0.51,
+      "metrics": {
+        "cpu_pct": 2.994201135149172,
+        "first_view_stale": false,
+        "pss_mib": 28.505859375,
+        "rss_mib": 42.61328125
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.18,
+      "load1_end": 0.08,
+      "load5": 0.51,
+      "metrics": {
+        "cpu_pct": 7.964179010326905,
+        "pss_mib": 28.7919921875,
+        "rss_mib": 42.8515625
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.08,
+      "load1_end": 0.06,
+      "load5": 0.43,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.08,
+      "load1_end": 0.05,
+      "load5": 0.43,
+      "metrics": {
+        "cpu_pct": 0.09999657314751273,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.08,
+      "load1_end": 0.04,
+      "load5": 0.43,
+      "metrics": {
+        "cpu_pct": 2.8863584344577156,
+        "first_view_stale": false,
+        "pss_mib": 28.5458984375,
+        "rss_mib": 42.60546875
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.08,
+      "load1_end": 0.04,
+      "load5": 0.43,
+      "metrics": {
+        "cpu_pct": 7.998804470677653,
+        "pss_mib": 28.7685546875,
+        "rss_mib": 42.828125
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.04,
+      "load1_end": 0.03,
+      "load5": 0.36,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=1 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.04,
+      "load1_end": 0.02,
+      "load5": 0.36,
+      "metrics": {
+        "cpu_pct": 0.1999930339625844,
+        "pss_mib": 8.23828125,
+        "rss_mib": 17.07421875
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=1 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.04,
+      "load1_end": 0.02,
+      "load5": 0.36,
+      "metrics": {
+        "cpu_pct": 2.8978178721461316,
+        "first_view_stale": false,
+        "pss_mib": 28.5458984375,
+        "rss_mib": 42.60546875
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=1 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.04,
+      "load1_end": 0.02,
+      "load5": 0.36,
+      "metrics": {
+        "cpu_pct": 7.999924946302607,
+        "pss_mib": 28.7802734375,
+        "rss_mib": 42.83984375
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=1 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.02,
+      "load1_end": 0.15,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5791015625,
+        "rss_mib": 17.4375
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.02,
+      "load1_end": 0.12,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 2.6999507321088543,
+        "pss_mib": 8.6611328125,
+        "rss_mib": 17.51953125
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.02,
+      "load1_end": 0.17,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 5.487617183046743,
+        "first_view_stale": false,
+        "pss_mib": 36.166015625,
+        "rss_mib": 50.25390625
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.02,
+      "load1_end": 0.14,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 17.72896667360672,
+        "pss_mib": 36.447265625,
+        "rss_mib": 50.53515625
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.14,
+      "load1_end": 0.12,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5830078125,
+        "rss_mib": 17.44140625
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.14,
+      "load1_end": 0.09,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 2.3999208688517535,
+        "pss_mib": 8.6611328125,
+        "rss_mib": 17.51953125
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.14,
+      "load1_end": 0.08,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 5.489587763288266,
+        "first_view_stale": false,
+        "pss_mib": 36.154296875,
+        "rss_mib": 50.2421875
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.14,
+      "load1_end": 0.07,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 17.76403000996078,
+        "pss_mib": 36.666015625,
+        "rss_mib": 50.75390625
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.07,
+      "load1_end": 0.41,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5830078125,
+        "rss_mib": 17.44140625
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.07,
+      "load1_end": 0.35,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 3.5998830973904035,
+        "pss_mib": 8.6572265625,
+        "rss_mib": 17.515625
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.07,
+      "load1_end": 0.27,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 5.384251678181341,
+        "first_view_stale": false,
+        "pss_mib": 36.205078125,
+        "rss_mib": 50.29296875
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.07,
+      "load1_end": 0.23,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 18.369969748943607,
+        "pss_mib": 36.357421875,
+        "rss_mib": 50.4453125
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.18,
+      "load5": 0.29,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5791015625,
+        "rss_mib": 17.4375
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.15,
+      "load5": 0.29,
+      "metrics": {
+        "cpu_pct": 4.699826687783847,
+        "pss_mib": 8.6572265625,
+        "rss_mib": 17.515625
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.12,
+      "load5": 0.29,
+      "metrics": {
+        "cpu_pct": 5.48662408453577,
+        "first_view_stale": false,
+        "pss_mib": 36.130859375,
+        "rss_mib": 50.21875
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.19,
+      "load5": 0.29,
+      "metrics": {
+        "cpu_pct": 19.06993949940846,
+        "pss_mib": 36.431640625,
+        "rss_mib": 50.51953125
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.19,
+      "load1_end": 0.28,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5830078125,
+        "rss_mib": 17.44140625
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.19,
+      "load1_end": 0.24,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 4.299849301035433,
+        "pss_mib": 8.6572265625,
+        "rss_mib": 17.515625
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.19,
+      "load1_end": 0.18,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 5.2943216912170135,
+        "first_view_stale": false,
+        "pss_mib": 36.310546875,
+        "rss_mib": 50.3984375
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.19,
+      "load1_end": 0.15,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 19.34315212007902,
+        "pss_mib": 36.482421875,
+        "rss_mib": 50.5703125
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.15,
+      "load1_end": 0.12,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 8.5830078125,
+        "rss_mib": 17.44140625
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=20 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.15,
+      "load1_end": 0.1,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 4.199854256234781,
+        "pss_mib": 8.6572265625,
+        "rss_mib": 17.515625
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=20 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.15,
+      "load1_end": 0.08,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 5.392476418512844,
+        "first_view_stale": false,
+        "pss_mib": 36.150390625,
+        "rss_mib": 50.23828125
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=20 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.15,
+      "load1_end": 0.23,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 19.01258508655278,
+        "pss_mib": 36.384765625,
+        "rss_mib": 50.47265625
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=20 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.32,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0517578125,
+        "rss_mib": 17.9296875
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.27,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 9.299678764915903,
+        "pss_mib": 9.3173828125,
+        "rss_mib": 18.1953125
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.21,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 9.373377812924696,
+        "first_view_stale": false,
+        "pss_mib": 46.818359375,
+        "rss_mib": 60.92578125
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.23,
+      "load1_end": 0.26,
+      "load5": 0.25,
+      "metrics": {
+        "cpu_pct": 38.124615313106354,
+        "pss_mib": 47.189453125,
+        "rss_mib": 61.296875
+      },
+      "rep": 0,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": true
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.26,
+      "load1_end": 0.34,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0556640625,
+        "rss_mib": 17.93359375
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.26,
+      "load1_end": 0.36,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 8.799690039724258,
+        "pss_mib": 9.3291015625,
+        "rss_mib": 18.20703125
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.26,
+      "load1_end": 0.28,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 9.261696107057377,
+        "first_view_stale": false,
+        "pss_mib": 46.748046875,
+        "rss_mib": 60.85546875
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.26,
+      "load1_end": 0.24,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 35.15324357105225,
+        "pss_mib": 47.193359375,
+        "rss_mib": 61.30078125
+      },
+      "rep": 1,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.4,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0595703125,
+        "rss_mib": 17.9375
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.58,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 9.299872304391917,
+        "pss_mib": 9.3173828125,
+        "rss_mib": 18.1953125
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.45,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 9.362837608275077,
+        "first_view_stale": false,
+        "pss_mib": 56.724609375,
+        "rss_mib": 92.26171875
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.38,
+      "load5": 0.26,
+      "metrics": {
+        "cpu_pct": 38.07532121030849,
+        "pss_mib": 47.080078125,
+        "rss_mib": 61.1875
+      },
+      "rep": 2,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.38,
+      "load1_end": 0.29,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0556640625,
+        "rss_mib": 17.93359375
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.38,
+      "load1_end": 0.25,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 9.399862514802196,
+        "pss_mib": 9.3251953125,
+        "rss_mib": 18.203125
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.38,
+      "load1_end": 0.19,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 9.452808791818788,
+        "first_view_stale": false,
+        "pss_mib": 46.908203125,
+        "rss_mib": 61.015625
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.38,
+      "load1_end": 0.24,
+      "load5": 0.31,
+      "metrics": {
+        "cpu_pct": 33.03221819880658,
+        "pss_mib": 47.236328125,
+        "rss_mib": 61.34375
+      },
+      "rep": 3,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.19,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0556640625,
+        "rss_mib": 17.93359375
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 0.23,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 8.899681717114369,
+        "pss_mib": 9.3251953125,
+        "rss_mib": 18.203125
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 2.17,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 9.454455994573674,
+        "first_view_stale": false,
+        "pss_mib": 46.869140625,
+        "rss_mib": 60.9765625
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 0.24,
+      "load1_end": 5.48,
+      "load5": 0.27,
+      "metrics": {
+        "cpu_pct": 36.83668951475355,
+        "pss_mib": 47.115234375,
+        "rss_mib": 61.22265625
+      },
+      "rep": 4,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 5.48,
+      "load1_end": 4.64,
+      "load5": 1.45,
+      "metrics": {
+        "cpu_pct": 0.0,
+        "pss_mib": 9.0595703125,
+        "rss_mib": 17.9375
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=50 headless idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 5.48,
+      "load1_end": 3.61,
+      "load5": 1.45,
+      "metrics": {
+        "cpu_pct": 8.299712151858124,
+        "pss_mib": 9.3291015625,
+        "rss_mib": 18.20703125
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=50 headless output",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 5.48,
+      "load1_end": 3.05,
+      "load5": 1.45,
+      "metrics": {
+        "cpu_pct": 9.480961660136265,
+        "first_view_stale": false,
+        "pss_mib": 46.841796875,
+        "rss_mib": 60.94921875
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=50 attached idle",
+      "warmup": false
+    },
+    {
+      "host": "thurbox",
+      "load1": 5.48,
+      "load1_end": 2.51,
+      "load5": 1.45,
+      "metrics": {
+        "cpu_pct": 35.26553103137798,
+        "pss_mib": 47.173828125,
+        "rss_mib": 61.28125
+      },
+      "rep": 5,
+      "scenario": "resources",
+      "variant": "N=50 attached output",
+      "warmup": false
+    }
+  ]
+}

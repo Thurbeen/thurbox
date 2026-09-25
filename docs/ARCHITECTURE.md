@@ -1837,8 +1837,9 @@ mechanisms now, and they answer different halves:
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
   `agent::tmux::retire_duplicate_windows` runs after every local stamp
-  (`stamp_local_window`, and `TmuxBackend::stamp_window` for the interface's own
-  spawn and for an adopt) and **the highest window id keeps the identity**.
+  (`stamp_local_window`; the headless `spawn_window`, whose stamp rides in
+  `new-window`'s own command list; and `TmuxBackend::stamp_window` for the
+  interface's own spawn and for an adopt) and **the highest window id keeps the identity**.
   Not "the window I just made": both racers run the sweep, so "mine wins" has
   each retire the other's and can leave the session no window at all, while a
   key tmux issues in order and never reissues makes every sweep reach the same
