@@ -8,7 +8,7 @@ breadcrumb: 'Performance'
 <h1>Performance at 50 sessions</h1>
 <p>
   Same-machine measurements of what it costs to start, keep, and show agent sessions.
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/BENCHMARK-MULTIPLEXERS.md">Read the benchmark report</a>.
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md">Read the benchmark report</a>.
 </p>
 <ul>
   <li><strong>After closing the interface:</strong> 50 idle Thurbox sessions used 0% host CPU and about 9&nbsp;MiB of measured host memory; Herdr used 22.5% and about 41&nbsp;MiB.</li>
@@ -86,28 +86,28 @@ breadcrumb: 'Performance'
 </p>
 <p>
   The resource rows combine a
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Thurbox-only rerun</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Thurbox-only rerun</a>
   on source <code>78ca3f93</code> (25 September) with Herdr and tmux from the
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/after/summary.md">earlier three-host run</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">earlier three-host run</a>
   (23 September, Thurbox build <code>1a6b60c0</code>). They used the same machine but were not
   interleaved with each other. The typing and burst rows come from a separate
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">three-host final-source run</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">three-host final-source run</a>
   (25 September).
 </p>
 <p>
   Attached idle Thurbox memory
   measured 46.9&nbsp;MiB at the final-head median and 56.7&nbsp;MiB at p95 (the worst of five
   repetitions): a short spike after attach remains. The
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/before/summary.md">earlier full run before the echo change</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/before/summary.md">earlier full run before the echo change</a>
   read 46.0&nbsp;MiB, and its
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/after/summary.md">after run</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">after run</a>
   read 52.3&nbsp;MiB. Those earlier values are not final-head results.
 </p>
 <p>
   Thurbox still loses to Herdr on typing: 4.13 versus 2.23&nbsp;ms at rest, and 1.90 versus
   0.45&nbsp;ms with another session busy. In the final-source burst run, the last of 50,000 lines
   appeared at 269&nbsp;ms in Thurbox and 158&nbsp;ms in Herdr. In the
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">same raw run</a>,
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">same raw run</a>,
   that attached burst also spent
   0.38&nbsp;s of host CPU and left 37.1&nbsp;MiB PSS in Thurbox, versus 0.19&nbsp;s and
   23.2&nbsp;MiB in Herdr. The steady 50-session resource result does not describe every output
@@ -177,23 +177,23 @@ breadcrumb: 'Performance'
   <li>
     <strong>23 September 2026, Thurbox <code>1a6b60c0</code>:</strong> creation, plus the
     Herdr/tmux resource comparators and the one-session example.
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/after/summary.md">Summary</a>
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/summary.md">Summary</a>
     and
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/after/results.csv">raw CSV</a>.
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/after/results.csv">raw CSV</a>.
   </li>
   <li>
     <strong>25 September 2026, Thurbox <code>78ca3f93</code>:</strong> resource-only rerun
     (<code>--hosts thurbox --scenarios resources</code>).
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Summary</a>
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/summary.md">Summary</a>
     and
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-resources/results.csv">raw CSV</a>.
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-resources/results.csv">raw CSV</a>.
   </li>
   <li>
     <strong>25 September 2026, Thurbox <code>78ca3f93</code>:</strong> three-host typing and
     burst rerun.
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">Summary</a>
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/summary.md">Summary</a>
     and
-    <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">raw CSV</a>.
+    <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/benchmark-multiplexers/echo-and-create/current-latency-throughput/results.csv">raw CSV</a>.
   </li>
 </ul>
 <p>
@@ -212,7 +212,7 @@ breadcrumb: 'Performance'
 <p>
   A real coding agent, a different terminal, remote SSH, macOS, or Windows can change the result.
   The terminal emulator's own cost was outside the harness. The
-  <a href="https://github.com/Thurbeen/thurbox/blob/b5264e0d7b5d6018fedde8590dc92523d7db9e72/docs/BENCHMARK-MULTIPLEXERS.md">full benchmark report</a>
+  <a href="https://github.com/Thurbeen/thurbox/blob/30acd3d81f8568f3a4a969cfb6793fa446133987/docs/BENCHMARK-MULTIPLEXERS.md">full benchmark report</a>
   and the linked raw data include the commands, per-run samples, defaults, and threats to validity.
   The report also records the different headless grid sizes and the limits of a terminal harness.
 </p>
