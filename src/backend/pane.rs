@@ -642,6 +642,7 @@ impl WiredPane {
             return;
         }
         if let Err(e) = backend.resize(&self.backend_id, rows, cols) {
+            size.retry_released();
             debug!(pane = %self.backend_id, "could not take the pane's size back: {e:#}");
         }
     }

@@ -89,6 +89,12 @@ impl PaneSize {
     pub(in crate::backend) fn take_released(&self) -> bool {
         self.0.released.load(Ordering::Relaxed) && self.0.released.swap(false, Ordering::Relaxed)
     }
+
+    /// Mark the pane released again, so a retake that failed is tried on a
+    /// later frame rather than given up.
+    pub(in crate::backend) fn retry_released(&self) {
+        self.0.released.store(true, Ordering::Relaxed);
+    }
 }
 
 /// A pane's screen and history as its multiplexer holds them — enough to
