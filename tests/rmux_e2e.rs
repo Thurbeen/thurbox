@@ -159,6 +159,70 @@ fn missing_rmux_is_reported_before_a_session_is_created() {
 }
 
 #[test]
+fn settings_choose_rmux_for_new_local_sessions() {
+    let Some(binary) = rmux_binary() else {
+        eprintln!("skipping: set RMUX_TEST_BIN to a real rmux binary");
+        return;
+    };
+    let instance = RmuxInstance::new(binary);
+    std::fs::write(
+        instance.path("config/settings.toml"),
+        "multiplexer = \"rmux\"\n",
+    )
+    .expect("RMUX preference");
+    let repo = instance.path("repo");
+    let created = instance.cli(&[
+        "session",
+        "create",
+        "--name",
+        "configured-rmux",
+        "--repo-path",
+        repo.to_str().unwrap(),
+        "--command",
+        "cat",
+        "--json",
+    ]);
+    assert!(
+        created.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&created.stdout)
+    );
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).expect("create JSON");
+    assert_eq!(created["backend_type"], "local-rmux");
+    let id = created["id"].as_str().expect("session id");
+    let doctor = instance.cli(&["doctor", "--json"]);
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).expect("doctor JSON");
+    assert_eq!(doctor["multiplexer"], "rmux");
+
+    let override_create = instance.cli(&[
+        "session",
+        "create",
+        "--name",
+        "overridden-tmux",
+        "--repo-path",
+        repo.to_str().unwrap(),
+        "--command",
+        "cat",
+        "--multiplexer",
+        "default",
+        "--json",
+    ]);
+    assert!(override_create.status.success(), "default override failed");
+    let override_create: serde_json::Value =
+        serde_json::from_slice(&override_create.stdout).expect("override JSON");
+    assert_eq!(override_create["backend_type"], "local-tmux");
+
+    std::fs::write(
+        instance.path("config/settings.toml"),
+        "multiplexer = \"default\"\n",
+    )
+    .expect("switch back");
+    let recorded = instance.cli(&["session", "get", id, "--json"]);
+    let recorded: serde_json::Value = serde_json::from_slice(&recorded.stdout).expect("get JSON");
+    assert_eq!(recorded["backend_type"], "local-rmux");
+}
+
+#[test]
 fn cli_selects_rmux_and_records_the_backend_that_owns_the_session() {
     let Some(binary) = rmux_binary() else {
         eprintln!("skipping: set RMUX_TEST_BIN to a real rmux binary");

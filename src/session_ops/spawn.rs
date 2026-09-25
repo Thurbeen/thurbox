@@ -72,7 +72,7 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
-    /// Opt-in local multiplexer. `None` keeps the platform default.
+    /// Local multiplexer override. `None` uses the configured preference.
     pub multiplexer: Option<String>,
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
@@ -1450,17 +1450,18 @@ fn resolve_backend(
     multiplexer: Option<&str>,
 ) -> Result<(String, Option<HostDef>), String> {
     let (backend, host_def) = resolve_host(host)?;
-    match multiplexer {
-        None => Ok((backend, host_def)),
-        Some(choice) => {
-            if host_def.is_some() {
-                return Err("--multiplexer currently supports local sessions only".into());
-            }
-            let mux = crate::agent::tmux::LocalMuxContext::for_choice(choice)?;
-            mux.ensure_available()?;
-            Ok((mux.backend_type().into(), None))
+    if host_def.is_some() {
+        if multiplexer.is_some() {
+            return Err("--multiplexer currently supports local sessions only".into());
         }
+        return Ok((backend, host_def));
     }
+    let mux = match multiplexer {
+        Some(choice) => crate::agent::tmux::LocalMuxContext::for_choice(choice)?,
+        None => crate::agent::tmux::LocalMuxContext::configured_default(),
+    };
+    mux.ensure_available()?;
+    Ok((mux.backend_type().into(), None))
 }
 
 /// Resolve `--host` to `(backend_type, host)`.

@@ -333,9 +333,9 @@ pub fn is_missing_dependency(err: &anyhow::Error) -> bool {
     err.chain().any(|e| e.is::<MissingDependency>())
 }
 
-/// The multiplexer a local session would run in on this platform.
+/// The configured multiplexer a new local session would use.
 pub fn local_multiplexer() -> &'static str {
-    DEFAULT_MUX
+    super::tmux::LocalMuxContext::configured_default().binary()
 }
 
 #[cfg(test)]

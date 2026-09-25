@@ -119,9 +119,9 @@ pub enum Action {
         /// worktree and tmux window are created on that host over SSH.
         #[arg(long)]
         host: Option<String>,
-        /// Use RMUX for this local session. Existing sessions keep their
-        /// recorded multiplexer; omitting this option uses tmux/psmux.
-        #[arg(long, value_parser = ["rmux"], conflicts_with = "host")]
+        /// Override settings.toml for this local session. Existing sessions keep
+        /// their recorded multiplexer; `default` means tmux/psmux.
+        #[arg(long, value_parser = ["default", "rmux"], conflicts_with = "host")]
         multiplexer: Option<String>,
         /// Parent session UUID (lead/worker relationship for orchestration).
         /// Must reference an existing active session.

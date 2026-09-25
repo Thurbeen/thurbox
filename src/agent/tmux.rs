@@ -43,14 +43,28 @@ pub struct LocalMuxContext {
 }
 
 impl LocalMuxContext {
-    /// Resolve the non-default CLI choice at the same boundary as persisted ids.
+    /// Resolve a CLI override at the same boundary as persisted ids.
     pub fn for_choice(choice: &str) -> std::result::Result<Self, String> {
         match choice {
+            "default" => Ok(Self::default_local()),
             "rmux" => Self::for_backend(LOCAL_RMUX_BACKEND_TYPE),
             other => Err(format!(
-                "Unknown multiplexer '{other}'. Choose rmux or omit the option."
+                "Unknown multiplexer '{other}'. Choose default or rmux."
             )),
         }
+    }
+
+    /// The configured backend for new local sessions. This setting is read at
+    /// process startup; an explicit per-create choice can override it.
+    pub fn configured_default() -> Self {
+        match crate::session::settings::global().multiplexer {
+            crate::session::settings::LocalMultiplexer::Default => Self::default_local(),
+            crate::session::settings::LocalMultiplexer::Rmux => Self { mux: "rmux" },
+        }
+    }
+
+    pub fn binary(self) -> &'static str {
+        self.mux
     }
 
     pub fn for_backend(backend_type: &str) -> std::result::Result<Self, String> {
@@ -88,6 +102,9 @@ impl LocalMuxContext {
     }
 
     pub fn ensure_available(self) -> std::result::Result<(), String> {
+        if self.mux == "rmux" && cfg!(windows) {
+            return Err("RMUX sessions are supported on POSIX systems only".into());
+        }
         if self.mux == "rmux"
             && crate::agent::preflight::look_up("rmux")
                 == crate::agent::preflight::Presence::Missing

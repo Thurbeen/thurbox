@@ -389,6 +389,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             let req = SpawnRequest {
                 name: name.clone(),
                 repo_path: repo_path.clone(),
+                multiplexer: Some("default".into()),
                 worktree_branch: worktree_branch.clone(),
                 base_branch: base_branch.clone(),
                 agent: agent.clone(),

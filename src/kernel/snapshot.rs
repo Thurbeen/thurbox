@@ -1640,12 +1640,20 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 /// Whether the local multiplexer is installed, and what to do when it is not.
 fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
+    if binary == "rmux" && cfg!(windows) {
+        return MuxRow {
+            binary: binary.to_string(),
+            presence: crate::agent::preflight::Presence::Missing,
+            advice: "RMUX sessions are supported on POSIX systems only".into(),
+        };
+    }
     let presence = crate::agent::preflight::look_up(binary);
     MuxRow {
         binary: binary.to_string(),
         presence,
         advice: match presence {
             crate::agent::preflight::Presence::Present => String::new(),
+            _ if binary == "rmux" => crate::agent::preflight::Dependency::Rmux.fix(),
             _ => crate::agent::preflight::Dependency::LocalMultiplexer.fix(),
         },
     }

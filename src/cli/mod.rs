@@ -291,8 +291,8 @@ pub enum Command {
     /// session's status hooks are wired. This one names no session, so it
     /// answers on a machine where nothing has been created yet.
     Doctor {
-        /// Check the optional RMUX choice instead of the platform default.
-        #[arg(long, value_parser = ["rmux"])]
+        /// Check a choice instead of the configured local multiplexer.
+        #[arg(long, value_parser = ["default", "rmux"])]
         multiplexer: Option<String>,
     },
 }

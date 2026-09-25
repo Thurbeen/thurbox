@@ -684,8 +684,8 @@ fn fire_spawn(
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     let mux = crate::agent::tmux::LocalMuxContext::default_local();
-    // This action creates on the default local backend, so a same-named RMUX
-    // session is not an earlier run of this automation.
+    // This action creates on the platform default backend, so a same-named
+    // RMUX session is not an earlier run of this automation.
     let existing = db
         .list_active_sessions()
         .unwrap_or_default()
@@ -693,7 +693,7 @@ fn fire_spawn(
         .find(|row| {
             row.name == name
                 && crate::agent::tmux::LocalMuxContext::is_default_local_backend(&row.backend_type)
-                && { crate::agent::tmux::window_exists(&mux, &row.id.to_string(), &row.name) }
+                && crate::agent::tmux::window_exists(&mux, &row.id.to_string(), &row.name)
         });
     if let Some(session) = existing {
         return match crate::agent::tmux::send_prompt_now(
@@ -717,6 +717,7 @@ fn fire_spawn(
     let req = SpawnRequest {
         name: name.clone(),
         repo_path: repo_path.to_path_buf(),
+        multiplexer: Some("default".into()),
         worktree_branch: worktree_branch.clone(),
         base_branch: base_branch.clone(),
         agent: agent.clone(),

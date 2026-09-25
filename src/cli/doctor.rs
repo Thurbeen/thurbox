@@ -65,9 +65,13 @@ pub fn run() -> Result<CommandOutput, CommandError> {
     run_for(None)
 }
 
-/// Report readiness for an explicitly selected local multiplexer.
+/// Report readiness for the configured or explicitly selected local multiplexer.
 pub fn run_for(multiplexer: Option<&str>) -> Result<CommandOutput, CommandError> {
-    let mux = multiplexer.unwrap_or(crate::agent::preflight::local_multiplexer());
+    let mux = match multiplexer {
+        Some("default") => crate::agent::tmux::LocalMuxContext::default_local().binary(),
+        Some(choice) => choice,
+        None => crate::agent::preflight::local_multiplexer(),
+    };
     let mut findings = vec![multiplexer_finding(mux)];
     findings.extend(agent_findings());
     findings.extend(host_findings());

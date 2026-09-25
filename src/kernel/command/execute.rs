@@ -623,6 +623,7 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 name: format!("task-{task_id}"),
                 repo_path: repo,
                 task_id: Some(task_id),
+                multiplexer: Some("default".into()),
                 ..Default::default()
             };
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
