@@ -391,6 +391,60 @@ The complete raw results are in
 | idle | 1.04 (1.10) ms | 2.21 (2.35) ms | **4.14 (5.15) ms** |
 | another session busy | 0.76 (0.96) ms | 0.45 (0.55) ms | **1.91 (3.15) ms** |
 
+The final source commit (`78ca3f93`) was measured again on that machine with
+the same defaults, one warm-up and five measured repetitions for each host and
+variant. The release build was already complete and the machine's 1-minute load
+was 0.17 at the start and 0.74 at the end; measured repetitions began at
+0.06–1.15. This run covered both 100-key latency and 50,000-line throughput.
+The complete samples, including per-repetition load, are in
+[`echo-and-create/current-latency-throughput/`](benchmark-multiplexers/echo-and-create/current-latency-throughput/).
+The latency figures are median (p95) of 500 measured keys per host and
+variant; no key timed out.
+
+| exact-source-head keystroke to echo | tmux | Herdr | thurbox |
+|---|---:|---:|---:|
+| idle | 1.04 (1.10) ms | 2.23 (2.34) ms | **4.13 (5.56) ms** |
+| another session busy | 0.76 (0.95) ms | 0.45 (0.55) ms | **1.90 (2.90) ms** |
+
+The same run measured the burst's time to appear at the attached client,
+host CPU spent on the burst, and PSS after it. Every checked output tail was
+intact. Values below are medians of five measured repetitions. The visible
+time is not available when headless, so the headless row gives the time for
+output to settle instead.
+
+| 50,000-line burst | tmux | Herdr | thurbox |
+|---|---:|---:|---:|
+| attached visible, ms | 334 | 158 | **269** |
+| attached host CPU, s | 0.23 | 0.19 | **0.38** |
+| attached PSS after, MiB | 7.73 | 23.2 | **37.1** |
+| headless settle, ms | 338 | 255 | **343** |
+| headless host CPU, s | 0.21 | 0.13 | **0.21** |
+| headless PSS after, MiB | 5.21 | 25.3 | **9.95** |
+
+The resource scenario was also rerun on the final source commit (`78ca3f93`)
+on the same 4-core machine. It used the same N=1, 20 and 50 states and
+10-second CPU windows, with one warm-up and five measured repetitions; only
+the separate 65-second N=20 idle-long probe was skipped. The release build
+ended just before timing, so 1-minute load began at 1.40 and ended at 2.51.
+At N=50, four measured repetitions began at load 0.24–0.38 and the last began
+at 5.48 after the preceding 50-session teardown. Timed commands ran at
+niceness zero with no other benchmark running. Raw samples and per-repetition
+load are in
+[`echo-and-create/current-resources/`](benchmark-multiplexers/echo-and-create/current-resources/).
+
+| N=50 state | CPU, % of one core, median (p95) | PSS, MiB, median (p95) |
+|---|---:|---:|
+| attached idle | 9.45 (9.48) | **46.9 (56.7)** |
+| attached output | 35.3 (38.1) | 47.2 (47.2) |
+| headless idle | 0 (0) | 9.06 (9.06) |
+| headless output | 8.90 (9.40) | 9.33 (9.33) |
+
+The five attached idle PSS samples were 46.7, 56.7, 46.9, 46.9 and 46.8 MiB.
+The 56.7 MiB spike occurred in a repetition that began at load 0.24; ten
+seconds later its attached output reading was 47.1 MiB. The full earlier
+after run's 52.3 MiB median remains a real result, and the current head still
+shows a brief high-water mark. This run does not establish a cause for it.
+
 No simple wait remains to remove from the idle path: the earlier trace below
 puts roughly 1.4 ms in painting and flushing a pane, 1.1 ms in tmux control
 mode and thread hand-offs, and 0.5 ms in the focused plugin's key handler. A
@@ -421,22 +475,39 @@ identity is stamped in `new-window`'s own command list: six processes. Attaching
 and restarting got faster for the same reason — the interface runs the same
 setup when it starts. What is left of the 36 ms is mostly starting `thurbox-cli`.
 
-**What it cost.** CPU is unchanged: attached and idle, 2.90 → 2.89 % at N=1 and
-9.9 → 9.7 % at N=50; under output 35.9 → 36.0 % at N=50; the 50 000-line burst
-0.39 → 0.37 s of CPU. Attached memory is unchanged at the median (N=50 idle
-46.0 → 46.2 MiB, output 46.6 → 46.7) but one row moved in the full run: 50
-idle sessions measured 52 MiB after against 46, three of five repetitions high.
-Four more rounds of that row alone, alternating the two builds (20 repetitions
-each), put both medians at 46 MiB and the high samples right after attaching:
-the new build read above 47 MiB five times in 20, up to 55, the old one once,
-at 47.6, and the output window measured ten seconds later in the same session
-never passed 47.0 on either. A transient, then, which the new build shows more
-often — plausibly because it is ready sooner after attaching, so the window
-opens earlier; that was not proven. The echo path keeps a copy of the screen
-(~0.4 MiB at 200x50) only while someone types, so none of it is at rest.
-Headless memory moved by 0.14 MiB at every N, inside the 7.89–8.03 MiB that
-five runs of three builds measured at N=1 — tmux's own allocations, not this
-change.
+**CPU, memory and throughput from the full before/after run.** These are
+medians of five measured repetitions at N=50, with the same 10-second CPU
+window and PSS accounting for every host. The after run's attached idle PSS
+**rose from 46.0 to 52.3 MiB**. Its CPU stayed near 10 % of one core; headless
+idle CPU stayed at zero and headless PSS stayed under 9 MiB, well below
+Herdr's 41.1 MiB. Neither CPU nor memory is an overall win across the rows.
+
+| N=50 state and metric | tmux after | Herdr after | thurbox before | thurbox after |
+|---|---:|---:|---:|---:|
+| attached idle CPU, % of one core | 0 | 86.7 | 9.89 | 9.67 |
+| attached idle PSS, MiB | 12.1 | 53.8 | 46.0 | **52.3** |
+| attached output CPU, % of one core | 5.87 | 104 | 35.9 | 36.0 |
+| attached output PSS, MiB | 12.1 | 53.9 | 46.6 | 46.7 |
+| headless idle CPU, % of one core | 0 | 22.5 | 0 | 0 |
+| headless idle PSS, MiB | 3.55 | 41.1 | 8.70 | 8.84 |
+| headless output CPU, % of one core | 7.40 | 93.1 | 8.00 | 8.70 |
+| headless output PSS, MiB | 3.99 | 41.9 | 8.97 | 9.10 |
+
+The attached idle PSS increase was uneven: three of five after samples were
+above 52 MiB, while the output window measured ten seconds later was 46.7–46.9
+MiB. Four more rounds of the idle row alone, alternating builds (20 repetitions
+each), put both medians at 46 MiB; the new build exceeded 47 MiB five times,
+up to 55, and the old build once, at 47.6. The new build showed more brief
+post-attach spikes. An earlier opening of the measurement window is possible
+because attach got faster, but the cause was not proven. The echo path keeps a
+copy of the screen (~0.4 MiB at 200x50) only while someone types, so none of it
+is kept at rest. Headless PSS rose by 0.14 MiB at N=50.
+
+The 50,000-line attached burst took 259 → 260 ms to reach the screen, used
+0.39 → 0.37 s of host CPU and finished with 36.0 → 36.8 MiB PSS. Every run's
+checked output tail was intact. Herdr reached the screen in 158 ms in the after
+run, and tmux in 334 ms; neither number says how much CPU or memory that
+latency cost.
 
 ## What was measured, and why these
 
