@@ -202,6 +202,27 @@ horizontal glyph, for runs a pane paints over its own top border). Never pick
 the colours yourself: they are the theme's two border roles, so every palette
 restyles every pane.
 
+### Text fields (`lib/textinput.lua`)
+
+Every field on screen — search, rename, the new-session filters — edits through
+`textinput.key(field, key)`, so these keys work in all of them and in yours:
+
+| keys | does |
+|---|---|
+| `left`/`right`, `home`/`end`, `ctrl+b`/`ctrl+f`, `ctrl+a`/`ctrl+e` | move a character, or to either end |
+| `alt+left`/`alt+right`, `ctrl+left`/`ctrl+right`, `alt+b`/`alt+f` | move a word |
+| `backspace`/`delete`, `ctrl+d` | delete a character |
+| `alt+backspace`, `ctrl+backspace`, `ctrl+w` | delete the word before the caret |
+| `alt+delete`, `ctrl+delete`, `alt+d` | delete the word after the caret |
+| `ctrl+u`/`ctrl+k` | delete to the start / to the end |
+
+Most terminals send `ctrl+backspace` as `ctrl+h`, which the kernel keeps for
+moving focus, so it deletes a word only under the kitty keyboard protocol. A
+macOS terminal sends option+arrow as `alt+b`/`alt+f`, which is why both are
+here. Any other `alt` chord is left for your pane; any other `ctrl`+letter is
+swallowed, never typed. A paste into a focused field arrives as typing, one
+character at a time, and never as your pane's declared chords.
+
 ## What you have to work with
 
 The whole environment. Anything not in this list does not exist here.

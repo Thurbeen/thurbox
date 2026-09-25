@@ -249,6 +249,7 @@ impl App {
         self.errors.clear();
         self.focused_session = None;
         self.focused_surface = None;
+        self.focused_typing = false;
         self.changed_this_frame = false;
         self.click_targets.clear();
         self.band_targets.clear();
@@ -647,6 +648,7 @@ impl App {
             // session"; it meant "what this pane is showing", and a plugin's own
             // program is now one of the things that can be.
             self.focused_surface = rendered.node.first_live_surface().map(str::to_string);
+            self.focused_typing = rendered.node.has_focused_input();
         }
 
         // Decoration is the rare case, so the undecorated tree rides the
