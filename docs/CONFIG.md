@@ -36,6 +36,10 @@ development checkout never touches your real setup.
 
 `agents.toml` and `settings.toml` reload **live**: the TUI polls their
 mtime (~1/s) and applies edits with a confirmation toast — no restart.
+An `agents.toml` reload updates the picker, default, and session-status
+coverage together. A file that cannot be parsed or has no usable agents leaves
+the last good registry in force and reports the error; correcting it is picked
+up by the next poll. Existing session records are not changed.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
 `settings.toml` the flags that apply live are `shell_pane`, `perf_hud`
