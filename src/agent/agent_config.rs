@@ -269,14 +269,15 @@ pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
     }
 }
 
-/// Read an edited registry without replacing the running one on an invalid file.
-/// Startup may fall back to built-ins; a live reload must preserve its last
-/// usable registry until the user finishes correcting the edit.
-pub fn load_for_reload() -> Result<(AgentRegistry, Vec<String>), String> {
+/// Read a registry edit for the TUI's paced content comparison.
+pub fn read_for_reload() -> Result<String, String> {
     let path = agents_config_path().ok_or("Could not resolve agents.toml path")?;
-    let contents =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read agents.toml: {e}"))?;
-    parse_agents_toml_checked(&contents).map_err(|warnings| warnings.join("; "))
+    std::fs::read_to_string(path).map_err(|e| format!("Failed to read agents.toml: {e}"))
+}
+
+/// Parse a live edit without replacing the running registry on invalid TOML.
+pub fn parse_for_reload(contents: &str) -> Result<(AgentRegistry, Vec<String>), String> {
+    parse_agents_toml_checked(contents).map_err(|warnings| warnings.join("; "))
 }
 
 /// Launch from the registry generation already published by this process.

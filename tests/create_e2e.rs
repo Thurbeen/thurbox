@@ -479,6 +479,7 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     .expect("initial registry");
     let db = on_disk_db();
     let mut snapshot = SnapshotStore::with_database(on_disk_db());
+    assert!(snapshot.poll_registry().is_none());
     let first = spawn_session_headless(
         &db,
         SpawnRequest {
@@ -578,12 +579,56 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     );
     snapshot.refresh();
 
+    let reference = config.join("agents-reference.toml");
+    std::fs::copy(&agents, &reference).expect("save registry contents");
+    assert!(Command::new("touch")
+        .arg("-r")
+        .arg(&agents)
+        .arg(&reference)
+        .status()
+        .unwrap()
+        .success());
+    let original_metadata = std::fs::metadata(&agents).unwrap();
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'thirdx'\n[[agents]]\nname = 'thirdx'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("same-size edit");
+    assert_eq!(
+        std::fs::metadata(&agents).unwrap().len(),
+        original_metadata.len()
+    );
+    assert!(Command::new("touch")
+        .arg("-r")
+        .arg(&reference)
+        .arg(&agents)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        std::fs::metadata(&agents).unwrap().modified().unwrap(),
+        original_metadata.modified().unwrap()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("same-stamp edit")
+        .expect("valid edit");
+    assert_eq!(snapshot.current().agent_default, "thirdx");
+
     std::fs::write(&agents, "[[agents]\n").expect("invalid registry");
     std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(snapshot.poll_registry().expect("invalid edit").is_err());
-    assert_eq!(snapshot.current().agent_default, "second");
-    assert_eq!(snapshot.current().agents[0].name, "second");
+    assert_eq!(snapshot.current().agent_default, "thirdx");
+    assert_eq!(snapshot.current().agents[0].name, "thirdx");
     assert_eq!(snapshot.current().sessions.len(), 3);
+    std::fs::remove_file(&agents).expect("remove registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(snapshot.poll_registry().expect("missing registry").is_err());
+    assert_eq!(snapshot.current().agent_default, "thirdx");
     std::fs::remove_file(&marker).expect("clear launch marker");
     let third = spawn_session_headless(
         &db,
@@ -600,7 +645,7 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
             .unwrap()
             .unwrap()
             .agent,
-        "second"
+        "thirdx"
     );
     for _ in 0..100 {
         if marker.exists() {
@@ -612,6 +657,22 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
         std::fs::read_to_string(&marker).expect("last good agent ran"),
         "second"
     );
+
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'fourth'\n[[agents]]\nname = 'fourth'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("correct registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("correction")
+        .expect("valid correction");
+    assert_eq!(snapshot.current().agent_default, "fourth");
+    assert_eq!(snapshot.current().agents[0].name, "fourth");
 }
 
 #[cfg(unix)]

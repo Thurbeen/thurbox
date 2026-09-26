@@ -697,7 +697,8 @@ pub struct SnapshotStore {
     registry: std::sync::Arc<AgentRegistry>,
     agents: Vec<AgentRow>,
     agent_default: String,
-    registry_stamp: Option<(std::time::SystemTime, u64)>,
+    /// Last observed contents or read error, sampled behind `registry_polled_at`.
+    registry_contents: Option<Result<String, String>>,
     registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
     /// Whether the local multiplexer is installed. Beside `agents` because it
@@ -764,7 +765,6 @@ impl SnapshotStore {
         };
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
-        let registry_stamp = registry_stamp();
         let mut store = Self {
             database,
             git: GitStats::new(git_poll_interval()),
@@ -772,7 +772,7 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
-            registry_stamp,
+            registry_contents: None,
             registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
@@ -797,7 +797,6 @@ impl SnapshotStore {
     pub fn with_database(database: Database) -> Self {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
-        let registry_stamp = registry_stamp();
         let mut store = Self {
             database: Some(database),
             git: GitStats::new(git_poll_interval()),
@@ -805,7 +804,7 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
-            registry_stamp,
+            registry_contents: None,
             registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
@@ -853,12 +852,15 @@ impl SnapshotStore {
             return None;
         }
         self.registry_polled_at = Some(Instant::now());
-        let stamp = registry_stamp()?;
-        if self.registry_stamp == Some(stamp) {
+        let first_poll = self.registry_contents.is_none();
+        let contents = crate::agent::agent_config::read_for_reload();
+        if self.registry_contents.as_ref() == Some(&contents) {
             return None;
         }
-        self.registry_stamp = Some(stamp);
-        let (registry, warnings) = match crate::agent::agent_config::load_for_reload() {
+        self.registry_contents = Some(contents.clone());
+        let (registry, warnings) = match contents
+            .and_then(|contents| crate::agent::agent_config::parse_for_reload(&contents))
+        {
             Ok(loaded) => loaded,
             Err(error) => return Some(Err(error)),
         };
@@ -868,6 +870,8 @@ impl SnapshotStore {
             self.registry = std::sync::Arc::new(registry);
             crate::agent::agent_config::publish_registry(&self.registry);
             self.refresh();
+        } else if first_poll && warnings.is_empty() {
+            return None;
         }
         Some(Ok(warnings))
     }
@@ -1642,12 +1646,6 @@ fn assess(
 /// this one file, and `load_or_seed` seeds it when it is missing.
 fn read_registry() -> std::sync::Arc<AgentRegistry> {
     std::sync::Arc::new(crate::agent::agent_config::load_or_seed())
-}
-
-fn registry_stamp() -> Option<(std::time::SystemTime, u64)> {
-    let path = crate::agent::agent_config::agents_config_path()?;
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// Agents from the registry the launcher itself uses — so the flow can never
