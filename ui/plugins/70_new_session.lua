@@ -165,8 +165,11 @@ local function ask(flow)
   -- and `tab` on a fresh field is how browsing starts, so it read as "tab no
   -- longer browses". The want is still dropped the moment the dropdown closes, so
   -- a flow that is only picking from memory asks for no listing at all.
+  --
+  -- Only while the field has focus: it holds its starting directory the whole
+  -- time now, and a flow picking from memory must not pay for a listing.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if flow.step == "repo" and (typed ~= "" or flow.browse) then
+  if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
@@ -250,6 +253,22 @@ end
 
 local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
+end
+
+--- Move focus into the path field, filling an empty one with where a new path
+--- most likely goes (`pathpicker.start`). The fill is remembered so it can be
+--- told apart from something typed: until it is edited it is no choice at all.
+local function enter_path_field(flow)
+  flow.focus = "input"
+  if (flow.input.value or "") == "" then
+    flow.prefill = pathpicker.start(bookmarks().rows or {})
+    textinput.set(flow.input, flow.prefill)
+  end
+end
+
+--- Is the path field still holding only its starting directory?
+local function untouched(flow)
+  return flow.prefill ~= nil and flow.input.value == flow.prefill
 end
 
 local function suggestion_for(flow)
@@ -742,7 +761,9 @@ local function render_repo(flow)
     -- clears it and leaves the focus here so several paths can be typed in a
     -- row. Trimmed as `enter` trims it, so a field holding only spaces reads as
     -- the nothing it is.
-    primary = ((flow.input.value or ""):match("^%s*(.-)%s*$") ~= "") and "Add repo" or nil
+    -- The untouched starting directory is not a choice either.
+    local typed = (flow.input.value or ""):match("^%s*(.-)%s*$")
+    primary = (typed ~= "" and not untouched(flow)) and "Add repo" or nil
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
@@ -1190,7 +1211,7 @@ return {
     -- through five signatures, so a spinner can animate in any of them. Not
     -- saved: it belongs to this frame.
     flow.elapsed = ctx.elapsed
-    flow.suggestion = flow.step == "repo" and suggestion_for(flow) or ""
+    flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
     -- A path just added is selected, which is v1's select-or-add. The row cannot
     -- be found by name — the expansion of a `~` on a remote host happened on the
@@ -1517,8 +1538,9 @@ return {
 
     if flow.focus == "search" then
       if name == "tab" then
-        flow.focus = "input"
+        enter_path_field(flow)
         save(flow)
+        ask(flow)
         return true
       elseif name == "enter" then
         confirm_repos(flow)
@@ -1557,17 +1579,23 @@ return {
         return true
       elseif name == "enter" then
         local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
-        if path ~= "" then
+        if path ~= "" and not untouched(flow) then
           -- Validated on the target machine, not here: a missing path is refused
           -- by the command and reported, with the text left to be corrected.
           command("bookmark", { host = flow.host, repo = path, action = "add" })
           textinput.clear(flow.input)
+          enter_path_field(flow)
           flow.browse = false
           flow.select_newest = true
         end
         save(flow)
         ask(flow)
         return true
+      end
+      -- `/` or `~` typed over the untouched start is a path of its own, the way
+      -- an address bar takes a new address; anything else is a name under it.
+      if untouched(flow) and (key.char == "/" or key.char == "~") then
+        textinput.clear(flow.input)
       end
       if textinput.key(flow.input, key) then
         -- The visible set just changed, so the cursor starts again rather than

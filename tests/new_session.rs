@@ -711,14 +711,14 @@ fn a_dotted_prefix_offers_the_hidden_entries() {
 }
 
 #[test]
-fn tab_on_an_empty_field_browses_home() {
+fn tab_on_a_fresh_field_browses_home_when_memory_is_empty() {
     // The regression behind "tab no longer browses directories": the flow asked
     // for a listing only once something had been typed, so `tab` on a fresh
     // field opened a dropdown whose want was never published — it sat on "(no
-    // subdirectories)" forever. An empty field means home, exactly as a bare
-    // `~` does.
+    // subdirectories)" forever. With nothing remembered the field starts at
+    // home, exactly as a bare `~` does.
     let host = host();
-    let mut world = World::default();
+    let mut world = world_with(Vec::new());
     world.repos.set_listing_for_test(
         "",
         "~",
@@ -743,27 +743,117 @@ fn tab_on_an_empty_field_browses_home() {
 }
 
 #[test]
-fn a_closed_dropdown_over_an_empty_field_asks_for_no_listing() {
-    // The other half of the same rule: a flow only picking from memory must not
-    // pay for a directory read. The want is restated on every render, so what a
-    // frame asks for is read after one — closing the browser stops the asking.
+fn a_flow_picking_from_memory_asks_for_no_listing() {
+    // A flow only picking from memory must not pay for a directory read — even
+    // though the path field now holds its starting directory the whole time.
+    // The want is restated on every render, so what a frame asks for is read
+    // after one; leaving the field stops the asking.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse"), None);
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0/src"));
+    press(&host, &world, "backtab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse"), None);
+}
+
+/// What the path field holds once focus has moved into it.
+fn path_field(host: &LuaHost, world: &World) -> String {
+    open(host, world);
+    press(host, world, "tab");
+    let screen = drawn(host, world);
+    let lines: Vec<&str> = screen.lines().collect();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("Add Repo Path"))
+        .unwrap_or_else(|| panic!("no path field: {screen}"));
+    lines[title + 1]
+        .trim_matches(|c| c == '│' || c == ' ')
+        .to_string()
+}
+
+#[test]
+fn the_path_field_starts_at_the_directory_every_repository_shares() {
+    let world = world_with(vec![
+        bookmark("/home/me/code/work/api", Some(true)),
+        bookmark("/home/me/code/perso/thurbox", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/home/me/code/");
+}
+
+#[test]
+fn the_shared_directory_is_found_by_whole_components() {
+    // `/src/app` and `/src/apple` share `/src`, not `/src/app`.
+    let world = world_with(vec![
+        bookmark("/src/app/one", Some(true)),
+        bookmark("/src/apple/two", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/src/");
+}
+
+#[test]
+fn a_single_repository_starts_the_field_at_its_parent() {
+    let world = world_with(vec![bookmark("/srv/code/thurbox", Some(true))]);
+    assert_eq!(path_field(&host(), &world), "/srv/code/");
+}
+
+#[test]
+fn repositories_with_nothing_in_common_start_at_the_root() {
+    let world = world_with(vec![
+        bookmark("/srv/one", Some(true)),
+        bookmark("/opt/two", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/");
+}
+
+#[test]
+fn folder_headers_and_the_offered_interface_do_not_move_the_start() {
+    // The header is a folder, not a repository in it, and the interface
+    // directory is offered by the kernel, not remembered by the user.
+    let mut rows = folder_rows();
+    rows.insert(0, offered());
+    assert_eq!(path_field(&host(), &world_with(rows)), "/src/");
+    assert_eq!(path_field(&host(), &world_with(vec![offered()])), "~/");
+}
+
+#[test]
+fn a_name_typed_into_the_untouched_field_lands_under_the_start() {
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "tab");
-    drawn(&host, &world);
-    assert_eq!(
-        host.shared_string("want_browse"),
-        None,
-        "an empty field with no dropdown has nothing to list"
-    );
+    type_text(&host, &world, "new-thing");
+    assert!(drawn(&host, &world).contains("/src/new-thing"));
+}
+
+#[test]
+fn a_new_path_typed_into_the_untouched_field_replaces_the_start() {
+    // `/` or `~` first is a path of its own, not a name under the start — the
+    // way an address bar takes a new address.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
     press(&host, &world, "tab");
-    drawn(&host, &world);
-    assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0~"));
-    // Shift+Tab closes the dropdown and hands focus back to the list.
+    type_text(&host, &world, "~/elsewhere");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("~/elsewhere"), "{screen}");
+    assert!(!screen.contains("/src/~"), "{screen}");
+}
+
+#[test]
+fn a_field_that_was_typed_in_is_not_refilled() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/opt/x");
     press(&host, &world, "backtab");
-    drawn(&host, &world);
-    assert_eq!(host.shared_string("want_browse"), None);
+    press(&host, &world, "tab");
+    assert!(drawn(&host, &world).contains("/opt/x"));
 }
 
 #[test]
@@ -1591,7 +1681,7 @@ fn the_typed_path_field_offers_to_add_the_repository() {
     let empty = drawn(&h, &world);
     assert!(
         !empty.contains("[ Add repo ]"),
-        "nothing typed yet: {empty}"
+        "nothing typed yet — the starting directory is not a choice: {empty}"
     );
     assert!(!empty.contains("[ Next ]"), "{empty}");
 

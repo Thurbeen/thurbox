@@ -73,7 +73,10 @@ directory, offered because editing the panes is a thing you might want a session
 for.
 
 To add a repository, press **`Tab`** to move to the **Add Repo Path** field and
-type a path. `~` is expanded for you:
+type a path. `~` is expanded for you. The field starts at the deepest directory
+all your remembered repositories share (home, while there are none), so a bare
+name lands next to them; typing `/` or `~` first replaces it with a path of
+your own:
 
 ![Typing ~/code/ into the Add Repo Path field](../media/tutorial/03-add-repo-path.png)
 
