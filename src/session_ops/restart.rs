@@ -68,6 +68,7 @@ pub(crate) fn build_restart_plan(
     config
         .env
         .extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    config.env.remove(super::CODEX_PICKER_ENV);
     super::inject_thurbox_env(&mut config, &agent_session_id, None);
     // Where a restart gets what to run. A registry agent is resolved by name
     // *now* rather than replayed, so an `agents.toml` edit takes effect on the
@@ -86,11 +87,11 @@ pub(crate) fn build_restart_plan(
     if let Some(note) = degraded {
         tracing::warn!("restart of '{}': {note}", session.name);
     }
-    let codex_builtin =
-        def.name == "codex" && def.command == "codex" && def.resume_args == ["resume", "{id}"];
+    let codex_builtin = def.name == "codex" && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin {
         db.get_session_meta(session.id, "thurbox.codex_conversation_id")
             .map_err(|e| format!("read Codex conversation id: {e}"))?
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
     } else {
         None
     };
@@ -120,6 +121,9 @@ pub(crate) fn build_restart_plan(
         args = std::iter::once("resume".to_string())
             .chain(def.args.iter().cloned())
             .collect();
+        config
+            .env
+            .insert(super::CODEX_PICKER_ENV.into(), "1".into());
     }
 
     Ok(RestartPlan {

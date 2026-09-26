@@ -1224,15 +1224,29 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
         return Err("Codex hook identity does not match the Thurbox session".into());
     }
     const KEY: &str = "thurbox.codex_conversation_id";
+    const PICKER_REQUIRED: &str = crate::session_ops::CODEX_PICKER_REQUIRED;
+    let source = payload["source"].as_str().unwrap_or_default();
     match db
         .get_session_meta(target.id, KEY)
         .map_err(|e| format!("read Codex id: {e}"))?
     {
-        Some(existing) if existing != conversation => {
+        Some(existing)
+            if existing == PICKER_REQUIRED
+                && source == "resume"
+                && std::env::var(crate::session_ops::CODEX_PICKER_ENV).as_deref() == Ok("1") =>
+        {
             db.set_session_meta(target.id, KEY, conversation)
-                .map_err(|e| format!("save Codex id: {e}"))?;
+                .map_err(|e| format!("save Codex id: {e}"))?
         }
-        Some(_) => {}
+        Some(existing) if existing == PICKER_REQUIRED || existing == conversation => {}
+        Some(_) if source == "startup" => {}
+        Some(_) => {
+            // A nested Codex process inherits the row identity. A clear or
+            // resume event cannot prove which process switched conversations,
+            // so the picker must establish the next address.
+            db.set_session_meta(target.id, KEY, PICKER_REQUIRED)
+                .map_err(|e| format!("mark ambiguous Codex id: {e}"))?;
+        }
         None => db
             .set_session_meta(target.id, KEY, conversation)
             .map_err(|e| format!("save Codex id: {e}"))?,

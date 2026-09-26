@@ -580,7 +580,8 @@ simply omitted — no unresolved-placeholder heuristics.
 Only `claude` and `pi` accept the thurbox-generated id at creation
 (`--session-id {id}`), so they resume/fork by that exact id. Codex
 reports its own ID through `SessionStart`; thurbox saves it for exact
-`resume {id}` and `fork {id}`. The remaining built-ins use
+`resume {id}` and `fork {id}`. Legacy or ambiguous rows use Codex's interactive
+picker, including for forks. The remaining built-ins use
 `resume_latest = true` and id-less, cwd-scoped flags
 (`opencode --continue`, `agy --continue`, `aider --restore-chat-history`); the agent
 resolves "the last session in this directory" itself, which works

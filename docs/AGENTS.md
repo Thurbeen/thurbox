@@ -104,8 +104,11 @@ whether resume/fork can target *this* session or only *the last* one.
   conversation UUID. Thurbox saves it beside the row's generated
   `agent_session_id` and resumes or forks that exact UUID. Existing rows with no
   captured UUID open Codex's interactive `resume` picker on restart; selecting a
-  conversation binds it through the hook. Forking an unbound row refuses with
-  recovery instructions. Existing seeded `codex` definitions using `--last`
+  conversation binds it through the hook. Forking an unbound row opens Codex's
+  interactive `fork` picker. If a second Codex process inherits the same row
+  identity, a changed startup ID is ignored; an ambiguous in-pane switch makes
+  the next restart use the picker. Only the picker launch can bind its selection.
+  Existing seeded `codex` definitions using `--last`
   are upgraded in memory; other custom definitions are unchanged. A remotely
   provisioned hook reports status through the pane option and has no channel to
   persist Codex's ID in the local database, so an unmapped remote row opens the

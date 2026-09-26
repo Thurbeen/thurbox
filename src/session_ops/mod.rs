@@ -38,6 +38,9 @@ pub use extensions::{
 pub use lifecycle_hooks::{fire_post, fire_pre};
 pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_refusal, restore_session_headless, RestoreReport};
+
+pub(crate) const CODEX_PICKER_REQUIRED: &str = "picker-required";
+pub(crate) const CODEX_PICKER_ENV: &str = "THURBOX_CODEX_PICKER";
 pub use spawn::{spawn_session_headless, SpawnRequest, SpawnResult};
 pub use wsl_loopback::repair_wsl_loopback_rows;
 
@@ -514,9 +517,12 @@ pub fn fork_session_headless(
         && recipe.is_none()
         && resolve_agent_def(Some("codex")).resume_args == ["resume", "{id}"];
     let fork_session_id = if codex_builtin {
-        Some(db.get_session_meta(source.id, "thurbox.codex_conversation_id")
-            .map_err(|e| format!("read Codex conversation id: {e}"))?
-            .ok_or_else(|| format!("'{}' has no captured Codex conversation id; restart it, choose its conversation in the Codex picker, then fork", source.name))?)
+        Some(
+            db.get_session_meta(source.id, "thurbox.codex_conversation_id")
+                .map_err(|e| format!("read Codex conversation id: {e}"))?
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                .unwrap_or_default(),
+        )
     } else {
         source.agent_session_id.clone()
     };

@@ -69,6 +69,8 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 reports its own id through `SessionStart`; thurbox stores it in session metadata
 and resumes/forks that exact id. A legacy row without a captured id opens the
 interactive Codex `resume` picker; its selection is then bound by the hook.
+An unbound fork uses Codex's `fork` picker. An ambiguous in-pane conversation
+switch requires the picker on restart; only that launch can bind a new ID.
 Older seeded `codex` definitions are upgraded in memory. The remaining built-ins
 (`opencode`, `antigravity`, `aider`, `copilot`) set `resume_latest = true` with
 **id-less** resume/fork flags: the agent resolves "the last session in *this*
