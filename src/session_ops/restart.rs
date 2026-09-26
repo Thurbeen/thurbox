@@ -581,6 +581,49 @@ fn relaunch_is_owed(
 /// Replace a local session's window with the plan's, and point the row at the
 /// new pane.
 fn respawn_local(db: &Database, session: &SharedSession, plan: &RestartPlan) -> Result<(), String> {
+    if session.backend_type == crate::agent::herdr::BACKEND_TYPE {
+        let backend = crate::agent::herdr::HerdrBackend::default();
+        if !session.backend_id.is_empty() {
+            if let Err(e) =
+                crate::agent::backend::SessionBackend::kill(&backend, &session.backend_id)
+            {
+                tracing::debug!("no Herdr pane to kill for '{}': {e:#}", plan.window_name);
+            }
+        }
+        let spawned = crate::agent::backend::SessionBackend::spawn(
+            &backend,
+            &plan.window_name,
+            &plan.command,
+            &plan.args,
+            plan.cwd.as_deref(),
+            &plan.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("Failed to re-spawn Herdr pane: {e:#}"))?;
+        crate::agent::backend::SessionBackend::stamp_window(
+            &backend,
+            &spawned.backend_id,
+            &session.id.to_string(),
+            crate::agent::tmux::WindowRole::Agent,
+        )
+        .map_err(|e| format!("Failed to stamp restarted Herdr pane: {e:#}"))?;
+        return match record_pane(db, session, &spawned.backend_id) {
+            Recorded::Stored => Ok(()),
+            Recorded::RowGone => {
+                if let Err(kill_err) =
+                    crate::agent::backend::SessionBackend::kill(&backend, &spawned.backend_id)
+                {
+                    tracing::warn!(
+                        "could not kill orphaned restarted Herdr pane for '{}': {kill_err:#}",
+                        plan.window_name
+                    );
+                }
+                Err(Recorded::deleted_mid_restart(&session.name))
+            }
+            Recorded::WriteFailed(e) => Err(e),
+        };
+    }
     // A window that is already gone is not an error — the same rule the
     // remote branch follows. It is also what makes this the *respawn*
     // path: a session whose tmux server died is restarted by asking for

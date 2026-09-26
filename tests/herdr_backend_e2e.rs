@@ -40,6 +40,7 @@ impl EnvironmentGuard {
             ("XDG_STATE_HOME", Some(state_home.as_os_str())),
             ("HERDR_CONFIG_PATH", Some(config.as_os_str())),
             ("HERDR_SOCKET_PATH", Some(socket.as_os_str())),
+            ("TMUX_TMPDIR", Some(root.as_os_str())),
         ];
         let previous = values
             .iter()
@@ -216,6 +217,53 @@ fn output_until(
     Ok(bytes)
 }
 
+fn contains_terminal_text(bytes: &[u8], text: &[u8]) -> bool {
+    strip_terminal_controls(bytes)
+        .windows(text.len())
+        .any(|part| part == text)
+}
+
+fn strip_terminal_controls(bytes: &[u8]) -> Vec<u8> {
+    let mut text = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b || index + 1 == bytes.len() {
+            text.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match bytes[index] {
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    text
+}
+
 #[test]
 fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Result<()> {
     let version = Command::new("herdr").arg("--version").output()?;
@@ -314,23 +362,18 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
     session.input.flush()?;
     let expected_bytes = b"e2 82 ac ff 0a";
     let observed = output_until(&output, Duration::from_secs(10), |bytes| {
-        bytes.windows(b"30 90".len()).any(|part| part == b"30 90")
-            && bytes
-                .windows(expected_bytes.len())
-                .any(|part| part == expected_bytes)
+        contains_terminal_text(bytes, b"30")
+            && contains_terminal_text(bytes, b"90")
+            && contains_terminal_text(bytes, expected_bytes)
     })
     .context("waiting for resized dimensions and exact raw input bytes")?;
     assert!(
-        observed
-            .windows(b"30 90".len())
-            .any(|part| part == b"30 90"),
-        "PTY size did not change to 30 rows by 90 columns: {:?}",
+        contains_terminal_text(&observed, b"30") && contains_terminal_text(&observed, b"90"),
+        "PTY size output did not contain 30 rows and 90 columns: {:?}",
         String::from_utf8_lossy(&observed)
     );
     assert!(
-        observed
-            .windows(expected_bytes.len())
-            .any(|part| part == expected_bytes),
+        contains_terminal_text(&observed, expected_bytes),
         "raw input bytes were not preserved: {:?}",
         String::from_utf8_lossy(&observed)
     );
@@ -382,8 +425,89 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
     assert!(observed
         .windows(b"restart-input".len())
         .any(|part| part == b"restart-input"));
-    restarted.kill(&backend_id)?;
+    restarted
+        .kill(&backend_id)
+        .context("closing the directly spawned Herdr probe pane")?;
     drop(output);
     drop(adopted);
+
+    // Exercise Thurbox's headless create/restart path as well as the backend
+    // contract directly. The isolated TMUX_TMPDIR makes an accidental tmux
+    // respawn fail without reaching a user's server.
+    let repo = temp.path().join("restart-repo");
+    std::fs::create_dir_all(&repo)?;
+    std::fs::write(repo.join("README.md"), "Herdr restart probe\n")?;
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["add", "README.md"],
+        vec![
+            "-c",
+            "user.name=Herdr E2E",
+            "-c",
+            "user.email=herdr-e2e@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    ] {
+        let output = Command::new("git").args(args).current_dir(&repo).output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "git setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    thurbox::paths::set_test_dir(temp.path().join("thurbox-home"));
+    let db = thurbox::storage::Database::open_in_memory()?;
+    let spawned = thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        thurbox::session_ops::spawn::SpawnRequest {
+            name: "herdr-restart-e2e".into(),
+            repo_path: repo,
+            worktree_branch: None,
+            base_branch: None,
+            existing_worktree: None,
+            agent: None,
+            command: Some("/bin/sh".into()),
+            args: vec!["-c".into(), "while :; do sleep 1; done".into()],
+            env: HashMap::new().into_iter().collect(),
+            resume_session_id: None,
+            agent_session_id: None,
+            host: None,
+            multiplexer: Some(BACKEND_TYPE.into()),
+            parent_session_id: None,
+            task_id: None,
+            extra_repos: Vec::new(),
+            fork_session_id: None,
+            inherit_worktrees: Vec::new(),
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    let restarted_session =
+        thurbox::session_ops::restart::restart_session_headless(&db, spawned.session_id)
+            .map_err(anyhow::Error::msg)?;
+    let row = db
+        .get_session_by_id(spawned.session_id)?
+        .context("restarted Herdr session disappeared")?;
+    anyhow::ensure!(
+        row.backend_type == BACKEND_TYPE && row.backend_id != spawned.backend_id,
+        "headless restart did not replace the Herdr pane: {row:?}"
+    );
+    anyhow::ensure!(
+        restarted.discover()?.iter().any(|pane| {
+            pane.backend_id == row.backend_id
+                && pane.session == spawned.session_id.to_string()
+                && pane.name == "herdr-restart-e2e"
+        }),
+        "headless restart persisted a pane id that Herdr cannot discover"
+    );
+    anyhow::ensure!(
+        restarted_session.hook_failures.is_empty(),
+        "headless restart hooks failed: {:?}",
+        restarted_session.hook_failures
+    );
+    restarted
+        .kill(&row.backend_id)
+        .context("closing the restarted Herdr lifecycle pane")?;
     Ok(())
 }
