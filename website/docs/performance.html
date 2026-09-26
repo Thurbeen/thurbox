@@ -15,7 +15,13 @@ breadcrumb: 'Performance'
   <li><strong>Creating:</strong> 50 sessions took 1.81&nbsp;s in Thurbox, 2.66&nbsp;s in Herdr, and 0.45&nbsp;s in plain tmux.</li>
   <li><strong>Typing:</strong> Herdr echoed sooner: 2.23 versus 4.13&nbsp;ms at rest, and 0.45 versus 1.90&nbsp;ms with another session busy.</li>
 </ul>
-<table id="comparison">
+<p id="comparison-scale">
+  Resource cells show CPU / PSS memory (MiB). CPU is percent of one logical core, summed over the
+  host process tree (server and attached client; stand-in agents excluded). Values can exceed 100%
+  when the host uses multiple cores: Herdr's 104% is about 1.04 busy cores, or 26% of this
+  four-core machine's capacity.
+</p>
+<table id="comparison" aria-describedby="comparison-scale">
   <caption class="performance-table-hint">Swipe the table sideways to compare all three.</caption>
   <thead>
     <tr>
@@ -107,9 +113,8 @@ breadcrumb: 'Performance'
   </li>
 </ul>
 <p>
-  Each cell is a median; lower is better for time, CPU, and memory. The 50-session resource cells
-  show CPU as a share of one core, then PSS memory in MiB. CPU is the host's processing time in a
-  fixed window (100% means one core was busy). PSS counts each host process's fair share of shared
+  Each cell is a median; lower is better for time, CPU, and memory. CPU is measured over a fixed
+  window (100% means one core was busy). PSS counts each host process's fair share of shared
   memory, so a library used by two processes is counted only once.
 </p>
 <p>
