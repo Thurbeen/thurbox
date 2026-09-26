@@ -1242,6 +1242,9 @@ pub struct TmuxBackend {
     control: Mutex<Option<ControlMode>>,
     /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
     sizer: String,
+    /// The host an off-local backend was built from, for the agent `PATH`
+    /// its windows get ([`crate::agent::host_path`]). `None` locally.
+    host: Option<crate::session::HostDef>,
 }
 
 /// `(rows, cols)` within what `resize-window` accepts, so a resize an `if-shell`
@@ -1289,6 +1292,7 @@ impl TmuxBackend {
             name: "local-tmux".to_string(),
             control: Mutex::new(None),
             sizer: sizer_name(),
+            host: None,
         }
     }
 
@@ -1306,6 +1310,7 @@ impl TmuxBackend {
             name: name.into(),
             control: Mutex::new(None),
             sizer: sizer_name(),
+            host: None,
         }
     }
 
@@ -1331,7 +1336,9 @@ impl TmuxBackend {
                 mux: host.mux(),
             }
         };
-        Self::with_transport(transport, socket, session, host.backend_name())
+        let mut backend = Self::with_transport(transport, socket, session, host.backend_name());
+        backend.host = Some(host.clone());
+        backend
     }
 
     /// The socket this backend talks to: the configured one, unless the host's
@@ -1729,12 +1736,22 @@ impl TmuxBackend {
     /// an absolute path needs no shell's `PATH` at all; a wrap would only add a
     /// second shell whose own quoting rules could differ.
     ///
+    /// `/bin/sh -l` reads `~/.profile` but not the user's own shell's files
+    /// (`~/.zshenv`, `~/.zprofile`), so the host's login `PATH` is assigned
+    /// inside the wrap too ([`crate::agent::host_path`]) — the same `PATH` a
+    /// delegated create gives the pane.
+    ///
     /// Done here — not via tmux `default-command` — because that value round-trips
     /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
     /// space would be re-split into a stray `set-option` argument.
     fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
         if self.transport.is_remote() && !self.transport.uses_psmux() {
-            let inner = control_mode::shell_escape(&format!("exec {shell_cmd}"));
+            let path = self
+                .host
+                .as_ref()
+                .and_then(crate::agent::host_path::assignment_for)
+                .unwrap_or_default();
+            let inner = control_mode::shell_escape(&format!("{path}exec {shell_cmd}"));
             format!("/bin/sh -lc {inner}")
         } else {
             shell_cmd.to_string()
@@ -5222,6 +5239,29 @@ mod tests {
         let backend = TmuxBackend::from_host(&crate::session::HostDef::wsl("Ubuntu"));
         let wrapped = backend.login_wrap_for_remote("claude --resume x");
         assert_eq!(wrapped, "/bin/sh -lc 'exec claude --resume x'");
+    }
+
+    #[test]
+    fn login_wrap_assigns_the_hosts_login_path() {
+        let host = crate::session::HostDef {
+            name: "login-wrap-path".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        };
+        crate::agent::host_path::seed(
+            &host,
+            Some(crate::agent::host_path::HostEnv {
+                home: Some("/home/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/home/me/.local/bin".into(), "/usr/bin".into()]),
+                sh_login: None,
+            }),
+        );
+        let backend = TmuxBackend::from_host(&host);
+        assert_eq!(
+            backend.login_wrap_for_remote("claude"),
+            "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
+        );
     }
 
     #[test]

@@ -822,7 +822,15 @@ fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<S
     let mut command = if host.is_windows() {
         crate::git::host_powershell_c(host, script)
     } else {
-        crate::git::host_shell_c(host, script)
+        // The launcher's environment is a non-login one, and a `session
+        // create` run here pins whatever `PATH` it inherits on the agent's
+        // pane — so the host's login `PATH` goes in first (see
+        // `agent::host_path`).
+        let script = match crate::agent::host_path::assignment_for(host) {
+            Some(path) => format!("{path}{script}"),
+            None => script.to_string(),
+        };
+        crate::git::host_shell_c(host, &script)
     };
     let output = command
         .stdout(std::process::Stdio::piped())

@@ -187,8 +187,10 @@ Resolution is **best-effort and never a new way to fail**: a `command` that is
 already a path, that nothing on `PATH` matches (a shell function or alias, or a
 binary installed after thurbox started), or that runs on Windows is passed
 through verbatim, exactly as before. A **remote** (SSH/WSL) session is not
-resolved either — its `PATH` is the host's; its window command is wrapped in a
-login shell instead.
+resolved either — its `PATH` is the host's: the host's login-shell `PATH`
+(read once per host, see [hosts.toml](#hoststoml) → `path_prepend`) ahead of
+what ssh / `wsl.exe` give a command, and its window command is wrapped in a
+login shell.
 
 Only **absolute** `PATH` entries are considered. That excludes the empty entry
 POSIX reads as "the current directory" (`:/usr/bin`, or a stray trailing colon),
@@ -277,6 +279,21 @@ configured hosts, error shown.
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
 | `multiplexer` | no | `tmux` | host multiplexer binary; set to `psmux` for a Windows SSH host |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
+| `path_prepend` | no | `[]` | directories put first on the agent's `PATH` on the host, absolute or `~/`-rooted (`~` = the host's `$HOME`) — for what the host's login shell cannot report |
+
+**The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
+non-login environment — `wsl.exe -e` skips the user's shell entirely, so
+not even `~/.zshenv` is read — which has none of `~/.local/bin`,
+`~/.cargo/bin`, nvm/fnm and the like. So thurbox reads the host's login
+`PATH` once per host and process (`$SHELL -lc`, the passwd shell when
+`$SHELL` is unset, and `/bin/sh -lc`; stdin closed, never `-i`, 5 s each
+under `timeout`, 15 s overall) and gives every command it runs there —
+the delegated `thurbox-cli`, and so the agent's pane — `path_prepend`,
+then the login shells' `PATH`, then the launcher's own (on WSL that
+includes the Windows `PATH` WSL appends unless `appendWindowsPath =
+false`), each directory once. A host whose shells cannot be read keeps
+the launcher's `PATH` with a warning in the log; session creation never
+waits longer than the timeout on it, and never fails for it.
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
 handles credentials. **WSL** distros are reached with
