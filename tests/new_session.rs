@@ -17,7 +17,7 @@ use ratatui::Terminal;
 
 use thurbox::agent::preflight::Presence;
 use thurbox::git::ExistingWorktree;
-use thurbox::kernel::command::{BookmarkEdit, Command};
+use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::repos::{
@@ -160,6 +160,7 @@ struct World {
     snapshot: Snapshot,
     repos: RepoStore,
     wants: Wants,
+    inflight: Vec<InFlight>,
 }
 
 impl Default for World {
@@ -174,6 +175,7 @@ impl Default for World {
                 bookmarks: Some(String::new()),
                 ..Default::default()
             },
+            inflight: Vec::new(),
         }
     }
 }
@@ -188,7 +190,7 @@ fn publish(host: &LuaHost, world: &World) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &world.snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight: &world.inflight,
         themes: &themes,
         registry: &registry,
         diffs: &diffs,
@@ -1143,6 +1145,90 @@ fn escape_from_the_folder_question_keeps_what_was_typed() {
     assert!(screen.contains("Select Repos"), "{screen}");
     assert!(screen.contains("/src/brand-new"), "{screen}");
     assert!(host.drain_commands().is_empty());
+}
+
+/// Walk to the new-folder question for `/src/<name>` and pick "clone".
+fn to_the_clone_step(host: &LuaHost, world: &World, name: &str) {
+    open(host, world);
+    press(host, world, "tab");
+    type_text(host, world, name);
+    press(host, world, "enter");
+    press(host, world, "down");
+    press(host, world, "enter");
+}
+
+#[test]
+fn a_new_folder_can_have_a_repository_cloned_into_it() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Clone Repository"), "{screen}");
+    assert!(
+        screen.contains("/src/fork-of-it"),
+        "the destination: {screen}"
+    );
+    assert!(host.drain_commands().is_empty());
+
+    type_text(&host, &world, "git@github.com:me/it.git");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/fork-of-it".into(),
+            edit: BookmarkEdit::Clone {
+                url: "git@github.com:me/it.git".into()
+            },
+        }]
+    );
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_clone_needs_a_url() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("[ Clone ]"),
+        "nothing to clone yet: {screen}"
+    );
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty());
+    assert!(drawn(&host, &world).contains("Clone Repository"));
+    type_text(&host, &world, "https://example.com/it.git");
+    assert!(drawn(&host, &world).contains("[ Clone ]"));
+}
+
+#[test]
+fn escape_from_the_clone_goes_back_to_the_folder_question() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    press(&host, &world, "esc");
+    assert!(drawn(&host, &world).contains("New Folder"));
+}
+
+#[test]
+fn a_clone_under_way_says_so_where_the_path_is_typed() {
+    let host = host();
+    let mut world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    type_text(&host, &world, "https://example.com/it.git");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 1,
+        kind: "bookmark",
+        session: String::new(),
+        subject: None,
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    });
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("cloning…"), "{screen}");
 }
 
 #[test]

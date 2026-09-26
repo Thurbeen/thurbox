@@ -12,6 +12,7 @@
 -- plus a detour off the repo step for a typed path that does not exist yet:
 --
 --   repo → new folder (git init / leave it empty) → repo
+--                     (clone into it)         → clone URL → repo
 --
 -- `host` is skipped when nothing is configured, `base branch` and `branch name`
 -- only appear when some repository is in worktree mode, and `agent` is skipped
@@ -145,6 +146,11 @@ local function fresh()
     -- `FOLDER_CHOICES` the cursor is on.
     new_path = nil,
     folder_index = 1,
+    url = textinput.new(""),
+    -- What the path field's spinner says while a repository-memory write is in
+    -- flight: `checking…` for an add, `cloning…` for a clone, which takes long
+    -- enough that "checking" would read as stuck.
+    pending_label = nil,
     message = nil,
   }
 end
@@ -641,7 +647,7 @@ local function render_repo(flow)
   local suggestion = flow.suggestion or ""
   local label = "Add Repo Path"
   if bookmark_pending() then
-    label = label .. " " .. spinner(flow) .. " checking…"
+    label = label .. " " .. spinner(flow) .. " " .. (flow.pending_label or "checking…")
   end
   children[#children + 1] = {
     type = "box",
@@ -834,6 +840,7 @@ end
 --- offered: the `bookmark` action each one issues, and how it reads.
 local FOLDER_CHOICES = {
   { action = "init", label = "New git repository (git init)" },
+  { action = "clone", label = "Clone a repository into it" },
   { action = "create", label = "Leave it empty" },
 }
 
@@ -861,6 +868,33 @@ local function render_new_folder(flow)
     { type = "box", len = height, children = selector_rows(labels, flow.folder_index, height) },
     message_row(flow),
     modal.footer({ { "↑/↓", "choose" } }, "Create", { cancel = "Back" }),
+  }, flow)
+end
+
+local function render_clone(flow)
+  local url = (flow.url.value or ""):match("^%s*(.-)%s*$")
+  return frame("Clone Repository", 8, {
+    textinput.node(flow.url, {
+      label = "Repository URL",
+      focused = true,
+      placeholder = "git@host:owner/repo.git or https://…",
+    }),
+    {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          { text = " Into ", style = { fg = theme.muted } },
+          {
+            text = widgets.middle_truncate(flow.new_path or "", ROW_COLS - 6),
+            style = { fg = theme.text },
+          },
+        },
+      },
+    },
+    message_row(flow),
+    -- No pill until there is a URL: `enter` would only refuse.
+    modal.footer({ { "esc", "back" } }, url ~= "" and "Clone" or nil, { cancel = "Back" }),
   }, flow)
 end
 
@@ -1316,6 +1350,7 @@ return {
         flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
+      flow.pending_label = nil
       save(flow)
     end
 
@@ -1331,6 +1366,8 @@ return {
       return render_field("Branch Name", "Branch", flow.branch, flow)
     elseif flow.step == "new_folder" then
       return render_new_folder(flow)
+    elseif flow.step == "clone" then
+      return render_clone(flow)
     end
     return render_agent(flow)
   end,
@@ -1361,7 +1398,10 @@ return {
     end
     -- Every step with a text field types the letters `j`/`k`; the repo step
     -- always has one focused (its search or its path).
-    local typing = flow.step == "repo" or flow.step == "name" or flow.step == "worktree"
+    local typing = flow.step == "repo"
+      or flow.step == "name"
+      or flow.step == "worktree"
+      or flow.step == "clone"
     local in_search = flow.step == "repo" and flow.focus == "search"
     flow.message = nil
 
@@ -1499,6 +1539,8 @@ return {
         -- Back to the path, still typed, so a slip in the name is one edit away.
         flow.step = "repo"
         flow.focus = "input"
+      elseif flow.step == "clone" then
+        flow.step = "new_folder"
       else
         save(nil)
         ask(nil)
@@ -1590,9 +1632,46 @@ return {
       return false
     end
 
+    if flow.step == "clone" then
+      if name == "enter" then
+        local url = (flow.url.value or ""):match("^%s*(.-)%s*$")
+        if url == "" then
+          flow.message = "Paste the URL of the repository to clone"
+          save(flow)
+          return true
+        end
+        command("bookmark", {
+          host = flow.host,
+          repo = flow.new_path,
+          action = "clone",
+          text = url,
+        })
+        flow.step = "repo"
+        flow.focus = "search"
+        flow.select_newest = true
+        flow.pending_label = "cloning…"
+        textinput.clear(flow.input)
+        save(flow)
+        ask(flow)
+        return true
+      end
+      if textinput.key(flow.url, key) then
+        save(flow)
+        return true
+      end
+      return false
+    end
+
     if flow.step == "new_folder" then
       if name == "enter" then
         local choice = FOLDER_CHOICES[widgets.clamp(flow.folder_index, #FOLDER_CHOICES)]
+        if choice.action == "clone" then
+          -- The URL is still to be asked; nothing is made until it is.
+          flow.step = "clone"
+          textinput.clear(flow.url)
+          save(flow)
+          return true
+        end
         command("bookmark", { host = flow.host, repo = flow.new_path, action = choice.action })
         -- Back on the repositories with the search focused, so the new row —
         -- picked once it lands, as a typed path's is — goes on with one `enter`.

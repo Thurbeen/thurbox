@@ -677,7 +677,7 @@ impl App {
             None
         };
         // Straight to `on_key`, past the registry: a paste is text, and a pane
-        // that binds a letter — the new-session float's `j`/`k`/`w`/`d` — would
+        // that binds a key a paste can hold — the new-session float's `j`/`k`/`space` — would
         // otherwise run the action for every one pasted instead of typing it.
         if let Some(index) = self.grabbed.or(typing) {
             for ch in text.chars().filter(|ch| !ch.is_control()) {
