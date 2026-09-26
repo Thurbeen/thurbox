@@ -72,6 +72,8 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
+    /// Optional local Herdr selection. `None` preserves the configured tmux default.
+    pub multiplexer: Option<String>,
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
     pub parent_session_id: Option<SessionId>,
@@ -203,7 +205,20 @@ pub fn spawn_session_headless_with_progress(
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
-    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+    let (mut backend_type, host) = resolve_host(req.host.as_deref())?;
+    if let Some(choice) = req.multiplexer.as_deref() {
+        if host.is_some() {
+            return Err("--multiplexer supports local sessions only".into());
+        }
+        if choice != crate::agent::herdr::BACKEND_TYPE {
+            return Err(format!("unsupported multiplexer '{choice}'"));
+        }
+        crate::agent::backend::SessionBackend::check_available(
+            &crate::agent::herdr::HerdrBackend::default(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        backend_type = choice.to_string();
+    }
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -371,15 +386,38 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
-    let backend_id = launch_window(
-        host.as_ref(),
-        &stamp,
-        &req.name,
-        &command,
-        &args,
-        &launch_cwd,
-        &config.env,
-    )?;
+    let backend_id = if backend_type == crate::agent::herdr::BACKEND_TYPE {
+        let backend = crate::agent::herdr::HerdrBackend::default();
+        let spawned = crate::agent::SessionBackend::spawn(
+            &backend,
+            &req.name,
+            &command,
+            &args,
+            Some(&launch_cwd),
+            &config.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("Failed to spawn Herdr pane: {e:#}"))?;
+        crate::agent::SessionBackend::stamp_window(
+            &backend,
+            &spawned.backend_id,
+            &stamp,
+            crate::agent::tmux::WindowRole::Agent,
+        )
+        .map_err(|e| format!("Failed to stamp Herdr pane: {e:#}"))?;
+        spawned.backend_id
+    } else {
+        launch_window(
+            host.as_ref(),
+            &stamp,
+            &req.name,
+            &command,
+            &args,
+            &launch_cwd,
+            &config.env,
+        )?
+    };
 
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
@@ -1422,7 +1460,23 @@ fn dir_label(path: &std::path::Path) -> String {
 /// against the rows already on *that* backend: a database mirroring a shareable
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
-pub(crate) fn backend_type_for(host: Option<&str>) -> Result<String, String> {
+pub(crate) fn backend_type_for_choice(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<String, String> {
+    if let Some(choice) = multiplexer {
+        if host.is_some() {
+            return Err("--multiplexer supports local sessions only".into());
+        }
+        if choice != crate::agent::herdr::BACKEND_TYPE {
+            return Err(format!("unsupported multiplexer '{choice}'"));
+        }
+        crate::agent::backend::SessionBackend::check_available(
+            &crate::agent::herdr::HerdrBackend::default(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        return Ok(choice.to_string());
+    }
     resolve_host(host).map(|(backend, _)| backend)
 }
 

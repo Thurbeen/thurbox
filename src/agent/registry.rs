@@ -46,6 +46,8 @@ impl BackendRegistry {
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
         let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
         let mut backends = Self::new(local);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        backends.register(Arc::new(crate::agent::herdr::HerdrBackend::default()));
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {

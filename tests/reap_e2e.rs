@@ -179,6 +179,7 @@ fn spawn(
             resume_session_id: None,
             agent_session_id: None,
             host: None,
+            multiplexer: None,
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),

@@ -119,6 +119,9 @@ pub enum Action {
         /// worktree and tmux window are created on that host over SSH.
         #[arg(long)]
         host: Option<String>,
+        /// Select an optional local multiplexer backend (currently `herdr`).
+        #[arg(long, value_parser = ["herdr"], conflicts_with = "host")]
+        multiplexer: Option<String>,
         /// Parent session UUID (lead/worker relationship for orchestration).
         /// Must reference an existing active session.
         #[arg(long)]
@@ -560,6 +563,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             worktree_branch,
             base_branch,
             host,
+            multiplexer,
             parent,
             add_repo,
             add_dir,
@@ -578,6 +582,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 worktree_branch,
                 base_branch,
                 host,
+                multiplexer,
                 parent,
                 add_repo,
                 add_dir,
@@ -752,6 +757,7 @@ struct CreateArgs {
     worktree_branch: Option<String>,
     base_branch: Option<String>,
     host: Option<String>,
+    multiplexer: Option<String>,
     parent: Option<String>,
     add_repo: Vec<String>,
     add_dir: Vec<String>,
@@ -771,6 +777,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         worktree_branch,
         base_branch,
         host,
+        multiplexer,
         parent,
         add_repo,
         add_dir,
@@ -798,7 +805,10 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
     // caller makes rather than something thurbox assumes — and it is a
     // decision about *this* backend, since a mirrored host's rows share
     // the namespace.
-    let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
+    let backend = crate::session_ops::spawn::backend_type_for_choice(
+        host.as_deref(),
+        multiplexer.as_deref(),
+    )?;
     let existing = resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
     if let Existing::Answered(output) = existing {
         return Ok(*output);
@@ -810,6 +820,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         base_branch,
         agent,
         host,
+        multiplexer,
         parent_session_id,
         extra_repos,
         command,
@@ -1203,9 +1214,20 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output =
+    let output = if session.backend_type == crate::agent::herdr::BACKEND_TYPE {
+        let bytes = crate::agent::backend::SessionBackend::capture_history(
+            &crate::agent::herdr::HerdrBackend::default(),
+            &session.backend_id,
+        )
+        .map_err(|e| format!("Herdr capture: {e:#}"))?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut captured = text.lines().rev().take(lines as usize).collect::<Vec<_>>();
+        captured.reverse();
+        captured.join("\n")
+    } else {
         crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
-            .map_err(|e| format!("capture_pane_text: {e}"))?;
+            .map_err(|e| format!("capture_pane_text: {e}"))?
+    };
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.

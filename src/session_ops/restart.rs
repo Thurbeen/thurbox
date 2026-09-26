@@ -156,6 +156,14 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
             _ => false,
         }
     } else {
+        if session.backend_type == crate::agent::herdr::BACKEND_TYPE {
+            return crate::agent::backend::SessionBackend::kill(
+                &crate::agent::herdr::HerdrBackend::default(),
+                &session.backend_id,
+            )
+            .map(|()| true)
+            .map_err(|e| format!("Herdr pane close failed: {e:#}"));
+        }
         let killed =
             crate::agent::tmux::kill_window(&session.id.to_string(), &session.name).is_ok();
         if let Err(e) =
