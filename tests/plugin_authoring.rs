@@ -9,10 +9,11 @@
 
 use thurbox::cli::plugins::{run, Action};
 
-/// Point the interface directory at a fresh tempdir and return it.
+/// Keep plugin checks independent of the operator's saved keybinding overrides.
 fn at(dir: &std::path::Path) -> std::path::PathBuf {
     let ui = dir.join("ui");
     std::fs::create_dir_all(&ui).expect("mkdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", dir);
     std::env::set_var("THURBOX_UI_DIR", &ui);
     ui
 }
@@ -770,6 +771,8 @@ fn declaring_a_pill_is_enough_to_be_findable() {
 fn the_pane_that_draws_by_default_is_not_warned_about() {
     // The first occupant of a switch slot is the one shown, so it needs no pill —
     // warning about it would train the reader to ignore the warning.
+    let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
     std::env::set_var("THURBOX_UI_DIR", checkout_ui());
     let output = run(Action::Check).expect("check runs");
     assert!(output.failure.is_none(), "{:?}", output.json);
