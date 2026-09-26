@@ -102,6 +102,15 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       Set to false to use the host exactly as before: worktrees and hooks
 #       driven from here, nothing mirrored, nothing installed there.
 #
+#   path_prepend   (array of strings, optional, default: [])
+#       Directories put first on the agent's PATH on the host. thurbox reads
+#       the host's login-shell PATH once (`$SHELL -lc`, then `/bin/sh -lc`,
+#       non-interactive, 5s timeout) and puts it ahead of the bare PATH that
+#       ssh / `wsl.exe` hand a command, so `~/.local/bin`, `~/.cargo/bin` and
+#       the like are found. Use this for what a login shell cannot report (one
+#       that needs a terminal, or hangs). Absolute or "~/"-rooted ("~" is the
+#       host's $HOME); anything else is ignored. Example: ["~/.local/bin"].
+#
 config_version = 1
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -133,6 +142,7 @@ config_version = 1
 # # session = "thurbox"         # remote tmux session grouping thurbox windows
 # # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs remote path
 # # multiplexer = "tmux"        # set to "psmux" for a Windows remote host
+# # path_prepend = []           # e.g. ["~/.local/bin"]: first on the agent's PATH
 #
 # ──────────────────────────────────────────────────────────────────────────
 # WSL distro — only needed to OVERRIDE auto-discovery (distros appear with no
@@ -956,6 +966,8 @@ mod tests {
             "session",
             "worktrees_dir",
             "multiplexer",
+            "share_sessions",
+            "path_prepend",
         ] {
             assert!(
                 SEED_HOSTS_TOML.contains(field),

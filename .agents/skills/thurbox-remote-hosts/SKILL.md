@@ -212,6 +212,15 @@ session), never on the loop, ADR-P12).
   adds a block per command it runs. psmux keeps last-writer-wins.
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
+- **The agent's `PATH` on a host** (`agent::host_path`). ssh/`wsl.exe -e` give
+  a command a non-login `PATH`, and a delegated `session create` pins its own
+  `PATH` on the pane (`tmux::path_prefix_args`), so the host's login `PATH`
+  (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
+  included, bounded by `timeout` and a 15 s kill) is assigned in front of every
+  POSIX script `host_cli` runs and inside `login_wrap_for_remote`: hosts.toml
+  `path_prepend`, then the login shells', then the launcher's, de-duplicated.
+  No answer = no change plus a warning. Tests never probe: an unseeded host is
+  "no answer" under `cfg(test)`; seed one with `host_path::seed`.
 - **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
   default) owns the record of the sessions on it: its **own thurbox database**.
   A remote thurbox *mirrors* that database into local rows on `ssh:<name>`

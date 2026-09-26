@@ -180,6 +180,12 @@ pub struct HostDef {
     /// here, nothing mirrored, nothing installed on the host.
     #[serde(default = "default_share_sessions")]
     pub share_sessions: bool,
+    /// Directories put in front of the agent's `PATH` on the host, ahead of
+    /// the login-shell `PATH` thurbox reads there (`agent::host_path`). For a
+    /// host whose login shell cannot be run non-interactively. Absolute or
+    /// `~`-rooted; anything else is ignored.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
 }
 
 fn default_share_sessions() -> bool {
@@ -202,6 +208,7 @@ impl Default for HostDef {
             worktrees_dir: None,
             multiplexer: None,
             share_sessions: true,
+            path_prepend: Vec::new(),
         }
     }
 }
