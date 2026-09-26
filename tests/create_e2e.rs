@@ -511,6 +511,9 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
         ),
     )
     .expect("edited registry");
+    // Another in-process reader must not publish an unpolled generation to
+    // the launch worker while the picker still offers the old one.
+    let _ = thurbox::agent::agent_config::load_or_seed();
     let before_poll = spawn_session_headless(
         &db,
         SpawnRequest {

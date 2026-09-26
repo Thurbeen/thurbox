@@ -763,6 +763,7 @@ impl SnapshotStore {
             ),
         };
         let registry = read_registry();
+        crate::agent::agent_config::publish_registry(&registry);
         let registry_stamp = registry_stamp();
         let mut store = Self {
             database,
@@ -795,6 +796,7 @@ impl SnapshotStore {
     /// owns its own connection).
     pub fn with_database(database: Database) -> Self {
         let registry = read_registry();
+        crate::agent::agent_config::publish_registry(&registry);
         let registry_stamp = registry_stamp();
         let mut store = Self {
             database: Some(database),
@@ -864,6 +866,7 @@ impl SnapshotStore {
             self.agent_default = registry.default_name();
             self.agents = read_agents(&registry);
             self.registry = std::sync::Arc::new(registry);
+            crate::agent::agent_config::publish_registry(&self.registry);
             self.refresh();
         }
         Some(Ok(warnings))

@@ -239,28 +239,11 @@ pub fn builtin_registry() -> AgentRegistry {
 /// logged here (headless callers) — the TUI uses
 /// [`load_or_seed_with_warnings`] to surface them in the status bar too.
 pub fn load_or_seed() -> AgentRegistry {
-    match load_for_reload() {
-        Ok((registry, warnings)) => {
-            for warning in warnings {
-                tracing::warn!("{warning}");
-            }
-            registry
-        }
-        Err(error) => {
-            if let Some(registry) = cached_registry() {
-                tracing::warn!("{error}; keeping last good agents.toml");
-                return registry;
-            }
-            let (registry, warnings) = load_or_seed_with_warnings();
-            if warnings.is_empty() {
-                remember_registry(&registry);
-            }
-            for warning in warnings {
-                tracing::warn!("{warning}");
-            }
-            registry
-        }
+    let (registry, warnings) = load_or_seed_with_warnings();
+    for warning in warnings {
+        tracing::warn!("{warning}");
     }
+    registry
 }
 
 /// [`load_or_seed`], also returning user-facing warnings for anything that
@@ -293,10 +276,7 @@ pub fn load_for_reload() -> Result<(AgentRegistry, Vec<String>), String> {
     let path = agents_config_path().ok_or("Could not resolve agents.toml path")?;
     let contents =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read agents.toml: {e}"))?;
-    let (registry, warnings) =
-        parse_agents_toml_checked(&contents).map_err(|warnings| warnings.join("; "))?;
-    remember_registry(&registry);
-    Ok((registry, warnings))
+    parse_agents_toml_checked(&contents).map_err(|warnings| warnings.join("; "))
 }
 
 /// Launch from the registry generation already published by this process.
@@ -313,7 +293,8 @@ fn registry_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathB
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn remember_registry(registry: &AgentRegistry) {
+/// Publish the generation the TUI has adopted for its launch worker.
+pub fn publish_registry(registry: &AgentRegistry) {
     if let Some(path) = agents_config_path() {
         registry_cache()
             .lock()
