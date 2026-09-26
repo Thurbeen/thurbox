@@ -493,6 +493,69 @@ fn search_filters_and_counts_what_it_matched() {
     assert!(!screen.contains("thurbox"), "{screen}");
 }
 
+/// The repository rows as drawn, top to bottom, without their checkboxes.
+fn listed(screen: &str) -> Vec<String> {
+    screen
+        .lines()
+        .filter_map(|line| line.split_once("[ ] ").or_else(|| line.split_once("[x] ")))
+        .map(|(_, rest)| rest.trim_end_matches(['│', ' ', '┐', '┘']).to_string())
+        .collect()
+}
+
+#[test]
+fn a_match_in_the_repository_name_ranks_above_one_in_its_path() {
+    // Every path shares its leading directories, so a query that happens to be
+    // spelled across them matched every row — in list order, with the row that
+    // is actually called that somewhere down the list. The cursor starts on the
+    // first row, and enter takes it, so the best match has to be first.
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/home/me/capital/web", Some(true)),
+        bookmark("/home/me/work/api-gateway", Some(true)),
+        bookmark("/home/me/work/api", Some(true)),
+        bookmark("/home/me/work/legacy-api", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "api");
+    assert_eq!(
+        listed(&drawn(&host, &world)),
+        vec![
+            "/home/me/work/api",         // the name, exactly
+            "/home/me/work/api-gateway", // the name starts with it
+            "/home/me/work/legacy-api",  // the name contains it
+            "/home/me/capital/web",      // only the path does
+        ]
+    );
+}
+
+#[test]
+fn a_query_every_path_matches_keeps_the_list_order() {
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/home/me/projects/web", Some(true)),
+        bookmark("/home/me/projects/cli", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "proj");
+    assert_eq!(
+        listed(&drawn(&host, &world)),
+        vec!["/home/me/projects/web", "/home/me/projects/cli"]
+    );
+}
+
+#[test]
+fn a_search_ranks_folder_members_without_their_header() {
+    // The ranked list is flat: a header is a folder, not something to pick, and
+    // keeping it would split the ranking into groups.
+    let host = host();
+    let world = world_with(folder_rows());
+    open(&host, &world);
+    type_text(&host, &world, "thurbox");
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("(parent)"), "{screen}");
+    assert!(screen.contains("/src/thurbox"), "{screen}");
+}
+
 #[test]
 fn the_search_is_focused_as_soon_as_the_flow_opens() {
     // No `/` first: the flow opens on the repositories to pick from, and the
