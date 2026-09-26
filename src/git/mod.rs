@@ -3,13 +3,15 @@
 //! Split by concern — `command` builds the process (and scrubs the inherited
 //! `GIT_*` that would silently retarget it), `plugin` clones a plugin's working
 //! copy, `remote` runs commands over ssh/`wsl.exe` and decodes what came back,
-//! `discovery` answers "what is here", `diff` produces diffs and stats, and
+//! `discovery` answers "what is here", `newrepo` makes a directory for a
+//! repository that does not exist yet, `diff` produces diffs and stats, and
 //! `worktree` creates, syncs and removes the checkouts sessions live in.
 //! `git::*` is one flat surface; no caller names a submodule.
 
 mod command;
 mod diff;
 mod discovery;
+mod newrepo;
 mod plugin;
 mod remote;
 mod worktree;
@@ -30,6 +32,7 @@ mod tests;
 pub(crate) use command::*;
 pub use diff::*;
 pub use discovery::*;
+pub use newrepo::*;
 pub use plugin::*;
 pub use remote::*;
 pub use worktree::*;

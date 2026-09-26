@@ -29,8 +29,10 @@ panels.placed function
 panels.show function
 panels.shown function
 panels.toggle function
+pathpicker.common_root function
 pathpicker.entries function
 pathpicker.split_typed function
+pathpicker.start function
 pathpicker.suggestion function
 repo_picker.chosen function
 repo_picker.current function

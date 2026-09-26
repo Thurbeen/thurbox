@@ -55,7 +55,7 @@ pub(super) fn execute(
     // Repository memory names a path, not a session, so it too runs before the
     // id parse.
     if let Command::Bookmark { host, path, edit } = command {
-        return bookmark(host, path, *edit);
+        return bookmark(host, path, edit);
     }
 
     // The settings file names nothing at all.
@@ -322,7 +322,7 @@ fn create(
 /// whether a path is a repository, and scanning a folder is another. The
 /// refusal of a missing path is the point — catching a typo now beats failing
 /// minutes later inside `git worktree add`.
-fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
+fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
     let db_path = crate::paths::database_file().ok_or("could not resolve the database path")?;
     let db = Database::open_existing(&db_path).map_err(|e| format!("open database: {e}"))?;
 
@@ -331,7 +331,7 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
     // filesystem nor the host. Done BEFORE the host is resolved, which is what
     // lets a bookmark be forgotten after its host has been taken out of
     // `hosts.toml`.
-    if edit == BookmarkEdit::Remove {
+    if *edit == BookmarkEdit::Remove {
         return bookmark_remove(&db, host, path);
     }
 
@@ -357,10 +357,19 @@ fn bookmark(host: &str, path: &str, edit: BookmarkEdit) -> Result<(), String> {
         None => crate::paths::expand_tilde(path),
     };
 
-    match edit {
-        BookmarkEdit::Parent => bookmark_parent(&db, host, remote.as_ref(), &expanded),
-        _ => bookmark_add(&db, host, remote.as_ref(), &expanded),
-    }
+    let fill = match edit {
+        BookmarkEdit::Parent => return bookmark_parent(&db, host, remote.as_ref(), &expanded),
+        BookmarkEdit::Create => crate::git::NewRepo::Empty,
+        BookmarkEdit::Init => crate::git::NewRepo::Init,
+        BookmarkEdit::Clone { url } => crate::git::NewRepo::Clone { url: url.clone() },
+        BookmarkEdit::Add | BookmarkEdit::Remove => {
+            return bookmark_add(&db, host, remote.as_ref(), &expanded)
+        }
+    };
+    crate::git::create_repo_dir(remote.as_ref(), &expanded, &fill).map_err(|e| format!("{e:#}"))?;
+    // Remembered through the same door as a typed path, so the git-ness is
+    // observed rather than assumed from which verb was asked for.
+    bookmark_add(&db, host, remote.as_ref(), &expanded)
 }
 
 /// Forget a remembered path.

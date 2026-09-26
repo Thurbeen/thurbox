@@ -17,7 +17,7 @@ use ratatui::Terminal;
 
 use thurbox::agent::preflight::Presence;
 use thurbox::git::ExistingWorktree;
-use thurbox::kernel::command::{BookmarkEdit, Command};
+use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
 use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::repos::{
@@ -160,6 +160,7 @@ struct World {
     snapshot: Snapshot,
     repos: RepoStore,
     wants: Wants,
+    inflight: Vec<InFlight>,
 }
 
 impl Default for World {
@@ -174,6 +175,7 @@ impl Default for World {
                 bookmarks: Some(String::new()),
                 ..Default::default()
             },
+            inflight: Vec::new(),
         }
     }
 }
@@ -188,7 +190,7 @@ fn publish(host: &LuaHost, world: &World) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &world.snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight: &world.inflight,
         themes: &themes,
         registry: &registry,
         diffs: &diffs,
@@ -231,10 +233,13 @@ fn drawn(host: &LuaHost, world: &World) -> String {
     let Some(float) = rendered.float else {
         return String::new();
     };
-    // The flow asks in cells for its height and a share of the screen for its
-    // width, exactly as v1's modals are sized.
+    // The flow asks in cells for both, and cells win over the percentage just
+    // as they do in the kernel — a dump wider than the real modal hides every
+    // truncation the user would see.
     let rows = float.rows.expect("the flow sizes its own height");
-    let width = (120.0 * float.width_pct / 100.0) as u16;
+    let width = float
+        .cols
+        .unwrap_or((120.0 * float.width_pct / 100.0) as u16);
     let mut terminal = Terminal::new(TestBackend::new(width, rows)).expect("terminal");
     terminal
         .draw(|frame| {
@@ -281,9 +286,16 @@ fn press(host: &LuaHost, world: &World, chord: &str) {
 fn key_press(chord: &str) -> KeyPress {
     let mut key = KeyPress::default();
     let mut name = chord;
-    while let Some(rest) = name.strip_prefix("ctrl+") {
-        key.ctrl = true;
-        name = rest;
+    loop {
+        if let Some(rest) = name.strip_prefix("ctrl+") {
+            key.ctrl = true;
+            name = rest;
+        } else if let Some(rest) = name.strip_prefix("alt+") {
+            key.alt = true;
+            name = rest;
+        } else {
+            break;
+        }
     }
     key.name = name.to_string();
     if name.chars().count() == 1 {
@@ -420,13 +432,13 @@ fn remembered_repositories_are_listed_with_their_kind() {
 }
 
 #[test]
-fn space_selects_and_w_gives_it_a_worktree() {
+fn space_selects_and_alt_w_gives_it_a_worktree() {
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "space");
     assert!(drawn(&host, &world).contains("[x] /src/thurbox"));
-    press(&host, &world, "w");
+    press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(screen.contains("[wt]"), "{screen}");
 }
@@ -436,8 +448,8 @@ fn worktree_mode_is_refused_for_a_directory_that_is_not_a_repository() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "j");
-    press(&host, &world, "w");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(
         screen.contains("Not a git repo"),
@@ -474,12 +486,144 @@ fn search_filters_and_counts_what_it_matched() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "/");
     type_text(&host, &world, "note");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Search (1/2)"), "{screen}");
     assert!(screen.contains("/src/notes"), "{screen}");
     assert!(!screen.contains("thurbox"), "{screen}");
+}
+
+/// The repository rows as drawn, top to bottom, without their checkboxes.
+fn listed(screen: &str) -> Vec<String> {
+    screen
+        .lines()
+        .filter_map(|line| line.split_once("[ ] ").or_else(|| line.split_once("[x] ")))
+        .map(|(_, rest)| rest.trim_end_matches(['│', ' ', '┐', '┘']).to_string())
+        .collect()
+}
+
+#[test]
+fn a_match_in_the_repository_name_ranks_above_one_in_its_path() {
+    // Every path shares its leading directories, so a query that happens to be
+    // spelled across them matched every row — in list order, with the row that
+    // is actually called that somewhere down the list. The cursor starts on the
+    // first row, and enter takes it, so the best match has to be first.
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/home/me/capital/web", Some(true)),
+        bookmark("/home/me/work/api-gateway", Some(true)),
+        bookmark("/home/me/work/api", Some(true)),
+        bookmark("/home/me/work/legacy-api", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "api");
+    assert_eq!(
+        listed(&drawn(&host, &world)),
+        vec![
+            "/home/me/work/api",         // the name, exactly
+            "/home/me/work/api-gateway", // the name starts with it
+            "/home/me/work/legacy-api",  // the name contains it
+            "/home/me/capital/web",      // only the path does
+        ]
+    );
+}
+
+#[test]
+fn a_query_every_path_matches_keeps_the_list_order() {
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/home/me/projects/web", Some(true)),
+        bookmark("/home/me/projects/cli", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "proj");
+    assert_eq!(
+        listed(&drawn(&host, &world)),
+        vec!["/home/me/projects/web", "/home/me/projects/cli"]
+    );
+}
+
+#[test]
+fn a_search_ranks_folder_members_without_their_header() {
+    // The ranked list is flat: a header is a folder, not something to pick, and
+    // keeping it would split the ranking into groups.
+    let host = host();
+    let world = world_with(folder_rows());
+    open(&host, &world);
+    type_text(&host, &world, "thurbox");
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("(parent)"), "{screen}");
+    assert!(screen.contains("/src/thurbox"), "{screen}");
+}
+
+#[test]
+fn the_search_is_focused_as_soon_as_the_flow_opens() {
+    // No `/` first: the flow opens on the repositories to pick from, and the
+    // first thing a hand does there is start typing one's name.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (2/2)"), "{screen}");
+}
+
+#[test]
+fn letters_that_used_to_be_shortcuts_are_typed_into_the_search() {
+    // j/k/w/d were list commands; with the search focused they are part of a
+    // repository's name, which is what they are far more often.
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/src/jkwd", Some(true)),
+        bookmark("/src/other", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "jkwd");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (1/2)"), "{screen}");
+    assert!(!screen.contains("[wt]"), "{screen}");
+    assert!(
+        host.drain_commands().is_empty(),
+        "`d` must not forget anything"
+    );
+}
+
+#[test]
+fn escape_clears_the_query_before_it_closes_the_flow() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    type_text(&host, &world, "note");
+    press(&host, &world, "esc");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("Search (2/2)"),
+        "cleared, still open: {screen}"
+    );
+    press(&host, &world, "esc");
+    assert_eq!(drawn(&host, &world), "");
+}
+
+#[test]
+fn enter_in_the_search_carries_the_ticked_repositories_on() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+}
+
+#[test]
+fn shift_tab_from_the_path_returns_to_the_search() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    press(&host, &world, "backtab");
+    type_text(&host, &world, "note");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (1/2)"), "{screen}");
 }
 
 #[test]
@@ -635,14 +779,14 @@ fn a_dotted_prefix_offers_the_hidden_entries() {
 }
 
 #[test]
-fn tab_on_an_empty_field_browses_home() {
+fn tab_on_a_fresh_field_browses_home_when_memory_is_empty() {
     // The regression behind "tab no longer browses directories": the flow asked
     // for a listing only once something had been typed, so `tab` on a fresh
     // field opened a dropdown whose want was never published — it sat on "(no
-    // subdirectories)" forever. An empty field means home, exactly as a bare
-    // `~` does.
+    // subdirectories)" forever. With nothing remembered the field starts at
+    // home, exactly as a bare `~` does.
     let host = host();
-    let mut world = World::default();
+    let mut world = world_with(Vec::new());
     world.repos.set_listing_for_test(
         "",
         "~",
@@ -667,27 +811,117 @@ fn tab_on_an_empty_field_browses_home() {
 }
 
 #[test]
-fn a_closed_dropdown_over_an_empty_field_asks_for_no_listing() {
-    // The other half of the same rule: a flow only picking from memory must not
-    // pay for a directory read. The want is restated on every render, so what a
-    // frame asks for is read after one — closing the browser stops the asking.
+fn a_flow_picking_from_memory_asks_for_no_listing() {
+    // A flow only picking from memory must not pay for a directory read — even
+    // though the path field now holds its starting directory the whole time.
+    // The want is restated on every render, so what a frame asks for is read
+    // after one; leaving the field stops the asking.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse"), None);
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0/src"));
+    press(&host, &world, "backtab");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_browse"), None);
+}
+
+/// What the path field holds once focus has moved into it.
+fn path_field(host: &LuaHost, world: &World) -> String {
+    open(host, world);
+    press(host, world, "tab");
+    let screen = drawn(host, world);
+    let lines: Vec<&str> = screen.lines().collect();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("Add Repo Path"))
+        .unwrap_or_else(|| panic!("no path field: {screen}"));
+    lines[title + 1]
+        .trim_matches(|c| c == '│' || c == ' ')
+        .to_string()
+}
+
+#[test]
+fn the_path_field_starts_at_the_directory_every_repository_shares() {
+    let world = world_with(vec![
+        bookmark("/home/me/code/work/api", Some(true)),
+        bookmark("/home/me/code/perso/thurbox", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/home/me/code/");
+}
+
+#[test]
+fn the_shared_directory_is_found_by_whole_components() {
+    // `/src/app` and `/src/apple` share `/src`, not `/src/app`.
+    let world = world_with(vec![
+        bookmark("/src/app/one", Some(true)),
+        bookmark("/src/apple/two", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/src/");
+}
+
+#[test]
+fn a_single_repository_starts_the_field_at_its_parent() {
+    let world = world_with(vec![bookmark("/srv/code/thurbox", Some(true))]);
+    assert_eq!(path_field(&host(), &world), "/srv/code/");
+}
+
+#[test]
+fn repositories_with_nothing_in_common_start_at_the_root() {
+    let world = world_with(vec![
+        bookmark("/srv/one", Some(true)),
+        bookmark("/opt/two", Some(true)),
+    ]);
+    assert_eq!(path_field(&host(), &world), "/");
+}
+
+#[test]
+fn folder_headers_and_the_offered_interface_do_not_move_the_start() {
+    // The header is a folder, not a repository in it, and the interface
+    // directory is offered by the kernel, not remembered by the user.
+    let mut rows = folder_rows();
+    rows.insert(0, offered());
+    assert_eq!(path_field(&host(), &world_with(rows)), "/src/");
+    assert_eq!(path_field(&host(), &world_with(vec![offered()])), "~/");
+}
+
+#[test]
+fn a_name_typed_into_the_untouched_field_lands_under_the_start() {
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "tab");
-    drawn(&host, &world);
-    assert_eq!(
-        host.shared_string("want_browse"),
-        None,
-        "an empty field with no dropdown has nothing to list"
-    );
+    type_text(&host, &world, "new-thing");
+    assert!(drawn(&host, &world).contains("/src/new-thing"));
+}
+
+#[test]
+fn a_new_path_typed_into_the_untouched_field_replaces_the_start() {
+    // `/` or `~` first is a path of its own, not a name under the start — the
+    // way an address bar takes a new address.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
     press(&host, &world, "tab");
-    drawn(&host, &world);
-    assert_eq!(host.shared_string("want_browse").as_deref(), Some("\0~"));
-    // Shift+Tab closes the dropdown and hands focus back to the list.
+    type_text(&host, &world, "~/elsewhere");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("~/elsewhere"), "{screen}");
+    assert!(!screen.contains("/src/~"), "{screen}");
+}
+
+#[test]
+fn a_field_that_was_typed_in_is_not_refilled() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/opt/x");
     press(&host, &world, "backtab");
-    drawn(&host, &world);
-    assert_eq!(host.shared_string("want_browse"), None);
+    press(&host, &world, "tab");
+    assert!(drawn(&host, &world).contains("/opt/x"));
 }
 
 #[test]
@@ -856,6 +1090,346 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
     );
 }
 
+// ── A path that does not exist yet ─────────────────────────────────────────
+
+/// A world whose `/src` holds the two remembered repositories and nothing else,
+/// with that listing served — the directory the path field starts in.
+fn world_listing_src() -> World {
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/src",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "thurbox".into(),
+                is_git: true,
+            },
+            BrowseEntry {
+                name: "notes".into(),
+                is_git: false,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/src".into()));
+    world
+}
+
+#[test]
+fn a_name_that_is_not_there_offers_to_create_the_folder() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[ Create folder ]"), "{screen}");
+
+    // A name that IS there is still an add.
+    let host = self::host();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    assert!(drawn(&host, &world).contains("[ Add repo ]"));
+}
+
+#[test]
+fn creating_a_folder_asks_what_goes_into_it() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("New Folder"), "{screen}");
+    assert!(screen.contains("/src/brand-new"), "{screen}");
+    assert!(screen.contains("git init"), "{screen}");
+    assert!(screen.contains("Leave it empty"), "{screen}");
+    assert!(
+        host.drain_commands().is_empty(),
+        "nothing is made before the answer"
+    );
+}
+
+#[test]
+fn a_new_git_repository_is_one_command_and_lands_ticked() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/brand-new".into(),
+            edit: BookmarkEdit::Init,
+        }]
+    );
+    // Back on the repositories, where the new row is picked once it lands —
+    // the same select-or-add a typed path gets.
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn adding_a_repository_clears_the_search_that_would_hide_it() {
+    // The new row is ticked and the cursor put on it — which is no use behind a
+    // query typed before the path was, one that the new row does not match.
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    type_text(&host, &world, "zzz");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+
+    let host = self::host();
+    open(&host, &world);
+    type_text(&host, &world, "zzz");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/srv/typed");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+}
+
+#[test]
+fn a_folder_can_be_left_empty() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "scratch");
+    press(&host, &world, "enter");
+    // The last choice; the selector stops there rather than wrapping.
+    press(&host, &world, "j");
+    press(&host, &world, "j");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/scratch".into(),
+            edit: BookmarkEdit::Create,
+        }]
+    );
+}
+
+#[test]
+fn escape_from_the_folder_question_keeps_what_was_typed() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "esc");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(screen.contains("/src/brand-new"), "{screen}");
+    assert!(host.drain_commands().is_empty());
+}
+
+/// Walk to the new-folder question for `/src/<name>` and pick "clone".
+fn to_the_clone_step(host: &LuaHost, world: &World, name: &str) {
+    open(host, world);
+    press(host, world, "tab");
+    type_text(host, world, name);
+    press(host, world, "enter");
+    press(host, world, "down");
+    press(host, world, "enter");
+}
+
+#[test]
+fn a_new_folder_can_have_a_repository_cloned_into_it() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Clone Repository"), "{screen}");
+    assert!(
+        screen.contains("/src/fork-of-it"),
+        "the destination: {screen}"
+    );
+    assert!(host.drain_commands().is_empty());
+
+    type_text(&host, &world, "git@github.com:me/it.git");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/fork-of-it".into(),
+            edit: BookmarkEdit::Clone {
+                url: "git@github.com:me/it.git".into()
+            },
+        }]
+    );
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_clone_needs_a_url() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("[ Clone ]"),
+        "nothing to clone yet: {screen}"
+    );
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty());
+    assert!(drawn(&host, &world).contains("Clone Repository"));
+    type_text(&host, &world, "https://example.com/it.git");
+    assert!(drawn(&host, &world).contains("[ Clone ]"));
+}
+
+#[test]
+fn escape_from_the_clone_goes_back_to_the_folder_question() {
+    let host = host();
+    let world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    press(&host, &world, "esc");
+    assert!(drawn(&host, &world).contains("New Folder"));
+}
+
+#[test]
+fn a_clone_under_way_says_so_where_the_path_is_typed() {
+    let host = host();
+    let mut world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    type_text(&host, &world, "https://example.com/it.git");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 1,
+        kind: "bookmark",
+        session: String::new(),
+        subject: None,
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    });
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("cloning…"), "{screen}");
+}
+
+#[test]
+fn a_write_that_failed_ticks_nothing_in_its_place() {
+    // The row a write lands as is found by recency, so a write that never
+    // landed would tick whichever row was newest before it — and a confirm
+    // after the reported failure would open a session somewhere nobody chose.
+    let host = host();
+    let mut world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    type_text(&host, &world, "https://example.com/gone.git");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 7,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/fork-of-it".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("git clone failed: not found".into()),
+    });
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("[x]"), "{screen}");
+
+    // Nor does the tick arrive late, once the failure is swept from the list.
+    world.inflight.clear();
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("[x]"),
+        "no stale tick later either: {screen}"
+    );
+}
+
+#[test]
+fn an_earlier_failure_does_not_stop_the_next_write_being_ticked() {
+    let host = host();
+    let mut world = world_listing_src();
+    world.inflight.push(InFlight {
+        id: 3,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/notes".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("an older refusal of the same path".into()),
+    });
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[x]"), "{screen}");
+}
+
+#[test]
+fn another_write_failing_meanwhile_does_not_count_as_this_ones() {
+    // Writes run independently: a forget that fails while a clone is running
+    // says nothing about the clone.
+    let host = host();
+    let mut world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 9,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/elsewhere".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("not a remembered repository".into()),
+    });
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[x]"), "{screen}");
+}
+
+#[test]
+fn a_parent_that_is_missing_too_is_still_a_folder_to_create() {
+    // `mkdir -p` makes the parents, so a failed listing is no reason to refuse.
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/src/new",
+        Listing::Failed("No such directory: /src/new".into()),
+    );
+    world.wants.browse = Some((String::new(), "/src/new".into()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "new/deeper");
+    assert!(drawn(&host, &world).contains("[ Create folder ]"));
+}
+
+#[test]
+fn a_listing_still_on_its_way_leaves_enter_an_add() {
+    // Until the listing says otherwise the path may well exist, and the kernel
+    // is the one that checks: the old behaviour, unchanged.
+    let host = host();
+    let mut world = World::default();
+    world.wants.browse = Some((String::new(), "/src".into()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "maybe");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/maybe".into(),
+            edit: BookmarkEdit::Add,
+        }]
+    );
+}
+
 #[test]
 fn alt_p_imports_the_typed_path_as_a_folder() {
     let host = host();
@@ -875,11 +1449,11 @@ fn alt_p_imports_the_typed_path_as_a_folder() {
 }
 
 #[test]
-fn d_forgets_a_remembered_repository() {
+fn alt_d_forgets_a_remembered_repository() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "d");
+    press(&host, &world, "alt+d");
     assert_eq!(
         host.drain_commands(),
         vec![Command::Bookmark {
@@ -891,17 +1465,40 @@ fn d_forgets_a_remembered_repository() {
 }
 
 #[test]
+fn delete_forgets_too_once_there_is_nothing_ahead_of_the_caret() {
+    // `delete` still edits the query while there is text ahead of the caret —
+    // only past the end, where it would do nothing, does it mean "forget".
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "delete");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/thurbox".into(),
+            edit: BookmarkEdit::Remove,
+        }]
+    );
+    type_text(&host, &world, "src");
+    press(&host, &world, "left");
+    press(&host, &world, "delete");
+    assert!(host.drain_commands().is_empty());
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+}
+
+#[test]
 fn a_member_of_a_folder_cannot_be_forgotten_on_its_own() {
     let host = host();
     let world = world_with(folder_rows());
     open(&host, &world);
-    press(&host, &world, "j");
-    press(&host, &world, "d");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+d");
     assert!(
         host.drain_commands().is_empty(),
         "a child has no memory of its own to forget"
     );
-    assert!(drawn(&host, &world).contains("delete the parent header instead"));
+    assert!(drawn(&host, &world).contains("forget the folder header instead"));
 }
 
 // ── Through to creation ────────────────────────────────────────────────────
@@ -990,9 +1587,9 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
     // directory, which is no kind of session name, so there is no default to take
     // and the refusal stands.
     let host = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&host, &world);
-    // No `space`: nothing is selected, so `enter` takes the home-directory path.
+    // An empty list: nothing to tick or point at, so `enter` takes home.
     press(&host, &world, "enter");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
@@ -1085,7 +1682,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
     );
     open(&host, &world);
     press(&host, &world, "space");
-    press(&host, &world, "w");
+    press(&host, &world, "alt+w");
     press(&host, &world, "enter");
 
     // The flow reaches the branch step and asks for the list; the answer is
@@ -1143,10 +1740,10 @@ fn a_second_repository_travels_as_an_extra_member_with_its_own_mode() {
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     open(&host, &world);
     // thurbox: worktree. website: worktree. notes: attached as it is.
-    press(&host, &world, "w");
-    press(&host, &world, "j");
-    press(&host, &world, "w");
-    press(&host, &world, "j");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "down");
     press(&host, &world, "space");
     press(&host, &world, "enter");
     press(&host, &world, "enter"); // base branch
@@ -1213,10 +1810,11 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
 }
 
 #[test]
-fn nothing_selected_locally_still_creates_a_session() {
-    // v1 spawns in the home directory when no repository is chosen.
+fn nothing_to_pick_locally_still_creates_a_session() {
+    // v1 spawns in the home directory when no repository is chosen. With rows on
+    // screen the cursor row is the choice, so that fallback is an empty list's.
     let host = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&host, &world);
     press(&host, &world, "enter");
     assert!(drawn(&host, &world).contains("Session Name"));
@@ -1366,7 +1964,9 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
         .iter()
         .map(|binding| binding.chord.as_str())
         .collect();
-    for chord in ["ctrl+n", "j", "k", "space", "w", "d", "/", "alt+p"] {
+    for chord in [
+        "ctrl+n", "j", "k", "space", "alt+w", "alt+d", "delete", "alt+p",
+    ] {
         assert!(
             declared.contains(&chord),
             "{chord} is not declared: {declared:?}"
@@ -1426,10 +2026,8 @@ fn the_arrows_still_move_the_list_while_a_field_has_focus() {
     ]);
     // No hosts configured, so the flow opens on the repository step.
     open(&host, &world);
-    press(&host, &world, "/");
 
     press(&host, &world, "down");
-    press(&host, &world, "enter");
     press(&host, &world, "space");
     let picked = drawn(&host, &world);
     assert!(
@@ -1461,6 +2059,25 @@ fn the_repository_list_offers_the_next_step_rather_than_done() {
 }
 
 #[test]
+fn the_repo_step_footer_names_every_key_it_offers_in_full() {
+    // The hints share one row with the pills, and the ones that did not fit
+    // were cut off at the edge — forgetting a repository was the one hint
+    // nobody could see.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    let screen = drawn(&h, &world);
+    let footer = screen
+        .lines()
+        .find(|line| line.contains("[ Next ]"))
+        .unwrap_or_else(|| panic!("no footer: {screen}"));
+    for hint in ["nav", "tick", "worktree", "forget", "path"] {
+        assert!(screen.contains(hint), "`{hint}` is not shown: {screen}");
+    }
+    assert!(footer.contains("[ Cancel ]"), "{footer}");
+}
+
+#[test]
 fn the_typed_path_field_offers_to_add_the_repository() {
     // `enter` here adds what was typed to memory and leaves the flow on this
     // very step — the one place the old label read most like "finish". An empty
@@ -1472,25 +2089,28 @@ fn the_typed_path_field_offers_to_add_the_repository() {
     let empty = drawn(&h, &world);
     assert!(
         !empty.contains("[ Add repo ]"),
-        "nothing typed yet: {empty}"
+        "nothing typed yet — the starting directory is not a choice: {empty}"
     );
     assert!(!empty.contains("[ Next ]"), "{empty}");
 
     type_text(&h, &world, "/srv/thing");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Add repo ]"), "{screen}");
+    // `enter` adds, so the key that goes on from here is named beside it.
+    assert!(screen.contains("alt+⏎ next"), "{screen}");
 }
 
 #[test]
 fn the_search_pills_name_the_filter_they_act_on() {
-    // With the search focused `esc` clears the filter rather than closing the
-    // flow, so the dismiss pill must not claim to cancel.
+    // With a query typed `esc` clears it rather than closing the flow, so the
+    // dismiss pill must not claim to cancel — until there is nothing to clear.
     let h = host();
     let world = World::default();
     open(&h, &world);
-    press(&h, &world, "/");
+    assert!(drawn(&h, &world).contains("[ Cancel ]"));
+    type_text(&h, &world, "src");
     let screen = drawn(&h, &world);
-    assert!(screen.contains("[ Keep filter ]"), "{screen}");
+    assert!(screen.contains("[ Next ]"), "{screen}");
     assert!(screen.contains("[ Clear ]"), "{screen}");
     assert!(!screen.contains("[ Cancel ]"), "{screen}");
 }
@@ -1607,7 +2227,7 @@ fn the_branch_step_offers_nothing_to_select_while_it_is_still_fetching() {
         .set_branches_for_test("", "/src/thurbox", Branches::Pending);
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     let screen = drawn(&h, &world);
@@ -1677,7 +2297,7 @@ fn the_branch_name_is_not_the_last_question_when_an_agent_is_still_to_come() {
     );
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     press(&h, &world, "enter");
@@ -1721,19 +2341,76 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
         "nothing to advance to on a host: {empty}"
     );
 
-    // The same refusal with rows on screen but none of them ticked, and the
-    // pill arriving the moment one is.
+    // A row on screen is a choice even unticked: `enter` takes the cursor row.
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     let listed = drawn(&h, &world);
-    assert!(
-        !listed.contains("[ Next ]"),
-        "listed but nothing ticked is the same refusal: {listed}"
-    );
-    press(&h, &world, "space");
-    let ticked = drawn(&h, &world);
-    assert!(ticked.contains("[ Next ]"), "{ticked}");
+    assert!(listed.contains("[ Next ]"), "{listed}");
+}
+
+#[test]
+fn ctrl_enter_confirms_from_the_path_field() {
+    // No trip back to the list first: the ticked rows go on from any focus.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/half/typed");
+    press(&host, &world, "ctrl+enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+}
+
+#[test]
+fn alt_enter_is_the_same_confirm_for_terminals_that_cannot_send_ctrl_enter() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "tab");
+    press(&host, &world, "alt+enter");
+    assert!(drawn(&host, &world).contains("Session Name"));
+}
+
+#[test]
+fn with_nothing_ticked_the_cursor_row_is_the_choice() {
+    // Type part of a name, confirm: the best match is the repository, with no
+    // `space` in between.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    type_text(&host, &world, "note");
+    press(&host, &world, "ctrl+enter");
+    type_text(&host, &world, "n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
+        panic!("expected a create, got {issued:?}");
+    };
+    assert_eq!(repo, "/src/notes");
+    assert!(extras.is_empty());
+}
+
+#[test]
+fn ticked_rows_win_over_the_cursor_row() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space"); // ticks /src/thurbox
+    press(&host, &world, "down"); // cursor on /src/notes, unticked
+    press(&host, &world, "enter");
+    type_text(&host, &world, "n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
+        panic!("expected a create, got {issued:?}");
+    };
+    assert_eq!(repo, "/src/thurbox");
+    assert!(extras.is_empty(), "the cursor row is not added: {extras:?}");
 }
 
 #[test]
@@ -1753,7 +2430,7 @@ fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
     // no kind of session name, leaving the field with an empty value AND an
     // empty placeholder. `enter` is refused there, so nothing is offered.
     let h = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&h, &world);
     press(&h, &world, "enter");
     let screen = drawn(&h, &world);
@@ -1796,7 +2473,7 @@ fn a_branch_name_that_prefilled_to_nothing_offers_no_pill() {
     );
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     press(&h, &world, "enter");

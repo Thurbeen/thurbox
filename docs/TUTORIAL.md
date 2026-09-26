@@ -61,7 +61,9 @@ sessions yet, so the list says so.
 
 ## 2. Add a repository
 
-Press **`Ctrl+N`**. The creation flow opens on the repo step.
+Press **`Ctrl+N`**. The creation flow opens on the repo step, with its search
+focused: type any part of a repository's path and the list narrows to the
+fuzzy matches, best first.
 
 ![The repo picker, with only the interface directory in it](../media/tutorial/02-repo-picker.png)
 
@@ -71,13 +73,19 @@ directory, offered because editing the panes is a thing you might want a session
 for.
 
 To add a repository, press **`Tab`** to move to the **Add Repo Path** field and
-type a path. `~` is expanded for you:
+type a path. `~` is expanded for you. The field starts at the deepest directory
+all your remembered repositories share (home, while there are none), so a bare
+name lands next to them; typing `/` or `~` first replaces it with a path of
+your own:
 
 ![Typing ~/code/ into the Add Repo Path field](../media/tutorial/03-add-repo-path.png)
 
 Two ways to finish from here:
 
-- **`Enter`** adds the path you typed, if it is a repository.
+- **`Enter`** adds the path you typed, if it is a repository. A folder that
+  does not exist yet reads **Create folder** instead: `Enter` then asks what goes
+  into it — a new git repository (`git init`), a clone of an existing one (paste
+  its URL), or nothing — makes it, and adds it.
 - **`Tab`** browses instead — a listing of that directory, marking which
   subdirectories are git repositories:
 
@@ -91,20 +99,24 @@ on it — and stays there for next time:
 
 ![The repository added to the list and selected](../media/tutorial/05-repo-added.png)
 
-The footer names the rest of what this step does, all on the list:
+The footer names the rest of what this step does. Letters always go to the
+search, so the list's own keys are ones you cannot type:
 
 | Key | What it does |
 |---|---|
+| `↑`/`↓` | move the cursor |
 | `space` | select / deselect a repository (select several for a **multi-repo** session) |
-| `w` | give the selected repository its own **worktree** |
-| `/` | filter a long list |
-| `d` | forget a remembered repository |
+| `Alt+W` | give the selected repository its own **worktree** |
+| `Del` / `Alt+D` | forget a remembered repository (with the caret at the end of the search) |
+| `Enter` | go on with the ticked repositories — or, with none ticked, the one under the cursor |
+| `Ctrl+Enter` / `Alt+Enter` | the same, from the path field too (`Ctrl+Enter` needs a terminal with the kitty keyboard protocol) |
+| `Esc` | clear the search; a second `Esc` closes the flow |
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
-| `Tab` | move between the list and the path field |
+| `Tab` / `Shift+Tab` | move between the search and the path field |
 
 ## 3. Give the session its own worktree
 
-With the repository selected, press **`w`**. The `[wt]` mark means this session
+With the repository selected, press **`Alt+W`**. The `[wt]` mark means this session
 gets a **git worktree of its own** rather than your checkout — the agent works
 on its own branch, in its own directory, and your working tree is untouched.
 

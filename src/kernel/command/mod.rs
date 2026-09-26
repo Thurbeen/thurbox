@@ -367,7 +367,7 @@ pub struct ExtraMember {
 }
 
 /// What to do to a remembered repository.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BookmarkEdit {
     /// Remember it (or touch its recency, which is how the flow re-selects a
     /// path that was already there).
@@ -377,6 +377,14 @@ pub enum BookmarkEdit {
     /// Remember it as a folder *of* repositories, replacing its children with a
     /// fresh scan.
     Parent,
+    /// Make the directory, which must not exist or be empty, then remember it.
+    /// The last three are one command each so nothing lands between the
+    /// `mkdir` and what goes into it — see [`crate::git::create_repo_dir`].
+    Create,
+    /// [`Self::Create`], then `git init` it.
+    Init,
+    /// [`Self::Create`], then `git clone <url>` into it.
+    Clone { url: String },
 }
 
 /// What to do to one file of the interface.
@@ -516,13 +524,16 @@ impl Command {
     ///
     /// For a creation that is the repository, which is what lets the session
     /// list draw the placeholder inside the group the session will land in
-    /// rather than in a limbo of its own.
+    /// rather than in a limbo of its own. For a repository-memory write it is
+    /// the path, exactly as issued: writes run independently, and the creation
+    /// flow ties a failure to the write it is waiting on by it.
     pub fn subject(&self) -> Option<String> {
         match self {
             Command::Create { repo, .. } => std::path::Path::new(repo)
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .or_else(|| Some(repo.clone())),
+            Command::Bookmark { path, .. } => Some(path.clone()),
             _ => None,
         }
     }
@@ -756,11 +767,20 @@ impl Command {
             Some("add") => BookmarkEdit::Add,
             Some("remove") => BookmarkEdit::Remove,
             Some("parent") => BookmarkEdit::Parent,
+            Some("create") => BookmarkEdit::Create,
+            Some("init") => BookmarkEdit::Init,
+            Some("clone") => match args.text.as_deref().map(str::trim) {
+                // A leading `-` is refused rather than left to `git clone --`:
+                // the flow's field takes any text, and this says why it failed.
+                Some(url) if !url.is_empty() && !url.starts_with('-') => BookmarkEdit::Clone {
+                    url: url.to_string(),
+                },
+                _ => return Err("command \"bookmark\" clone needs a url in text".to_string()),
+            },
             _ => {
-                return Err(
-                    "command \"bookmark\" needs action = \"add\", \"remove\" or \"parent\""
-                        .to_string(),
-                )
+                return Err("command \"bookmark\" needs action = \"add\", \"remove\", \
+                     \"parent\", \"create\", \"init\" or \"clone\""
+                    .to_string())
             }
         };
         Ok(Command::Bookmark {
@@ -1369,7 +1389,10 @@ mod tests {
                     action: text("forget"),
                     ..Args::default()
                 },
-                err("command \"bookmark\" needs action = \"add\", \"remove\" or \"parent\""),
+                err(
+                    "command \"bookmark\" needs action = \"add\", \"remove\", \"parent\", \
+                     \"create\", \"init\" or \"clone\"",
+                ),
             ),
             (
                 "focus",

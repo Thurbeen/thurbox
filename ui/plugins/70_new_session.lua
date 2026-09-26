@@ -9,6 +9,11 @@
 --
 --   host  → repo → [base branch] → name → [branch name] → [agent] → create
 --
+-- plus a detour off the repo step for a typed path that does not exist yet:
+--
+--   repo → new folder (git init / leave it empty) → repo
+--                     (clone into it)         → clone URL → repo
+--
 -- `host` is skipped when nothing is configured, `base branch` and `branch name`
 -- only appear when some repository is in worktree mode, and `agent` is skipped
 -- when there is one or none. Nothing here waits: every listing, path check and
@@ -86,6 +91,19 @@ local function bookmark_pending()
   return false
 end
 
+--- The repository-memory writes that have failed and are still being
+--- reported: their path (the command's `subject`, as issued) keyed by id as a
+--- string.
+local function bookmark_failures()
+  local failed = {}
+  for _, item in ipairs((thurbox and thurbox.commands) or {}) do
+    if item.kind == "bookmark" and item.phase == "failed" then
+      failed[tostring(item.id)] = item.subject or ""
+    end
+  end
+  return failed
+end
+
 -- ── Flow state ─────────────────────────────────────────────────────────────
 --
 -- One table, read whole and written whole: `state` hands back a fresh Lua table
@@ -116,12 +134,15 @@ local function fresh()
     host = "",
     host_index = 1,
     cursor = 1,
-    focus = "list",
+    -- The repo step opens on its search, not on the list: the first thing a
+    -- hand does there is type part of a repository's name. The other focus is
+    -- `input`, the path field.
+    focus = "search",
     selected = {},
     worktree = {},
     collapsed = {},
     input = textinput.new(""),
-    search = nil,
+    search = textinput.new(""),
     browse = false,
     browse_index = 1,
     select_newest = false,
@@ -134,6 +155,15 @@ local function fresh()
     name = textinput.new(""),
     branch = textinput.new(""),
     agent_index = 1,
+    -- The detour for a typed path that does not exist: where, and which of
+    -- `FOLDER_CHOICES` the cursor is on.
+    new_path = nil,
+    folder_index = 1,
+    url = textinput.new(""),
+    -- What the path field's spinner says while a repository-memory write is in
+    -- flight: `checking…` for an add, `cloning…` for a clone, which takes long
+    -- enough that "checking" would read as stuck.
+    pending_label = nil,
     message = nil,
   }
 end
@@ -162,8 +192,11 @@ local function ask(flow)
   -- and `tab` on a fresh field is how browsing starts, so it read as "tab no
   -- longer browses". The want is still dropped the moment the dropdown closes, so
   -- a flow that is only picking from memory asks for no listing at all.
+  --
+  -- Only while the field has focus: it holds its starting directory the whole
+  -- time now, and a flow picking from memory must not pay for a listing.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if flow.step == "repo" and (typed ~= "" or flow.browse) then
+  if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
@@ -196,7 +229,7 @@ end
 -- one `enter` picks.
 
 local function rows_for(flow)
-  local query = flow.search and (flow.search.value or "") or ""
+  local query = flow.search.value or ""
   local entries = repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
   return repo_picker.with_worktrees(entries, flow.wt_repo, worktrees_read())
 end
@@ -227,8 +260,94 @@ local function chosen(flow)
   return repo_picker.chosen(bookmarks().rows or {}, flow.selected, flow.worktree)
 end
 
+--- The repository the cursor stands in for when nothing is ticked, or nil.
+---
+--- "Ticked, else the cursor row": type part of a name and confirm, with no
+--- `space` in between. A folder header is not a repository, and a worktree row
+--- is opened rather than gathered, so neither stands in.
+local function cursor_stand_in(flow)
+  local worktrees, plain = chosen(flow)
+  if #worktrees > 0 or #plain > 0 then
+    return nil
+  end
+  local entry = current_row(flow)
+  local row = entry and entry.row
+  if row and not row.is_parent and not row.is_worktree then
+    return row
+  end
+  return nil
+end
+
 local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
+end
+
+--- A repository-memory write has been issued: tick the row it lands as (see
+--- `select_newest` in the render), and clear a search typed before the path
+--- was — one the new row need not match, which would hide it once ticked.
+---
+--- `path` is the path exactly as issued, and the failures already on record
+--- are noted too: a new failure for that path is this write's, and a write that
+--- never landed has no row to tick (see the render). Another write failing
+--- meanwhile says nothing about this one.
+local function await_new_row(flow, path)
+  flow.select_newest = true
+  flow.awaiting_path = path
+  flow.failures_before = bookmark_failures()
+  textinput.clear(flow.search)
+  flow.cursor = 1
+end
+
+--- Move focus into the path field, filling an empty one with where a new path
+--- most likely goes (`pathpicker.start`). The fill is remembered so it can be
+--- told apart from something typed: until it is edited it is no choice at all.
+local function enter_path_field(flow)
+  flow.focus = "input"
+  if (flow.input.value or "") == "" then
+    flow.prefill = pathpicker.start(bookmarks().rows or {})
+    textinput.set(flow.input, flow.prefill)
+  end
+end
+
+--- Is the path field still holding only its starting directory?
+local function untouched(flow)
+  return flow.prefill ~= nil and flow.input.value == flow.prefill
+end
+
+--- The typed path with its trailing slashes gone, which is the folder it names.
+local function typed_target(flow)
+  local value = (flow.input.value or ""):match("^%s*(.-)%s*$")
+  return (value:gsub("(.)/+$", "%1"))
+end
+
+--- Does the path field name a folder that is known not to exist?
+---
+--- Known from the listing the field already asks for — the parent's — and only
+--- once it has answered for that very directory: until then the path may well
+--- exist, and `enter` stays the add the kernel checks. A listing that failed
+--- means a parent is missing too, which `mkdir -p` makes, so it counts.
+local function names_missing_folder(flow)
+  if untouched(flow) then
+    return false
+  end
+  local target = typed_target(flow)
+  if target == "" or target == "/" or target == "~" then
+    return false
+  end
+  local dir, leaf = pathpicker.split_typed(target)
+  local listing = browse()
+  if listing.dir ~= dir or (listing.host or "") ~= (flow.host or "") or listing.loading then
+    return false
+  end
+  if listing.error then
+    return true
+  end
+  for _, entry in ipairs(listing.entries or {}) do
+    if entry.name == leaf then
+      return false
+    end
+  end
+  return true
 end
 
 local function suggestion_for(flow)
@@ -487,18 +606,17 @@ local function render_repo(flow)
   local entries = rows_for(flow)
   local total = #(bookmarks().rows or {})
   local visible = math.max(1, math.min(#entries, REPO_LIST_MAX))
-  local searching = flow.search ~= nil
+  local query = flow.search.value or ""
   local dropdown = flow.browse and browse() or nil
 
   local children = {}
 
-  -- The search bar, above the list, only while searching — v1's layout exactly.
-  if searching then
-    children[#children + 1] = textinput.node(flow.search, {
-      label = "Search (" .. #entries .. "/" .. total .. ")",
-      focused = flow.focus == "search",
-    })
-  end
+  -- The search bar is always there, above the list it filters: it is where the
+  -- keys go from the moment the flow opens.
+  children[#children + 1] = textinput.node(flow.search, {
+    label = "Search (" .. #entries .. "/" .. total .. ")",
+    focused = flow.focus == "search",
+  })
 
   local list = {}
   if #entries == 0 then
@@ -508,8 +626,7 @@ local function render_repo(flow)
       text = {
         {
           {
-            text = (searching and (flow.search.value ~= "")) and "  No matches"
-              or "  No bookmarks — add via path input below",
+            text = query ~= "" and "  No matches" or "  No bookmarks — add via path input below",
             style = { fg = theme.muted },
           },
         },
@@ -529,7 +646,7 @@ local function render_repo(flow)
             entry,
             flow.selected[path] == true,
             flow,
-            position == cursor and flow.focus == "list"
+            position == cursor and flow.focus == "search"
           ),
         },
         id = path,
@@ -547,7 +664,7 @@ local function render_repo(flow)
         or (" Repos (" .. total .. ") "),
       borders = "all",
       border_style = {
-        fg = flow.focus == "list" and theme.border_focused or theme.border,
+        fg = flow.focus == "search" and theme.border_focused or theme.border,
       },
     },
     children = list,
@@ -559,7 +676,7 @@ local function render_repo(flow)
   local suggestion = flow.suggestion or ""
   local label = "Add Repo Path"
   if bookmark_pending() then
-    label = label .. " " .. spinner(flow) .. " checking…"
+    label = label .. " " .. spinner(flow) .. " " .. (flow.pending_label or "checking…")
   end
   children[#children + 1] = {
     type = "box",
@@ -661,14 +778,13 @@ local function render_repo(flow)
   -- repetition cost `alt+p` its description entirely, and that one is the only
   -- place a folder import is offered at all.
   local hints, primary, cancel
-  if flow.focus == "list" then
+  if flow.focus == "search" then
     hints = {
-      { "j/k", "nav" },
-      { "space", "toggle/fold" },
-      { "w", "worktree" },
-      { "/", "search" },
-      { "d", "forget" },
-      { "tab", "input" },
+      { "↑/↓", "nav" },
+      { "space", "tick" },
+      { "alt+w", "worktree" },
+      { "del", "forget" },
+      { "tab", "path" },
     }
     local entry = entries[widgets.clamp(flow.cursor, #entries)]
     if entry and entry.row.is_worktree then
@@ -686,21 +802,21 @@ local function render_repo(flow)
       -- Spelled as an `if`: `cond and nil or "Next"` is always "Next", because
       -- `and` yielding nil falls through to the `or`.
       local worktrees, plain = chosen(flow)
-      local nothing_to_carry = #worktrees == 0 and #plain == 0
+      local nothing_to_carry = #worktrees == 0 and #plain == 0 and not cursor_stand_in(flow)
       if nothing_to_carry and (flow.host or "") ~= "" then
         primary = nil
       else
         primary = "Next"
       end
     end
-  elseif flow.focus == "search" then
-    hints = { { "esc", "clear" } }
-    primary = "Keep filter"
-    cancel = "Clear"
+    -- `esc` clears a typed query before it closes anything.
+    if query ~= "" then
+      cancel = "Clear"
+    end
   elseif dropdown then
     hints = {
       { "↑/↓", "select" },
-      { "s-tab", "list" },
+      { "s-tab", "search" },
       { "esc", "close" },
     }
     -- "open/pick" is two actions, and which one it is depends on the row: a
@@ -715,15 +831,28 @@ local function render_repo(flow)
     hints = {
       { "tab", suggestion ~= "" and "complete" or "browse" },
       { "alt+p", "import parent" },
-      { "s-tab", "list" },
+      { "s-tab", "search" },
+      -- The portable spelling; `ctrl+enter` does the same where the terminal
+      -- can send it, and help lists both.
+      { "alt+⏎", "next" },
     }
     -- An empty field is nothing to add — including straight after an add, which
     -- clears it and leaves the focus here so several paths can be typed in a
     -- row. Trimmed as `enter` trims it, so a field holding only spaces reads as
     -- the nothing it is.
-    primary = ((flow.input.value or ""):match("^%s*(.-)%s*$") ~= "") and "Add repo" or nil
+    -- The untouched starting directory is not a choice either.
+    local typed = (flow.input.value or ""):match("^%s*(.-)%s*$")
+    if typed == "" or untouched(flow) then
+      primary = nil
+    elseif names_missing_folder(flow) then
+      primary = "Create folder"
+    else
+      primary = "Add repo"
+    end
   end
-  children[#children + 1] = modal.footer(hints, primary, { cancel = cancel })
+  -- Stacked: this step has more keys than one row can name beside its pills,
+  -- and a hint cut off at the pill is a key nobody learns (forget was).
+  children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
   -- The height is the sum of what was actually built, plus the two border rows.
   -- Deriving it from the children rather than recomputing the layout means the
@@ -734,6 +863,68 @@ local function render_repo(flow)
     height = height + (child.len or 1)
   end
   return frame("Select Repos", height, children, flow)
+end
+
+--- What can go into a folder made for a path that did not exist, in the order
+--- offered: the `bookmark` action each one issues, and how it reads.
+local FOLDER_CHOICES = {
+  { action = "init", label = "New git repository (git init)" },
+  { action = "clone", label = "Clone a repository into it" },
+  { action = "create", label = "Leave it empty" },
+}
+
+local function render_new_folder(flow)
+  local labels = {}
+  for index, choice in ipairs(FOLDER_CHOICES) do
+    labels[index] = choice.label
+  end
+  local height = #labels
+  return frame("New Folder", height + 6, {
+    {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          { text = " Create ", style = { fg = theme.muted } },
+          {
+            text = widgets.middle_truncate(flow.new_path or "", ROW_COLS - 8),
+            style = { fg = theme.text },
+          },
+        },
+      },
+    },
+    { type = "text", len = 1, text = "" },
+    { type = "box", len = height, children = selector_rows(labels, flow.folder_index, height) },
+    message_row(flow),
+    modal.footer({ { "↑/↓", "choose" } }, "Create", { cancel = "Back" }),
+  }, flow)
+end
+
+local function render_clone(flow)
+  local url = (flow.url.value or ""):match("^%s*(.-)%s*$")
+  return frame("Clone Repository", 8, {
+    textinput.node(flow.url, {
+      label = "Repository URL",
+      focused = true,
+      placeholder = "git@host:owner/repo.git or https://…",
+    }),
+    {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          { text = " Into ", style = { fg = theme.muted } },
+          {
+            text = widgets.middle_truncate(flow.new_path or "", ROW_COLS - 6),
+            style = { fg = theme.text },
+          },
+        },
+      },
+    },
+    message_row(flow),
+    -- No pill until there is a URL: `enter` would only refuse.
+    modal.footer({ { "esc", "back" } }, url ~= "" and "Clone" or nil, { cancel = "Back" }),
+  }, flow)
 end
 
 local function render_branch(flow)
@@ -992,6 +1183,31 @@ local function after_name(flow)
   return flow
 end
 
+--- Carry the repo step on to the next question: the ticked rows, else the row
+--- under the cursor.
+---
+--- An existing worktree under the cursor is not a selection to gather: it names
+--- its own repo, branch and directory, so there is nothing left to ask — unless
+--- rows are ticked, which are what the reader has been gathering.
+local function confirm_repos(flow)
+  local stand_in = cursor_stand_in(flow)
+  if stand_in then
+    flow.selected[stand_in.path] = true
+  end
+  local entry = current_row(flow)
+  local row = entry and entry.row
+  local worktrees, plain = chosen(flow)
+  if row and row.is_worktree and #worktrees == 0 and #plain == 0 then
+    flow.primary = row.parent
+    flow.extras = {}
+    flow.open_worktree = { path = row.path, branch = row.branch }
+    save(after_name(flow))
+  else
+    save(after_repos(flow))
+  end
+  ask(load())
+end
+
 -- ── The plugin ─────────────────────────────────────────────────────────────
 
 --- Whether the browse dropdown is up and holding the keys.
@@ -1017,6 +1233,8 @@ local function move_selection(flow, step)
     flow.branch_index = widgets.clamp(flow.branch_index + step, #(branches().list or {}))
   elseif flow.step == "agent" then
     flow.agent_index = widgets.clamp(flow.agent_index + step, #agents())
+  elseif flow.step == "new_folder" then
+    flow.folder_index = widgets.clamp(flow.folder_index + step, #FOLDER_CHOICES)
   end
 end
 
@@ -1074,22 +1292,42 @@ return {
       desc = "select a repository, or fold a folder",
       group = "New session",
     },
+    -- Chords rather than letters: the repo step types every letter into its
+    -- search, so a bare `w` or `d` is part of a repository's name there.
     {
-      key = "w",
+      key = "alt+w",
       action = "new_session.worktree",
       desc = "give a repository its own worktree",
       group = "New session",
     },
     {
-      key = "d",
+      -- Not `ctrl+d`: that is the global delete-session chord, and a float's
+      -- claim on a global chord is a conflict the registry reports.
+      key = "alt+d",
       action = "new_session.forget",
       desc = "forget a remembered repository",
       group = "New session",
     },
     {
-      key = "/",
-      action = "new_session.search",
-      desc = "filter repositories",
+      key = "delete",
+      action = "new_session.forget",
+      desc = "forget a remembered repository",
+      group = "New session",
+    },
+    -- Confirm the repo step from any focus — the path field included — with the
+    -- ticked rows, else the cursor row. `ctrl+enter` reaches a terminal only
+    -- under the kitty keyboard protocol; `alt+enter` is the same action for
+    -- every other terminal.
+    {
+      key = "ctrl+enter",
+      action = "new_session.confirm",
+      desc = "go on with the ticked repositories, or the one under the cursor",
+      group = "New session",
+    },
+    {
+      key = "alt+enter",
+      action = "new_session.confirm",
+      desc = "go on with the ticked repositories, or the one under the cursor",
       group = "New session",
     },
     {
@@ -1122,7 +1360,7 @@ return {
     -- through five signatures, so a spinner can animate in any of them. Not
     -- saved: it belongs to this frame.
     flow.elapsed = ctx.elapsed
-    flow.suggestion = flow.step == "repo" and suggestion_for(flow) or ""
+    flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
     -- A path just added is selected, which is v1's select-or-add. The row cannot
     -- be found by name — the expansion of a `~` on a remote host happened on the
@@ -1133,7 +1371,16 @@ return {
     -- every repository added. Consumed only once the write has landed and the
     -- list has been re-read, or it would select whatever was previously on top.
     if flow.select_newest and not bookmark_pending() and not bookmarks().loading then
-      local newest = repo_picker.newest(bookmarks().rows or {})
+      -- A failure that was not on record when the write was issued is this
+      -- write's: the newest row is then whatever was newest before it, and
+      -- ticking that would pick a repository nobody chose.
+      local failed = false
+      for id, subject in pairs(bookmark_failures()) do
+        if subject == flow.awaiting_path and not (flow.failures_before or {})[id] then
+          failed = true
+        end
+      end
+      local newest = not failed and repo_picker.newest(bookmarks().rows or {})
       if newest then
         flow.selected[newest.path] = true
         -- The cursor follows the selection rather than resetting to the top, for
@@ -1141,6 +1388,9 @@ return {
         flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
+      flow.awaiting_path = nil
+      flow.failures_before = nil
+      flow.pending_label = nil
       save(flow)
     end
 
@@ -1154,6 +1404,10 @@ return {
       return render_field("Session Name", "Name", flow.name, flow, suggested_name(flow))
     elseif flow.step == "worktree" then
       return render_field("Branch Name", "Branch", flow.branch, flow)
+    elseif flow.step == "new_folder" then
+      return render_new_folder(flow)
+    elseif flow.step == "clone" then
+      return render_clone(flow)
     end
     return render_agent(flow)
   end,
@@ -1182,16 +1436,17 @@ return {
     if not flow then
       return false
     end
-    -- A text field owns every printable key while it has focus, so the letter
-    -- actions below defer to it.
-    local typing = flow.step == "repo" and flow.focus ~= "list"
+    -- Every step with a text field types the letters `j`/`k`; the repo step
+    -- always has one focused (its search or its path).
+    local typing = flow.step == "repo"
       or flow.step == "name"
       or flow.step == "worktree"
+      or flow.step == "clone"
+    local in_search = flow.step == "repo" and flow.focus == "search"
     flow.message = nil
 
     if action == "new_session.next" or action == "new_session.previous" then
-      -- `j`/`k` are letters, so a step with a text field has to be able to type
-      -- them. The arrows are not, and are handled in `on_key` so they move the
+      -- The arrows are not letters, and are handled in `on_key` so they move the
       -- list even mid-typing — which is what v1's picker does.
       if typing then
         return false
@@ -1202,11 +1457,19 @@ return {
     end
 
     if flow.step ~= "repo" then
+      -- Elsewhere the chord is still an `enter`: `on_key` matches the key name
+      -- and ignores the modifier.
       return false
     end
 
-    if action == "new_session.toggle" then
-      if typing then
+    if action == "new_session.confirm" then
+      flow.browse = false
+      confirm_repos(flow)
+      return true
+    elseif action == "new_session.toggle" then
+      -- A space is a character the path field is entitled to; the search gives
+      -- it up, because no repository is found by typing one.
+      if not in_search then
         return false
       end
       local entry = current_row(flow)
@@ -1224,7 +1487,7 @@ return {
       save(flow)
       return true
     elseif action == "new_session.worktree" then
-      if typing then
+      if dropdown_open(flow) then
         return false
       end
       local entry = current_row(flow)
@@ -1245,28 +1508,26 @@ return {
       save(flow)
       return true
     elseif action == "new_session.forget" then
-      if typing then
-        return false
+      -- Only from the search: in the path field `alt+d` and `delete` are the
+      -- edits every field takes. In the search they still delete forward while
+      -- there is text ahead of the caret, and mean "forget" only past the end,
+      -- where they would otherwise do nothing — the way readline's `ctrl+d`
+      -- deletes a character or, on an empty line, ends the input.
+      local ahead = widgets.chars(flow.search.value or "") > (flow.search.cursor or 0)
+      if not in_search or (ahead and textinput.key(flow.search, { key = "delete" })) then
+        save(flow)
+        return in_search
       end
       local entry = current_row(flow)
       if entry then
         if entry.row.parent then
-          flow.message = "Child of a parent bookmark — delete the parent header instead"
+          flow.message = "Part of a folder — forget the folder header instead"
         else
           command("bookmark", { host = flow.host, repo = entry.row.path, action = "remove" })
           flow.selected[entry.row.path] = nil
           flow.worktree[entry.row.path] = nil
         end
       end
-      save(flow)
-      return true
-    elseif action == "new_session.search" then
-      if typing then
-        return false
-      end
-      flow.search = textinput.new("")
-      flow.focus = "search"
-      flow.cursor = 1
       save(flow)
       return true
     elseif action == "new_session.import" then
@@ -1278,7 +1539,7 @@ return {
         command("bookmark", { host = flow.host, repo = path, action = "parent" })
         textinput.clear(flow.input)
         flow.browse = false
-        flow.focus = "list"
+        flow.focus = "search"
       end
       save(flow)
       return true
@@ -1311,10 +1572,15 @@ return {
     if name == "esc" then
       if flow.step == "repo" and flow.browse then
         flow.browse = false
-      elseif flow.step == "repo" and flow.search then
-        flow.search = nil
-        flow.focus = "list"
+      elseif flow.step == "repo" and flow.focus == "search" and flow.search.value ~= "" then
+        textinput.clear(flow.search)
         flow.cursor = 1
+      elseif flow.step == "new_folder" then
+        -- Back to the path, still typed, so a slip in the name is one edit away.
+        flow.step = "repo"
+        flow.focus = "input"
+      elseif flow.step == "clone" then
+        flow.step = "new_folder"
       else
         save(nil)
         ask(nil)
@@ -1406,6 +1672,60 @@ return {
       return false
     end
 
+    if flow.step == "clone" then
+      if name == "enter" then
+        local url = (flow.url.value or ""):match("^%s*(.-)%s*$")
+        if url == "" then
+          flow.message = "Paste the URL of the repository to clone"
+          save(flow)
+          return true
+        end
+        command("bookmark", {
+          host = flow.host,
+          repo = flow.new_path,
+          action = "clone",
+          text = url,
+        })
+        flow.step = "repo"
+        flow.focus = "search"
+        await_new_row(flow, flow.new_path)
+        flow.pending_label = "cloning…"
+        textinput.clear(flow.input)
+        save(flow)
+        ask(flow)
+        return true
+      end
+      if textinput.key(flow.url, key) then
+        save(flow)
+        return true
+      end
+      return false
+    end
+
+    if flow.step == "new_folder" then
+      if name == "enter" then
+        local choice = FOLDER_CHOICES[widgets.clamp(flow.folder_index, #FOLDER_CHOICES)]
+        if choice.action == "clone" then
+          -- The URL is still to be asked; nothing is made until it is.
+          flow.step = "clone"
+          textinput.clear(flow.url)
+          save(flow)
+          return true
+        end
+        command("bookmark", { host = flow.host, repo = flow.new_path, action = choice.action })
+        -- Back on the repositories with the search focused, so the new row —
+        -- picked once it lands, as a typed path's is — goes on with one `enter`.
+        flow.step = "repo"
+        flow.focus = "search"
+        await_new_row(flow, flow.new_path)
+        textinput.clear(flow.input)
+        save(flow)
+        ask(flow)
+        return true
+      end
+      return false
+    end
+
     -- The repo step: the list, the input, the search bar and the dropdown.
     if dropdown_open(flow) then
       local entries = browse_entries(flow)
@@ -1416,7 +1736,7 @@ return {
         return true
       elseif name == "backtab" then
         flow.browse = false
-        flow.focus = "list"
+        flow.focus = "search"
         save(flow)
         return true
       elseif name == "enter" then
@@ -1430,8 +1750,8 @@ return {
             command("bookmark", { host = flow.host, repo = joined, action = "add" })
             textinput.clear(flow.input)
             flow.browse = false
-            flow.focus = "list"
-            flow.select_newest = true
+            flow.focus = "search"
+            await_new_row(flow, joined)
           else
             textinput.set(flow.input, joined .. "/")
             flow.browse_index = 1
@@ -1445,12 +1765,18 @@ return {
     end
 
     if flow.focus == "search" then
-      if name == "enter" then
-        flow.focus = "list"
+      if name == "tab" then
+        enter_path_field(flow)
         save(flow)
+        ask(flow)
+        return true
+      elseif name == "enter" then
+        confirm_repos(flow)
         return true
       end
       if textinput.key(flow.search, key) then
+        -- The visible set just changed, so the cursor starts again at the best
+        -- match rather than pointing at whatever now occupies its old position.
         flow.cursor = 1
         save(flow)
         return true
@@ -1476,22 +1802,34 @@ return {
         return true
       elseif name == "backtab" then
         flow.browse = false
-        flow.focus = "list"
+        flow.focus = "search"
         save(flow)
         return true
       elseif name == "enter" then
         local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
-        if path ~= "" then
+        if names_missing_folder(flow) then
+          -- Nothing is made yet: what goes into it is the next question.
+          flow.new_path = typed_target(flow)
+          flow.folder_index = 1
+          flow.step = "new_folder"
+          flow.browse = false
+        elseif path ~= "" and not untouched(flow) then
           -- Validated on the target machine, not here: a missing path is refused
           -- by the command and reported, with the text left to be corrected.
           command("bookmark", { host = flow.host, repo = path, action = "add" })
           textinput.clear(flow.input)
+          enter_path_field(flow)
           flow.browse = false
-          flow.select_newest = true
+          await_new_row(flow, path)
         end
         save(flow)
         ask(flow)
         return true
+      end
+      -- `/` or `~` typed over the untouched start is a path of its own, the way
+      -- an address bar takes a new address; anything else is a name under it.
+      if untouched(flow) and (key.char == "/" or key.char == "~") then
+        textinput.clear(flow.input)
       end
       if textinput.key(flow.input, key) then
         -- The visible set just changed, so the cursor starts again rather than
@@ -1502,34 +1840,6 @@ return {
         return true
       end
       return false
-    end
-
-    -- The list.
-    if name == "tab" then
-      flow.focus = "input"
-      save(flow)
-      return true
-    elseif name == "enter" then
-      -- An existing worktree is not a selection to gather: it names its own
-      -- repo, branch and directory, so there is nothing left to ask.
-      local entry = current_row(flow)
-      local row = entry and entry.row
-      if row and row.is_worktree then
-        flow.primary = row.parent
-        flow.extras = {}
-        flow.open_worktree = { path = row.path, branch = row.branch }
-        save(after_name(flow))
-        ask(load())
-        return true
-      end
-      save(after_repos(flow))
-      ask(load())
-      return true
-    elseif name == "up" or name == "down" then
-      local count = math.max(1, #rows_for(flow))
-      flow.cursor = math.max(1, math.min((flow.cursor or 1) + (name == "down" and 1 or -1), count))
-      save(flow)
-      return true
     end
     return false
   end,
@@ -1550,7 +1860,7 @@ return {
         return false
       end
       flow.cursor = index
-      flow.focus = "list"
+      flow.focus = "search"
       save(flow)
       return true
     end
@@ -1564,6 +1874,8 @@ return {
       flow.branch_index = index
     elseif flow.step == "agent" then
       flow.agent_index = index
+    elseif flow.step == "new_folder" then
+      flow.folder_index = index
     end
     save(flow)
     return true

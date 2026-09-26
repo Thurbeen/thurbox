@@ -68,4 +68,55 @@ function pathpicker.suggestion(typed, listed)
   return shown[1].name:sub(#prefix + 1) .. "/"
 end
 
+--- Where a new path most likely goes: the deepest directory that holds every
+--- remembered repository.
+---
+--- Compared by whole components, over each repository's PARENT — so one
+--- repository answers its own parent, and `/src/app/x` beside `/src/apple/y`
+--- answers `/src` rather than the character prefix `/src/app`. Folder headers
+--- are folders rather than repositories in one, and an `offered` row is the
+--- kernel's suggestion rather than the user's memory; neither says where the
+--- user keeps their code. With nothing to go on the answer is home.
+function pathpicker.common_root(rows)
+  local common, absolute
+  for _, row in ipairs(rows or {}) do
+    if not row.is_parent and not row.offered and row.path then
+      local parts = {}
+      for part in row.path:gmatch("[^/]+") do
+        parts[#parts + 1] = part
+      end
+      parts[#parts] = nil
+      local rooted = row.path:sub(1, 1) == "/"
+      if not common then
+        common, absolute = parts, rooted
+      elseif rooted ~= absolute then
+        -- `~/x` beside `/x` share nothing a string can say.
+        return "~"
+      else
+        local shared = 0
+        while shared < #common and common[shared + 1] == parts[shared + 1] do
+          shared = shared + 1
+        end
+        for index = #common, shared + 1, -1 do
+          common[index] = nil
+        end
+      end
+    end
+  end
+  if not common then
+    return "~"
+  end
+  local joined = table.concat(common, "/")
+  if absolute then
+    return "/" .. joined
+  end
+  return joined ~= "" and joined or "~"
+end
+
+--- The path field's starting value: `common_root` as a directory to type under.
+function pathpicker.start(rows)
+  local root = pathpicker.common_root(rows)
+  return root == "/" and "/" or (root .. "/")
+end
+
 return pathpicker
