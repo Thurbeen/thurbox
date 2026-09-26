@@ -286,7 +286,9 @@ fn probe(host: &HostDef) -> Option<HostEnv> {
 /// waiting for EOF there would outlive any timeout. Only the first
 /// [`MAX_PROBE_OUTPUT`] bytes are kept — a `PATH` or three — and the rest is
 /// drained unread, so a chatty rc file costs neither memory nor a blocked
-/// writer.
+/// writer. A line the cap cuts through is dropped whole: half a `PATH` would
+/// parse as a shorter, wrong one, where a missing line is an honest "not
+/// read".
 fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
     let mut child = cmd
         .stdin(Stdio::null())
@@ -318,9 +320,13 @@ fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<Stri
             Err(_) => return None,
         }
     }
-    let out = rx
+    let mut out = rx
         .recv_timeout(timeout.saturating_sub(started.elapsed()))
         .ok()?;
+    if out.len() as u64 >= MAX_PROBE_OUTPUT {
+        let complete = out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        out.truncate(complete);
+    }
     String::from_utf8(out).ok()
 }
 
@@ -486,11 +492,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn probe_output_is_capped() {
+    fn probe_output_is_capped_at_a_whole_line() {
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg("yes 0123456789 | head -c 1000000");
         let out = run_bounded(cmd, Duration::from_secs(10)).expect("answered");
-        assert_eq!(out.len() as u64, MAX_PROBE_OUTPUT);
+        assert!(out.len() as u64 <= MAX_PROBE_OUTPUT);
+        assert!(out.len() as u64 > MAX_PROBE_OUTPUT - 11);
+        assert!(out.ends_with("0123456789\n"), "cut mid-line");
+    }
+
+    /// A `PATH` line the cap cuts through is not read as a shorter `PATH`.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_line_cut_by_the_cap_is_dropped_not_shortened() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(
+            "echo '@base /usr/bin'; printf '@shell /a'; yes :/pad | head -c 100000 | tr -d '\\n'",
+        );
+        let out = run_bounded(cmd, Duration::from_secs(10)).expect("answered");
+        let env = parse_probe(&out).expect("the whole @base line survives");
+        assert_eq!(env.base, s(&["/usr/bin"]));
+        assert_eq!(env.shell_login, None);
     }
 
     #[cfg(unix)]
