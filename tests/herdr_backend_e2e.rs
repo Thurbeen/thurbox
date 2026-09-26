@@ -369,9 +369,21 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
         .clone();
     let mut adopted = restarted.adopt(&backend_id, 30, 90, Some(history))?;
     assert!(adopted.seed_len > 0);
-    adopted.input.write_all(b"restart-input\\n")?;
+    let output = std::mem::replace(&mut adopted.output, Box::new(std::io::empty()));
+    let output = pump_one_byte_reads(output);
+    adopted.input.write_all(b"restart-input\n")?;
     adopted.input.flush()?;
+    let observed = output_until(&output, Duration::from_secs(10), |bytes| {
+        bytes
+            .windows(b"restart-input".len())
+            .any(|part| part == b"restart-input")
+    })
+    .context("waiting for live output after adopting the pane")?;
+    assert!(observed
+        .windows(b"restart-input".len())
+        .any(|part| part == b"restart-input"));
     restarted.kill(&backend_id)?;
+    drop(output);
     drop(adopted);
     Ok(())
 }
