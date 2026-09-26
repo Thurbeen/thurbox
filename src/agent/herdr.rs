@@ -14,18 +14,79 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 
-use crate::agent::backend::{
-    AdoptedSession, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession,
-};
+use crate::agent::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
 use crate::agent::tmux::WindowRole;
+
+fn parse_version(output: &str) -> Result<(u64, u64, u64)> {
+    let token = output
+        .split_whitespace()
+        .find(|part| {
+            part.trim_start_matches('v')
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        })
+        .context("version number missing")?;
+    let token = token.trim_start_matches('v');
+    let token = token.split('+').next().unwrap_or(token);
+    if token.contains('-') {
+        bail!("pre-release Herdr versions are not supported");
+    }
+    let mut parts = token.split('.');
+    let major = parts.next().context("major version missing")?.parse()?;
+    let minor = parts.next().context("minor version missing")?.parse()?;
+    let patch = parts.next().context("patch version missing")?.parse()?;
+    Ok((major, minor, patch))
+}
 
 pub const BACKEND_TYPE: &str = "herdr";
 const LABEL_PREFIX: &str = "thurbox";
+const MINIMUM_VERSION: (u64, u64, u64) = (0, 9, 1);
 
 struct TerminalStream {
     child: Arc<Mutex<Child>>,
     input: ChildStdin,
     lines: Receiver<std::io::Result<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn herdr_version_parser_accepts_minimum_and_newer_versions() {
+        assert_eq!(parse_version("herdr 0.9.1").unwrap(), (0, 9, 1));
+        assert_eq!(parse_version("herdr v0.10.0+build.2").unwrap(), (0, 10, 0));
+        assert_eq!(parse_version("herdr 1.0.0").unwrap(), (1, 0, 0));
+    }
+
+    #[test]
+    fn herdr_version_parser_rejects_old_and_malformed_versions() {
+        assert!(parse_version("herdr 0.9.0").unwrap() < MINIMUM_VERSION);
+        assert!(parse_version("herdr 0.9.1-rc.1").is_err());
+        assert!(parse_version("herdr unknown").is_err());
+    }
+
+    #[test]
+    fn reader_skips_empty_frames_and_reads_the_next_frame() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(r#"{"type":"terminal.frame","data":""}"#.into()))
+            .unwrap();
+        sender
+            .send(Ok(r#"{"type":"terminal.frame","data":"eA=="}"#.into()))
+            .unwrap();
+        let child = Command::new("sh").arg("-c").arg("sleep 5").spawn().unwrap();
+        let mut reader = StreamReader {
+            child: Arc::new(Mutex::new(child)),
+            lines: receiver,
+            pending_line: None,
+            pending: VecDeque::new(),
+        };
+        let mut byte = [0];
+        assert_eq!(reader.read(&mut byte).unwrap(), 1);
+        assert_eq!(byte, [b'x']);
+    }
 }
 
 #[derive(Default)]
@@ -34,6 +95,15 @@ pub struct HerdrBackend {
 }
 
 impl HerdrBackend {
+    fn close_pane(&self, pane: &str) {
+        if let Err(error) = self.cli(&["pane", "close", pane]) {
+            tracing::warn!(
+                pane,
+                "could not close Herdr pane after spawn failure: {error:#}"
+            );
+        }
+    }
+
     fn cli(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = Command::new("herdr")
             .args(args)
@@ -228,6 +298,9 @@ impl Read for StreamReader {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
                 .map_err(std::io::Error::other)?;
+            if bytes.is_empty() {
+                continue;
+            }
             let count = bytes.len().min(buf.len());
             buf[..count].copy_from_slice(&bytes[..count]);
             self.pending.extend(bytes.into_iter().skip(count));
@@ -292,6 +365,17 @@ impl SessionBackend for HerdrBackend {
         if !out.status.success() {
             bail!("Herdr CLI is unavailable");
         }
+        let version_output = String::from_utf8_lossy(&out.stdout);
+        let version =
+            parse_version(&version_output).context("could not parse Herdr CLI version")?;
+        if version < MINIMUM_VERSION {
+            bail!(
+                "Herdr 0.9.1 or newer is required; found {}.{}.{}",
+                version.0,
+                version.1,
+                version.2
+            );
+        }
         Ok(())
     }
     fn ensure_ready(&self) -> Result<()> {
@@ -319,7 +403,13 @@ impl SessionBackend for HerdrBackend {
             child,
             input,
             lines,
-        } = self.terminal(&pane, cols, rows)?;
+        } = match self.terminal(&pane, cols, rows) {
+            Ok(stream) => stream,
+            Err(error) => {
+                self.close_pane(&pane);
+                return Err(error);
+            }
+        };
         let initial_frame = match Self::wait_initial_frame(&lines, Duration::from_secs(5)) {
             Ok(frame) => frame,
             Err(error) => {
@@ -327,6 +417,7 @@ impl SessionBackend for HerdrBackend {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+                self.close_pane(&pane);
                 bail!("Herdr terminal did not become ready: {error:#}");
             }
         };
@@ -344,6 +435,7 @@ impl SessionBackend for HerdrBackend {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Herdr stream lock poisoned"))?
                 .remove(&pane);
+            self.close_pane(&pane);
             return Err(error);
         }
         let output = StreamReader {
@@ -357,7 +449,7 @@ impl SessionBackend for HerdrBackend {
             backend_id: pane,
             output: Box::new(output),
             input: Box::new(writer),
-            size: Some(PaneSize::default()),
+            size: None,
         })
     }
     fn adopt(
@@ -390,7 +482,7 @@ impl SessionBackend for HerdrBackend {
             output: Box::new(std::io::Cursor::new(seed).chain(output)),
             input: Box::new(writer),
             seed_len,
-            size: Some(PaneSize::default()),
+            size: None,
         })
     }
     fn capture_history(&self, backend_id: &str) -> Result<Vec<u8>> {

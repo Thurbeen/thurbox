@@ -1,3 +1,5 @@
+#![cfg(any(target_os = "linux", target_os = "macos"))]
+
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -266,9 +268,16 @@ fn strip_terminal_controls(bytes: &[u8]) -> Vec<u8> {
 
 #[test]
 fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Result<()> {
-    let version = Command::new("herdr").arg("--version").output()?;
+    let version = match Command::new("herdr").arg("--version").output() {
+        Ok(version) => version,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping real Herdr E2E: herdr binary is not installed");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     if !version.status.success() {
-        anyhow::bail!("Herdr CLI unavailable");
+        anyhow::bail!("Herdr CLI version command failed: {version:?}");
     }
     let temp = TempDir::new()?;
     let config = temp.path().join("config.toml");
@@ -286,7 +295,10 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
         .args(["status", "server", "--json"]);
     let status = output_with_timeout(status_command, Duration::from_secs(1))?;
     let status: serde_json::Value = serde_json::from_slice(&status.stdout)?;
-    assert_eq!(status["version"], "0.9.1");
+    assert!(
+        status["version"].as_str().is_some(),
+        "missing Herdr version: {status}"
+    );
     assert_eq!(status["running"], true);
     assert!(
         status["socket"]
@@ -323,6 +335,10 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
         24,
         80,
     )?;
+    assert!(
+        session.size.is_none(),
+        "Herdr delegates grid size to the UI rect"
+    );
     let output = std::mem::replace(&mut session.output, Box::new(std::io::empty()));
     let output = pump_one_byte_reads(output);
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -354,6 +370,10 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
     let _initial_frame = output_until(&output, Duration::from_secs(10), |bytes| !bytes.is_empty())
         .context("waiting for the initial terminal frame")?;
     backend.resize(&session.backend_id, 30, 90)?;
+    assert!(
+        session.size.is_none(),
+        "resize keeps the UI rect authoritative"
+    );
     session.input.write_all(&[0xe2])?;
     session.input.write_all(&[0x82])?;
     session.input.write_all(&[0xac])?;
@@ -411,6 +431,10 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
         .backend_id
         .clone();
     let mut adopted = restarted.adopt(&backend_id, 30, 90, Some(history))?;
+    assert!(
+        adopted.size.is_none(),
+        "adopted Herdr panes follow the UI rect"
+    );
     assert!(adopted.seed_len > 0);
     let output = std::mem::replace(&mut adopted.output, Box::new(std::io::empty()));
     let output = pump_one_byte_reads(output);
@@ -458,6 +482,44 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
         );
     }
     thurbox::paths::set_test_dir(temp.path().join("thurbox-home"));
+    let failed_db = thurbox::storage::Database::open_in_memory()?;
+    failed_db.conn_ref().execute_batch(
+        "CREATE TRIGGER herdr_e2e_reject_insert BEFORE INSERT ON sessions \
+         BEGIN SELECT RAISE(ABORT, 'forced Herdr E2E insert failure'); END;",
+    )?;
+    let panes_before = isolated_json(&config, &["pane", "list"])?["result"]["panes"]
+        .as_array()
+        .context("Herdr panes missing before forced persistence failure")?
+        .iter()
+        .filter_map(|pane| pane["pane_id"].as_str().map(str::to_owned))
+        .collect::<std::collections::HashSet<_>>();
+    let failure = thurbox::session_ops::spawn::spawn_session_headless(
+        &failed_db,
+        thurbox::session_ops::spawn::SpawnRequest {
+            name: "herdr-persistence-failure-e2e".into(),
+            repo_path: repo.clone(),
+            command: Some("/bin/sh".into()),
+            args: vec!["-c".into(), "sleep 30".into()],
+            multiplexer: Some(BACKEND_TYPE.into()),
+            ..Default::default()
+        },
+    );
+    anyhow::ensure!(
+        failure
+            .as_ref()
+            .is_err_and(|error| error.contains("forced Herdr E2E insert failure")),
+        "expected the injected persistence failure, got {failure:?}"
+    );
+    let panes_after = isolated_json(&config, &["pane", "list"])?["result"]["panes"]
+        .as_array()
+        .context("Herdr panes missing after forced persistence failure")?
+        .iter()
+        .filter_map(|pane| pane["pane_id"].as_str().map(str::to_owned))
+        .collect::<std::collections::HashSet<_>>();
+    anyhow::ensure!(
+        panes_after == panes_before,
+        "failed DB upsert leaked a Herdr pane: before {panes_before:?}, after {panes_after:?}"
+    );
     let db = thurbox::storage::Database::open_in_memory()?;
     let spawned = thurbox::session_ops::spawn::spawn_session_headless(
         &db,

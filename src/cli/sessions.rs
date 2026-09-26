@@ -1220,10 +1220,7 @@ fn capture_pane(
             &session.backend_id,
         )
         .map_err(|e| format!("Herdr capture: {e:#}"))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let mut captured = text.lines().rev().take(lines as usize).collect::<Vec<_>>();
-        captured.reverse();
-        captured.join("\n")
+        format_herdr_capture(&bytes, lines, ansi)
     } else {
         crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
             .map_err(|e| format!("capture_pane_text: {e}"))?
@@ -1257,6 +1254,60 @@ fn capture_pane(
         "thurbox-cli session capture <id> --lines 40   a shorter tail",
         "thurbox-cli session send <id> <text>   type into the pane",
     ]))
+}
+
+fn strip_terminal_sequences(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b || index + 1 >= bytes.len() {
+            output.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match bytes[index] {
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+fn format_herdr_capture(bytes: &[u8], lines: u32, ansi: bool) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let text = if ansi {
+        text.into_owned()
+    } else {
+        strip_terminal_sequences(&text)
+    };
+    let mut captured = text.lines().rev().take(lines as usize).collect::<Vec<_>>();
+    captured.reverse();
+    captured.join("\n")
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
@@ -2327,6 +2378,13 @@ fn register_running_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_capture_removes_ansi_but_styled_capture_keeps_it() {
+        let sample = b"\x1b[31mred\x1b[0m\n";
+        assert_eq!(format_herdr_capture(sample, 1, false), "red");
+        assert_eq!(format_herdr_capture(sample, 1, true), "\x1b[31mred\x1b[0m");
+    }
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

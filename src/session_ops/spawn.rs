@@ -213,7 +213,7 @@ pub fn spawn_session_headless_with_progress(
         if choice != crate::agent::herdr::BACKEND_TYPE {
             return Err(format!("unsupported multiplexer '{choice}'"));
         }
-        crate::agent::backend::SessionBackend::check_available(
+        crate::agent::backend::SessionBackend::ensure_ready(
             &crate::agent::herdr::HerdrBackend::default(),
         )
         .map_err(|e| format!("{e:#}"))?;
@@ -399,13 +399,15 @@ pub fn spawn_session_headless_with_progress(
             80,
         )
         .map_err(|e| format!("Failed to spawn Herdr pane: {e:#}"))?;
-        crate::agent::SessionBackend::stamp_window(
+        if let Err(error) = crate::agent::SessionBackend::stamp_window(
             &backend,
             &spawned.backend_id,
             &stamp,
             crate::agent::tmux::WindowRole::Agent,
-        )
-        .map_err(|e| format!("Failed to stamp Herdr pane: {e:#}"))?;
+        ) {
+            discard_orphaned_window(None, &backend_type, &stamp, &req.name, &spawned.backend_id);
+            return Err(format!("Failed to stamp Herdr pane: {error:#}"));
+        }
         spawned.backend_id
     } else {
         launch_window(
@@ -448,7 +450,13 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(
+            host.as_ref(),
+            &shared.backend_type,
+            &stamp,
+            &req.name,
+            &backend_id,
+        );
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -570,16 +578,26 @@ fn launch_window(
     }
 }
 
-/// Tear down the window a spawn opened but could not persist as a row — only
-/// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
-    // Ownership-gated, for the same reason the reap is: this tears down a
-    // window that never became a row, so it must kill only the one it just
-    // spawned. `kill_window`'s resolution would reach the `tb-<name>`
-    // window when the pane id is unusable — and it is unusable exactly
-    // where it matters, since psmux records none — which on a name two
-    // sessions share destroys a live one. Leaking the window we already
-    // leaked is the cheap failure; killing someone else's is not.
+/// Tear down the exact backend object a spawn opened but could not persist.
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    backend_type: &str,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
+    // A Herdr pane id directly identifies the pane this call just spawned.
+    if backend_type == crate::agent::herdr::BACKEND_TYPE {
+        if let Err(error) = crate::agent::SessionBackend::kill(
+            &crate::agent::herdr::HerdrBackend::default(),
+            backend_id,
+        ) {
+            tracing::error!("failed to close orphaned Herdr pane for '{name}': {error:#}");
+        }
+        return;
+    }
+    // tmux's name fallback can reach a same-named live window when the pane id
+    // is unavailable, so its cleanup remains ownership-gated.
     let cleanup = match host {
         Some(h) => crate::agent::tmux::kill_remote_windows(
             h,
@@ -1471,7 +1489,7 @@ pub(crate) fn backend_type_for_choice(
         if choice != crate::agent::herdr::BACKEND_TYPE {
             return Err(format!("unsupported multiplexer '{choice}'"));
         }
-        crate::agent::backend::SessionBackend::check_available(
+        crate::agent::backend::SessionBackend::ensure_ready(
             &crate::agent::herdr::HerdrBackend::default(),
         )
         .map_err(|e| format!("{e:#}"))?;
