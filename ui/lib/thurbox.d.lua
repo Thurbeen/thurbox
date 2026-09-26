@@ -470,7 +470,7 @@
 ---@field kind string
 ---@field session string
 ---@field phase string
----@field subject? string
+---@field subject? string A `create`'s repository name, or a `bookmark` write's path as issued.
 ---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 
@@ -887,7 +887,8 @@ function require(name) end
 
 ---@class (exact) thurbox.cmd.Bookmark
 ---@field repo string The path to remember or forget.
----@field action "add"|"remove"|"parent"
+---@field action "add"|"remove"|"parent"|"create"|"init"|"clone" `create`/`init`/`clone` make the directory first (it must not exist, or be empty), then remember it.
+---@field text? string The URL to clone, for `clone`.
 ---@field host? string
 
 ---@class (exact) thurbox.cmd.Focus

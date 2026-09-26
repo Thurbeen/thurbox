@@ -2154,3 +2154,169 @@ fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
     assert!(!clean.dirty);
     assert_eq!(clean_calls, 1, "one status, and it answered everything");
 }
+
+// ── creating a directory for a new repository ──────────────────────────────
+
+#[test]
+fn a_new_directory_is_created_empty_or_initialised() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let empty = dir.path().join("deep/er/empty");
+    create_repo_dir(None, &empty, &NewRepo::Empty).expect("empty");
+    assert!(empty.is_dir());
+    assert!(!empty.join(".git").exists());
+
+    let init = dir.path().join("fresh");
+    create_repo_dir(None, &init, &NewRepo::Init).expect("init");
+    assert!(is_git_repo(&init));
+}
+
+#[test]
+fn a_clone_lands_in_the_new_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = dir.path().join("source");
+    seed_repo(&source, "README.md", "hello");
+    let target = dir.path().join("code/cloned");
+    create_repo_dir(
+        None,
+        &target,
+        &NewRepo::Clone {
+            url: source.to_string_lossy().to_string(),
+        },
+    )
+    .expect("clone");
+    assert!(target.join("README.md").is_file());
+}
+
+#[test]
+fn a_failed_clone_takes_away_the_directory_it_created() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("cloned");
+    let url = dir
+        .path()
+        .join("no-such-repo")
+        .to_string_lossy()
+        .to_string();
+    let error = create_repo_dir(None, &target, &NewRepo::Clone { url }).unwrap_err();
+    assert!(format!("{error:#}").contains("clone"), "{error:#}");
+    assert!(!target.exists(), "no half-made directory is left behind");
+}
+
+#[test]
+fn a_directory_that_already_holds_something_is_refused_and_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("taken");
+    std::fs::create_dir_all(&target).expect("mkdir");
+    std::fs::write(target.join("keep.txt"), "mine").expect("write");
+    let error = create_repo_dir(None, &target, &NewRepo::Init).unwrap_err();
+    assert!(format!("{error:#}").contains("not empty"), "{error:#}");
+    assert!(target.join("keep.txt").is_file());
+    assert!(!target.join(".git").exists());
+}
+
+#[test]
+fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("mkdir-ed");
+    std::fs::create_dir_all(&target).expect("mkdir");
+    create_repo_dir(None, &target, &NewRepo::Init).expect("init into empty");
+    assert!(is_git_repo(&target));
+
+    let other = dir.path().join("also-empty");
+    std::fs::create_dir_all(&other).expect("mkdir");
+    let url = dir
+        .path()
+        .join("no-such-repo")
+        .to_string_lossy()
+        .to_string();
+    create_repo_dir(None, &other, &NewRepo::Clone { url }).unwrap_err();
+    assert!(
+        other.is_dir(),
+        "a directory the user made is not ours to remove"
+    );
+}
+
+/// Run the remote POSIX script here, through `sh -c`, as a host's shell would.
+fn run_new_repo_script(path: &Path, what: &NewRepo) -> std::process::Output {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg(create_repo_dir_script(&path.to_string_lossy(), what));
+    scrub_git_location_env(&mut cmd);
+    cmd.output().expect("sh")
+}
+
+#[test]
+fn the_remote_script_creates_initialises_and_clones_as_the_local_path_does() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let init = dir.path().join("with space/init");
+    assert!(run_new_repo_script(&init, &NewRepo::Init).status.success());
+    assert!(is_git_repo(&init));
+
+    let empty = dir.path().join("empty");
+    assert!(run_new_repo_script(&empty, &NewRepo::Empty)
+        .status
+        .success());
+    assert!(empty.is_dir());
+
+    let source = dir.path().join("source");
+    seed_repo(&source, "README.md", "hello");
+    let cloned = dir.path().join("it's cloned");
+    let url = source.to_string_lossy().to_string();
+    assert!(run_new_repo_script(&cloned, &NewRepo::Clone { url })
+        .status
+        .success());
+    assert!(cloned.join("README.md").is_file());
+}
+
+#[test]
+fn the_remote_script_refuses_what_is_taken_and_cleans_up_what_it_made() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let taken = dir.path().join("taken");
+    std::fs::create_dir_all(&taken).expect("mkdir");
+    std::fs::write(taken.join("keep.txt"), "mine").expect("write");
+    let refused = run_new_repo_script(&taken, &NewRepo::Init);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("not empty"));
+    assert!(taken.join("keep.txt").is_file());
+
+    let target = dir.path().join("cloned");
+    let url = dir
+        .path()
+        .join("no-such-repo")
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        !run_new_repo_script(&target, &NewRepo::Clone { url: url.clone() })
+            .status
+            .success()
+    );
+    assert!(!target.exists());
+
+    // A directory that was already there, empty, was not this script's to make,
+    // so it is not this script's to remove either.
+    let theirs = dir.path().join("theirs");
+    std::fs::create_dir_all(&theirs).expect("mkdir");
+    assert!(!run_new_repo_script(&theirs, &NewRepo::Clone { url })
+        .status
+        .success());
+    assert!(theirs.is_dir());
+}
+
+#[test]
+fn the_windows_script_quotes_the_path_and_the_url() {
+    let script = create_repo_dir_script_windows(
+        "C:/code/it's",
+        &NewRepo::Clone {
+            url: "https://example.com/o'k.git".into(),
+        },
+    );
+    assert!(script.contains("'C:/code/it''s'"), "{script}");
+    assert!(
+        script.contains("'https://example.com/o''k.git'"),
+        "{script}"
+    );
+    assert!(script.contains("clone"), "{script}");
+    // A create that fails must fail loudly rather than pass with no folder, and
+    // must not be told to succeed over something already there.
+    assert!(script.contains("-ErrorAction Stop"), "{script}");
+    assert!(!script.contains("-Force -Path"), "{script}");
+}
