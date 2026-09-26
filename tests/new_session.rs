@@ -231,10 +231,13 @@ fn drawn(host: &LuaHost, world: &World) -> String {
     let Some(float) = rendered.float else {
         return String::new();
     };
-    // The flow asks in cells for its height and a share of the screen for its
-    // width, exactly as v1's modals are sized.
+    // The flow asks in cells for both, and cells win over the percentage just
+    // as they do in the kernel — a dump wider than the real modal hides every
+    // truncation the user would see.
     let rows = float.rows.expect("the flow sizes its own height");
-    let width = (120.0 * float.width_pct / 100.0) as u16;
+    let width = float
+        .cols
+        .unwrap_or((120.0 * float.width_pct / 100.0) as u16);
     let mut terminal = Terminal::new(TestBackend::new(width, rows)).expect("terminal");
     terminal
         .draw(|frame| {
@@ -997,7 +1000,7 @@ fn a_member_of_a_folder_cannot_be_forgotten_on_its_own() {
         host.drain_commands().is_empty(),
         "a child has no memory of its own to forget"
     );
-    assert!(drawn(&host, &world).contains("delete the parent header instead"));
+    assert!(drawn(&host, &world).contains("forget the folder header instead"));
 }
 
 // ── Through to creation ────────────────────────────────────────────────────
@@ -1554,6 +1557,25 @@ fn the_repository_list_offers_the_next_step_rather_than_done() {
     open(&h, &world);
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Next ]"), "{screen}");
+}
+
+#[test]
+fn the_repo_step_footer_names_every_key_it_offers_in_full() {
+    // The hints share one row with the pills, and the ones that did not fit
+    // were cut off at the edge — forgetting a repository was the one hint
+    // nobody could see.
+    let h = host();
+    let world = World::default();
+    open(&h, &world);
+    let screen = drawn(&h, &world);
+    let footer = screen
+        .lines()
+        .find(|line| line.contains("[ Next ]"))
+        .unwrap_or_else(|| panic!("no footer: {screen}"));
+    for hint in ["nav", "tick", "worktree", "forget", "path"] {
+        assert!(screen.contains(hint), "`{hint}` is not shown: {screen}");
+    }
+    assert!(footer.contains("[ Cancel ]"), "{footer}");
 }
 
 #[test]

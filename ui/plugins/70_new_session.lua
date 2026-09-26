@@ -665,7 +665,7 @@ local function render_repo(flow)
   if flow.focus == "search" then
     hints = {
       { "↑/↓", "nav" },
-      { "space", "toggle/fold" },
+      { "space", "tick" },
       { "alt+w", "worktree" },
       { "del", "forget" },
       { "tab", "path" },
@@ -723,7 +723,9 @@ local function render_repo(flow)
     -- the nothing it is.
     primary = ((flow.input.value or ""):match("^%s*(.-)%s*$") ~= "") and "Add repo" or nil
   end
-  children[#children + 1] = modal.footer(hints, primary, { cancel = cancel })
+  -- Stacked: this step has more keys than one row can name beside its pills,
+  -- and a hint cut off at the pill is a key nobody learns (forget was).
+  children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
   -- The height is the sum of what was actually built, plus the two border rows.
   -- Deriving it from the children rather than recomputing the layout means the
@@ -1280,7 +1282,7 @@ return {
       local entry = current_row(flow)
       if entry then
         if entry.row.parent then
-          flow.message = "Child of a parent bookmark — delete the parent header instead"
+          flow.message = "Part of a folder — forget the folder header instead"
         else
           command("bookmark", { host = flow.host, repo = entry.row.path, action = "remove" })
           flow.selected[entry.row.path] = nil

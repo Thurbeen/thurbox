@@ -50,7 +50,9 @@ end
 --- confirm pill, or nil to offer no confirm at all (a list with nothing to act
 --- on still needs its Close). opts: `key` is the keystroke the primary pill
 --- replays (default "enter"), `style` its colour (default accent), `cancel`
---- the dismiss pill's label (default "Cancel" — its key is always esc).
+--- the dismiss pill's label (default "Cancel" — its key is always esc), and
+--- `stack` puts the hints on a row of their own above the pills, for a step
+--- with more keys than fit beside them. A stacked footer is two rows tall.
 ---
 --- The pills carry `key:` roles, so a click replays the very keystroke they
 --- name — a button and its key cannot come to mean different things. Which is
@@ -73,7 +75,8 @@ function modal.footer(hints, primary, opts)
     spans[#spans + 1] = { text = pair[1], style = { fg = theme.hint } }
     spans[#spans + 1] = { text = " " .. pair[2] .. "  ", style = { fg = theme.muted } }
   end
-  local children = { { type = "text", fill = 1, text = { spans } } }
+  local hint_row = { type = "text", fill = 1, text = { spans } }
+  local children = { opts.stack and { type = "text", fill = 1, text = "" } or hint_row }
   if primary then
     local done = " [ " .. primary .. " ]"
     children[#children + 1] = {
@@ -90,7 +93,12 @@ function modal.footer(hints, primary, opts)
     text = { { { text = cancel, style = { fg = theme.muted } } } },
     role = "key:esc",
   }
-  return { type = "box", axis = "horizontal", len = 1, children = children }
+  local pills = { type = "box", axis = "horizontal", len = 1, children = children }
+  if opts.stack then
+    hint_row.len, hint_row.fill = 1, nil
+    return { type = "box", len = 2, children = { hint_row, pills } }
+  end
+  return pills
 end
 
 return modal
