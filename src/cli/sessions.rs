@@ -465,6 +465,9 @@ pub enum Action {
         #[arg(long)]
         session: Option<String>,
     },
+    /// Bind the current Codex pane to the conversation reported by its
+    /// SessionStart hook. Reads the hook's JSON from stdin.
+    BindCodex,
 }
 
 /// What `session create` should do when the name is already taken.
@@ -623,6 +626,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
         Action::Signal { state, session } => run_signal(db, state, session),
+        Action::BindCodex => run_bind_codex(db),
     }
 }
 
@@ -1173,6 +1177,69 @@ fn run_signal(
             "state": state,
         }),
         format!("Signaled {state} for '{}'.", target.name),
+    ))
+}
+
+fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
+    use std::io::Read;
+
+    let (Ok(row_id), Ok(agent_id)) = (
+        std::env::var("THURBOX_SESSION"),
+        std::env::var("THURBOX_SESSION_ID"),
+    ) else {
+        return Ok(CommandOutput::new(
+            json!({ "bound": false }),
+            "Codex hook is outside a Thurbox session.",
+        ));
+    };
+    let row_id: crate::session::SessionId = row_id
+        .parse()
+        .map_err(|_| "Codex hook has an invalid THURBOX_SESSION")?;
+
+    let mut input = String::new();
+    std::io::stdin()
+        .take(64 * 1024)
+        .read_to_string(&mut input)
+        .map_err(|e| format!("read Codex hook input: {e}"))?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&input).map_err(|e| format!("parse Codex hook input: {e}"))?;
+    let conversation = payload["session_id"]
+        .as_str()
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .ok_or("Codex SessionStart did not report a valid session_id")?;
+
+    // The agent window starts before its row is persisted. The hook can run
+    // immediately, so wait briefly for that row instead of losing the only
+    // event that tells us which conversation Codex actually opened.
+    let target = (0..40)
+        .find_map(|_| match db.get_session_by_id(row_id) {
+            Ok(Some(row)) => Some(row),
+            _ => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                None
+            }
+        })
+        .ok_or("Codex hook could not find its Thurbox session; run `thurbox-cli session doctor` and repair the hook installation")?;
+    if target.agent != "codex" || target.agent_session_id.as_deref() != Some(agent_id.as_str()) {
+        return Err("Codex hook identity does not match the Thurbox session".into());
+    }
+    const KEY: &str = "thurbox.codex_conversation_id";
+    match db
+        .get_session_meta(target.id, KEY)
+        .map_err(|e| format!("read Codex id: {e}"))?
+    {
+        Some(existing) if existing != conversation => {
+            db.set_session_meta(target.id, KEY, conversation)
+                .map_err(|e| format!("save Codex id: {e}"))?;
+        }
+        Some(_) => {}
+        None => db
+            .set_session_meta(target.id, KEY, conversation)
+            .map_err(|e| format!("save Codex id: {e}"))?,
+    }
+    Ok(CommandOutput::new(
+        json!({ "bound": true, "session_id": target.id.to_string() }),
+        format!("Bound Codex conversation for '{}'.", target.name),
     ))
 }
 

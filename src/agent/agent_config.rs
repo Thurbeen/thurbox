@@ -20,9 +20,9 @@ use crate::session::{AgentDef, AgentRegistry};
 /// session-id groups. `claude` and `pi` pin a thurbox-generated id
 /// (`--session-id`) so they can resume/fork by that exact id; `omp` pins the
 /// same id as a session-file path (`--session {home}/…/thurbox-{id}.jsonl`)
-/// since it generates its own id but accepts a file. The other built-ins can't
-/// pin or report their session id, so they use `resume_latest = true` with
-/// id-less, cwd-scoped flags (`codex resume --last`, `opencode --continue`, …):
+/// since it generates its own id but accepts a file. Codex reports its id through
+/// `SessionStart`. The remaining built-ins use `resume_latest = true` with
+/// id-less, cwd-scoped flags (`opencode --continue`, …):
 /// the agent resolves "the last session in this directory" itself. Agents
 /// without any resume group simply start fresh on restart. No model is passed —
 /// each agent uses its own default config. Bake extra flags (including a model)
@@ -47,15 +47,13 @@ resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]
 
-# codex can't pin or report its session id, so resume/fork target the most
-# recent session in the launch directory. thurbox keeps that directory stable
-# across restart (same cwd) and single-repo fork (child reuses the parent cwd).
+# Codex reports its conversation id in the SessionStart hook. Thurbox stores
+# that id separately from its own row identity and addresses it exactly.
 [[agents]]
 name = "codex"
 command = "codex"
-resume_args = ["resume", "--last"]
-fork_args = ["fork", "--last"]
-resume_latest = true
+resume_args = ["resume", "{id}"]
+fork_args = ["fork", "{id}"]
 
 # antigravity (the `agy` CLI, the Gemini CLI successor) resumes the latest
 # session in the launch directory via `--continue`; it has no fork (Ctrl+F falls
@@ -342,7 +340,19 @@ fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
     match table.get("agents") {
         Some(toml::Value::Array(entries)) => {
             for (index, entry) in entries.iter().enumerate() {
-                if let Some(agent) = deserialize_agent(entry, index, &mut warnings) {
+                if let Some(mut agent) = deserialize_agent(entry, index, &mut warnings) {
+                    // Upgrade the former seeded Codex address without changing
+                    // other definitions or user-supplied launch arguments.
+                    if agent.name == "codex"
+                        && agent.command == "codex"
+                        && agent.resume_args == ["resume", "--last"]
+                        && agent.fork_args == ["fork", "--last"]
+                        && agent.resume_latest
+                    {
+                        agent.resume_args = vec!["resume".into(), "{id}".into()];
+                        agent.fork_args = vec!["fork".into(), "{id}".into()];
+                        agent.resume_latest = false;
+                    }
                     agents.push(agent);
                 }
             }
@@ -484,11 +494,11 @@ mod tests {
         );
         assert!(omp.fork_args.is_empty(), "omp has no native fork target");
 
-        // codex/opencode resume + fork via id-less, cwd-scoped flags.
+        // Codex resumes by its hook-reported id; opencode is cwd-scoped.
         let codex = reg.get("codex").unwrap();
-        assert_eq!(codex.resume_args, ["resume", "--last"]);
-        assert_eq!(codex.fork_args, ["fork", "--last"]);
-        assert!(codex.resume_latest);
+        assert_eq!(codex.resume_args, ["resume", "{id}"]);
+        assert_eq!(codex.fork_args, ["fork", "{id}"]);
+        assert!(!codex.resume_latest);
         let opencode = reg.get("opencode").unwrap();
         assert_eq!(opencode.fork_args, ["--continue", "--fork"]);
         assert!(opencode.resume_latest);
@@ -502,9 +512,8 @@ mod tests {
             assert!(a.fork_args.is_empty(), "{name} has no fork");
         }
 
-        // No non-claude resume/fork token may carry a {id} placeholder — these
-        // agents can't be addressed by a thurbox-known id.
-        for name in ["codex", "antigravity", "opencode", "aider", "copilot"] {
+        // These agents still use id-less, cwd-scoped resume flags.
+        for name in ["antigravity", "opencode", "aider", "copilot"] {
             let a = reg.get(name).unwrap();
             assert!(
                 !a.resume_args
@@ -729,5 +738,25 @@ command = "missing-name"
         let reg = load_or_seed();
         assert_eq!(reg.default, "mine");
         assert_eq!(reg.get("mine").unwrap().command, "my-agent");
+    }
+
+    #[test]
+    fn old_seeded_codex_address_is_upgraded_without_rewriting_custom_agents() {
+        let (registry, warnings) = parse_agents_toml(
+            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = 'codex'\n\
+             args = ['--model', 'example']\nresume_args = ['resume', '--last']\n\
+             fork_args = ['fork', '--last']\nresume_latest = true\n\
+             [[agents]]\nname = 'custom'\ncommand = 'codex'\n\
+             resume_args = ['resume', '--last']\nresume_latest = true\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let codex = registry.get("codex").unwrap();
+        assert_eq!(codex.resume_args, ["resume", "{id}"]);
+        assert_eq!(codex.fork_args, ["fork", "{id}"]);
+        assert_eq!(codex.args, ["--model", "example"]);
+        assert!(!codex.resume_latest);
+        let custom = registry.get("custom").unwrap();
+        assert_eq!(custom.resume_args, ["resume", "--last"]);
+        assert!(custom.resume_latest);
     }
 }

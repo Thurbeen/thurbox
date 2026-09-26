@@ -477,8 +477,8 @@ pub fn fork_session_headless(
         .ok_or_else(|| format!("session not found: {id}"))?;
 
     // The parent's *working directory* — its worktree for a worktree session —
-    // not the repository root. A cwd-scoped agent (`codex resume --last`,
-    // `opencode --continue`) resolves "the last session here" from it, so the
+    // not the repository root. A cwd-scoped agent (`opencode --continue`)
+    // resolves "the last session here" from it, so the
     // repo root would find nothing to continue.
     let repo_path = source
         .cwd
@@ -510,6 +510,17 @@ pub fn fork_session_headless(
         .load_launch_env(id)
         .map_err(|e| format!("read the launch env: {e}"))?;
 
+    let codex_builtin = source.agent == "codex"
+        && recipe.is_none()
+        && resolve_agent_def(Some("codex")).resume_args == ["resume", "{id}"];
+    let fork_session_id = if codex_builtin {
+        Some(db.get_session_meta(source.id, "thurbox.codex_conversation_id")
+            .map_err(|e| format!("read Codex conversation id: {e}"))?
+            .ok_or_else(|| format!("'{}' has no captured Codex conversation id; restart it, choose its conversation in the Codex picker, then fork", source.name))?)
+    } else {
+        source.agent_session_id.clone()
+    };
+
     let request = spawn::SpawnRequest {
         name,
         repo_path,
@@ -527,7 +538,7 @@ pub fn fork_session_headless(
         parent_session_id: Some(source.id),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).
-        fork_session_id: source.agent_session_id.clone(),
+        fork_session_id,
         // Shared, not created — so the fork shows its branch and can be synced.
         inherit_worktrees: source.worktrees.clone(),
         ..Default::default()
@@ -876,16 +887,16 @@ mod tests {
 
     #[test]
     fn resume_trigger_latest_agent_always_triggers() {
-        // A resume_latest agent (codex) triggers resume regardless of any
+        // A resume_latest agent (opencode) triggers resume regardless of any
         // on-disk claude transcript; the returned id is just the trigger.
-        let codex = crate::agent::agent_config::builtin_registry()
-            .get("codex")
+        let opencode = crate::agent::agent_config::builtin_registry()
+            .get("opencode")
             .unwrap()
             .clone();
-        assert!(codex.resumes_latest());
+        assert!(opencode.resumes_latest());
         let env = HashMap::new();
         assert_eq!(
-            resume_trigger_for(&codex, "thurbox-uuid", &env),
+            resume_trigger_for(&opencode, "thurbox-uuid", &env),
             Some("thurbox-uuid".to_string())
         );
     }

@@ -417,8 +417,14 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     let env = db
         .load_launch_env(session.id)
         .map_err(|e| format!("read the launch env: {e}"))?;
-    let plan =
-        super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref(), &env)?;
+    let plan = super::restart::build_restart_plan(
+        db,
+        &session,
+        None,
+        hooks_enabled,
+        recipe.as_ref(),
+        &env,
+    )?;
     let pane = crate::agent::tmux::spawn_window(
         &stamp,
         &plan.window_name,

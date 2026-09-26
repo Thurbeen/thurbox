@@ -43,9 +43,8 @@ new_session_args = ["--session-id", "{id}"]  # emitted on a fresh spawn
 [[agents]]
 name = "codex"
 command = "codex"
-resume_args = ["resume", "--last"]      # id-less: resumes the last session in cwd
-fork_args = ["fork", "--last"]
-resume_latest = true
+resume_args = ["resume", "{id}"]
+fork_args = ["fork", "{id}"]
 ```
 
 Each `*_args` group is appended only when its driving value is
@@ -66,11 +65,14 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 
 **Session id pinning vs. `resume_latest`.** thurbox generates the
 `agent_session_id` (a UUID) and `claude`/`pi` accept it at creation
-(`--session-id {id}`), so only those two resume/fork by that exact id. The other
-built-ins (`codex`, `opencode`, `antigravity`, `aider`, `copilot`) can't pin or
-report their id, so they set `resume_latest = true` with **id-less** resume/fork
-flags: the agent resolves "the last session in *this* directory" itself (`codex
-resume --last`, `opencode --continue`, `agy --continue`, `aider
+(`--session-id {id}`), so those two resume/fork by that exact id. Codex instead
+reports its own id through `SessionStart`; thurbox stores it in session metadata
+and resumes/forks that exact id. A legacy row without a captured id opens the
+interactive Codex `resume` picker; its selection is then bound by the hook.
+Older seeded `codex` definitions are upgraded in memory. The remaining built-ins
+(`opencode`, `antigravity`, `aider`, `copilot`) set `resume_latest = true` with
+**id-less** resume/fork flags: the agent resolves "the last session in *this*
+directory" itself (`opencode --continue`, `agy --continue`, `aider
 --restore-chat-history`, `copilot --continue`) — which works because restart
 reuses the session's cwd and a single-repo fork reuses the parent's.
 `resume_latest` only changes *when* the resume group fires
@@ -87,7 +89,7 @@ name); a remote-omp restart can't stat the host file from the UI thread, so it
 starts fresh (documented fallback). Caveats: agents without `fork_args`
 (`antigravity`, `aider`, `copilot`, `omp`) start fresh on `Ctrl+F`; and a
 **multi-repo** fork of a cwd-scoped agent lands in a fresh symlink workspace, so
-`--last`/`--continue` finds no parent session (multi-repo *restart* still resumes,
+`--continue` finds no parent session (multi-repo *restart* still resumes,
 keeping the same workspace dir).
 
 - **Data type**: `session::AgentDef` / `session::AgentRegistry`
@@ -154,4 +156,3 @@ PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
 `NULL`/empty = single-repo, so old rows are byte-identical). A dispatcher that
 splits one brief across several repos forwards these flags per task — the
 [fleet](https://github.com/Thurbeen/fleet) control plane is the worked example.
-

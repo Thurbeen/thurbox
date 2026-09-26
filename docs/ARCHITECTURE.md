@@ -1115,12 +1115,12 @@ here if you want), and argument-template groups (`resume_args`,
 `fork_args`, `new_session_args`), plus a `resume_latest` flag. A
 single `agent::GenericProvider` (an `AgentProvider`) launches any
 defined agent by substituting `{id}` and appending each group only
-when its driving value is present. Only `claude` can be addressed by
-the thurbox-generated id (`--session-id {id}`); the other built-ins
-can't pin or report a session id, so they set `resume_latest = true`
-and use id-less, cwd-scoped flags (`codex resume --last`, `opencode
---continue`, …) that make the agent resolve "the last session in this
-directory" itself. `resume_latest` only governs *when* the resume
+when its driving value is present. Claude and pi accept the
+thurbox-generated id (`--session-id {id}`). Codex reports its own ID through
+`SessionStart`, which thurbox stores separately for exact resume and fork.
+The remaining resumable built-ins set `resume_latest = true` and use
+id-less, cwd-scoped flags (`opencode --continue`, …) that make the agent resolve
+"the last session in this directory" itself. `resume_latest` only governs *when* the resume
 group fires at restart (`session_ops::resume_trigger_for`): for these
 agents restart always resumes; claude still defers to an on-disk
 transcript check.

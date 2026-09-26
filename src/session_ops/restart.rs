@@ -35,6 +35,7 @@ pub(crate) struct RestartPlan {
 /// cwd (the symlink workspace for a multi-repo session, else the primary repo —
 /// mirroring the TUI's `App::resolve_process_cwd`).
 pub(crate) fn build_restart_plan(
+    db: &Database,
     session: &SharedSession,
     host: Option<&crate::session::HostDef>,
     hooks_enabled: bool,
@@ -85,7 +86,19 @@ pub(crate) fn build_restart_plan(
     if let Some(note) = degraded {
         tracing::warn!("restart of '{}': {note}", session.name);
     }
-    config.resume_session_id = super::resume_trigger_for(&def, &agent_session_id, &config.env);
+    let codex_builtin =
+        def.name == "codex" && def.command == "codex" && def.resume_args == ["resume", "{id}"];
+    let codex_id = if codex_builtin {
+        db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+            .map_err(|e| format!("read Codex conversation id: {e}"))?
+    } else {
+        None
+    };
+    config.resume_session_id = if codex_builtin {
+        codex_id.clone()
+    } else {
+        super::resume_trigger_for(&def, &agent_session_id, &config.env)
+    };
 
     // A multi-repo session (≥2 members) launches in its per-session symlink
     // workspace, gathering every member dir; a single-repo session keeps the
@@ -100,7 +113,14 @@ pub(crate) fn build_restart_plan(
         ));
     }
 
-    let (command, args) = super::build_agent_invocation(&def, &config);
+    let (command, mut args) = super::build_agent_invocation(&def, &config);
+    if codex_builtin && codex_id.is_none() {
+        // An old row has only Thurbox's generated id. The interactive picker
+        // can recover its real conversation without guessing from the CWD.
+        args = std::iter::once("resume".to_string())
+            .chain(def.args.iter().cloned())
+            .collect();
+    }
 
     Ok(RestartPlan {
         window_name: session.name.clone(),
@@ -414,6 +434,7 @@ fn restart_for(
         .load_launch_env(session_id)
         .map_err(|e| format!("could not read the launch env of '{}': {e}", session.name))?;
     let plan = build_restart_plan(
+        db,
         &session,
         host.as_ref(),
         hooks_enabled,
@@ -888,8 +909,16 @@ mod tests {
     fn restart_plan_requires_agent_session_id() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let err = build_restart_plan(&session(None, None), None, true, None, &Default::default())
-            .unwrap_err();
+        let db = Database::open_in_memory().unwrap();
+        let err = build_restart_plan(
+            &db,
+            &session(None, None),
+            None,
+            true,
+            None,
+            &Default::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("agent_session_id"), "got: {err}");
     }
 
@@ -897,8 +926,9 @@ mod tests {
     fn restart_plan_injects_identity_env() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
         let sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/tmp/repo")));
-        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
+        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
 
         // The thurbox session key and the agent conversation id are both present
         // and distinct, exactly as a fresh spawn would inject them.
@@ -913,9 +943,11 @@ mod tests {
     fn restart_plan_single_repo_launches_in_primary() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
         let primary = temp.path().join("primary");
         std::fs::create_dir_all(&primary).unwrap();
         let plan = build_restart_plan(
+            &db,
             &session(Some("sid"), Some(primary.clone())),
             None,
             true,
@@ -930,6 +962,7 @@ mod tests {
     fn restart_plan_multi_repo_launches_in_workspace() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
         let primary = temp.path().join("primary");
         std::fs::create_dir_all(&primary).unwrap();
         let extra = temp.path().join("extra");
@@ -938,7 +971,7 @@ mod tests {
         let mut sess = session(Some("sid-multi"), Some(primary.clone()));
         sess.additional_dirs = vec![extra];
 
-        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
+        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
         // ≥2 members → the symlink workspace, not the primary repo itself.
         assert_ne!(plan.cwd.as_deref(), Some(primary.as_path()));
         assert!(plan.cwd.is_some());
@@ -966,10 +999,11 @@ mod tests {
         // pinned to them would resolve garbage instead of its own defaults.
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
         let mut sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/srv/repo")));
         sess.backend_type = "ssh:devbox".into();
 
-        let plan = build_restart_plan(&sess, None, true, None, &Default::default()).unwrap();
+        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
         assert_eq!(plan.env.get("THURBOX_SESSION"), Some(&sess.id.to_string()));
         assert!(!plan.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(!plan.env.contains_key("THURBOX_METRICS_DIR"));

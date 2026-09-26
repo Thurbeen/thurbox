@@ -47,7 +47,7 @@ pub struct AgentDef {
     /// directory using id-less `resume_args` (no `{id}` token). thurbox cannot
     /// pin or read back the agent's real session id for these CLIs, so restart
     /// relies on the agent's own "last session in this directory" resolution
-    /// (e.g. `codex resume --last`, `opencode --continue`). Agents that pin ids
+    /// (e.g. `opencode --continue`). Agents that pin ids
     /// (claude) leave this `false` and resume by a thurbox-known id instead.
     #[serde(default)]
     pub resume_latest: bool,
@@ -209,11 +209,10 @@ mod tests {
 
     #[test]
     fn idless_resume_and_fork_pass_tokens_verbatim() {
-        // Mirrors the seeded codex definition: id-less resume/fork groups that
-        // resolve "latest in cwd" inside the agent and ignore any supplied id.
+        // A custom agent may still use id-less resume/fork groups.
         let d = AgentDef {
-            name: "codex".into(),
-            command: "codex".into(),
+            name: "custom".into(),
+            command: "custom".into(),
             args: vec![],
             resume_args: vec!["resume".into(), "--last".into()],
             fork_args: vec!["fork".into(), "--last".into()],
