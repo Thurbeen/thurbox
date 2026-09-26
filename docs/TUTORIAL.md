@@ -82,7 +82,10 @@ your own:
 
 Two ways to finish from here:
 
-- **`Enter`** adds the path you typed, if it is a repository.
+- **`Enter`** adds the path you typed, if it is a repository. A folder that
+  does not exist yet reads **Create folder** instead: `Enter` then asks what goes
+  into it — a new git repository (`git init`) or nothing — makes it, and adds
+  it.
 - **`Tab`** browses instead — a listing of that directory, marking which
   subdirectories are git repositories:
 

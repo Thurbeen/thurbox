@@ -191,6 +191,92 @@ fn a_plain_directory_is_remembered_as_one() {
     assert_eq!(remembered[0].is_git, Some(false));
 }
 
+fn clone_into(path: &str, url: &str) -> Command {
+    Command::parse(
+        "bookmark",
+        Args {
+            repo: Some(path.to_string()),
+            action: Some("clone".into()),
+            text: Some(url.to_string()),
+            ..Args::default()
+        },
+    )
+    .expect("parse")
+}
+
+#[test]
+fn a_path_that_does_not_exist_yet_can_be_made_and_remembered() {
+    // The creation flow's three answers to "that folder is not there": make it
+    // empty, make it a repository, or clone one into it. Each is remembered
+    // with the git-ness actually observed.
+    let _home = isolate();
+    let mut bus = CommandBus::new();
+    let empty = _home.path().join("code/empty");
+    let fresh = _home.path().join("code/fresh");
+    let source = _home.path().join("source");
+    std::fs::create_dir_all(&source).expect("mkdir");
+    repo(&source);
+    let cloned = _home.path().join("code/cloned");
+
+    let show = |path: &Path| path.display().to_string();
+    assert_eq!(run(&mut bus, edit(&show(&empty), "create")), None);
+    assert_eq!(run(&mut bus, edit(&show(&fresh), "init")), None);
+    assert_eq!(
+        run(&mut bus, clone_into(&show(&cloned), &show(&source))),
+        None
+    );
+
+    assert!(empty.is_dir());
+    assert!(fresh.join(".git").exists());
+    assert!(cloned.join(".git").exists());
+    let remembered = database().list_repo_bookmarks("").expect("list");
+    let git_ness = |path: &Path| {
+        remembered
+            .iter()
+            .find(|row| row.repo_path == path)
+            .and_then(|row| row.is_git)
+    };
+    assert_eq!(git_ness(&empty), Some(false));
+    assert_eq!(git_ness(&fresh), Some(true));
+    assert_eq!(git_ness(&cloned), Some(true));
+}
+
+#[test]
+fn making_a_path_that_holds_something_is_refused_and_not_remembered() {
+    let _home = isolate();
+    let mut bus = CommandBus::new();
+    let taken = _home.path().join("taken");
+    std::fs::create_dir_all(&taken).expect("mkdir");
+    std::fs::write(taken.join("notes.txt"), "mine").expect("write");
+
+    let error = run(&mut bus, edit(&taken.display().to_string(), "init"));
+    assert!(
+        error.as_deref().unwrap_or_default().contains("not empty"),
+        "{error:?}"
+    );
+    assert!(taken.join("notes.txt").is_file());
+    assert!(database().list_repo_bookmarks("").expect("list").is_empty());
+}
+
+#[test]
+fn a_failed_clone_leaves_neither_a_directory_nor_a_memory() {
+    let _home = isolate();
+    let mut bus = CommandBus::new();
+    let target = _home.path().join("cloned");
+    let nowhere = _home.path().join("no-such-repo");
+
+    let error = run(
+        &mut bus,
+        clone_into(
+            &target.display().to_string(),
+            &nowhere.display().to_string(),
+        ),
+    );
+    assert!(error.is_some());
+    assert!(!target.exists());
+    assert!(database().list_repo_bookmarks("").expect("list").is_empty());
+}
+
 #[test]
 fn adding_a_remembered_path_again_touches_it_rather_than_duplicating_it() {
     // This is what makes "select the newest row" identify the row that was just

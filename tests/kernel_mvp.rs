@@ -1755,6 +1755,8 @@ fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
         ("add", BookmarkEdit::Add),
         ("remove", BookmarkEdit::Remove),
         ("parent", BookmarkEdit::Parent),
+        ("create", BookmarkEdit::Create),
+        ("init", BookmarkEdit::Init),
     ] {
         let parsed = Command::parse(
             "bookmark",
@@ -1777,6 +1779,40 @@ fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
             "{verb}"
         );
     }
+}
+
+#[test]
+fn a_bookmark_clone_needs_a_url_that_cannot_pass_for_an_option() {
+    use thurbox::kernel::command::{Args, BookmarkEdit, Command};
+    let clone = |url: Option<&str>| {
+        Command::parse(
+            "bookmark",
+            Args {
+                repo: Some("~/src/new".into()),
+                action: Some("clone".into()),
+                text: url.map(str::to_string),
+                ..Args::default()
+            },
+        )
+    };
+    assert_eq!(
+        clone(Some("  git@github.com:me/new.git  ")).expect("parse"),
+        Command::Bookmark {
+            host: String::new(),
+            path: "~/src/new".into(),
+            edit: BookmarkEdit::Clone {
+                url: "git@github.com:me/new.git".into()
+            },
+        }
+    );
+    for missing in [None, Some("   ")] {
+        let error = clone(missing).unwrap_err();
+        assert!(error.contains("url"), "{error}");
+    }
+    // `git clone -- <url>` already stops option parsing; refusing here says why
+    // instead of failing inside git.
+    let error = clone(Some("--upload-pack=touch /tmp/x")).unwrap_err();
+    assert!(error.contains("url"), "{error}");
 }
 
 #[test]

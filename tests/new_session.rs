@@ -530,7 +530,10 @@ fn escape_clears_the_query_before_it_closes_the_flow() {
     type_text(&host, &world, "note");
     press(&host, &world, "esc");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Search (2/2)"), "cleared, still open: {screen}");
+    assert!(
+        screen.contains("Search (2/2)"),
+        "cleared, still open: {screen}"
+    );
     press(&host, &world, "esc");
     assert_eq!(drawn(&host, &world), "");
 }
@@ -1019,6 +1022,164 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
     assert!(
         selected[0].contains("new"),
         "the path just typed is the one chosen:\n{screen}"
+    );
+}
+
+// ── A path that does not exist yet ─────────────────────────────────────────
+
+/// A world whose `/src` holds the two remembered repositories and nothing else,
+/// with that listing served — the directory the path field starts in.
+fn world_listing_src() -> World {
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/src",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "thurbox".into(),
+                is_git: true,
+            },
+            BrowseEntry {
+                name: "notes".into(),
+                is_git: false,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/src".into()));
+    world
+}
+
+#[test]
+fn a_name_that_is_not_there_offers_to_create_the_folder() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[ Create folder ]"), "{screen}");
+
+    // A name that IS there is still an add.
+    let host = self::host();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    assert!(drawn(&host, &world).contains("[ Add repo ]"));
+}
+
+#[test]
+fn creating_a_folder_asks_what_goes_into_it() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("New Folder"), "{screen}");
+    assert!(screen.contains("/src/brand-new"), "{screen}");
+    assert!(screen.contains("git init"), "{screen}");
+    assert!(screen.contains("Leave it empty"), "{screen}");
+    assert!(
+        host.drain_commands().is_empty(),
+        "nothing is made before the answer"
+    );
+}
+
+#[test]
+fn a_new_git_repository_is_one_command_and_lands_ticked() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/brand-new".into(),
+            edit: BookmarkEdit::Init,
+        }]
+    );
+    // Back on the repositories, where the new row is picked once it lands —
+    // the same select-or-add a typed path gets.
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_folder_can_be_left_empty() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "scratch");
+    press(&host, &world, "enter");
+    // The last choice; the selector stops there rather than wrapping.
+    press(&host, &world, "j");
+    press(&host, &world, "j");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/scratch".into(),
+            edit: BookmarkEdit::Create,
+        }]
+    );
+}
+
+#[test]
+fn escape_from_the_folder_question_keeps_what_was_typed() {
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "esc");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(screen.contains("/src/brand-new"), "{screen}");
+    assert!(host.drain_commands().is_empty());
+}
+
+#[test]
+fn a_parent_that_is_missing_too_is_still_a_folder_to_create() {
+    // `mkdir -p` makes the parents, so a failed listing is no reason to refuse.
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/src/new",
+        Listing::Failed("No such directory: /src/new".into()),
+    );
+    world.wants.browse = Some((String::new(), "/src/new".into()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "new/deeper");
+    assert!(drawn(&host, &world).contains("[ Create folder ]"));
+}
+
+#[test]
+fn a_listing_still_on_its_way_leaves_enter_an_add() {
+    // Until the listing says otherwise the path may well exist, and the kernel
+    // is the one that checks: the old behaviour, unchanged.
+    let host = host();
+    let mut world = World::default();
+    world.wants.browse = Some((String::new(), "/src".into()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "maybe");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/maybe".into(),
+            edit: BookmarkEdit::Add,
+        }]
     );
 }
 

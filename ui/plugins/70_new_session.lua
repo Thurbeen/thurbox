@@ -9,6 +9,10 @@
 --
 --   host  → repo → [base branch] → name → [branch name] → [agent] → create
 --
+-- plus a detour off the repo step for a typed path that does not exist yet:
+--
+--   repo → new folder (git init / leave it empty) → repo
+--
 -- `host` is skipped when nothing is configured, `base branch` and `branch name`
 -- only appear when some repository is in worktree mode, and `agent` is skipped
 -- when there is one or none. Nothing here waits: every listing, path check and
@@ -137,6 +141,10 @@ local function fresh()
     name = textinput.new(""),
     branch = textinput.new(""),
     agent_index = 1,
+    -- The detour for a typed path that does not exist: where, and which of
+    -- `FOLDER_CHOICES` the cursor is on.
+    new_path = nil,
+    folder_index = 1,
     message = nil,
   }
 end
@@ -269,6 +277,42 @@ end
 --- Is the path field still holding only its starting directory?
 local function untouched(flow)
   return flow.prefill ~= nil and flow.input.value == flow.prefill
+end
+
+--- The typed path with its trailing slashes gone, which is the folder it names.
+local function typed_target(flow)
+  local value = (flow.input.value or ""):match("^%s*(.-)%s*$")
+  return (value:gsub("(.)/+$", "%1"))
+end
+
+--- Does the path field name a folder that is known not to exist?
+---
+--- Known from the listing the field already asks for — the parent's — and only
+--- once it has answered for that very directory: until then the path may well
+--- exist, and `enter` stays the add the kernel checks. A listing that failed
+--- means a parent is missing too, which `mkdir -p` makes, so it counts.
+local function names_missing_folder(flow)
+  if untouched(flow) then
+    return false
+  end
+  local target = typed_target(flow)
+  if target == "" or target == "/" or target == "~" then
+    return false
+  end
+  local dir, leaf = pathpicker.split_typed(target)
+  local listing = browse()
+  if listing.dir ~= dir or (listing.host or "") ~= (flow.host or "") or listing.loading then
+    return false
+  end
+  if listing.error then
+    return true
+  end
+  for _, entry in ipairs(listing.entries or {}) do
+    if entry.name == leaf then
+      return false
+    end
+  end
+  return true
 end
 
 local function suggestion_for(flow)
@@ -763,7 +807,13 @@ local function render_repo(flow)
     -- the nothing it is.
     -- The untouched starting directory is not a choice either.
     local typed = (flow.input.value or ""):match("^%s*(.-)%s*$")
-    primary = (typed ~= "" and not untouched(flow)) and "Add repo" or nil
+    if typed == "" or untouched(flow) then
+      primary = nil
+    elseif names_missing_folder(flow) then
+      primary = "Create folder"
+    else
+      primary = "Add repo"
+    end
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
@@ -778,6 +828,40 @@ local function render_repo(flow)
     height = height + (child.len or 1)
   end
   return frame("Select Repos", height, children, flow)
+end
+
+--- What can go into a folder made for a path that did not exist, in the order
+--- offered: the `bookmark` action each one issues, and how it reads.
+local FOLDER_CHOICES = {
+  { action = "init", label = "New git repository (git init)" },
+  { action = "create", label = "Leave it empty" },
+}
+
+local function render_new_folder(flow)
+  local labels = {}
+  for index, choice in ipairs(FOLDER_CHOICES) do
+    labels[index] = choice.label
+  end
+  local height = #labels
+  return frame("New Folder", height + 6, {
+    {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          { text = " Create ", style = { fg = theme.muted } },
+          {
+            text = widgets.middle_truncate(flow.new_path or "", ROW_COLS - 8),
+            style = { fg = theme.text },
+          },
+        },
+      },
+    },
+    { type = "text", len = 1, text = "" },
+    { type = "box", len = height, children = selector_rows(labels, flow.folder_index, height) },
+    message_row(flow),
+    modal.footer({ { "↑/↓", "choose" } }, "Create", { cancel = "Back" }),
+  }, flow)
 end
 
 local function render_branch(flow)
@@ -1086,6 +1170,8 @@ local function move_selection(flow, step)
     flow.branch_index = widgets.clamp(flow.branch_index + step, #(branches().list or {}))
   elseif flow.step == "agent" then
     flow.agent_index = widgets.clamp(flow.agent_index + step, #agents())
+  elseif flow.step == "new_folder" then
+    flow.folder_index = widgets.clamp(flow.folder_index + step, #FOLDER_CHOICES)
   end
 end
 
@@ -1243,6 +1329,8 @@ return {
       return render_field("Session Name", "Name", flow.name, flow, suggested_name(flow))
     elseif flow.step == "worktree" then
       return render_field("Branch Name", "Branch", flow.branch, flow)
+    elseif flow.step == "new_folder" then
+      return render_new_folder(flow)
     end
     return render_agent(flow)
   end,
@@ -1407,6 +1495,10 @@ return {
       elseif flow.step == "repo" and flow.focus == "search" and flow.search.value ~= "" then
         textinput.clear(flow.search)
         flow.cursor = 1
+      elseif flow.step == "new_folder" then
+        -- Back to the path, still typed, so a slip in the name is one edit away.
+        flow.step = "repo"
+        flow.focus = "input"
       else
         save(nil)
         ask(nil)
@@ -1498,6 +1590,23 @@ return {
       return false
     end
 
+    if flow.step == "new_folder" then
+      if name == "enter" then
+        local choice = FOLDER_CHOICES[widgets.clamp(flow.folder_index, #FOLDER_CHOICES)]
+        command("bookmark", { host = flow.host, repo = flow.new_path, action = choice.action })
+        -- Back on the repositories with the search focused, so the new row —
+        -- picked once it lands, as a typed path's is — goes on with one `enter`.
+        flow.step = "repo"
+        flow.focus = "search"
+        flow.select_newest = true
+        textinput.clear(flow.input)
+        save(flow)
+        ask(flow)
+        return true
+      end
+      return false
+    end
+
     -- The repo step: the list, the input, the search bar and the dropdown.
     if dropdown_open(flow) then
       local entries = browse_entries(flow)
@@ -1579,7 +1688,13 @@ return {
         return true
       elseif name == "enter" then
         local path = (flow.input.value or ""):match("^%s*(.-)%s*$")
-        if path ~= "" and not untouched(flow) then
+        if names_missing_folder(flow) then
+          -- Nothing is made yet: what goes into it is the next question.
+          flow.new_path = typed_target(flow)
+          flow.folder_index = 1
+          flow.step = "new_folder"
+          flow.browse = false
+        elseif path ~= "" and not untouched(flow) then
           -- Validated on the target machine, not here: a missing path is refused
           -- by the command and reported, with the text left to be corrected.
           command("bookmark", { host = flow.host, repo = path, action = "add" })
@@ -1640,6 +1755,8 @@ return {
       flow.branch_index = index
     elseif flow.step == "agent" then
       flow.agent_index = index
+    elseif flow.step == "new_folder" then
+      flow.folder_index = index
     end
     save(flow)
     return true

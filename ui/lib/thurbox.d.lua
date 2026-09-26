@@ -887,7 +887,8 @@ function require(name) end
 
 ---@class (exact) thurbox.cmd.Bookmark
 ---@field repo string The path to remember or forget.
----@field action "add"|"remove"|"parent"
+---@field action "add"|"remove"|"parent"|"create"|"init"|"clone" `create`/`init`/`clone` make the directory first (it must not exist, or be empty), then remember it.
+---@field text? string The URL to clone, for `clone`.
 ---@field host? string
 
 ---@class (exact) thurbox.cmd.Focus
