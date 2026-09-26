@@ -524,13 +524,16 @@ impl Command {
     ///
     /// For a creation that is the repository, which is what lets the session
     /// list draw the placeholder inside the group the session will land in
-    /// rather than in a limbo of its own.
+    /// rather than in a limbo of its own. For a repository-memory write it is
+    /// the path, exactly as issued: writes run independently, and the creation
+    /// flow ties a failure to the write it is waiting on by it.
     pub fn subject(&self) -> Option<String> {
         match self {
             Command::Create { repo, .. } => std::path::Path::new(repo)
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .or_else(|| Some(repo.clone())),
+            Command::Bookmark { path, .. } => Some(path.clone()),
             _ => None,
         }
     }

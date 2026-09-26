@@ -470,7 +470,7 @@
 ---@field kind string
 ---@field session string
 ---@field phase string
----@field subject? string
+---@field subject? string A `create`'s repository name, or a `bookmark` write's path as issued.
 ---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 

@@ -91,6 +91,19 @@ local function bookmark_pending()
   return false
 end
 
+--- The repository-memory writes that have failed and are still being
+--- reported: their path (the command's `subject`, as issued) keyed by id as a
+--- string.
+local function bookmark_failures()
+  local failed = {}
+  for _, item in ipairs((thurbox and thurbox.commands) or {}) do
+    if item.kind == "bookmark" and item.phase == "failed" then
+      failed[tostring(item.id)] = item.subject or ""
+    end
+  end
+  return failed
+end
+
 -- ── Flow state ─────────────────────────────────────────────────────────────
 --
 -- One table, read whole and written whole: `state` hands back a fresh Lua table
@@ -272,8 +285,15 @@ end
 --- A repository-memory write has been issued: tick the row it lands as (see
 --- `select_newest` in the render), and clear a search typed before the path
 --- was — one the new row need not match, which would hide it once ticked.
-local function await_new_row(flow)
+---
+--- `path` is the path exactly as issued, and the failures already on record
+--- are noted too: a new failure for that path is this write's, and a write that
+--- never landed has no row to tick (see the render). Another write failing
+--- meanwhile says nothing about this one.
+local function await_new_row(flow, path)
   flow.select_newest = true
+  flow.awaiting_path = path
+  flow.failures_before = bookmark_failures()
   textinput.clear(flow.search)
   flow.cursor = 1
 end
@@ -1351,7 +1371,16 @@ return {
     -- every repository added. Consumed only once the write has landed and the
     -- list has been re-read, or it would select whatever was previously on top.
     if flow.select_newest and not bookmark_pending() and not bookmarks().loading then
-      local newest = repo_picker.newest(bookmarks().rows or {})
+      -- A failure that was not on record when the write was issued is this
+      -- write's: the newest row is then whatever was newest before it, and
+      -- ticking that would pick a repository nobody chose.
+      local failed = false
+      for id, subject in pairs(bookmark_failures()) do
+        if subject == flow.awaiting_path and not (flow.failures_before or {})[id] then
+          failed = true
+        end
+      end
+      local newest = not failed and repo_picker.newest(bookmarks().rows or {})
       if newest then
         flow.selected[newest.path] = true
         -- The cursor follows the selection rather than resetting to the top, for
@@ -1359,6 +1388,8 @@ return {
         flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
+      flow.awaiting_path = nil
+      flow.failures_before = nil
       flow.pending_label = nil
       save(flow)
     end
@@ -1657,7 +1688,7 @@ return {
         })
         flow.step = "repo"
         flow.focus = "search"
-        await_new_row(flow)
+        await_new_row(flow, flow.new_path)
         flow.pending_label = "cloning…"
         textinput.clear(flow.input)
         save(flow)
@@ -1686,7 +1717,7 @@ return {
         -- picked once it lands, as a typed path's is — goes on with one `enter`.
         flow.step = "repo"
         flow.focus = "search"
-        await_new_row(flow)
+        await_new_row(flow, flow.new_path)
         textinput.clear(flow.input)
         save(flow)
         ask(flow)
@@ -1720,7 +1751,7 @@ return {
             textinput.clear(flow.input)
             flow.browse = false
             flow.focus = "search"
-            await_new_row(flow)
+            await_new_row(flow, joined)
           else
             textinput.set(flow.input, joined .. "/")
             flow.browse_index = 1
@@ -1789,7 +1820,7 @@ return {
           textinput.clear(flow.input)
           enter_path_field(flow)
           flow.browse = false
-          await_new_row(flow)
+          await_new_row(flow, path)
         end
         save(flow)
         ask(flow)

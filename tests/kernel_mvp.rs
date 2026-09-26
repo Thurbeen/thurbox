@@ -1782,6 +1782,23 @@ fn a_bookmark_command_needs_a_path_and_an_explicit_verb() {
 }
 
 #[test]
+fn a_bookmark_write_is_published_with_the_path_it_writes() {
+    // The creation flow ties a failed write to the one it issued by this, since
+    // writes run independently and another one may fail meanwhile.
+    use thurbox::kernel::command::{Args, Command};
+    let command = Command::parse(
+        "bookmark",
+        Args {
+            repo: Some(" ~/src/new ".into()),
+            action: Some("init".into()),
+            ..Args::default()
+        },
+    )
+    .expect("parse");
+    assert_eq!(command.subject().as_deref(), Some("~/src/new"));
+}
+
+#[test]
 fn a_bookmark_clone_needs_a_url_that_cannot_pass_for_an_option() {
     use thurbox::kernel::command::{Args, BookmarkEdit, Command};
     let clone = |url: Option<&str>| {

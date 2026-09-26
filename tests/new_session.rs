@@ -1318,6 +1318,81 @@ fn a_clone_under_way_says_so_where_the_path_is_typed() {
 }
 
 #[test]
+fn a_write_that_failed_ticks_nothing_in_its_place() {
+    // The row a write lands as is found by recency, so a write that never
+    // landed would tick whichever row was newest before it — and a confirm
+    // after the reported failure would open a session somewhere nobody chose.
+    let host = host();
+    let mut world = world_listing_src();
+    to_the_clone_step(&host, &world, "fork-of-it");
+    type_text(&host, &world, "https://example.com/gone.git");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 7,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/fork-of-it".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("git clone failed: not found".into()),
+    });
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("[x]"), "{screen}");
+
+    // Nor does the tick arrive late, once the failure is swept from the list.
+    world.inflight.clear();
+    let screen = drawn(&host, &world);
+    assert!(
+        !screen.contains("[x]"),
+        "no stale tick later either: {screen}"
+    );
+}
+
+#[test]
+fn an_earlier_failure_does_not_stop_the_next_write_being_ticked() {
+    let host = host();
+    let mut world = world_listing_src();
+    world.inflight.push(InFlight {
+        id: 3,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/notes".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("an older refusal of the same path".into()),
+    });
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[x]"), "{screen}");
+}
+
+#[test]
+fn another_write_failing_meanwhile_does_not_count_as_this_ones() {
+    // Writes run independently: a forget that fails while a clone is running
+    // says nothing about the clone.
+    let host = host();
+    let mut world = world_listing_src();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 9,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/src/elsewhere".into()),
+        host: None,
+        phase: Phase::Failed,
+        error: Some("not a remembered repository".into()),
+    });
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[x]"), "{screen}");
+}
+
+#[test]
 fn a_parent_that_is_missing_too_is_still_a_folder_to_create() {
     // `mkdir -p` makes the parents, so a failed listing is no reason to refuse.
     let host = host();
