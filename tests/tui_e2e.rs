@@ -2426,6 +2426,28 @@ fn the_wheel_scrolls_the_agents_output_back() {
 }
 
 #[test]
+fn the_wheel_reaches_a_fullscreen_app_that_checks_tmux_mouse_mode() {
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+
+    // Some apps suppress mouse capture when tmux reports `mouse=0`. The
+    // private server must advertise mouse support so they request wheel
+    // reports, which their transcript views can then handle.
+    tui.send(b"stty -echo -icanon min 1 time 0; printf '\\033[?1049h'; if [ \"$(tmux display-message -p '#{mouse}')\" = 1 ]; then printf '\\033[?1000h\\033[?1006h'; fi; printf 'ALT-CODEX\\n'; cat -v\r");
+    tui.wait_until("the mouse-gated alternate screen", |frame| {
+        frame.contains("ALT-CODEX") && !frame.contains("stty -echo")
+    });
+
+    let at = tui.find("ALT-CODEX");
+    tui.wheel(at, true, 1);
+    tui.wait_for("[<64;");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
 fn the_wheel_scrolls_the_companion_shell_too() {
     // The shell is a second surface over the same primitive, and it was the
     // half that never honoured a scroll offset: the pane refused to hold one

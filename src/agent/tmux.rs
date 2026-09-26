@@ -1570,6 +1570,12 @@ impl TmuxBackend {
         for (key, val) in SESSION_OPTS {
             set(&["-t", &self.session, key, val], true);
         }
+        // Apps inside tmux can inspect this option before deciding whether to
+        // request mouse reports. With it off, a full-screen app may leave wheel
+        // capture disabled even though thurbox can forward those reports.
+        if !psmux {
+            set(&["-t", &self.session, "mouse", "on"], true);
+        }
 
         // Window-level options — see `WINDOW_OPTS` for why these are global to
         // the server and why failing to set one is not fatal.

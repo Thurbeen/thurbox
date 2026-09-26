@@ -478,6 +478,9 @@ bugs (#641, #2989), required 3 external deps in the data path
 - `status off` — no tmux status bar (thurbox renders its own)
 - `default-terminal xterm-256color` — standard terminal type
 - `history-limit 5000` — reasonable scrollback
+- `mouse on` — on tmux, lets programs inside panes detect mouse support and
+  request wheel reports. Thurbox forwards those reports through control mode;
+  programs that leave capture off still use normal-screen scrollback
 - `extended-keys on` — enhanced key reporting
 - `extended-keys-format csi-u` — the modern, unambiguous format some agents
   (e.g. `pi`) probe for at startup; thurbox injects keys via `send-keys` so this
