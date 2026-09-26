@@ -61,7 +61,9 @@ sessions yet, so the list says so.
 
 ## 2. Add a repository
 
-Press **`Ctrl+N`**. The creation flow opens on the repo step.
+Press **`Ctrl+N`**. The creation flow opens on the repo step, with its search
+focused: type any part of a repository's path and the list narrows to the
+fuzzy matches, best first.
 
 ![The repo picker, with only the interface directory in it](../media/tutorial/02-repo-picker.png)
 
@@ -91,20 +93,22 @@ on it — and stays there for next time:
 
 ![The repository added to the list and selected](../media/tutorial/05-repo-added.png)
 
-The footer names the rest of what this step does, all on the list:
+The footer names the rest of what this step does. Letters always go to the
+search, so the list's own keys are ones you cannot type:
 
 | Key | What it does |
 |---|---|
+| `↑`/`↓` | move the cursor |
 | `space` | select / deselect a repository (select several for a **multi-repo** session) |
-| `w` | give the selected repository its own **worktree** |
-| `/` | filter a long list |
-| `d` | forget a remembered repository |
+| `Alt+W` | give the selected repository its own **worktree** |
+| `Del` / `Alt+D` | forget a remembered repository (with the caret at the end of the search) |
+| `Esc` | clear the search; a second `Esc` closes the flow |
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
-| `Tab` | move between the list and the path field |
+| `Tab` / `Shift+Tab` | move between the search and the path field |
 
 ## 3. Give the session its own worktree
 
-With the repository selected, press **`w`**. The `[wt]` mark means this session
+With the repository selected, press **`Alt+W`**. The `[wt]` mark means this session
 gets a **git worktree of its own** rather than your checkout — the agent works
 on its own branch, in its own directory, and your working tree is untouched.
 

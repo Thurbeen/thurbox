@@ -281,9 +281,16 @@ fn press(host: &LuaHost, world: &World, chord: &str) {
 fn key_press(chord: &str) -> KeyPress {
     let mut key = KeyPress::default();
     let mut name = chord;
-    while let Some(rest) = name.strip_prefix("ctrl+") {
-        key.ctrl = true;
-        name = rest;
+    loop {
+        if let Some(rest) = name.strip_prefix("ctrl+") {
+            key.ctrl = true;
+            name = rest;
+        } else if let Some(rest) = name.strip_prefix("alt+") {
+            key.alt = true;
+            name = rest;
+        } else {
+            break;
+        }
     }
     key.name = name.to_string();
     if name.chars().count() == 1 {
@@ -420,13 +427,13 @@ fn remembered_repositories_are_listed_with_their_kind() {
 }
 
 #[test]
-fn space_selects_and_w_gives_it_a_worktree() {
+fn space_selects_and_alt_w_gives_it_a_worktree() {
     let host = host();
     let world = World::default();
     open(&host, &world);
     press(&host, &world, "space");
     assert!(drawn(&host, &world).contains("[x] /src/thurbox"));
-    press(&host, &world, "w");
+    press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(screen.contains("[wt]"), "{screen}");
 }
@@ -436,8 +443,8 @@ fn worktree_mode_is_refused_for_a_directory_that_is_not_a_repository() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "j");
-    press(&host, &world, "w");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+w");
     let screen = drawn(&host, &world);
     assert!(
         screen.contains("Not a git repo"),
@@ -474,12 +481,78 @@ fn search_filters_and_counts_what_it_matched() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "/");
     type_text(&host, &world, "note");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Search (1/2)"), "{screen}");
     assert!(screen.contains("/src/notes"), "{screen}");
     assert!(!screen.contains("thurbox"), "{screen}");
+}
+
+#[test]
+fn the_search_is_focused_as_soon_as_the_flow_opens() {
+    // No `/` first: the flow opens on the repositories to pick from, and the
+    // first thing a hand does there is start typing one's name.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (2/2)"), "{screen}");
+}
+
+#[test]
+fn letters_that_used_to_be_shortcuts_are_typed_into_the_search() {
+    // j/k/w/d were list commands; with the search focused they are part of a
+    // repository's name, which is what they are far more often.
+    let host = host();
+    let world = world_with(vec![
+        bookmark("/src/jkwd", Some(true)),
+        bookmark("/src/other", Some(true)),
+    ]);
+    open(&host, &world);
+    type_text(&host, &world, "jkwd");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (1/2)"), "{screen}");
+    assert!(!screen.contains("[wt]"), "{screen}");
+    assert!(
+        host.drain_commands().is_empty(),
+        "`d` must not forget anything"
+    );
+}
+
+#[test]
+fn escape_clears_the_query_before_it_closes_the_flow() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    type_text(&host, &world, "note");
+    press(&host, &world, "esc");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (2/2)"), "cleared, still open: {screen}");
+    press(&host, &world, "esc");
+    assert_eq!(drawn(&host, &world), "");
+}
+
+#[test]
+fn enter_in_the_search_carries_the_ticked_repositories_on() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+}
+
+#[test]
+fn shift_tab_from_the_path_returns_to_the_search() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    press(&host, &world, "backtab");
+    type_text(&host, &world, "note");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Search (1/2)"), "{screen}");
 }
 
 #[test]
@@ -875,11 +948,11 @@ fn alt_p_imports_the_typed_path_as_a_folder() {
 }
 
 #[test]
-fn d_forgets_a_remembered_repository() {
+fn alt_d_forgets_a_remembered_repository() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "d");
+    press(&host, &world, "alt+d");
     assert_eq!(
         host.drain_commands(),
         vec![Command::Bookmark {
@@ -891,12 +964,35 @@ fn d_forgets_a_remembered_repository() {
 }
 
 #[test]
+fn delete_forgets_too_once_there_is_nothing_ahead_of_the_caret() {
+    // `delete` still edits the query while there is text ahead of the caret —
+    // only past the end, where it would do nothing, does it mean "forget".
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "delete");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/src/thurbox".into(),
+            edit: BookmarkEdit::Remove,
+        }]
+    );
+    type_text(&host, &world, "src");
+    press(&host, &world, "left");
+    press(&host, &world, "delete");
+    assert!(host.drain_commands().is_empty());
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+}
+
+#[test]
 fn a_member_of_a_folder_cannot_be_forgotten_on_its_own() {
     let host = host();
     let world = world_with(folder_rows());
     open(&host, &world);
-    press(&host, &world, "j");
-    press(&host, &world, "d");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+d");
     assert!(
         host.drain_commands().is_empty(),
         "a child has no memory of its own to forget"
@@ -1085,7 +1181,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
     );
     open(&host, &world);
     press(&host, &world, "space");
-    press(&host, &world, "w");
+    press(&host, &world, "alt+w");
     press(&host, &world, "enter");
 
     // The flow reaches the branch step and asks for the list; the answer is
@@ -1143,10 +1239,10 @@ fn a_second_repository_travels_as_an_extra_member_with_its_own_mode() {
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     open(&host, &world);
     // thurbox: worktree. website: worktree. notes: attached as it is.
-    press(&host, &world, "w");
-    press(&host, &world, "j");
-    press(&host, &world, "w");
-    press(&host, &world, "j");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "down");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "down");
     press(&host, &world, "space");
     press(&host, &world, "enter");
     press(&host, &world, "enter"); // base branch
@@ -1366,7 +1462,9 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
         .iter()
         .map(|binding| binding.chord.as_str())
         .collect();
-    for chord in ["ctrl+n", "j", "k", "space", "w", "d", "/", "alt+p"] {
+    for chord in [
+        "ctrl+n", "j", "k", "space", "alt+w", "alt+d", "delete", "alt+p",
+    ] {
         assert!(
             declared.contains(&chord),
             "{chord} is not declared: {declared:?}"
@@ -1426,10 +1524,8 @@ fn the_arrows_still_move_the_list_while_a_field_has_focus() {
     ]);
     // No hosts configured, so the flow opens on the repository step.
     open(&host, &world);
-    press(&host, &world, "/");
 
     press(&host, &world, "down");
-    press(&host, &world, "enter");
     press(&host, &world, "space");
     let picked = drawn(&host, &world);
     assert!(
@@ -1483,14 +1579,15 @@ fn the_typed_path_field_offers_to_add_the_repository() {
 
 #[test]
 fn the_search_pills_name_the_filter_they_act_on() {
-    // With the search focused `esc` clears the filter rather than closing the
-    // flow, so the dismiss pill must not claim to cancel.
+    // With a query typed `esc` clears it rather than closing the flow, so the
+    // dismiss pill must not claim to cancel — until there is nothing to clear.
     let h = host();
     let world = World::default();
     open(&h, &world);
-    press(&h, &world, "/");
+    assert!(drawn(&h, &world).contains("[ Cancel ]"));
+    type_text(&h, &world, "src");
     let screen = drawn(&h, &world);
-    assert!(screen.contains("[ Keep filter ]"), "{screen}");
+    assert!(screen.contains("[ Next ]"), "{screen}");
     assert!(screen.contains("[ Clear ]"), "{screen}");
     assert!(!screen.contains("[ Cancel ]"), "{screen}");
 }
@@ -1607,7 +1704,7 @@ fn the_branch_step_offers_nothing_to_select_while_it_is_still_fetching() {
         .set_branches_for_test("", "/src/thurbox", Branches::Pending);
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     let screen = drawn(&h, &world);
@@ -1677,7 +1774,7 @@ fn the_branch_name_is_not_the_last_question_when_an_agent_is_still_to_come() {
     );
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     press(&h, &world, "enter");
@@ -1796,7 +1893,7 @@ fn a_branch_name_that_prefilled_to_nothing_offers_no_pill() {
     );
     open(&h, &world);
     press(&h, &world, "space");
-    press(&h, &world, "w");
+    press(&h, &world, "alt+w");
     press(&h, &world, "enter");
     world.wants.branches = Some((String::new(), "/src/thurbox".into()));
     press(&h, &world, "enter");

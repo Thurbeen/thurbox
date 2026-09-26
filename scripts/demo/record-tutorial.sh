@@ -397,12 +397,12 @@ send Tab; sleep 3
 shot browse-directory
 
 # 05 — enter on a git row adds it to repo memory, selects it, and puts focus back
-# on the list with the cursor on the row just added.
+# on the search with the cursor on the row just added.
 send Enter; sleep 3
 shot repo-added
 
-# 06 — `w` gives the selected repository its own worktree.
-write "w"; sleep 2
+# 06 — `alt+w` gives the selected repository its own worktree.
+send M-w; sleep 2
 shot worktree-mode
 
 # 07 — enter leaves the repo step. Worktree mode is what makes the base-branch
