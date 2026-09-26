@@ -68,6 +68,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reader_skips_empty_frames_and_reads_the_next_frame() {
         let (sender, receiver) = mpsc::channel();
         sender
