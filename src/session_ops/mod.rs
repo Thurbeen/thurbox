@@ -596,7 +596,7 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
 }
 
 pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::AgentDef {
-    let registry = crate::agent::agent_config::load_or_seed();
+    let registry = crate::agent::agent_config::load_for_launch();
     requested
         .filter(|n| !n.is_empty())
         .and_then(|n| registry.get(n))

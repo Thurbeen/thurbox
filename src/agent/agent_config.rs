@@ -239,11 +239,28 @@ pub fn builtin_registry() -> AgentRegistry {
 /// logged here (headless callers) — the TUI uses
 /// [`load_or_seed_with_warnings`] to surface them in the status bar too.
 pub fn load_or_seed() -> AgentRegistry {
-    let (registry, warnings) = load_or_seed_with_warnings();
-    for w in &warnings {
-        tracing::warn!("{w}");
+    match load_for_reload() {
+        Ok((registry, warnings)) => {
+            for warning in warnings {
+                tracing::warn!("{warning}");
+            }
+            registry
+        }
+        Err(error) => {
+            if let Some(registry) = cached_registry() {
+                tracing::warn!("{error}; keeping last good agents.toml");
+                return registry;
+            }
+            let (registry, warnings) = load_or_seed_with_warnings();
+            if warnings.is_empty() {
+                remember_registry(&registry);
+            }
+            for warning in warnings {
+                tracing::warn!("{warning}");
+            }
+            registry
+        }
     }
-    registry
 }
 
 /// [`load_or_seed`], also returning user-facing warnings for anything that
@@ -267,6 +284,47 @@ pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
             vec![format!("Failed to read agents.toml: {e}")],
         ),
     }
+}
+
+/// Read an edited registry without replacing the running one on an invalid file.
+/// Startup may fall back to built-ins; a live reload must preserve its last
+/// usable registry until the user finishes correcting the edit.
+pub fn load_for_reload() -> Result<(AgentRegistry, Vec<String>), String> {
+    let path = agents_config_path().ok_or("Could not resolve agents.toml path")?;
+    let contents =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read agents.toml: {e}"))?;
+    let (registry, warnings) =
+        parse_agents_toml_checked(&contents).map_err(|warnings| warnings.join("; "))?;
+    remember_registry(&registry);
+    Ok((registry, warnings))
+}
+
+/// Launch from the registry generation already published by this process.
+/// A fresh CLI process has no cached generation and reads the file itself.
+pub fn load_for_launch() -> AgentRegistry {
+    cached_registry().unwrap_or_else(load_or_seed)
+}
+
+fn registry_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, AgentRegistry>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, AgentRegistry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn remember_registry(registry: &AgentRegistry) {
+    if let Some(path) = agents_config_path() {
+        registry_cache()
+            .lock()
+            .unwrap()
+            .insert(path, registry.clone());
+    }
+}
+
+fn cached_registry() -> Option<AgentRegistry> {
+    let path = agents_config_path()?;
+    registry_cache().lock().unwrap().get(&path).cloned()
 }
 
 /// Write the bundled agents.toml on first run, degrading to the built-in
@@ -305,17 +363,24 @@ const KNOWN_TOP_LEVEL_KEYS: [&str; 3] = ["config_version", "default", "agents"];
 /// that tells you to fix the file, while the TUI degrades gracefully so a
 /// single typo never strands you on the built-ins.
 fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
+    match parse_agents_toml_checked(contents) {
+        Ok(parsed) => parsed,
+        Err(mut warnings) => {
+            warnings.push("using built-in agents".into());
+            (builtin_registry(), warnings)
+        }
+    }
+}
+
+fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<String>), Vec<String>> {
     // A genuine syntax error can't be recovered per entry — fall back to built-ins.
     let table: toml::Table = match contents.parse() {
         Ok(table) => table,
         Err(e) => {
-            return (
-                builtin_registry(),
-                vec![format!(
-                    "agents.toml: {}; using built-in agents",
-                    compact_toml_error(&e.to_string())
-                )],
-            );
+            return Err(vec![format!(
+                "agents.toml: {}",
+                compact_toml_error(&e.to_string())
+            )])
         }
     };
 
@@ -362,18 +427,18 @@ fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
     }
 
     if agents.is_empty() {
-        warnings.push("agents.toml has no usable agents; using built-in agents".into());
-        return (builtin_registry(), warnings);
+        warnings.push("agents.toml has no usable agents".into());
+        return Err(warnings);
     }
 
-    (
+    Ok((
         AgentRegistry {
             config_version,
             default,
             agents,
         },
         warnings,
-    )
+    ))
 }
 
 /// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning

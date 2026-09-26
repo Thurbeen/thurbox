@@ -458,6 +458,159 @@ fn on_disk_db() -> thurbox::storage::Database {
     thurbox::storage::Database::open(&path).expect("open db")
 }
 
+#[test]
+#[cfg(unix)]
+fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned() {
+    use thurbox::kernel::snapshot::SnapshotStore;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    let agents = config.join("agents.toml");
+    std::fs::write(
+        &agents,
+        "default = 'first'\n[[agents]]\nname = 'first'\ncommand = 'sh'\n",
+    )
+    .expect("initial registry");
+    let db = on_disk_db();
+    let mut snapshot = SnapshotStore::with_database(on_disk_db());
+    let first = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "existing".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agent_default.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("first session");
+
+    let marker = config.join("second-agent-ran");
+    let command = config.join("second-agent");
+    std::fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf second > '{}'\nexec sh\n",
+            marker.display()
+        ),
+    )
+    .expect("agent script");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755))
+        .expect("executable agent");
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'second'\n[[agents]]\nname = 'second'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("edited registry");
+    let before_poll = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "before-poll".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agents[0].name.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("still-selected agent launches");
+    assert_eq!(
+        db.get_session_by_id(before_poll.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "first"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("edited registry")
+        .expect("valid registry");
+    assert_eq!(snapshot.current().agent_default, "second");
+    assert_eq!(snapshot.current().agents.len(), 1);
+    assert_eq!(snapshot.current().agents[0].name, "second");
+
+    let selected = snapshot.current().agents[0].name.clone();
+    let second = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "new".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(selected),
+            ..Default::default()
+        },
+    )
+    .expect("selected agent launches");
+    assert_eq!(
+        db.get_session_by_id(second.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "second"
+    );
+    assert_eq!(
+        db.get_session_by_id(first.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "first"
+    );
+    assert!(second.backend_id.starts_with('%'));
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("new agent ran"),
+        "second"
+    );
+    snapshot.refresh();
+
+    std::fs::write(&agents, "[[agents]\n").expect("invalid registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(snapshot.poll_registry().expect("invalid edit").is_err());
+    assert_eq!(snapshot.current().agent_default, "second");
+    assert_eq!(snapshot.current().agents[0].name, "second");
+    assert_eq!(snapshot.current().sessions.len(), 3);
+    std::fs::remove_file(&marker).expect("clear launch marker");
+    let third = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "after-invalid-edit".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agents[0].name.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("last good agent still launches");
+    assert_eq!(
+        db.get_session_by_id(third.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "second"
+    );
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("last good agent ran"),
+        "second"
+    );
+}
+
 #[cfg(unix)]
 fn write_hooks(config: &Path, body: &str) {
     std::fs::write(config.join("hooks.toml"), body).expect("write hooks.toml");

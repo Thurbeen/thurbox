@@ -693,14 +693,12 @@ pub struct SnapshotStore {
     git: GitStats,
     /// What holds each unreported session's pane — see [`PaneProbe`].
     panes: PaneProbe,
-    /// The agent registry every state answer is judged against: coverage comes
-    /// from it, and so does the name a detected agent is reported under. Read
-    /// once, like `agents` below, so a refresh never touches the filesystem.
+    /// The registry shared by picker, default, and status coverage.
     registry: std::sync::Arc<AgentRegistry>,
-    /// Read once at startup: these change only when their config files do, and
-    /// re-reading them every 400ms would be a filesystem hit for nothing.
     agents: Vec<AgentRow>,
     agent_default: String,
+    registry_stamp: Option<(std::time::SystemTime, u64)>,
+    registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
@@ -765,6 +763,7 @@ impl SnapshotStore {
             ),
         };
         let registry = read_registry();
+        let registry_stamp = registry_stamp();
         let mut store = Self {
             database,
             git: GitStats::new(git_poll_interval()),
@@ -772,6 +771,8 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
+            registry_stamp,
+            registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
             preflight_at: Instant::now(),
@@ -794,6 +795,7 @@ impl SnapshotStore {
     /// owns its own connection).
     pub fn with_database(database: Database) -> Self {
         let registry = read_registry();
+        let registry_stamp = registry_stamp();
         let mut store = Self {
             database: Some(database),
             git: GitStats::new(git_poll_interval()),
@@ -801,6 +803,8 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
+            registry_stamp,
+            registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
             preflight_at: Instant::now(),
@@ -830,6 +834,39 @@ impl SnapshotStore {
 
     pub fn current(&self) -> &Snapshot {
         &self.current
+    }
+
+    pub fn agent_registry(&self) -> &AgentRegistry {
+        &self.registry
+    }
+
+    /// Adopt an edited agents.toml at the same cadence as settings polling.
+    /// A failed edit keeps all four readers on the last good registry.
+    pub fn poll_registry(&mut self) -> Option<Result<Vec<String>, String>> {
+        const POLL_INTERVAL: Duration = Duration::from_secs(1);
+        if self
+            .registry_polled_at
+            .is_some_and(|at| at.elapsed() < POLL_INTERVAL)
+        {
+            return None;
+        }
+        self.registry_polled_at = Some(Instant::now());
+        let stamp = registry_stamp()?;
+        if self.registry_stamp == Some(stamp) {
+            return None;
+        }
+        self.registry_stamp = Some(stamp);
+        let (registry, warnings) = match crate::agent::agent_config::load_for_reload() {
+            Ok(loaded) => loaded,
+            Err(error) => return Some(Err(error)),
+        };
+        if *self.registry != registry {
+            self.agent_default = registry.default_name();
+            self.agents = read_agents(&registry);
+            self.registry = std::sync::Arc::new(registry);
+            self.refresh();
+        }
+        Some(Ok(warnings))
     }
 
     /// Rebuild if the refresh interval has elapsed *and* anything committed.
@@ -1602,6 +1639,12 @@ fn assess(
 /// this one file, and `load_or_seed` seeds it when it is missing.
 fn read_registry() -> std::sync::Arc<AgentRegistry> {
     std::sync::Arc::new(crate::agent::agent_config::load_or_seed())
+}
+
+fn registry_stamp() -> Option<(std::time::SystemTime, u64)> {
+    let path = crate::agent::agent_config::agents_config_path()?;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 /// Agents from the registry the launcher itself uses — so the flow can never
