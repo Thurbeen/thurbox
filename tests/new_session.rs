@@ -1174,6 +1174,29 @@ fn a_new_git_repository_is_one_command_and_lands_ticked() {
 }
 
 #[test]
+fn adding_a_repository_clears_the_search_that_would_hide_it() {
+    // The new row is ticked and the cursor put on it — which is no use behind a
+    // query typed before the path was, one that the new row does not match.
+    let host = host();
+    let world = world_listing_src();
+    open(&host, &world);
+    type_text(&host, &world, "zzz");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "brand-new");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+
+    let host = self::host();
+    open(&host, &world);
+    type_text(&host, &world, "zzz");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/srv/typed");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Search (2/2)"));
+}
+
+#[test]
 fn a_folder_can_be_left_empty() {
     let host = host();
     let world = world_listing_src();

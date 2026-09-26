@@ -269,6 +269,15 @@ local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
 end
 
+--- A repository-memory write has been issued: tick the row it lands as (see
+--- `select_newest` in the render), and clear a search typed before the path
+--- was — one the new row need not match, which would hide it once ticked.
+local function await_new_row(flow)
+  flow.select_newest = true
+  textinput.clear(flow.search)
+  flow.cursor = 1
+end
+
 --- Move focus into the path field, filling an empty one with where a new path
 --- most likely goes (`pathpicker.start`). The fill is remembered so it can be
 --- told apart from something typed: until it is edited it is no choice at all.
@@ -1648,7 +1657,7 @@ return {
         })
         flow.step = "repo"
         flow.focus = "search"
-        flow.select_newest = true
+        await_new_row(flow)
         flow.pending_label = "cloning…"
         textinput.clear(flow.input)
         save(flow)
@@ -1677,7 +1686,7 @@ return {
         -- picked once it lands, as a typed path's is — goes on with one `enter`.
         flow.step = "repo"
         flow.focus = "search"
-        flow.select_newest = true
+        await_new_row(flow)
         textinput.clear(flow.input)
         save(flow)
         ask(flow)
@@ -1711,7 +1720,7 @@ return {
             textinput.clear(flow.input)
             flow.browse = false
             flow.focus = "search"
-            flow.select_newest = true
+            await_new_row(flow)
           else
             textinput.set(flow.input, joined .. "/")
             flow.browse_index = 1
@@ -1780,7 +1789,7 @@ return {
           textinput.clear(flow.input)
           enter_path_field(flow)
           flow.browse = false
-          flow.select_newest = true
+          await_new_row(flow)
         end
         save(flow)
         ask(flow)
