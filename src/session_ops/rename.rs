@@ -42,6 +42,7 @@ pub fn rename_session_headless(
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     if session.name == name {
         return Ok(RenameReport {
             previous: session.name,
@@ -97,7 +98,7 @@ pub fn rename_session_headless(
 
     let id = session_id.to_string();
     let written =
-        crate::agent::tmux::rename_session_windows(host.as_ref(), &id, &session.name, name)
+        crate::agent::tmux::rename_session_windows(&mux, host.as_ref(), &id, &session.name, name)
             .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
             .and_then(|()| match db.rename_session(session_id, name) {
                 Ok(true) => Ok(()),
@@ -111,9 +112,13 @@ pub fn rename_session_headless(
         // like this it reads as gone, and a relaunch would start a second agent
         // beside it. Nothing renamed is found under the new name, so putting
         // back is harmless when the first rename failed outright.
-        if let Err(e) =
-            crate::agent::tmux::rename_session_windows(host.as_ref(), &id, name, &session.name)
-        {
+        if let Err(e) = crate::agent::tmux::rename_session_windows(
+            &mux,
+            host.as_ref(),
+            &id,
+            name,
+            &session.name,
+        ) {
             tracing::warn!(
                 "could not put back the windows of '{}': {e:#}",
                 session.name

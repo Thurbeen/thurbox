@@ -1070,16 +1070,18 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             <a href="#session-persistence" class="heading-anchor">#</a>
           </h2>
           <p>
-            Sessions run inside a dedicated tmux server (
+            Local sessions use a dedicated tmux server by default (
             <code>tmux -L thurbox</code>
-            ) and survive crashes, restarts, and multiple concurrent instances.
+            ). New local sessions can select a separate RMUX server on POSIX through
+            <code>settings.toml</code> or a CLI flag. Both survive
+            crashes, restarts, and multiple concurrent instances.
           </p>
 
           <h3>How it works</h3>
           <ul>
             <li>
-              Sessions spawn as tmux windows. The tmux pane keeps running regardless of Thurbox's
-              lifecycle.
+              Sessions spawn as multiplexer windows. Their panes keep running regardless of
+              Thurbox's lifecycle.
             </li>
             <li>
               On shutdown (
@@ -1087,13 +1089,13 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
               ), session metadata is saved to SQLite. Thurbox detaches without killing sessions.
             </li>
             <li>
-              On restart, Thurbox discovers existing sessions from tmux, matches them to persisted
-              metadata, and adopts them with terminal content intact.
+              On restart, Thurbox discovers existing sessions from each recorded backend,
+              matches them to persisted metadata, and adopts them with terminal content intact.
             </li>
             <li>
-              External recovery is always possible via
+              For default local sessions, external recovery is possible via
               <code>tmux -L thurbox attach</code>
-              .
+              ; for RMUX sessions use <code>rmux -L thurbox attach</code>.
             </li>
           </ul>
 
@@ -1118,7 +1120,7 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
                   <code>Ctrl+D</code>
                   (Close)
                 </td>
-                <td>Permanently kills the tmux pane. Worktree (if any) is removed immediately.</td>
+                <td>Permanently kills the session pane. Worktree (if any) is removed immediately.</td>
               </tr>
             </tbody>
           </table>

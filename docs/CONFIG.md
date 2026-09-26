@@ -237,6 +237,41 @@ than a guessed invocation. A missing **agent** is answered with the `agents.toml
 entry that decides what gets run, because thurbox bakes in no knowledge of any
 agent's installer.
 
+### Opt-in local RMUX sessions
+
+On Linux or macOS, install the complete [RMUX](https://github.com/Helvesec/rmux/releases)
+package, including its `libexec/rmux` helper, and put its `bin/rmux` on `PATH`.
+The tested release is v0.10.0. Set the top-level `multiplexer = "rmux"` in
+`settings.toml` to use RMUX for new local sessions created by the TUI or CLI.
+Restart a running TUI after editing this startup setting; each new CLI command
+reads the file on launch. `thurbox-cli doctor` reports the configured choice,
+and a missing RMUX fails creation before it writes a session.
+
+For one session, `thurbox-cli session create --name demo --repo-path .
+--command sh --multiplexer rmux` overrides the setting. Set
+`multiplexer = "default"` to switch future creates back to tmux on POSIX or
+psmux on native Windows, or pass `--multiplexer default` for one create. Spawn
+automations, task runs, and extension sessions continue to use the platform
+default. Existing rows retain
+`local-tmux` or `local-rmux` in `backend_type`, so
+send, capture, restart, discovery and deletion continue to reach the server
+that owns each pane after switching. `thurbox-cli session list --json` shows the
+recorded type. Removing RMUX while its sessions still exist leaves those
+sessions unavailable until it is installed again; switch-back does not convert
+them.
+
+RMUX selection is currently local and POSIX only. `--multiplexer` cannot be
+combined with `--host`. New session creation on a host configured with
+`multiplexer = "rmux"` is rejected before connecting; existing remote rows
+also refuse RMUX control commands and host CLI delegation. The remote RMUX
+spawn and control path is not yet supported. Force-delete leaves remote
+windows and worktrees untouched and reports the teardown as owed.
+SSH and WSL backends still use tmux or psmux as configured for their host;
+native Windows still defaults to psmux. RMUX v0.10.0 supports the control stream
+used for local pane I/O, but not
+tmux's `refresh-client` flow-control and format subscriptions, so RMUX panes
+do not use those features or terminal snapshot eviction.
+
 `hook_schema` is optional. Custom agents are agent-neutral, so the built-in
 **hooks** extension normally wires status hooks only for the built-ins it knows
 by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose

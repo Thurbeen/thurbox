@@ -1,4 +1,4 @@
-//! Headless session spawn — creates a local-tmux session without requiring
+//! Headless session spawn — creates a session without requiring
 //! the TUI event loop.
 
 use std::collections::BTreeMap;
@@ -11,7 +11,7 @@ use crate::sync::{SharedSession, SharedWorktree};
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
 
-/// Backend identifier for the local-tmux backend (matches `LocalTmuxBackend`).
+/// Backend identifier for the platform-default local backend.
 pub const LOCAL_TMUX_BACKEND_TYPE: &str = crate::session::LOCAL_BACKEND_TYPE;
 
 /// Request to create a new headless session.
@@ -72,6 +72,8 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
+    /// Local multiplexer override. `None` uses the configured preference.
+    pub multiplexer: Option<String>,
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
     pub parent_session_id: Option<SessionId>,
@@ -112,6 +114,8 @@ pub struct SpawnResult {
     /// report one (psmux). Callers that act on the fresh session (prompt
     /// delivery, teardown) target this rather than the non-unique window name.
     pub backend_id: String,
+    /// Persisted backend that owns the new pane.
+    pub backend_type: String,
     pub cwd: PathBuf,
     pub worktrees: Vec<SharedWorktree>,
     pub parent_session_id: Option<SessionId>,
@@ -136,7 +140,7 @@ pub struct SpawnResult {
     pub sharing: Option<String>,
 }
 
-/// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
+/// Spawn a new session in its selected backend, persisting its state to the
 /// shared SQLite database.
 /// A stage of the spawn pipeline, for callers that want to render progress.
 ///
@@ -201,9 +205,10 @@ pub fn spawn_session_headless_with_progress(
     report(SpawnPhase::Resolving);
     validate_request(db, &req)?;
 
-    // Resolve the optional remote host. `backend_type` is `local-tmux` or
-    // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
-    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+    // Resolve the optional remote host and selected local multiplexer before
+    // any one-shot commands run; later operations use the persisted backend.
+    let (backend_type, host) = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&backend_type)?;
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -373,6 +378,7 @@ pub fn spawn_session_headless_with_progress(
     let stamp = session_id.to_string();
     let backend_id = launch_window(
         host.as_ref(),
+        &mux,
         &stamp,
         &req.name,
         &command,
@@ -387,7 +393,7 @@ pub fn spawn_session_headless_with_progress(
         name: req.name.clone(),
         agent: agent_name.clone(),
         backend_id: backend_id.clone(),
-        backend_type,
+        backend_type: backend_type.clone(),
         agent_session_id: Some(agent_session_id.clone()),
         // `cwd` is the *primary* repo (for display / git context); the workspace
         // is a spawn-time launch detail, re-derived idempotently on every launch.
@@ -410,7 +416,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(host.as_ref(), &mux, &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -454,6 +460,7 @@ pub fn spawn_session_headless_with_progress(
         agent: agent_name,
         agent_session_id,
         backend_id,
+        backend_type,
         cwd: primary_cwd,
         worktrees,
         parent_session_id: req.parent_session_id,
@@ -499,8 +506,10 @@ fn missing_agent_warning(
 
 /// Open the session's window, on its host or here, and return the new pane's
 /// id.
+#[allow(clippy::too_many_arguments)]
 fn launch_window(
     host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
     stamp: &str,
     name: &str,
     command: &str,
@@ -520,7 +529,7 @@ fn launch_window(
                     },
                 )
         }
-        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
+        None => crate::agent::tmux::spawn_window(mux, stamp, name, command, args, Some(cwd), env)
             .map_err(
                 |e| match crate::agent::preflight::is_missing_dependency(&e) {
                     // Already a sentence naming the binary, the search and the fix;
@@ -534,7 +543,13 @@ fn launch_window(
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
     // spawned. `kill_window`'s resolution would reach the `tb-<name>`
@@ -549,7 +564,7 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
             name,
             crate::agent::tmux::SessionPanes::agent(backend_id),
         ),
-        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
+        None => crate::agent::tmux::kill_window(mux, stamp, name).map(|()| true),
     };
     match cleanup {
         Ok(true) => {}
@@ -721,6 +736,7 @@ fn spawn_delegated(
         agent: row.agent,
         agent_session_id: row.agent_session_id.unwrap_or_default(),
         backend_id: row.backend_id,
+        backend_type: row.backend_type,
         cwd: row.cwd.unwrap_or(req.repo_path),
         worktrees: row.worktrees,
         parent_session_id: row.parent_session_id,
@@ -1422,8 +1438,33 @@ fn dir_label(path: &std::path::Path) -> String {
 /// against the rows already on *that* backend: a database mirroring a shareable
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
-pub(crate) fn backend_type_for(host: Option<&str>) -> Result<String, String> {
-    resolve_host(host).map(|(backend, _)| backend)
+pub(crate) fn backend_type_for_choice(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<String, String> {
+    resolve_backend(host, multiplexer).map(|(backend, _)| backend)
+}
+
+fn resolve_backend(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<(String, Option<HostDef>), String> {
+    let (backend, host_def) = resolve_host(host)?;
+    if let Some(remote) = host_def.as_ref() {
+        if remote.mux() == "rmux" {
+            return Err(crate::agent::tmux::REMOTE_RMUX_UNSUPPORTED.into());
+        }
+        if multiplexer.is_some() {
+            return Err("--multiplexer currently supports local sessions only".into());
+        }
+        return Ok((backend, host_def));
+    }
+    let mux = match multiplexer {
+        Some(choice) => crate::agent::tmux::LocalMuxContext::for_choice(choice)?,
+        None => crate::agent::tmux::LocalMuxContext::configured_default(),
+    };
+    mux.ensure_available()?;
+    Ok((mux.backend_type().into(), None))
 }
 
 /// Resolve `--host` to `(backend_type, host)`.

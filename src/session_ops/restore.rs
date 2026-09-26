@@ -177,7 +177,6 @@ pub fn restore_session_headless(
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
         .ok_or_else(|| format!("deleted session not found: {id}"))?;
-
     // Recovery the caller would not want is a decision, not a discovery: they
     // have to have been told before it happens. v1's confirm modal and the
     // CLI's `--best-effort` are the two places that ask — but only when there
@@ -384,6 +383,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
         .ok_or_else(|| format!("restored session not found: {id}"))?;
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)?;
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //
@@ -395,9 +395,10 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // Strictly its own window: one stamped for a live namesake is not this
     // row's to adopt, and recording it would put two rows on one pane — the
     // next kill-by-id then destroys the other session's agent.
-    if let Ok(located) = crate::agent::tmux::agent_window(None, &stamp, &session.name) {
+    if let Ok(located) = crate::agent::tmux::agent_window(&mux, None, &stamp, &session.name) {
         if let Some(pane) = located.pane() {
             crate::agent::tmux::stamp_local_window(
+                &mux,
                 &pane,
                 &stamp,
                 crate::agent::tmux::WindowRole::Agent,
@@ -420,6 +421,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     let plan =
         super::restart::build_restart_plan(&session, None, hooks_enabled, recipe.as_ref(), &env)?;
     let pane = crate::agent::tmux::spawn_window(
+        &mux,
         &stamp,
         &plan.window_name,
         &plan.command,

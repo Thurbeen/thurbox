@@ -308,16 +308,22 @@ fn enqueue_and_wake(
 
     let mut woke = false;
     if !no_wake {
-        // Best-effort nudge: a missing/dead window must not fail the send (the
-        // message is already durably queued for the next drain).
-        match crate::agent::tmux::send_prompt_now(
-            &recipient.id.to_string(),
-            &recipient.name,
-            WAKE_TOKEN,
-        ) {
-            Ok(()) => woke = true,
+        // The enqueue is durable already; backend resolution and the nudge are
+        // best effort so callers can use the returned message id without retrying.
+        match crate::agent::tmux::LocalMuxContext::for_backend(&recipient.backend_type) {
+            Ok(mux) => match crate::agent::tmux::send_prompt_now(
+                &mux,
+                &recipient.id.to_string(),
+                &recipient.name,
+                WAKE_TOKEN,
+            ) {
+                Ok(()) => woke = true,
+                Err(e) => {
+                    tracing::debug!("message: wake nudge to {} failed: {e}", recipient.name)
+                }
+            },
             Err(e) => {
-                tracing::debug!("message: wake nudge to {} failed: {e}", recipient.name)
+                tracing::debug!("message: wake nudge to {} unavailable: {e}", recipient.name)
             }
         }
         // Keep the headless janitor ticking so a missed wake is still drained in

@@ -1,9 +1,8 @@
 //! Headless session operations — spawn and restart sessions without the TUI.
 //!
-//! Callers (MCP, CLI) use these helpers to drive the same local-tmux-backed
-//! sessions the TUI manages, without requiring the TUI event loop. All
-//! operations are synchronous against the SQLite database and the `tmux -L
-//! thurbox` server.
+//! Callers (MCP, CLI) use these helpers to drive the same sessions the TUI
+//! manages, without requiring its event loop. Operations are synchronous
+//! against the SQLite database and each session's recorded backend.
 
 pub mod builtin;
 pub mod builtin_hooks;
@@ -524,6 +523,9 @@ pub fn fork_session_headless(
         host: resolve_host(&source.backend_type)
             .flatten()
             .map(|host| host.name),
+        multiplexer: crate::agent::tmux::LocalMuxContext::for_backend(&source.backend_type)?
+            .choice()
+            .map(str::to_string),
         parent_session_id: Some(source.id),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).

@@ -107,6 +107,9 @@ fn verdicts() -> &'static Mutex<HashMap<String, Verdict>> {
 /// A host with `share_sessions = false` is never contacted: it is used
 /// exactly as before sharing existed.
 pub fn usable(host: &HostDef) -> Usable {
+    if host.mux() == "rmux" {
+        return Usable::No(crate::agent::tmux::REMOTE_RMUX_UNSUPPORTED.to_string());
+    }
     if !host.shareable() {
         return Usable::No("sharing is off for this host (share_sessions = false)".to_string());
     }

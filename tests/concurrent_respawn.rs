@@ -71,6 +71,7 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
                 // instead of being serialised by thread startup.
                 barrier.wait();
                 thurbox::agent::tmux::spawn_window(
+                    &thurbox::agent::tmux::LocalMuxContext::default_local(),
                     &id,
                     &name,
                     "sh",

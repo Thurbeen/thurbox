@@ -607,6 +607,7 @@ impl PaneProbe {
         &mut self,
         session: &str,
         name: &str,
+        backend_type: &str,
         agent_command: String,
         registry: &std::sync::Arc<AgentRegistry>,
     ) {
@@ -622,10 +623,22 @@ impl PaneProbe {
         }
         self.inflight.insert(session.to_string());
         let tx = self.ensure_channel();
-        let (session, name) = (session.to_string(), name.to_string());
+        let (session, name, backend_type) = (
+            session.to_string(),
+            name.to_string(),
+            backend_type.to_string(),
+        );
         let registry = std::sync::Arc::clone(registry);
         std::thread::spawn(move || {
-            let pane = crate::agent::tmux::pane_state(&session, &name);
+            let mux = match crate::agent::tmux::LocalMuxContext::for_backend(&backend_type) {
+                Ok(mux) => mux,
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    let _ = tx.send((session, crate::session::Corroboration::Unknown));
+                    return;
+                }
+            };
+            let pane = crate::agent::tmux::pane_state(&mux, &session, &name);
             // Classified on the worker rather than at the fold, so the argv the
             // verdict was read from — a driver's brief runs to kilobytes — never
             // crosses the channel or lands in the snapshot.
@@ -913,7 +926,7 @@ impl SnapshotStore {
     fn poll_pane_probes(&mut self) -> bool {
         let moved = self.panes.drain();
 
-        let wanted: Vec<(String, String, String)> = self
+        let wanted: Vec<(String, String, String, String)> = self
             .current
             .sessions
             .iter()
@@ -932,16 +945,22 @@ impl SnapshotStore {
                     .get(agent)
                     .map(|def| def.command.clone())
                     .unwrap_or_else(|| agent.to_string());
-                (row.id.clone(), row.name.clone(), command)
+                (
+                    row.id.clone(),
+                    row.name.clone(),
+                    row.backend.clone(),
+                    command,
+                )
             })
             .collect();
 
         let probed: std::collections::HashSet<&str> =
-            wanted.iter().map(|(id, _, _)| id.as_str()).collect();
+            wanted.iter().map(|(id, _, _, _)| id.as_str()).collect();
         self.panes.retain(&probed);
 
-        for (id, name, command) in wanted {
-            self.panes.request(&id, &name, command, &self.registry);
+        for (id, name, backend, command) in wanted {
+            self.panes
+                .request(&id, &name, &backend, command, &self.registry);
         }
         moved
     }
@@ -1621,12 +1640,20 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 /// Whether the local multiplexer is installed, and what to do when it is not.
 fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
+    if binary == "rmux" && cfg!(windows) {
+        return MuxRow {
+            binary: binary.to_string(),
+            presence: crate::agent::preflight::Presence::Missing,
+            advice: "RMUX sessions are supported on POSIX systems only".into(),
+        };
+    }
     let presence = crate::agent::preflight::look_up(binary);
     MuxRow {
         binary: binary.to_string(),
         presence,
         advice: match presence {
             crate::agent::preflight::Presence::Present => String::new(),
+            _ if binary == "rmux" => crate::agent::preflight::Dependency::Rmux.fix(),
             _ => crate::agent::preflight::Dependency::LocalMultiplexer.fix(),
         },
     }

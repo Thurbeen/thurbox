@@ -340,11 +340,17 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&target.backend_type)?;
+            if !crate::agent::tmux::window_exists(&mux, &target.id.to_string(), &target.name) {
                 return Err("target session not running".into());
             }
-            crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &prompt)
-                .map_err(|e| format!("send_prompt_now: {e}"))?;
+            crate::agent::tmux::send_prompt_now(
+                &mux,
+                &target.id.to_string(),
+                &target.name,
+                &prompt,
+            )
+            .map_err(|e| format!("send_prompt_now: {e}"))?;
             mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
         }
@@ -356,6 +362,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             extra_repos,
         }) => {
             let name = task.spawn_session_name();
+            let mux = crate::agent::tmux::LocalMuxContext::default_local();
             // Reuse an existing session window (re-trigger / restored session).
             // Match by the `· #<id>` tag rather than the exact name so a
             // since-edited title (and legacy `task-<id>` sessions) are found too.
@@ -364,11 +371,13 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
                 .find(|s| {
-                    task.matches_spawn_session(&s.name)
-                        && crate::agent::tmux::window_exists(&s.id.to_string(), &s.name)
+                    crate::agent::tmux::LocalMuxContext::is_default_local_backend(&s.backend_type)
+                        && task.matches_spawn_session(&s.name)
+                        && crate::agent::tmux::window_exists(&mux, &s.id.to_string(), &s.name)
                 });
             if let Some(session) = existing {
                 crate::agent::tmux::send_prompt_now(
+                    &mux,
                     &session.id.to_string(),
                     &session.name,
                     &prompt,
@@ -380,6 +389,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             let req = SpawnRequest {
                 name: name.clone(),
                 repo_path: repo_path.clone(),
+                multiplexer: Some("default".into()),
                 worktree_branch: worktree_branch.clone(),
                 base_branch: base_branch.clone(),
                 agent: agent.clone(),

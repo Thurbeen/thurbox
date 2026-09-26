@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,140 @@ use crate::agent::control_mode::{
     ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
 use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
+
+pub const LOCAL_RMUX_BACKEND_TYPE: &str = "local-rmux";
+pub(crate) const REMOTE_RMUX_UNSUPPORTED: &str =
+    "Remote RMUX is not supported yet; use tmux or psmux for this host";
+
+thread_local! {
+    static ACTIVE_LOCAL_MUX: Cell<Option<&'static str>> = const { Cell::new(None) };
+}
+
+fn local_mux() -> &'static str {
+    ACTIVE_LOCAL_MUX.with(|slot| slot.get().unwrap_or(DEFAULT_MUX))
+}
+
+fn active_context() -> LocalMuxContext {
+    LocalMuxContext { mux: local_mux() }
+}
+
+/// Explicit local backend for synchronous one-shot commands. Carry this value
+/// from a session row into workers. Public one-shot entry points require it,
+/// so a recorded session cannot silently use the default backend.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalMuxContext {
+    mux: &'static str,
+}
+
+impl LocalMuxContext {
+    /// Resolve a CLI override at the same boundary as persisted ids.
+    pub fn for_choice(choice: &str) -> std::result::Result<Self, String> {
+        match choice {
+            "default" => Ok(Self::default_local()),
+            "rmux" => Self::for_backend(LOCAL_RMUX_BACKEND_TYPE),
+            other => Err(format!(
+                "Unknown multiplexer '{other}'. Choose default or rmux."
+            )),
+        }
+    }
+
+    /// The configured backend for new local sessions. This setting is read at
+    /// process startup; an explicit per-create choice can override it.
+    pub fn configured_default() -> Self {
+        match crate::session::settings::global().multiplexer {
+            crate::session::settings::LocalMultiplexer::Default => Self::default_local(),
+            crate::session::settings::LocalMultiplexer::Rmux => Self { mux: "rmux" },
+        }
+    }
+
+    pub fn binary(self) -> &'static str {
+        self.mux
+    }
+
+    pub fn for_backend(backend_type: &str) -> std::result::Result<Self, String> {
+        match backend_type {
+            LOCAL_RMUX_BACKEND_TYPE if cfg!(windows) => {
+                Err("RMUX sessions are supported on POSIX systems only".into())
+            }
+            LOCAL_RMUX_BACKEND_TYPE => Ok(Self { mux: "rmux" }),
+            "" | "tmux" | crate::session::LOCAL_BACKEND_TYPE => Ok(Self::default_local()),
+            remote if crate::session::is_remote_backend(remote) => Ok(Self::default_local()),
+            unsupported => Err(format!("Unsupported local backend '{unsupported}'")),
+        }
+    }
+
+    pub fn default_local() -> Self {
+        Self { mux: DEFAULT_MUX }
+    }
+
+    /// Legacy persisted ids and the current default all name the same server.
+    pub fn is_default_local_backend(backend_type: &str) -> bool {
+        !crate::session::is_remote_backend(backend_type)
+            && Self::for_backend(backend_type).is_ok_and(|mux| mux.choice().is_none())
+    }
+
+    pub fn backend_type(self) -> &'static str {
+        if self.mux == "rmux" {
+            LOCAL_RMUX_BACKEND_TYPE
+        } else {
+            crate::session::LOCAL_BACKEND_TYPE
+        }
+    }
+
+    pub fn choice(self) -> Option<&'static str> {
+        (self.mux == "rmux").then_some("rmux")
+    }
+
+    pub fn ensure_available(self) -> std::result::Result<(), String> {
+        if self.mux == "rmux" && cfg!(windows) {
+            return Err("RMUX sessions are supported on POSIX systems only".into());
+        }
+        if self.mux == "rmux"
+            && crate::agent::preflight::look_up("rmux")
+                == crate::agent::preflight::Presence::Missing
+        {
+            return Err(crate::agent::preflight::Dependency::Rmux.missing_message());
+        }
+        Ok(())
+    }
+
+    fn backend(self) -> TmuxBackend {
+        if self.mux == "rmux" {
+            TmuxBackend::local_rmux()
+        } else {
+            TmuxBackend::local_tmux()
+        }
+    }
+
+    fn enter(self) -> ActiveLocalMux {
+        let previous = ACTIVE_LOCAL_MUX.with(|slot| slot.replace(Some(self.mux)));
+        ActiveLocalMux {
+            previous,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+
+    pub fn send_prompt_after_delay(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        send_prompt_after_delay(self, session_id, session_name, text, delay_secs)
+    }
+}
+
+struct ActiveLocalMux {
+    previous: Option<&'static str>,
+    _not_send: std::marker::PhantomData<*mut ()>,
+}
+
+impl Drop for ActiveLocalMux {
+    fn drop(&mut self) {
+        ACTIVE_LOCAL_MUX.with(|slot| slot.set(self.previous));
+    }
+}
 
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
@@ -198,12 +333,12 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 };
 
 /// Build a [`Command`] for the local multiplexer on the thurbox socket:
-/// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
+/// `<selected mux> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
 /// (send/capture/spawn/kill/heartbeat) bypass the [`TmuxTransport`] seam — they
-/// are local-only — so this centralizes the binary name (`tmux`, or `psmux` on
-/// Windows) and socket instead of hardcoding `tmux` at each call site.
+/// are local-only — so this centralizes the selected binary and socket
+/// instead of hardcoding `tmux` at each call site.
 fn local_mux_command(args: &[&str]) -> Command {
-    let mut cmd = Command::new(DEFAULT_MUX);
+    let mut cmd = Command::new(local_mux());
     cmd.arg("-L").arg(local_socket()).args(args);
     // Strip nesting env so these one-shots target thurbox's own socket even when
     // thurbox is launched inside a tmux/psmux pane (see `strip_mux_nesting_env`).
@@ -218,7 +353,12 @@ fn local_mux_command(args: &[&str]) -> Command {
 /// [`crate::agent::preflight::launch_failure`] for why a `NotFound` is answered
 /// with a sentence rather than with `os error 2`.
 fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
-    crate::agent::preflight::launch_failure(&TmuxTransport::Local, context, err)
+    let transport = if local_mux() == "rmux" {
+        TmuxTransport::LocalRmux
+    } else {
+        TmuxTransport::Local
+    };
+    crate::agent::preflight::launch_failure(&transport, context, err)
 }
 
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
@@ -851,7 +991,7 @@ fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String
     let (keep, retire) = windows.split_last()?;
     let mut retired = false;
     for window in retire {
-        match kill_window_at(window) {
+        match kill_window_at(&active_context(), window) {
             Ok(()) => {
                 retired = true;
                 warn!(
@@ -878,7 +1018,8 @@ fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String
 /// server-global option under the name and answers `#{@...}` with it for every
 /// window, so a single stamp made every window look like one session's and
 /// cost the interface every pane it had (issue #1168).
-pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
+pub fn stamp_local_window(ctx: &LocalMuxContext, target: &str, session_id: &str, role: WindowRole) {
+    let _active_mux = ctx.enter();
     if local_mux_is_psmux() {
         return;
     }
@@ -905,8 +1046,9 @@ pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
 }
 
 /// Every thurbox window on the local server, indexed.
-pub fn local_window_index() -> Result<WindowIndex> {
-    Ok(WindowIndex::from_listing(TmuxBackend::local().discover()?))
+pub fn local_window_index(ctx: &LocalMuxContext) -> Result<WindowIndex> {
+    let _active_mux = ctx.enter();
+    Ok(WindowIndex::from_listing(ctx.backend().discover()?))
 }
 
 /// Every thurbox window on `host`'s server, indexed — [`local_window_index`]
@@ -1007,7 +1149,7 @@ fn mux_answered_absent(error: &str) -> bool {
 /// namesakes are genuinely indistinguishable, and refusing to act would be a
 /// regression on Windows rather than the safety it is everywhere else.
 fn local_mux_is_psmux() -> bool {
-    DEFAULT_MUX == "psmux"
+    local_mux() == "psmux"
 }
 
 /// Resolve the local tmux target for acting on a session's agent pane, or
@@ -1050,7 +1192,7 @@ fn owned_target(session_id: &str, session_name: &str, role: WindowRole) -> Optio
 /// One listing of the local server, resolved. [`Located::Unknown`] is also what
 /// a listing that could not be taken answers: not knowing is not absence.
 fn locate_local(session_id: &str, session_name: &str, role: WindowRole) -> Located {
-    match local_window_index() {
+    match local_window_index(&active_context()) {
         Ok(index) => index.locate(session_id, session_name, role, false),
         Err(e) => {
             debug!("could not list windows to resolve '{session_name}': {e:#}");
@@ -1280,13 +1422,32 @@ impl TmuxBackend {
         Self::local()
     }
 
-    /// Build the local tmux backend, named `local-tmux`.
+    /// Build the platform-default local backend.
     pub fn local() -> Self {
+        Self::local_tmux()
+    }
+
+    /// Build the platform-default local backend independently of a one-shot
+    /// operation's scope.
+    pub fn local_tmux() -> Self {
         Self {
             transport: TmuxTransport::Local,
             socket: local_socket(),
             session: TMUX_SESSION.to_string(),
             name: "local-tmux".to_string(),
+            control: Mutex::new(None),
+            sizer: sizer_name(),
+        }
+    }
+
+    /// Build the opt-in local RMUX backend. Existing local-tmux rows retain
+    /// their original backend and are always registered separately.
+    pub fn local_rmux() -> Self {
+        Self {
+            transport: TmuxTransport::LocalRmux,
+            socket: local_socket(),
+            session: TMUX_SESSION.to_string(),
+            name: LOCAL_RMUX_BACKEND_TYPE.to_string(),
             control: Mutex::new(None),
             sizer: sizer_name(),
         }
@@ -1341,6 +1502,13 @@ impl TmuxBackend {
         learned_host_socket(&self.name).unwrap_or_else(|| self.socket.clone())
     }
 
+    fn ensure_supported_transport(&self) -> Result<()> {
+        if self.transport.is_remote() && self.transport.mux() == "rmux" {
+            bail!(REMOTE_RMUX_UNSUPPORTED);
+        }
+        Ok(())
+    }
+
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
         let output = self.run_tmux(args)?;
@@ -1379,6 +1547,7 @@ impl TmuxBackend {
     /// Also one round trip instead of two: `list-windows` on an absent server
     /// gives exactly the refusal `has-session` was asked for.
     fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
+        self.ensure_supported_transport()?;
         let args = ["list-windows", "-t", &self.session, "-F", DISCOVER_FORMAT];
         // Run it here rather than through `run_tmux`, which formats the
         // failure into a message: the whole point is to keep the exit status,
@@ -1434,6 +1603,7 @@ impl TmuxBackend {
 
     /// Execute a tmux command on the thurbox socket and check for errors.
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
+        self.ensure_supported_transport()?;
         let output = self
             .transport
             .tmux_command(&self.socket(), args)
@@ -2135,10 +2305,12 @@ impl TmuxBackend {
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
-        self.ctrl_command(&format!(
-            "refresh-client -A '{}:on'",
-            pane_id.replace('\'', "'\\''")
-        ))?;
+        if self.transport.supports_client_refresh() {
+            self.ctrl_command(&format!(
+                "refresh-client -A '{}:on'",
+                pane_id.replace('\'', "'\\''")
+            ))?;
+        }
 
         // Resize to the TUI panel dimensions. force_resize triggers a
         // SIGWINCH, making TUI applications (like claude) repaint at the
@@ -2247,6 +2419,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn check_available(&self) -> Result<()> {
+        self.ensure_supported_transport()?;
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
@@ -2269,6 +2442,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
+        self.ensure_supported_transport()?;
         self.ensure_session_configured()?;
 
         // Start control mode if not already running.
@@ -2490,7 +2664,7 @@ impl SessionBackend for TmuxBackend {
     /// exact, and its blocks are framed the old way (see
     /// `ControlMode::reader_thread`).
     fn supports_snapshots(&self) -> bool {
-        !self.transport.uses_psmux()
+        self.transport.supports_exact_snapshots()
     }
 
     fn request_snapshot(&self, backend_id: &str) -> Result<()> {
@@ -2571,6 +2745,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.ensure_supported_transport()?;
         if !self.session_exists() {
             return Ok(Vec::new());
         }
@@ -2735,11 +2910,13 @@ impl SessionBackend for TmuxBackend {
 
     fn detach(&self, backend_id: &str) -> Result<()> {
         // Disable output monitoring for this pane.
-        if let Err(e) = self.ctrl_command_nowait(&format!(
-            "refresh-client -A '{}:off'",
-            backend_id.replace('\'', "'\\''")
-        )) {
-            warn!("Failed to disable output monitoring during detach: {e}");
+        if self.transport.supports_client_refresh() {
+            if let Err(e) = self.ctrl_command_nowait(&format!(
+                "refresh-client -A '{}:off'",
+                backend_id.replace('\'', "'\\''")
+            )) {
+                warn!("Failed to disable output monitoring during detach: {e}");
+            }
         }
         // Remove the pane sender — the ControlModeReader gets EOF.
         let _ = self.unregister_pane(backend_id);
@@ -2882,8 +3059,14 @@ fn pane_is_dead(target: &str) -> bool {
 /// The prompt-delivery shape every caller wants: [`send_text_now`] with the
 /// Enter kept, which is the behaviour this had before the CLI needed to leave
 /// text unsubmitted.
-pub fn send_prompt_now(session_id: &str, session_name: &str, text: &str) -> Result<()> {
-    send_text_now(session_id, session_name, text, true)
+pub fn send_prompt_now(
+    ctx: &LocalMuxContext,
+    session_id: &str,
+    session_name: &str,
+    text: &str,
+) -> Result<()> {
+    let _active_mux = ctx.enter();
+    send_text_now(ctx, session_id, session_name, text, true)
 }
 
 /// Type text into a session pane (no scheduling), submitting it or not.
@@ -2908,20 +3091,27 @@ pub fn send_prompt_now(session_id: &str, session_name: &str, text: &str) -> Resu
 /// caller reads that success as "the agent got it" — which is how the mailbox
 /// wake came to report `woke: true` at a pane nothing was listening to — so the
 /// liveness check belongs here, once, rather than in each of them.
-pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: bool) -> Result<()> {
+pub fn send_text_now(
+    ctx: &LocalMuxContext,
+    session_id: &str,
+    session_name: &str,
+    text: &str,
+    submit: bool,
+) -> Result<()> {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         bail!("session '{session_name}' has no window of its own here");
     };
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
-    let paste = paste_prompt_args(&target, text, DEFAULT_MUX == "psmux");
+    let paste = paste_prompt_args(&target, text, local_mux_is_psmux());
     let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
     let out = local_mux_command(&paste_argv)
         .output()
         .context("Failed to paste prompt text into the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} {} {}", paste[0], mux_failure(&out));
+        bail!("{} {} {}", local_mux(), paste[0], mux_failure(&out));
     }
 
     if !submit {
@@ -2934,7 +3124,7 @@ pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: b
         .output()
         .context("Failed to send Enter to the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys (Enter) {}", mux_failure(&out));
+        bail!("{} send-keys (Enter) {}", local_mux(), mux_failure(&out));
     }
     Ok(())
 }
@@ -3054,7 +3244,13 @@ pub fn resolve_key(input: &str) -> Option<ResolvedKey> {
 ///
 /// Refuses a dead pane for the same reason [`send_text_now`] does — `send-keys`
 /// exits 0 into a `remain-on-exit` corpse, so success would be a lie.
-pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Result<()> {
+pub fn send_key_now(
+    ctx: &LocalMuxContext,
+    session_id: &str,
+    session_name: &str,
+    tmux_key: &str,
+) -> Result<()> {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         bail!("session '{session_name}' has no window of its own here");
     };
@@ -3065,7 +3261,11 @@ pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Res
         .output()
         .context("Failed to send a key to the session pane")?;
     if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) {}", mux_failure(&out));
+        bail!(
+            "{} send-keys ({tmux_key}) {}",
+            local_mux(),
+            mux_failure(&out)
+        );
     }
     Ok(())
 }
@@ -3095,13 +3295,14 @@ fn list_window_names() -> Vec<String> {
         .collect()
 }
 
-/// Whether the session has an agent pane of its own on the thurbox tmux server.
+/// Whether the session has an agent pane on its recorded local server.
 ///
 /// A window stamped for a namesake does not count (ADR-25). Used by the
 /// headless dispatcher to skip `send`
 /// automations whose target session is no longer running rather than failing
 /// into a dead pane.
-pub fn window_exists(session_id: &str, session_name: &str) -> bool {
+pub fn window_exists(ctx: &LocalMuxContext, session_id: &str, session_name: &str) -> bool {
+    let _active_mux = ctx.enter();
     agent_target(session_id, session_name).is_some()
 }
 
@@ -3110,13 +3311,15 @@ pub fn window_exists(session_id: &str, session_name: &str) -> bool {
 ///
 /// Used by the headless automation dispatcher to deliver a Spawn automation's
 /// prompt once the freshly launched agent CLI has had time to boot — offline
-/// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
+/// there is no TUI deferred-input queue to lean on. The context selects the server.
 pub fn send_prompt_after_delay(
+    ctx: &LocalMuxContext,
     session_id: &str,
     session_name: &str,
     text: &str,
     delay_secs: u64,
 ) -> Result<()> {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         bail!("session '{session_name}' has no window of its own here");
     };
@@ -3138,14 +3341,15 @@ pub fn send_prompt_after_delay(
 #[cfg(not(windows))]
 fn deferred_prompt_script(target: &str, text: &str) -> String {
     let escaped_target = shell_escape(target);
+    let mux = local_mux();
     let socket = local_socket();
     // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
     // submit early; `-l` makes the multiplexer deliver the bytes literally.
     let escaped_text = shell_escape(&bracketed_paste(text));
     format!(
-        "{DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
+        "{mux} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
          sleep 0.2; \
-         {DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} Enter"
+         {mux} -L {socket} send-keys -t {escaped_target} Enter"
     )
 }
 
@@ -3191,6 +3395,7 @@ fn ps_single_quote(s: &str) -> String {
 /// thurbox puts on a tmux server that nothing could see or reclaim; this and
 /// [`stop_automation_heartbeat`] are what make it accountable.
 pub fn automation_heartbeat_running() -> bool {
+    let _active_mux = LocalMuxContext::default_local().enter();
     list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW)
 }
 
@@ -3199,6 +3404,7 @@ pub fn automation_heartbeat_running() -> bool {
 /// Automations stop firing headlessly until something arms it again — which any
 /// `automation` write does, so this is a pause rather than a removal.
 pub fn stop_automation_heartbeat() -> bool {
+    let _active_mux = LocalMuxContext::default_local().enter();
     if !automation_heartbeat_running() {
         return false;
     }
@@ -3210,7 +3416,8 @@ pub fn stop_automation_heartbeat() -> bool {
 }
 
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
-    TmuxBackend::local().ensure_session_configured()?;
+    let _active_mux = LocalMuxContext::default_local().enter();
+    TmuxBackend::local_tmux().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
@@ -3291,11 +3498,13 @@ pub fn resolve_cli_binary() -> std::path::PathBuf {
 /// With `ansi`, tmux emits the styling escape sequences too (`capture-pane
 /// -e`) instead of flattening the screen to plain text.
 pub fn capture_pane_text(
+    ctx: &LocalMuxContext,
     session_id: &str,
     session_name: &str,
     lines: u32,
     ansi: bool,
 ) -> Result<String> {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         bail!("session '{session_name}' has no window of its own here");
     };
@@ -3443,7 +3652,8 @@ const PANE_STATE_UTF8_FLAG: &str = "-u";
 /// *name* into the foreground process's argv. `session_id`/`session_name`
 /// resolve the window the same way [`capture_pane_text`] does, so the state
 /// describes the pane the capture came from.
-pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
+pub fn pane_state(ctx: &LocalMuxContext, session_id: &str, session_name: &str) -> PaneState {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         return PaneState::default();
     };
@@ -3459,7 +3669,7 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
     .join(&PANE_STATE_SEP.to_string());
 
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if !local_mux_is_psmux() {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3515,13 +3725,14 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
 /// live pane that cannot be verified is a live pane that may not work.
 /// Remote sessions are the caller's to exclude: this reads **this** machine's
 /// server.
-pub fn agent_pane_path(session_id: &str, session_name: &str) -> PanePath {
+pub fn agent_pane_path(ctx: &LocalMuxContext, session_id: &str, session_name: &str) -> PanePath {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         return PanePath::Absent;
     };
     let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if !local_mux_is_psmux() {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3818,6 +4029,7 @@ pub(crate) fn resolve_local_program(command: &str) -> String {
 /// outs elsewhere). With no id to weigh, a non-zero status is the whole answer
 /// there, exactly as before.
 pub fn spawn_window(
+    ctx: &LocalMuxContext,
     session_id: &str,
     session_name: &str,
     command: &str,
@@ -3825,9 +4037,10 @@ pub fn spawn_window(
     cwd: Option<&Path>,
     env: &HashMap<String, String>,
 ) -> Result<String> {
+    let _active_mux = ctx.enter();
     // Ensure the session exists and is configured, without opening a
     // control-mode connection (headless one-shot path).
-    TmuxBackend::local().ensure_session_configured()?;
+    ctx.backend().ensure_session_configured()?;
     if local_mux_is_psmux() {
         check_local_psmux_server()?;
     }
@@ -3904,7 +4117,7 @@ pub fn spawn_window(
             output.status,
             window_name,
             pane_id,
-            DEFAULT_MUX,
+            local_mux(),
             local_socket()
         );
     }
@@ -3919,7 +4132,7 @@ pub fn spawn_window(
         // What `stamp_local_window` does after writing the stamp.
         let _ = retire_duplicate_windows(session_id, WindowRole::Agent);
     } else {
-        stamp_local_window(&target, session_id, WindowRole::Agent);
+        stamp_local_window(ctx, &target, session_id, WindowRole::Agent);
     }
     Ok(pane_id)
 }
@@ -4210,8 +4423,9 @@ pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(St
 /// [`list_remote_hook_states`] for this machine's own server: the pane option
 /// a session created *from afar* on this host sets (its hooks were rewritten to
 /// that form), which nothing here read before sessions were shared.
-pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
-    list_hook_states_on(&TmuxBackend::local())
+pub fn list_local_hook_states(ctx: &LocalMuxContext) -> Result<Vec<(String, String)>> {
+    let _active_mux = ctx.enter();
+    list_hook_states_on(&ctx.backend())
 }
 
 fn list_hook_states_on(backend: &TmuxBackend) -> Result<Vec<(String, String)>> {
@@ -4236,16 +4450,18 @@ fn list_hook_states_on(backend: &TmuxBackend) -> Result<Vec<(String, String)>> {
 /// that relaunches on it puts a third agent beside the two that already
 /// collide.
 pub fn agent_window(
+    ctx: &LocalMuxContext,
     host: Option<&crate::session::HostDef>,
     session_id: &str,
     session_name: &str,
 ) -> Result<Located> {
+    let _active_mux = ctx.enter();
     let backend = match host {
         Some(host) => {
             known_host_socket(host)?;
             TmuxBackend::from_host(host)
         }
-        None => TmuxBackend::local(),
+        None => ctx.backend(),
     };
     // A one-shot `list-windows`, and deliberately nothing more: `discover`
     // answers empty for a server that is not there, where starting control
@@ -4262,11 +4478,13 @@ pub fn agent_window(
 /// launch another agent, and "I cannot tell" must not be the answer that
 /// launches one.
 pub fn agent_window_alive(
+    ctx: &LocalMuxContext,
     host: Option<&crate::session::HostDef>,
     session_id: &str,
     session_name: &str,
 ) -> Result<bool> {
-    Ok(!agent_window(host, session_id, session_name)?.is_absent())
+    let _active_mux = ctx.enter();
+    Ok(!agent_window(ctx, host, session_id, session_name)?.is_absent())
 }
 
 /// Follow a session's rename with the windows named after it: its agent's, and
@@ -4278,17 +4496,19 @@ pub fn agent_window_alive(
 /// all that finds it, and a row renamed without its window would lose it — which
 /// is also why ambiguity refuses rather than skips.
 pub fn rename_session_windows(
+    ctx: &LocalMuxContext,
     host: Option<&crate::session::HostDef>,
     session_id: &str,
     from: &str,
     to: &str,
 ) -> Result<()> {
+    let _active_mux = ctx.enter();
     let backend = match host {
         Some(host) => {
             known_host_socket(host)?;
             TmuxBackend::from_host(host)
         }
-        None => TmuxBackend::local(),
+        None => ctx.backend(),
     };
     let index = WindowIndex::from_listing(backend.discover_answered()?);
     for role in [WindowRole::Agent, WindowRole::Shell] {
@@ -4312,7 +4532,8 @@ pub fn rename_session_windows(
 /// cadence. `$TMUX` is `<socket path>,<pid>,<session index>`; the socket is
 /// addressed by path (`-S`) because it is whichever server the pane is on,
 /// which need not be this build's own. Silently nothing outside tmux.
-pub fn set_own_pane_state(state: &str) -> Result<()> {
+pub fn set_own_pane_state(ctx: &LocalMuxContext, state: &str) -> Result<()> {
+    let _active_mux = ctx.enter();
     let (Some(tmux), Some(pane)) = (
         std::env::var_os("TMUX").map(|s| s.to_string_lossy().into_owned()),
         std::env::var_os("TMUX_PANE").map(|s| s.to_string_lossy().into_owned()),
@@ -4325,7 +4546,7 @@ pub fn set_own_pane_state(state: &str) -> Result<()> {
     if !control_mode::is_valid_pane_id(&pane) {
         return Ok(());
     }
-    let status = Command::new(DEFAULT_MUX)
+    let status = Command::new(local_mux())
         .args([
             "-S",
             &socket_path,
@@ -4467,9 +4688,10 @@ fn kill_located(
 /// a live namesake's — is never the one that comes down. That is not a
 /// nicety: names are not unique, a soft-deleted row keeps its name until it is
 /// reaped, and `kill-window -t tb-<name>` matches an arbitrary one of them.
-pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
+pub fn kill_window(ctx: &LocalMuxContext, session_id: &str, session_name: &str) -> Result<()> {
+    let _active_mux = ctx.enter();
     match agent_target(session_id, session_name) {
-        Some(target) => kill_window_at(&target),
+        Some(target) => kill_window_at(ctx, &target),
         None => Ok(()),
     }
 }
@@ -4482,9 +4704,14 @@ pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
 /// that no longer exists. Resolved by the same stamp, so a NULL
 /// `shell_backend_id` — the usual state, since the column is written only when
 /// the interface opens the shell — costs nothing.
-pub fn kill_shell_window(session_id: &str, session_name: &str) -> Result<()> {
+pub fn kill_shell_window(
+    ctx: &LocalMuxContext,
+    session_id: &str,
+    session_name: &str,
+) -> Result<()> {
+    let _active_mux = ctx.enter();
     match owned_target(session_id, session_name, WindowRole::Shell) {
-        Some(target) => kill_window_at(&target),
+        Some(target) => kill_window_at(ctx, &target),
         None => Ok(()),
     }
 }
@@ -4493,7 +4720,8 @@ pub fn kill_shell_window(session_id: &str, session_name: &str) -> Result<()> {
 /// that is already gone. Shared by [`kill_window`] and the reap, which resolves
 /// its own target through [`WindowIndex`] (`session_ops::delete`) — the two
 /// differ only in how the target is chosen.
-pub fn kill_window_at(target: &str) -> Result<()> {
+pub fn kill_window_at(ctx: &LocalMuxContext, target: &str) -> Result<()> {
+    let _active_mux = ctx.enter();
     let output = local_mux_command(&["kill-window", "-t", target])
         .output()
         .context("Failed to run tmux kill-window")?;
@@ -4521,7 +4749,12 @@ pub fn kill_window_at(target: &str) -> Result<()> {
 /// pane process **before** removing its cwd on Windows, where a directory that
 /// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
 /// so callers only need the returned pid on Windows.
-pub fn window_pane_pid(session_id: &str, session_name: &str) -> Result<Option<u32>> {
+pub fn window_pane_pid(
+    ctx: &LocalMuxContext,
+    session_id: &str,
+    session_name: &str,
+) -> Result<Option<u32>> {
+    let _active_mux = ctx.enter();
     let Some(target) = agent_target(session_id, session_name) else {
         return Ok(None);
     };

@@ -200,6 +200,7 @@ impl Config {
             // Restart-only because the git-stat cache is built with it, and a
             // cache that re-read it would also have to re-age every entry.
             git_poll_secs: restart_only.git_poll_secs,
+            multiplexer: restart_only.multiplexer,
             config_version: fresh.config_version,
         };
         if needs_restart {

@@ -62,13 +62,23 @@ struct Finding {
 /// registry is a `warn` and exits 0 — having `claude` but not `aider` is an
 /// ordinary machine, not breakage.
 pub fn run() -> Result<CommandOutput, CommandError> {
-    let mut findings = vec![multiplexer_finding()];
+    run_for(None)
+}
+
+/// Report readiness for the configured or explicitly selected local multiplexer.
+pub fn run_for(multiplexer: Option<&str>) -> Result<CommandOutput, CommandError> {
+    let mux = match multiplexer {
+        Some("default") => crate::agent::tmux::LocalMuxContext::default_local().binary(),
+        Some(choice) => choice,
+        None => crate::agent::preflight::local_multiplexer(),
+    };
+    let mut findings = vec![multiplexer_finding(mux)];
     findings.extend(agent_findings());
     findings.extend(host_findings());
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
     let human = render(&findings, verdict);
-    let json = document(&findings, verdict);
+    let json = document(&findings, verdict, mux);
 
     Ok(match verdict {
         Level::Fail => CommandOutput::failed(
@@ -86,8 +96,14 @@ pub fn run() -> Result<CommandOutput, CommandError> {
 /// The one check that fails the report: without it nothing can be created at
 /// all, so an `Unknown` here is treated as a failure too — the only way the
 /// lookup answers that for a bare name is a `PATH` it could not read.
-fn multiplexer_finding() -> Finding {
-    let mux = crate::agent::preflight::local_multiplexer();
+fn multiplexer_finding(mux: &str) -> Finding {
+    if mux == "rmux" && cfg!(windows) {
+        return Finding {
+            key: "multiplexer".into(),
+            level: Level::Fail,
+            detail: "RMUX sessions are currently supported on POSIX systems only".into(),
+        };
+    }
     match crate::agent::preflight::look_up(mux) {
         crate::agent::preflight::Presence::Present => Finding {
             key: "multiplexer".into(),
@@ -97,7 +113,11 @@ fn multiplexer_finding() -> Finding {
         _ => Finding {
             key: "multiplexer".into(),
             level: Level::Fail,
-            detail: crate::agent::preflight::Dependency::LocalMultiplexer.missing_summary(),
+            detail: if mux == "rmux" {
+                crate::agent::preflight::Dependency::Rmux.missing_summary()
+            } else {
+                crate::agent::preflight::Dependency::LocalMultiplexer.missing_summary()
+            },
         },
     }
 }
@@ -225,10 +245,10 @@ fn render(findings: &[Finding], verdict: Level) -> String {
 
 /// The same report as one JSON document, for a script that branches on `key`
 /// and `level` rather than parsing the sentences.
-fn document(findings: &[Finding], verdict: Level) -> Value {
+fn document(findings: &[Finding], verdict: Level, mux: &str) -> Value {
     json!({
         "verdict": verdict.as_str(),
-        "multiplexer": crate::agent::preflight::local_multiplexer(),
+        "multiplexer": mux,
         "path": crate::paths::path_dirs()
             .iter()
             .map(|p| p.display().to_string())

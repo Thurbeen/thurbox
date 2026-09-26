@@ -32,6 +32,36 @@ breadcrumb: 'Configuration'
             </p>
           </div>
 
+          <h2 id="local-multiplexer">
+            Local multiplexer
+            <a href="#local-multiplexer" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            New local sessions use tmux on Linux and macOS, or psmux on native Windows. On
+            Linux and macOS you can install
+            <a href="https://github.com/Helvesec/rmux/releases">RMUX</a>
+            (v0.10.0 tested, including its <code>libexec/rmux</code> helper). Set the top-level
+            <code>multiplexer = "rmux"</code> in <code>settings.toml</code> for new local TUI and CLI
+            sessions, or select it for one new session:
+          </p>
+          <pre><code>thurbox-cli doctor --multiplexer rmux
+thurbox-cli session create --name demo --repo-path . --command sh --multiplexer rmux</code></pre>
+          <p>
+            Set <code>multiplexer = "default"</code> to switch future creates back, or pass
+            <code>--multiplexer default</code> for one create. Restart a running TUI after editing
+            this setting; a new CLI command reads it on launch. Spawn automations, task runs,
+            and extension sessions retain the platform default. Each session keeps its recorded backend, shown by
+            <code>thurbox-cli session list --json</code>; existing
+            tmux and RMUX sessions continue on their own servers. RMUX is currently local and
+            POSIX only. New session creation on a host configured with
+            <code>multiplexer = "rmux"</code> is rejected before connecting, and existing remote
+            rows cannot run RMUX control commands or delegate to the host CLI. Force-delete leaves
+            their remote resources untouched and reports the teardown as owed. SSH/WSL hosts use
+            tmux or psmux, and native Windows keeps psmux.
+            Install RMUX again before opening an existing RMUX session if you
+            removed its binary.
+          </p>
+
           <h2 id="files">
             Files at a glance
             <a href="#files" class="heading-anchor">#</a>

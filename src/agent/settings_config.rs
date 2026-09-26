@@ -21,6 +21,11 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 
 config_version = 1
 
+# New user-created local sessions use the platform default (tmux on POSIX,
+# psmux on Windows) unless RMUX is selected. Existing sessions keep their
+# recorded backend. Internal automation and task sessions keep the default.
+# multiplexer = "default"        # default | rmux (RMUX is local POSIX only)
+
 # Scrollback lines kept per session terminal.
 # scrollback_lines = 1000
 
@@ -313,6 +318,10 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
 
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
+    doc["multiplexer"] = value(match settings.multiplexer {
+        crate::session::settings::LocalMultiplexer::Default => "default",
+        crate::session::settings::LocalMultiplexer::Rmux => "rmux",
+    });
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));

@@ -11,7 +11,7 @@
 //! plugin can see it.
 
 use thurbox::kernel::config::{Config, Reloaded};
-use thurbox::session::settings::Settings;
+use thurbox::session::settings::{LocalMultiplexer, Settings};
 use thurbox::session::SessionState;
 
 /// Isolate config and data into a tempdir, process-wide so a worker sees it too.
@@ -136,6 +136,20 @@ fn a_restart_only_change_is_reported_rather_than_implied() {
         10000,
         "the parsers were built with the old value, so that is what is in force"
     );
+}
+
+#[test]
+fn a_multiplexer_change_waits_for_a_tui_restart() {
+    let _home = isolate();
+    write_settings("multiplexer = \"default\"\n");
+    let (mut config, _) = Config::load();
+
+    write_settings("multiplexer = \"rmux\"\n");
+    let (fresh, warnings) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(config.adopt(fresh), Reloaded::NeedsRestart);
+    assert_eq!(config.in_force().multiplexer, LocalMultiplexer::Default);
+    assert_eq!(config.on_disk().multiplexer, LocalMultiplexer::Rmux);
 }
 
 #[test]

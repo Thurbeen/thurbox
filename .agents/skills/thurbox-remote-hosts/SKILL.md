@@ -64,6 +64,11 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
+Remote RMUX is not supported: new session creation on a host with
+`multiplexer = "rmux"` is rejected before SSH/WSL is contacted. Existing
+remote rows refuse RMUX control commands and host CLI delegation. The local
+`settings.toml` RMUX choice does not change any host backend. Force-delete
+records an owed teardown without touching remote windows or worktrees.
 
 How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
@@ -507,4 +512,3 @@ session), never on the loop, ADR-P12).
   than relaunching against a host it cannot reach, then bring the host back
   and assert exactly one agent window exists — never a second one started
   while the host looked absent.
-

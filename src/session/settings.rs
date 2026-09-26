@@ -21,6 +21,10 @@ pub struct Settings {
     /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
+    /// Backend for new user-created local sessions. Existing sessions keep
+    /// their recorded backend.
+    #[serde(default)]
+    pub multiplexer: LocalMultiplexer,
     /// Scrollback lines kept per session terminal (vt100 parser history).
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: usize,
@@ -73,6 +77,15 @@ pub struct Settings {
     /// Remote-host settings (`[remote]` table).
     #[serde(default)]
     pub remote: RemoteSettings,
+}
+
+/// Preferred backend for new local sessions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalMultiplexer {
+    #[default]
+    Default,
+    Rmux,
 }
 
 /// How sessions on remote hosts are mirrored (`[remote]` table).
@@ -355,8 +368,9 @@ fn default_git_poll_secs() -> u64 {
 impl Settings {
     /// Whether any **restart-only** setting differs between `self` and `other`.
     ///
-    /// These are the values read once at startup (the scalars — `git_poll_secs`
-    /// included, the git-stat cache being built with it — every
+    /// These are the values read once at startup (the multiplexer preference,
+    /// the scalars — `git_poll_secs` included, the git-stat cache being built
+    /// with it — every
     /// `[notifications]` knob, and the feature flags whose effect is wired at
     /// launch — `automations`, `mouse`, `notifications`, `version_check`). The
     /// remaining feature flags gate UI panels read from `App.features` every
@@ -364,7 +378,8 @@ impl Settings {
     /// "some changes apply after restart" hint shown by the settings panel and
     /// the live-reload toast.
     pub fn restart_only_differs(&self, other: &Settings) -> bool {
-        self.scrollback_lines != other.scrollback_lines
+        self.multiplexer != other.multiplexer
+            || self.scrollback_lines != other.scrollback_lines
             || self.hidden_terminal_secs != other.hidden_terminal_secs
             || self.two_panel_min_cols != other.two_panel_min_cols
             || self.three_panel_min_cols != other.three_panel_min_cols
@@ -383,6 +398,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             config_version: None,
+            multiplexer: LocalMultiplexer::Default,
             scrollback_lines: default_scrollback_lines(),
             hidden_terminal_secs: default_hidden_terminal_secs(),
             two_panel_min_cols: default_two_panel_min_cols(),

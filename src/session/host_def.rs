@@ -43,7 +43,7 @@ pub fn is_wsl_backend(backend_name: &str) -> bool {
 
 /// Whether a backend name refers to any off-local host (SSH or WSL) — i.e. one
 /// that needs a launch prefix and runs git/worktrees somewhere other than the
-/// local filesystem. Local backends (`""`, `tmux`, `local-tmux`) are not.
+/// local filesystem. Local backends (`""`, `tmux`, `local-tmux`, `local-rmux`) are not.
 pub fn is_remote_backend(backend_name: &str) -> bool {
     is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
 }
