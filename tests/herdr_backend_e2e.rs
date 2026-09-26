@@ -201,12 +201,16 @@ fn output_until(
         let remaining = deadline.saturating_duration_since(Instant::now());
         anyhow::ensure!(
             !remaining.is_zero(),
-            "Herdr terminal output deadline expired"
+            "Herdr terminal output deadline expired after receiving {:?}",
+            String::from_utf8_lossy(&bytes)
         );
         match receiver.recv_timeout(remaining) {
             Ok(Ok(byte)) => bytes.push(byte),
             Ok(Err(error)) => anyhow::bail!("Herdr terminal read failed: {error}"),
-            Err(error) => anyhow::bail!("Herdr terminal output deadline expired: {error}"),
+            Err(error) => anyhow::bail!(
+                "Herdr terminal output deadline expired: {error}; received {:?}",
+                String::from_utf8_lossy(&bytes)
+            ),
         }
     }
     Ok(bytes)
@@ -257,7 +261,8 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
     let shell_arg = "space ; $(must-not-run) 'quoted'";
     let args = vec![
         "-c".to_string(),
-        "printf 'herdr-e2e-ready:%s\\n' \"$1\"; stty -echo; od -An -tx1 -N 5; cat".to_string(),
+        "printf 'herdr-e2e-ready:%s\\n' \"$1\"; stty -echo; od -An -tx1 -N 5; stty size; cat"
+            .to_string(),
         "thurbox-child".to_string(),
         shell_arg.to_string(),
     ];
@@ -300,20 +305,28 @@ fn herdr_backend_can_be_selected_and_discovers_a_real_isolated_session() -> Resu
     // One-byte reads catch loss of decoded frame tails; every wait is bounded.
     let _initial_frame = output_until(&output, Duration::from_secs(10), |bytes| !bytes.is_empty())
         .context("waiting for the initial terminal frame")?;
+    backend.resize(&session.backend_id, 30, 90)?;
     session.input.write_all(&[0xe2])?;
     session.input.write_all(&[0x82])?;
     session.input.write_all(&[0xac])?;
     session.input.write_all(&[0xff])?;
     session.input.write_all(b"\n")?;
     session.input.flush()?;
-    backend.resize(&session.backend_id, 30, 90)?;
     let expected_bytes = b"e2 82 ac ff 0a";
     let observed = output_until(&output, Duration::from_secs(10), |bytes| {
-        bytes
-            .windows(expected_bytes.len())
-            .any(|part| part == expected_bytes)
+        bytes.windows(b"30 90".len()).any(|part| part == b"30 90")
+            && bytes
+                .windows(expected_bytes.len())
+                .any(|part| part == expected_bytes)
     })
-    .context("waiting for the child process to report exact raw input bytes")?;
+    .context("waiting for resized dimensions and exact raw input bytes")?;
+    assert!(
+        observed
+            .windows(b"30 90".len())
+            .any(|part| part == b"30 90"),
+        "PTY size did not change to 30 rows by 90 columns: {:?}",
+        String::from_utf8_lossy(&observed)
+    );
     assert!(
         observed
             .windows(expected_bytes.len())

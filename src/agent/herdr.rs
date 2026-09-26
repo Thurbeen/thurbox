@@ -22,6 +22,12 @@ use crate::agent::tmux::WindowRole;
 pub const BACKEND_TYPE: &str = "herdr";
 const LABEL_PREFIX: &str = "thurbox";
 
+struct TerminalStream {
+    child: Arc<Mutex<Child>>,
+    input: ChildStdin,
+    lines: Receiver<std::io::Result<String>>,
+}
+
 #[derive(Default)]
 pub struct HerdrBackend {
     streams: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>,
@@ -52,16 +58,7 @@ impl HerdrBackend {
         Ok(value)
     }
 
-    fn terminal(
-        &self,
-        pane: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(
-        Arc<Mutex<Child>>,
-        ChildStdin,
-        Receiver<std::io::Result<String>>,
-    )> {
+    fn terminal(&self, pane: &str, cols: u16, rows: u16) -> Result<TerminalStream> {
         let mut child = Command::new("herdr")
             .args([
                 "terminal",
@@ -99,7 +96,11 @@ impl HerdrBackend {
                 }
             }
         });
-        Ok((Arc::new(Mutex::new(child)), input, receiver))
+        Ok(TerminalStream {
+            child: Arc::new(Mutex::new(child)),
+            input,
+            lines: receiver,
+        })
     }
 
     fn wait_initial_frame(
@@ -314,7 +315,11 @@ impl SessionBackend for HerdrBackend {
     ) -> Result<SpawnedSession> {
         self.ensure_ready()?;
         let pane = self.create_pane(window_name, cwd, rows, cols, env)?;
-        let (child, input, lines) = self.terminal(&pane, cols, rows)?;
+        let TerminalStream {
+            child,
+            input,
+            lines,
+        } = self.terminal(&pane, cols, rows)?;
         let initial_frame = match Self::wait_initial_frame(&lines, Duration::from_secs(5)) {
             Ok(frame) => frame,
             Err(error) => {
@@ -362,7 +367,11 @@ impl SessionBackend for HerdrBackend {
         cols: u16,
         seed: Option<Vec<u8>>,
     ) -> Result<AdoptedSession> {
-        let (child, input, lines) = self.terminal(backend_id, cols, rows)?;
+        let TerminalStream {
+            child,
+            input,
+            lines,
+        } = self.terminal(backend_id, cols, rows)?;
         let input = Arc::new(Mutex::new(input));
         self.streams
             .lock()
