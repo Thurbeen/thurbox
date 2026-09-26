@@ -349,10 +349,19 @@ pub fn spawn_session_headless_with_progress(
     config
         .env
         .extend(req.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    config.env.remove(super::CODEX_PICKER_ENV);
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
     report(SpawnPhase::Backend);
-    let (command, args) = super::build_agent_invocation(&agent_def, &config);
+    let (command, mut args) = super::build_agent_invocation(&agent_def, &config);
+    if agent_def.name == "codex"
+        && agent_def.fork_args == ["fork", "{id}"]
+        && req.fork_session_id.as_deref() == Some("")
+    {
+        args = std::iter::once("fork".to_string())
+            .chain(agent_def.args.iter().cloned())
+            .collect();
+    }
 
     // Asked before the launch rather than after it: this is the one moment
     // thurbox knows both which binary it is about to ask for and that the user

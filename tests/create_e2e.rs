@@ -487,6 +487,314 @@ fn shell_request(repo: &Path, branch: Option<&str>) -> thurbox::session_ops::spa
 
 #[test]
 #[cfg(unix)]
+fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_windows() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    let db = on_disk_db();
+    let outside = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "bind-codex", "--json"])
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SESSION_ID")
+        .output()
+        .unwrap();
+    assert!(outside.status.success());
+    let outside_json: serde_json::Value = serde_json::from_slice(&outside.stdout).unwrap();
+    assert_eq!(outside_json["bound"], false);
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = home.path().join("codex.log");
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nprintf '%s|%s\\n' \"$THURBOX_SESSION\" \"$*\" >> \"$FAKE_CODEX_LOG\"\nif [ \"$#\" -eq 0 ] || [ \"$*\" = resume ] || [ \"$*\" = fork ]; then\n  source=startup\n  [ \"$*\" = resume ] && source=resume\n  printf '{\"session_id\":\"%s\",\"source\":\"%s\"}\\n' \"$FAKE_CONV_ID\" \"$source\" | sh \"$FAKE_HOOK_DRIVER\"\nfi\nsleep 300\n").unwrap();
+    let mut mode = std::fs::metadata(&fake).unwrap().permissions();
+    mode.set_mode(0o755);
+    std::fs::set_permissions(&fake, mode).unwrap();
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    let source = home.path().join("hook-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("extension.toml"),
+        format!(
+            "name = 'hooks'\n[[config_merges]]\npath = '{}/.codex/hooks.json'\n\
+             source = 'codex-hooks.json'\nrequires_dir = '{}/.codex'\n",
+            home.path().display(),
+            home.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        format!(
+            "{}/extensions/hooks/codex-hooks.json",
+            env!("CARGO_MANIFEST_DIR")
+        ),
+        source.join("codex-hooks.json"),
+    )
+    .unwrap();
+    thurbox::session_ops::extensions::install_extension(
+        &db,
+        source.to_str().unwrap(),
+        Some(home.path().to_str().unwrap()),
+        false,
+    )
+    .unwrap();
+    let hooks: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    let command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(command.contains("session bind-codex"));
+    let driver = bin.join("hook-driver.sh");
+    std::fs::write(
+        &driver,
+        format!(
+            "#!/bin/sh\n{}\n",
+            command.replace("thurbox-cli", env!("CARGO_BIN_EXE_thurbox-cli"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        config.join("agents.toml"),
+        format!(
+            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = '{}'\n\
+             resume_args = ['resume', '{{id}}']\nfork_args = ['fork', '{{id}}']\n",
+            fake.display()
+        ),
+    )
+    .unwrap();
+
+    let first_conv = "11111111-1111-4111-8111-111111111111";
+    let second_conv = "22222222-2222-4222-8222-222222222222";
+    let create = |name: &str, conversation: &str| {
+        let mut req = thurbox::session_ops::spawn::SpawnRequest {
+            name: name.into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some("codex".into()),
+            ..Default::default()
+        };
+        req.env
+            .insert("FAKE_CODEX_LOG".into(), log.display().to_string());
+        req.env.insert(
+            "FAKE_THURBOX_CLI".into(),
+            env!("CARGO_BIN_EXE_thurbox-cli").into(),
+        );
+        req.env.insert("FAKE_CONV_ID".into(), conversation.into());
+        req.env
+            .insert("FAKE_HOOK_DRIVER".into(), driver.display().to_string());
+        thurbox::session_ops::spawn::spawn_session_headless(&db, req).unwrap()
+    };
+    let first = create("first", first_conv);
+    let second = create("second", second_conv);
+    assert_eq!(
+        db.get_session_by_id(first.session_id).unwrap().unwrap().cwd,
+        db.get_session_by_id(second.session_id)
+            .unwrap()
+            .unwrap()
+            .cwd
+    );
+
+    let wait_for = |count: usize| {
+        for _ in 0..100 {
+            let lines = std::fs::read_to_string(&log).unwrap_or_default();
+            if lines.lines().count() >= count {
+                return lines;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("fake Codex did not record {count} launches");
+    };
+    wait_for(2);
+    for _ in 0..100 {
+        let a = db
+            .get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap();
+        let b = db
+            .get_session_meta(second.session_id, "thurbox.codex_conversation_id")
+            .unwrap();
+        if a.as_deref() == Some(first_conv) && b.as_deref() == Some(second_conv) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref(),
+        Some(first_conv)
+    );
+    assert_eq!(
+        db.get_session_meta(second.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref(),
+        Some(second_conv)
+    );
+    let switched_conv = "33333333-3333-4333-8333-333333333333";
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "bind-codex"])
+        .env("THURBOX_SESSION", first.session_id.to_string())
+        .env("THURBOX_SESSION_ID", &first.agent_session_id)
+        .env_remove("TMUX_PANE")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    write!(
+        hook.stdin.take().unwrap(),
+        "{{\"session_id\":\"{switched_conv}\",\"source\":\"clear\"}}"
+    )
+    .unwrap();
+    assert!(
+        hook.wait().unwrap().success(),
+        "in-pane /new must leave a safe recovery state"
+    );
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap(),
+        Some("picker-required".to_string()),
+        "an in-pane switch must not leave the old conversation pinned"
+    );
+    let other_conv = "44444444-4444-4444-8444-444444444444";
+    let mut other = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "bind-codex"])
+        .env("THURBOX_SESSION", first.session_id.to_string())
+        .env("THURBOX_SESSION_ID", &first.agent_session_id)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    write!(
+        other.stdin.take().unwrap(),
+        "{{\"session_id\":\"{other_conv}\",\"source\":\"startup\"}}"
+    )
+    .unwrap();
+    assert!(other.wait().unwrap().success());
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap(),
+        Some("picker-required".to_string()),
+        "a second Codex process in the same pane must not redirect the row"
+    );
+    let mut nested_resume = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "bind-codex"])
+        .env("THURBOX_SESSION", first.session_id.to_string())
+        .env("THURBOX_SESSION_ID", &first.agent_session_id)
+        .env_remove("THURBOX_CODEX_PICKER")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    write!(
+        nested_resume.stdin.take().unwrap(),
+        "{{\"session_id\":\"{other_conv}\",\"source\":\"resume\"}}"
+    )
+    .unwrap();
+    assert!(nested_resume.wait().unwrap().success());
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap(),
+        Some("picker-required".to_string()),
+        "a nested resume cannot claim the pending picker"
+    );
+    for pane in [&first.backend_id, &second.backend_id] {
+        let killed = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-window", "-t", pane])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+    }
+    thurbox::session_ops::restart::restart_session_headless_with(&db, first.session_id, true)
+        .unwrap();
+    thurbox::session_ops::restart::restart_session_headless_with(&db, second.session_id, true)
+        .unwrap();
+    let launches = wait_for(4);
+    assert!(
+        launches
+            .lines()
+            .any(|line| line == format!("{}|resume", first.session_id)),
+        "{launches}"
+    );
+    assert!(
+        launches.contains(&format!("{}|resume {second_conv}", second.session_id)),
+        "{launches}"
+    );
+    for _ in 0..100 {
+        if db
+            .get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref()
+            == Some(first_conv)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref(),
+        Some(first_conv),
+        "picker must replace the ambiguity marker with its selected conversation"
+    );
+
+    db.unset_session_meta(first.session_id, "thurbox.codex_conversation_id")
+        .unwrap();
+    let pane = db
+        .get_session_by_id(first.session_id)
+        .unwrap()
+        .unwrap()
+        .backend_id;
+    assert!(Command::new("tmux")
+        .args(["-L", SOCKET, "kill-window", "-t", &pane])
+        .status()
+        .unwrap()
+        .success());
+    thurbox::session_ops::restart::restart_session_headless_with(&db, first.session_id, true)
+        .unwrap();
+    let launches = wait_for(5);
+    assert!(
+        launches
+            .lines()
+            .any(|line| line == format!("{}|resume", first.session_id)),
+        "{launches}"
+    );
+    for _ in 0..100 {
+        if db
+            .get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref()
+            == Some(first_conv)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref(),
+        Some(first_conv),
+        "picker selection was not rebound by SessionStart"
+    );
+
+    db.unset_session_meta(second.session_id, "thurbox.codex_conversation_id")
+        .unwrap();
+    let fork = thurbox::session_ops::fork_session_headless(&db, second.session_id, "second-fork")
+        .expect("an unmapped Codex fork opens the picker");
+    let launches = wait_for(6);
+    assert!(
+        launches
+            .lines()
+            .any(|line| line == format!("{}|fork", fork.session_id)),
+        "{launches}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn create_hooks_fire_once_each_with_the_facts_and_can_reach_the_database() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");

@@ -578,11 +578,12 @@ new-session id; static `args` follow. A group with no value is
 simply omitted — no unresolved-placeholder heuristics.
 
 Only `claude` and `pi` accept the thurbox-generated id at creation
-(`--session-id {id}`), so only they resume/fork by that exact id.
-The other built-ins can't pin or report their session id, so they
-set `resume_latest = true` and resume/fork via id-less, cwd-scoped
-flags (`codex resume --last`, `opencode --continue`, `agy
---continue`, `aider --restore-chat-history`); the agent
+(`--session-id {id}`), so they resume/fork by that exact id. Codex
+reports its own ID through `SessionStart`; thurbox saves it for exact
+`resume {id}` and `fork {id}`. Legacy or ambiguous rows use Codex's interactive
+picker, including for forks. The remaining built-ins use
+`resume_latest = true` and id-less, cwd-scoped flags
+(`opencode --continue`, `agy --continue`, `aider --restore-chat-history`); the agent
 resolves "the last session in this directory" itself, which works
 because restart reuses the session cwd and a single-repo fork reuses
 the parent cwd. Agents that declare no `resume_args` start fresh on
@@ -1018,7 +1019,8 @@ Create (UUID v4) → Running → Idle / Error
 Restarts the active session's tmux pane while preserving the
 conversation history. The session is killed and respawned with the
 agent's resume arguments (e.g. `--resume <id>` for Claude, or
-id-less `resume --last` for a `resume_latest` agent like codex),
+`resume <id>` for Codex). A legacy Codex row without a captured ID
+opens Codex's interactive `resume` picker instead of choosing `--last`,
 reusing the session's stored agent. Agents that define no
 `resume_args` simply start a fresh conversation.
 

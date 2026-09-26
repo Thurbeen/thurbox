@@ -89,7 +89,15 @@ pub(crate) fn rewrite_hook_signals_for_target(
     contents: &str,
     target: &RemoteSignalTarget,
 ) -> String {
-    contents.replace(SIGNAL_MARKER, &target.replacement())
+    // A remotely provisioned hook reports through a pane option: it cannot
+    // write to the local session database. Leave its status signal intact but
+    // drop the local-only Codex ID binding command from that payload.
+    contents
+        .replace(
+            "thurbox-cli session bind-codex >/dev/null 2>&1 || true; ",
+            "",
+        )
+        .replace(SIGNAL_MARKER, &target.replacement())
 }
 
 /// [`rewrite_hook_signals_for_target`] for a real-tmux POSIX host — the

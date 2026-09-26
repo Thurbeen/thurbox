@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
+            "command": "thurbox-cli session bind-codex >/dev/null 2>&1 || true; thurbox-cli session signal --state idle >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]

@@ -46,7 +46,7 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 | Name | Command | Resume | Fork | ID model | Status hooks |
 |------|---------|--------|------|----------|--------------|
 | `claude` | `claude` | `--resume {id}` | `--resume {id} --fork-session` | **pinned** (`--session-id {id}`) | `--settings` arg patch (`claude.json`) |
-| `codex` | `codex` | `resume --last` | `fork --last` | id-less (`resume_latest`) | `config_merges` → `~/.codex/hooks.json` |
+| `codex` | `codex` | `resume {id}` | `fork {id}` | hook-reported ID | `config_merges` → `~/.codex/hooks.json` |
 | `antigravity` | `agy` | `--continue` | — (none) | id-less (`resume_latest`) | `config_merges` → `~/.gemini/settings.json` |
 | `opencode` | `opencode` | `--continue` | `--continue --fork` | id-less (`resume_latest`) | `external_files` → `~/.config/opencode/plugin/` |
 | `aider` | `aider` | `--restore-chat-history` | — (none) | id-less (`resume_latest`) | `--notifications-command` arg patch (blocked only) |
@@ -100,9 +100,22 @@ whether resume/fork can target *this* session or only *the last* one.
   a literal `~` would never expand), and it translates onto the remote/WSL home.
   It has no `fork_args` (OMP can't pin a fork's target file to a thurbox UUID), so
   `Ctrl+F` starts fresh.
-- **id-less** (`codex`, `antigravity`, `opencode`, `aider`, `copilot`) — the CLI
+- **Hook-reported** (`codex`) — `SessionStart` reports Codex's actual
+  conversation UUID. Thurbox saves it beside the row's generated
+  `agent_session_id` and resumes or forks that exact UUID. Existing rows with no
+  captured UUID open Codex's interactive `resume` picker on restart; selecting a
+  conversation binds it through the hook. Forking an unbound row opens Codex's
+  interactive `fork` picker. If a second Codex process inherits the same row
+  identity, a changed startup ID is ignored; an ambiguous in-pane switch makes
+  the next restart use the picker. Only the picker launch can bind its selection.
+  Existing seeded `codex` definitions using `--last`
+  are upgraded in memory; other custom definitions are unchanged. A remotely
+  provisioned hook reports status through the pane option and has no channel to
+  persist Codex's ID in the local database, so an unmapped remote row opens the
+  picker again on restart.
+- **id-less** (`antigravity`, `opencode`, `aider`, `copilot`) — the CLI
   can neither pin nor report a session id, so the agent's own flags resolve *"the
-  last session in this directory"* (`codex resume --last`, `--continue`,
+  last session in this directory"* (`--continue`,
   `--restore-chat-history`). These entries set `resume_latest = true` and use no
   `{id}` token. This works because restart reuses the session's cwd and a
   single-repo fork reuses the parent's cwd. **Caveat:** a *multi-repo* fork lands

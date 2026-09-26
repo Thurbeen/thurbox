@@ -69,7 +69,9 @@ below), do the same.
 - **codex** — codex's `hooks.json` is claude-shaped, loaded from
   `~/.codex/hooks.json`. We **JSON-merge** our entries in (a `[[config_merges]]`,
   guarded by `requires_dir`) so your own hooks are preserved; uninstall prunes
-  exactly ours back out. Events: `SessionStart` → idle,
+  exactly ours back out. `SessionStart` also binds the reported Codex
+  conversation ID to the Thurbox row, so restart can address that conversation
+  exactly. Events: `SessionStart` → idle,
   `UserPromptSubmit`/`PostToolUse` → working, `PermissionRequest` and
   `PreToolUse` matching `request_user_input` → blocked, `Stop` → done. **Both**
   block edges are **structured** — a real approval event and a real tool call,
