@@ -303,6 +303,21 @@ paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
 
+### Local Herdr sessions
+
+Local sessions use tmux by default. On Linux or macOS, with Herdr 0.9.1 or
+newer installed and its server running, create one session with
+`thurbox-cli sessions create --multiplexer herdr ...`. Herdr is local-only;
+combining `--multiplexer` with `--host` is an error. Thurbox uses Herdr's
+workspace/pane commands for lifecycle and its terminal session control stream
+for live input, output and resize. Ownership labels retain the session UUID,
+role and original Thurbox window name so a fresh Thurbox process can rediscover
+the pane. History seeding is best-effort visible-pane ANSI text, not an exact
+terminal-state snapshot. Herdr does not provide Thurbox's tmux shell pane or
+tmux attach workflow. If Herdr is unavailable or its server is stopped,
+selection reports an actionable error. Native Windows is unsupported and
+reports that at selection time. Existing tmux sessions are unaffected.
+
 ## hooks.toml
 
 Declares **session lifecycle hooks**: your own shell commands, run by
