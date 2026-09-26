@@ -49,47 +49,6 @@ struct TerminalStream {
     lines: Receiver<std::io::Result<String>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn herdr_version_parser_accepts_minimum_and_newer_versions() {
-        assert_eq!(parse_version("herdr 0.9.1").unwrap(), (0, 9, 1));
-        assert_eq!(parse_version("herdr v0.10.0+build.2").unwrap(), (0, 10, 0));
-        assert_eq!(parse_version("herdr 1.0.0").unwrap(), (1, 0, 0));
-    }
-
-    #[test]
-    fn herdr_version_parser_rejects_old_and_malformed_versions() {
-        assert!(parse_version("herdr 0.9.0").unwrap() < MINIMUM_VERSION);
-        assert!(parse_version("herdr 0.9.1-rc.1").is_err());
-        assert!(parse_version("herdr unknown").is_err());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn reader_skips_empty_frames_and_reads_the_next_frame() {
-        let (sender, receiver) = mpsc::channel();
-        sender
-            .send(Ok(r#"{"type":"terminal.frame","data":""}"#.into()))
-            .unwrap();
-        sender
-            .send(Ok(r#"{"type":"terminal.frame","data":"eA=="}"#.into()))
-            .unwrap();
-        let child = Command::new("sh").arg("-c").arg("sleep 5").spawn().unwrap();
-        let mut reader = StreamReader {
-            child: Arc::new(Mutex::new(child)),
-            lines: receiver,
-            pending_line: None,
-            pending: VecDeque::new(),
-        };
-        let mut byte = [0];
-        assert_eq!(reader.read(&mut byte).unwrap(), 1);
-        assert_eq!(byte, [b'x']);
-    }
-}
-
 #[derive(Default)]
 pub struct HerdrBackend {
     streams: Mutex<HashMap<String, Arc<Mutex<ChildStdin>>>>,
@@ -577,4 +536,45 @@ fn parse_label(label: &str) -> Option<(&str, WindowRole, String)> {
         .decode(parts.next()?)
         .ok()?;
     Some((session, role, String::from_utf8(name).ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn herdr_version_parser_accepts_minimum_and_newer_versions() {
+        assert_eq!(parse_version("herdr 0.9.1").unwrap(), (0, 9, 1));
+        assert_eq!(parse_version("herdr v0.10.0+build.2").unwrap(), (0, 10, 0));
+        assert_eq!(parse_version("herdr 1.0.0").unwrap(), (1, 0, 0));
+    }
+
+    #[test]
+    fn herdr_version_parser_rejects_old_and_malformed_versions() {
+        assert!(parse_version("herdr 0.9.0").unwrap() < MINIMUM_VERSION);
+        assert!(parse_version("herdr 0.9.1-rc.1").is_err());
+        assert!(parse_version("herdr unknown").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reader_skips_empty_frames_and_reads_the_next_frame() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(r#"{"type":"terminal.frame","data":""}"#.into()))
+            .unwrap();
+        sender
+            .send(Ok(r#"{"type":"terminal.frame","data":"eA=="}"#.into()))
+            .unwrap();
+        let child = Command::new("sh").arg("-c").arg("sleep 5").spawn().unwrap();
+        let mut reader = StreamReader {
+            child: Arc::new(Mutex::new(child)),
+            lines: receiver,
+            pending_line: None,
+            pending: VecDeque::new(),
+        };
+        let mut byte = [0];
+        assert_eq!(reader.read(&mut byte).unwrap(), 1);
+        assert_eq!(byte, [b'x']);
+    }
 }
