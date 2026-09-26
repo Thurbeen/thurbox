@@ -119,6 +119,9 @@ pub enum Action {
         /// worktree and tmux window are created on that host over SSH.
         #[arg(long)]
         host: Option<String>,
+        /// Select an optional local multiplexer backend (currently `herdr`).
+        #[arg(long, value_parser = ["herdr"], conflicts_with = "host")]
+        multiplexer: Option<String>,
         /// Parent session UUID (lead/worker relationship for orchestration).
         /// Must reference an existing active session.
         #[arg(long)]
@@ -560,6 +563,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             worktree_branch,
             base_branch,
             host,
+            multiplexer,
             parent,
             add_repo,
             add_dir,
@@ -578,6 +582,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 worktree_branch,
                 base_branch,
                 host,
+                multiplexer,
                 parent,
                 add_repo,
                 add_dir,
@@ -752,6 +757,7 @@ struct CreateArgs {
     worktree_branch: Option<String>,
     base_branch: Option<String>,
     host: Option<String>,
+    multiplexer: Option<String>,
     parent: Option<String>,
     add_repo: Vec<String>,
     add_dir: Vec<String>,
@@ -771,6 +777,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         worktree_branch,
         base_branch,
         host,
+        multiplexer,
         parent,
         add_repo,
         add_dir,
@@ -798,7 +805,10 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
     // caller makes rather than something thurbox assumes — and it is a
     // decision about *this* backend, since a mirrored host's rows share
     // the namespace.
-    let backend = crate::session_ops::spawn::backend_type_for(host.as_deref())?;
+    let backend = crate::session_ops::spawn::backend_type_for_choice(
+        host.as_deref(),
+        multiplexer.as_deref(),
+    )?;
     let existing = resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
     if let Existing::Answered(output) = existing {
         return Ok(*output);
@@ -810,6 +820,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         base_branch,
         agent,
         host,
+        multiplexer,
         parent_session_id,
         extra_repos,
         command,
@@ -1203,9 +1214,17 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output =
+    let output = if session.backend_type == crate::agent::herdr::BACKEND_TYPE {
+        let bytes = crate::agent::backend::SessionBackend::capture_history(
+            &crate::agent::herdr::HerdrBackend::default(),
+            &session.backend_id,
+        )
+        .map_err(|e| format!("Herdr capture: {e:#}"))?;
+        format_herdr_capture(&bytes, lines, ansi)
+    } else {
         crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
-            .map_err(|e| format!("capture_pane_text: {e}"))?;
+            .map_err(|e| format!("capture_pane_text: {e}"))?
+    };
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.
@@ -1235,6 +1254,60 @@ fn capture_pane(
         "thurbox-cli session capture <id> --lines 40   a shorter tail",
         "thurbox-cli session send <id> <text>   type into the pane",
     ]))
+}
+
+fn strip_terminal_sequences(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b || index + 1 >= bytes.len() {
+            output.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match bytes[index] {
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+fn format_herdr_capture(bytes: &[u8], lines: u32, ansi: bool) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let text = if ansi {
+        text.into_owned()
+    } else {
+        strip_terminal_sequences(&text)
+    };
+    let mut captured = text.lines().rev().take(lines as usize).collect::<Vec<_>>();
+    captured.reverse();
+    captured.join("\n")
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
@@ -2305,6 +2378,13 @@ fn register_running_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_capture_removes_ansi_but_styled_capture_keeps_it() {
+        let sample = b"\x1b[31mred\x1b[0m\n";
+        assert_eq!(format_herdr_capture(sample, 1, false), "red");
+        assert_eq!(format_herdr_capture(sample, 1, true), "\x1b[31mred\x1b[0m");
+    }
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

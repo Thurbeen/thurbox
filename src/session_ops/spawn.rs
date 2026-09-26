@@ -72,6 +72,8 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
+    /// Optional local Herdr selection. `None` preserves the configured tmux default.
+    pub multiplexer: Option<String>,
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
     pub parent_session_id: Option<SessionId>,
@@ -203,7 +205,20 @@ pub fn spawn_session_headless_with_progress(
 
     // Resolve the optional remote host. `backend_type` is `local-tmux` or
     // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
-    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+    let (mut backend_type, host) = resolve_host(req.host.as_deref())?;
+    if let Some(choice) = req.multiplexer.as_deref() {
+        if host.is_some() {
+            return Err("--multiplexer supports local sessions only".into());
+        }
+        if choice != crate::agent::herdr::BACKEND_TYPE {
+            return Err(format!("unsupported multiplexer '{choice}'"));
+        }
+        crate::agent::backend::SessionBackend::ensure_ready(
+            &crate::agent::herdr::HerdrBackend::default(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        backend_type = choice.to_string();
+    }
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -371,15 +386,40 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
-    let backend_id = launch_window(
-        host.as_ref(),
-        &stamp,
-        &req.name,
-        &command,
-        &args,
-        &launch_cwd,
-        &config.env,
-    )?;
+    let backend_id = if backend_type == crate::agent::herdr::BACKEND_TYPE {
+        let backend = crate::agent::herdr::HerdrBackend::default();
+        let spawned = crate::agent::SessionBackend::spawn(
+            &backend,
+            &req.name,
+            &command,
+            &args,
+            Some(&launch_cwd),
+            &config.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("Failed to spawn Herdr pane: {e:#}"))?;
+        if let Err(error) = crate::agent::SessionBackend::stamp_window(
+            &backend,
+            &spawned.backend_id,
+            &stamp,
+            crate::agent::tmux::WindowRole::Agent,
+        ) {
+            discard_orphaned_window(None, &backend_type, &stamp, &req.name, &spawned.backend_id);
+            return Err(format!("Failed to stamp Herdr pane: {error:#}"));
+        }
+        spawned.backend_id
+    } else {
+        launch_window(
+            host.as_ref(),
+            &stamp,
+            &req.name,
+            &command,
+            &args,
+            &launch_cwd,
+            &config.env,
+        )?
+    };
 
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
@@ -410,7 +450,13 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(
+            host.as_ref(),
+            &shared.backend_type,
+            &stamp,
+            &req.name,
+            &backend_id,
+        );
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -532,16 +578,26 @@ fn launch_window(
     }
 }
 
-/// Tear down the window a spawn opened but could not persist as a row — only
-/// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
-    // Ownership-gated, for the same reason the reap is: this tears down a
-    // window that never became a row, so it must kill only the one it just
-    // spawned. `kill_window`'s resolution would reach the `tb-<name>`
-    // window when the pane id is unusable — and it is unusable exactly
-    // where it matters, since psmux records none — which on a name two
-    // sessions share destroys a live one. Leaking the window we already
-    // leaked is the cheap failure; killing someone else's is not.
+/// Tear down the exact backend object a spawn opened but could not persist.
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    backend_type: &str,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
+    // A Herdr pane id directly identifies the pane this call just spawned.
+    if backend_type == crate::agent::herdr::BACKEND_TYPE {
+        if let Err(error) = crate::agent::SessionBackend::kill(
+            &crate::agent::herdr::HerdrBackend::default(),
+            backend_id,
+        ) {
+            tracing::error!("failed to close orphaned Herdr pane for '{name}': {error:#}");
+        }
+        return;
+    }
+    // tmux's name fallback can reach a same-named live window when the pane id
+    // is unavailable, so its cleanup remains ownership-gated.
     let cleanup = match host {
         Some(h) => crate::agent::tmux::kill_remote_windows(
             h,
@@ -1422,7 +1478,23 @@ fn dir_label(path: &std::path::Path) -> String {
 /// against the rows already on *that* backend: a database mirroring a shareable
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
-pub(crate) fn backend_type_for(host: Option<&str>) -> Result<String, String> {
+pub(crate) fn backend_type_for_choice(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<String, String> {
+    if let Some(choice) = multiplexer {
+        if host.is_some() {
+            return Err("--multiplexer supports local sessions only".into());
+        }
+        if choice != crate::agent::herdr::BACKEND_TYPE {
+            return Err(format!("unsupported multiplexer '{choice}'"));
+        }
+        crate::agent::backend::SessionBackend::ensure_ready(
+            &crate::agent::herdr::HerdrBackend::default(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        return Ok(choice.to_string());
+    }
     resolve_host(host).map(|(backend, _)| backend)
 }
 

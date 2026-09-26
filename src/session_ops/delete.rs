@@ -839,6 +839,16 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
 /// Kill the session's window on the local tmux server, reaping the pane's child
 /// process on Windows (where a live process's cwd blocks the later rmdir).
 fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
+    if session.backend_type == crate::agent::herdr::BACKEND_TYPE {
+        match crate::agent::backend::SessionBackend::kill(
+            &crate::agent::herdr::HerdrBackend::default(),
+            &session.backend_id,
+        ) {
+            Ok(()) => report.killed_window = true,
+            Err(e) => tracing::warn!("Herdr pane close for '{}' failed: {e:#}", session.name),
+        }
+        return;
+    }
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /
