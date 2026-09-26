@@ -1089,9 +1089,9 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
     // directory, which is no kind of session name, so there is no default to take
     // and the refusal stands.
     let host = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&host, &world);
-    // No `space`: nothing is selected, so `enter` takes the home-directory path.
+    // An empty list: nothing to tick or point at, so `enter` takes home.
     press(&host, &world, "enter");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
@@ -1312,10 +1312,11 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
 }
 
 #[test]
-fn nothing_selected_locally_still_creates_a_session() {
-    // v1 spawns in the home directory when no repository is chosen.
+fn nothing_to_pick_locally_still_creates_a_session() {
+    // v1 spawns in the home directory when no repository is chosen. With rows on
+    // screen the cursor row is the choice, so that fallback is an empty list's.
     let host = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&host, &world);
     press(&host, &world, "enter");
     assert!(drawn(&host, &world).contains("Session Name"));
@@ -1597,6 +1598,8 @@ fn the_typed_path_field_offers_to_add_the_repository() {
     type_text(&h, &world, "/srv/thing");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Add repo ]"), "{screen}");
+    // `enter` adds, so the key that goes on from here is named beside it.
+    assert!(screen.contains("alt+⏎ next"), "{screen}");
 }
 
 #[test]
@@ -1840,19 +1843,76 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
         "nothing to advance to on a host: {empty}"
     );
 
-    // The same refusal with rows on screen but none of them ticked, and the
-    // pill arriving the moment one is.
+    // A row on screen is a choice even unticked: `enter` takes the cursor row.
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     let listed = drawn(&h, &world);
-    assert!(
-        !listed.contains("[ Next ]"),
-        "listed but nothing ticked is the same refusal: {listed}"
-    );
-    press(&h, &world, "space");
-    let ticked = drawn(&h, &world);
-    assert!(ticked.contains("[ Next ]"), "{ticked}");
+    assert!(listed.contains("[ Next ]"), "{listed}");
+}
+
+#[test]
+fn ctrl_enter_confirms_from_the_path_field() {
+    // No trip back to the list first: the ticked rows go on from any focus.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/half/typed");
+    press(&host, &world, "ctrl+enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Session Name"), "{screen}");
+}
+
+#[test]
+fn alt_enter_is_the_same_confirm_for_terminals_that_cannot_send_ctrl_enter() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "tab");
+    press(&host, &world, "alt+enter");
+    assert!(drawn(&host, &world).contains("Session Name"));
+}
+
+#[test]
+fn with_nothing_ticked_the_cursor_row_is_the_choice() {
+    // Type part of a name, confirm: the best match is the repository, with no
+    // `space` in between.
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    type_text(&host, &world, "note");
+    press(&host, &world, "ctrl+enter");
+    type_text(&host, &world, "n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
+        panic!("expected a create, got {issued:?}");
+    };
+    assert_eq!(repo, "/src/notes");
+    assert!(extras.is_empty());
+}
+
+#[test]
+fn ticked_rows_win_over_the_cursor_row() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space"); // ticks /src/thurbox
+    press(&host, &world, "down"); // cursor on /src/notes, unticked
+    press(&host, &world, "enter");
+    type_text(&host, &world, "n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
+        panic!("expected a create, got {issued:?}");
+    };
+    assert_eq!(repo, "/src/thurbox");
+    assert!(extras.is_empty(), "the cursor row is not added: {extras:?}");
 }
 
 #[test]
@@ -1872,7 +1932,7 @@ fn a_name_with_no_default_to_fall_back_on_offers_no_pill() {
     // no kind of session name, leaving the field with an empty value AND an
     // empty placeholder. `enter` is refused there, so nothing is offered.
     let h = host();
-    let world = World::default();
+    let world = world_with(Vec::new());
     open(&h, &world);
     press(&h, &world, "enter");
     let screen = drawn(&h, &world);

@@ -102,6 +102,8 @@ search, so the list's own keys are ones you cannot type:
 | `space` | select / deselect a repository (select several for a **multi-repo** session) |
 | `Alt+W` | give the selected repository its own **worktree** |
 | `Del` / `Alt+D` | forget a remembered repository (with the caret at the end of the search) |
+| `Enter` | go on with the ticked repositories — or, with none ticked, the one under the cursor |
+| `Ctrl+Enter` / `Alt+Enter` | the same, from the path field too (`Ctrl+Enter` needs a terminal with the kitty keyboard protocol) |
 | `Esc` | clear the search; a second `Esc` closes the flow |
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
 | `Tab` / `Shift+Tab` | move between the search and the path field |

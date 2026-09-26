@@ -230,6 +230,24 @@ local function chosen(flow)
   return repo_picker.chosen(bookmarks().rows or {}, flow.selected, flow.worktree)
 end
 
+--- The repository the cursor stands in for when nothing is ticked, or nil.
+---
+--- "Ticked, else the cursor row": type part of a name and confirm, with no
+--- `space` in between. A folder header is not a repository, and a worktree row
+--- is opened rather than gathered, so neither stands in.
+local function cursor_stand_in(flow)
+  local worktrees, plain = chosen(flow)
+  if #worktrees > 0 or #plain > 0 then
+    return nil
+  end
+  local entry = current_row(flow)
+  local row = entry and entry.row
+  if row and not row.is_parent and not row.is_worktree then
+    return row
+  end
+  return nil
+end
+
 local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
 end
@@ -686,7 +704,7 @@ local function render_repo(flow)
       -- Spelled as an `if`: `cond and nil or "Next"` is always "Next", because
       -- `and` yielding nil falls through to the `or`.
       local worktrees, plain = chosen(flow)
-      local nothing_to_carry = #worktrees == 0 and #plain == 0
+      local nothing_to_carry = #worktrees == 0 and #plain == 0 and not cursor_stand_in(flow)
       if nothing_to_carry and (flow.host or "") ~= "" then
         primary = nil
       else
@@ -716,6 +734,9 @@ local function render_repo(flow)
       { "tab", suggestion ~= "" and "complete" or "browse" },
       { "alt+p", "import parent" },
       { "s-tab", "search" },
+      -- The portable spelling; `ctrl+enter` does the same where the terminal
+      -- can send it, and help lists both.
+      { "alt+⏎", "next" },
     }
     -- An empty field is nothing to add — including straight after an add, which
     -- clears it and leaves the focus here so several paths can be typed in a
@@ -994,14 +1015,21 @@ local function after_name(flow)
   return flow
 end
 
---- Carry the repo step on to the next question.
+--- Carry the repo step on to the next question: the ticked rows, else the row
+--- under the cursor.
 ---
 --- An existing worktree under the cursor is not a selection to gather: it names
---- its own repo, branch and directory, so there is nothing left to ask.
+--- its own repo, branch and directory, so there is nothing left to ask — unless
+--- rows are ticked, which are what the reader has been gathering.
 local function confirm_repos(flow)
+  local stand_in = cursor_stand_in(flow)
+  if stand_in then
+    flow.selected[stand_in.path] = true
+  end
   local entry = current_row(flow)
   local row = entry and entry.row
-  if row and row.is_worktree then
+  local worktrees, plain = chosen(flow)
+  if row and row.is_worktree and #worktrees == 0 and #plain == 0 then
     flow.primary = row.parent
     flow.extras = {}
     flow.open_worktree = { path = row.path, branch = row.branch }
@@ -1116,6 +1144,22 @@ return {
       desc = "forget a remembered repository",
       group = "New session",
     },
+    -- Confirm the repo step from any focus — the path field included — with the
+    -- ticked rows, else the cursor row. `ctrl+enter` reaches a terminal only
+    -- under the kitty keyboard protocol; `alt+enter` is the same action for
+    -- every other terminal.
+    {
+      key = "ctrl+enter",
+      action = "new_session.confirm",
+      desc = "go on with the ticked repositories, or the one under the cursor",
+      group = "New session",
+    },
+    {
+      key = "alt+enter",
+      action = "new_session.confirm",
+      desc = "go on with the ticked repositories, or the one under the cursor",
+      group = "New session",
+    },
     {
       -- `alt`, not `ctrl`: `ctrl+p` is the command palette everywhere, and a
       -- float's own claim on a global chord is a conflict the registry reports.
@@ -1224,10 +1268,16 @@ return {
     end
 
     if flow.step ~= "repo" then
+      -- Elsewhere the chord is still an `enter`: `on_key` matches the key name
+      -- and ignores the modifier.
       return false
     end
 
-    if action == "new_session.toggle" then
+    if action == "new_session.confirm" then
+      flow.browse = false
+      confirm_repos(flow)
+      return true
+    elseif action == "new_session.toggle" then
       -- A space is a character the path field is entitled to; the search gives
       -- it up, because no repository is found by typing one.
       if not in_search then
