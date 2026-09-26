@@ -40,6 +40,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// How much of the probe's output is kept — far more than three `PATH`s.
+const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
+
 /// What the probe read on a host.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostEnv {
@@ -257,7 +260,8 @@ fn probe(host: &HostDef) -> Option<HostEnv> {
             ssh_opts: &host.ssh_opts,
         }
     };
-    let env = run_bounded(launcher.shell_c(&probe_script())).and_then(|out| parse_probe(&out));
+    let env = run_bounded(launcher.shell_c(&probe_script()), PROBE_TIMEOUT)
+        .and_then(|out| parse_probe(&out));
     match &env {
         None => warn!(
             "host '{}': could not read the host's PATH; agents there keep the default PATH \
@@ -274,28 +278,38 @@ fn probe(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
-/// Run `cmd` with stdin closed, killing it after [`PROBE_TIMEOUT`]. `None`
-/// when it could not start, timed out, or printed nothing readable.
-fn run_bounded(mut cmd: std::process::Command) -> Option<String> {
+/// Run `cmd` with stdin closed, giving up after `timeout`. `None` when it
+/// could not start, timed out, or printed nothing readable.
+///
+/// The deadline covers the **output** as well as the process: a login shell
+/// can leave a background job holding the pipe after the launcher exits, and
+/// waiting for EOF there would outlive any timeout. Only the first
+/// [`MAX_PROBE_OUTPUT`] bytes are kept — a `PATH` or three — and the rest is
+/// drained unread, so a chatty rc file costs neither memory nor a blocked
+/// writer.
+fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    // Drained on its own thread so a chatty host cannot fill the pipe and
-    // leave the child blocked on a write this loop never reads.
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Detached: if the deadline passes it is left blocked on a pipe someone
+    // else still holds, and ends when they close it.
+    std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
+        let mut capped = stdout.take(MAX_PROBE_OUTPUT);
+        let _ = capped.read_to_end(&mut out);
+        let _ = tx.send(out);
+        let _ = std::io::copy(&mut capped.into_inner(), &mut std::io::sink());
     });
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() >= PROBE_TIMEOUT => {
+            Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -304,7 +318,9 @@ fn run_bounded(mut cmd: std::process::Command) -> Option<String> {
             Err(_) => return None,
         }
     }
-    let out = reader.join().ok()?;
+    let out = rx
+        .recv_timeout(timeout.saturating_sub(started.elapsed()))
+        .ok()?;
     String::from_utf8(out).ok()
 }
 
@@ -454,6 +470,37 @@ mod tests {
             assignment_for(&host).as_deref(),
             Some("PATH=/home/me/.local/bin:/usr/bin; export PATH; ")
         );
+    }
+
+    /// A background job keeping the pipe open after the launcher exits must
+    /// not hold the probe past its deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_held_open_after_exit_does_not_outlive_the_timeout() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg("sleep 30 & echo early");
+        let started = Instant::now();
+        assert_eq!(run_bounded(cmd, Duration::from_millis(500)), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_output_is_capped() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg("yes 0123456789 | head -c 1000000");
+        let out = run_bounded(cmd, Duration::from_secs(10)).expect("answered");
+        assert_eq!(out.len() as u64, MAX_PROBE_OUTPUT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_outruns_the_timeout_is_killed() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg("exec sleep 30");
+        let started = Instant::now();
+        assert_eq!(run_bounded(cmd, Duration::from_millis(300)), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// The script itself, against a real `sh` with a login shell whose rc file
