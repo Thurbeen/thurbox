@@ -721,6 +721,24 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         launches.contains(&format!("{}|resume {second_conv}", second.session_id)),
         "{launches}"
     );
+    for _ in 0..100 {
+        if db
+            .get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref()
+            == Some(first_conv)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")
+            .unwrap()
+            .as_deref(),
+        Some(first_conv),
+        "picker must replace the ambiguity marker with its selected conversation"
+    );
 
     db.unset_session_meta(first.session_id, "thurbox.codex_conversation_id")
         .unwrap();
