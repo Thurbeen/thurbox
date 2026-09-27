@@ -255,6 +255,8 @@ pub struct AgentRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MuxRow {
     pub binary: String,
+    pub configured: Option<String>,
+    pub available: Vec<String>,
     pub presence: crate::agent::preflight::Presence,
     /// What to do about it, empty when there is nothing to do.
     pub advice: String,
@@ -266,6 +268,8 @@ impl Default for MuxRow {
     fn default() -> Self {
         Self {
             binary: crate::agent::preflight::local_multiplexer().to_string(),
+            configured: None,
+            available: vec![crate::agent::preflight::local_multiplexer().to_string()],
             presence: crate::agent::preflight::Presence::Unknown,
             advice: String::new(),
         }
@@ -283,6 +287,8 @@ pub struct HostRow {
     pub name: String,
     pub detail: String,
     pub backend: String,
+    pub multiplexer: Option<String>,
+    pub available_multiplexers: Vec<String>,
 }
 
 /// An immutable picture of the engine at one instant.
@@ -1709,8 +1715,18 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
     let presence = crate::agent::preflight::look_up(binary);
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    let available = ["tmux", "psmux", "rmux", "herdr"]
+        .into_iter()
+        .filter_map(|name| {
+            let choice = crate::session::BackendChoice::resolve(None, Some(name), None).ok()?;
+            backends.supports_choice(&choice).then(|| name.to_string())
+        })
+        .collect();
     MuxRow {
         binary: binary.to_string(),
+        configured: crate::session::settings::global().multiplexer.clone(),
+        available,
         presence,
         advice: match presence {
             crate::agent::preflight::Presence::Present => String::new(),
@@ -1723,6 +1739,7 @@ fn read_mux() -> MuxRow {
 /// asking.
 fn read_hosts() -> Vec<HostRow> {
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
     registry
         .hosts
         .iter()
@@ -1730,13 +1747,30 @@ fn read_hosts() -> Vec<HostRow> {
             name: host.name.clone(),
             detail: host.picker_detail(),
             backend: host.backend_name(),
+            multiplexer: host.multiplexer.clone(),
+            available_multiplexers: ["tmux", "psmux", "rmux", "herdr"]
+                .into_iter()
+                .filter_map(|name| {
+                    let choice = crate::session::BackendChoice::resolve(
+                        Some(host.clone()),
+                        Some(name),
+                        None,
+                    )
+                    .ok()?;
+                    backends.supports_choice(&choice).then(|| name.to_string())
+                })
+                .collect(),
         })
         .collect()
 }
 
-/// A remote session's bare host name, read off its backend name.
+/// A remote session's host name, using the registry to resolve suffixes.
 fn remote_host_of(backend: &str) -> Option<String> {
-    crate::session::host_name_of(backend).map(str::to_string)
+    let (hosts, _) = crate::agent::host_config::cached_registry();
+    hosts
+        .get_by_backend(backend)
+        .map(|host| host.name.clone())
+        .or_else(|| crate::session::host_name_of(backend).map(str::to_string))
 }
 
 /// Best-effort repo label: the worktree's repo directory name, else the cwd's.

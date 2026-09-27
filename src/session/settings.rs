@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 /// unrecognized key in a startup warning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
+    /// Default multiplexer for new local sessions; an explicit create choice wins.
+    #[serde(default)]
+    pub multiplexer: Option<String>,
     /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
@@ -364,7 +367,8 @@ impl Settings {
     /// "some changes apply after restart" hint shown by the settings panel and
     /// the live-reload toast.
     pub fn restart_only_differs(&self, other: &Settings) -> bool {
-        self.scrollback_lines != other.scrollback_lines
+        self.multiplexer != other.multiplexer
+            || self.scrollback_lines != other.scrollback_lines
             || self.hidden_terminal_secs != other.hidden_terminal_secs
             || self.two_panel_min_cols != other.two_panel_min_cols
             || self.three_panel_min_cols != other.three_panel_min_cols
@@ -382,6 +386,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            multiplexer: None,
             config_version: None,
             scrollback_lines: default_scrollback_lines(),
             hidden_terminal_secs: default_hidden_terminal_secs(),

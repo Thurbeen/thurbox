@@ -402,6 +402,10 @@ globals:
   # written out.
   thurbox.preflight.mux.binary:
     property: read-only
+  thurbox.preflight.mux.configured:
+    property: read-only
+  thurbox.preflight.mux.available:
+    property: read-only
   thurbox.preflight.mux.presence:
     property: read-only
   thurbox.preflight.mux.advice:

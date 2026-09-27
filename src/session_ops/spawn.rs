@@ -1,5 +1,4 @@
-//! Headless session spawn — creates a local-tmux session without requiring
-//! the TUI event loop.
+//! Headless session spawn without requiring the TUI event loop.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -72,6 +71,8 @@ pub struct SpawnRequest {
     /// Optional remote host name (from `hosts.toml`). When set, the session is
     /// created on that host over SSH (worktree + tmux window live remotely).
     pub host: Option<String>,
+    /// Explicit multiplexer for this creation; host and local defaults follow.
+    pub multiplexer: Option<String>,
     /// Optional parent session (lead/worker relationship for orchestration).
     /// Must reference an existing active session.
     pub parent_session_id: Option<SessionId>,
@@ -112,6 +113,7 @@ pub struct SpawnResult {
     /// report one (psmux). Callers that act on the fresh session (prompt
     /// delivery, teardown) target this rather than the non-unique window name.
     pub backend_id: String,
+    pub backend_type: String,
     pub cwd: PathBuf,
     pub worktrees: Vec<SharedWorktree>,
     pub parent_session_id: Option<SessionId>,
@@ -136,8 +138,7 @@ pub struct SpawnResult {
     pub sharing: Option<String>,
 }
 
-/// Spawn a new session inside `tmux -L thurbox`, persisting its state to the
-/// shared SQLite database.
+/// Spawn a new session on its resolved backend and persist it to SQLite.
 /// A stage of the spawn pipeline, for callers that want to render progress.
 ///
 /// Creating a session runs for tens of seconds on a large repository, and the
@@ -201,9 +202,10 @@ pub fn spawn_session_headless_with_progress(
     report(SpawnPhase::Resolving);
     validate_request(db, &req)?;
 
-    // Resolve the optional remote host. `backend_type` is `local-tmux` or
-    // `ssh:<host>`; `host` is the matching HostDef for remote git/tmux ops.
-    let (backend_type, host) = resolve_host(req.host.as_deref())?;
+    // Resolve host and multiplexer before any worktree or pane is made.
+    let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
+    let backend_type = choice.backend_type.clone();
+    let host = choice.host.clone();
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -213,7 +215,7 @@ pub fn spawn_session_headless_with_progress(
     if let Some(h) = host.as_ref() {
         match super::host_cli::usable(h) {
             super::host_cli::Usable::Yes(cli) if req.fork_session_id.is_none() => {
-                return spawn_delegated(db, req, h, &cli, &report);
+                return spawn_delegated(db, req, h, &cli, &choice, &report);
             }
             super::host_cli::Usable::Yes(_) => {
                 // A fork resumes the parent's conversation in the parent's
@@ -463,6 +465,7 @@ pub fn spawn_session_headless_with_progress(
         agent: agent_name,
         agent_session_id,
         backend_id,
+        backend_type: shared.backend_type.clone(),
         cwd: primary_cwd,
         worktrees,
         parent_session_id: req.parent_session_id,
@@ -590,6 +593,36 @@ fn record_fork_point(db: &Database, session_id: SessionId, req: &SpawnRequest) {
     }
 }
 
+/// Arguments that preserve the resolved choice on a compatible host CLI.
+fn delegated_mux_option(
+    choice: &crate::session::BackendChoice,
+    host: &HostDef,
+    cli: &super::host_cli::CliInfo,
+) -> Result<Vec<String>, String> {
+    if cli.multiplexer_choice {
+        return Ok(vec![
+            "--multiplexer".into(),
+            choice.multiplexer.name().into(),
+        ]);
+    }
+    // An older compatible CLI predates both this flag and multiplexer
+    // settings. It can only honour its platform default.
+    let platform_default = if host.is_windows() {
+        crate::session::Multiplexer::Psmux
+    } else {
+        crate::session::Multiplexer::Tmux
+    };
+    if choice.multiplexer == platform_default {
+        Ok(Vec::new())
+    } else {
+        Err(format!(
+            "host '{}' has an older thurbox-cli that cannot select {}; update that CLI before creating this session",
+            host.name,
+            choice.multiplexer.name()
+        ))
+    }
+}
+
 /// Create the session by running `thurbox-cli session create` **on the host**.
 ///
 /// The host's CLI does what the rest of this file does — resolves the
@@ -603,9 +636,11 @@ fn spawn_delegated(
     req: SpawnRequest,
     host: &HostDef,
     cli: &super::host_cli::CliInfo,
+    choice: &crate::session::BackendChoice,
     report: &dyn Fn(SpawnPhase),
 ) -> Result<SpawnResult, String> {
-    let backend = host.backend_name();
+    let backend = &choice.backend_type;
+    let mux_option = delegated_mux_option(choice, host, cli)?;
     // The host validates the parent against its own database; a parent that
     // lives anywhere else is refused here, before any round trip, with a
     // message that says where it lives.
@@ -614,7 +649,7 @@ fn spawn_delegated(
             .get_session_by_id(parent_id)
             .map_err(|e| format!("get parent session: {e}"))?
             .ok_or_else(|| format!("parent session not found: {parent_id}"))?;
-        if parent.backend_type != backend {
+        if parent.backend_type != backend.as_str() {
             return Err(format!(
                 "parent session '{}' runs on {}, not on host '{}'; a session's parent must be on the same host",
                 parent.name, parent.backend_type, host.name
@@ -661,6 +696,7 @@ fn spawn_delegated(
     if let Some(agent) = &req.agent {
         args.extend(["--agent".to_string(), agent.clone()]);
     }
+    args.extend(mux_option);
     if let Some(branch) = &req.worktree_branch {
         args.extend(["--worktree-branch".to_string(), branch.clone()]);
     }
@@ -730,6 +766,7 @@ fn spawn_delegated(
         agent: row.agent,
         agent_session_id: row.agent_session_id.unwrap_or_default(),
         backend_id: row.backend_id,
+        backend_type: row.backend_type,
         cwd: row.cwd.unwrap_or(req.repo_path),
         worktrees: row.worktrees,
         parent_session_id: row.parent_session_id,
@@ -1431,8 +1468,29 @@ fn dir_label(path: &std::path::Path) -> String {
 /// against the rows already on *that* backend: a database mirroring a shareable
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
-pub(crate) fn backend_type_for(host: Option<&str>) -> Result<String, String> {
-    resolve_host(host).map(|(backend, _)| backend)
+pub(crate) fn backend_type_for_choice(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<String, String> {
+    resolve_backend(host, multiplexer).map(|choice| choice.backend_type)
+}
+
+fn resolve_backend(
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<crate::session::BackendChoice, String> {
+    let (_, host_def) = resolve_host(host)?;
+    let configured = crate::agent::settings_config::load_quiet().multiplexer;
+    let choice =
+        crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    if !backends.supports_choice(&choice) {
+        return Err(format!(
+            "{} is unavailable for this host: no registered backend implements it",
+            choice.multiplexer.name()
+        ));
+    }
+    Ok(choice)
 }
 
 /// Resolve `--host` to `(backend_type, host)`.
@@ -1478,6 +1536,32 @@ mod tests {
             repo_path: PathBuf::from("/tmp"),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn default_delegation_works_with_a_host_cli_without_the_new_flag() {
+        let host = HostDef {
+            name: "example".into(),
+            ..Default::default()
+        };
+        let choice = crate::session::BackendChoice::resolve(Some(host.clone()), None, None)
+            .expect("default choice");
+        let old_cli = crate::session_ops::host_cli::fake::cli();
+        assert!(delegated_mux_option(&choice, &host, &old_cli)
+            .unwrap()
+            .is_empty());
+        let mut new_cli = old_cli.clone();
+        new_cli.multiplexer_choice = true;
+        assert_eq!(
+            delegated_mux_option(&choice, &host, &new_cli).unwrap(),
+            ["--multiplexer", "tmux"]
+        );
+        let non_default =
+            crate::session::BackendChoice::resolve(Some(host.clone()), Some("herdr"), None)
+                .expect("non-default choice");
+        assert!(delegated_mux_option(&non_default, &host, &old_cli)
+            .unwrap_err()
+            .contains("older thurbox-cli"));
     }
 
     #[test]

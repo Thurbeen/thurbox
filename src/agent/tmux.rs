@@ -638,6 +638,22 @@ impl WindowIndex {
         self.locate(session_id, session_name, WindowRole::Agent, false)
     }
 
+    pub fn agent_liveness(
+        &self,
+        session_id: &str,
+        session_name: &str,
+    ) -> crate::agent::backend::BackendLiveness {
+        use crate::agent::backend::BackendLiveness;
+        match self.agent_window(session_id, session_name) {
+            Located::At(_) => match self.live_agent_window(session_id, session_name) {
+                Located::At(_) => BackendLiveness::Live,
+                _ => BackendLiveness::Exited,
+            },
+            Located::Absent => BackendLiveness::Missing,
+            Located::Unknown => BackendLiveness::Unknown,
+        }
+    }
+
     /// Where a session's *running* agent window is. The question every
     /// relaunch and liveness gate asks: a dead pane is not an agent.
     pub fn live_agent_window(&self, session_id: &str, session_name: &str) -> Located {
@@ -2259,6 +2275,11 @@ impl TmuxBackend {
 }
 
 impl SessionBackend for TmuxBackend {
+    fn needs_liveness_poll(&self) -> bool {
+        self.host
+            .as_ref()
+            .map_or(cfg!(windows), |host| host.is_windows())
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -4559,6 +4580,18 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+
+    #[test]
+    fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {
+        let host = crate::session::HostDef {
+            name: "windows".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        assert!(TmuxBackend::from_host(&host).needs_liveness_poll());
+        #[cfg(windows)]
+        assert!(TmuxBackend::new().needs_liveness_poll());
+    }
 
     /// The one distinction the remote teardown rests on. Each answer below is
     /// what tmux 3.5/3.7 actually printed when asked for a listing it could not

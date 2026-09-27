@@ -1386,6 +1386,14 @@ fn shell_session_prepared(
     prepare: impl FnOnce(&Profile),
     adjust: impl FnOnce(&mut Command),
 ) -> Option<(Profile, Tui)> {
+    shell_session_prepared_on_branch(None, prepare, adjust)
+}
+
+fn shell_session_prepared_on_branch(
+    branch: Option<&str>,
+    prepare: impl FnOnce(&Profile),
+    adjust: impl FnOnce(&mut Command),
+) -> Option<(Profile, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -1398,7 +1406,7 @@ fn shell_session_prepared(
     .expect("seed agents");
     let repo = repo(profile.root.path());
 
-    profile.cli(&[
+    let mut create = vec![
         "session",
         "create",
         "--name",
@@ -1407,7 +1415,11 @@ fn shell_session_prepared(
         repo.to_str().expect("utf-8 path"),
         "--agent",
         "shell",
-    ]);
+    ];
+    if let Some(branch) = branch {
+        create.extend(["--worktree-branch", branch]);
+    }
+    profile.cli(&create);
     // A database with session history is a v1 profile as far as the one-time
     // gate can tell, and a gate on a pty is a real prompt; this is the
     // headless answer to it.
@@ -1452,6 +1464,159 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
+    let Some((profile, mut tui)) =
+        shell_session_prepared_on_branch(Some("test/relaunch-same-worktree"), |_| {}, |_| {})
+    else {
+        return;
+    };
+
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open profile database");
+    let original = db
+        .get_session_by_name("probe")
+        .expect("read session")
+        .expect("probe session");
+    assert_eq!(original.worktrees.len(), 1);
+
+    let old_pane = original.backend_id.as_str();
+    assert!(!old_pane.is_empty());
+
+    let mut kill = Command::new("tmux");
+    profile.apply(&mut kill);
+    let killed = kill
+        .args(["-L", profile.server.socket(), "kill-pane", "-t", old_pane])
+        .output()
+        .expect("kill pane");
+    assert!(
+        killed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
+
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && db
+            .get_session_by_name("probe")
+            .expect("read session during relaunch")
+            .is_some_and(|row| row.backend_id == old_pane)
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    tui.wait_for("$ ");
+    tui.send(b"echo tb-relaunched-once\r");
+    tui.wait_for("tb-relaunched-once");
+
+    let mut list = Command::new("tmux");
+    profile.apply(&mut list);
+    let after = list
+        .args(["-L", profile.server.socket()])
+        .args(["list-panes", "-a", "-F", "#{pane_id} #{window_name}"])
+        .output()
+        .expect("list panes after relaunch");
+    assert!(after.status.success());
+    let panes = String::from_utf8(after.stdout).expect("pane ids");
+    let agents: Vec<_> = panes
+        .lines()
+        .filter(|line| line.ends_with(" tb-probe"))
+        .collect();
+    assert_eq!(agents.len(), 1, "duplicate relaunch: {panes}");
+    assert_ne!(agents[0].split(' ').next(), Some(old_pane));
+    let relaunched = db
+        .get_session_by_name("probe")
+        .expect("read relaunched session")
+        .expect("same session row");
+    assert_eq!(relaunched.id, original.id);
+    assert_ne!(relaunched.backend_id, original.backend_id);
+    assert_eq!(relaunched.agent, original.agent);
+    assert_eq!(relaunched.worktrees, original.worktrees);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/settings.toml"),
+        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+    )
+    .expect("set unavailable backend");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("herdr is unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn explicit_cli_choice_overrides_an_unavailable_local_preference() {
+    if !have_tmux() {
+        return;
+    }
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/settings.toml"),
+        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+    )
+    .expect("set unavailable preference");
+    let repo = repo(profile.root.path());
+
+    let mut unavailable = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut unavailable);
+    let unavailable = unavailable
+        .args([
+            "session",
+            "create",
+            "--name",
+            "unavailable",
+            "--command",
+            "sh",
+        ])
+        .arg("--repo-path")
+        .arg(&repo)
+        .output()
+        .expect("create with preference");
+    assert!(!unavailable.status.success());
+    assert!(
+        String::from_utf8_lossy(&unavailable.stdout).contains("herdr is unavailable"),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&unavailable.stdout),
+        String::from_utf8_lossy(&unavailable.stderr)
+    );
+
+    let mut override_create = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut override_create);
+    let created = override_create
+        .args([
+            "session",
+            "create",
+            "--name",
+            "overridden",
+            "--command",
+            "sh",
+            "--multiplexer",
+            "tmux",
+        ])
+        .arg("--repo-path")
+        .arg(&repo)
+        .output()
+        .expect("create with override");
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open profile database");
+    let row = db
+        .get_session_by_name("overridden")
+        .expect("read session")
+        .expect("created session");
+    assert_eq!(row.backend_type, "local-tmux");
+    assert!(db.get_session_by_name("unavailable").unwrap().is_none());
 }
 
 #[test]
@@ -2739,11 +2904,11 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
 
     // Now the wizard, which floats and therefore holds the keyboard.
     tui.send(CTRL_N);
-    // Its first question is "Run On" where the machine has hosts and "Select
-    // Repos" where it has none — this one has sibling WSL distros, so which it
+    // Its first question is "Run On" where the machine has hosts and
+    // "Multiplexer" where it has none — this one has sibling WSL distros, so which it
     // is depends on the machine and neither is the point.
     tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Run On") || frame.contains("Select Repos")
+        frame.contains("Run On") || frame.contains("Multiplexer")
     });
     tui.send(CTRL_V);
     // It has nothing to paste from — that is what the missing X clipboard

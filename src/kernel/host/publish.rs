@@ -144,6 +144,8 @@ impl LuaHost {
             let table = self.lua.create_table().map_err(|e| e.to_string())?;
             let mux = self.lua.create_table().map_err(|e| e.to_string())?;
             set(&mux, "binary", snapshot.mux.binary.clone())?;
+            set(&mux, "configured", snapshot.mux.configured.clone())?;
+            set(&mux, "available", snapshot.mux.available.clone())?;
             set(&mux, "presence", snapshot.mux.presence.as_str())?;
             set(&mux, "advice", snapshot.mux.advice.clone())?;
             set(&table, "mux", Value::Table(mux))?;
@@ -833,6 +835,12 @@ fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         set(&item, "name", host.name.clone())?;
         set(&item, "detail", host.detail.clone())?;
         set(&item, "backend", host.backend.clone())?;
+        set(&item, "multiplexer", host.multiplexer.clone())?;
+        set(
+            &item,
+            "available_multiplexers",
+            host.available_multiplexers.clone(),
+        )?;
         hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(hosts))

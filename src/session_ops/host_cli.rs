@@ -81,6 +81,8 @@ pub struct CliInfo {
     /// Its database schema. `None` for a CLI too old to report one, which is
     /// also too old to share with.
     pub schema_version: Option<u32>,
+    /// Whether `session create --multiplexer` is understood by this CLI.
+    pub multiplexer_choice: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -670,6 +672,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .get("schema_version")
             .and_then(Value::as_u64)
             .map(|v| v as u32),
+        multiplexer_choice: json
+            .get("multiplexer_choice")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }))
 }
 
@@ -1243,6 +1249,7 @@ pub(crate) mod fake {
             tmux_socket: Some("thurbox".into()),
             data_dir: Some("/home/me/.local/share/thurbox".into()),
             schema_version: Some(crate::storage::SCHEMA_VERSION),
+            multiplexer_choice: false,
         }
     }
 }
@@ -1305,6 +1312,7 @@ mod tests {
             tmux_socket: None,
             data_dir: None,
             schema_version: schema,
+            multiplexer_choice: false,
         }
     }
 
@@ -1354,6 +1362,14 @@ mod tests {
         assert_eq!(found.version, "1.4.0");
         assert_eq!(found.tmux_socket.as_deref(), Some("thurbox"));
         assert_eq!(found.schema_version, Some(40));
+        assert!(!found.multiplexer_choice);
+        let capable = parse_probe(
+            "@cli thurbox-cli\n@status 0\n{\"version\":\"1.4.0\",\
+             \"schema_version\":40,\"multiplexer_choice\":true}\n",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(capable.multiplexer_choice);
         assert_eq!(parse_probe("@none\n").unwrap(), None);
         // Neither of these says a CLI was found, so neither justifies
         // re-provisioning; both are the host failing to answer the protocol.

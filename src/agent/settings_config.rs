@@ -21,6 +21,9 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 
 config_version = 1
 
+# Multiplexer for new local sessions. Explicit per-create choice wins.
+# multiplexer = "tmux"           # tmux | rmux | herdr (psmux on Windows)
+
 # Scrollback lines kept per session terminal.
 # scrollback_lines = 1000
 
@@ -313,6 +316,11 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
 
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
+    if let Some(multiplexer) = &settings.multiplexer {
+        doc["multiplexer"] = value(multiplexer.as_str());
+    } else {
+        doc.remove("multiplexer");
+    }
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));

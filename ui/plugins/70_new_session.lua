@@ -475,6 +475,51 @@ local function render_host(flow)
   }, flow)
 end
 
+local function mux_options(flow)
+  if (flow.host or "") == "" then
+    local mux = preflight().mux or {}
+    return mux.available or {}, mux.configured or mux.binary
+  end
+  for _, host in ipairs(hosts()) do
+    if host.backend == flow.host then
+      return host.available_multiplexers or {}, host.multiplexer or "tmux"
+    end
+  end
+  return {}, nil
+end
+
+local function choose_mux(flow)
+  local options, configured = mux_options(flow)
+  flow.mux_index = 1
+  for index, name in ipairs(options) do
+    if name == configured then
+      flow.mux_index = index
+    end
+  end
+end
+
+local function render_mux(flow)
+  local options, configured = mux_options(flow)
+  local warning
+  if configured and configured ~= "default" then
+    local found = false
+    for _, name in ipairs(options) do
+      found = found or name == configured
+    end
+    if not found then
+      warning = configured .. " is unavailable for this host"
+    end
+  end
+  local height = math.max(1, #options)
+  local rows = #options > 0 and selector_rows(options, flow.mux_index, height)
+    or { { type = "text", len = 1, text = "  No registered multiplexer is available" } }
+  return frame("Multiplexer", height + 4, {
+    { type = "box", len = height, children = rows },
+    { type = "text", len = 1, text = warning or "" },
+    modal.footer({ { "j/k", "navigate" } }, #options > 0 and "Select" or nil),
+  }, flow)
+end
+
 local REPO_LIST_MAX = 10
 local BROWSE_MAX = 8
 
@@ -1150,6 +1195,7 @@ local function commit(flow)
     worktree_path = open and open.path or nil,
     agent = agent,
     host = (flow.host ~= "" and flow.host) or nil,
+    multiplexer = (mux_options(flow))[flow.mux_index],
     extras = flow.extras or {},
   })
   save(nil)
@@ -1227,6 +1273,9 @@ end
 local function move_selection(flow, step)
   if flow.step == "host" then
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
+  elseif flow.step == "multiplexer" then
+    local options = mux_options(flow)
+    flow.mux_index = widgets.clamp((flow.mux_index or 1) + step, #options)
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "branch" then
@@ -1396,6 +1445,8 @@ return {
 
     if flow.step == "host" then
       return render_host(flow)
+    elseif flow.step == "multiplexer" then
+      return render_mux(flow)
     elseif flow.step == "repo" then
       return render_repo(flow)
     elseif flow.step == "branch" then
@@ -1424,8 +1475,8 @@ return {
       end
       local flow = fresh()
       if #hosts() == 0 then
-        -- v1 skips the question entirely rather than offering one answer.
-        flow.step = "repo"
+        flow.step = "multiplexer"
+        choose_mux(flow)
       end
       save(flow)
       ask(flow)
@@ -1596,11 +1647,22 @@ return {
       if name == "enter" then
         local index = flow.host_index
         flow.host = index > 1 and (hosts()[index - 1].backend or "") or ""
-        flow.step = "repo"
+        flow.step = "multiplexer"
+        choose_mux(flow)
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
         -- earlier host's selection must not carry over.
         flow.selected, flow.worktree, flow.collapsed = {}, {}, {}
+        save(flow)
+        ask(flow)
+        return true
+      end
+      return false
+    end
+
+    if flow.step == "multiplexer" then
+      if name == "enter" and #mux_options(flow) > 0 then
+        flow.step = "repo"
         save(flow)
         ask(flow)
         return true

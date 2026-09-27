@@ -35,6 +35,7 @@ pub(super) fn execute(
         worktree_path,
         agent,
         host,
+        multiplexer,
         extras,
     } = command
     {
@@ -46,6 +47,7 @@ pub(super) fn execute(
             worktree_path.as_deref(),
             agent,
             host,
+            multiplexer,
             extras,
             id,
             progress,
@@ -255,6 +257,7 @@ fn create(
     worktree_path: Option<&str>,
     agent: &Option<String>,
     host: &Option<String>,
+    multiplexer: &Option<String>,
     extras: &[ExtraMember],
     id: u64,
     progress: &Sender<Progress>,
@@ -301,6 +304,7 @@ fn create(
         existing_worktree: opened,
         agent: agent.clone(),
         host: host.clone(),
+        multiplexer: multiplexer.clone(),
         // Each extra either takes its own worktree on the shared branch — off
         // its own base, which here is the session's — or is attached as it is.
         // Two or more members is what makes the agent launch in a symlink
