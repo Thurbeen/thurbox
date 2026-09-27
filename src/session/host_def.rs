@@ -60,6 +60,12 @@ pub fn host_name_of(backend_name: &str) -> Option<&str> {
     backend_name
         .strip_prefix(SSH_BACKEND_PREFIX)
         .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))
+        .map(|bare| {
+            [":tmux", ":psmux", ":rmux", ":herdr"]
+                .into_iter()
+                .find_map(|suffix| bare.strip_suffix(suffix))
+                .unwrap_or(bare)
+        })
         // A bare `ssh:` names no machine. Nothing builds one today — the
         // picker appends a name and an empty `--host` is dropped at parse —
         // but `Some("")` is a machine whose name is the empty string, and the
@@ -365,10 +371,24 @@ impl HostRegistry {
     /// that name is what lets the session re-adopt instead of going
     /// unreachable.
     pub fn get_by_backend(&self, backend_name: &str) -> Option<&HostDef> {
-        let bare = backend_name
-            .strip_prefix(SSH_BACKEND_PREFIX)
-            .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))?;
+        let bare = host_name_of(backend_name)?;
         self.get(bare)
+    }
+
+    /// Read an existing row by its recorded choice, not a host preference that
+    /// may have changed since the row was created. Unsuffixed keys keep the
+    /// historical tmux/psmux meaning.
+    pub fn resolved_by_backend(&self, backend_name: &str) -> Option<HostDef> {
+        let mut host = self.get_by_backend(backend_name)?.clone();
+        let selected = ["tmux", "psmux", "rmux", "herdr"]
+            .into_iter()
+            .find(|mux| backend_name.ends_with(&format!(":{mux}")));
+        if let Some(mux) = selected {
+            host.multiplexer = Some(mux.to_string());
+        } else if matches!(host.mux().as_str(), "rmux" | "herdr") {
+            host.multiplexer = Some("tmux".into());
+        }
+        Some(host)
     }
 
     /// Look up a host by **either** spelling: the `ssh:`/`wsl:` backend name or
@@ -594,6 +614,30 @@ mod tests {
         assert_eq!(reg.get_by_backend("wsl:Ubuntu").unwrap().name, "Ubuntu");
         assert!(reg.get_by_backend("devbox").is_none());
         assert!(reg.get_by_backend("local-tmux").is_none());
+    }
+
+    #[test]
+    fn recorded_remote_mux_survives_a_changed_host_preference() {
+        let registry = HostRegistry {
+            config_version: None,
+            hosts: vec![HostDef {
+                name: "example".into(),
+                multiplexer: Some("rmux".into()),
+                ..Default::default()
+            }],
+        };
+        assert_eq!(
+            registry.resolved_by_backend("ssh:example").unwrap().mux(),
+            "tmux"
+        );
+        assert_eq!(
+            registry
+                .resolved_by_backend("ssh:example:rmux")
+                .unwrap()
+                .mux(),
+            "rmux"
+        );
+        assert_eq!(host_name_of("ssh:example:rmux"), Some("example"));
     }
 
     #[test]

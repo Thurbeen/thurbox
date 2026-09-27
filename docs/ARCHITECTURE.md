@@ -729,11 +729,11 @@ WSL needs no credentials at all.
   only one can survive) and the survivor inherits the group's
   `is_parent`/`parent_path`, so a healed parent keeps the mark its
   children hang off.
-- **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>`
-  or `None`); `is_remote_backend` covers both. The TUI shows a host
-  picker as the first new-session step (skipped when none configured/
-  discovered); `thurbox-cli session create --host` is the headless
-  equivalent.
+- **Selection**: host and multiplexer are independent. The TUI asks for a
+  host and then a registered multiplexer; `session create --host` and
+  `--multiplexer` are the headless equivalents. `BackendChoice` resolves
+  explicit choice before configured host/local preference before the platform
+  default, and its routing key is persisted.
 - **Persistence/restore**: `backend_type` round-trips in SQLite;
   restore discovers windows **per backend** so off-local sessions
   re-adopt against their own host's tmux.

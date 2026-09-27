@@ -638,6 +638,22 @@ impl WindowIndex {
         self.locate(session_id, session_name, WindowRole::Agent, false)
     }
 
+    pub fn agent_liveness(
+        &self,
+        session_id: &str,
+        session_name: &str,
+    ) -> crate::agent::backend::BackendLiveness {
+        use crate::agent::backend::BackendLiveness;
+        match self.agent_window(session_id, session_name) {
+            Located::At(_) => match self.live_agent_window(session_id, session_name) {
+                Located::At(_) => BackendLiveness::Live,
+                _ => BackendLiveness::Exited,
+            },
+            Located::Absent => BackendLiveness::Missing,
+            Located::Unknown => BackendLiveness::Unknown,
+        }
+    }
+
     /// Where a session's *running* agent window is. The question every
     /// relaunch and liveness gate asks: a dead pane is not an agent.
     pub fn live_agent_window(&self, session_id: &str, session_name: &str) -> Located {
@@ -2259,6 +2275,9 @@ impl TmuxBackend {
 }
 
 impl SessionBackend for TmuxBackend {
+    fn needs_liveness_poll(&self) -> bool {
+        false
+    }
     fn name(&self) -> &str {
         &self.name
     }

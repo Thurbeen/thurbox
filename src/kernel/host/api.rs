@@ -259,6 +259,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             worktree_path: get_string("worktree_path"),
             agent: get_string("agent"),
             host: get_string("host"),
+            multiplexer: get_string("multiplexer"),
             status: get_string("status"),
             level: get_string("level"),
             file: get_string("file"),

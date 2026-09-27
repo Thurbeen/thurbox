@@ -460,6 +460,8 @@ pub struct Terminals {
     /// survey is invisible to it, and answering from the older listing reports a
     /// live session as having lost its agent (see [`Self::missing_agents`]).
     surveys: HashMap<String, u64>,
+    live_since: HashMap<String, u64>,
+    unreachable: std::collections::HashSet<String>,
     /// The survey count each waiting row was first seen at.
     ///
     /// Its backend has to get *past* this number before the row's absence from the
@@ -568,6 +570,8 @@ impl Terminals {
             discovered: HashMap::new(),
             discovery_due: HashMap::new(),
             surveys: HashMap::new(),
+            live_since: HashMap::new(),
+            unreachable: std::collections::HashSet::new(),
             waiting_since: HashMap::new(),
             meta: HashMap::new(),
             meta_version: 0,
@@ -649,6 +653,13 @@ impl Terminals {
             .iter()
             .map(|(_, backend)| (*backend).to_string())
             .collect();
+        waiting.extend(snapshot.sessions.iter().filter_map(|row| {
+            self.live.get(&row.id)?;
+            self.backends
+                .get(&row.backend)
+                .filter(|backend| backend.needs_liveness_poll())
+                .map(|_| row.backend.clone())
+        }));
         waiting.sort_unstable();
         waiting.dedup();
         if !waiting.is_empty() {
@@ -668,6 +679,8 @@ impl Terminals {
             .map(|row| row.id.as_str())
             .collect();
         self.live.retain(|id, _| present.contains(id.as_str()));
+        self.live_since
+            .retain(|id, _| present.contains(id.as_str()));
         let failures = self.failed.len();
         self.failed.retain(|id, _| present.contains(id.as_str()));
         if self.failed.len() != failures {
@@ -783,12 +796,23 @@ impl Terminals {
                         // listing to ask and the row's own id has to stand.
                         && (remote || self.pane_placed(row, id))
                 });
-                (live.session.has_exited() || moved)
-                    .then(|| (row.id.clone(), row.backend_id.clone(), remote))
+                let surveyed_after_attach = self.live_since.get(&row.id).is_some_and(|seen| {
+                    self.surveys.get(&row.backend).is_some_and(|now| now > seen)
+                });
+                let confirmed_missing = surveyed_after_attach
+                    && self.liveness(row) == crate::agent::backend::BackendLiveness::Missing;
+                (live.session.has_exited() || moved || confirmed_missing).then(|| {
+                    (
+                        row.id.clone(),
+                        row.backend_id.clone(),
+                        remote && !confirmed_missing,
+                    )
+                })
             })
             .collect();
         for (id, pane, remote) in lost {
             self.live.remove(&id);
+            self.live_since.remove(&id);
             if remote {
                 // The backend has to be readied again before the next attach can
                 // adopt anything: the connection this session died with is the
@@ -931,11 +955,13 @@ impl Terminals {
     fn collect_attached(&mut self, rows: u16, cols: u16) {
         while let Ok(done) = self.attached.1.try_recv() {
             self.attaching.remove(&done.session);
+            let seen_at = self.surveys.get(&done.backend).copied().unwrap_or(0);
             if done.readied {
                 self.ready.borrow_mut().insert(done.backend);
             }
             match done.session_handle {
                 Ok(session) => {
+                    self.live_since.insert(done.session.clone(), seen_at);
                     // A pane that had to be resolved by window name is worth
                     // persisting: names are not unique, so the row must not
                     // depend on one past this first adoption. The loop drains
@@ -987,8 +1013,12 @@ impl Terminals {
                 self.ready.borrow_mut().insert(done.backend.clone());
             }
             if let Some(panes) = done.panes {
+                self.unreachable.remove(&done.backend);
                 *self.surveys.entry(done.backend.clone()).or_insert(0) += 1;
                 self.discovered.insert(done.backend, panes);
+            } else {
+                self.unreachable.insert(done.backend.clone());
+                self.discovered.remove(&done.backend);
             }
         }
     }
@@ -1017,6 +1047,7 @@ impl Terminals {
     /// person asked for.
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
+        self.live_since.remove(session);
         self.discovery_due.clear();
         if self.failed.remove(session).is_some() {
             self.mark_failures_changed();
@@ -1728,13 +1759,23 @@ impl Terminals {
             // relaunch. An ambiguous name — several windows, none of them
             // stamped — resolves to nothing, and respawning on that is how a
             // third agent appears beside the two that already collide.
-            .filter(|row| {
-                self.discovered
-                    .get(&row.backend)
-                    .is_some_and(|windows| windows.agent_window(&row.id, &row.name).is_absent())
-            })
+            .filter(|row| self.liveness(row).permits_relaunch())
             .map(|row| row.id.clone())
             .collect()
+    }
+
+    fn liveness(
+        &self,
+        row: &super::snapshot::SessionRow,
+    ) -> crate::agent::backend::BackendLiveness {
+        use crate::agent::backend::BackendLiveness;
+        if self.unreachable.contains(&row.backend) {
+            return BackendLiveness::Unreachable;
+        }
+        self.discovered
+            .get(&row.backend)
+            .map(|windows| windows.agent_liveness(&row.id, &row.name))
+            .unwrap_or(BackendLiveness::Unknown)
     }
 
     /// Drain every backend's queued remote hook reports.
@@ -2464,6 +2505,112 @@ mod tests {
             detected_agent: None,
             shell_backend_id: None,
             member_dirs: Vec::new(),
+        }
+    }
+
+    struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
+
+    impl crate::agent::SessionBackend for FakeLivenessBackend {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&std::path::Path>,
+            _: &HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+            unreachable!()
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+            _: Option<Vec<u8>>,
+        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+            unreachable!()
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            match self.0.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => Ok(Vec::new()),
+                1 => anyhow::bail!("host unreachable"),
+                _ => Ok(vec![crate::agent::backend::DiscoveredSession {
+                    backend_id: "%1".into(),
+                    name: "tb-demo".into(),
+                    is_alive: false,
+                    session: "a".into(),
+                    role: crate::agent::tmux::WindowRole::Agent,
+                }]),
+            }
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn fake_backend_only_relaunches_confirmed_missing_once() {
+        use std::sync::atomic::Ordering;
+        let fake = std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
+        let backend: std::sync::Arc<dyn crate::agent::SessionBackend> = fake.clone();
+        let mut terminals = Terminals::new();
+        terminals.backends.register(backend.clone());
+        terminals.waiting_since.insert("a".into(), 0);
+        let rows = snapshot(vec![row("a", "fake", Some("%1"))]);
+        let mut notified = std::collections::HashSet::new();
+
+        for mode in [0, 0, 1, 2] {
+            fake.0.store(mode, Ordering::Relaxed);
+            let observed = discover_windows(&backend, "fake".into(), true);
+            terminals.discovered_rx.0.send(observed).unwrap();
+            terminals.collect_discovered();
+            let missing = terminals.missing_agents(&rows);
+            match mode {
+                0 => {
+                    assert_eq!(missing, ["a"]);
+                    for id in missing {
+                        notified.insert(id);
+                    }
+                    assert_eq!(notified.len(), 1, "duplicate notification");
+                }
+                1 => {
+                    assert_eq!(
+                        terminals.liveness(&rows.sessions[0]),
+                        crate::agent::backend::BackendLiveness::Unreachable
+                    );
+                    assert!(missing.is_empty());
+                }
+                _ => {
+                    assert_eq!(
+                        terminals.liveness(&rows.sessions[0]),
+                        crate::agent::backend::BackendLiveness::Exited
+                    );
+                    assert!(missing.is_empty());
+                }
+            }
         }
     }
 

@@ -282,7 +282,7 @@ configured hosts, error shown.
 | `socket` | no | `thurbox` | host `tmux -L` socket |
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
-| `multiplexer` | no | `tmux` | host multiplexer binary; set to `psmux` for a Windows SSH host |
+| `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Use `psmux` for a native Windows SSH host |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 | `path_prepend` | no | `[]` | directories put first on the agent's `PATH` on the host, absolute or `~/`-rooted (`~` = the host's `$HOME`) — for what the host's login shell cannot report |
 
@@ -324,6 +324,34 @@ paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
+
+### Multiplexer choice and existing sessions
+
+Host and multiplexer are separate choices. `hosts.toml` names the host's
+preference; top-level `multiplexer` in `settings.toml` names the local
+preference. `thurbox-cli session create --multiplexer <name>` overrides either
+for one creation. The TUI asks for a host and then shows the registered
+multiplexers for it. The order is explicit choice, configured host or local
+preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
+Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
+registered implementation is shown as unavailable and creation refuses it
+before making a worktree or pane.
+
+The resolved choice is recorded in each new session's `backend_type`. Existing
+`local-tmux`, `ssh:<host>`, and `wsl:<distro>` rows keep their original
+tmux/psmux routing after a preference changes. An adapter for another
+multiplexer registers its own local and host routing keys; it must read those
+keys on restart, restore, delete, input, capture, and fork.
+
+Manual deletion of an agent pane or window means the agent should run again.
+Once the backend **confirms absence**, Thurbox relaunches the same session ID,
+agent, and worktree once. An exited pane still held by the server remains
+visible for inspection. A backend that is unreachable or has not verified the
+window cannot authorize a relaunch. A session intentionally parked with
+`session stop` stays stopped. A deleted companion shell is forgotten without
+relaunching the agent. RMUX and Herdr adapters must prove this with real
+TUI-open pane-deletion tests, including a backend whose stream does not close
+when its pane is deleted.
 
 ## hooks.toml
 
@@ -447,6 +475,7 @@ all commented so defaults still apply out of the box.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
+| `multiplexer` | platform default | multiplexer preference for new local sessions; explicit per-create choice wins |
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
@@ -459,6 +488,7 @@ this, uncomment what you want to change, and restart:
 
 ```toml
 config_version = 1
+multiplexer = "tmux"     # use "psmux" on native Windows
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session

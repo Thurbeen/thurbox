@@ -426,10 +426,14 @@
 ---@field name string
 ---@field detail string
 ---@field backend string
+---@field multiplexer? string
+---@field available_multiplexers string[]
 
 --- The local multiplexer every session's window is created in.
 ---@class (exact) thurbox.Mux
 ---@field binary string `tmux`, or `psmux` on native Windows.
+---@field configured? string
+---@field available string[]
 ---@field presence thurbox.Presence
 ---@field advice string What to do about it; empty when there is nothing to do.
 
@@ -883,6 +887,7 @@ function require(name) end
 ---@field worktree_path? string An existing worktree to open rather than make.
 ---@field agent? string
 ---@field host? string
+---@field multiplexer? string
 ---@field extras? thurbox.cmd.ExtraMember[] Further repositories to span.
 
 ---@class (exact) thurbox.cmd.Bookmark

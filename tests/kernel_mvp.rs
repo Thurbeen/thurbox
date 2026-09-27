@@ -2573,6 +2573,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             resume_session_id: None,
             agent_session_id: None,
             host: None,
+            multiplexer: None,
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),

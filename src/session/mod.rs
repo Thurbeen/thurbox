@@ -6,6 +6,7 @@ pub mod hook_status;
 pub mod host_def;
 pub mod hyperlink;
 pub mod message;
+pub mod multiplexer;
 pub mod plugin_spec;
 pub mod review;
 pub mod settings;
@@ -37,6 +38,7 @@ pub use host_def::{
 };
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use message::SessionMessage;
+pub use multiplexer::{BackendChoice, Multiplexer};
 pub use plugin_spec::{
     LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,
 };

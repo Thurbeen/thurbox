@@ -120,6 +120,7 @@ fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
         worktree_path: Some(foreign.display().to_string()),
         agent: Some("shell".into()),
         host: None,
+        multiplexer: None,
         extras: Vec::new(),
     });
 
@@ -207,6 +208,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             resume_session_id: None,
             agent_session_id: None,
             host: None,
+            multiplexer: None,
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),
@@ -1161,6 +1163,7 @@ fn a_vetoed_creation_reports_through_the_command_bus() {
         worktree_path: None,
         agent: Some("shell".into()),
         host: None,
+        multiplexer: None,
         extras: Vec::new(),
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1379,6 +1382,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
             resume_session_id: None,
             agent_session_id: None,
             host: None,
+            multiplexer: None,
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),
@@ -1507,6 +1511,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
             resume_session_id: None,
             agent_session_id: None,
             host: None,
+            multiplexer: None,
             parent_session_id: None,
             task_id: None,
             extra_repos: Vec::new(),

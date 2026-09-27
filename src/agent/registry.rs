@@ -49,7 +49,13 @@ impl BackendRegistry {
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {
-            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
+            let mut routed = host.clone();
+            if matches!(routed.mux().as_str(), "rmux" | "herdr") {
+                routed.multiplexer = Some("tmux".into());
+            }
+            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+                &routed,
+            )));
         }
         (backends, hosts, warnings.clone())
     }
@@ -73,6 +79,18 @@ impl BackendRegistry {
     /// Check whether a backend with the given name is registered.
     pub fn has(&self, name: &str) -> bool {
         self.backends.contains_key(name)
+    }
+
+    /// A choice is offered only when an implementation has registered its
+    /// routing key. Installing a binary alone never makes an adapter exist.
+    pub fn supports_choice(&self, choice: &crate::session::BackendChoice) -> bool {
+        if choice.host.is_none()
+            && choice.backend_type == crate::session::LOCAL_BACKEND_TYPE
+            && choice.multiplexer != crate::session::Multiplexer::platform_default()
+        {
+            return false;
+        }
+        self.has(&choice.backend_type)
     }
 
     /// Return the name of the default backend.

@@ -678,7 +678,7 @@ pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef
     // The cached registry: this runs on the UI thread per diff request, and a
     // fresh load walks $PATH for WSL discovery every time.
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    registry.get_by_backend(backend_type).cloned().map(Some)
+    registry.resolved_by_backend(backend_type).map(Some)
 }
 
 /// Inject the standard thurbox env hints into a session config so a

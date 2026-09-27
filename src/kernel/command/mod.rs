@@ -85,6 +85,7 @@ pub enum Command {
         worktree_path: Option<String>,
         agent: Option<String>,
         host: Option<String>,
+        multiplexer: Option<String>,
         /// Further repositories this session spans, each either taking its own
         /// worktree on `branch` or attached as it is.
         ///
@@ -748,6 +749,7 @@ impl Command {
             worktree_path: args.worktree_path.filter(|p| !p.is_empty()),
             agent: args.agent.filter(|a| !a.is_empty()),
             host: args.host.filter(|h| !h.is_empty()),
+            multiplexer: args.multiplexer.filter(|m| !m.is_empty()),
             extras: args.extras,
         })
     }
@@ -900,6 +902,7 @@ pub struct Args {
     pub worktree_path: Option<String>,
     pub agent: Option<String>,
     pub host: Option<String>,
+    pub multiplexer: Option<String>,
     /// A task status name, for the task command.
     pub status: Option<String>,
     /// An ordered list of session ids, for the order command.
@@ -1322,6 +1325,7 @@ mod tests {
                     worktree_path: None,
                     agent: None,
                     host: Some("box".into()),
+                    multiplexer: None,
                     extras: Vec::new(),
                 }),
             ),
