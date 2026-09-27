@@ -664,6 +664,8 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     let name = format!("auto-{auto_id}");
     let row = session_row(&name, "codex", "local-tmux");
     db.upsert_session(&row).expect("persist session");
+    let namesake = session_row(&name, "codex", "local-tmux");
+    db.upsert_session(&namesake).expect("persist namesake");
     db.set_hook_state(row.id, "idle").expect("idle");
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir");
@@ -683,6 +685,19 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &format!("tb-{name}"),
         &fake.to_string_lossy(),
     ]);
+    thurbox::agent::tmux::stamp_local_window(
+        &format!("{SESSION}:tb-{name}"),
+        &row.id.to_string(),
+        thurbox::agent::tmux::WindowRole::Agent,
+    );
+    assert!(thurbox::agent::tmux::window_exists(
+        &row.id.to_string(),
+        &name
+    ));
+    assert!(!thurbox::agent::tmux::window_exists(
+        &namesake.id.to_string(),
+        &name
+    ));
 
     let out = run_automation(AutomationCommand::Tick, &db).expect("automation tick");
     assert_eq!(out["fired"][0]["status"], "success", "{out}");

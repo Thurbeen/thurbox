@@ -671,28 +671,29 @@ fn fire_spawn(
                 )
             }
         };
-        let mut local = sessions
-            .into_iter()
-            .filter(|s| s.backend_type == "local-tmux");
+        let mut local = sessions.into_iter().filter(|s| {
+            s.backend_type == "local-tmux"
+                && crate::agent::tmux::window_exists(&s.id.to_string(), &name)
+        });
         if let Some(session) = local.next() {
-            if local.next().is_some() {
-                return (
-                    AutomationRunStatus::Error,
-                    format!("multiple local sessions named {name}"),
-                    None,
-                );
+            if local.next().is_none() {
+                return match crate::session_ops::send_text_with_status(
+                    db,
+                    &session,
+                    &auto.prompt,
+                    true,
+                ) {
+                    Ok(()) => (
+                        AutomationRunStatus::Success,
+                        format!("reused {name}"),
+                        Some(session.id),
+                    ),
+                    Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+                };
             }
-            return match crate::session_ops::send_text_with_status(db, &session, &auto.prompt, true)
-            {
-                Ok(()) => (
-                    AutomationRunStatus::Success,
-                    format!("reused {name}"),
-                    Some(session.id),
-                ),
-                Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
-            };
         }
-        // A legacy window can outlive its database row; keep name-only delivery.
+        // A legacy window can outlive its row; multiple unstamped namesakes
+        // cannot be assigned a row safely. Deliver without changing status.
         return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
