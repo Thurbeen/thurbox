@@ -24,7 +24,7 @@ SESSIONS = 3
 
 def run(ctx):
     for rep, warm in ctx.repetitions():
-        for name in ctx.hosts:
+        for name in ctx.host_order(rep):
             load = bl.load()
             host = ctx.fresh(name)
             client = None

@@ -53,7 +53,7 @@ def run(ctx):
     window = 3.0 if ctx.quick else 10.0
     for n in counts:
         for rep, warm in ctx.repetitions():
-            for name in ctx.hosts:
+            for name in ctx.host_order(rep):
                 load = bl.load()
                 host = ctx.fresh(name)
                 client = None
@@ -114,7 +114,7 @@ def run(ctx):
     if ctx.quick or os.environ.get("BENCH_SKIP_LONG_IDLE"):
         return
     for rep, warm in ctx.repetitions():
-        for name in ctx.hosts:
+        for name in ctx.host_order(rep):
             load = bl.load()
             host = ctx.fresh(name)
             try:

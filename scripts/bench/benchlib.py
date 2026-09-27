@@ -5,6 +5,7 @@ Nothing here knows about a particular host; ``hosts.py`` does.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import platform
@@ -22,9 +23,17 @@ AGENT = os.path.join(HERE, "agent.py")
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 
 # The size every client is attached at, and every headless session is created
-# at where the host lets us say. One size for all three, so no host draws more
+# at where the host lets us say. One size for all four, so no host draws more
 # cells than another.
 COLS, ROWS = 200, 50
+
+
+def binary_hash(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as binary:
+        for chunk in iter(lambda: binary.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def now_ns():

@@ -20,7 +20,7 @@ def run(ctx):
     counts = (1, 5) if ctx.quick else (1, 20, 50)
     for n in counts:
         for rep, warm in ctx.repetitions():
-            for name in ctx.hosts:
+            for name in ctx.host_order(rep):
                 load = bl.load()
                 host = ctx.fresh(name)
                 client = None

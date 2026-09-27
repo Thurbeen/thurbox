@@ -331,7 +331,7 @@ authoring. docs/DEVELOPMENT.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/RELEASING.md owns the release process and
 docs/ORCHESTRATION.md the control-plane pattern. docs/BENCHMARK-MULTIPLEXERS.md
-owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
+owns how thurbox compares with raw tmux, Herdr, and RMUX as a host for agent sessions,
 and the method of the harness under scripts/bench/ that measures it. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md
 owns the introduction.

@@ -1,0 +1,1549 @@
+{
+  "kind": "real Codex TUI, mocked inference",
+  "started": "2026-09-27T08:16:57.224386+00:00",
+  "machine": {
+    "cpus": 4,
+    "kernel": "6.18.48",
+    "ram_gib": 15.5,
+    "os": "NixOS 26.05 (Yarara)",
+    "cpu_model": "Intel(R) Core(TM) i5-6500T CPU @ 2.50GHz",
+    "governor": "powersave"
+  },
+  "versions": {
+    "tmux": "tmux 3.6a",
+    "herdr": "herdr 0.9.1",
+    "rmux": "rmux 0.10.0",
+    "codex": "codex-cli 0.157.1",
+    "thurbox": "thurbox-cli 0.0.0-dev"
+  },
+  "binary_sha256": {
+    "tmux": "a7d5604867de8155d565b8e1e74691031490c7f9e7d39168beb026d74d901b72",
+    "herdr": "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7",
+    "rmux": "166d4c7c143472e8dc0def448958c35556a99a1f4be730cda41dbbe2a7da7e40",
+    "thurbox": "c371b08b0afea2edbac1291d564e0ba26d3c92481f153b267b33f4729c16ddc3",
+    "thurbox-cli": "5aff06bbdf56ddd9eb2bb1d3ee4628056bcc439a9fe91d1dbe572cfd474c69dd",
+    "codex": "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970"
+  },
+  "thurbox_commit": "1f9bd654db4209b1b5832248c5c444c627acd178",
+  "hosts": [
+    "tmux",
+    "herdr",
+    "rmux",
+    "thurbox"
+  ],
+  "reps": 5,
+  "warmup": 1,
+  "session_command": [
+    "codex",
+    "--dangerously-bypass-hook-trust",
+    "Reply with one short word."
+  ],
+  "shell": "/bin/sh",
+  "input_echo_definition": "8-byte marker sent in one write; time until seen in client output",
+  "records": [
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        33.279345,
+        29.399903,
+        29.700216,
+        35.572227,
+        38.674383
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.3332936139575551,
+      "pss_mib_including_agent": 177.2724609375,
+      "pss_by_process_mib": {
+        "tmux: server": 2.140625,
+        "codex": 173.671875,
+        "tmux: client": 1.4599609375
+      },
+      "rep": 0,
+      "warmup": true,
+      "load1": 0.1,
+      "load1_end": 0.17
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        31.101653,
+        35.753817,
+        36.769579,
+        44.895058,
+        36.860885
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.6664692089319917,
+      "pss_mib_including_agent": 196.3515625,
+      "pss_by_process_mib": {
+        "herdr": 22.96484375,
+        "codex": 173.38671875
+      },
+      "rep": 0,
+      "warmup": true,
+      "load1": 0.17,
+      "load1_end": 0.24
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        28.367335,
+        31.777479,
+        38.927235,
+        37.665803,
+        37.088775
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.3332948583329426,
+      "pss_mib_including_agent": 187.6123046875,
+      "pss_by_process_mib": {
+        "rmux": 14.0849609375,
+        "codex": 173.52734375
+      },
+      "rep": 0,
+      "warmup": true,
+      "load1": 0.24,
+      "load1_end": 0.22
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        73.544641,
+        42.276443,
+        43.60991,
+        41.401967,
+        87.850868
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.9998914832148178,
+      "pss_mib_including_agent": 202.9443359375,
+      "pss_by_process_mib": {
+        "tmux: server": 1.923828125,
+        "sh": 3.0810546875,
+        "codex": 175.59375,
+        "thurbox": 19.34375,
+        "sleep": 1.7197265625,
+        "tmux: client": 1.2822265625
+      },
+      "thurbox_hook_state": "done",
+      "rep": 0,
+      "warmup": true,
+      "load1": 0.22,
+      "load1_end": 0.27
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        31.413355,
+        34.99359,
+        45.404275,
+        44.432397,
+        35.823679
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.666589312319727,
+      "pss_mib_including_agent": 195.78125,
+      "pss_by_process_mib": {
+        "herdr": 22.94140625,
+        "codex": 172.83984375
+      },
+      "rep": 1,
+      "warmup": false,
+      "load1": 0.27,
+      "load1_end": 0.41
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        32.952827,
+        29.05906,
+        38.135648,
+        39.097125,
+        46.546697
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.6665894411616085,
+      "pss_mib_including_agent": 187.923828125,
+      "pss_by_process_mib": {
+        "rmux": 14.060546875,
+        "codex": 173.86328125
+      },
+      "rep": 1,
+      "warmup": false,
+      "load1": 0.41,
+      "load1_end": 0.45
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        72.265179,
+        85.290672,
+        63.411453,
+        41.184845,
+        82.920304
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 2.333060363735471,
+      "pss_mib_including_agent": 203.408203125,
+      "pss_by_process_mib": {
+        "tmux: server": 1.9375,
+        "sh": 3.08203125,
+        "codex": 175.8515625,
+        "thurbox": 19.580078125,
+        "sleep": 1.732421875,
+        "tmux: client": 1.224609375
+      },
+      "thurbox_hook_state": "done",
+      "rep": 1,
+      "warmup": false,
+      "load1": 0.45,
+      "load1_end": 0.38
+    },
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        32.105808,
+        30.442,
+        36.42283,
+        38.326912,
+        36.65175
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.6665886435790459,
+      "pss_mib_including_agent": 176.5595703125,
+      "pss_by_process_mib": {
+        "tmux: server": 2.06640625,
+        "codex": 173.06640625,
+        "tmux: client": 1.4267578125
+      },
+      "rep": 1,
+      "warmup": false,
+      "load1": 0.38,
+      "load1_end": 0.43
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        32.791729,
+        29.985098,
+        36.711988,
+        39.223311,
+        36.135527
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.33329463160193235,
+      "pss_mib_including_agent": 187.3251953125,
+      "pss_by_process_mib": {
+        "rmux": 13.9501953125,
+        "codex": 173.375
+      },
+      "rep": 2,
+      "warmup": false,
+      "load1": 0.43,
+      "load1_end": 0.48
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        72.003773,
+        85.333857,
+        64.53278,
+        84.118852,
+        82.705007
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 2.666420818208482,
+      "pss_mib_including_agent": 202.482421875,
+      "pss_by_process_mib": {
+        "tmux: server": 1.9384765625,
+        "sh": 3.0849609375,
+        "codex": 175.10546875,
+        "thurbox": 19.349609375,
+        "sleep": 1.7783203125,
+        "tmux: client": 1.2255859375
+      },
+      "thurbox_hook_state": "done",
+      "rep": 2,
+      "warmup": false,
+      "load1": 0.48,
+      "load1_end": 0.4
+    },
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        33.255367,
+        30.128876,
+        30.980462,
+        38.115465,
+        35.966724
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.333295017183853,
+      "pss_mib_including_agent": 177.0693359375,
+      "pss_by_process_mib": {
+        "tmux: server": 2.107421875,
+        "codex": 173.52734375,
+        "tmux: client": 1.4345703125
+      },
+      "rep": 2,
+      "warmup": false,
+      "load1": 0.4,
+      "load1_end": 0.45
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        34.217103,
+        33.751235,
+        33.951593,
+        35.572105,
+        36.151471
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.333280179905996,
+      "pss_mib_including_agent": 196.18359375,
+      "pss_by_process_mib": {
+        "herdr": 22.94921875,
+        "codex": 173.234375
+      },
+      "rep": 2,
+      "warmup": false,
+      "load1": 0.45,
+      "load1_end": 0.5
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        71.878357,
+        84.142239,
+        75.293152,
+        87.776232,
+        83.415774
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.9997999906577084,
+      "pss_mib_including_agent": 203.017578125,
+      "pss_by_process_mib": {
+        "tmux: server": 1.8671875,
+        "sh": 3.091796875,
+        "codex": 175.69921875,
+        "thurbox": 19.296875,
+        "sleep": 1.8349609375,
+        "tmux: client": 1.2275390625
+      },
+      "thurbox_hook_state": "done",
+      "rep": 3,
+      "warmup": false,
+      "load1": 0.5,
+      "load1_end": 0.49
+    },
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        33.188135,
+        30.427151,
+        36.816377,
+        37.843072,
+        36.524902
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.9998924492437563,
+      "pss_mib_including_agent": 176.5908203125,
+      "pss_by_process_mib": {
+        "tmux: server": 2.1748046875,
+        "codex": 173.0,
+        "tmux: client": 1.416015625
+      },
+      "rep": 3,
+      "warmup": false,
+      "load1": 0.49,
+      "load1_end": 0.53
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        37.224655,
+        35.286211,
+        35.667865,
+        35.312569,
+        35.344598
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.9998840171105073,
+      "pss_mib_including_agent": 197.22265625,
+      "pss_by_process_mib": {
+        "herdr": 22.90234375,
+        "codex": 174.3203125
+      },
+      "rep": 3,
+      "warmup": false,
+      "load1": 0.53,
+      "load1_end": 0.49
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        35.355587,
+        37.997641,
+        37.82865,
+        38.171678,
+        38.300985
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.3333041726629172,
+      "pss_mib_including_agent": 188.3076171875,
+      "pss_by_process_mib": {
+        "rmux": 14.5146484375,
+        "codex": 173.79296875
+      },
+      "rep": 3,
+      "warmup": false,
+      "load1": 0.49,
+      "load1_end": 0.45
+    },
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        33.050146,
+        29.103445,
+        30.912641,
+        36.198975,
+        36.167761
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.33329413616358,
+      "pss_mib_including_agent": 177.2666015625,
+      "pss_by_process_mib": {
+        "tmux: server": 2.1044921875,
+        "codex": 173.73046875,
+        "tmux: client": 1.431640625
+      },
+      "rep": 4,
+      "warmup": false,
+      "load1": 0.45,
+      "load1_end": 0.5
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        28.91505,
+        33.744066,
+        35.460152,
+        45.291387,
+        35.593208
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.9998844566899835,
+      "pss_mib_including_agent": 195.765625,
+      "pss_by_process_mib": {
+        "herdr": 22.9609375,
+        "codex": 172.8046875
+      },
+      "rep": 4,
+      "warmup": false,
+      "load1": 0.5,
+      "load1_end": 0.46
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        26.232589,
+        30.606591,
+        38.506317,
+        46.279622,
+        36.96994
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.666589275657412,
+      "pss_mib_including_agent": 186.9267578125,
+      "pss_by_process_mib": {
+        "rmux": 14.0166015625,
+        "codex": 172.91015625
+      },
+      "rep": 4,
+      "warmup": false,
+      "load1": 0.46,
+      "load1_end": 0.58
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        71.4497,
+        84.612142,
+        73.627312,
+        84.379966,
+        84.429403
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 2.33305908223223,
+      "pss_mib_including_agent": 202.5,
+      "pss_by_process_mib": {
+        "tmux: server": 1.97265625,
+        "sh": 3.09375,
+        "codex": 175.1328125,
+        "thurbox": 19.31640625,
+        "sleep": 1.755859375,
+        "tmux: client": 1.228515625
+      },
+      "thurbox_hook_state": "done",
+      "rep": 4,
+      "warmup": false,
+      "load1": 0.58,
+      "load1_end": 0.56
+    },
+    {
+      "host": "herdr",
+      "underlying_multiplexer": "herdr",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        32.218988,
+        34.981958,
+        34.011652,
+        35.254428,
+        36.183981
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.333252684435087,
+      "pss_mib_including_agent": 197.515625,
+      "pss_by_process_mib": {
+        "herdr": 22.9375,
+        "codex": 174.578125
+      },
+      "rep": 5,
+      "warmup": false,
+      "load1": 0.56,
+      "load1_end": 0.6
+    },
+    {
+      "host": "rmux",
+      "underlying_multiplexer": "rmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        32.095827,
+        29.14773,
+        39.516938,
+        46.479966,
+        38.142224
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.9998828803858839,
+      "pss_mib_including_agent": 187.1240234375,
+      "pss_by_process_mib": {
+        "rmux": 14.2216796875,
+        "codex": 172.90234375
+      },
+      "rep": 5,
+      "warmup": false,
+      "load1": 0.6,
+      "load1_end": 0.63
+    },
+    {
+      "host": "thurbox",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": 0,
+          "observed_hook_state": "idle",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": 0,
+          "observed_hook_state": "working",
+          "has_thurbox_identity": true
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": 0,
+          "observed_hook_state": "done",
+          "has_thurbox_identity": true
+        }
+      ],
+      "input_echo_ms": [
+        72.632156,
+        86.409311,
+        84.119904,
+        82.952369,
+        84.783977
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 1.9997644017481762,
+      "pss_mib_including_agent": 202.921875,
+      "pss_by_process_mib": {
+        "tmux: server": 1.88671875,
+        "sh": 3.08984375,
+        "codex": 175.36328125,
+        "thurbox": 19.552734375,
+        "sleep": 1.728515625,
+        "tmux: client": 1.30078125
+      },
+      "thurbox_hook_state": "done",
+      "rep": 5,
+      "warmup": false,
+      "load1": 0.63,
+      "load1_end": 0.68
+    },
+    {
+      "host": "tmux",
+      "underlying_multiplexer": "tmux",
+      "agent": "codex",
+      "provider": "local Responses fixture",
+      "hooks": [
+        {
+          "event": "SessionStart",
+          "state": "idle",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "UserPromptSubmit",
+          "state": "working",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        },
+        {
+          "event": "Stop",
+          "state": "done",
+          "signal_exit": null,
+          "observed_hook_state": null,
+          "has_thurbox_identity": false
+        }
+      ],
+      "input_echo_ms": [
+        25.247489,
+        29.732808,
+        31.482716,
+        38.858484,
+        38.697042
+      ],
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": 0.3332946049425499,
+      "pss_mib_including_agent": 176.3369140625,
+      "pss_by_process_mib": {
+        "tmux: server": 2.0498046875,
+        "codex": 172.84765625,
+        "tmux: client": 1.439453125
+      },
+      "rep": 5,
+      "warmup": false,
+      "load1": 0.68,
+      "load1_end": 0.71
+    }
+  ],
+  "summary": {
+    "tmux": {
+      "input_echo_ms": {
+        "n": 25,
+        "median": 33.255367,
+        "p95": 38.697042,
+        "min": 25.247489,
+        "max": 38.858484
+      },
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": {
+        "n": 5,
+        "median": 0.333295017183853,
+        "p95": 0.9998924492437563,
+        "min": 0.33329413616358,
+        "max": 0.9998924492437563
+      },
+      "pss_mib_including_agent": {
+        "n": 5,
+        "median": 176.5908203125,
+        "p95": 177.2666015625,
+        "min": 176.3369140625,
+        "max": 177.2666015625
+      }
+    },
+    "herdr": {
+      "input_echo_ms": {
+        "n": 25,
+        "median": 35.312569,
+        "p95": 45.291387,
+        "min": 28.91505,
+        "max": 45.404275
+      },
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": {
+        "n": 5,
+        "median": 0.9998844566899835,
+        "p95": 1.333280179905996,
+        "min": 0.666589312319727,
+        "max": 1.333280179905996
+      },
+      "pss_mib_including_agent": {
+        "n": 5,
+        "median": 196.18359375,
+        "p95": 197.515625,
+        "min": 195.765625,
+        "max": 197.515625
+      }
+    },
+    "rmux": {
+      "input_echo_ms": {
+        "n": 25,
+        "median": 37.82865,
+        "p95": 46.479966,
+        "min": 26.232589,
+        "max": 46.546697
+      },
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": {
+        "n": 5,
+        "median": 0.666589275657412,
+        "p95": 0.9998828803858839,
+        "min": 0.33329463160193235,
+        "max": 0.9998828803858839
+      },
+      "pss_mib_including_agent": {
+        "n": 5,
+        "median": 187.3251953125,
+        "p95": 188.3076171875,
+        "min": 186.9267578125,
+        "max": 188.3076171875
+      }
+    },
+    "thurbox": {
+      "input_echo_ms": {
+        "n": 25,
+        "median": 82.952369,
+        "p95": 86.409311,
+        "min": 41.184845,
+        "max": 87.776232
+      },
+      "input_echo_timeouts": 0,
+      "idle_cpu_pct_one_core": {
+        "n": 5,
+        "median": 2.33305908223223,
+        "p95": 2.666420818208482,
+        "min": 1.9997644017481762,
+        "max": 2.666420818208482
+      },
+      "pss_mib_including_agent": {
+        "n": 5,
+        "median": 202.921875,
+        "p95": 203.408203125,
+        "min": 202.482421875,
+        "max": 203.408203125
+      }
+    }
+  },
+  "mock_requests": [
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    },
+    {
+      "path": "/v1/responses",
+      "model": "local-mock",
+      "stream": true
+    }
+  ]
+}

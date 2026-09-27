@@ -1,4 +1,82 @@
-# Benchmark: raw tmux vs Herdr vs thurbox
+# Multiplexer benchmark: four configurations (2026-09-27)
+
+This rerun compares standalone tmux, standalone Herdr, standalone RMUX, and
+Thurbox using tmux on one four-core NixOS machine. Each configuration ran on
+that same machine with isolated state. Thurbox using RMUX is pending validation
+and was not measured. The [method and machine caveats](benchmark-multiplexers/four-way-2026-09-27/method.md)
+record the pinned source and tools. Debian timing was unavailable under
+concurrent process churn; the local timed run remains pending amid other work.
+
+## Real Codex TUI and hook workload
+
+These measurements use an actual Codex TUI attached to each host, with inference
+served by a loopback Responses fixture. Five measured repetitions follow one
+warm-up. The fixture is the same for all hosts and is excluded from CPU and
+memory accounting; the Codex process is included. Input echo is the elapsed time
+from writing an eight-byte marker until it appears in the attached client.
+Values are median (p95); CPU is percent of one logical core and memory is PSS.
+
+| Metric | tmux | Herdr | RMUX | Thurbox (tmux) |
+|---|---:|---:|---:|---:|
+| Input echo, ms | 33.26 (38.70) | 35.31 (45.29) | 37.83 (46.48) | 82.95 (86.41) |
+| Idle CPU, % of one core | 0.33 (1.00) | 1.00 (1.33) | 0.67 (1.00) | 2.33 (2.67) |
+| PSS including Codex, MiB | 176.59 (177.27) | 196.18 (197.52) | 187.33 (188.31) | 202.92 (203.41) |
+
+No input echo timed out. The loopback fixture recorded 48 requests across the
+run. Each of the six Thurbox repetitions delivered `SessionStart`,
+`UserPromptSubmit`, and `Stop`; reading Thurbox's persisted hook state after
+each event showed `idle`, `working`, and `done`, respectively. The
+[raw TUI records](benchmark-multiplexers/four-way-2026-09-27/nixos/real-tui.json)
+include each event and echo sample. This workload is separate from the Python
+stand-in below; its latency and resource figures must not be combined with the
+stand-in's host-only figures.
+
+## Identical stand-in agent workload
+
+The same Python stand-in runs in every session. Host CPU and PSS exclude that
+agent but include the multiplexer, helper shells, and attached client. Results
+come from five measured repetitions after one retained warm-up on the same
+NixOS machine; values are median (p95). CPU is percent of one logical core,
+with values above 100% left uncapped. The
+[complete summary](benchmark-multiplexers/four-way-2026-09-27/nixos/synthetic/summary.md),
+[raw JSON](benchmark-multiplexers/four-way-2026-09-27/nixos/synthetic/results.json),
+and [raw CSV](benchmark-multiplexers/four-way-2026-09-27/nixos/synthetic/results.csv)
+cover creation, attach, resources, throughput, scrollback, typing, and survival.
+
+| Metric | tmux | Herdr | RMUX | Thurbox (tmux) |
+|---|---:|---:|---:|---:|
+| Create 50 sessions, s | 0.458 (0.462) | 2.776 (2.919) | 0.532 (0.541) | 1.782 (1.929) |
+| Attach to 50 sessions, ms | 14.3 (14.5) | 410 (433) | 13.1 (13.4) | 425 (583) |
+| 50 idle, no client: CPU % | 0 (0) | 22.3 (22.4) | 0 (0) | 0 (0) |
+| 50 idle, no client: PSS MiB | 2.44 (2.46) | 41.1 (41.1) | 11.5 (11.8) | 7.54 (7.58) |
+| 50 idle, client attached: CPU % | 0 (0) | 77.8 (121) | 0.10 (0.10) | 9.56 (9.86) |
+| 50 idle, client attached: PSS MiB | 9.75 (9.78) | 53.7 (53.8) | 17.3 (17.3) | 44.4 (53.9) |
+| 50 printing, client attached: CPU % | 6.17 (6.99) | 92.8 (113) | 10.9 (11.0) | 36.6 (37.7) |
+| Stand-in key echo, idle, ms | 1.05 (1.10) | 2.21 (2.34) | 1.30 (1.37) | 4.17 (5.14) |
+| Stand-in key echo, another busy, ms | 0.68 (0.88) | 0.46 (0.55) | 2.04 (11.1) | 2.18 (3.15) |
+| Last line of attached 50k-line burst, ms | 225 (225) | 159 (162) | 218 (219) | 560 (564) |
+| Stand-in commands running again after restart | 0 of 3 | 0 of 3 | 0 of 3 | 3 of 3 |
+
+All four hosts kept the burst's checked tail in order, showed no missing first
+view after attach, and lost no typed input. All three agents survived client
+death on every host and none survived server death. Herdr listed three sessions
+after a clean restart, but their stand-in commands were not running; Thurbox
+listed and relaunched all three. Standalone RMUX did not restore them. Thurbox
+therefore offers command restoration in this test, with higher attach, visible
+burst, attached CPU, and typing costs than standalone tmux and RMUX.
+
+The 65-second N=20 idle check found Herdr at 9.15% (p95 9.35%) of one core;
+tmux, RMUX, and Thurbox registered 0% in the sampled host process set. A
+short-lived Thurbox automation tick can escape that accounting, as the
+[method](benchmark-multiplexers/four-way-2026-09-27/method.md) explains. The
+busy-typing RMUX p95 was 11.1 ms against its 2.04 ms median. The attached
+Thurbox PSS reached 53.9 MiB at p95 against a 44.4 MiB median. These spreads
+matter when judging a host from a single run.
+
+## Earlier three-configuration results (2026-09-23–25)
+
+The historical results below were measured on earlier source revisions and do
+not supply cells in the current four-configuration comparison.
 
 How the three compare as the thing your coding agents live in: starting
 sessions, holding them, showing them, typing into them, and surviving a crash.
@@ -17,7 +95,7 @@ binary), **thurbox** built in release from `main` at `0a7c8ece`. Every number
 is a median over 5 repetitions with the worst of them (p95) in brackets, unless
 it says otherwise. Raw samples: [`benchmark-multiplexers/`](benchmark-multiplexers/).
 
-## The short version
+### The short version
 
 | | tmux | Herdr | thurbox |
 |---|---|---|---|
@@ -90,9 +168,9 @@ is busy), draining a burst (127 ms against 215), and scrollback held (5 500
 lines of the burst against 2 000–2 500). Its costs grow with the session count,
 even at rest.
 
-## Results by scenario
+### Results by scenario
 
-### Create N sessions
+#### Create N sessions
 
 From nothing running, one after another. N=1 includes starting the host.
 
@@ -110,7 +188,7 @@ the agents even start loading. None of the three slows down much as sessions
 pile up — thurbox's cost is flat per session, and flat high. Herdr's first
 session includes starting its server.
 
-### Attach, detach, reattach
+#### Attach, detach, reattach
 
 | N | metric | tmux | Herdr | thurbox |
 |---|---|---|---|---|
@@ -127,7 +205,7 @@ thurbox and Herdr both take a noticeable fraction of a second with many
 sessions, Herdr growing faster with N. thurbox's detach is its Quit (Ctrl+Q) —
 the interface exits and tmux keeps the sessions.
 
-### Memory and CPU
+#### Memory and CPU
 
 The host's processes only (see *Accounting*). "Output" is every session
 printing 10 lines a second; attached, the client shows session 1.
@@ -159,7 +237,7 @@ Herdr costs a real slice of a core that grows with every session, even when
 nothing is happening. Attached, thurbox is the heaviest on memory and sits
 between the other two on CPU.
 
-### Throughput: a 50 000-line burst
+#### Throughput: a 50 000-line burst
 
 One session prints 50 000 lines of about 107 bytes (5.4 MB) as fast as its pty
 takes them.
@@ -183,7 +261,7 @@ agent is never slowed by any of the three; Herdr drains fastest, and thurbox
 shows the end of a burst sooner than `tmux attach` does, at about 1.6 times
 the CPU.
 
-### Scrollback
+#### Scrollback
 
 After one 50 000-line burst, headless.
 
@@ -201,7 +279,7 @@ asked for, so a script sees less than it holds (the ~5 500 is from its own
 scroll metrics). For a user: none of them keeps a long build log by default;
 thurbox's CLI is the slowest to hand it over.
 
-### Keystroke to echo
+#### Keystroke to echo
 
 Through the attached client, 500 keys per cell (5 repetitions of 100), sent
 60–100 ms apart at random, send to send, so every host gets the same typing
@@ -218,7 +296,7 @@ and 42 ms. For a user: 1–2 ms is imperceptible; 25–48 ms is the difference b
 a local shell and a slightly laggy remote one, and it is there on every key.
 Herdr getting faster while another session is busy was not investigated.
 
-### Survival
+#### Survival
 
 Three sessions.
 
@@ -238,7 +316,7 @@ for, whatever the command is. For a user: after a reboot, thurbox puts your
 sessions back; Herdr puts back the ones running an agent it knows; tmux puts
 back nothing.
 
-## What this points at in thurbox
+### What this points at in thurbox
 
 Recorded, not fixed here — the benchmark does not tune what it measures. Each
 can be re-measured with the scenario named; the two revisits below say what
@@ -267,7 +345,7 @@ has been done since.
 5. **`session capture` start-up** (`scrollback`): 47 ms to hand back 2 500
    lines, against 8 for `tmux capture-pane`.
 
-## Revisited: a session nobody is looking at keeps no grid (2026-09-23)
+### Revisited: a session nobody is looking at keeps no grid (2026-09-23)
 
 The question: *can the interface lazily parse sessions that are not on
 screen?* The answer is yes, and the design and its reasons are ADR-P27 in
@@ -342,7 +420,7 @@ history rows at 200x50 (ADR-P27 has the method):
   behaviour. psmux (Windows) cannot hand a pane back in step with its output,
   so sessions there keep their grids either way.
 
-## Revisited: a keystroke's echo, and session creation (2026-09-24)
+### Revisited: a keystroke's echo, and session creation (2026-09-24)
 
 The two costs a user feels most — typing latency and creating sessions — worked
 on, and measured the way everything above was: two complete runs of every
@@ -509,7 +587,7 @@ checked output tail was intact. Herdr reached the screen in 158 ms in the after
 run, and tmux in 334 ms; neither number says how much CPU or memory that
 latency cost.
 
-## What was measured, and why these
+### What was measured, and why these
 
 The question is "which host costs me what, for the work every one of them
 does". So each scenario is something all three do, done the way each one's own
@@ -539,7 +617,7 @@ Left out, on purpose:
   the agent: its startup, its redraw rate, its memory. The stand-in is the
   constant.
 
-## Method
+### Method
 
 **The stand-in agent** (`scripts/bench/agent.py`) is one Python process per
 session, identical on every host. It writes the monotonic time it started to
@@ -602,7 +680,7 @@ before them ran under `nice -n 10`. Every sample in the raw results carries the
 also records it when each sample ends (`load1_end`), which the latency re-run
 below has and the other scenarios' committed data predates.
 
-## The machine
+### The machine
 
 A NixOS 26.05 machine with a 4-core Intel Core i5-6500T (2.5 GHz, one thread
 per core, `powersave` governor), 15.5 GiB of RAM, Linux 6.18, dedicated to the
@@ -611,7 +689,7 @@ the harness and the stand-in. thurbox reports itself as `0.0.0-dev`, which is
 what a build from a checkout is; the commit it was built from is recorded in
 the results.
 
-## Threats to validity
+### Threats to validity
 
 - **One machine, and an old one.** Four cores of a 2015 desktop CPU with the
   `powersave` governor. A faster machine shrinks every absolute number; it
@@ -663,7 +741,7 @@ the results.
   each echo, so a slower host was typed at more slowly. The fixed schedule
   moved no median by more than 1.4 ms (thurbox idle: 24.0 then 25.4).
 
-## Re-running it
+### Re-running it
 
 ```sh
 nix develop -c just bench-multiplexers                       # all of it

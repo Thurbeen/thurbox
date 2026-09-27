@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Benchmark raw tmux vs Herdr vs thurbox — the one command.
+# Benchmark raw tmux, Herdr, RMUX and Thurbox (tmux) — the one command.
 #
 #   scripts/bench/run.sh                       # fetch, build, run every scenario
 #   scripts/bench/run.sh --quick --reps 1      # try the harness end to end
 #   scripts/bench/run.sh --scenarios latency   # one scenario (see run.py --help)
 #
 # Everything it creates lives under ${BENCH_CACHE:-~/.cache/thurbox-bench}:
-# the pinned Herdr binary, the sandboxes, and results-<timestamp>/. Nothing is
+# the pinned Herdr and RMUX binaries, the sandboxes, and results-<timestamp>/. Nothing is
 # installed system-wide, and no server it starts outlives the run.
 #
 # It builds thurbox in release from THIS checkout (nice -n 10), then runs the
@@ -28,6 +28,7 @@ if [ -n "${THURBOX_GATE:-}" ] && [ -z "${THURBOX_PERF_ALLOW_IN_GATE:-}" ]; then
 fi
 
 HERDR_VERSION=v0.9.1
+RMUX_VERSION=v0.10.0
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cache=${BENCH_CACHE:-$HOME/.cache/thurbox-bench}
@@ -35,7 +36,8 @@ herdr_dir=$cache/herdr-$HERDR_VERSION-$(uname -m)
 export BENCH_CACHE=$cache
 
 build=1
-hosts=tmux,herdr,thurbox
+hosts=tmux,herdr,rmux,thurbox
+rmux_bin=
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -49,6 +51,15 @@ while [ $# -gt 0 ]; do
             args+=("$1" "${2:-}")
             shift
             ;;
+        --rmux=*)
+            rmux_bin=${1#--rmux=}
+            args+=("$1")
+            ;;
+        --rmux)
+            rmux_bin=${2:-}
+            args+=("$1" "${2:-}")
+            shift
+            ;;
         *) args+=("$1") ;;
     esac
     shift
@@ -59,10 +70,12 @@ case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
         asset=herdr-linux-x86_64
         sha256=2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
+        rmux_sha256=1bec11eff08c3313c3a400196e7a93d00b8ad4a24f81ef13debb03355c2696c5
         ;;
     Linux-aarch64)
         asset=herdr-linux-aarch64
         sha256=f4ccf4de745f2cb9a39a983e9ba3703dad50ec2a58dea83026ceab721bbd8d9e
+        rmux_sha256=7e916560ea0fb90864b8c24e5d0f81b4e3e0b013b8aad5ab53839d7e8e5e1926
         ;;
     *)
         echo "run.sh: the harness reads /proc, so it runs on Linux only" >&2
@@ -93,14 +106,44 @@ if [ "$build" = 1 ] && [[ ",$hosts," == *,thurbox,* ]]; then
     (cd "$repo" && nice -n 10 cargo build --release --bin thurbox --bin thurbox-cli)
 fi
 
-command -v tmux >/dev/null || {
-    echo "run.sh: tmux is not on PATH (nix develop provides it)" >&2
-    exit 2
-}
+if [[ ",$hosts," == *,rmux,* ]]; then
+    if [ -z "$rmux_bin" ]; then
+        rmux_asset=rmux-${RMUX_VERSION#v}-linux-$(uname -m).tar.gz
+        rmux_archive=$cache/$rmux_asset
+        rmux_dir=$cache/${rmux_asset%.tar.gz}
+        mkdir -p "$cache"
+        if [ ! -f "$rmux_archive" ]; then
+            curl -fsSL -o "$rmux_archive.part" \
+                "https://github.com/Helvesec/rmux/releases/download/$RMUX_VERSION/$rmux_asset"
+            mv "$rmux_archive.part" "$rmux_archive"
+        fi
+        echo "$rmux_sha256  $rmux_archive" | sha256sum -c --quiet -
+        tar -xzf "$rmux_archive" -C "$cache"
+        rmux_bin=$rmux_dir/bin/rmux
+        export PATH="$rmux_dir/bin:$PATH"
+    fi
+    command -v "$rmux_bin" >/dev/null || {
+        echo "run.sh: rmux is not executable: $rmux_bin" >&2
+        exit 2
+    }
+    "$rmux_bin" -V
+fi
+
+rmux_args=()
+if [[ ",$hosts," == *,rmux,* ]]; then
+    rmux_args=(--rmux "$rmux_bin")
+fi
+
+if [[ ",$hosts," == *,tmux,* ]] || [[ ",$hosts," == *,thurbox,* ]]; then
+    command -v tmux >/dev/null || {
+        echo "run.sh: tmux is not on PATH (nix develop provides it)" >&2
+        exit 2
+    }
+fi
 
 if command -v python3 >/dev/null; then
-    exec python3 "$repo/scripts/bench/run.py" "${herdr_args[@]}" "${args[@]}"
+    exec python3 "$repo/scripts/bench/run.py" "${herdr_args[@]}" "${rmux_args[@]}" "${args[@]}"
 fi
 # The harness is standard-library Python; borrow an interpreter if there is none.
 exec nix shell nixpkgs#python3 -c python3 "$repo/scripts/bench/run.py" \
-    "${herdr_args[@]}" "${args[@]}"
+    "${herdr_args[@]}" "${rmux_args[@]}" "${args[@]}"
