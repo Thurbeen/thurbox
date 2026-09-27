@@ -394,16 +394,24 @@ pub fn spawn_session_headless_with_registry(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
-    let backend_id = launch_window(
-        backends,
-        &backend_type,
-        &stamp,
-        &req.name,
-        &command,
-        &args,
-        &launch_cwd,
-        &config.env,
-    )?;
+    let backend = backends
+        .get(&backend_type)
+        .ok_or_else(|| format!("no registered backend for '{backend_type}'"))?;
+    let backend_id = backend
+        .spawn_headless(
+            &stamp,
+            &req.name,
+            &command,
+            &args,
+            Some(&launch_cwd),
+            &config.env,
+        )
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                true => format!("{e}"),
+                false => format!("Failed to spawn window on '{backend_type}': {e:#}"),
+            },
+        )?;
 
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
@@ -526,31 +534,6 @@ fn missing_agent_warning(
         }
         .missing_message(),
     )
-}
-
-/// Open the session's window, on its host or here, and return the new pane's
-/// id.
-fn launch_window(
-    backends: &crate::agent::BackendRegistry,
-    backend_type: &str,
-    stamp: &str,
-    name: &str,
-    command: &str,
-    args: &[String],
-    cwd: &std::path::Path,
-    env: &std::collections::HashMap<String, String>,
-) -> Result<String, String> {
-    let backend = backends
-        .get(backend_type)
-        .ok_or_else(|| format!("no registered backend for '{backend_type}'"))?;
-    backend
-        .spawn_headless(stamp, name, command, args, Some(cwd), env)
-        .map_err(
-            |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                true => format!("{e}"),
-                false => format!("Failed to spawn window on '{backend_type}': {e:#}"),
-            },
-        )
 }
 
 /// Tear down the window a spawn opened but could not persist as a row — only
