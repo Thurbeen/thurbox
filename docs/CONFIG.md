@@ -336,6 +336,9 @@ preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
+When creation is delegated to a host's own Thurbox CLI, that CLI advertises
+whether it accepts a multiplexer choice. Older compatible CLIs can still use
+their platform default; a non-default choice requires updating the host CLI.
 
 The resolved choice is recorded in each new session's `backend_type`. Existing
 `local-tmux`, `ssh:<host>`, and `wsl:<distro>` rows keep their original

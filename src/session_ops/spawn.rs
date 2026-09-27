@@ -595,22 +595,31 @@ fn record_fork_point(db: &Database, session_id: SessionId, req: &SpawnRequest) {
 
 /// Arguments that preserve the resolved choice on a compatible host CLI.
 fn delegated_mux_option(
-    req: &SpawnRequest,
     choice: &crate::session::BackendChoice,
     host: &HostDef,
-) -> Vec<String> {
-    // Older compatible host CLIs do not know this flag. Their existing
-    // platform default already matches an unqualified request; a deliberate
-    // override or non-default host preference needs the new CLI contract.
+    cli: &super::host_cli::CliInfo,
+) -> Result<Vec<String>, String> {
+    if cli.multiplexer_choice {
+        return Ok(vec![
+            "--multiplexer".into(),
+            choice.multiplexer.name().into(),
+        ]);
+    }
+    // An older compatible CLI predates both this flag and multiplexer
+    // settings. It can only honour its platform default.
     let platform_default = if host.is_windows() {
         crate::session::Multiplexer::Psmux
     } else {
         crate::session::Multiplexer::Tmux
     };
-    if req.multiplexer.is_none() && choice.multiplexer == platform_default {
-        Vec::new()
+    if choice.multiplexer == platform_default {
+        Ok(Vec::new())
     } else {
-        vec!["--multiplexer".into(), choice.multiplexer.name().into()]
+        Err(format!(
+            "host '{}' has an older thurbox-cli that cannot select {}; update that CLI before creating this session",
+            host.name,
+            choice.multiplexer.name()
+        ))
     }
 }
 
@@ -631,6 +640,7 @@ fn spawn_delegated(
     report: &dyn Fn(SpawnPhase),
 ) -> Result<SpawnResult, String> {
     let backend = &choice.backend_type;
+    let mux_option = delegated_mux_option(choice, host, cli)?;
     // The host validates the parent against its own database; a parent that
     // lives anywhere else is refused here, before any round trip, with a
     // message that says where it lives.
@@ -686,7 +696,7 @@ fn spawn_delegated(
     if let Some(agent) = &req.agent {
         args.extend(["--agent".to_string(), agent.clone()]);
     }
-    args.extend(delegated_mux_option(&req, choice, host));
+    args.extend(mux_option);
     if let Some(branch) = &req.worktree_branch {
         args.extend(["--worktree-branch".to_string(), branch.clone()]);
     }
@@ -1536,13 +1546,22 @@ mod tests {
         };
         let choice = crate::session::BackendChoice::resolve(Some(host.clone()), None, None)
             .expect("default choice");
-        assert!(delegated_mux_option(&req("demo"), &choice, &host).is_empty());
-        let mut explicit = req("demo");
-        explicit.multiplexer = Some("tmux".into());
+        let old_cli = crate::session_ops::host_cli::fake::cli();
+        assert!(delegated_mux_option(&choice, &host, &old_cli)
+            .unwrap()
+            .is_empty());
+        let mut new_cli = old_cli.clone();
+        new_cli.multiplexer_choice = true;
         assert_eq!(
-            delegated_mux_option(&explicit, &choice, &host),
+            delegated_mux_option(&choice, &host, &new_cli).unwrap(),
             ["--multiplexer", "tmux"]
         );
+        let non_default =
+            crate::session::BackendChoice::resolve(Some(host.clone()), Some("herdr"), None)
+                .expect("non-default choice");
+        assert!(delegated_mux_option(&non_default, &host, &old_cli)
+            .unwrap_err()
+            .contains("older thurbox-cli"));
     }
 
     #[test]
