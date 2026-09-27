@@ -778,7 +778,7 @@ impl App {
     /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         let echo = self.expect_echo(surface);
-        let submitted = bytes == [b'\r'] && self.terminals.program_key(surface).is_none();
+        let submitted = bytes.as_slice() == b"\r" && self.terminals.program_key(surface).is_none();
         let prior = submitted
             .then(|| self.snapshots.codex_submission_report(surface))
             .flatten();

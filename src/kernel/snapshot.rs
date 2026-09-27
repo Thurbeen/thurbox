@@ -1179,9 +1179,19 @@ impl SnapshotStore {
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            let stamped = now_ms();
-            self.hook_state_at.insert(row.id.clone(), stamped);
-            row.status = derive_state(Some(&event.state), Some(stamped), None);
+            let stamped = match database.load_hook_state(id) {
+                Ok(Some(hook)) => hook.state_at,
+                Ok(None) | Err(_) => {
+                    self.last_data_version = None;
+                    continue;
+                }
+            };
+            if let Some(stamped) = stamped {
+                self.hook_state_at.insert(row.id.clone(), stamped);
+            } else {
+                self.hook_state_at.remove(&row.id);
+            }
+            row.status = derive_state(Some(&event.state), stamped, None);
             row.hook_state = Some(event.state);
             row.detected_agent = None;
             applied += 1;
@@ -2329,6 +2339,56 @@ mod tests {
                 .as_deref(),
             Some("working")
         );
+    }
+
+    #[test]
+    fn remote_codex_report_uses_its_persisted_timestamp_for_retirement() {
+        let database = Database::open_in_memory().expect("db");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "remote-codex".into(),
+            agent: "codex".into(),
+            backend_id: "%7".into(),
+            backend_type: "ssh:fixture".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("persist");
+        database.set_hook_state(row.id, "working").expect("working");
+        // A future stamp also models repeated reports within one millisecond:
+        // set_hook_state keeps each stamp distinct even when the clock has not moved.
+        let future = crate::sync::current_time_millis() as i64 + 60_000;
+        database
+            .conn_ref()
+            .execute(
+                "UPDATE sessions SET hook_state_at = ?1 WHERE id = ?2",
+                rusqlite::params![future, row.id.to_string()],
+            )
+            .expect("seed later stamp");
+        let mut store = SnapshotStore::with_database(database);
+        assert_eq!(
+            store.apply_hook_states(
+                vec![("ssh:fixture".into(), "%7".into(), "idle".into())],
+                Instant::now(),
+            ),
+            1
+        );
+        let old = store
+            .codex_submission_report(&row.id.to_string())
+            .expect("cached report");
+        assert!(store
+            .database
+            .as_ref()
+            .unwrap()
+            .clear_hook_state_if_unchanged(row.id, &old)
+            .expect("retire remote report"));
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
