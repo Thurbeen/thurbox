@@ -1,6 +1,6 @@
 ---
 name: thurbox-remote-hosts
-description: Remote SSH and WSL sessions in thurbox: hosts.toml schema, the TmuxTransport abstraction, psmux/Windows-host divergences, remote worktrees, shared sessions (ADR-24) and host CLI delegation, agent-config path rewriting, remote hook status delivery via tmux pane options, and remote teardown. Use when working on remote/WSL/Windows hosts, ssh transport, psmux, host provisioning or remote session status.
+description: Remote SSH and WSL sessions in thurbox: hosts.toml schema, the MuxTransport launch seam, psmux/Windows-host divergences, remote worktrees, shared sessions (ADR-24) and host CLI delegation, agent-config path rewriting, remote hook status delivery via tmux pane options, and remote teardown. Use when working on remote/WSL/Windows hosts, ssh transport, psmux, host provisioning or remote session status.
 ---
 
 # Thurbox remote SSH and WSL hosts
@@ -65,28 +65,15 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
-How it works: `TmuxBackend` provides the shared transport and control-mode
-protocol; native Windows psmux uses a separately registered `PsmuxBackend`
-for its lifecycle capabilities and routing identity. `TmuxBackend` is transport-neutral
-(`agent::transport::TmuxTransport`). The local backend launches
-`<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
-a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
-(`TmuxTransport::Wsl`). `wsl.exe` forwards whitespace-free tokens to the
-in-distro shell like `ssh` does, so the same POSIX quoting
-(`shell::posix_quote`) and the byte-identical control-mode protocol
-(`control_mode.rs`) apply — only the one-time process launch differs. (An arg
-*containing whitespace* is preserved as one word, so multi-word `sh -c` scripts
-go through `wsl.exe --exec` instead — see `shell::wsl_command` /
-`git::host_shell_c`.) The local `DEFAULT_MUX` is **`tmux` on
-Linux/macOS and `psmux` on Windows** — psmux is a native-Windows, drop-in tmux
-clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
-pane-id (`%N`) / `-L` socket model, so the wire helpers are shared rather than
-forked (a remote SSH host can also pin
-`multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
-control-mode protocol is byte-identical over either transport/binary, with
-**psmux divergences** (verified against psmux 3.3.6, each branched on
-`TmuxTransport::uses_psmux()`; spawning needs psmux ≥ 3.3.7, asked of the
-server by `check_psmux_version` — ADR-13 has why) — psmux lacks `send-keys -H`, does not join
+How it works: `TmuxBackend` and `PsmuxBackend` each implement
+`SessionBackend` and own `TmuxTransport` or `PsmuxTransport`. The common
+`MuxBackend` handles pane bookkeeping and control connection I/O. `MuxTransport`
+shares local, SSH, and WSL command launching only. A WSL host runs Linux tmux;
+a native Windows host runs psmux. The local `DEFAULT_MUX` is `tmux` on
+Linux/macOS and `psmux` on Windows. The control stream has common framing, but
+protocol behavior differs by mux binary. For psmux (verified against 3.3.6),
+spawning needs psmux ≥ 3.3.7; the backend checks the server version before
+birthing a pane (ADR-13). Psmux lacks `send-keys -H`, does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
 keystrokes from the primitives psmux does support (`send_keys_commands`), folds

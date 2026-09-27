@@ -25,7 +25,7 @@
 
 use std::path::Path;
 
-use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
+use crate::agent::transport::{MuxTransport, DEFAULT_MUX};
 
 /// How many search directories a one-line message names before it summarizes
 /// the rest. A `PATH` of thirty entries is ordinary; a message that prints all
@@ -280,8 +280,8 @@ fn searched(binary: &str) -> String {
 /// Every other io error keeps `context` and its own text: a permission error or
 /// a broken pipe is not something an install fixes, and dressing one as a
 /// missing binary sends the reader somewhere there is nothing to find.
-pub fn launch_failure(
-    transport: &TmuxTransport,
+pub fn launch_failure<T: MuxTransport>(
+    transport: &T,
     context: &'static str,
     err: std::io::Error,
 ) -> anyhow::Error {

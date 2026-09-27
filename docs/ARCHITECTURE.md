@@ -422,8 +422,8 @@ regardless of which backend is active.
 **Why**: Keeping session lifecycle behind a trait boundary leaves
 the app layer completely backend-agnostic. The backends today are
 local tmux, local Windows psmux, and explicit tmux and psmux routes for each
-SSH host (sharing `TmuxTransport`; see ADR-13). The seam means
-the transport can evolve without touching `App`, `Session`, or any UI
+SSH host (using separate tmux and psmux transports; see ADR-13). The seam means
+the launch path can evolve without touching `App`, `Session`, or any UI
 code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
@@ -463,7 +463,7 @@ code.
 ## ADR-12: Local tmux as default backend
 
 **Choice**: On POSIX the default `SessionBackend` is `TmuxBackend`
-parameterized over its `Local` transport (`TmuxTransport::Local`)
+with `TmuxTransport::Local`
 and registered as `local-tmux`, using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
 through tmux control mode (`-C`). (The transport abstraction that
@@ -626,21 +626,15 @@ restored — it is an event, not state.
 
 ## ADR-13: Off-local sessions via an SSH / WSL tmux transport
 
-**Choice**: Run agent sessions on a remote host (over SSH) or in a
-local WSL distro (via `wsl.exe`) by launching the same tmux
-control-mode protocol behind a launch prefix. `LocalTmuxBackend` is
-generalized into `TmuxBackend { transport, socket, session, name }`
-where `transport: TmuxTransport` is `Local` (a bare
-`Command::new("tmux")`), `Ssh { destination, ssh_opts, mux }`
-(`ssh <dest> <mux> …`), or `Wsl { distro, mux }`
-(`wsl.exe -d <distro> <mux> …`). `mux` is the host multiplexer binary
-(`tmux` by default, or `psmux` for a Windows SSH host; a WSL distro
-runs `tmux`). The transport builds the `Command`; control-mode framing and
-reader/writer threads are shared, while `PsmuxBackend` owns psmux lifecycle
-capabilities and command differences (see below). The SSH and WSL
-arms share `TmuxTransport::prefixed`, since both join + shell-interpret
-the trailing POSIX-quoted tokens identically; only the launcher prefix
-differs.
+**Choice**: `TmuxBackend` and `PsmuxBackend` are distinct `SessionBackend`
+implementations. `TmuxTransport` runs tmux locally, over SSH, or inside WSL;
+`PsmuxTransport` runs native psmux locally or over SSH. Their types fix the
+mux binary. `MuxTransport` shares command construction for local execution
+and the SSH/WSL launch prefixes. `MuxBackend` holds common pane bookkeeping,
+control connection ownership, and process I/O; protocol differences such as
+attach responses, command lists, pane options, paste, and version gates are
+selected by the concrete mux protocol. A host's execution location cannot
+silently change its protocol.
 
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
@@ -776,9 +770,8 @@ stalls. Worth the most manual testing.
 
 **Rejected**:
 
-- *A `TmuxTransport` trait with `Box<dyn>`* — an enum with two
-  variants is simpler; promote to a trait only if a third transport
-  (e.g. container exec) appears.
+- *A boxed transport trait* — concrete transport types keep the mux binary
+  fixed, while `MuxTransport` shares only command launching.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
@@ -798,9 +791,8 @@ stalls. Worth the most manual testing.
 
 ### psmux divergences from tmux
 
-The control-mode protocol is byte-identical over either transport, but the
-**psmux** binary diverges from tmux in five places (all verified against psmux
-3.3.6, each branched on `TmuxTransport::uses_psmux()`). The
+The control stream uses common framing, but **psmux** has different responses
+and capabilities (measured against psmux 3.3.6). The
 `thurbox-remote-hosts` skill keeps a summary; this is the reference to read
 before touching that path.
 
@@ -823,7 +815,7 @@ before touching that path.
 - **`new-window` trailing tokens are not joined** (psmux keeps only the first
   and drops the rest — the agent launched with **no args**) and **`new-window
   -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
-  `TmuxBackend::psmux_window_powershell` folds env + command into **one token**
+  `MuxBackend::psmux_window_powershell` folds env + command into **one token**
   of PowerShell (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs
   it via `powershell -NoLogo -Command`, whose Win32 command line strips
   unescaped double quotes, hence PowerShell single-quoting throughout;

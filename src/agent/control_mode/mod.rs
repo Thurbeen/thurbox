@@ -1,12 +1,7 @@
-//! Shared tmux control mode I/O infrastructure.
+//! Control stream I/O and framing shared by tmux and psmux.
 //!
-//! Both halves of control mode live here: the transport-agnostic protocol
-//! (notification parsing, octal decoding, the per-pane reader/writer and the
-//! psmux encodings) and the live `ControlMode` connection itself (the `-C`
-//! child process, its reader thread, the FIFO response queue and the psmux
-//! hook poller). `TmuxBackend` drives one `ControlMode` per backend across its
-//! local and SSH/WSL (`TmuxTransport`) transports — the wire protocol is
-//! identical over either.
+//! The transport launches the client; its protocol selects attach-response
+//! draining, block validation, subscriptions, and paste encoding.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use tracing::{debug, warn};
 
-use super::transport::TmuxTransport;
+use super::transport::MuxTransport;
 
 /// Per-pane output channel capacity. Sized large enough to buffer heavy output
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
@@ -656,15 +651,28 @@ fn psmux_send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
 /// it normalizes CRLF for ConPTY, writes the markers contiguously with the text,
 /// and adds them only when the pane's app actually enabled bracketed paste.
 /// Verified present since psmux 3.3.6.
-#[derive(Debug, Clone)]
+type PasteCommand = dyn Fn(&str, &[&str]) -> std::process::Command + Send + Sync;
+
+#[derive(Clone)]
 pub struct PsmuxPaste {
-    transport: TmuxTransport,
+    command: Arc<PasteCommand>,
     socket: String,
 }
 
+impl std::fmt::Debug for PsmuxPaste {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PsmuxPaste")
+            .field("socket", &self.socket)
+            .finish()
+    }
+}
+
 impl PsmuxPaste {
-    pub fn new(transport: TmuxTransport, socket: String) -> Self {
-        Self { transport, socket }
+    pub fn new<T: MuxTransport>(transport: T, socket: String) -> Self {
+        debug_assert!(T::PROTOCOL.needs_psmux_encoding());
+        let command =
+            Arc::new(move |socket: &str, args: &[&str]| transport.mux_command(socket, args));
+        Self { command, socket }
     }
 
     /// Deliver `text` to `pane_id` as a paste. Blocks until psmux has applied it
@@ -693,9 +701,7 @@ impl PsmuxPaste {
     fn send_one(&self, pane_id: &str, text: &str) -> Result<()> {
         let args = psmux_send_paste_args(pane_id, text);
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = self
-            .transport
-            .tmux_command(&self.socket, &argv)
+        let out = (self.command)(&self.socket, &argv)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -1105,30 +1111,10 @@ const SUB_EVENTS_CAP: usize = 256;
 /// status latency.
 const PSMUX_HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// Whether this multiplexer answers the `attach-session` carried on argv with
-/// a `%begin`/`%end` block of its own.
-///
-/// tmux does, and [`ControlMode::drain_implicit_attach_response`] must consume
-/// it before any waiter exists. **psmux does not** (measured against psmux
-/// 3.3.6 — ADR-13): its command counter starts at 1 for the *client's* first
-/// command, so the attach is never numbered at all.
-///
-/// ```text
-/// $ printf 'display-message -p first\ndisplay-message -p second\n' \
-///     | psmux -L s -C attach-session -t thurbox
-/// %begin 1789657328 1 1     <- the first command sent, not the attach
-/// %begin 1789657328 2 1
-/// ```
-///
-/// Draining there waits on a `read_until` for a block that never comes, which
-/// is the whole of issue #1168's headline symptom: `ensure_ready` never
-/// returns, so the discovery worker never reports, `Terminals::discovered`
-/// stays empty, and **every** session renders "session has no pane yet" with
-/// nothing logged — the interface never attaches a single pane on Windows. The
-/// blocking read ends only when psmux closes the pipe, which is the other face
-/// of it ("control mode closed before sending its implicit attach response").
-fn sends_implicit_attach_response(transport: &TmuxTransport) -> bool {
-    !transport.uses_psmux()
+/// tmux answers the argv attach with a block; psmux does not. Draining a
+/// nonexistent psmux block would hang before the reader starts (ADR-13).
+fn sends_implicit_attach_response<T: MuxTransport>(_: &T) -> bool {
+    T::PROTOCOL.sends_implicit_attach_response()
 }
 
 impl ControlMode {
@@ -1136,8 +1122,8 @@ impl ControlMode {
     /// given transport (local or ssh).
     /// `sizer` is this client's name in [`SIZER_OPTION`], so a pane named for
     /// anybody else can be reported as sized elsewhere.
-    pub(super) fn start(
-        transport: &TmuxTransport,
+    pub(super) fn start<T: MuxTransport>(
+        transport: &T,
         socket: &str,
         session: &str,
         sizer: &str,
@@ -1145,7 +1131,7 @@ impl ControlMode {
         // -C (single C): control mode with echo — works with piped stdin.
         // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
         let mut child = transport
-            .tmux_command(socket, &["-C", "attach-session", "-t", session])
+            .mux_command(socket, &["-C", "attach-session", "-t", session])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1207,7 +1193,7 @@ impl ControlMode {
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
 
-        let strict_blocks = !transport.uses_psmux();
+        let strict_blocks = T::PROTOCOL.validates_response_blocks();
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
             .spawn(move || {
@@ -1248,7 +1234,7 @@ impl ControlMode {
         // refusal must not brick the whole backend, status just stays dark.
         // Armed here — not per pane — so `reconnect_control` re-arms for free
         // and panes created later are covered (`%*` is session-scoped).
-        if !transport.uses_psmux() {
+        if T::PROTOCOL.supports_subscriptions() {
             let arm = format!(
                 "refresh-client -B '{}:%*:#{{{}}}'",
                 crate::session::REMOTE_HOOK_SUBSCRIPTION,

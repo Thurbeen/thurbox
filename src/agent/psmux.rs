@@ -1,6 +1,5 @@
-//! Native Windows psmux backend. The shared tmux protocol engine still owns
-//! control-mode framing and transport, while this adapter owns psmux's
-//! lifecycle capabilities and its registered identity.
+//! Native Windows psmux backend. It owns its transport and protocol choices;
+//! common pane bookkeeping lives in the mux backend core.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,21 +10,23 @@ use super::backend::{
     AdoptedSession, BackendLiveness, DiscoveredSession, SessionBackend, SpawnedSession,
 };
 use super::control_mode::PaneSnapshot;
-use super::tmux::{TmuxBackend, WindowRole};
+use super::backend::WindowRole;
+use super::mux::MuxBackend;
+use super::transport::PsmuxTransport;
 
 pub struct PsmuxBackend {
-    protocol: TmuxBackend,
+    protocol: MuxBackend<PsmuxTransport>,
 }
 
 impl PsmuxBackend {
     pub fn local() -> Self {
-        let mut protocol = TmuxBackend::local();
+        let mut protocol = MuxBackend::<PsmuxTransport>::local();
         protocol.set_name("local-psmux");
         Self { protocol }
     }
 
     pub fn from_host(host: &crate::session::HostDef) -> Self {
-        let mut protocol = TmuxBackend::from_host(host);
+        let mut protocol = MuxBackend::<PsmuxTransport>::from_host(host);
         protocol.set_name(format!("{}:psmux", host.backend_name()));
         Self { protocol }
     }
@@ -169,6 +170,9 @@ impl SessionBackend for PsmuxBackend {
     }
     fn pane_pids(&self) -> Result<HashMap<String, u32>> {
         self.protocol.pane_pids()
+    }
+    fn pane_ids(&self) -> Result<std::collections::HashSet<String>> {
+        self.protocol.pane_ids()
     }
     fn shutdown(&self) {
         self.protocol.shutdown()

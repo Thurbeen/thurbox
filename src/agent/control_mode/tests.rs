@@ -1,6 +1,8 @@
 //! `control_mode`'s tests, kept together (the `git/tests.rs` pattern): a
 //! sibling module of `mod.rs`, so private items stay reachable.
 
+use crate::agent::transport::{PsmuxTransport, TmuxTransport};
+
 use std::sync::mpsc::sync_channel;
 
 use super::*;
@@ -1376,27 +1378,20 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
 /// because nothing failed, it simply never came back.
 #[test]
 fn only_a_multiplexer_that_answers_the_attach_is_drained() {
-    let psmux = TmuxTransport::Ssh {
+    let psmux = PsmuxTransport::from_host(&crate::session::HostDef {
         destination: "me@winbox".into(),
-        ssh_opts: Vec::new(),
-        mux: "psmux".into(),
-    };
+        ..Default::default()
+    });
     let tmux = TmuxTransport::Ssh {
         destination: "me@devbox".into(),
         ssh_opts: Vec::new(),
-        mux: "tmux".into(),
     };
     assert!(!sends_implicit_attach_response(&psmux));
     assert!(sends_implicit_attach_response(&tmux));
     assert!(sends_implicit_attach_response(&TmuxTransport::Wsl {
         distro: "Ubuntu".into(),
-        mux: "tmux".into(),
     }));
-    assert_eq!(
-        sends_implicit_attach_response(&TmuxTransport::Local),
-        !cfg!(windows),
-        "the local multiplexer is psmux on Windows and tmux elsewhere"
-    );
+    assert!(sends_implicit_attach_response(&TmuxTransport::Local));
 }
 
 /// The drain takes the implicit block and **only** it: the bytes after `%end`

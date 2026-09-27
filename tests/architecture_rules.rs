@@ -653,6 +653,39 @@ fn session_lifecycle_does_not_select_psmux_by_name() {
 }
 
 #[test]
+fn mux_backends_own_their_protocol_and_transport() {
+    let psmux = fs::read_to_string(src_root().join("agent/psmux.rs")).unwrap();
+    let tmux = fs::read_to_string(src_root().join("agent/tmux.rs")).unwrap();
+    let common = fs::read_to_string(src_root().join("agent/mux.rs")).unwrap();
+    let transport = fs::read_to_string(src_root().join("agent/transport.rs")).unwrap();
+    assert!(
+        !psmux.contains("TmuxBackend"),
+        "psmux delegates through TmuxBackend"
+    );
+    assert!(psmux.contains("impl SessionBackend for PsmuxBackend"));
+    assert!(tmux.contains("impl SessionBackend for TmuxBackend"));
+    assert!(!tmux.contains("pub use super::mux::*"));
+    assert!(!tmux.contains("impl std::ops::Deref"));
+    assert!(common.contains("pub(crate) struct MuxBackend"));
+    assert!(
+        !common.contains("SessionBackend for MuxBackend"),
+        "shared mechanics cannot own the backend trait"
+    );
+    assert!(
+        !common.contains("transport.uses_psmux()"),
+        "execution path cannot select mux protocol"
+    );
+    assert!(
+        transport.contains("pub struct PsmuxTransport"),
+        "psmux needs its own transport type"
+    );
+    assert!(
+        !transport.contains("psmux_paste_transport"),
+        "shared launch interface must not expose psmux paste"
+    );
+}
+
+#[test]
 fn cli_module_isolation() {
     assert_module_clean("cli");
 }

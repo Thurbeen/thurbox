@@ -329,10 +329,8 @@ impl HostDef {
     /// field to disagree with, and a WSL distro is Linux inside — it runs
     /// `tmux` — so it is correctly not Windows here.
     ///
-    /// The name is spelled out rather than shared with `agent::transport`'s
-    /// `DEFAULT_MUX` / `TmuxTransport::uses_psmux` (which asks the *protocol*
-    /// question, not the platform one): `session` is the leaf module and may
-    /// reference nothing, so the two must be kept in step by hand.
+    /// This module cannot import agent transport types: `session` is the
+    /// dependency leaf. Keep this mapping aligned with backend registration.
     pub fn is_windows(&self) -> bool {
         self.mux() == "psmux"
     }
