@@ -127,6 +127,10 @@ def run_one(name, root, port, tools):
             )
         if name == "thurbox" and any(row["signal_exit"] != 0 for row in hooks_seen[:3]):
             raise RuntimeError("Thurbox: a Codex status hook failed to signal")
+        if name == "thurbox":
+            observed = [row.get("observed_hook_state") for row in hooks_seen[:3]]
+            if observed != ["idle", "working", "done"]:
+                raise RuntimeError(f"Thurbox hook transitions were {observed!r}")
         echo_ms = []
         for i in range(5):
             marker = f"qzbench{i}".encode()
@@ -272,7 +276,8 @@ def main():
         "machine": bl.machine(),
         "versions": versions,
         "binary_sha256": hashes,
-        "thurbox_commit": subprocess.run(
+        "thurbox_commit": os.environ.get("BENCH_SOURCE_COMMIT")
+        or subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
         ).stdout.strip(),
         "hosts": names,

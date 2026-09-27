@@ -67,5 +67,5 @@ python3 scripts/bench/real_tui.py --reps 5 --warmup 1 \
 ```
 
 The mock server listens on `127.0.0.1` only. The runner retains raw hook
-events, individual input echoes, per-process PSS, host load, and every mock
-request in `real-tui.json`.
+events and Thurbox's persisted status after each hook, individual input
+echoes, per-process PSS, host load, and every mock request in `real-tui.json`.

@@ -36,7 +36,15 @@ sys.path.insert(0, os.path.join(HERE, "scenarios"))
 import benchlib as bl
 import hosts
 
-SCENARIOS = ["create", "attach", "resources", "throughput", "scrollback", "latency", "survival"]
+SCENARIOS = [
+    "create",
+    "attach",
+    "resources",
+    "throughput",
+    "scrollback",
+    "latency",
+    "survival",
+]
 CACHE = os.path.expanduser(os.environ.get("BENCH_CACHE", "~/.cache/thurbox-bench"))
 
 
@@ -92,10 +100,14 @@ class Ctx:
         }
         self.records.append(row)
         shown = ", ".join(
-            f"{k}={v:.1f}" if isinstance(v, float) else f"{k}={v}" for k, v in metrics.items()
+            f"{k}={v:.1f}" if isinstance(v, float) else f"{k}={v}"
+            for k, v in metrics.items()
         )
         tag = " (warm-up)" if warmup else ""
-        print(f"  {scenario:<10} {host:<8} {variant:<18} rep {rep}{tag}: {shown}", flush=True)
+        print(
+            f"  {scenario:<10} {host:<8} {variant:<18} rep {rep}{tag}: {shown}",
+            flush=True,
+        )
 
 
 def resolve_tools(args):
@@ -141,17 +153,30 @@ def thurbox_commit(tools):
     checkout's target/ (which is how run.sh builds them)."""
     if "thurbox" not in tools:
         return None
+    if os.environ.get("BENCH_SOURCE_COMMIT"):
+        return os.environ["BENCH_SOURCE_COMMIT"]
     repo = os.path.dirname(os.path.dirname(os.path.dirname(tools["thurbox"])))
     try:
         return subprocess.run(
-            ["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+            ["git", "-C", repo, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
 
-CSV_FIELDS = ["scenario", "host", "underlying_multiplexer", "variant", "rep",
-              "warmup", "load1", "load1_end"]
+CSV_FIELDS = [
+    "scenario",
+    "host",
+    "underlying_multiplexer",
+    "variant",
+    "rep",
+    "warmup",
+    "load1",
+    "load1_end",
+]
 
 
 def flatten(records):
@@ -196,18 +221,24 @@ def summary_markdown(summary, meta):
     )
     lines.append("")
     lines.append("```json")
-    lines.append(json.dumps({"machine": meta["machine"], "versions": meta["versions"]}, indent=2))
+    lines.append(
+        json.dumps({"machine": meta["machine"], "versions": meta["versions"]}, indent=2)
+    )
     lines.append("```")
     host_order = meta["hosts"]
     by_scenario = {}
     for (scenario, variant, metric, host), stats in summary.items():
-        by_scenario.setdefault(scenario, {}).setdefault((variant, metric), {})[host] = stats
+        by_scenario.setdefault(scenario, {}).setdefault((variant, metric), {})[host] = (
+            stats
+        )
     for scenario in SCENARIOS:
         if scenario not in by_scenario:
             continue
         lines += ["", f"## {scenario}", ""]
         head = (
-            "| variant | metric | " + " | ".join(f"{h} median | {h} p95" for h in host_order) + " |"
+            "| variant | metric | "
+            + " | ".join(f"{h} median | {h} p95" for h in host_order)
+            + " |"
         )
         lines.append(head)
         lines.append("|" + "---|" * (2 + 2 * len(host_order)))
@@ -229,15 +260,23 @@ def main(argv=None):
     p.add_argument("--reps", type=int, default=5)
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument(
-        "--quick", action="store_true", help="smaller N and shorter windows, for trying the harness"
+        "--quick",
+        action="store_true",
+        help="smaller N and shorter windows, for trying the harness",
     )
-    p.add_argument("--work", default=os.path.join(CACHE, "work"), help="sandboxes live here")
     p.add_argument(
-        "--out", default=None, help="results directory (default: <work>/results-<timestamp>)"
+        "--work", default=os.path.join(CACHE, "work"), help="sandboxes live here"
+    )
+    p.add_argument(
+        "--out",
+        default=None,
+        help="results directory (default: <work>/results-<timestamp>)",
     )
     p.add_argument("--herdr", default=None, help="path to the herdr binary")
     p.add_argument("--rmux", default=None, help="path to the rmux binary")
-    p.add_argument("--thurbox-bin", default=None, help="directory holding thurbox and thurbox-cli")
+    p.add_argument(
+        "--thurbox-bin", default=None, help="directory holding thurbox and thurbox-cli"
+    )
     args = p.parse_args(argv)
     args.hosts = [h for h in args.hosts.split(",") if h]
     if not args.hosts:
@@ -257,8 +296,12 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
     # The same refusal as run.sh's, for a scenario script run on its own.
-    if os.environ.get("THURBOX_GATE") and not os.environ.get("THURBOX_PERF_ALLOW_IN_GATE"):
-        sys.exit("run.py: refusing to run inside a validation step (THURBOX_GATE is set)")
+    if os.environ.get("THURBOX_GATE") and not os.environ.get(
+        "THURBOX_PERF_ALLOW_IN_GATE"
+    ):
+        sys.exit(
+            "run.py: refusing to run inside a validation step (THURBOX_GATE is set)"
+        )
 
     tools = resolve_tools(args)
     ctx = Ctx(args, tools)
@@ -272,10 +315,18 @@ def main(argv=None):
         "load_at_start": bl.load(),
         "niceness": os.nice(0),
         "hosts": args.hosts,
-        "underlying_multiplexers": {"tmux": "tmux", "herdr": "herdr",
-                                    "rmux": "rmux", "thurbox": "tmux"},
-        "session_command": ["python3", "scripts/bench/agent.py", "<session-name>",
-                            "<sandbox-agents-dir>"],
+        "underlying_multiplexers": {
+            "tmux": "tmux",
+            "herdr": "herdr",
+            "rmux": "rmux",
+            "thurbox": "tmux",
+        },
+        "session_command": [
+            "python3",
+            "scripts/bench/agent.py",
+            "<session-name>",
+            "<sandbox-agents-dir>",
+        ],
         "shell": "/bin/sh",
         "scenarios": scenarios,
         "reps": args.reps,
@@ -292,12 +343,18 @@ def main(argv=None):
         print(f"== {name} (load {bl.load()})", flush=True)
         started = time.monotonic()
         importlib.import_module(name).run(ctx)
-        meta.setdefault("scenario_seconds", {})[name] = round(time.monotonic() - started, 1)
+        meta.setdefault("scenario_seconds", {})[name] = round(
+            time.monotonic() - started, 1
+        )
         # Written after every scenario so an interrupted run keeps what it has.
-        bl.dump_json(os.path.join(out, "results.json"), {"meta": meta, "records": ctx.records})
+        bl.dump_json(
+            os.path.join(out, "results.json"), {"meta": meta, "records": ctx.records}
+        )
 
     meta["load_at_end"] = bl.load()
-    bl.dump_json(os.path.join(out, "results.json"), {"meta": meta, "records": ctx.records})
+    bl.dump_json(
+        os.path.join(out, "results.json"), {"meta": meta, "records": ctx.records}
+    )
     with open(os.path.join(out, "results.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS + ["metric", "sample", "value"])
         w.writeheader()
