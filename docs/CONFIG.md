@@ -20,7 +20,7 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/agents.toml` | TOML | you | **live** (mtime poll) | coding-agent CLI definitions |
+| `~/.config/thurbox/agents.toml` | TOML | you | **live** (content poll) | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
@@ -34,8 +34,13 @@ development checkout never touches your real setup.
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 
-`agents.toml` and `settings.toml` reload **live**: the TUI polls their
-mtime (~1/s) and applies edits with a confirmation toast — no restart.
+`agents.toml` and `settings.toml` reload **live**: the TUI checks them about
+once per second and applies edits without a restart. The agent registry is
+compared by content; settings use mtime. A successful edit shows a toast.
+An `agents.toml` reload updates the picker, default, and session-status
+coverage together. A missing file, an invalid file, or one with no usable agents
+leaves the last good registry in force and reports the error; correcting it is picked
+up by the next poll. Existing session records are not changed.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
 `settings.toml` the flags that apply live are `shell_pane`, `perf_hud`

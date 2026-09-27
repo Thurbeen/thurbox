@@ -693,14 +693,13 @@ pub struct SnapshotStore {
     git: GitStats,
     /// What holds each unreported session's pane — see [`PaneProbe`].
     panes: PaneProbe,
-    /// The agent registry every state answer is judged against: coverage comes
-    /// from it, and so does the name a detected agent is reported under. Read
-    /// once, like `agents` below, so a refresh never touches the filesystem.
+    /// The registry shared by picker, default, and status coverage.
     registry: std::sync::Arc<AgentRegistry>,
-    /// Read once at startup: these change only when their config files do, and
-    /// re-reading them every 400ms would be a filesystem hit for nothing.
     agents: Vec<AgentRow>,
     agent_default: String,
+    /// Last observed contents or read error, sampled behind `registry_polled_at`.
+    registry_contents: Option<Result<String, String>>,
+    registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
@@ -765,6 +764,7 @@ impl SnapshotStore {
             ),
         };
         let registry = read_registry();
+        crate::agent::agent_config::publish_registry(&registry);
         let mut store = Self {
             database,
             git: GitStats::new(git_poll_interval()),
@@ -772,6 +772,8 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
+            registry_contents: None,
+            registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
             preflight_at: Instant::now(),
@@ -794,6 +796,7 @@ impl SnapshotStore {
     /// owns its own connection).
     pub fn with_database(database: Database) -> Self {
         let registry = read_registry();
+        crate::agent::agent_config::publish_registry(&registry);
         let mut store = Self {
             database: Some(database),
             git: GitStats::new(git_poll_interval()),
@@ -801,6 +804,8 @@ impl SnapshotStore {
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
             registry,
+            registry_contents: None,
+            registry_polled_at: None,
             hosts: read_hosts(),
             mux: read_mux(),
             preflight_at: Instant::now(),
@@ -830,6 +835,45 @@ impl SnapshotStore {
 
     pub fn current(&self) -> &Snapshot {
         &self.current
+    }
+
+    pub fn agent_registry(&self) -> &AgentRegistry {
+        &self.registry
+    }
+
+    /// Adopt an edited agents.toml at the same cadence as settings polling.
+    /// A failed edit keeps all four readers on the last good registry.
+    pub fn poll_registry(&mut self) -> Option<Result<Vec<String>, String>> {
+        const POLL_INTERVAL: Duration = Duration::from_secs(1);
+        if self
+            .registry_polled_at
+            .is_some_and(|at| at.elapsed() < POLL_INTERVAL)
+        {
+            return None;
+        }
+        self.registry_polled_at = Some(Instant::now());
+        let first_poll = self.registry_contents.is_none();
+        let contents = crate::agent::agent_config::read_for_reload();
+        if self.registry_contents.as_ref() == Some(&contents) {
+            return None;
+        }
+        self.registry_contents = Some(contents.clone());
+        let (registry, warnings) = match contents
+            .and_then(|contents| crate::agent::agent_config::parse_for_reload(&contents))
+        {
+            Ok(loaded) => loaded,
+            Err(error) => return Some(Err(error)),
+        };
+        if *self.registry != registry {
+            self.agent_default = registry.default_name();
+            self.agents = read_agents(&registry);
+            self.registry = std::sync::Arc::new(registry);
+            crate::agent::agent_config::publish_registry(&self.registry);
+            self.refresh();
+        } else if first_poll && warnings.is_empty() {
+            return None;
+        }
+        Some(Ok(warnings))
     }
 
     /// Rebuild if the refresh interval has elapsed *and* anything committed.

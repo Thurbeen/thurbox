@@ -458,6 +458,223 @@ fn on_disk_db() -> thurbox::storage::Database {
     thurbox::storage::Database::open(&path).expect("open db")
 }
 
+#[test]
+#[cfg(unix)]
+fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned() {
+    use thurbox::kernel::snapshot::SnapshotStore;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    let agents = config.join("agents.toml");
+    std::fs::write(
+        &agents,
+        "default = 'first'\n[[agents]]\nname = 'first'\ncommand = 'sh'\n",
+    )
+    .expect("initial registry");
+    let db = on_disk_db();
+    let mut snapshot = SnapshotStore::with_database(on_disk_db());
+    assert!(snapshot.poll_registry().is_none());
+    let first = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "existing".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agent_default.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("first session");
+
+    let marker = config.join("second-agent-ran");
+    let command = config.join("second-agent");
+    std::fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf second > '{}'\nexec sh\n",
+            marker.display()
+        ),
+    )
+    .expect("agent script");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755))
+        .expect("executable agent");
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'second'\n[[agents]]\nname = 'second'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("edited registry");
+    // Another in-process reader must not publish an unpolled generation to
+    // the launch worker while the picker still offers the old one.
+    let _ = thurbox::agent::agent_config::load_or_seed();
+    let before_poll = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "before-poll".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agents[0].name.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("still-selected agent launches");
+    assert_eq!(
+        db.get_session_by_id(before_poll.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "first"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("edited registry")
+        .expect("valid registry");
+    assert_eq!(snapshot.current().agent_default, "second");
+    assert_eq!(snapshot.current().agents.len(), 1);
+    assert_eq!(snapshot.current().agents[0].name, "second");
+
+    let selected = snapshot.current().agents[0].name.clone();
+    let second = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "new".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(selected),
+            ..Default::default()
+        },
+    )
+    .expect("selected agent launches");
+    assert_eq!(
+        db.get_session_by_id(second.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "second"
+    );
+    assert_eq!(
+        db.get_session_by_id(first.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "first"
+    );
+    assert!(second.backend_id.starts_with('%'));
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("new agent ran"),
+        "second"
+    );
+    snapshot.refresh();
+
+    let reference = config.join("agents-reference.toml");
+    std::fs::copy(&agents, &reference).expect("save registry contents");
+    assert!(Command::new("touch")
+        .arg("-r")
+        .arg(&agents)
+        .arg(&reference)
+        .status()
+        .unwrap()
+        .success());
+    let original_metadata = std::fs::metadata(&agents).unwrap();
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'thirdx'\n[[agents]]\nname = 'thirdx'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("same-size edit");
+    assert_eq!(
+        std::fs::metadata(&agents).unwrap().len(),
+        original_metadata.len()
+    );
+    assert!(Command::new("touch")
+        .arg("-r")
+        .arg(&reference)
+        .arg(&agents)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        std::fs::metadata(&agents).unwrap().modified().unwrap(),
+        original_metadata.modified().unwrap()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("same-stamp edit")
+        .expect("valid edit");
+    assert_eq!(snapshot.current().agent_default, "thirdx");
+
+    std::fs::write(&agents, "[[agents]\n").expect("invalid registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(snapshot.poll_registry().expect("invalid edit").is_err());
+    assert_eq!(snapshot.current().agent_default, "thirdx");
+    assert_eq!(snapshot.current().agents[0].name, "thirdx");
+    assert_eq!(snapshot.current().sessions.len(), 3);
+    std::fs::remove_file(&agents).expect("remove registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(snapshot.poll_registry().expect("missing registry").is_err());
+    assert_eq!(snapshot.current().agent_default, "thirdx");
+    std::fs::remove_file(&marker).expect("clear launch marker");
+    let third = spawn_session_headless(
+        &db,
+        SpawnRequest {
+            name: "after-invalid-edit".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some(snapshot.current().agents[0].name.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("last good agent still launches");
+    assert_eq!(
+        db.get_session_by_id(third.session_id)
+            .unwrap()
+            .unwrap()
+            .agent,
+        "thirdx"
+    );
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("last good agent ran"),
+        "second"
+    );
+
+    std::fs::write(
+        &agents,
+        format!(
+            "default = 'fourth'\n[[agents]]\nname = 'fourth'\ncommand = '{}'\n",
+            command.display()
+        ),
+    )
+    .expect("correct registry");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    snapshot
+        .poll_registry()
+        .expect("correction")
+        .expect("valid correction");
+    assert_eq!(snapshot.current().agent_default, "fourth");
+    assert_eq!(snapshot.current().agents[0].name, "fourth");
+}
+
 #[cfg(unix)]
 fn write_hooks(config: &Path, body: &str) {
     std::fs::write(config.join("hooks.toml"), body).expect("write hooks.toml");

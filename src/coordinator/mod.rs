@@ -102,7 +102,7 @@ impl App {
         Ok(())
     }
 
-    /// The interface directory and `settings.toml`, both edited from outside.
+    /// The interface directory and live configuration files.
     pub(crate) fn poll_reload(&mut self) {
         if self.watcher.changed() {
             self.reload_at = Some(Instant::now() + DEBOUNCE);
@@ -122,6 +122,23 @@ impl App {
             Some(thurbox::kernel::config::Reloaded::Failed(error)) => {
                 self.report(format!("settings: {error}"), Level::Error);
             }
+            None => {}
+        }
+        match self.snapshots.poll_registry() {
+            Some(Ok(warnings)) => {
+                self.terminals
+                    .set_agents(self.snapshots.agent_registry().clone());
+                if warnings.is_empty() {
+                    self.toast("agents reloaded".to_string());
+                } else {
+                    for warning in &warnings {
+                        tracing::warn!("{warning}");
+                    }
+                    self.report(format!("agents: {}", warnings[0]), Level::Info);
+                }
+                self.dirty = true;
+            }
+            Some(Err(error)) => self.report(format!("agents: {error}"), Level::Error),
             None => {}
         }
         if self.reload_at.is_some_and(|at| Instant::now() >= at) {

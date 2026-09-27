@@ -547,6 +547,10 @@ pub struct Terminals {
 }
 
 impl Terminals {
+    pub fn set_agents(&mut self, agents: crate::session::AgentRegistry) {
+        self.agents = agents;
+    }
+
     /// Build the backend registry the same way the v1 binary does: the local
     /// multiplexer plus every configured or discovered host. How that set is
     /// assembled — and why nothing is readied here — is the registry's own
