@@ -196,6 +196,102 @@ fn mirror_keeps_a_registered_mux_route_and_the_hosts_pane_id() {
 }
 
 #[test]
+fn mirror_preserves_a_deleted_session_on_a_suffixed_route() {
+    let local: Arc<dyn SessionBackend> = Arc::new(ProbeBackend::new(
+        "local-probe",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let mut registry = BackendRegistry::new(local);
+    registry.register(Arc::new(ProbeBackend::new(
+        "ssh:example:probe",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    )));
+    let id = SessionId::default();
+    let host_row = thurbox::session_ops::mirror::session_from_json_with_registry(
+        &serde_json::json!({
+            "id": id.to_string(), "name": "probe", "backend_type": "local-probe",
+            "backend_id": "opaque-pane"
+        }),
+        "ssh:example",
+        &registry,
+    )
+    .unwrap();
+    let db = Database::open_in_memory().unwrap();
+    db.upsert_session(&host_row.session).unwrap();
+    db.soft_delete_session(id).unwrap();
+
+    let report = thurbox::session_ops::mirror::apply(&db, "ssh:example", &[host_row], &[]);
+    assert_eq!(report.tombstoned, vec![id]);
+    assert!(db.get_session_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn a_registered_remote_suffix_receives_direct_force_delete() {
+    let home = tempfile::tempdir().unwrap();
+    thurbox::paths::set_test_dir(home.path());
+    let config = thurbox::paths::config_file()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("hosts.toml"),
+        "[[hosts]]\nname = 'example'\ndestination = 'unused'\nshare_sessions = false\n",
+    )
+    .unwrap();
+
+    let kills = Arc::new(AtomicUsize::new(0));
+    let local: Arc<dyn SessionBackend> = Arc::new(ProbeBackend::new(
+        "local-tmux",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let remote = Arc::new(ProbeBackend::new(
+        "ssh:example:herdr",
+        Arc::new(AtomicUsize::new(0)),
+        kills.clone(),
+    ));
+    let id = SessionId::default();
+    remote.panes.lock().unwrap().push(DiscoveredSession {
+        backend_id: "opaque-pane".into(),
+        name: "probe".into(),
+        is_alive: true,
+        session: id.to_string(),
+        role: thurbox::agent::tmux::WindowRole::Agent,
+    });
+    let mut registry = BackendRegistry::new(local);
+    registry.register(remote);
+    let db = Database::open_in_memory().unwrap();
+    db.upsert_session(&SharedSession {
+        id,
+        name: "probe".into(),
+        agent: "probe".into(),
+        backend_id: "opaque-pane".into(),
+        backend_type: "ssh:example:herdr".into(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    })
+    .unwrap();
+
+    let report = thurbox::session_ops::delete::delete_session_headless_with_registry(
+        &db, id, true, &registry,
+    )
+    .unwrap();
+    assert!(report.killed_window);
+    assert_eq!(kills.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn ambiguous_unstamped_panes_are_never_killed_or_relaunched() {
     let spawns = Arc::new(AtomicUsize::new(0));
     let kills = Arc::new(AtomicUsize::new(0));
