@@ -8,7 +8,8 @@
     "lint:css": "stylelint 'website/css/**/*.css'",
     "lint:js": "eslint 'website/js/**/*.js'",
     "lint:format": "prettier --check 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
-    "lint:website": "npm run build:website && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "test:performance-cpu-scale": "node scripts/ci/check-performance-cpu-scale.mjs",
+    "lint:website": "npm run build:website && npm run test:performance-cpu-scale && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
     "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'"
   },
   "devDependencies": {
