@@ -153,10 +153,17 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    if backends.is_ambiguous_route(&session.backend_type) {
+        return Err(format!(
+            "ambiguous backend route '{}'",
+            session.backend_type
+        ));
+    }
+
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
     let killed = backends
         .get(&session.backend_type)
         .and_then(|backend| {
@@ -184,9 +191,19 @@ pub fn start_session_headless(
     db: &Database,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
+    let session = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("Failed to load session: {e}"))?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    if backends.is_ambiguous_route(&session.backend_type) {
+        return Err(format!(
+            "ambiguous backend route '{}'",
+            session.backend_type
+        ));
+    }
     db.set_session_stopped(session_id, false)
         .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
     restart_for(db, session_id, Relaunch::Unparking, &backends)
 }
 
@@ -370,6 +387,12 @@ fn restart_for(
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    if backends.is_ambiguous_route(&session.backend_type) {
+        return Err(format!(
+            "ambiguous backend route '{}'",
+            session.backend_type
+        ));
+    }
     // A remote session's window lives on its host, so both halves have to go
     // there — restarting it locally would leave the real window running and add
     // a stray local one beside it. Refusing is only right when we cannot tell

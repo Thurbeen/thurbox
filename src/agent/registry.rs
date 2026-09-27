@@ -3,7 +3,7 @@
 //! Allows multiple `SessionBackend` implementations to coexist. Sessions select
 //! their backend at creation time; the registry routes by name.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::agent::SessionBackend;
@@ -16,6 +16,7 @@ use crate::session::HostRegistry;
 /// name is specified.
 pub struct BackendRegistry {
     backends: HashMap<String, Arc<dyn SessionBackend>>,
+    ambiguous_routes: HashSet<String>,
     default_name: String,
 }
 
@@ -27,6 +28,7 @@ impl BackendRegistry {
         backends.insert(name.clone(), default);
         Self {
             backends,
+            ambiguous_routes: HashSet::new(),
             default_name: name,
         }
     }
@@ -56,7 +58,7 @@ impl BackendRegistry {
                 backends.default_backend().clone(),
             );
         }
-        // Add aliases after canonical keys so a literal suffix host wins a collision.
+        // A legacy alias can collide with another host's qualified route.
         let mut legacy_aliases = Vec::new();
         for host in &hosts.hosts {
             if host.is_wsl() {
@@ -84,7 +86,16 @@ impl BackendRegistry {
             legacy_aliases.push((host.backend_name(), legacy));
         }
         for (name, backend) in legacy_aliases {
-            backends.register_alias(name, backend);
+            if backends.ambiguous_routes.contains(&name) {
+                continue;
+            }
+            if backends.has(&name) {
+                // The persisted key cannot identify which host owns it. Fail closed.
+                backends.backends.remove(&name);
+                backends.ambiguous_routes.insert(name);
+            } else {
+                backends.register_alias(name, backend);
+            }
         }
         backends
     }
@@ -112,6 +123,11 @@ impl BackendRegistry {
     /// Check whether a backend with the given name is registered.
     pub fn has(&self, name: &str) -> bool {
         self.backends.contains_key(name)
+    }
+
+    /// Whether a persisted key could name two different hosts.
+    pub fn is_ambiguous_route(&self, name: &str) -> bool {
+        self.ambiguous_routes.contains(name)
     }
 
     /// A route is selectable only if its registered backend matches the chosen host.

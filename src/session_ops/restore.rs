@@ -187,6 +187,12 @@ pub fn restore_session_headless_with_registry(
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
         .ok_or_else(|| format!("deleted session not found: {id}"))?;
+    if backends.is_ambiguous_route(&deleted.backend_type) {
+        return Err(format!(
+            "ambiguous backend route '{}'",
+            deleted.backend_type
+        ));
+    }
 
     // Recovery the caller would not want is a decision, not a discovery: they
     // have to have been told before it happens. v1's confirm modal and the

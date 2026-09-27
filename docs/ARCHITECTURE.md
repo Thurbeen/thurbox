@@ -650,7 +650,9 @@ combined set is loaded by `agent::host_config::load_all`, each
 registered under `wsl:<distro>` for WSL. Each SSH host registers `TmuxBackend`
 under `ssh:<host>:tmux` and `PsmuxBackend` under `ssh:<host>:psmux`; its old
 `ssh:<host>` route remains an alias to the configured default for persisted
-sessions. On native Windows the local backend is `PsmuxBackend` under
+sessions. A collision between an alias and another host's qualified key makes
+that key unavailable, so persisted operations cannot reach the wrong host.
+On native Windows the local backend is `PsmuxBackend` under
 `local-psmux`, with `local-tmux` as a persisted-row alias.
 
 **Why WSL = "SSH without the ssh"**: `wsl.exe` runs `tmux`, `git`, the

@@ -350,7 +350,9 @@ keep the preference in place while those legacy rows are active. Existing
 registers its own local and host routing keys; it must read those keys on
 restart, restore, delete, input, capture, and fork.
 SSH hosts register both `ssh:<host>:tmux` and `ssh:<host>:psmux` so a qualified
-row remains routable if the host's preferred multiplexer changes.
+row remains routable if the host's preferred multiplexer changes. If a literal
+host name makes a legacy alias identical to another host's qualified route,
+that ambiguous key is unavailable; rename one host before acting on those rows.
 
 Manual deletion of an agent pane or window means the agent should run again.
 Once the backend **confirms absence**, Thurbox relaunches the same session ID,

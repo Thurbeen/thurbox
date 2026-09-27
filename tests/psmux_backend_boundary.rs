@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 use thurbox::agent::BackendRegistry;
+use thurbox::session::SessionId;
 use thurbox::session::{BackendChoice, HostDef, HostRegistry};
+use thurbox::storage::Database;
+use thurbox::sync::SharedSession;
 
 #[test]
 fn a_psmux_host_registers_under_its_own_persisted_route() {
@@ -86,7 +89,7 @@ fn a_host_preference_change_keeps_explicit_mux_routes_available() {
 }
 
 #[test]
-fn a_literal_suffix_host_keeps_its_legacy_route() {
+fn a_literal_suffix_host_makes_the_colliding_persisted_route_unavailable() {
     let hosts = HostRegistry {
         hosts: vec![
             HostDef {
@@ -112,9 +115,39 @@ fn a_literal_suffix_host_keeps_its_legacy_route() {
             .unwrap();
     assert_eq!(literal.backend_type, "ssh:box:psmux:tmux");
     assert_eq!(qualified.backend_type, "ssh:box:psmux");
-    assert!(Arc::ptr_eq(
-        backends.get("ssh:box:psmux").unwrap(),
-        backends.get(&literal.backend_type).unwrap()
-    ));
+    assert!(backends.get("ssh:box:psmux").is_none());
     assert!(!backends.supports_choice(&qualified));
+
+    let db = Database::open_in_memory().unwrap();
+    let id = SessionId::default();
+    db.upsert_session(&SharedSession {
+        id,
+        name: "ambiguous".into(),
+        agent: "test".into(),
+        backend_id: String::new(),
+        backend_type: qualified.backend_type,
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    })
+    .unwrap();
+    assert!(
+        thurbox::session_ops::delete::delete_session_headless_with_registry(
+            &db, id, true, &backends
+        )
+        .is_err()
+    );
+    assert!(
+        thurbox::session_ops::restart::restart_session_headless_with_registry(
+            &db, id, true, &backends
+        )
+        .is_err()
+    );
+    assert!(db.get_session_by_id(id).unwrap().is_some());
 }

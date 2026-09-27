@@ -63,6 +63,16 @@ pub(crate) fn registered_backend(
         .ok_or_else(|| format!("no registered backend for '{backend_type}'"))
 }
 
+/// Refuse a persisted route that could address two different configured hosts.
+pub(crate) fn ensure_unambiguous_route(backend_type: &str) -> Result<(), String> {
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    if backends.is_ambiguous_route(backend_type) {
+        Err(format!("ambiguous backend route '{backend_type}'"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Deliver local input and retire a Codex report made before that submission.
 /// A hook arriving while tmux delivers the prompt keeps its newer report.
 pub fn send_text_with_status(
@@ -520,6 +530,7 @@ pub fn fork_session_headless(
         .get_session_by_id(id)
         .map_err(|e| format!("get session: {e}"))?
         .ok_or_else(|| format!("session not found: {id}"))?;
+    ensure_unambiguous_route(&source.backend_type)?;
 
     // The parent's *working directory* — its worktree for a worktree session —
     // not the repository root. A cwd-scoped agent (`opencode --continue`)

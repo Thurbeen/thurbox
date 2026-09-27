@@ -78,6 +78,12 @@ pub fn delete_session_headless_with_registry(
         .get_session_by_id(session_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    if backends.is_ambiguous_route(&session.backend_type) {
+        return Err(format!(
+            "ambiguous backend route '{}'",
+            session.backend_type
+        ));
+    }
 
     // The user's say, before anything is torn down or marked: a refusal here
     // leaves the row exactly as it was.
@@ -303,6 +309,13 @@ fn teardown_runtime_resources_with_registry(
     report: &mut ForceDeleteReport,
     backends: &crate::agent::BackendRegistry,
 ) {
+    if backends.is_ambiguous_route(&session.backend_type) {
+        report.remote_teardown_error = Some(format!(
+            "ambiguous backend route '{}'; teardown deferred",
+            session.backend_type
+        ));
+        return;
+    }
     if crate::session::is_remote_backend(&session.backend_type) {
         // Off-local session: kill the pane + remove worktrees on the host. An
         // unresolvable/unreachable host is expected — record it, never abort.
@@ -854,6 +867,7 @@ pub fn owned_windows_in(
 /// reap that did not reach its host left the windows standing, so the row is
 /// overdue again on the very next pass (issue #1193).
 fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
+    super::ensure_unambiguous_route(&row.backend_type)?;
     let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
         return Err(format!(
             "host {} is not in hosts.toml; \

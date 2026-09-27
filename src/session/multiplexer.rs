@@ -129,7 +129,11 @@ mod tests {
             BackendChoice::resolve(None, None, None)
                 .unwrap()
                 .backend_type,
-            super::super::LOCAL_BACKEND_TYPE
+            if cfg!(windows) {
+                "local-psmux"
+            } else {
+                super::super::LOCAL_BACKEND_TYPE
+            }
         );
     }
 
