@@ -32,11 +32,7 @@ currentPage: 'remote-setup'
   <li>
     Install Thurbox, <code>thurbox-cli</code>, and OpenSSH on your computer. On the Linux host,
     run <code>sshd</code> and install Git, tmux 3.2 or newer, your coding agent, and its
-    credentials. Clone the repository on the host. After adding the SSH alias below, check the remote command environment:
-    <pre><code>ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'</code></pre>
-    Replace <code>codex</code> and <code>/srv/project</code> with your agent and the host's
-    absolute repository path. If the agent is absent from the remote command PATH, see
-    <a href="configuration.html#hosts-toml">path_prepend in the host configuration</a>.
+    credentials. Clone the repository on the host. Use its absolute path in Thurbox.
   </li>
   <li>
     Add a local <code>~/.ssh/config</code> alias, substituting your hostname and user:
@@ -47,6 +43,11 @@ currentPage: 'remote-setup'
     IdentitiesOnly yes</code></pre>
     Run <code>ssh devbox 'printf ready'</code>; it should print <code>ready</code> without a
     password prompt. Verify the host key through your normal SSH process.
+    Then check the remote prerequisites and command path:
+    <pre><code>ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'</code></pre>
+    Replace <code>codex</code> and <code>/srv/project</code> with your agent and the host's
+    absolute repository path. If the agent is absent from the remote command PATH, see
+    <a href="configuration.html#hosts-toml">path_prepend in the host configuration</a>.
   </li>
   <li>
     Add this to local <code>~/.config/thurbox/hosts.toml</code> and restart Thurbox:
@@ -76,8 +77,8 @@ thurbox-cli session list</code></pre>
   <code>thurbox-cli session sync --host devbox</code> to refresh sessions created on the host.
   For a connection failure, try <code>ssh -v devbox true</code>. If SSH succeeds, check the
   remote Git, tmux, agent, repository path and credentials. If the host cannot run the provisioned
-  CLI, set <code>share_sessions = false</code>, restart Thurbox, and create the session again;
-  its records then belong to this local instance.
+  CLI, set <code>share_sessions = false</code> and restart Thurbox; this local instance then
+  owns the session records.
 </p>
 
 <h2>Other OpenSSH routes</h2>

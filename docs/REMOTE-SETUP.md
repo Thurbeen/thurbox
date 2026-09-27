@@ -28,18 +28,6 @@ than the local binary requires.
    `sshd` and install Git, tmux **3.2 or newer**, your chosen coding-agent CLI,
    and that agent's own credentials. Clone your repository there. The path you
    pass to Thurbox is the **host's absolute path**, not your local checkout.
-   After creating the alias in step 2, check the host's prerequisites and
-   the non-interactive command path:
-
-   ```sh
-   ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'
-   ```
-
-   Replace `codex` with your configured agent and `/srv/project` with your
-   host's repository path. Make sure the agent can authenticate on the host
-   before creating a session. If its executable is absent from the remote
-   command `PATH`, set `path_prepend` in `hosts.toml` or check the host's login
-   shell; see [configuration](CONFIG.md#hoststoml).
 
 2. Give OpenSSH a reusable alias in **your local** `~/.ssh/config`:
 
@@ -54,6 +42,17 @@ than the local binary requires.
    Replace the example hostname and user. Confirm `ssh devbox 'printf ready'`
    prints `ready` without an interactive password prompt. Verify the host key
    through your normal SSH process; do not disable host-key checking.
+   Then check the remote prerequisites and command path:
+
+   ```sh
+   ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'
+   ```
+
+   Replace `codex` with your configured agent and `/srv/project` with your
+   host's repository path. Make sure the agent can authenticate on the host
+   before creating a session. If its executable is absent from the remote
+   command `PATH`, set `path_prepend` in `hosts.toml` or check the host's login
+   shell; see [configuration](CONFIG.md#hoststoml).
 
 3. Add this entry to **your local** `~/.config/thurbox/hosts.toml` (create the
    file if needed):
@@ -93,8 +92,8 @@ succeeds but creation fails, repeat the remote prerequisite command and check
 the repository's path and agent authentication. A shared host needs a
 compatible remote platform for CLI provisioning. Keep the host online when
 first creating a session. If the host cannot run the provisioned CLI (for
-example, a libc mismatch), set `share_sessions = false`, restart Thurbox, and
-create the session again; its records then belong to this local instance.
+example, a libc mismatch), set `share_sessions = false` and restart Thurbox;
+this local instance then owns the session records.
 
 ## Other OpenSSH routes
 
