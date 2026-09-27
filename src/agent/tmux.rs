@@ -2281,6 +2281,116 @@ impl TmuxBackend {
 }
 
 impl SessionBackend for TmuxBackend {
+    fn headless_owned_panes_in(
+        &self,
+        windows: &[DiscoveredSession],
+        session_id: &str,
+        session_name: &str,
+    ) -> Vec<String> {
+        let index = WindowIndex::from_listing(windows.iter().cloned());
+        [
+            index.agent_window(session_id, session_name),
+            index.shell_window(session_id, session_name),
+        ]
+        .into_iter()
+        .filter_map(Located::pane)
+        .collect()
+    }
+    fn headless_pane_pid(
+        &self,
+        backend_id: &str,
+        session_id: &str,
+        name: &str,
+    ) -> Result<Option<u32>> {
+        if self.host.is_none() {
+            window_pane_pid(session_id, name)
+        } else {
+            self.pane_pid(backend_id)
+        }
+    }
+    fn headless_discover(&self) -> Result<Vec<DiscoveredSession>> {
+        if let Some(host) = self.host.as_ref() {
+            known_host_socket(host)?;
+        }
+        self.discover_answered()
+    }
+    fn spawn_headless(
+        &self,
+        session_id: &str,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Result<String> {
+        match self.host.as_ref() {
+            Some(host) => {
+                spawn_window_remote(host, session_id, window_name, command, args, cwd, env)
+            }
+            None => spawn_window(session_id, window_name, command, args, cwd, env),
+        }
+    }
+
+    fn headless_liveness(
+        &self,
+        session_id: &str,
+        session_name: &str,
+    ) -> Result<crate::agent::backend::BackendLiveness> {
+        let index = match self.host.as_ref() {
+            Some(host) => remote_window_index(host)?,
+            None => local_window_index()?,
+        };
+        // The old headless path treated a retained dead pane as needing a
+        // relaunch; retain that behavior while unknown and unreachable remain
+        // refusals.
+        Ok(match index.agent_liveness(session_id, session_name) {
+            crate::agent::backend::BackendLiveness::Exited => {
+                crate::agent::backend::BackendLiveness::Missing
+            }
+            other => other,
+        })
+    }
+
+    fn headless_live_pane(&self, session_id: &str, session_name: &str) -> Result<Option<String>> {
+        match agent_window(self.host.as_ref(), session_id, session_name)? {
+            Located::Unknown => bail!("ambiguous agent window"),
+            located => Ok(located.pane()),
+        }
+    }
+
+    fn kill_headless(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        agent_pane: &str,
+        shell_pane: &str,
+    ) -> Result<bool> {
+        match self.host.as_ref() {
+            Some(host) => kill_remote_windows(
+                host,
+                session_id,
+                session_name,
+                SessionPanes {
+                    agent: agent_pane,
+                    shell: shell_pane,
+                },
+            ),
+            None => {
+                let index = local_window_index()?;
+                let targets = [
+                    index.agent_window(session_id, session_name).pane(),
+                    index.shell_window(session_id, session_name).pane(),
+                ];
+                let mut killed = false;
+                for target in targets.into_iter().flatten() {
+                    kill_window_at(&target)?;
+                    killed = true;
+                }
+                Ok(killed)
+            }
+        }
+    }
+
     fn needs_liveness_poll(&self) -> bool {
         self.host
             .as_ref()

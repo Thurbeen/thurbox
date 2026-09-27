@@ -194,6 +194,18 @@ pub fn spawn_session_headless_with_progress(
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SpawnResult, String> {
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    spawn_session_headless_with_registry(db, req, progress, &backends)
+}
+
+/// Create through a caller-supplied backend registry, used by adapters and
+/// lifecycle regression harnesses without changing the persisted routing key.
+pub fn spawn_session_headless_with_registry(
+    db: &Database,
+    req: SpawnRequest,
+    progress: Option<ProgressFn<'_>>,
+    backends: &crate::agent::BackendRegistry,
+) -> Result<SpawnResult, String> {
     let report = |phase: SpawnPhase| {
         if let Some(progress) = progress {
             progress(phase);
@@ -203,7 +215,7 @@ pub fn spawn_session_headless_with_progress(
     validate_request(db, &req)?;
 
     // Resolve host and multiplexer before any worktree or pane is made.
-    let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
+    let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref(), backends)?;
     let backend_type = choice.backend_type.clone();
     let host = choice.host.clone();
 
@@ -383,7 +395,8 @@ pub fn spawn_session_headless_with_progress(
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
     let backend_id = launch_window(
-        host.as_ref(),
+        backends,
+        &backend_type,
         &stamp,
         &req.name,
         &command,
@@ -421,7 +434,13 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(
+            backends,
+            &shared.backend_type,
+            &stamp,
+            &req.name,
+            &backend_id,
+        );
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -512,7 +531,8 @@ fn missing_agent_warning(
 /// Open the session's window, on its host or here, and return the new pane's
 /// id.
 fn launch_window(
-    host: Option<&HostDef>,
+    backends: &crate::agent::BackendRegistry,
+    backend_type: &str,
     stamp: &str,
     name: &str,
     command: &str,
@@ -520,33 +540,28 @@ fn launch_window(
     cwd: &std::path::Path,
     env: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    match host {
-        Some(h) => {
-            crate::agent::tmux::spawn_window_remote(h, stamp, name, command, args, Some(cwd), env)
-                .map_err(
-                    |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                        // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
-                        // naming it, the search and the fix.
-                        true => format!("{e}"),
-                        false => format!("Failed to spawn remote tmux window: {e:#}"),
-                    },
-                )
-        }
-        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
-            .map_err(
-                |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                    // Already a sentence naming the binary, the search and the fix;
-                    // a prefix in front of it only pushes the fix off the row.
-                    true => format!("{e}"),
-                    false => format!("Failed to spawn tmux window: {e:#}"),
-                },
-            ),
-    }
+    let backend = backends
+        .get(backend_type)
+        .ok_or_else(|| format!("no registered backend for '{backend_type}'"))?;
+    backend
+        .spawn_headless(stamp, name, command, args, Some(cwd), env)
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                true => format!("{e}"),
+                false => format!("Failed to spawn window on '{backend_type}': {e:#}"),
+            },
+        )
 }
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    backends: &crate::agent::BackendRegistry,
+    backend_type: &str,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
     // spawned. `kill_window`'s resolution would reach the `tb-<name>`
@@ -554,15 +569,10 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
     // where it matters, since psmux records none — which on a name two
     // sessions share destroys a live one. Leaking the window we already
     // leaked is the cheap failure; killing someone else's is not.
-    let cleanup = match host {
-        Some(h) => crate::agent::tmux::kill_remote_windows(
-            h,
-            stamp,
-            name,
-            crate::agent::tmux::SessionPanes::agent(backend_id),
-        ),
-        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
-    };
+    let cleanup = backends
+        .get(backend_type)
+        .ok_or_else(|| anyhow::anyhow!("no registered backend for '{backend_type}'"))
+        .and_then(|backend| backend.kill_headless(stamp, name, backend_id, ""));
     match cleanup {
         Ok(true) => {}
         // Nothing this spawn can prove is its own. The window leaks rather
@@ -1472,18 +1482,19 @@ pub(crate) fn backend_type_for_choice(
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<String, String> {
-    resolve_backend(host, multiplexer).map(|choice| choice.backend_type)
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    resolve_backend(host, multiplexer, &backends).map(|choice| choice.backend_type)
 }
 
 fn resolve_backend(
     host: Option<&str>,
     multiplexer: Option<&str>,
+    backends: &crate::agent::BackendRegistry,
 ) -> Result<crate::session::BackendChoice, String> {
     let (_, host_def) = resolve_host(host)?;
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
     if !backends.supports_choice(&choice) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",

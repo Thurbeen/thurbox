@@ -105,6 +105,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   scenarios assert only on a kernel-owned overlay, never on the session list:
   the list returns on a snapshot tick, seconds even on a healthy link, so it
   cannot tell a frozen interface from a patient one. See ADR-P24.
+- **`tests/lifecycle_dispatch.rs`** — a registered fake backend drives
+  headless create, direct-pane deletion and relaunch, force delete, restore,
+  and host-route identity without a real multiplexer.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
   throwaway socket (skipped when tmux is absent), because the bug it pins only
   exists in how tmux resolves a target. 13 tests. Six pin the reap itself: a
@@ -281,4 +284,3 @@ another, and the probe splits a second pane so that difference is observable.
 half's measurement including the leak case, the verdict table and that a failed
 probe reaches the exit status — with no VM to provision, so the failing branch
 is covered in CI and by `just test-scripts`.
-

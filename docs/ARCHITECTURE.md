@@ -426,7 +426,9 @@ the transport can evolve without touching `App`, `Session`, or any UI
 code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
-`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`.
+`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`, plus
+`spawn_headless`, `headless_discover`, `headless_liveness`,
+`headless_live_pane`, and `kill_headless` for operations outside the TUI.
 
 **Key design decisions**:
 
@@ -437,6 +439,12 @@ code.
 - `discover()` lists existing sessions for restore-on-startup.
 - `detach()` stops streaming without killing the session.
 - `kill()` permanently destroys the session.
+- Headless create, restart, restore, and delete resolve the persisted
+  `backend_type` through `BackendRegistry`. The backend owns pane discovery,
+  launch, and teardown; a new adapter registers routing keys without adding
+  backend-name branches to those shared operations. A failed discovery is an
+  error, not proof that the pane is missing. The tmux implementation keeps its
+  one-shot launch and stamp-based ownership checks behind these methods.
 
 **Rejected**:
 

@@ -51,6 +51,18 @@ use crate::session::{AutomationRunStatus, SessionConfig};
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
+/// Resolve persisted routing keys through the same registry used by the
+/// interface. Lifecycle callers keep the recorded key, including mux suffixes.
+pub(crate) fn registered_backend(
+    backend_type: &str,
+) -> Result<std::sync::Arc<dyn crate::agent::SessionBackend>, String> {
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    backends
+        .get(backend_type)
+        .cloned()
+        .ok_or_else(|| format!("no registered backend for '{backend_type}'"))
+}
+
 /// Deliver local input and retire a Codex report made before that submission.
 /// A hook arriving while tmux delivers the prompt keeps its newer report.
 pub fn send_text_with_status(
