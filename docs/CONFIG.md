@@ -356,6 +356,24 @@ relaunching the agent. RMUX and Herdr adapters must prove this with real
 TUI-open pane-deletion tests, including a backend whose stream does not close
 when its pane is deleted.
 
+### Herdr adapter
+
+Install Herdr 0.9.1 or newer on the machine that runs the pane, then start its
+server with `herdr server`. Thurbox checks the installed CLI and the running
+server when creating a Herdr session. For a local default, set
+`multiplexer = "herdr"` at the top of `settings.toml`; for one creation, choose
+Herdr in the TUI or pass `--multiplexer herdr` to
+`thurbox-cli session create`. In `hosts.toml`, set `multiplexer = "herdr"` on an
+SSH or WSL host, or select Herdr explicitly for a session on that host. The
+Herdr CLI and server must run on the selected host. Direct terminal control is
+supported on Linux and macOS; use a WSL host rather than native Windows.
+
+The recorded local key is `local-herdr`, and a remote key ends in `:herdr`.
+Changing a default later does not change an existing session's backend. If a
+Herdr pane is closed outside Thurbox while the TUI is open, a confirmed missing
+pane is relaunched under the same session and worktree. A stopped session and
+an unreachable server do not authorize a relaunch.
+
 ## hooks.toml
 
 Declares **session lifecycle hooks**: your own shell commands, run by

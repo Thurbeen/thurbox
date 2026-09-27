@@ -46,6 +46,14 @@ impl BackendRegistry {
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
         let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
         let mut backends = Self::new(local);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let herdr: Arc<dyn SessionBackend> =
+                Arc::new(crate::agent::herdr::HerdrBackend::default());
+            backends.register(herdr.clone());
+            // Preserve rows created by the earlier Herdr preview.
+            backends.backends.insert("herdr".into(), herdr);
+        }
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {
@@ -56,6 +64,16 @@ impl BackendRegistry {
             backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
                 &routed,
             )));
+            let herdr_name = format!("{}:herdr", host.backend_name());
+            if !hosts
+                .hosts
+                .iter()
+                .any(|other| other.backend_name() == herdr_name)
+            {
+                backends.register(Arc::new(crate::agent::herdr::HerdrBackend::from_host(
+                    host, herdr_name,
+                )));
+            }
         }
         (backends, hosts, warnings.clone())
     }

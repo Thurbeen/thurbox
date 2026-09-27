@@ -382,15 +382,40 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
-    let backend_id = launch_window(
-        host.as_ref(),
-        &stamp,
-        &req.name,
-        &command,
-        &args,
-        &launch_cwd,
-        &config.env,
-    )?;
+    let backend_id = if crate::agent::herdr::is_herdr_backend(&backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::for_backend(host.as_ref(), &backend_type);
+        let spawned = crate::agent::SessionBackend::spawn(
+            &backend,
+            &req.name,
+            &command,
+            &args,
+            Some(&launch_cwd),
+            &config.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("Failed to spawn Herdr pane: {e:#}"))?;
+        if let Err(error) = crate::agent::SessionBackend::stamp_window(
+            &backend,
+            &spawned.backend_id,
+            &stamp,
+            crate::agent::tmux::WindowRole::Agent,
+        ) {
+            let _ = crate::agent::SessionBackend::kill(&backend, &spawned.backend_id);
+            return Err(format!("Failed to stamp Herdr pane: {error:#}"));
+        }
+        spawned.backend_id
+    } else {
+        launch_window(
+            host.as_ref(),
+            &stamp,
+            &req.name,
+            &command,
+            &args,
+            &launch_cwd,
+            &config.env,
+        )?
+    };
 
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
@@ -421,7 +446,13 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(
+            host.as_ref(),
+            &shared.backend_type,
+            &stamp,
+            &req.name,
+            &backend_id,
+        );
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -546,7 +577,20 @@ fn launch_window(
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    backend_type: &str,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
+    if crate::agent::herdr::is_herdr_backend(backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::for_backend(host, backend_type);
+        if let Err(error) = crate::agent::SessionBackend::kill(&backend, backend_id) {
+            tracing::error!("failed to close orphaned Herdr pane for '{name}': {error:#}");
+        }
+        return;
+    }
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
     // spawned. `kill_window`'s resolution would reach the `tb-<name>`
@@ -1483,12 +1527,33 @@ fn resolve_backend(
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
-    if !backends.supports_choice(&choice) {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    if choice.multiplexer == crate::session::Multiplexer::Herdr
+        && choice.host.as_ref().is_some_and(|selected| {
+            hosts.hosts.iter().any(|other| {
+                other.backend_name() == choice.backend_type && other.name != selected.name
+            })
+        })
+    {
+        return Err(format!(
+            "Herdr backend key '{}' collides with an existing host name",
+            choice.backend_type
+        ));
+    }
+    if choice.multiplexer != crate::session::Multiplexer::Herdr
+        && !backends.supports_choice(&choice)
+    {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",
             choice.multiplexer.name()
         ));
+    }
+    if choice.multiplexer == crate::session::Multiplexer::Herdr {
+        let backend = crate::agent::herdr::HerdrBackend::for_backend(
+            choice.host.as_ref(),
+            &choice.backend_type,
+        );
+        crate::agent::SessionBackend::ensure_ready(&backend).map_err(|e| format!("{e:#}"))?;
     }
     Ok(choice)
 }

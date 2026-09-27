@@ -165,7 +165,17 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let killed = if crate::session::is_remote_backend(&session.backend_type) {
+    let killed = if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        let host = super::resolve_host(&session.backend_type).flatten();
+        if crate::session::is_remote_backend(&session.backend_type) && host.is_none() {
+            return Ok(false);
+        }
+        let backend =
+            crate::agent::herdr::HerdrBackend::for_backend(host.as_ref(), &session.backend_type);
+        crate::agent::backend::SessionBackend::kill(&backend, &session.backend_id)
+            .map(|()| true)
+            .map_err(|e| format!("Herdr pane close failed: {e:#}"))?
+    } else if crate::session::is_remote_backend(&session.backend_type) {
         match super::resolve_host(&session.backend_type).flatten() {
             Some(host) => crate::agent::tmux::kill_remote_windows(
                 &host,
@@ -454,7 +464,10 @@ fn restart_for(
     refuse_if_deleted(db, &session)?;
 
     match host.as_ref() {
-        None => respawn_local(db, &session, &plan)?,
+        None => respawn_local(db, &session, &plan, None)?,
+        Some(host) if crate::agent::herdr::is_herdr_backend(&session.backend_type) => {
+            respawn_local(db, &session, &plan, Some(host))?
+        }
         Some(host) => respawn_remote(db, &session, host, &plan)?,
     }
 
@@ -585,9 +598,14 @@ fn relaunch_is_owed(
     // Only a listing that positively says the window is *gone* relaunches.
     // An ambiguous name — several windows, none stamped — reads as running
     // here on purpose: launching another agent is the expensive mistake.
-    let alive =
+    let alive = if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::for_backend(host, &session.backend_type);
+        !crate::agent::backend::SessionBackend::is_dead(&backend, &session.backend_id)
+            .map_err(|e| format!("could not inspect Herdr pane for '{}': {e:#}", session.name))?
+    } else {
         crate::agent::tmux::agent_window_alive(host, &session.id.to_string(), &session.name)
-            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?
+    };
     if alive {
         tracing::debug!("'{}' is running; nothing to relaunch", session.name);
         return Ok(false);
@@ -597,7 +615,46 @@ fn relaunch_is_owed(
 
 /// Replace a local session's window with the plan's, and point the row at the
 /// new pane.
-fn respawn_local(db: &Database, session: &SharedSession, plan: &RestartPlan) -> Result<(), String> {
+fn respawn_local(
+    db: &Database,
+    session: &SharedSession,
+    plan: &RestartPlan,
+    host: Option<&crate::session::HostDef>,
+) -> Result<(), String> {
+    if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::for_backend(host, &session.backend_type);
+        if !session.backend_id.is_empty() {
+            let _ = crate::agent::backend::SessionBackend::kill(&backend, &session.backend_id);
+        }
+        let spawned = crate::agent::backend::SessionBackend::spawn(
+            &backend,
+            &plan.window_name,
+            &plan.command,
+            &plan.args,
+            plan.cwd.as_deref(),
+            &plan.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("Failed to re-spawn Herdr pane: {e:#}"))?;
+        if let Err(error) = crate::agent::backend::SessionBackend::stamp_window(
+            &backend,
+            &spawned.backend_id,
+            &session.id.to_string(),
+            crate::agent::tmux::WindowRole::Agent,
+        ) {
+            let _ = crate::agent::backend::SessionBackend::kill(&backend, &spawned.backend_id);
+            return Err(format!("Failed to stamp restarted Herdr pane: {error:#}"));
+        }
+        return match record_pane(db, session, &spawned.backend_id) {
+            Recorded::Stored => Ok(()),
+            Recorded::RowGone => {
+                let _ = crate::agent::backend::SessionBackend::kill(&backend, &spawned.backend_id);
+                Err(Recorded::deleted_mid_restart(&session.name))
+            }
+            Recorded::WriteFailed(e) => Err(e),
+        };
+    }
     // A window that is already gone is not an error — the same rule the
     // remote branch follows. It is also what makes this the *respawn*
     // path: a session whose tmux server died is restarted by asking for

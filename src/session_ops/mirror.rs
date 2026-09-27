@@ -210,6 +210,15 @@ pub fn session_to_json_assessed(
 /// (`local-tmux` there). Fields a host older than this one does not print are
 /// simply empty; the id and the name are required.
 pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, String> {
+    let recorded_backend = match value.get("backend_type").and_then(Value::as_str) {
+        Some("herdr" | "local-herdr")
+            if crate::session::is_remote_backend(backend_type)
+                && !backend_type.ends_with(":herdr") =>
+        {
+            format!("{backend_type}:herdr")
+        }
+        _ => backend_type.to_string(),
+    };
     let string = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
     let id: SessionId = string("id")
         .ok_or("session without an id")?
@@ -254,7 +263,7 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
             name,
             agent: string("agent").unwrap_or_else(|| crate::session::DEFAULT_AGENT_NAME.into()),
             backend_id: string("backend_id").unwrap_or_default(),
-            backend_type: backend_type.to_string(),
+            backend_type: recorded_backend,
             agent_session_id: string("agent_session_id"),
             cwd: string("cwd").map(PathBuf::from),
             additional_dirs,
@@ -584,7 +593,46 @@ pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<Mirro
     } else {
         Transitive::Hide
     };
-    let report = reconcile_with(db, &backend, &active, &deleted, transitive);
+    // A host reports its own Herdr panes as local rows. Keep their mux key
+    // separate so a later mirror pass compares them with the same backend.
+    let herdr_rows = |listing: &Value, selected: bool| -> Value {
+        Value::Array(
+            listing
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|row| {
+                    let herdr = matches!(
+                        row.get("backend_type").and_then(Value::as_str),
+                        Some("local-herdr" | "herdr")
+                    );
+                    herdr == selected
+                })
+                .cloned()
+                .collect(),
+        )
+    };
+    let mut report = reconcile_with(
+        db,
+        &backend,
+        &herdr_rows(&active, false),
+        &herdr_rows(&deleted, false),
+        transitive,
+    );
+    let herdr = reconcile_with(
+        db,
+        &format!("{backend}:herdr"),
+        &herdr_rows(&active, true),
+        &herdr_rows(&deleted, true),
+        transitive,
+    );
+    report.adopted.extend(herdr.adopted);
+    report.updated.extend(herdr.updated);
+    report.deleted.extend(herdr.deleted);
+    report.restored.extend(herdr.restored);
+    report.unknown_local.extend(herdr.unknown_local);
+    report.tombstoned.extend(herdr.tombstoned);
+    report.forgotten.extend(herdr.forgotten);
     push_tombstones(db, host, cli, &report.tombstoned);
     Ok(report)
 }

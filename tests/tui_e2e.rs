@@ -92,6 +92,100 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn herdr_command(profile: &Profile, args: &[&str]) -> std::process::Output {
+    let mut command = Command::new("herdr");
+    profile.apply(&mut command);
+    command.args(args);
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run isolated herdr CLI");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if child.try_wait().expect("poll herdr CLI").is_some() {
+            return child.wait_with_output().expect("collect herdr CLI output");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("herdr {args:?} timed out");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct HerdrServer<'a> {
+    child: Child,
+    profile: &'a Profile,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl<'a> HerdrServer<'a> {
+    fn start(profile: &'a Profile) -> Self {
+        let mut command = Command::new("herdr");
+        profile.apply(&mut command);
+        let child = command
+            .arg("server")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start isolated Herdr server");
+        let server = Self { child, profile };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let output = herdr_command(profile, &["status", "server", "--json"]);
+            if output.status.success()
+                && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .is_ok_and(|status| status["running"] == true)
+            {
+                return server;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "isolated Herdr server did not start"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Drop for HerdrServer<'_> {
+    fn drop(&mut self) {
+        let mut command = Command::new("herdr");
+        self.profile.apply(&mut command);
+        if let Ok(mut stop) = command
+            .args(["server", "stop"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if matches!(stop.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if matches!(stop.try_wait(), Ok(None)) {
+                let _ = stop.kill();
+            }
+            let _ = stop.wait();
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// The isolated profile a scenario runs in: every directory the binary reads
 /// or writes, under one tempdir that goes away with the test — except the
 /// multiplexer's socket directory, which has to be short.
@@ -138,6 +232,10 @@ impl Profile {
         cmd.env("HOME", self.path("home"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
+        if self.path("herdr.toml").exists() {
+            cmd.env("HERDR_CONFIG_PATH", self.path("herdr.toml"));
+            cmd.env("HERDR_SOCKET_PATH", self.path("home/herdr.sock"));
+        }
         // Pinned socket, cleared owner tag, private socket directory. Run from
         // inside a thurbox pane, an inherited owner would make the pin read as
         // inherited and put the server on a derived socket the guard never
@@ -1442,6 +1540,205 @@ fn shell_session_prepared_on_branch(
     Some((profile, tui))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn externally_closed_herdr_pane_relaunches_once_with_live_tui() {
+    if !Command::new("herdr")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        eprintln!("skipping real Herdr TUI E2E: herdr is unavailable");
+        return;
+    }
+    let profile = Profile::new();
+    std::fs::write(profile.path("home/.zshrc"), "# isolated Herdr shell\n")
+        .expect("seed isolated zshrc");
+    std::fs::write(
+        profile.path("herdr.toml"),
+        "[terminal]\ndefault_shell = \"/bin/sh\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+    )
+    .expect("seed isolated Herdr config");
+    let server = HerdrServer::start(&profile);
+    let repo = repo(profile.root.path());
+    let mut create = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut create);
+    let created = create
+        .args([
+            "session",
+            "create",
+            "--name",
+            "herdr-close-probe",
+            "--repo-path",
+            repo.to_str().expect("UTF-8 repo path"),
+            "--command",
+            "/bin/sh",
+            "--multiplexer",
+            "herdr",
+            "--json",
+        ])
+        .output()
+        .expect("create Herdr session");
+    assert!(
+        created.status.success(),
+        "create Herdr session: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("created session JSON");
+    let id = created["id"].as_str().expect("session id");
+    let old_pane = created["backend_id"].as_str().expect("initial pane id");
+    let worktrees = created["worktrees"].clone();
+    profile.cli(&["config", "accept-interface"]);
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("herdr-close-probe");
+    tui.wait_for("$ ");
+    let closed = herdr_command(&profile, &["pane", "close", old_pane]);
+    assert!(
+        closed.status.success(),
+        "close Herdr pane: {}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+
+    // The TUI must not retain the dead surface, nor create two replacement
+    // agents while discovery and the old control stream report the same loss.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let replacement = loop {
+        let mut get = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut get);
+        let output = get
+            .args(["session", "get", id, "--no-verify", "--json"])
+            .output()
+            .expect("read Herdr session");
+        assert!(output.status.success(), "session get failed: {output:?}");
+        let row: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("session get JSON");
+        assert_eq!(row["id"], id, "relaunch changed the session identity");
+        assert_eq!(row["worktrees"], worktrees, "relaunch changed the worktree");
+        if let Some(pane) = row["backend_id"].as_str() {
+            if !pane.is_empty() && pane != old_pane {
+                break pane.to_owned();
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Herdr pane was not relaunched; TUI frame:\n{}\n{}",
+            tui.frame(),
+            tui.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    tui.wait_for("$ ");
+    tui.send(b"echo herdr-relaunch-live\r");
+    tui.wait_for("herdr-relaunch-live");
+    std::thread::sleep(Duration::from_secs(2));
+    let listed = herdr_command(&profile, &["pane", "list"]);
+    assert!(listed.status.success(), "list Herdr panes: {listed:?}");
+    let panes: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("Herdr pane JSON");
+    let session_panes: Vec<_> = panes["result"]["panes"]
+        .as_array()
+        .expect("Herdr panes")
+        .iter()
+        .filter(|pane| {
+            pane["label"]
+                .as_str()
+                .is_some_and(|label| label.contains(id))
+        })
+        .collect();
+    assert_eq!(
+        session_panes.len(),
+        1,
+        "duplicate Herdr agent panes: {panes}"
+    );
+    assert_eq!(session_panes[0]["pane_id"], replacement);
+    let mut get = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut get);
+    let row = get
+        .args(["session", "get", id, "--no-verify", "--json"])
+        .output()
+        .expect("recheck Herdr session");
+    assert!(row.status.success(), "recheck Herdr session: {row:?}");
+    let row: serde_json::Value = serde_json::from_slice(&row.stdout).expect("session JSON");
+    assert_eq!(row["backend_id"], replacement, "pane changed twice");
+    assert!(
+        !tui.frame().contains("no live terminal"),
+        "TUI retained a dead surface after relaunch"
+    );
+
+    // A failed discovery while the server is down is unreachable, not proof
+    // that the pane was deleted. The row must keep its identity and pane id.
+    let stopped_server = herdr_command(&profile, &["server", "stop"]);
+    assert!(
+        stopped_server.status.success(),
+        "stop Herdr server: {stopped_server:?}"
+    );
+    drop(server);
+    std::thread::sleep(Duration::from_secs(7));
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open isolated database");
+    let unreachable = db
+        .get_session_by_name("herdr-close-probe")
+        .expect("read unreachable session")
+        .expect("session retained while unreachable");
+    assert_eq!(unreachable.id.to_string(), id);
+    assert_eq!(
+        unreachable.backend_id, replacement,
+        "unreachable server caused relaunch"
+    );
+    assert_eq!(
+        unreachable.worktrees.len(),
+        worktrees.as_array().unwrap().len()
+    );
+    assert!(
+        tui.frame().contains("herdr-close-probe"),
+        "TUI lost the session row"
+    );
+
+    // Herdr retains its panes across a server restart. A successful listing
+    // still places this pane, so Thurbox must reattach it without relaunching.
+    let _resumed_server = HerdrServer::start(&profile);
+    std::thread::sleep(Duration::from_secs(7));
+    let recovered = db
+        .get_session_by_name("herdr-close-probe")
+        .expect("read recovered session")
+        .expect("session retained after recovery");
+    assert_eq!(
+        recovered.backend_id, replacement,
+        "reachable pane was relaunched"
+    );
+    tui.wait_for("$ ");
+    tui.send(b"echo herdr-recovered-live\r");
+    tui.wait_for("herdr-recovered-live");
+
+    profile.cli(&["session", "stop", id]);
+    std::thread::sleep(Duration::from_secs(7));
+    let parked = db
+        .get_session_by_name("herdr-close-probe")
+        .expect("read parked session")
+        .expect("parked row retained");
+    assert_eq!(
+        parked.backend_id, replacement,
+        "intentional stop caused relaunch"
+    );
+    assert!(db
+        .session_stopped_at(parked.id)
+        .expect("read stop mark")
+        .is_some());
+    let listed = herdr_command(&profile, &["pane", "list"]);
+    let panes: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("Herdr pane list");
+    assert!(
+        panes["result"]["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|pane| !pane["label"]
+                .as_str()
+                .is_some_and(|label| label.contains(id))),
+        "stopped session was relaunched: {panes}"
+    );
+    assert!(tui.quit().success(), "TUI did not exit cleanly");
+}
+
 #[test]
 fn a_session_shows_its_terminal_and_takes_keystrokes() {
     // The product, end to end: a session created headlessly appears in the
@@ -1541,13 +1838,13 @@ fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
     let profile = Profile::new();
     std::fs::write(
         profile.path("config/settings.toml"),
-        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+        "multiplexer = \"rmux\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
     )
     .expect("set unavailable backend");
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("herdr is unavailable");
+    tui.wait_for("rmux is unavailable");
     assert!(tui.quit().success());
 }
 
@@ -1559,7 +1856,7 @@ fn explicit_cli_choice_overrides_an_unavailable_local_preference() {
     let profile = Profile::new();
     std::fs::write(
         profile.path("config/settings.toml"),
-        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+        "multiplexer = \"rmux\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
     )
     .expect("set unavailable preference");
     let repo = repo(profile.root.path());
@@ -1581,7 +1878,7 @@ fn explicit_cli_choice_overrides_an_unavailable_local_preference() {
         .expect("create with preference");
     assert!(!unavailable.status.success());
     assert!(
-        String::from_utf8_lossy(&unavailable.stdout).contains("herdr is unavailable"),
+        String::from_utf8_lossy(&unavailable.stdout).contains("rmux is unavailable"),
         "stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&unavailable.stdout),
         String::from_utf8_lossy(&unavailable.stderr)

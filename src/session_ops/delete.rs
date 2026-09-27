@@ -434,16 +434,22 @@ fn finish_remote_teardown(
         }
     }
 
-    let panes = crate::agent::tmux::SessionPanes {
-        agent: row.backend_id.trim(),
-        shell: row
-            .shell_backend_id
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default(),
-    };
-    crate::agent::tmux::kill_remote_windows(host, &id, &row.name, panes)
-        .map_err(|e| format!("{e:#}"))?;
+    if crate::agent::herdr::is_herdr_backend(&row.backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::from_host(host, row.backend_type.clone());
+        crate::agent::backend::SessionBackend::kill(&backend, &row.backend_id)
+            .map_err(|e| format!("Herdr pane close failed: {e:#}"))?;
+    } else {
+        let panes = crate::agent::tmux::SessionPanes {
+            agent: row.backend_id.trim(),
+            shell: row
+                .shell_backend_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default(),
+        };
+        crate::agent::tmux::kill_remote_windows(host, &id, &row.name, panes)
+            .map_err(|e| format!("{e:#}"))?;
+    }
 
     for wt in &row.worktrees {
         if !wt.created_by_thurbox {
@@ -827,6 +833,11 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
             Err(e) => return Err(format!("host '{}': {e}", host.name)),
         }
     }
+    if crate::agent::herdr::is_herdr_backend(&row.backend_type) {
+        let backend = crate::agent::herdr::HerdrBackend::from_host(&host, row.backend_type.clone());
+        return crate::agent::backend::SessionBackend::kill(&backend, &row.backend_id)
+            .map_err(|e| format!("host '{}': {e:#}", host.name));
+    }
     let panes = crate::agent::tmux::SessionPanes {
         agent: &row.backend_id,
         shell: row.shell_backend_id.as_deref().unwrap_or_default(),
@@ -839,6 +850,16 @@ fn reap_remote(row: &DeletedSessionInfo) -> Result<(), String> {
 /// Kill the session's window on the local tmux server, reaping the pane's child
 /// process on Windows (where a live process's cwd blocks the later rmdir).
 fn kill_local_window(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
+    if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        match crate::agent::backend::SessionBackend::kill(
+            &crate::agent::herdr::HerdrBackend::default(),
+            &session.backend_id,
+        ) {
+            Ok(()) => report.killed_window = true,
+            Err(e) => tracing::warn!("Herdr pane close for '{}' failed: {e:#}", session.name),
+        }
+        return;
+    }
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
     // process's cwd, and a session's agent runs with cwd = its worktree /
@@ -883,6 +904,22 @@ fn kill_remote_window(
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
+    if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        let backend =
+            crate::agent::herdr::HerdrBackend::from_host(host, session.backend_type.clone());
+        match crate::agent::backend::SessionBackend::kill(&backend, &session.backend_id) {
+            Ok(()) => report.killed_window = true,
+            Err(e) => {
+                let msg = format!(
+                    "could not close remote Herdr pane for '{}': {e:#}",
+                    session.name
+                );
+                tracing::warn!("{msg}");
+                report.remote_teardown_error = Some(msg);
+            }
+        }
+        return;
+    }
     let panes = crate::agent::tmux::SessionPanes {
         agent: session.backend_id.trim(),
         shell: session

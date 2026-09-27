@@ -201,10 +201,19 @@ pub fn restore_session_headless(
     // machine, and restoring there would produce a local impostor of a remote
     // session — `restart` refuses for the same reason.
     let remote = super::resolve_host(&deleted.backend_type).flatten();
+    if crate::session::is_remote_backend(&deleted.backend_type) && remote.is_none() {
+        return Err(format!(
+            "'{}' runs on backend '{}', which is missing from hosts.toml",
+            deleted.name, deleted.backend_type
+        ));
+    }
     let delegated = remote
         .as_ref()
         .and_then(|host| super::host_cli::delegated(host).map(|cli| (host.clone(), cli)));
-    if crate::session::is_remote_backend(&deleted.backend_type) && delegated.is_none() {
+    if crate::session::is_remote_backend(&deleted.backend_type)
+        && delegated.is_none()
+        && !crate::agent::herdr::is_herdr_backend(&deleted.backend_type)
+    {
         return Err(format!(
             "'{}' runs on remote backend '{}'; restoring it is local-only for now",
             deleted.name, deleted.backend_type
@@ -384,6 +393,58 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
         .ok_or_else(|| format!("restored session not found: {id}"))?;
+    if crate::agent::herdr::is_herdr_backend(&session.backend_type) {
+        let host = super::resolve_host(&session.backend_type).flatten();
+        let backend =
+            crate::agent::herdr::HerdrBackend::for_backend(host.as_ref(), &session.backend_type);
+        if !session.backend_id.is_empty()
+            && matches!(
+                crate::agent::backend::SessionBackend::is_dead(&backend, &session.backend_id),
+                Ok(false)
+            )
+        {
+            return Ok(());
+        }
+        let recipe = db
+            .load_launch_recipe(id)
+            .map_err(|e| format!("read launch recipe: {e}"))?;
+        let env = db
+            .load_launch_env(id)
+            .map_err(|e| format!("read launch env: {e}"))?;
+        let plan = super::restart::build_restart_plan(
+            db,
+            &session,
+            host.as_ref(),
+            super::hooks_enabled(db),
+            recipe.as_ref(),
+            &env,
+        )?;
+        let pane = crate::agent::backend::SessionBackend::spawn(
+            &backend,
+            &plan.window_name,
+            &plan.command,
+            &plan.args,
+            plan.cwd.as_deref(),
+            &plan.env,
+            24,
+            80,
+        )
+        .map_err(|e| format!("re-spawn Herdr pane: {e:#}"))?;
+        if let Err(error) = crate::agent::backend::SessionBackend::stamp_window(
+            &backend,
+            &pane.backend_id,
+            &id.to_string(),
+            crate::agent::tmux::WindowRole::Agent,
+        ) {
+            let _ = crate::agent::backend::SessionBackend::kill(&backend, &pane.backend_id);
+            return Err(format!("stamp restored Herdr pane: {error:#}"));
+        }
+        if let Err(error) = db.set_backend_id(id, &pane.backend_id) {
+            let _ = crate::agent::backend::SessionBackend::kill(&backend, &pane.backend_id);
+            return Err(format!("record restored Herdr pane: {error}"));
+        }
+        return Ok(());
+    }
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //
