@@ -245,6 +245,14 @@ own, which is the point.
   (or `running`, once the pane probe finds its agent), never `idle`, and the
   agent's hooks drive it from there (so an idle, just-booted agent doesn't look
   stuck working).
+  Codex input that may submit a prompt (`session send`, `session key enter`, or
+  a direct Enter delivered by the TUI) clears an older report conditionally: a
+  hook that reported during delivery wins. This covers hooks left untrusted by
+  the user without changing that trust choice. A silent Codex session then
+  reads `unreported`
+  without a pane probe or `running` with one; neither claims a turn is active.
+  With hooks disabled, turn completion and prompts submitted outside Thurbox
+  cannot be determined from the process alone.
 - **A parked session takes no state.** `set_hook_state` returns `false` for a
   row with `stopped_at` set, and `set_session_stopped(true)` clears the hook
   columns in the same transaction as the mark. `session stop` killed the pane,
@@ -373,4 +381,3 @@ overflow the banner.
   not own, and per-emulator window control is fragile, especially on Wayland.
 - **Gated by `[features] notifications`** (default on); knobs in `[notifications]`.
   `backend = "off"` is a soft delivery switch distinct from the feature flag.
-

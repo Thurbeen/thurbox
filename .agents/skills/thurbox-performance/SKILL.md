@@ -44,9 +44,10 @@ printing agent being drawn at 4 fps. It sums each pane's `output_seq`, bumped
 after the parse, never the millisecond `last_output_at`: that stamp was stored
 before the parse and cannot tell two chunks in one millisecond apart. What does **not**: background housekeeping.
 A command answering `Command::is_housekeeping()` (the 5-second deleted-session
-sweep, and nothing else) is dispatched to a worker with no in-flight record at
-all, so it reaches neither `thurbox.commands`, nor the message band, nor the
-animation clock — recorded like a command someone pressed, the sweep reserved a
+sweep or a Codex status reset after delivered input) is dispatched to a worker
+with no in-flight record, so it reaches neither `thurbox.commands`, nor the
+message band, nor the animation clock — recorded like a command someone
+pressed, the sweep reserved a
 band row and gave it back every five seconds, and a band row appearing is a
 reflow (ADR-P22). A **reflow** — the arrangement placing a
 slot at a new rect, so a column opened or closed — additionally forces one *full*
