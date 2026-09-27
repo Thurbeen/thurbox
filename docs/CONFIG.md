@@ -340,9 +340,10 @@ When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.
 
-The resolved choice is recorded in each new session's `backend_type`. Existing
-`local-tmux`, `ssh:<host>`, and `wsl:<distro>` rows keep their original
-tmux/psmux routing after a preference changes. An adapter for another
+The resolved choice is recorded in each new session's `backend_type`. New psmux
+sessions use `local-psmux` or `ssh:<host>:psmux`; the registry also routes old
+`local-tmux` and `ssh:<host>` psmux rows to the same backend. Existing
+`wsl:<distro>` rows keep their tmux routing after a preference changes. An adapter for another
 multiplexer registers its own local and host routing keys; it must read those
 keys on restart, restore, delete, input, capture, and fork.
 

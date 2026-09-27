@@ -12,6 +12,7 @@ mod osc8;
 pub mod output_wake;
 pub mod preflight;
 pub mod provider;
+pub mod psmux;
 pub mod registry;
 pub mod self_update;
 pub mod settings_config;

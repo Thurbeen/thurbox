@@ -285,7 +285,7 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backend: `TmuxBackend` over a `TmuxTransport`
+- Session backend: `TmuxBackend` or `PsmuxBackend` over a shared `TmuxTransport`
   (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
   `ssh:<host>` backends from `hosts.toml`). The local socket is
   `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one

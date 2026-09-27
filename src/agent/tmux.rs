@@ -1239,6 +1239,10 @@ impl Default for TmuxBackend {
 }
 
 impl TmuxBackend {
+    pub(crate) fn set_name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+    }
+
     /// Build the local tmux backend (`tmux -L thurbox`).
     pub fn new() -> Self {
         Self::local()
@@ -1306,7 +1310,10 @@ impl TmuxBackend {
     /// own CLI has since reported a different one (see [`learn_host_socket`]).
     /// Resolved per call so a backend registered at startup follows the host.
     fn socket(&self) -> String {
-        learned_host_socket(&self.name).unwrap_or_else(|| self.socket.clone())
+        self.host
+            .as_ref()
+            .map(host_socket)
+            .unwrap_or_else(|| self.socket.clone())
     }
 
     /// Run a tmux command and return its stdout (used before control mode is available).
@@ -5138,6 +5145,22 @@ mod tests {
         };
         learn_host_socket(&pinned, "thurbox");
         assert_eq!(host_socket(&pinned), "mine");
+    }
+
+    #[test]
+    fn a_qualified_psmux_backend_follows_a_socket_learned_after_registration() {
+        let host = crate::session::HostDef {
+            name: "qualified-socket-host".into(),
+            destination: "unused".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        let mut backend = TmuxBackend::from_host(&host);
+        backend.set_name(format!("{}:psmux", host.backend_name()));
+        let before = backend.socket();
+        learn_host_socket(&host, "learned-after-registration");
+        assert_ne!(before, "learned-after-registration");
+        assert_eq!(backend.socket(), "learned-after-registration");
     }
 
     #[test]

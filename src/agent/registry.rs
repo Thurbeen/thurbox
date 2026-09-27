@@ -44,8 +44,18 @@ impl BackendRegistry {
     /// read of `hosts.toml`. The warnings are that read's, for callers that
     /// surface them.
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
-        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
+        let local: Arc<dyn SessionBackend> = if cfg!(windows) {
+            Arc::new(crate::agent::psmux::PsmuxBackend::local())
+        } else {
+            Arc::new(crate::agent::tmux::LocalTmuxBackend::new())
+        };
         let mut backends = Self::new(local);
+        if cfg!(windows) {
+            backends.register_alias(
+                crate::session::LOCAL_BACKEND_TYPE,
+                backends.default_backend().clone(),
+            );
+        }
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {
@@ -53,9 +63,16 @@ impl BackendRegistry {
             if matches!(routed.mux().as_str(), "rmux" | "herdr") {
                 routed.multiplexer = Some("tmux".into());
             }
-            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
-                &routed,
-            )));
+            if routed.mux() == "psmux" {
+                let backend: Arc<dyn SessionBackend> =
+                    Arc::new(crate::agent::psmux::PsmuxBackend::from_host(&routed));
+                backends.register_alias(routed.backend_name(), backend.clone());
+                backends.register(backend);
+            } else {
+                backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+                    &routed,
+                )));
+            }
         }
         (backends, hosts, warnings.clone())
     }
@@ -64,6 +81,10 @@ impl BackendRegistry {
     pub fn register(&mut self, backend: Arc<dyn SessionBackend>) {
         let name = backend.name().to_string();
         self.backends.insert(name, backend);
+    }
+
+    fn register_alias(&mut self, name: impl Into<String>, backend: Arc<dyn SessionBackend>) {
+        self.backends.insert(name.into(), backend);
     }
 
     /// Look up a backend by name.

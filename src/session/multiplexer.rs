@@ -75,8 +75,12 @@ impl BackendChoice {
             Multiplexer::parse(name)?
         };
         let backend_type = match &host {
+            Some(host) if multiplexer == Multiplexer::Psmux => {
+                format!("{}:psmux", host.backend_name())
+            }
             Some(host) if multiplexer == fallback => host.backend_name(),
             Some(host) => format!("{}:{}", host.backend_name(), multiplexer.name()),
+            None if multiplexer == Multiplexer::Psmux => "local-psmux".to_string(),
             None if multiplexer == fallback => super::LOCAL_BACKEND_TYPE.to_string(),
             None => format!("local-{}", multiplexer.name()),
         };

@@ -36,8 +36,9 @@ when multiple PTY sessions are producing concurrent output.
 **Choice**: A `SessionBackend` trait abstracts session lifecycle
 (spawn, adopt, resize, kill, detach, discover). Each session runs
 one coding-agent CLI inside the backend. The default backend is
-local tmux (`tmux -L thurbox`); the same `TmuxBackend` also runs
-over SSH for remote hosts (ADR-13).
+local tmux (`tmux -L thurbox`); `TmuxBackend` also runs over SSH and WSL.
+Native Windows psmux has its own registered `PsmuxBackend`, using the shared
+control-mode transport (ADR-13).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
@@ -461,7 +462,7 @@ code.
 
 ## ADR-12: Local tmux as default backend
 
-**Choice**: The default `SessionBackend` is `TmuxBackend`
+**Choice**: On POSIX the default `SessionBackend` is `TmuxBackend`
 parameterized over its `Local` transport (`TmuxTransport::Local`)
 and registered as `local-tmux`, using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
@@ -648,7 +649,10 @@ and WSL distros are additionally **auto-discovered**
 (`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
 combined set is loaded by `agent::host_config::load_all`, each
 registered as a backend named `ssh:<host>` / `wsl:<distro>` via
-`TmuxBackend::from_host`.
+`TmuxBackend::from_host`. A psmux host instead registers `PsmuxBackend` under
+`ssh:<host>:psmux`; its old `ssh:<host>` route remains an alias for persisted
+sessions. On native Windows the local backend is `PsmuxBackend` under
+`local-psmux`, with `local-tmux` as a persisted-row alias.
 
 **Why WSL = "SSH without the ssh"**: `wsl.exe` runs `tmux`, `git`, the
 agent, and the worktrees all *inside* the distro at native Linux paths,

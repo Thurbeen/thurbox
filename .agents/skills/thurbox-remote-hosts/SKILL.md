@@ -65,7 +65,9 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
-How it works: `TmuxBackend` is transport-neutral
+How it works: `TmuxBackend` provides the shared transport and control-mode
+protocol; native Windows psmux uses a separately registered `PsmuxBackend`
+for its lifecycle capabilities and routing identity. `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
 `<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
 a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
@@ -78,8 +80,8 @@ go through `wsl.exe --exec` instead — see `shell::wsl_command` /
 `git::host_shell_c`.) The local `DEFAULT_MUX` is **`tmux` on
 Linux/macOS and `psmux` on Windows** — psmux is a native-Windows, drop-in tmux
 clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
-pane-id (`%N`) / `-L` socket model, so the whole backend is parameterized by
-binary name rather than forked (a remote SSH host can also pin
+pane-id (`%N`) / `-L` socket model, so the wire helpers are shared rather than
+forked (a remote SSH host can also pin
 `multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
 control-mode protocol is byte-identical over either transport/binary, with
 **psmux divergences** (verified against psmux 3.3.6, each branched on
@@ -119,8 +121,10 @@ so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
 envelope is decoded to the message inside it. See the two subsections after
 "psmux divergences" in ADR-13.
 
-Each host registers a backend named
-`ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
+Each tmux host registers a backend named
+`ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`); a psmux host registers
+`ssh:<name>:psmux` and aliases its old `ssh:<name>` key, while native Windows
+registers `local-psmux` and aliases `local-tmux`. All are registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
 — looking a backend up is a map read, and the blocking `ensure_ready` runs on the
@@ -516,4 +520,3 @@ session), never on the loop, ADR-P12).
   than relaunching against a host it cannot reach, then bring the host back
   and assert exactly one agent window exists — never a second one started
   while the host looked absent.
-
