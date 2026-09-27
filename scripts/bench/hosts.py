@@ -1,8 +1,8 @@
-"""The three hosts, behind one interface.
+"""The four hosts, behind one interface.
 
 Each adapter creates sessions the way that host's own documentation says to do
-it headlessly, and nothing cleverer: ``tmux new-window``, Herdr's ``tab create``
-plus ``pane run``, ``thurbox-cli session create --command``. The scenarios only
+it headlessly, and nothing cleverer: ``tmux/rmux new-window``, Herdr's ``tab
+create`` plus ``pane run``, ``thurbox-cli session create --command``. The scenarios only
 ever talk to this interface, so a number in the report is never one host's
 special path against another's general one.
 
@@ -152,12 +152,13 @@ class Host:
 
 class Tmux(Host):
     name = "tmux"
+    binary = "tmux"
     detach_keys = b"\x02d"  # prefix, d
 
     def __init__(self, sandbox, tools):
         super().__init__(sandbox, tools)
         # `-f /dev/null`: tmux's defaults, not whatever ~/.tmux.conf a machine has.
-        self.base = [tools["tmux"], "-L", "bench-raw", "-f", "/dev/null"]
+        self.base = [tools[self.binary], "-L", "bench-raw", "-f", "/dev/null"]
 
     def tmux(self, *args, check=True):
         return self.sb.run(self.base + list(args), check=check)
@@ -205,6 +206,14 @@ class Tmux(Host):
 
     def versions(self):
         return {"tmux": self.sb.run([self.tools["tmux"], "-V"]).stdout.strip()}
+
+
+class Rmux(Tmux):
+    name = "rmux"
+    binary = "rmux"
+
+    def versions(self):
+        return {"rmux": self.sb.run([self.tools["rmux"], "-V"]).stdout.strip()}
 
 
 # --- Herdr ---------------------------------------------------------------------
@@ -429,4 +438,4 @@ class Thurbox(Host):
         return {"thurbox": f"{out['version']} (schema v{out['schema_version']})"}
 
 
-HOSTS = {"tmux": Tmux, "herdr": Herdr, "thurbox": Thurbox}
+HOSTS = {"tmux": Tmux, "herdr": Herdr, "rmux": Rmux, "thurbox": Thurbox}

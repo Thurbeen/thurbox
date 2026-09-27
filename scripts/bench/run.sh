@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Benchmark raw tmux vs Herdr vs thurbox — the one command.
+# Benchmark raw tmux, Herdr, RMUX and Thurbox (tmux) — the one command.
 #
 #   scripts/bench/run.sh                       # fetch, build, run every scenario
 #   scripts/bench/run.sh --quick --reps 1      # try the harness end to end
@@ -35,7 +35,8 @@ herdr_dir=$cache/herdr-$HERDR_VERSION-$(uname -m)
 export BENCH_CACHE=$cache
 
 build=1
-hosts=tmux,herdr,thurbox
+hosts=tmux,herdr,rmux,thurbox
+rmux_bin=rmux
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,6 +47,15 @@ while [ $# -gt 0 ]; do
             ;;
         --hosts)
             hosts=${2:-}
+            args+=("$1" "${2:-}")
+            shift
+            ;;
+        --rmux=*)
+            rmux_bin=${1#--rmux=}
+            args+=("$1")
+            ;;
+        --rmux)
+            rmux_bin=${2:-}
             args+=("$1" "${2:-}")
             shift
             ;;
@@ -93,10 +103,20 @@ if [ "$build" = 1 ] && [[ ",$hosts," == *,thurbox,* ]]; then
     (cd "$repo" && nice -n 10 cargo build --release --bin thurbox --bin thurbox-cli)
 fi
 
-command -v tmux >/dev/null || {
-    echo "run.sh: tmux is not on PATH (nix develop provides it)" >&2
-    exit 2
-}
+if [[ ",$hosts," == *,rmux,* ]]; then
+    command -v "$rmux_bin" >/dev/null || {
+        echo "run.sh: rmux is not executable: $rmux_bin" >&2
+        exit 2
+    }
+    "$rmux_bin" -V
+fi
+
+if [[ ",$hosts," == *,tmux,* ]] || [[ ",$hosts," == *,thurbox,* ]]; then
+    command -v tmux >/dev/null || {
+        echo "run.sh: tmux is not on PATH (nix develop provides it)" >&2
+        exit 2
+    }
+fi
 
 if command -v python3 >/dev/null; then
     exec python3 "$repo/scripts/bench/run.py" "${herdr_args[@]}" "${args[@]}"

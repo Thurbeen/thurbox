@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the multiplexer benchmark: raw tmux vs Herdr vs thurbox.
+"""Run the stand-in-agent benchmark on tmux, Herdr, RMUX and Thurbox (tmux).
 
     scripts/bench/run.py                         # every scenario, every host
     scripts/bench/run.py --scenarios latency --hosts tmux,thurbox --reps 3
@@ -9,10 +9,10 @@ Writes ``results.json`` (every sample, with the load average it ran under),
 scenario) into ``--out``. ``scripts/bench/run.sh`` fetches the pinned Herdr and
 builds thurbox first; this file assumes both are there.
 
-Each repetition gets a fresh sandbox (own HOME, XDG dirs, tmux socket, Herdr
+Each repetition gets a fresh sandbox (own HOME, XDG dirs, socket, Herdr
 state), and every server it started is killed before the next one. Hosts are
-interleaved within a repetition so a slow drift in the machine lands on all
-three rather than on whichever ran last. The first ``--warmup`` repetitions are
+interleaved and rotated across repetitions so a slow drift in the machine
+lands on all four. The first ``--warmup`` repetitions are
 recorded but marked, and left out of the summary.
 """
 
@@ -56,6 +56,10 @@ class Ctx:
         for i in range(self.warmup + self.reps):
             yield i, i < self.warmup
 
+    def host_order(self, rep):
+        offset = rep % len(self.hosts)
+        return self.hosts[offset:] + self.hosts[:offset]
+
     def fresh(self, name):
         """A new host in a new sandbox. Scenarios must ``close`` it."""
         sandbox = bl.Sandbox(os.path.join(self.root, name))
@@ -77,6 +81,7 @@ class Ctx:
         row = {
             "scenario": scenario,
             "host": host,
+            "underlying_multiplexer": "tmux" if host == "thurbox" else host,
             "variant": variant,
             "rep": rep,
             "warmup": warmup,
@@ -99,6 +104,8 @@ def resolve_tools(args):
     tools = {}
     if {"tmux", "thurbox"} & set(args.hosts):
         tools["tmux"] = shutil.which("tmux")
+    if "rmux" in args.hosts:
+        tools["rmux"] = args.rmux or shutil.which("rmux")
     if "herdr" in args.hosts:
         tools["herdr"] = args.herdr or os.path.join(
             CACHE, f"herdr-v0.9.1-{platform.machine()}", "herdr"
@@ -143,7 +150,8 @@ def thurbox_commit(tools):
         return None
 
 
-CSV_FIELDS = ["scenario", "host", "variant", "rep", "warmup", "load1", "load1_end"]
+CSV_FIELDS = ["scenario", "host", "underlying_multiplexer", "variant", "rep",
+              "warmup", "load1", "load1_end"]
 
 
 def flatten(records):
@@ -216,7 +224,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--hosts", default="tmux,herdr,thurbox")
+    p.add_argument("--hosts", default="tmux,herdr,rmux,thurbox")
     p.add_argument("--scenarios", default=",".join(SCENARIOS))
     p.add_argument("--reps", type=int, default=5)
     p.add_argument("--warmup", type=int, default=1)
@@ -228,9 +236,12 @@ def main(argv=None):
         "--out", default=None, help="results directory (default: <work>/results-<timestamp>)"
     )
     p.add_argument("--herdr", default=None, help="path to the herdr binary")
+    p.add_argument("--rmux", default=None, help="path to the rmux binary")
     p.add_argument("--thurbox-bin", default=None, help="directory holding thurbox and thurbox-cli")
     args = p.parse_args(argv)
     args.hosts = [h for h in args.hosts.split(",") if h]
+    if not args.hosts:
+        p.error("--hosts requires at least one host")
     scenarios = [s for s in args.scenarios.split(",") if s]
     for s in scenarios:
         if s not in SCENARIOS:
@@ -261,11 +272,17 @@ def main(argv=None):
         "load_at_start": bl.load(),
         "niceness": os.nice(0),
         "hosts": args.hosts,
+        "underlying_multiplexers": {"tmux": "tmux", "herdr": "herdr",
+                                    "rmux": "rmux", "thurbox": "tmux"},
+        "session_command": ["python3", "scripts/bench/agent.py", "<session-name>",
+                            "<sandbox-agents-dir>"],
+        "shell": "/bin/sh",
         "scenarios": scenarios,
         "reps": args.reps,
         "warmup": args.warmup,
         "quick": args.quick,
         "versions": versions(ctx),
+        "binary_sha256": {name: bl.binary_hash(path) for name, path in tools.items()},
         "thurbox_commit": thurbox_commit(tools),
         "timing": "in-harness, CLOCK_MONOTONIC (hyperfine not used)",
     }
