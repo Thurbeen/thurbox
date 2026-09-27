@@ -43,13 +43,27 @@ impl SessionBackend for RemoteProbe {
     ) -> Result<SpawnedSession> {
         unreachable!()
     }
+    fn spawn_headless(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: Option<&Path>,
+        _: &HashMap<String, String>,
+    ) -> Result<String> {
+        anyhow::bail!("this probe cannot spawn")
+    }
     fn adopt(&self, _: &str, _: u16, _: u16, _: Option<Vec<u8>>) -> Result<AdoptedSession> {
         unreachable!()
     }
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
         Ok(self.pane.lock().unwrap().iter().cloned().collect())
     }
-    fn stamp_window(&self, _: &str, _: &str, _: thurbox::agent::tmux::WindowRole) -> Result<()> {
+    fn headless_discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.discover()
+    }
+    fn stamp_window(&self, _: &str, _: &str, _: thurbox::agent::backend::WindowRole) -> Result<()> {
         Ok(())
     }
     fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
@@ -101,7 +115,7 @@ fn a_registered_remote_suffix_receives_direct_force_delete() {
             name: "probe".into(),
             is_alive: true,
             session: id.to_string(),
-            role: thurbox::agent::tmux::WindowRole::Agent,
+            role: thurbox::agent::backend::WindowRole::Agent,
         })),
         kills: kills.clone(),
     });

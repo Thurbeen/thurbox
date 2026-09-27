@@ -445,6 +445,11 @@ code.
   backend-name branches to those shared operations. A failed discovery is an
   error, not proof that the pane is missing. The tmux implementation keeps its
   one-shot launch and stamp-based ownership checks behind these methods.
+- `WindowRole`, `Located`, and `DiscoveredSession` are backend contract types;
+  tmux's window-name parser remains in the tmux implementation.
+  `spawn_headless` and `headless_discover` require explicit implementations:
+  dropping interactive stream handles may stop a pane, and an interactive
+  discovery method may hide a failed remote probe.
 
 **Rejected**:
 

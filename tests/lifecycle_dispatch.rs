@@ -59,7 +59,7 @@ impl SessionBackend for ProbeBackend {
             name: window_name.to_string(),
             is_alive: true,
             session: String::new(),
-            role: thurbox::agent::tmux::WindowRole::Agent,
+            role: thurbox::agent::backend::WindowRole::Agent,
         });
         Ok(SpawnedSession {
             backend_id,
@@ -68,17 +68,37 @@ impl SessionBackend for ProbeBackend {
             size: None,
         })
     }
+    fn spawn_headless(
+        &self,
+        session_id: &str,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Result<String> {
+        let spawned = self.spawn(window_name, command, args, cwd, env, 24, 80)?;
+        self.stamp_window(
+            &spawned.backend_id,
+            session_id,
+            thurbox::agent::backend::WindowRole::Agent,
+        )?;
+        Ok(spawned.backend_id)
+    }
     fn adopt(&self, _: &str, _: u16, _: u16, _: Option<Vec<u8>>) -> Result<AdoptedSession> {
         unreachable!()
     }
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
         Ok(self.panes.lock().unwrap().clone())
     }
+    fn headless_discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.discover()
+    }
     fn stamp_window(
         &self,
         pane: &str,
         session: &str,
-        _: thurbox::agent::tmux::WindowRole,
+        _: thurbox::agent::backend::WindowRole,
     ) -> Result<()> {
         if let Some(found) = self
             .panes
@@ -209,7 +229,7 @@ fn ambiguous_unstamped_panes_are_never_killed_or_relaunched() {
             name: "same-name".into(),
             is_alive: true,
             session: String::new(),
-            role: thurbox::agent::tmux::WindowRole::Agent,
+            role: thurbox::agent::backend::WindowRole::Agent,
         }));
     let live = backend.headless_liveness("session-a", "same-name").unwrap();
     assert_eq!(live, thurbox::agent::backend::BackendLiveness::Unknown);

@@ -144,11 +144,25 @@ mod tests {
         ) -> Result<SpawnedSession> {
             unimplemented!()
         }
+        fn spawn_headless(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &HashMap<String, String>,
+        ) -> Result<String> {
+            anyhow::bail!("stub backend cannot spawn")
+        }
         fn adopt(&self, _: &str, _: u16, _: u16, _: Option<Vec<u8>>) -> Result<AdoptedSession> {
             unimplemented!()
         }
         fn discover(&self) -> Result<Vec<DiscoveredSession>> {
             Ok(vec![])
+        }
+        fn headless_discover(&self) -> Result<Vec<DiscoveredSession>> {
+            self.discover()
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
             Ok(())
