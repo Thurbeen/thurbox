@@ -376,7 +376,10 @@ fn opening_without_hosts_shows_available_multiplexers_first() {
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Multiplexer"), "{screen}");
-    assert!(screen.contains("tmux"), "{screen}");
+    assert!(
+        screen.contains(thurbox::agent::preflight::local_multiplexer()),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -1550,7 +1553,7 @@ fn a_plain_selection_names_the_session_then_the_agent() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some("tmux".into()),
+            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -1591,7 +1594,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some("tmux".into()),
+            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -1665,7 +1668,7 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
             worktree_path: Some("/src/thurbox/.worktrees/dynamic-tooltips".into()),
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some("tmux".into()),
+            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -1739,7 +1742,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some("tmux".into()),
+            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );

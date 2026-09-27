@@ -357,8 +357,8 @@ pub trait SessionBackend: Send + Sync {
 
     /// Backends whose stream does not reliably end when a window is deleted
     /// request periodic discovery of attached sessions. tmux reports close
-    /// events in control mode and opts out; a backend without that guarantee
-    /// keeps the default.
+    /// events in control mode and opts out; psmux and backends without that
+    /// guarantee keep polling.
     fn needs_liveness_poll(&self) -> bool {
         true
     }
@@ -1198,9 +1198,11 @@ impl ProgramPane {
 /// local backends. Drives the session list's remote indicator.
 fn remote_host_from_backend(backend: &Arc<dyn SessionBackend>) -> Option<String> {
     let name = backend.name();
-    name.strip_prefix(crate::session::SSH_BACKEND_PREFIX)
-        .or_else(|| name.strip_prefix(crate::session::WSL_BACKEND_PREFIX))
-        .map(str::to_string)
+    let (hosts, _) = crate::agent::host_config::cached_registry();
+    hosts
+        .get_by_backend(name)
+        .map(|host| host.name.clone())
+        .or_else(|| crate::session::host_name_of(name).map(str::to_string))
 }
 
 /// A running session connected to a backend.

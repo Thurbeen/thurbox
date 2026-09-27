@@ -48,24 +48,21 @@ pub fn is_remote_backend(backend_name: &str) -> bool {
     is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
 }
 
-/// The bare host name inside a backend name — `ssh:devbox` → `devbox` — or
-/// `None` for a local backend.
+/// The text after a remote backend prefix — `ssh:devbox` → `devbox` — or
+/// `None` for a local backend. A mux suffix is ambiguous without a
+/// [`HostRegistry`], so this leaves it intact.
 ///
-/// The one place the prefix is stripped. A session's machine is published to
+/// A session's machine is published to
 /// the interface bare while the host picker carries the prefixed backend name,
 /// and the two have to answer as one vocabulary: the session list groups rows
 /// by the former and creations-in-flight by the latter, so a second spelling
 /// put a creation under a machine that did not exist.
 pub fn host_name_of(backend_name: &str) -> Option<&str> {
+    // Keep the whole bare name: without a registry, `ssh:box:rmux` may be a
+    // legacy host literally named `box:rmux` or a mux-qualified `box`.
     backend_name
         .strip_prefix(SSH_BACKEND_PREFIX)
         .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))
-        .map(|bare| {
-            [":tmux", ":psmux", ":rmux", ":herdr"]
-                .into_iter()
-                .find_map(|suffix| bare.strip_suffix(suffix))
-                .unwrap_or(bare)
-        })
         // A bare `ssh:` names no machine. Nothing builds one today — the
         // picker appends a name and an empty `--host` is dropped at parse —
         // but `Some("")` is a machine whose name is the empty string, and the
@@ -372,17 +369,28 @@ impl HostRegistry {
     /// unreachable.
     pub fn get_by_backend(&self, backend_name: &str) -> Option<&HostDef> {
         let bare = host_name_of(backend_name)?;
-        self.get(bare)
+        self.get(bare).or_else(|| {
+            [":tmux", ":psmux", ":rmux", ":herdr"]
+                .into_iter()
+                .find_map(|suffix| bare.strip_suffix(suffix).and_then(|name| self.get(name)))
+        })
     }
 
     /// Read an existing row by its recorded choice, not a host preference that
     /// may have changed since the row was created. Unsuffixed keys keep the
     /// historical tmux/psmux meaning.
     pub fn resolved_by_backend(&self, backend_name: &str) -> Option<HostDef> {
+        let bare = host_name_of(backend_name)?;
         let mut host = self.get_by_backend(backend_name)?.clone();
-        let selected = ["tmux", "psmux", "rmux", "herdr"]
-            .into_iter()
-            .find(|mux| backend_name.ends_with(&format!(":{mux}")));
+        let selected = self
+            .get(bare)
+            .is_none()
+            .then(|| {
+                ["tmux", "psmux", "rmux", "herdr"]
+                    .into_iter()
+                    .find(|mux| bare.ends_with(&format!(":{mux}")))
+            })
+            .flatten();
         if let Some(mux) = selected {
             host.multiplexer = Some(mux.to_string());
         } else if matches!(host.mux().as_str(), "rmux" | "herdr") {
@@ -637,7 +645,23 @@ mod tests {
                 .mux(),
             "rmux"
         );
-        assert_eq!(host_name_of("ssh:example:rmux"), Some("example"));
+        assert_eq!(host_name_of("ssh:example:rmux"), Some("example:rmux"));
+    }
+
+    #[test]
+    fn legacy_host_name_ending_in_mux_is_not_truncated() {
+        let registry = HostRegistry {
+            config_version: None,
+            hosts: vec![HostDef {
+                name: "example:rmux".into(),
+                ..Default::default()
+            }],
+        };
+        let host = registry
+            .resolved_by_backend("ssh:example:rmux")
+            .expect("legacy host remains resolvable");
+        assert_eq!(host.name, "example:rmux");
+        assert_eq!(host.mux(), "tmux");
     }
 
     #[test]

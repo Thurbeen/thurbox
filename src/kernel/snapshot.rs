@@ -1721,9 +1721,13 @@ fn read_hosts() -> Vec<HostRow> {
         .collect()
 }
 
-/// A remote session's bare host name, read off its backend name.
+/// A remote session's host name, using the registry to resolve suffixes.
 fn remote_host_of(backend: &str) -> Option<String> {
-    crate::session::host_name_of(backend).map(str::to_string)
+    let (hosts, _) = crate::agent::host_config::cached_registry();
+    hosts
+        .get_by_backend(backend)
+        .map(|host| host.name.clone())
+        .or_else(|| crate::session::host_name_of(backend).map(str::to_string))
 }
 
 /// Best-effort repo label: the worktree's repo directory name, else the cwd's.

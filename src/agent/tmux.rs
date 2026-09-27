@@ -2276,7 +2276,9 @@ impl TmuxBackend {
 
 impl SessionBackend for TmuxBackend {
     fn needs_liveness_poll(&self) -> bool {
-        false
+        self.host
+            .as_ref()
+            .map_or(cfg!(windows), |host| host.is_windows())
     }
     fn name(&self) -> &str {
         &self.name
@@ -4578,6 +4580,18 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+
+    #[test]
+    fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {
+        let host = crate::session::HostDef {
+            name: "windows".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        assert!(TmuxBackend::from_host(&host).needs_liveness_poll());
+        #[cfg(windows)]
+        assert!(TmuxBackend::new().needs_liveness_poll());
+    }
 
     /// The one distinction the remote teardown rests on. Each answer below is
     /// what tmux 3.5/3.7 actually printed when asked for a listing it could not

@@ -593,6 +593,27 @@ fn record_fork_point(db: &Database, session_id: SessionId, req: &SpawnRequest) {
     }
 }
 
+/// Arguments that preserve the resolved choice on a compatible host CLI.
+fn delegated_mux_option(
+    req: &SpawnRequest,
+    choice: &crate::session::BackendChoice,
+    host: &HostDef,
+) -> Vec<String> {
+    // Older compatible host CLIs do not know this flag. Their existing
+    // platform default already matches an unqualified request; a deliberate
+    // override or non-default host preference needs the new CLI contract.
+    let platform_default = if host.is_windows() {
+        crate::session::Multiplexer::Psmux
+    } else {
+        crate::session::Multiplexer::Tmux
+    };
+    if req.multiplexer.is_none() && choice.multiplexer == platform_default {
+        Vec::new()
+    } else {
+        vec!["--multiplexer".into(), choice.multiplexer.name().into()]
+    }
+}
+
 /// Create the session by running `thurbox-cli session create` **on the host**.
 ///
 /// The host's CLI does what the rest of this file does — resolves the
@@ -665,10 +686,7 @@ fn spawn_delegated(
     if let Some(agent) = &req.agent {
         args.extend(["--agent".to_string(), agent.clone()]);
     }
-    args.extend([
-        "--multiplexer".to_string(),
-        choice.multiplexer.name().to_string(),
-    ]);
+    args.extend(delegated_mux_option(&req, choice, host));
     if let Some(branch) = &req.worktree_branch {
         args.extend(["--worktree-branch".to_string(), branch.clone()]);
     }
@@ -1508,6 +1526,23 @@ mod tests {
             repo_path: PathBuf::from("/tmp"),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn default_delegation_works_with_a_host_cli_without_the_new_flag() {
+        let host = HostDef {
+            name: "example".into(),
+            ..Default::default()
+        };
+        let choice = crate::session::BackendChoice::resolve(Some(host.clone()), None, None)
+            .expect("default choice");
+        assert!(delegated_mux_option(&req("demo"), &choice, &host).is_empty());
+        let mut explicit = req("demo");
+        explicit.multiplexer = Some("tmux".into());
+        assert_eq!(
+            delegated_mux_option(&explicit, &choice, &host),
+            ["--multiplexer", "tmux"]
+        );
     }
 
     #[test]
