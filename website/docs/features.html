@@ -484,8 +484,9 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
 # worktrees_dir      — optional absolute remote worktrees dir</code></pre>
           <p>
             Spawn remotely from the CLI with
-            <code>thurbox-cli session create --host devbox …</code>
-            .
+            <code>thurbox-cli session create --name remote-work --host devbox --repo-path /srv/project --agent codex</code>
+            . Follow the <a href="remote-setup.html">remote setup guide</a> for a complete
+            SSH walkthrough and cloud access routes.
           </p>
 
           <h2 id="worktree-sync">

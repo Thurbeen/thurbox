@@ -314,6 +314,10 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
             <a href="#hosts-toml" class="heading-anchor">#</a>
           </h2>
           <p>
+            Start with the <a href="remote-setup.html">remote setup guide</a> for SSH, bastions,
+            cloud tunnels, and WSL. This section lists configuration fields.
+          </p>
+          <p>
             Declares remote SSH hosts; each
             <code>[[hosts]]</code>
             entry registers a session backend named
@@ -348,6 +352,18 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
                 <td>no</td>
                 <td><code>[]</code></td>
                 <td>extra ssh flags, one token per element</td>
+              </tr>
+              <tr>
+                <td><code>share_sessions</code></td>
+                <td>no</td>
+                <td><code>true</code></td>
+                <td>the host's database owns session records; <code>false</code> keeps them local</td>
+              </tr>
+              <tr>
+                <td><code>path_prepend</code></td>
+                <td>no</td>
+                <td><code>[]</code></td>
+                <td>host directories added first to the agent's <code>PATH</code></td>
               </tr>
               <tr>
                 <td><code>socket</code></td>
