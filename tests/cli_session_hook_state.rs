@@ -16,8 +16,10 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
+use thurbox::cli::automations::{run as run_automation, Action as AutomationCommand};
 use thurbox::cli::sessions::{run, Action};
-use thurbox::session::SessionId;
+use thurbox::session::{AutomationAction, AutomationSchedule, SessionId};
+use thurbox::storage::automations::NewAutomation;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
@@ -533,6 +535,173 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
     assert!(out["foreground_command"]
         .as_str()
         .is_some_and(|c| c.contains("codex")));
+}
+
+#[test]
+fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
+    if !have_tmux() || !have_ps() {
+        eprintln!("skipping: needs tmux and a ps that knows tpgid");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nwhile :; do sleep 1; done\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    let row = session_row("silent-codex", "codex", "local-tmux");
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-silent-codex",
+        &fake.to_string_lossy(),
+    ]);
+    let db = Database::open_in_memory().expect("db");
+    db.upsert_session(&row).expect("persist");
+    db.set_hook_state(row.id, "idle")
+        .expect("initial idle signal");
+    assert_eq!(get(&db, row.id, false)["state"], "idle");
+
+    run(
+        Action::Send {
+            uuid: row.id.to_string(),
+            text: "draft prompt".into(),
+            no_enter: true,
+        },
+        &db,
+    )
+    .expect("type without submitting");
+    assert_eq!(get(&db, row.id, false)["state"], "idle");
+
+    run(
+        Action::Key {
+            uuid: row.id.to_string(),
+            key: "enter".into(),
+        },
+        &db,
+    )
+    .expect("submit drafted prompt");
+    assert_eq!(get(&db, row.id, false)["state"], "unreported");
+    db.set_hook_state(row.id, "idle").expect("idle again");
+
+    run(
+        Action::Send {
+            uuid: row.id.to_string(),
+            text: "start the turn".into(),
+            no_enter: false,
+        },
+        &db,
+    )
+    .expect("submit prompt");
+    let out = get_when_pane_settles(&db, row.id, "agent");
+    assert_eq!(
+        out["hook_state"],
+        Value::Null,
+        "silent hooks cannot confirm idle: {out}"
+    );
+    assert_eq!(out["state"], "running", "the pane still holds Codex: {out}");
+    let listed = run(
+        Action::List {
+            parent: None,
+            deleted: false,
+            verify: false,
+        },
+        &db,
+    )
+    .expect("session list");
+    let found = listed
+        .json
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| r["id"] == row.id.to_string())
+        .expect("codex row");
+    assert_eq!(found["state"], "unreported", "no hook signal: {found}");
+}
+
+#[test]
+fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
+    if !have_tmux() || !have_ps() {
+        eprintln!("skipping: needs tmux and a ps that knows tpgid");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let db = Database::open_in_memory().expect("db");
+    for name in ["hooks", "ui-skill"] {
+        db.set_builtin_extension_optout(name, true)
+            .expect("opt out");
+    }
+    let auto_id = db
+        .create_automation(&NewAutomation {
+            name: "reuse Codex".into(),
+            enabled: true,
+            schedule: AutomationSchedule::Cron {
+                expr: "0 9 * * *".into(),
+            },
+            timezone: None,
+            action: AutomationAction::Spawn {
+                repo_path: dir.path().to_path_buf(),
+                worktree_branch: None,
+                base_branch: None,
+                agent: Some("codex".into()),
+                extra_repos: Vec::new(),
+            },
+            prompt: "start work".into(),
+            next_run_at: Some(1),
+        })
+        .expect("automation");
+    let name = format!("auto-{auto_id}");
+    let row = session_row(&name, "codex", "local-tmux");
+    db.upsert_session(&row).expect("persist session");
+    let namesake = session_row(&name, "codex", "local-tmux");
+    db.upsert_session(&namesake).expect("persist namesake");
+    db.set_hook_state(row.id, "idle").expect("idle");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nwhile :; do sleep 1; done\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        &format!("tb-{name}"),
+        &fake.to_string_lossy(),
+    ]);
+    thurbox::agent::tmux::stamp_local_window(
+        &format!("{SESSION}:tb-{name}"),
+        &row.id.to_string(),
+        thurbox::agent::tmux::WindowRole::Agent,
+    );
+    assert!(thurbox::agent::tmux::window_exists(
+        &row.id.to_string(),
+        &name
+    ));
+    assert!(!thurbox::agent::tmux::window_exists(
+        &namesake.id.to_string(),
+        &name
+    ));
+
+    let out = run_automation(AutomationCommand::Tick, &db).expect("automation tick");
+    assert_eq!(out["fired"][0]["status"], "success", "{out}");
+    assert_eq!(get(&db, row.id, false)["state"], "unreported");
 }
 
 #[test]

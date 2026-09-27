@@ -636,7 +636,7 @@ fn fire_send(
             None,
         );
     }
-    match crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &auto.prompt) {
+    match crate::session_ops::send_text_with_status(db, &target, &auto.prompt, true) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
@@ -660,12 +660,40 @@ fn fire_spawn(
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     // Reuse an existing session window (later fires / restored sessions).
-    // Name-only targeting: the reused window's session row has no cheap lookup
-    // here, and `auto-<id>` names don't collide.
     if crate::agent::tmux::window_exists("", &name) {
-        // The reused window's session id has no cheap lookup here, so it is
-        // addressed by name — which resolves only while `auto-<id>` is the sole
-        // window with that name, and they do not collide.
+        let sessions = match db.find_sessions_by_name(&name) {
+            Ok(sessions) => sessions,
+            Err(e) => {
+                return (
+                    AutomationRunStatus::Error,
+                    format!("find_sessions_by_name: {e}"),
+                    None,
+                )
+            }
+        };
+        let mut local = sessions.into_iter().filter(|s| {
+            s.backend_type == "local-tmux"
+                && crate::agent::tmux::window_exists(&s.id.to_string(), &name)
+        });
+        if let Some(session) = local.next() {
+            if local.next().is_none() {
+                return match crate::session_ops::send_text_with_status(
+                    db,
+                    &session,
+                    &auto.prompt,
+                    true,
+                ) {
+                    Ok(()) => (
+                        AutomationRunStatus::Success,
+                        format!("reused {name}"),
+                        Some(session.id),
+                    ),
+                    Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+                };
+            }
+        }
+        // A legacy window can outlive its row; multiple unstamped namesakes
+        // cannot be assigned a row safely. Deliver without changing status.
         return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),

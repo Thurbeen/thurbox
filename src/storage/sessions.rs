@@ -999,21 +999,23 @@ impl Database {
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
         let tx = self.write_transaction()?;
-        let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
-        let before: Option<Option<String>> = self
+        let before: Option<(Option<String>, Option<i64>)> = self
             .conn
             .query_row(
-                "SELECT hook_state FROM sessions \
+                "SELECT hook_state, hook_state_at FROM sessions \
                  WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL",
                 params![id_str],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let Some(previous) = before else {
+        let Some((previous, previous_at)) = before else {
             return Ok(false);
         };
+        // Two signals can land in one millisecond. Keep the stamp distinct so
+        // a submitted-input reset can never mistake the newer one for the old.
+        let now = (current_time_millis() as i64).max(previous_at.unwrap_or(0) + 1);
 
         self.conn.execute(
             "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2 \
@@ -1304,6 +1306,37 @@ impl Database {
             )?;
         }
         tx.commit()
+    }
+
+    /// Forget a report superseded by submitted input, unless a hook has
+    /// reported again since the caller read it. A trusted prompt hook may run
+    /// while the input is being delivered; its newer report must win.
+    pub fn clear_hook_state_if_unchanged(
+        &self,
+        id: SessionId,
+        expected: &HookRow,
+    ) -> rusqlite::Result<bool> {
+        let Some(previous) = expected.state.as_deref() else {
+            return Ok(false);
+        };
+        let tx = self.write_transaction()?;
+        let changed = self.conn.execute(
+            "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
+             WHERE id = ?1 AND hook_state IS ?2 AND hook_state_at IS ?3 \
+             AND deleted_at IS NULL AND stopped_at IS NULL",
+            params![id.to_string(), previous, expected.state_at],
+        )? != 0;
+        if changed {
+            self.record_session_event(
+                id,
+                SessionEventKind::Changed,
+                EventReason::State,
+                Some(previous),
+                None,
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// Load the hook-status columns for every active session in one indexed

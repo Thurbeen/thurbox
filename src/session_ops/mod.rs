@@ -48,6 +48,36 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::session::agent_def::ID_PLACEHOLDER;
 use crate::session::{AutomationRunStatus, SessionConfig};
+use crate::storage::Database;
+use crate::sync::SharedSession;
+
+/// Deliver local input and retire a Codex report made before that submission.
+/// A hook arriving while tmux delivers the prompt keeps its newer report.
+pub fn send_text_with_status(
+    db: &Database,
+    session: &SharedSession,
+    text: &str,
+    submit: bool,
+) -> anyhow::Result<()> {
+    let prior = if submit && session.agent == "codex" {
+        match db.load_hook_state(session.id) {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(session_id = %session.id, "could not read Codex status before input: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    crate::agent::tmux::send_text_now(&session.id.to_string(), &session.name, text, submit)?;
+    if let Some(prior) = prior {
+        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
+            tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
+        }
+    }
+    Ok(())
+}
 
 /// Run an `Exec` automation's shell command headlessly (`sh -c`, or `cmd /C` on
 /// Windows) and report its outcome for the run history. No session/agent is

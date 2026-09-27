@@ -149,8 +149,8 @@ impl CommandBus {
     /// Run background housekeeping on a worker, unrecorded.
     ///
     /// Deliberately touches neither the in-flight list nor the completion
-    /// channel: a row there is drawn, captioned and counted as activity, and
-    /// this work recurs forever with nobody waiting on it — see
+    /// channel: a row there is drawn, captioned and counted as activity, while
+    /// this work needs no separate interface activity — see
     /// [`Command::is_housekeeping`]. Its failures go to the log.
     fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
         let progress = self.progress_tx.clone();

@@ -208,6 +208,19 @@ embedded hook assets live in
     `blocked` until it is answered; and a bare `request_user` matcher registered
     beside the anchored one never fires. `codex exec` pins its approval policy
     to `never`, so the approval edge only shows in an interactive session.
+
+    Codex may require a changed command hook to be reviewed. If the user
+    continues without trusting it, Codex does not deliver the status events;
+    Thurbox leaves that security choice alone. When Thurbox can identify the
+    session row receiving input that may submit a prompt (`session send`,
+    `session key enter`, or a direct Enter in its terminal), it clears any
+    older Codex hook report. The list then says `unreported`, and a live pane
+    probe can say `running` (agent present, turn state unknown). A draft sent
+    with `--no-enter` does not clear the report. Without hook delivery, Thurbox
+    cannot detect when the turn ends or a prompt submitted outside Thurbox;
+    the coarse state can persist until a trusted hook reports again. A legacy
+    unstamped window shared by namesake rows also has no safe row identity,
+    so a name-only automation send cannot retire one row's report.
   - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
     the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
     entry) rather than the JSON one; `toml_edit` keeps the user's comments and key

@@ -24,6 +24,7 @@ use crossterm::event::{
 use thurbox::agent::input::key_to_bytes;
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::clipboard;
+use thurbox::kernel::command::Command;
 use thurbox::kernel::host::KeyPress;
 use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord};
@@ -777,11 +778,25 @@ impl App {
     /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         let echo = self.expect_echo(surface);
+        let submitted = bytes.as_slice() == b"\r" && self.terminals.program_key(surface).is_none();
+        let prior = submitted
+            .then(|| self.snapshots.codex_submission_report(surface))
+            .flatten();
         let delivered = match self.terminals.program_key(surface).cloned() {
             Some(program) => self.terminals.send_to_program(&program, bytes).is_ok(),
             None => self.terminals.send(surface, bytes),
         };
         if delivered {
+            if let Some(prior) = prior {
+                self.snapshots.note_codex_submission(surface, &prior);
+                if let Some(state) = prior.state {
+                    self.commands.dispatch(Command::RetireHook {
+                        session: surface.to_string(),
+                        state,
+                        state_at: prior.state_at,
+                    });
+                }
+            }
             self.last_keystroke = Some(Instant::now());
             if let Some(echo) = echo {
                 self.echo.push_back(echo);

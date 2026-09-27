@@ -155,9 +155,22 @@ pub(super) fn execute(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::agent::tmux::send_prompt_now(&session.id.to_string(), &session.name, text)
+            crate::session_ops::send_text_with_status(&db, &session, text, true)
                 .map_err(|e| format!("send: {e}"))
         }
+        Command::RetireHook {
+            state, state_at, ..
+        } => db
+            .clear_hook_state_if_unchanged(
+                id,
+                &crate::storage::HookRow {
+                    state: Some(state.clone()),
+                    state_at: *state_at,
+                    seen_at: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| format!("retire hook: {e}")),
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
         // Handled above, before the session id is parsed.
         Command::Order { .. } => Ok(()),
@@ -613,7 +626,7 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &prompt)
+            crate::session_ops::send_text_with_status(db, &target, &prompt, true)
                 .map_err(|e| format!("send: {e}"))?;
         }
         None => {
