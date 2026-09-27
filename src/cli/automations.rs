@@ -636,7 +636,7 @@ fn fire_send(
             None,
         );
     }
-    match crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &auto.prompt) {
+    match crate::session_ops::send_text_with_status(db, &target, &auto.prompt, true) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),

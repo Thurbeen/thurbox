@@ -983,7 +983,7 @@ fn run_send(
         return Ok(remote);
     }
     let submit = !no_enter;
-    crate::agent::tmux::send_text_now(&session.id.to_string(), &session.name, &text, submit)
+    crate::session_ops::send_text_with_status(db, &session, &text, submit)
         .map_err(|e| format!("send_text_now: {e}"))?;
     let human = if submit {
         format!("Sent to '{}'.", session.name)
@@ -1009,8 +1009,24 @@ fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, Co
     if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, &resolved.name])? {
         return Ok(remote);
     }
+    let prior = if session.agent == "codex" && resolved.name == "enter" {
+        match db.load_hook_state(session.id) {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     crate::agent::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
         .map_err(|e| format!("send_key_now: {e}"))?;
+    if let Some(prior) = prior {
+        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
+            tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
+        }
+    }
     Ok(CommandOutput::new(
         json!({
             "sent": true,

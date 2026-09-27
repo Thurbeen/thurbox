@@ -536,6 +536,97 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
 }
 
 #[test]
+fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
+    if !have_tmux() || !have_ps() {
+        eprintln!("skipping: needs tmux and a ps that knows tpgid");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nwhile :; do sleep 1; done\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    let row = session_row("silent-codex", "codex", "local-tmux");
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-silent-codex",
+        &fake.to_string_lossy(),
+    ]);
+    let db = Database::open_in_memory().expect("db");
+    db.upsert_session(&row).expect("persist");
+    db.set_hook_state(row.id, "idle")
+        .expect("initial idle signal");
+    assert_eq!(get(&db, row.id, false)["state"], "idle");
+
+    run(
+        Action::Send {
+            uuid: row.id.to_string(),
+            text: "draft prompt".into(),
+            no_enter: true,
+        },
+        &db,
+    )
+    .expect("type without submitting");
+    assert_eq!(get(&db, row.id, false)["state"], "idle");
+
+    run(
+        Action::Key {
+            uuid: row.id.to_string(),
+            key: "enter".into(),
+        },
+        &db,
+    )
+    .expect("submit drafted prompt");
+    assert_eq!(get(&db, row.id, false)["state"], "unreported");
+    db.set_hook_state(row.id, "idle").expect("idle again");
+
+    run(
+        Action::Send {
+            uuid: row.id.to_string(),
+            text: "start the turn".into(),
+            no_enter: false,
+        },
+        &db,
+    )
+    .expect("submit prompt");
+    let out = get_when_pane_settles(&db, row.id, "agent");
+    assert_eq!(
+        out["hook_state"],
+        Value::Null,
+        "silent hooks cannot confirm idle: {out}"
+    );
+    assert_eq!(out["state"], "running", "the pane still holds Codex: {out}");
+    let listed = run(
+        Action::List {
+            parent: None,
+            deleted: false,
+            verify: false,
+        },
+        &db,
+    )
+    .expect("session list");
+    let found = listed
+        .json
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| r["id"] == row.id.to_string())
+        .expect("codex row");
+    assert_eq!(found["state"], "unreported", "no hook signal: {found}");
+}
+
+#[test]
 fn doctor_names_the_wiring_that_is_missing_and_exits_non_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());

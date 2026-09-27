@@ -343,7 +343,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
             if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
                 return Err("target session not running".into());
             }
-            crate::agent::tmux::send_prompt_now(&target.id.to_string(), &target.name, &prompt)
+            crate::session_ops::send_text_with_status(db, &target, &prompt, true)
                 .map_err(|e| format!("send_prompt_now: {e}"))?;
             mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
@@ -368,12 +368,8 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                         && crate::agent::tmux::window_exists(&s.id.to_string(), &s.name)
                 });
             if let Some(session) = existing {
-                crate::agent::tmux::send_prompt_now(
-                    &session.id.to_string(),
-                    &session.name,
-                    &prompt,
-                )
-                .map_err(|e| format!("send_prompt_now: {e}"))?;
+                crate::session_ops::send_text_with_status(db, &session, &prompt, true)
+                    .map_err(|e| format!("send_prompt_now: {e}"))?;
                 mark_in_progress(db, task)?;
                 return Ok(json!({ "reused": session.name, "id": task.id }));
             }

@@ -18,7 +18,7 @@ use crate::session::{
     derive_state, with_output_quiescence, AgentRegistry, Assessment, Corroboration, SessionId,
     SessionState,
 };
-use crate::storage::Database;
+use crate::storage::{Database, HookRow};
 
 /// How often the snapshot is rebuilt. A read never waits on this; it only
 /// determines how out of date the answer may be.
@@ -1064,6 +1064,39 @@ impl SnapshotStore {
             .find(|row| row.id == session)
         {
             row.status = SessionState::Idle;
+            self.mark_changed();
+        }
+    }
+
+    /// Capture the cached report before delivering Enter. The worker compares
+    /// it against storage after delivery so a concurrent hook can win.
+    pub fn codex_submission_report(&self, session: &str) -> Option<HookRow> {
+        let row = self.current.session(session)?;
+        if row.agent != "codex" || row.stopped {
+            return None;
+        }
+        Some(HookRow {
+            state: row.hook_state.clone(),
+            state_at: self.hook_state_at.get(session).copied(),
+            seen_at: None,
+        })
+    }
+
+    /// A delivered Enter may submit a prompt. Publish the coarse pane state
+    /// while a worker conditionally retires the older hook report.
+    pub fn note_codex_submission(&mut self, session: &str, previous: &HookRow) {
+        if previous.state.is_none() {
+            return;
+        }
+        if let Some(row) = self
+            .current
+            .sessions
+            .iter_mut()
+            .find(|row| row.id == session)
+        {
+            row.hook_state = None;
+            row.status = SessionState::Running;
+            self.hook_state_at.remove(session);
             self.mark_changed();
         }
     }
@@ -2225,6 +2258,77 @@ mod tests {
             .find(|s| s.id == id)
             .expect("row published")
             .status
+    }
+
+    #[test]
+    fn codex_input_retires_only_the_report_it_observed() {
+        let database = Database::open_in_memory().expect("db");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "codex-pane".into(),
+            agent: "codex".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        database.upsert_session(&row).expect("persist");
+        database.set_hook_state(row.id, "idle").expect("idle");
+        let mut store = SnapshotStore::with_database(database);
+        let id = row.id.to_string();
+        assert_eq!(status_of(&store, &id), SessionState::Idle);
+
+        let old = store.codex_submission_report(&id).expect("old report");
+        store.note_codex_submission(&id, &old);
+        assert!(store
+            .database
+            .as_ref()
+            .unwrap()
+            .clear_hook_state_if_unchanged(row.id, &old)
+            .expect("retire report"));
+        assert_eq!(status_of(&store, &id), SessionState::Running);
+        assert_eq!(store.current().session(&id).unwrap().hook_state, None);
+
+        store
+            .database
+            .as_ref()
+            .unwrap()
+            .set_hook_state(row.id, "idle")
+            .expect("idle again");
+        store.refresh();
+        let old = store.codex_submission_report(&id).expect("second report");
+        store
+            .database
+            .as_ref()
+            .unwrap()
+            .set_hook_state(row.id, "working")
+            .expect("prompt hook");
+        store.note_codex_submission(&id, &old);
+        assert!(!store
+            .database
+            .as_ref()
+            .unwrap()
+            .clear_hook_state_if_unchanged(row.id, &old)
+            .expect("newer report wins"));
+        assert_eq!(
+            store
+                .database
+                .as_ref()
+                .unwrap()
+                .load_hook_state(row.id)
+                .unwrap()
+                .unwrap()
+                .state
+                .as_deref(),
+            Some("working")
+        );
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
