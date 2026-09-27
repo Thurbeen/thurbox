@@ -244,9 +244,18 @@ fn session_from_json_on_host(
                 .unwrap_or(&reported)
                 .to_string()
         })
-        .map(|suffix| format!("{backend_type}:{suffix}"))
-        .filter(|candidate| {
-            backends.has(candidate) && route_belongs_to_host(candidate, backend_type, hosts)
+        .and_then(|suffix| {
+            let candidate = format!("{backend_type}:{suffix}");
+            let selected_on_host = hosts
+                .get_by_backend(backend_type)
+                .and_then(|host| {
+                    crate::session::BackendChoice::resolve(Some(host.clone()), Some(&suffix), None)
+                        .ok()
+                })
+                .is_some_and(|choice| choice.backend_type == candidate);
+            (route_belongs_to_host(&candidate, backend_type, hosts)
+                && (backends.has(&candidate) || selected_on_host))
+                .then_some(candidate)
         })
         .unwrap_or_else(|| backend_type.to_string());
     let id: SessionId = string("id")
