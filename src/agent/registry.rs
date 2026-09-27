@@ -124,9 +124,12 @@ impl BackendRegistry {
         self.backends.keys().map(|s| s.as_str())
     }
 
-    /// Iterate over all registered backends.
+    /// Iterate over canonical registrations once, excluding persisted-key aliases.
     pub fn all_backends(&self) -> impl Iterator<Item = &Arc<dyn SessionBackend>> {
-        self.backends.values()
+        self.backends
+            .iter()
+            .filter(|(name, backend)| name.as_str() == backend.name())
+            .map(|(_, backend)| backend)
     }
 }
 
@@ -289,5 +292,15 @@ mod tests {
         let backends: Vec<_> = registry.all_backends().collect();
         assert_eq!(backends.len(), 1);
         assert_eq!(backends[0].name(), "local-tmux");
+    }
+
+    #[test]
+    fn persisted_route_aliases_do_not_duplicate_backend_iteration() {
+        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
+            backend_name: "local-psmux",
+        });
+        let mut registry = BackendRegistry::new(default.clone());
+        registry.register_alias("local-tmux", default);
+        assert_eq!(registry.all_backends().count(), 1);
     }
 }
