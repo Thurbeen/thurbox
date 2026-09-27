@@ -173,6 +173,16 @@ pub fn restore_session_headless(
     id: SessionId,
     best_effort: bool,
 ) -> Result<RestoreReport, String> {
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    restore_session_headless_with_registry(db, id, best_effort, &backends)
+}
+
+pub fn restore_session_headless_with_registry(
+    db: &Database,
+    id: SessionId,
+    best_effort: bool,
+    backends: &crate::agent::BackendRegistry,
+) -> Result<RestoreReport, String> {
     let deleted = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
@@ -300,7 +310,7 @@ pub fn restore_session_headless(
     let wanted = deleted.worktrees.len();
     let recovered = recreate_worktrees(&deleted.worktrees);
 
-    let respawn_error = respawn(db, deleted.id).err();
+    let respawn_error = respawn(db, deleted.id, backends).err();
 
     // A restore whose agent did not come up is still a restore — the report
     // says so, and the hooks fire either way.
@@ -379,11 +389,18 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
 /// The window is gone (the delete killed it), so this spawns rather than
 /// restarts — but through the same plan a restart builds, so a restored session
 /// resumes its conversation exactly as a restarted one does.
-fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
+fn respawn(
+    db: &Database,
+    id: SessionId,
+    backends: &crate::agent::BackendRegistry,
+) -> Result<(), String> {
     let session = db
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
         .ok_or_else(|| format!("restored session not found: {id}"))?;
+    let backend = backends
+        .get(&session.backend_type)
+        .ok_or_else(|| format!("no registered backend for '{}'", session.backend_type))?;
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //
@@ -395,17 +412,16 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // Strictly its own window: one stamped for a live namesake is not this
     // row's to adopt, and recording it would put two rows on one pane — the
     // next kill-by-id then destroys the other session's agent.
-    if let Ok(located) = crate::agent::tmux::agent_window(None, &stamp, &session.name) {
-        if let Some(pane) = located.pane() {
-            crate::agent::tmux::stamp_local_window(
-                &pane,
-                &stamp,
-                crate::agent::tmux::WindowRole::Agent,
-            );
-            db.set_backend_id(session.id, &pane)
-                .map_err(|e| format!("record the live pane: {e}"))?;
-            return Ok(());
-        }
+    if let Some(pane) = backend
+        .headless_live_pane(&stamp, &session.name)
+        .map_err(|e| format!("probe restored pane: {e:#}"))?
+    {
+        backend
+            .stamp_window(&pane, &stamp, crate::agent::tmux::WindowRole::Agent)
+            .map_err(|e| format!("stamp the live pane: {e:#}"))?;
+        db.set_backend_id(session.id, &pane)
+            .map_err(|e| format!("record the live pane: {e}"))?;
+        return Ok(());
     }
     let hooks_enabled = super::hooks_enabled(db);
     // Strict: a `--command` session whose recipe read as absent is planned as a
@@ -425,15 +441,16 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         recipe.as_ref(),
         &env,
     )?;
-    let pane = crate::agent::tmux::spawn_window(
-        &stamp,
-        &plan.window_name,
-        &plan.command,
-        &plan.args,
-        plan.cwd.as_deref(),
-        &plan.env,
-    )
-    .map_err(|e| format!("re-spawn: {e}"))?;
+    let pane = backend
+        .spawn_headless(
+            &stamp,
+            &plan.window_name,
+            &plan.command,
+            &plan.args,
+            plan.cwd.as_deref(),
+            &plan.env,
+        )
+        .map_err(|e| format!("re-spawn: {e}"))?;
     // The row still carries the pane the delete killed; the fresh one is what
     // every later read must target (empty on psmux — the name fallback stands).
     db.set_backend_id(session.id, &pane)

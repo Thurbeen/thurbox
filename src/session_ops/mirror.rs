@@ -210,7 +210,43 @@ pub fn session_to_json_assessed(
 /// (`local-tmux` there). Fields a host older than this one does not print are
 /// simply empty; the id and the name are required.
 pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, String> {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    session_from_json_on_host(value, backend_type, &backends, &hosts)
+}
+
+/// Translate a host's local routing key to a registered route through that
+/// host. A suffix is retained only when an adapter actually registered it;
+/// legacy default host keys therefore keep their existing spelling.
+pub fn session_from_json_with_registry(
+    value: &Value,
+    backend_type: &str,
+    backends: &crate::agent::BackendRegistry,
+) -> Result<HostRow, String> {
+    session_from_json_on_host(
+        value,
+        backend_type,
+        backends,
+        &crate::session::HostRegistry::default(),
+    )
+}
+
+fn session_from_json_on_host(
+    value: &Value,
+    backend_type: &str,
+    backends: &crate::agent::BackendRegistry,
+    hosts: &crate::session::HostRegistry,
+) -> Result<HostRow, String> {
     let string = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    let routed = string("backend_type")
+        .map(|reported| {
+            reported
+                .strip_prefix("local-")
+                .unwrap_or(&reported)
+                .to_string()
+        })
+        .map(|suffix| format!("{backend_type}:{suffix}"))
+        .filter(|candidate| on_backend(candidate, backend_type, backends, hosts))
+        .unwrap_or_else(|| backend_type.to_string());
     let id: SessionId = string("id")
         .ok_or("session without an id")?
         .parse()
@@ -254,7 +290,7 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
             name,
             agent: string("agent").unwrap_or_else(|| crate::session::DEFAULT_AGENT_NAME.into()),
             backend_id: string("backend_id").unwrap_or_default(),
-            backend_type: backend_type.to_string(),
+            backend_type: routed,
             agent_session_id: string("agent_session_id"),
             cwd: string("cwd").map(PathBuf::from),
             additional_dirs,
@@ -274,15 +310,18 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
 
 /// Every session in a `session list --json` answer, on `backend_type`.
 pub fn parse_active(value: &Value, backend_type: &str) -> Vec<HostRow> {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
     value
         .as_array()
         .map(|rows| {
             rows.iter()
-                .filter_map(|row| match session_from_json(row, backend_type) {
-                    Ok(row) => Some(row),
-                    Err(e) => {
-                        tracing::warn!("skipping a session the host listed: {e}");
-                        None
+                .filter_map(|row| {
+                    match session_from_json_on_host(row, backend_type, &backends, &hosts) {
+                        Ok(row) => Some(row),
+                        Err(e) => {
+                            tracing::warn!("skipping a session the host listed: {e}");
+                            None
+                        }
                     }
                 })
                 .collect()
@@ -310,6 +349,21 @@ pub fn parse_deleted(value: &Value) -> Vec<HostDeletedRow> {
         .unwrap_or_default()
 }
 
+/// Registered suffixes still belong to the same host's mirror pass.
+fn on_backend(
+    route: &str,
+    host_backend: &str,
+    backends: &crate::agent::BackendRegistry,
+    hosts: &crate::session::HostRegistry,
+) -> bool {
+    route == host_backend
+        || route.strip_prefix(host_backend).is_some_and(|suffix| {
+            suffix.starts_with(':')
+                && backends.has(route)
+                && !hosts.hosts.iter().any(|host| host.backend_name() == route)
+        })
+}
+
 /// Reconcile the local rows on `backend_type` to what the host listed.
 pub fn apply(
     db: &Database,
@@ -317,6 +371,7 @@ pub fn apply(
     active: &[HostRow],
     deleted: &[HostDeletedRow],
 ) -> MirrorReport {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
     let mut report = MirrorReport {
         host: backend_type.to_string(),
         ..MirrorReport::default()
@@ -325,7 +380,7 @@ pub fn apply(
         .list_active_sessions()
         .unwrap_or_default()
         .into_iter()
-        .filter(|s| s.backend_type == backend_type)
+        .filter(|s| on_backend(&s.backend_type, backend_type, &backends, &hosts))
         .map(|s| (s.id, s))
         .collect();
     // Tombstones with the instant each was taken, and the host's own
@@ -337,7 +392,7 @@ pub fn apply(
         .list_deleted_sessions()
         .unwrap_or_default()
         .into_iter()
-        .filter(|s| s.backend_type == backend_type)
+        .filter(|s| on_backend(&s.backend_type, backend_type, &backends, &hosts))
         .map(|s| (s.id, (s.deleted_at, s.force_deleted, s.host_updated_at)))
         .collect();
     let hook_rows = db.load_hook_states().unwrap_or_default();
@@ -558,7 +613,7 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
         } else {
             host.backend_id.clone()
         },
-        backend_type: local.backend_type.clone(),
+        backend_type: host.backend_type.clone(),
         agent_session_id: host.agent_session_id.clone(),
         cwd: host.cwd.clone(),
         additional_dirs: host.additional_dirs.clone(),
@@ -623,6 +678,7 @@ pub fn reconcile_with(
     deleted: &Value,
     transitive: Transitive,
 ) -> MirrorReport {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
     let foreign = transitive_ids(active)
         .chain(transitive_ids(deleted))
         .collect::<HashSet<_>>();
@@ -639,7 +695,7 @@ pub fn reconcile_with(
                 .iter()
                 .map(|s| (s.id, s.backend_type.as_str()))
                 .chain(deleted.iter().map(|s| (s.id, s.backend_type.as_str())))
-                .filter(|(_, on)| *on != backend)
+                .filter(|(_, on)| !on_backend(on, backend, &backends, &hosts))
                 .map(|(id, _)| id)
                 .collect()
         }
@@ -698,6 +754,7 @@ fn transitive_ids(listing: &Value) -> impl Iterator<Item = SessionId> + '_ {
 /// tombstone here would be pushed back to the host as a delete of it (see
 /// [`push_tombstones`]) the moment the setting was turned back on.
 fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
+    let (backends, hosts, _) = crate::agent::BackendRegistry::from_configured_hosts();
     let held = db
         .list_active_sessions()
         .unwrap_or_default()
@@ -710,7 +767,7 @@ fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>)
                 .map(|s| (s.id, s.backend_type)),
         );
     let mut forgotten: Vec<SessionId> = held
-        .filter(|(id, on)| on == backend && foreign.contains(id))
+        .filter(|(id, on)| on_backend(on, backend, &backends, &hosts) && foreign.contains(id))
         .filter_map(|(id, _)| match db.forget_session(id) {
             Ok(()) => Some(id),
             Err(e) => {

@@ -322,6 +322,43 @@ impl BackendLiveness {
     }
 }
 
+/// Resolve a backend's own labels without assuming tmux's `tb-` naming.
+/// A stamp wins; a lone unstamped label is the migration fallback. Another
+/// session's stamp and multiple candidates never authorize a kill or relaunch.
+fn headless_pane(
+    windows: &[DiscoveredSession],
+    session_id: &str,
+    session_name: &str,
+    role: crate::agent::tmux::WindowRole,
+    live_only: bool,
+) -> crate::agent::tmux::Located {
+    use crate::agent::tmux::Located;
+    let stamped: Vec<_> = windows
+        .iter()
+        .filter(|w| w.role == role && w.session == session_id)
+        .collect();
+    let candidates: Vec<_> = if stamped.is_empty() {
+        windows
+            .iter()
+            .filter(|w| w.role == role && w.name == session_name)
+            .collect()
+    } else {
+        stamped
+    };
+    match candidates.as_slice() {
+        [] => Located::Absent,
+        [only] if only.session.is_empty() || only.session == session_id => {
+            if live_only && !only.is_alive {
+                Located::Absent
+            } else {
+                Located::At(only.backend_id.clone())
+            }
+        }
+        [_, _, ..] => Located::Unknown,
+        [_] => Located::Absent,
+    }
+}
+
 /// A newly spawned session from the backend.
 pub struct SpawnedSession {
     /// Backend-specific session identifier.
@@ -382,6 +419,116 @@ pub trait SessionBackend: Send + Sync {
         cols: u16,
     ) -> Result<SpawnedSession>;
 
+    /// Start a pane for a headless lifecycle operation. Implementations whose
+    /// streaming handles own a control process should override this so dropping
+    /// the handles does not stop the agent. The returned id is persisted as is.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_headless(
+        &self,
+        session_id: &str,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Result<String> {
+        self.ensure_ready()?;
+        let spawned = self.spawn(window_name, command, args, cwd, env, 24, 80)?;
+        if let Err(error) = self.stamp_window(
+            &spawned.backend_id,
+            session_id,
+            crate::agent::tmux::WindowRole::Agent,
+        ) {
+            let _ = self.kill(&spawned.backend_id);
+            return Err(error);
+        }
+        Ok(spawned.backend_id)
+    }
+
+    /// A probe must distinguish confirmed absence from an ambiguous listing or
+    /// an unreachable backend. Only `Missing` authorizes a repair launch.
+    fn headless_liveness(&self, session_id: &str, session_name: &str) -> Result<BackendLiveness> {
+        let windows = self.headless_discover()?;
+        let role = crate::agent::tmux::WindowRole::Agent;
+        Ok(
+            match headless_pane(&windows, session_id, session_name, role, false) {
+                crate::agent::tmux::Located::Unknown => BackendLiveness::Unknown,
+                crate::agent::tmux::Located::Absent => BackendLiveness::Missing,
+                crate::agent::tmux::Located::At(_) => {
+                    match headless_pane(&windows, session_id, session_name, role, true) {
+                        crate::agent::tmux::Located::At(_) => BackendLiveness::Live,
+                        _ => BackendLiveness::Exited,
+                    }
+                }
+            },
+        )
+    }
+
+    /// Return an existing live pane for restore, or refuse an ambiguous answer.
+    fn headless_live_pane(&self, session_id: &str, session_name: &str) -> Result<Option<String>> {
+        let windows = self.headless_discover()?;
+        match headless_pane(
+            &windows,
+            session_id,
+            session_name,
+            crate::agent::tmux::WindowRole::Agent,
+            true,
+        ) {
+            crate::agent::tmux::Located::Unknown => anyhow::bail!("ambiguous agent window"),
+            located => Ok(located.pane()),
+        }
+    }
+
+    /// Owned panes in a listing already fetched by a sweep. Both the agent
+    /// and its companion shell are considered, including exited panes.
+    fn headless_owned_panes_in(
+        &self,
+        windows: &[DiscoveredSession],
+        session_id: &str,
+        session_name: &str,
+    ) -> Vec<String> {
+        [
+            headless_pane(
+                windows,
+                session_id,
+                session_name,
+                crate::agent::tmux::WindowRole::Agent,
+                false,
+            )
+            .pane(),
+            headless_pane(
+                windows,
+                session_id,
+                session_name,
+                crate::agent::tmux::WindowRole::Shell,
+                false,
+            )
+            .pane(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Tear down only panes whose backend identity belongs to this row. The
+    /// fallback to an unstamped name is governed by the ambiguity
+    /// rules, so another row's stamped pane is never a candidate.
+    fn kill_headless(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        _agent_pane: &str,
+        _shell_pane: &str,
+    ) -> Result<bool> {
+        let windows = self.headless_discover()?;
+        let mut killed = false;
+        for target in self.headless_owned_panes_in(&windows, session_id, session_name) {
+            self.kill(&target)?;
+            killed = true;
+        }
+        Ok(killed)
+    }
+
     /// Reconnect to an existing session. `seed` is the pre-captured pane state
     /// to prepend to the live stream (see [`Self::capture_history`]);
     /// `None` makes the backend capture it itself — the two paths produce the
@@ -440,6 +587,23 @@ pub trait SessionBackend: Send + Sync {
 
     /// Discover existing sessions managed by this backend.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
+
+    /// Discovery used for destructive or relaunch decisions must report a
+    /// failed remote probe as an error, never as an empty backend.
+    fn headless_discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.discover()
+    }
+
+    /// Process id to reap after a headless kill on platforms where an open cwd
+    /// prevents deleting a worktree. Backends without a pane id may override.
+    fn headless_pane_pid(
+        &self,
+        backend_id: &str,
+        _session_id: &str,
+        _name: &str,
+    ) -> Result<Option<u32>> {
+        self.pane_pid(backend_id)
+    }
 
     /// Stamp a window with the identity every reconciler resolves it by: which
     /// session row owns it, and in what role (see
