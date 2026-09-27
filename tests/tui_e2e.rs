@@ -1467,6 +1467,163 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 }
 
 #[test]
+fn deleting_an_rmux_pane_with_the_tui_open_relaunches_the_same_session_once() {
+    if !Command::new("rmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: real rmux is not installed");
+        return;
+    }
+    struct RmuxGuard<'a>(&'a Profile);
+    impl Drop for RmuxGuard<'_> {
+        fn drop(&mut self) {
+            let mut cmd = Command::new("rmux");
+            self.0.apply(&mut cmd);
+            let _ = cmd
+                .args(["-L", self.0.server.socket(), "kill-server"])
+                .output();
+        }
+    }
+
+    let profile = Profile::new();
+    let _rmux = RmuxGuard(&profile);
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("repo path"),
+        "--worktree-branch",
+        "test/rmux-relaunch",
+        "--agent",
+        "shell",
+        "--multiplexer",
+        "rmux",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("probe");
+    tui.wait_for("$ ");
+
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open profile database");
+    let original = db.get_session_by_name("probe").unwrap().unwrap();
+    assert_eq!(original.backend_type, "local-rmux");
+    assert_eq!(original.worktrees.len(), 1);
+    let old_pane = original.backend_id.as_str();
+    let mut kill = Command::new("rmux");
+    profile.apply(&mut kill);
+    let killed = kill
+        .args(["-L", profile.server.socket(), "kill-pane", "-t", old_pane])
+        .output()
+        .expect("kill RMUX pane");
+    assert!(
+        killed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
+
+    let deadline = Instant::now() + WAIT;
+    let relaunched = loop {
+        let row = db.get_session_by_name("probe").unwrap().unwrap();
+        if row.backend_id != old_pane {
+            break row;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "RMUX pane was not relaunched; frame:\n{}",
+            tui.frame()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(relaunched.id, original.id);
+    assert_eq!(relaunched.agent, original.agent);
+    assert_eq!(relaunched.worktrees, original.worktrees);
+    tui.wait_for("$ ");
+    tui.send(b"echo rmux-relaunched-once\r");
+    tui.wait_for("rmux-relaunched-once");
+    let mut list = Command::new("rmux");
+    profile.apply(&mut list);
+    let after = list
+        .args([
+            "-L",
+            profile.server.socket(),
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{window_name}",
+        ])
+        .output()
+        .expect("list RMUX panes");
+    assert!(after.status.success());
+    let panes = String::from_utf8(after.stdout).unwrap();
+    assert_eq!(
+        panes
+            .lines()
+            .filter(|line| line.ends_with(" tb-probe"))
+            .count(),
+        1,
+        "{panes}"
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    let mut list = Command::new("rmux");
+    profile.apply(&mut list);
+    let stable = list
+        .args([
+            "-L",
+            profile.server.socket(),
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{window_name}",
+        ])
+        .output()
+        .expect("list RMUX panes after repeated liveness checks");
+    let panes = String::from_utf8(stable.stdout).unwrap();
+    assert_eq!(
+        panes
+            .lines()
+            .filter(|line| line.ends_with(" tb-probe"))
+            .count(),
+        1,
+        "{panes}"
+    );
+
+    profile.cli(&["session", "stop", &original.id.to_string()]);
+    std::thread::sleep(Duration::from_secs(1));
+    let mut list = Command::new("rmux");
+    profile.apply(&mut list);
+    let stopped = list
+        .args([
+            "-L",
+            profile.server.socket(),
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{window_name}",
+        ])
+        .output()
+        .expect("list RMUX panes after stop");
+    assert!(
+        !String::from_utf8_lossy(&stopped.stdout)
+            .lines()
+            .any(|line| line.ends_with(" tb-probe")),
+        "intentional stop was undone: {}",
+        String::from_utf8_lossy(&stopped.stdout)
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
     let Some((profile, mut tui)) =
         shell_session_prepared_on_branch(Some("test/relaunch-same-worktree"), |_| {}, |_| {})

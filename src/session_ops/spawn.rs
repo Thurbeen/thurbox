@@ -205,7 +205,10 @@ pub fn spawn_session_headless_with_progress(
     // Resolve host and multiplexer before any worktree or pane is made.
     let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
     let backend_type = choice.backend_type.clone();
-    let host = choice.host.clone();
+    let host = choice.host.clone().map(|mut host| {
+        host.multiplexer = Some(choice.multiplexer.name().to_owned());
+        host
+    });
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -382,8 +385,10 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
+    let local_mux = crate::agent::tmux::LocalMuxContext::for_backend(&backend_type)?;
     let backend_id = launch_window(
         host.as_ref(),
+        &local_mux,
         &stamp,
         &req.name,
         &command,
@@ -421,7 +426,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(host.as_ref(), &local_mux, &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -511,8 +516,10 @@ fn missing_agent_warning(
 
 /// Open the session's window, on its host or here, and return the new pane's
 /// id.
+#[allow(clippy::too_many_arguments)]
 fn launch_window(
     host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
     stamp: &str,
     name: &str,
     command: &str,
@@ -532,7 +539,7 @@ fn launch_window(
                     },
                 )
         }
-        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
+        None => crate::agent::tmux::spawn_window(mux, stamp, name, command, args, Some(cwd), env)
             .map_err(
                 |e| match crate::agent::preflight::is_missing_dependency(&e) {
                     // Already a sentence naming the binary, the search and the fix;
@@ -546,7 +553,13 @@ fn launch_window(
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    host: Option<&HostDef>,
+    mux: &crate::agent::tmux::LocalMuxContext,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
     // spawned. `kill_window`'s resolution would reach the `tb-<name>`
@@ -561,7 +574,7 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
             name,
             crate::agent::tmux::SessionPanes::agent(backend_id),
         ),
-        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
+        None => crate::agent::tmux::kill_window(mux, stamp, name).map(|()| true),
     };
     match cleanup {
         Ok(true) => {}

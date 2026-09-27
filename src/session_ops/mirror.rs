@@ -573,7 +573,6 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
 
 /// One mirror pass for `host` through its usable CLI.
 pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<MirrorReport, String> {
-    let backend = host.backend_name();
     let active = host_cli::run(host, cli, &["session", "list"])?;
     let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
     let transitive = if crate::agent::settings_config::load_quiet()
@@ -584,9 +583,64 @@ pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<Mirro
     } else {
         Transitive::Hide
     };
-    let report = reconcile_with(db, &backend, &active, &deleted, transitive);
+    let report = reconcile_host_listing(db, host, &active, &deleted, transitive);
     push_tombstones(db, host, cli, &report.tombstoned);
     Ok(report)
+}
+
+fn reconcile_host_listing(
+    db: &Database,
+    host: &HostDef,
+    active: &Value,
+    deleted: &Value,
+    transitive: Transitive,
+) -> MirrorReport {
+    let backend = host.backend_name();
+    // A host CLI reports its own local backend in each row. Keep that mux
+    // identity when translating the row to this observer's remote backend.
+    let filter = |listing: &Value, own_backend: Option<&str>| -> Value {
+        Value::Array(
+            listing
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|row| {
+                    let on = row.get("backend_type").and_then(Value::as_str);
+                    match own_backend {
+                        Some(backend) => on == Some(backend),
+                        None => on != Some("local-rmux"),
+                    }
+                })
+                .cloned()
+                .collect(),
+        )
+    };
+    let mut report = reconcile_with(
+        db,
+        &backend,
+        &filter(active, None),
+        &filter(deleted, None),
+        transitive,
+    );
+    let remote_backend =
+        crate::session::BackendChoice::resolve(Some(host.clone()), Some("rmux"), None)
+            .expect("known multiplexer")
+            .backend_type;
+    let one = reconcile_with(
+        db,
+        &remote_backend,
+        &filter(active, Some("local-rmux")),
+        &filter(deleted, Some("local-rmux")),
+        transitive,
+    );
+    report.adopted.extend(one.adopted);
+    report.updated.extend(one.updated);
+    report.deleted.extend(one.deleted);
+    report.restored.extend(one.restored);
+    report.unknown_local.extend(one.unknown_local);
+    report.tombstoned.extend(one.tombstoned);
+    report.forgotten.extend(one.forgotten);
+    report
 }
 
 /// What a mirror pass does with a host's **transitive** rows: the sessions it
@@ -956,6 +1010,37 @@ mod tests {
         assert!(row.session.worktrees.is_empty());
         assert_eq!(row.hook_state, None);
         assert!(session_from_json(&json!({ "name": "no id" }), BACKEND).is_err());
+    }
+
+    #[test]
+    fn shared_host_mirror_keeps_each_recorded_multiplexer() {
+        let db = Database::open_in_memory().unwrap();
+        let host = HostDef {
+            name: "box".into(),
+            ..HostDef::default()
+        };
+        let tmux_id: SessionId = "00000000-0000-4000-8000-000000000001".parse().unwrap();
+        let rmux_id: SessionId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        let active = json!([
+            {"id": tmux_id.to_string(), "name": "old", "backend_type": "local-tmux"},
+            {"id": rmux_id.to_string(), "name": "rmux", "backend_type": "local-rmux"}
+        ]);
+        let report = reconcile_host_listing(&db, &host, &active, &json!([]), Transitive::Hide);
+        assert_eq!(report.adopted.len(), 2);
+        assert_eq!(
+            db.get_session_by_id(tmux_id).unwrap().unwrap().backend_type,
+            "ssh:box"
+        );
+        assert_eq!(
+            db.get_session_by_id(rmux_id).unwrap().unwrap().backend_type,
+            "ssh:box:rmux"
+        );
+
+        let mut changed_default = host;
+        changed_default.multiplexer = Some("rmux".into());
+        let again =
+            reconcile_host_listing(&db, &changed_default, &active, &json!([]), Transitive::Hide);
+        assert!(!again.changed());
     }
 
     #[test]

@@ -336,15 +336,22 @@ preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
+The RMUX adapter is available on POSIX systems when the complete RMUX package
+is on `PATH`; `thurbox-cli doctor --multiplexer rmux` checks it before a create.
+Choose `multiplexer = "rmux"` in top-level `settings.toml` for new local
+sessions or on a `hosts.toml` SSH/WSL entry for that host's new sessions. An
+explicit TUI or CLI choice overrides either preference for one session.
 When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.
 
 The resolved choice is recorded in each new session's `backend_type`. Existing
 `local-tmux`, `ssh:<host>`, and `wsl:<distro>` rows keep their original
-tmux/psmux routing after a preference changes. An adapter for another
-multiplexer registers its own local and host routing keys; it must read those
-keys on restart, restore, delete, input, capture, and fork.
+tmux/psmux routing after a preference changes. RMUX rows use `local-rmux`,
+`ssh:<host>:rmux`, or `wsl:<distro>:rmux`; those keys keep routing to RMUX after
+the preference changes. An adapter for another multiplexer registers its own
+local and host routing keys; it must read those keys on restart, restore,
+delete, input, capture, and fork.
 
 Manual deletion of an agent pane or window means the agent should run again.
 Once the backend **confirms absence**, Thurbox relaunches the same session ID,
@@ -352,9 +359,10 @@ agent, and worktree once. An exited pane still held by the server remains
 visible for inspection. A backend that is unreachable or has not verified the
 window cannot authorize a relaunch. A session intentionally parked with
 `session stop` stays stopped. A deleted companion shell is forgotten without
-relaunching the agent. RMUX and Herdr adapters must prove this with real
-TUI-open pane-deletion tests, including a backend whose stream does not close
-when its pane is deleted.
+relaunching the agent. The RMUX adapter covers this with a real TUI-open
+pane-deletion test, including live input/output and intentional stop; other
+adapters must prove the same behavior, including a backend whose stream does
+not close when its pane is deleted.
 
 ## hooks.toml
 

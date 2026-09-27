@@ -527,36 +527,51 @@ fn tick(db: &Database) -> Result<Value, String> {
 /// Write the `@thurbox_state` pane option of every live local pane into the
 /// hook columns, for sessions whose rows are here. Returns how many changed.
 fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::agent::tmux::list_local_hook_states() {
-        Ok(states) if !states.is_empty() => states,
-        Ok(_) => return 0,
-        Err(e) => {
-            tracing::debug!("local pane status poll skipped: {e:#}");
-            return 0;
-        }
-    };
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let mut written = 0;
-    for (pane, state) in states {
-        if !crate::session::HOOK_STATES.contains(&state.as_str()) {
-            continue;
-        }
-        let Some(session) = sessions
-            .iter()
-            .find(|s| !crate::session::is_remote_backend(&s.backend_type) && s.backend_id == pane)
-        else {
-            continue;
+    let mut backends: Vec<&str> = sessions
+        .iter()
+        .filter(|session| !crate::session::is_remote_backend(&session.backend_type))
+        .map(|session| session.backend_type.as_str())
+        .collect();
+    backends.sort_unstable();
+    backends.dedup();
+    for backend in backends {
+        let mux = match crate::agent::tmux::LocalMuxContext::for_backend(backend) {
+            Ok(mux) => mux,
+            Err(e) => {
+                tracing::warn!("{e}");
+                continue;
+            }
         };
-        if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
-            continue;
-        }
-        // `Ok(false)` is a parked session refusing a state it has no process
-        // to be in — not a write that failed, and not one that happened.
-        if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
-            written += 1;
+        let states = match crate::agent::tmux::list_local_hook_states(&mux) {
+            Ok(states) => states,
+            Err(e) => {
+                tracing::debug!("{backend} pane status poll skipped: {e:#}");
+                continue;
+            }
+        };
+        for (pane, state) in states {
+            if !crate::session::HOOK_STATES.contains(&state.as_str()) {
+                continue;
+            }
+            let Some(session) = sessions
+                .iter()
+                .find(|s| s.backend_type == backend && s.backend_id == pane)
+            else {
+                continue;
+            };
+            if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
+                continue;
+            }
+            // `Ok(false)` is a parked session refusing a state it has no process
+            // to be in — not a write that failed, and not one that happened.
+            if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
+                written += 1;
+            }
         }
     }
     written
@@ -629,7 +644,11 @@ fn fire_send(
             )
         }
     };
-    if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
+    let mux = match crate::agent::tmux::LocalMuxContext::for_backend(&target.backend_type) {
+        Ok(mux) => mux,
+        Err(e) => return (AutomationRunStatus::Error, e, None),
+    };
+    if !crate::agent::tmux::window_exists(&mux, &target.id.to_string(), &target.name) {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
@@ -659,8 +678,9 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
+    let mux = crate::agent::tmux::LocalMuxContext::default_local();
     // Reuse an existing session window (later fires / restored sessions).
-    if crate::agent::tmux::window_exists("", &name) {
+    if crate::agent::tmux::window_exists(&mux, "", &name) {
         let sessions = match db.find_sessions_by_name(&name) {
             Ok(sessions) => sessions,
             Err(e) => {
@@ -672,8 +692,8 @@ fn fire_spawn(
             }
         };
         let mut local = sessions.into_iter().filter(|s| {
-            s.backend_type == "local-tmux"
-                && crate::agent::tmux::window_exists(&s.id.to_string(), &name)
+            crate::agent::tmux::LocalMuxContext::is_default_local_backend(&s.backend_type)
+                && crate::agent::tmux::window_exists(&mux, &s.id.to_string(), &name)
         });
         if let Some(session) = local.next() {
             if local.next().is_none() {
@@ -694,7 +714,7 @@ fn fire_spawn(
         }
         // A legacy window can outlive its row; multiple unstamped namesakes
         // cannot be assigned a row safely. Deliver without changing status.
-        return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
+        return match crate::agent::tmux::send_prompt_now(&mux, "", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };

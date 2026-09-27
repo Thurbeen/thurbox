@@ -685,16 +685,20 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &format!("tb-{name}"),
         &fake.to_string_lossy(),
     ]);
+    let mux = thurbox::agent::tmux::LocalMuxContext::default_local();
     thurbox::agent::tmux::stamp_local_window(
+        &mux,
         &format!("{SESSION}:tb-{name}"),
         &row.id.to_string(),
         thurbox::agent::tmux::WindowRole::Agent,
     );
     assert!(thurbox::agent::tmux::window_exists(
+        &mux,
         &row.id.to_string(),
         &name
     ));
     assert!(!thurbox::agent::tmux::window_exists(
+        &mux,
         &namesake.id.to_string(),
         &name
     ));

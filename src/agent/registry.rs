@@ -46,6 +46,8 @@ impl BackendRegistry {
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
         let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
         let mut backends = Self::new(local);
+        #[cfg(unix)]
+        backends.register(Arc::new(crate::agent::tmux::TmuxBackend::local_rmux()));
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
         for host in &hosts.hosts {
@@ -56,6 +58,13 @@ impl BackendRegistry {
             backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
                 &routed,
             )));
+            if !host.is_windows() {
+                let mut rmux_host = host.clone();
+                rmux_host.multiplexer = Some("rmux".into());
+                backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+                    &rmux_host,
+                )));
+            }
         }
         (backends, hosts, warnings.clone())
     }

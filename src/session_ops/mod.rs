@@ -1,9 +1,8 @@
 //! Headless session operations — spawn and restart sessions without the TUI.
 //!
-//! Callers (MCP, CLI) use these helpers to drive the same local-tmux-backed
-//! sessions the TUI manages, without requiring the TUI event loop. All
-//! operations are synchronous against the SQLite database and the `tmux -L
-//! thurbox` server.
+//! Callers (MCP, CLI) use these helpers to drive the same sessions the TUI
+//! manages, without requiring its event loop. Operations are synchronous
+//! against the SQLite database and each session's recorded backend.
 
 pub mod builtin;
 pub mod builtin_hooks;
@@ -70,7 +69,9 @@ pub fn send_text_with_status(
     } else {
         None
     };
-    crate::agent::tmux::send_text_now(&session.id.to_string(), &session.name, text, submit)?;
+    let mux = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type)
+        .map_err(anyhow::Error::msg)?;
+    crate::agent::tmux::send_text_now(&mux, &session.id.to_string(), &session.name, text, submit)?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
@@ -557,6 +558,14 @@ pub fn fork_session_headless(
         source.agent_session_id.clone()
     };
 
+    let parent_host = resolve_host(&source.backend_type)
+        .ok_or_else(|| format!("Cannot resolve host for '{}'", source.backend_type))?;
+    let multiplexer = match parent_host.as_ref() {
+        Some(host) => Some(host.mux()),
+        None => crate::agent::tmux::LocalMuxContext::for_backend(&source.backend_type)?
+            .choice()
+            .map(str::to_string),
+    };
     let request = spawn::SpawnRequest {
         name,
         repo_path,
@@ -568,9 +577,8 @@ pub fn fork_session_headless(
         env,
         // A fork of a remote session belongs on that session's host, or it would
         // silently become a local session pointed at a path that is not here.
-        host: resolve_host(&source.backend_type)
-            .flatten()
-            .map(|host| host.name),
+        host: parent_host.map(|host| host.name),
+        multiplexer,
         parent_session_id: Some(source.id),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).

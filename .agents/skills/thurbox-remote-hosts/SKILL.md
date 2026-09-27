@@ -64,6 +64,11 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
+Remote SSH/WSL hosts can choose `multiplexer = "rmux"` in `hosts.toml`, or
+override a create with `--host <name> --multiplexer rmux`. The resolved choice
+is stored as `ssh:<name>:rmux` or `wsl:<name>:rmux`; legacy host backend IDs
+still route to tmux/psmux after the host preference changes. The local
+`settings.toml` preference does not change a host's choice.
 
 How it works: `TmuxBackend` is transport-neutral
 (`agent::transport::TmuxTransport`). The local backend launches
@@ -516,4 +521,3 @@ session), never on the loop, ADR-P12).
   than relaunching against a host it cannot reach, then bring the host back
   and assert exactly one agent window exists — never a second one started
   while the host looked absent.
-

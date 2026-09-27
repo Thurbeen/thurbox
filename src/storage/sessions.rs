@@ -54,7 +54,7 @@ pub struct DeletedSessionInfo {
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
     pub parent_session_id: Option<SessionId>,
-    /// Persisted backend (`local-tmux` or `ssh:<host>`). Preserved on restore so
+    /// Persisted backend (`local-tmux`, `local-rmux`, or `ssh:<host>`). Preserved on restore so
     /// a remote session re-spawns against its own host, not the local default.
     pub backend_type: String,
     /// The pane id (`%N`) the session held when it was deleted, kept so a

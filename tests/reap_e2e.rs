@@ -642,8 +642,12 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     db.set_backend_id(session.session_id, "")
         .expect("clear the pane id");
 
-    let located =
-        thurbox::agent::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
+    let located = thurbox::agent::tmux::agent_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        None,
+        &session.session_id.to_string(),
+        "stamped",
+    );
     let outcome = located.map(|l| l.pane());
 
     assert_eq!(
@@ -821,8 +825,16 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     assert!(!tmux(&["has-session"]).status.success());
 
     let id = thurbox::session::SessionId::default();
-    let _ = thurbox::agent::tmux::kill_window(&id.to_string(), "ghost");
-    let _ = thurbox::agent::tmux::kill_shell_window(&id.to_string(), "ghost");
+    let _ = thurbox::agent::tmux::kill_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        &id.to_string(),
+        "ghost",
+    );
+    let _ = thurbox::agent::tmux::kill_shell_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
+        &id.to_string(),
+        "ghost",
+    );
     let _ = thurbox::session_ops::reap_soft_deleted(&db, id);
 
     let started = tmux(&["has-session"]).status.success();

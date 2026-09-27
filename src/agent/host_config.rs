@@ -86,9 +86,9 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       $HOME/.local/share/thurbox/worktrees there ($HOME resolved on first use).
 #
 #   multiplexer    (string, optional, default: "tmux")
-#       Multiplexer binary on the host. Set to "psmux" when an SSH host is a
-#       Windows machine (psmux speaks the same control-mode wire protocol);
-#       WSL distros use "tmux".
+#       Host preference for new sessions: "tmux" or "rmux" on POSIX, "psmux"
+#       for a native Windows SSH host. An explicit create choice wins.
+#       WSL distros can use "tmux" or "rmux" inside the distro.
 #
 #   share_sessions (bool, optional, default: true)
 #       The host's own thurbox database is the record of the sessions on it:
@@ -141,7 +141,7 @@ config_version = 1
 # # socket = "thurbox"          # remote `tmux -L` socket; change to avoid a clash
 # # session = "thurbox"         # remote tmux session grouping thurbox windows
 # # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs remote path
-# # multiplexer = "tmux"        # set to "psmux" for a Windows remote host
+# # multiplexer = "tmux"        # "rmux" on POSIX, "psmux" on native Windows
 # # path_prepend = []           # e.g. ["~/.local/bin"]: first on the agent's PATH
 #
 # ──────────────────────────────────────────────────────────────────────────

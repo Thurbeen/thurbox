@@ -583,10 +583,13 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     if remote {
         return HookCli::Remote;
     }
+    let Ok(mux) = crate::agent::tmux::LocalMuxContext::for_backend(&session.backend_type) else {
+        return HookCli::PaneUnverifiable;
+    };
     // Spelled out at every mention rather than imported: `cli` may reach
     // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
     // that holds for a `use` inside a function too.
-    match crate::agent::tmux::agent_pane_path(&session.id.to_string(), &session.name) {
+    match crate::agent::tmux::agent_pane_path(&mux, &session.id.to_string(), &session.name) {
         crate::agent::tmux::PanePath::Known(path) => {
             match resolve_cli_on(std::ffi::OsStr::new(&path)) {
                 Some(found) => HookCli::OnPanePath(found),

@@ -645,9 +645,11 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 ..Default::default()
             };
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
+            let mux = crate::agent::tmux::LocalMuxContext::for_backend(&spawned.backend_type)?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
             crate::agent::tmux::send_prompt_after_delay(
+                &mux,
                 &spawned.session_id.to_string(),
                 &spawned.name,
                 &prompt,

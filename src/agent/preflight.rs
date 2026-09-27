@@ -140,6 +140,8 @@ pub enum Dependency<'a> {
     /// The multiplexer a *local* session's window lives in: `tmux`, or `psmux`
     /// on native Windows.
     LocalMultiplexer,
+    /// Optional RMUX selected for a local session.
+    Rmux,
     /// What reaches a remote host's multiplexer from this machine: `ssh`, or
     /// `wsl.exe` for a WSL distro.
     Launcher(&'a str),
@@ -152,6 +154,7 @@ impl Dependency<'_> {
     pub fn binary(&self) -> &str {
         match self {
             Dependency::LocalMultiplexer => DEFAULT_MUX,
+            Dependency::Rmux => "rmux",
             Dependency::Launcher(bin) => bin,
             Dependency::Agent { command, .. } => command,
         }
@@ -167,6 +170,7 @@ impl Dependency<'_> {
             Dependency::LocalMultiplexer => {
                 format!("{DEFAULT_MUX} (thurbox's multiplexer)")
             }
+            Dependency::Rmux => "rmux (the selected session multiplexer)".to_string(),
             Dependency::Launcher(bin) => format!("{bin} (how thurbox reaches a host)"),
             Dependency::Agent { name, command } if name == command => {
                 format!("{name} (a coding agent)")
@@ -187,6 +191,9 @@ impl Dependency<'_> {
     /// rather than with an install command for a CLI thurbox does not know.
     pub fn fix(&self) -> String {
         match self {
+            Dependency::Rmux => {
+                "install RMUX from https://github.com/Helvesec/rmux/releases".to_string()
+            }
             Dependency::LocalMultiplexer if cfg!(windows) => {
                 "install psmux, the Windows multiplexer: https://github.com/psmux/psmux".to_string()
             }
@@ -289,7 +296,9 @@ pub fn launch_failure(
         return anyhow::Error::new(err).context(context);
     }
     let launcher = transport.launcher();
-    let dependency = if transport.is_remote() {
+    let dependency = if matches!(transport, TmuxTransport::LocalRmux) {
+        Dependency::Rmux
+    } else if transport.is_remote() {
         Dependency::Launcher(launcher)
     } else {
         Dependency::LocalMultiplexer
@@ -324,9 +333,9 @@ pub fn is_missing_dependency(err: &anyhow::Error) -> bool {
     err.chain().any(|e| e.is::<MissingDependency>())
 }
 
-/// The multiplexer a local session would run in on this platform.
+/// The configured multiplexer a new local session would use.
 pub fn local_multiplexer() -> &'static str {
-    DEFAULT_MUX
+    super::tmux::LocalMuxContext::configured_default().binary()
 }
 
 #[cfg(test)]

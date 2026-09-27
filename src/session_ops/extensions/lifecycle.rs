@@ -250,6 +250,7 @@ fn create_under_claim(
             name: sess.name.clone(),
             repo_path: sess.repo_path.clone(),
             agent: Some(sess.agent.clone()),
+            multiplexer: Some("default".into()),
             ..Default::default()
         },
     )?;

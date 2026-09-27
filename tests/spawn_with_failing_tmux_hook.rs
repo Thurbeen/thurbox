@@ -86,6 +86,7 @@ fn window_names() -> Vec<String> {
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
     thurbox::agent::tmux::spawn_window(
+        &thurbox::agent::tmux::LocalMuxContext::default_local(),
         SESSION_ID,
         name,
         "sh",
