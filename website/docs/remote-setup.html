@@ -3,6 +3,7 @@ layout: docs.njk
 title: 'Remote setup — Thurbox Docs'
 description: 'Run Thurbox sessions on Linux SSH hosts, through bastions and cloud tunnels, or in WSL.'
 currentPage: 'remote-setup'
+breadcrumb: 'Remote setup'
 ---
 <h1>Run a session on another machine</h1>
 <p>
@@ -44,7 +45,7 @@ currentPage: 'remote-setup'
     Run <code>ssh devbox 'printf ready'</code>; it should print <code>ready</code> without a
     password prompt. Verify the host key through your normal SSH process.
     Then check the remote prerequisites and command path:
-    <pre><code>ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'</code></pre>
+    <pre><code>ssh devbox 'git --version &amp;&amp; tmux -V &amp;&amp; command -v codex &amp;&amp; git -C /srv/project rev-parse --is-inside-work-tree &gt;/dev/null'</code></pre>
     Replace <code>codex</code> and <code>/srv/project</code> with your agent and the host's
     absolute repository path. If the agent is absent from the remote command PATH, see
     <a href="configuration.html#hosts-toml">path_prepend in the host configuration</a>.

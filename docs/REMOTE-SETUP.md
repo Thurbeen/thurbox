@@ -45,7 +45,7 @@ than the local binary requires.
    Then check the remote prerequisites and command path:
 
    ```sh
-   ssh devbox 'git --version; tmux -V; command -v codex; test -d /srv/project/.git'
+   ssh devbox 'git --version && tmux -V && command -v codex && git -C /srv/project rev-parse --is-inside-work-tree >/dev/null'
    ```
 
    Replace `codex` with your configured agent and `/srv/project` with your
