@@ -417,7 +417,7 @@ fn respawn(
         .map_err(|e| format!("probe restored pane: {e:#}"))?
     {
         backend
-            .stamp_window(&pane, &stamp, crate::agent::tmux::WindowRole::Agent)
+            .stamp_window(&pane, &stamp, crate::agent::backend::WindowRole::Agent)
             .map_err(|e| format!("stamp the live pane: {e:#}"))?;
         db.set_backend_id(session.id, &pane)
             .map_err(|e| format!("record the live pane: {e}"))?;

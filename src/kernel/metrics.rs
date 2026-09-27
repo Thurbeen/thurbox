@@ -448,6 +448,17 @@ mod tests {
         ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
             unimplemented!()
         }
+        fn spawn_headless(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&Path>,
+            _: &HashMap<String, String>,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("metrics probe cannot spawn")
+        }
         fn adopt(
             &self,
             _: &str,
@@ -459,6 +470,11 @@ mod tests {
         }
         fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
             Ok(Vec::new())
+        }
+        fn headless_discover(
+            &self,
+        ) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            self.discover()
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
             Ok(())

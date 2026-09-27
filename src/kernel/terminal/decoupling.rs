@@ -137,6 +137,17 @@ impl crate::agent::backend::SessionBackend for Recorder {
             size: None,
         })
     }
+    fn spawn_headless(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: Option<&std::path::Path>,
+        _: &HashMap<String, String>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("recorder has no headless sessions")
+    }
     fn adopt(
         &self,
         _: &str,
@@ -154,6 +165,9 @@ impl crate::agent::backend::SessionBackend for Recorder {
     }
     fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
         Ok(Vec::new())
+    }
+    fn headless_discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+        self.discover()
     }
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> anyhow::Result<()> {
         self.resizes

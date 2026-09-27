@@ -2386,7 +2386,7 @@ fn register_running_session(
     crate::agent::tmux::stamp_local_window(
         &pane,
         &session.id.to_string(),
-        crate::agent::tmux::WindowRole::Agent,
+        crate::agent::backend::WindowRole::Agent,
     );
     session.backend_id = pane;
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)

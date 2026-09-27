@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 use crate::agent::backend::{
     AdoptedSession, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession,
 };
+pub use crate::agent::backend::{Located, WindowRole};
 use crate::agent::control_mode::{
     self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
     ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
@@ -393,38 +394,7 @@ pub const WINDOW_SESSION_OPTION: &str = "@thurbox_session";
 /// and a companion shell window, and both carry its id.
 pub const WINDOW_ROLE_OPTION: &str = "@thurbox_role";
 
-/// What a thurbox window holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum WindowRole {
-    /// A session's agent (`tb-`).
-    Agent,
-    /// A session's companion shell (`tbs-`).
-    Shell,
-    /// A plugin's program (`tbp-`). Owned by a plugin rather than a session
-    /// row, so it is stamped with a role and no session id — which is what
-    /// keeps it from ever resolving as somebody's agent.
-    Program,
-}
-
 impl WindowRole {
-    /// The value written to [`WINDOW_ROLE_OPTION`].
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Shell => "shell",
-            Self::Program => "program",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "agent" => Some(Self::Agent),
-            "shell" => Some(Self::Shell),
-            "program" => Some(Self::Program),
-            _ => None,
-        }
-    }
-
     /// The role a window *name* implies, for one spawned before windows were
     /// stamped. `None` for a window that is not thurbox's at all.
     fn from_window_name(name: &str) -> Option<Self> {
@@ -545,38 +515,6 @@ fn birth_option_commands(window_name: &str, psmux: bool) -> Vec<String> {
         .iter()
         .map(|(key, value)| format!("set-window-option {key} {value}"))
         .collect()
-}
-
-/// Where a listing puts a session's window.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Located {
-    /// The window is this pane.
-    At(String),
-    /// The listing covers the server and nothing on it is this session's.
-    Absent,
-    /// The listing cannot say: more than one window answers to the name and at
-    /// least one of them carries no stamp.
-    ///
-    /// Never collapse this into [`Located::Absent`]. Reading ambiguity as
-    /// absence is what relaunches a session that is already running, so two
-    /// colliding windows become three.
-    Unknown,
-}
-
-impl Located {
-    /// The pane, when there is one to act on.
-    pub fn pane(self) -> Option<String> {
-        match self {
-            Self::At(pane) => Some(pane),
-            _ => None,
-        }
-    }
-
-    /// Whether the listing positively says there is no such window. The only
-    /// answer a relaunch may act on.
-    pub fn is_absent(&self) -> bool {
-        matches!(self, Self::Absent)
-    }
 }
 
 /// One thurbox window as a listing reported it.

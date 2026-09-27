@@ -838,7 +838,7 @@ pub fn owned_windows_in(
         index.shell_window(&id, &row.name),
     ]
     .into_iter()
-    .filter_map(crate::agent::tmux::Located::pane)
+    .filter_map(crate::agent::backend::Located::pane)
     .collect()
 }
 

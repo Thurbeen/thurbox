@@ -935,7 +935,7 @@ impl Terminals {
             // persisted for the same reason, by `drain_adopted_panes`.
             if via_name && result.is_ok() {
                 if let Err(e) =
-                    backend.stamp_window(&pane, &session, crate::agent::tmux::WindowRole::Agent)
+                    backend.stamp_window(&pane, &session, crate::agent::backend::WindowRole::Agent)
                 {
                     tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
                 }
@@ -2532,6 +2532,17 @@ mod tests {
         ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
             unreachable!()
         }
+        fn spawn_headless(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&std::path::Path>,
+            _: &HashMap<String, String>,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("liveness probe cannot spawn")
+        }
         fn adopt(
             &self,
             _: &str,
@@ -2550,9 +2561,14 @@ mod tests {
                     name: "tb-demo".into(),
                     is_alive: false,
                     session: "a".into(),
-                    role: crate::agent::tmux::WindowRole::Agent,
+                    role: crate::agent::backend::WindowRole::Agent,
                 }]),
             }
+        }
+        fn headless_discover(
+            &self,
+        ) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+            self.discover()
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
             Ok(())
@@ -2661,7 +2677,7 @@ mod tests {
                     name: (*window).to_string(),
                     is_alive: true,
                     session: String::new(),
-                    role: crate::agent::tmux::WindowRole::Agent,
+                    role: crate::agent::backend::WindowRole::Agent,
                 })
         });
         terminals
@@ -2776,7 +2792,7 @@ mod tests {
                 name: "tb-demo".into(),
                 is_alive: true,
                 session: "b".into(),
-                role: crate::agent::tmux::WindowRole::Agent,
+                role: crate::agent::backend::WindowRole::Agent,
             }]),
         );
 
