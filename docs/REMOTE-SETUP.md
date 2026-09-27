@@ -16,8 +16,10 @@ other routes only change how OpenSSH reaches that host.
 The cloud configurations below were checked against the linked provider docs.
 They were **not connected to a cloud account** during this guide's validation.
 Supply your own identity, permissions, network rules, and SSH key; Thurbox
-does not manage cloud credentials or IAM. The generic path was exercised with
-the repository's isolated SSH container test.
+does not manage cloud credentials or IAM. An isolated container check created,
+listed and inspected a remote tmux session with `share_sessions = false`. Its
+shared-host CLI check could not run because the test container's libc is older
+than the local binary requires.
 
 ## Plain Linux SSH
 
@@ -90,7 +92,9 @@ host itself. If a connection fails, run `ssh -v devbox true` first. If SSH
 succeeds but creation fails, repeat the remote prerequisite command and check
 the repository's path and agent authentication. A shared host needs a
 compatible remote platform for CLI provisioning. Keep the host online when
-first creating a session.
+first creating a session. If the host cannot run the provisioned CLI (for
+example, a libc mismatch), set `share_sessions = false`, restart Thurbox, and
+create the session again; its records then belong to this local instance.
 
 ## Other OpenSSH routes
 

@@ -22,8 +22,9 @@ currentPage: 'remote-setup'
 <p>
   The cloud commands were checked against the linked provider documentation, but were not executed
   against cloud accounts. Supply your own identity, network access, permissions, and SSH key.
-  Thurbox does not manage cloud credentials or IAM. The generic path was exercised with the
-  repository's isolated SSH container test.
+  Thurbox does not manage cloud credentials or IAM. An isolated container check created, listed,
+  and inspected a remote tmux session with <code>share_sessions = false</code>. Its shared-host
+  CLI check could not run because that container's libc is older than the local binary requires.
 </p>
 
 <h2 id="plain-ssh">Plain Linux SSH</h2>
@@ -74,7 +75,9 @@ thurbox-cli session list</code></pre>
   <code>thurbox-cli session list</code>; use
   <code>thurbox-cli session sync --host devbox</code> to refresh sessions created on the host.
   For a connection failure, try <code>ssh -v devbox true</code>. If SSH succeeds, check the
-  remote Git, tmux, agent, repository path and credentials.
+  remote Git, tmux, agent, repository path and credentials. If the host cannot run the provisioned
+  CLI, set <code>share_sessions = false</code>, restart Thurbox, and create the session again;
+  its records then belong to this local instance.
 </p>
 
 <h2>Other OpenSSH routes</h2>
