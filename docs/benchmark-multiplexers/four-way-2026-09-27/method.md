@@ -78,8 +78,8 @@ scripts/bench/run.sh --no-build --reps 5 --warmup 1 \
   --out "$RESULTS/synthetic"
 ```
 
-The release binaries are built before measurement. The command checks the
-pinned Herdr release hash and records the installed RMUX version. For an
+The release binaries are built before measurement. The command fetches or
+checks the pinned Herdr and RMUX release archives before running. For an
 archive without `.git`, `BENCH_SOURCE_COMMIT` is set to the pinned commit above.
 The work path is short enough for Unix socket limits and is separate from
 Thurbox's live config and sessions.
@@ -105,7 +105,7 @@ same rotating host order.
 ```sh
 BASE="$HOME/.cache/thurbox-bench-fourway"
 RESULTS="$BASE/results"
-export PATH="$BASE/bin:$BASE/rmux-0.10.0-linux-x86_64/bin:$PATH"
+export PATH="$BASE/bin:$BASE/herdr-v0.9.1-$(uname -m):$BASE/rmux-0.10.0-linux-x86_64/bin:$PATH"
 export BENCH_SOURCE_COMMIT=1f9bd654db4209b1b5832248c5c444c627acd178
 python3 scripts/bench/real_tui.py --reps 5 --warmup 1 \
   --work "$HOME/.cache/b5/real-run" \

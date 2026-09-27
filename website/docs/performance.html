@@ -59,7 +59,12 @@ breadcrumb: 'Performance'
   and <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/benchmark-multiplexers/four-way-2026-09-27/nixos/synthetic/results.json">raw samples</a>
   include attach, resources, burst, scrollback, typing, and survival.
 </p>
-<table id="stand-in-comparison">
+<p id="comparison-scale">
+  CPU rows are percent of one logical core; PSS rows are memory in MiB. A CPU value can exceed
+  100% when the host uses multiple cores: Herdr's 121% attached-idle p95 is about 1.21 busy cores,
+  or 30% of this four-core machine's capacity.
+</p>
+<table id="stand-in-comparison" aria-describedby="comparison-scale">
   <caption class="performance-table-hint">Swipe sideways to compare all four configurations.</caption>
   <thead>
     <tr><th scope="col">Metric</th><th scope="col">tmux</th><th scope="col">Herdr</th><th scope="col">RMUX</th><th scope="col">Thurbox (tmux)</th></tr>

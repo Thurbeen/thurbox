@@ -11,6 +11,7 @@ import argparse
 import datetime
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -48,7 +49,7 @@ env_key = "MOCK_API_KEY"
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f"python3 {HERE / 'real_tui_hook.py'} {state}",
+                        "command": f"python3 {shlex.quote(str(HERE / 'real_tui_hook.py'))} {state}",
                     }
                 ]
             }
@@ -60,9 +61,10 @@ env_key = "MOCK_API_KEY"
         CODEX_HOME=str(home),
         MOCK_API_KEY="dummy",
         BENCH_HOOK_LOG=str(Path(sb.root) / "hooks.jsonl"),
-        BENCH_THURBOX_CLI=cli,
+        BENCH_THURBOX_CLI=cli or "",
     )
-    sb.env["PATH"] = str(Path(cli).parent) + os.pathsep + sb.env["PATH"]
+    if cli:
+        sb.env["PATH"] = str(Path(cli).parent) + os.pathsep + sb.env["PATH"]
     sb.run(["git", "init", "-q"])
     sb.agent_argv = lambda _: [
         shutil.which("codex"),
@@ -89,7 +91,7 @@ def whole_stack_pids(host, client):
 
 def run_one(name, root, port, tools):
     sb = bl.Sandbox(str(root / name))
-    configure(sb, port, tools["thurbox-cli"])
+    configure(sb, port, tools.get("thurbox-cli") if name == "thurbox" else None)
     host = hosts.HOSTS[name](sb, tools)
     client = None
     try:
@@ -181,7 +183,7 @@ def main():
     p.add_argument("--hosts", default="tmux,herdr,rmux,thurbox")
     p.add_argument("--work", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--thurbox-bin", required=True)
+    p.add_argument("--thurbox-bin", default="target/release")
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--warmup", type=int, default=1)
     args = p.parse_args()
@@ -250,10 +252,14 @@ def main():
         if name != "thurbox"
     }
     versions["codex"] = codex_version
-    versions["thurbox"] = subprocess.run(
-        [tools["thurbox-cli"], "--version"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    hashes = {name: bl.binary_hash(path) for name, path in tools.items()}
+    if "thurbox" in names:
+        versions["thurbox"] = subprocess.run(
+            [tools["thurbox-cli"], "--version"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    selected_tools = set(names)
+    if "thurbox" in selected_tools:
+        selected_tools.add("thurbox-cli")
+    hashes = {name: bl.binary_hash(tools[name]) for name in selected_tools}
     hashes["codex"] = bl.binary_hash(shutil.which("codex"))
     summary = {}
     for name in names:
