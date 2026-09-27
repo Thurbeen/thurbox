@@ -121,9 +121,9 @@ so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
 envelope is decoded to the message inside it. See the two subsections after
 "psmux divergences" in ADR-13.
 
-Each tmux host registers a backend named
-`ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`); a psmux host registers
-`ssh:<name>:psmux` and aliases its old `ssh:<name>` key, while native Windows
+Each SSH host registers explicit `ssh:<name>:tmux` and `ssh:<name>:psmux`
+backends and aliases `ssh:<name>` to its configured default; WSL registers
+`wsl:<name>` (`TmuxBackend::from_host`). Native Windows
 registers `local-psmux` and aliases `local-tmux`. All are registered lazily in
 `main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use

@@ -259,7 +259,9 @@ main     ← the coordinator: the loop, the workers, the chrome
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form, so a new module fails the test
 until its place is declared. The full rule, the module responsibilities and the
-event loop are in the `thurbox-kernel` skill.
+event loop are in the `thurbox-kernel` skill. The architecture test also rejects
+psmux type selection in generic session lifecycle files; route and alias
+behavior is covered by `tests/psmux_backend_boundary.rs`.
 
 ## Pre-commit Hooks
 
@@ -285,9 +287,9 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backend: `TmuxBackend` or `PsmuxBackend` over a shared `TmuxTransport`
-  (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
-  `ssh:<host>` backends from `hosts.toml`). The local socket is
+- Session backends: `TmuxBackend` and `PsmuxBackend` share transport and
+  control-mode protocol code. Local tmux uses `tmux -L thurbox`; SSH hosts
+  register qualified tmux and psmux routes from `hosts.toml`. The local socket is
   `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one
   relocated by `THURBOX_DATA_DIR` derives its own (`thurbox-<digest>`) so it
   never creates windows on the operator's server, and `THURBOX_SOCKET`

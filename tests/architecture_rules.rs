@@ -11,8 +11,8 @@
 //! statements, and fully-qualified paths in code (`crate::a::item(…)`).
 //!
 //! The layering mirrors AGENTS.md ("Module Dependency Rules") and
-//! docs/CONSTITUTION.md §2. If a rule change is intentional, update those
-//! docs in the same PR.
+//! docs/CONSTITUTION.md §2. The lifecycle guard below also keeps psmux
+//! selection out of generic session operations.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -634,6 +634,22 @@ fn usage_module_isolation() {
 #[test]
 fn session_ops_module_isolation() {
     assert_module_clean("session_ops");
+}
+
+#[test]
+fn session_lifecycle_does_not_select_psmux_by_name() {
+    for file in ["spawn", "restart", "restore", "delete", "mirror"] {
+        let path = src_root().join(format!("session_ops/{file}.rs"));
+        let source = fs::read_to_string(&path).unwrap();
+        let code = strip_comments_and_strings(&source);
+        for forbidden in ["PsmuxBackend", "Multiplexer::Psmux"] {
+            assert!(
+                !code.contains(forbidden),
+                "{} selects {forbidden} inside generic session lifecycle",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

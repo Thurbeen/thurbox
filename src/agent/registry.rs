@@ -31,19 +31,19 @@ impl BackendRegistry {
         }
     }
 
-    /// The registry as a running interface needs it: the local multiplexer as
-    /// the default plus one backend per configured or discovered host — the
-    /// same construction the v1 binary did by hand.
-    ///
-    /// Backends are registered, never readied: registration is a map insert,
-    /// where readying is a blocking connect (an ssh round trip for a remote
-    /// host), so a down host must not be probed until a session on it is
-    /// actually attached. The `HostRegistry` comes back alongside because a
-    /// pane needs more than a connection — a remote session's launch directory
-    /// resolves against its `HostDef` — and both halves must come from the same
-    /// read of `hosts.toml`. The warnings are that read's, for callers that
-    /// surface them.
+    /// Register local and host routes without connecting to remote hosts.
+    /// Both SSH mux routes remain available after a host preference changes;
+    /// the unsuffixed alias follows the current preference for legacy rows.
+    /// Return the hosts from the same config read for launch and path lookup.
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
+        let (hosts, warnings) = crate::agent::host_config::cached_registry();
+        let hosts = hosts.clone();
+        let backends = Self::from_host_registry(&hosts);
+        (backends, hosts, warnings.clone())
+    }
+
+    /// Build routes from an already resolved host registry without contacting hosts.
+    pub fn from_host_registry(hosts: &HostRegistry) -> Self {
         let local: Arc<dyn SessionBackend> = if cfg!(windows) {
             Arc::new(crate::agent::psmux::PsmuxBackend::local())
         } else {
@@ -56,25 +56,37 @@ impl BackendRegistry {
                 backends.default_backend().clone(),
             );
         }
-        let (hosts, warnings) = crate::agent::host_config::cached_registry();
-        let hosts = hosts.clone();
+        // Add aliases after canonical keys so a literal suffix host wins a collision.
+        let mut legacy_aliases = Vec::new();
         for host in &hosts.hosts {
-            let mut routed = host.clone();
-            if matches!(routed.mux().as_str(), "rmux" | "herdr") {
-                routed.multiplexer = Some("tmux".into());
+            if host.is_wsl() {
+                backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
+                continue;
             }
-            if routed.mux() == "psmux" {
-                let backend: Arc<dyn SessionBackend> =
-                    Arc::new(crate::agent::psmux::PsmuxBackend::from_host(&routed));
-                backends.register_alias(routed.backend_name(), backend.clone());
-                backends.register(backend);
+            let mut tmux_host = host.clone();
+            tmux_host.multiplexer = Some("tmux".into());
+            let mut tmux = crate::agent::tmux::TmuxBackend::from_host(&tmux_host);
+            tmux.set_name(format!("{}:tmux", host.backend_name()));
+            let tmux: Arc<dyn SessionBackend> = Arc::new(tmux);
+
+            let mut psmux_host = host.clone();
+            psmux_host.multiplexer = Some("psmux".into());
+            let psmux: Arc<dyn SessionBackend> =
+                Arc::new(crate::agent::psmux::PsmuxBackend::from_host(&psmux_host));
+
+            let legacy = if host.mux() == "psmux" {
+                psmux.clone()
             } else {
-                backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
-                    &routed,
-                )));
-            }
+                tmux.clone()
+            };
+            backends.register(tmux);
+            backends.register(psmux);
+            legacy_aliases.push((host.backend_name(), legacy));
         }
-        (backends, hosts, warnings.clone())
+        for (name, backend) in legacy_aliases {
+            backends.register_alias(name, backend);
+        }
+        backends
     }
 
     /// Register an additional backend. Its `name()` is used as the key.
@@ -102,8 +114,7 @@ impl BackendRegistry {
         self.backends.contains_key(name)
     }
 
-    /// A choice is offered only when an implementation has registered its
-    /// routing key. Installing a binary alone never makes an adapter exist.
+    /// A route is selectable only if its registered backend matches the chosen host.
     pub fn supports_choice(&self, choice: &crate::session::BackendChoice) -> bool {
         if choice.host.is_none()
             && choice.backend_type == crate::session::LOCAL_BACKEND_TYPE
@@ -111,7 +122,15 @@ impl BackendRegistry {
         {
             return false;
         }
-        self.has(&choice.backend_type)
+        let Some(backend) = self.get(&choice.backend_type) else {
+            return false;
+        };
+        match choice.host.as_ref() {
+            Some(host) if !host.is_wsl() => {
+                backend.name() == format!("{}:{}", host.backend_name(), choice.multiplexer.name())
+            }
+            _ => true,
+        }
     }
 
     /// Return the name of the default backend.

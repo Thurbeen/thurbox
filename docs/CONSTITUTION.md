@@ -40,11 +40,12 @@ Some crossings are permitted **by fully-qualified path only**, never by
 the point — every crossing into the side-effect layer stays visible at
 its call site instead of disappearing into an import list.
 
-The full per-module allowlist lives in `tests/architecture_rules.rs`,
-which is an **allowlist**: a new `src/` module fails the test until its
-dependencies are declared there. Exempt are only `main` and its own body
-split out as `src/coordinator/` — the coordinator wires every layer
-together by definition — plus the trivial `bin`/`lib` entry points.
+The full per-module allowlist lives in `tests/architecture_rules.rs`: a new
+`src/` module fails the test until its dependencies are declared there. The
+same test rejects psmux type selection in generic session lifecycle files.
+Routing and legacy aliases have an end-to-end registry regression. Only
+`main` and the trivial `bin`/`lib` entry points are exempt; `coordinator` has
+an explicit rule.
 
 ### 3. Zero-warning policy
 
@@ -108,8 +109,9 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 
 Coding-agent sessions run via a `SessionBackend` trait. The default is
 a local multiplexer (`tmux -L thurbox`; `psmux` on native Windows), and
-the same `TmuxBackend` runs over a transport — local, SSH, or WSL — so a
-session can live on another host without a second backend (ADR-13). The
+`TmuxBackend` and `PsmuxBackend` each own their lifecycle behavior while
+sharing the tmux protocol and transport where they agree (ADR-13). A session
+can run locally or on an SSH or WSL host. The
 multiplexer provides truly persistent sessions that survive
 crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.

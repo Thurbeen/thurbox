@@ -421,8 +421,8 @@ regardless of which backend is active.
 
 **Why**: Keeping session lifecycle behind a trait boundary leaves
 the app layer completely backend-agnostic. The backends today are
-local tmux and one SSH backend per configured host (both
-`TmuxBackend` over a `TmuxTransport`; see ADR-13), and the seam means
+local tmux, local Windows psmux, and explicit tmux and psmux routes for each
+SSH host (sharing `TmuxTransport`; see ADR-13). The seam means
 the transport can evolve without touching `App`, `Session`, or any UI
 code.
 
@@ -635,10 +635,9 @@ where `transport: TmuxTransport` is `Local` (a bare
 (`ssh <dest> <mux> …`), or `Wsl { distro, mux }`
 (`wsl.exe -d <distro> <mux> …`). `mux` is the host multiplexer binary
 (`tmux` by default, or `psmux` for a Windows SSH host; a WSL distro
-runs `tmux`). The transport's *only* job is to build the `Command`;
-everything downstream — the control-mode reader/writer threads, pane
-registration, `send-keys`/`%output` — is byte-for-byte identical
-(`control_mode.rs` was already transport-agnostic). The SSH and WSL
+runs `tmux`). The transport builds the `Command`; control-mode framing and
+reader/writer threads are shared, while `PsmuxBackend` owns psmux lifecycle
+capabilities and command differences (see below). The SSH and WSL
 arms share `TmuxTransport::prefixed`, since both join + shell-interpret
 the trailing POSIX-quoted tokens identically; only the launcher prefix
 differs.
@@ -648,9 +647,9 @@ Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 and WSL distros are additionally **auto-discovered**
 (`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
 combined set is loaded by `agent::host_config::load_all`, each
-registered as a backend named `ssh:<host>` / `wsl:<distro>` via
-`TmuxBackend::from_host`. A psmux host instead registers `PsmuxBackend` under
-`ssh:<host>:psmux`; its old `ssh:<host>` route remains an alias for persisted
+registered under `wsl:<distro>` for WSL. Each SSH host registers `TmuxBackend`
+under `ssh:<host>:tmux` and `PsmuxBackend` under `ssh:<host>:psmux`; its old
+`ssh:<host>` route remains an alias to the configured default for persisted
 sessions. On native Windows the local backend is `PsmuxBackend` under
 `local-psmux`, with `local-tmux` as a persisted-row alias.
 

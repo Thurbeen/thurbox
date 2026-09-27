@@ -1901,32 +1901,13 @@ enum Existing {
     Replaced(SessionId),
 }
 
-/// Apply the caller's [`OnExisting`] answer before anything is spawned.
+/// Apply the caller's [`OnExisting`] answer before spawning.
 ///
-/// A refusal is an `Err`, which the entrypoint renders as a structured document
-/// on stdout and exits non-zero — what Gas City's `RPP-LIFECYCLE-002` requires
-/// of a duplicate start, and what firstmate was hand-rolling a `session list`
-/// pre-check to achieve.
-///
-/// `backend` scopes the match to the machine the new session will land on. The
-/// name namespace is *not* per-machine: a database mirroring a shareable host
-/// (ADR-24) holds that host's rows beside its own, and two machines may
-/// legitimately each have a session called `build`. Matching across all of them
-/// made `replace` force-delete a session on another host, `fail` refuse a local
-/// create because of a remote namesake, and `adopt` hand back an id whose pane
-/// is not on this machine. The lookup itself is
-/// [`session_ops::names::live_namesakes`](crate::session_ops::names::live_namesakes),
-/// shared with the two creators that reach no `OnExisting` at all — extension
-/// self-heal and `session restore`.
-///
-/// Ambiguity blocks `adopt` and `replace` but not `allow`: adopting one of two
-/// same-named sessions, or destroying one of them, is a guess about which was
-/// meant. It is the same rule [`super::session_ref`] follows, and it still
-/// applies within one backend — thurbox enforces no uniqueness there either.
-///
-/// `reports_as` is only consulted on the `adopt` arm: `replace` and `None`
-/// both flow back into the normal creation path, which already applies it to
-/// the freshly spawned session.
+/// Match only rows routed to the selected backend, including legacy aliases.
+/// A database may mirror sessions from another host (ADR-24), where the same
+/// name must not make `replace` delete a remote pane. Multiple matches make
+/// `adopt` and `replace` ambiguous. `reports_as` applies here only to an
+/// adopted row; creation applies it after spawning.
 fn resolve_existing(
     db: &Database,
     name: &str,
@@ -1937,7 +1918,19 @@ fn resolve_existing(
     if mode == OnExisting::Allow {
         return Ok(Existing::None);
     }
-    let found: Vec<SharedSession> = crate::session_ops::names::live_namesakes(db, name, backend)?;
+    let routes = crate::agent::BackendRegistry::from_configured_hosts().0;
+    let selected = routes.get(backend);
+    let found: Vec<SharedSession> = db
+        .find_sessions_by_name(name)
+        .map_err(|e| format!("find_sessions_by_name: {e}"))?
+        .into_iter()
+        .filter(|session| {
+            session.backend_type == backend
+                || selected
+                    .zip(routes.get(&session.backend_type))
+                    .is_some_and(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+        })
+        .collect();
     match (mode, found.len()) {
         (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
         (OnExisting::Fail, _) => Err(format!(

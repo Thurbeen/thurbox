@@ -600,11 +600,7 @@ fn delegated_mux_option(
     }
     // An older compatible CLI predates both this flag and multiplexer
     // settings. It can only honour its platform default.
-    let platform_default = if host.is_windows() {
-        crate::session::Multiplexer::Psmux
-    } else {
-        crate::session::Multiplexer::Tmux
-    };
+    let platform_default = crate::session::Multiplexer::default_for_host(host);
     if choice.multiplexer == platform_default {
         Ok(Vec::new())
     } else {
@@ -1454,8 +1450,7 @@ fn dir_label(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
-/// The backend a creation on `host` will land on — `local-tmux`, or
-/// `ssh:<host>`/`wsl:<distro>`.
+/// The persisted backend route a new session will use.
 ///
 /// Exposed for `--on-existing`, which has to compare a proposed creation
 /// against the rows already on *that* backend: a database mirroring a shareable

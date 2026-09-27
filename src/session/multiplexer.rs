@@ -41,6 +41,14 @@ impl Multiplexer {
             Self::Tmux
         }
     }
+
+    pub fn default_for_host(host: &HostDef) -> Self {
+        if host.is_windows() {
+            Self::Psmux
+        } else {
+            Self::Tmux
+        }
+    }
 }
 
 /// What a create will use, before any worktree or pane is made. The host name
@@ -60,8 +68,7 @@ impl BackendChoice {
         local_default: Option<&str>,
     ) -> Result<Self, String> {
         let fallback = match &host {
-            Some(host) if host.is_windows() => Multiplexer::Psmux,
-            Some(_) => Multiplexer::Tmux,
+            Some(host) => Multiplexer::default_for_host(host),
             None => Multiplexer::platform_default(),
         };
         let configured = match &host {
@@ -75,8 +82,8 @@ impl BackendChoice {
             Multiplexer::parse(name)?
         };
         let backend_type = match &host {
-            Some(host) if multiplexer == Multiplexer::Psmux => {
-                format!("{}:psmux", host.backend_name())
+            Some(host) if !host.is_wsl() => {
+                format!("{}:{}", host.backend_name(), multiplexer.name())
             }
             Some(host) if multiplexer == fallback => host.backend_name(),
             Some(host) => format!("{}:{}", host.backend_name(), multiplexer.name()),
@@ -111,13 +118,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_keys_keep_their_routing() {
+    fn new_sessions_use_qualified_ssh_routes() {
         let host = HostDef {
             name: "example".into(),
             ..Default::default()
         };
         let chosen = BackendChoice::resolve(Some(host), None, None).unwrap();
-        assert_eq!(chosen.backend_type, "ssh:example");
+        assert_eq!(chosen.backend_type, "ssh:example:tmux");
         assert_eq!(
             BackendChoice::resolve(None, None, None)
                 .unwrap()

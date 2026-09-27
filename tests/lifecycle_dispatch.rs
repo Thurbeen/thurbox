@@ -282,8 +282,13 @@ fn create_and_force_delete_use_the_registered_backend() {
     git(&["commit", "-qm", "init"]);
     let spawns = Arc::new(AtomicUsize::new(0));
     let kills = Arc::new(AtomicUsize::new(0));
+    let local_route = if cfg!(windows) {
+        "local-psmux"
+    } else {
+        "local-tmux"
+    };
     let backend: Arc<dyn SessionBackend> = Arc::new(ProbeBackend::new(
-        "local-tmux",
+        local_route,
         spawns.clone(),
         kills.clone(),
     ));
@@ -318,7 +323,7 @@ fn create_and_force_delete_use_the_registered_backend() {
     assert_eq!(created.backend_id, "probe-pane-1");
     assert_eq!(spawns.load(Ordering::SeqCst), 1);
     registry
-        .get("local-tmux")
+        .get(local_route)
         .unwrap()
         .kill("probe-pane-1")
         .unwrap();

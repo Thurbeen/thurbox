@@ -169,7 +169,7 @@ fn a_create_on_a_shareable_host_is_the_hosts_and_lands_with_its_id() {
     assert_eq!(result.session_id, host_id);
     assert_eq!(result.sharing, None);
     let row = rig.db.get_session_by_id(host_id).unwrap().unwrap();
-    assert_eq!(row.backend_type, BACKEND);
+    assert_eq!(row.backend_type, format!("{BACKEND}:tmux"));
     assert_eq!(row.backend_id, "%4");
     assert_eq!(row.agent_session_id.as_deref(), Some("conv-on-host"));
     assert_eq!(

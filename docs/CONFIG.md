@@ -340,12 +340,17 @@ When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.
 
-The resolved choice is recorded in each new session's `backend_type`. New psmux
-sessions use `local-psmux` or `ssh:<host>:psmux`; the registry also routes old
-`local-tmux` and `ssh:<host>` psmux rows to the same backend. Existing
-`wsl:<distro>` rows keep their tmux routing after a preference changes. An adapter for another
-multiplexer registers its own local and host routing keys; it must read those
-keys on restart, restore, delete, input, capture, and fork.
+The resolved choice is recorded in each new session's `backend_type`. New SSH
+sessions use `ssh:<host>:tmux` or `ssh:<host>:psmux`; native Windows uses
+`local-psmux`. The registry also accepts
+old `local-tmux` Windows rows and unsuffixed `ssh:<host>` rows. The latter have
+no recorded multiplexer, so they follow that host's configured preference;
+keep the preference in place while those legacy rows are active. Existing
+`wsl:<distro>` rows keep their tmux routing. An adapter for another multiplexer
+registers its own local and host routing keys; it must read those keys on
+restart, restore, delete, input, capture, and fork.
+SSH hosts register both `ssh:<host>:tmux` and `ssh:<host>:psmux` so a qualified
+row remains routable if the host's preferred multiplexer changes.
 
 Manual deletion of an agent pane or window means the agent should run again.
 Once the backend **confirms absence**, Thurbox relaunches the same session ID,
