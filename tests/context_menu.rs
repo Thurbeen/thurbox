@@ -14,8 +14,9 @@ use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render_recording, PlaceholderSurfaces};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::snapshot::Snapshot;
+use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
 
 /// Opens a menu of three entries and a rule at its right press.
 const OPENER: &str = r#"
@@ -152,13 +153,23 @@ fn menu_text(host: &LuaHost) -> Option<String> {
     let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
     terminal
         .draw(|frame| {
-            render_recording(frame, frame.area(), &rendered.node, &PlaceholderSurfaces, &mut hits)
+            render_recording(
+                frame,
+                frame.area(),
+                &rendered.node,
+                &PlaceholderSurfaces,
+                &mut hits,
+            )
         })
         .expect("draw");
     let buffer = terminal.backend().buffer().clone();
     Some(
         (0..rows)
-            .map(|y| (0..cols).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..cols)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     )
@@ -176,7 +187,10 @@ fn actions(host: &LuaHost) -> Vec<String> {
 
 fn open(host: &LuaHost) {
     assert!(host
-        .on_context(index_of(host, "opener"), &right_press_at(12, 5, Some("opener")))
+        .on_context(
+            index_of(host, "opener"),
+            &right_press_at(12, 5, Some("opener"))
+        )
         .expect("context"));
 }
 
@@ -212,7 +226,10 @@ fn an_entry_shows_the_chord_its_action_is_bound_to() {
     let (_home, host) = menu_host();
     open(&host);
     let text = menu_text(&host).expect("drawn");
-    let first = text.lines().find(|l| l.contains("First")).expect("First row");
+    let first = text
+        .lines()
+        .find(|l| l.contains("First"))
+        .expect("First row");
     assert!(first.trim_end_matches(['│', ' ']).ends_with('x'), "{first}");
 }
 
@@ -254,7 +271,9 @@ fn moving_past_either_end_stays_put() {
 fn escape_closes_the_menu_and_runs_nothing() {
     let (_home, host) = menu_host();
     open(&host);
-    assert!(host.on_key(index_of(&host, "menu"), &key("esc")).expect("key"));
+    assert!(host
+        .on_key(index_of(&host, "menu"), &key("esc"))
+        .expect("key"));
     assert!(menu_text(&host).is_none());
     assert!(actions(&host).is_empty());
 }
@@ -264,7 +283,9 @@ fn escape_closes_the_menu_and_runs_nothing() {
 fn an_unknown_key_is_swallowed_while_the_menu_is_up() {
     let (_home, host) = menu_host();
     open(&host);
-    assert!(host.on_key(index_of(&host, "menu"), &key("q")).expect("key"));
+    assert!(host
+        .on_key(index_of(&host, "menu"), &key("q"))
+        .expect("key"));
     assert!(menu_text(&host).is_some(), "still open");
 }
 
@@ -306,4 +327,139 @@ fn clicking_the_rule_does_nothing() {
         .expect("click"));
     assert!(actions(&host).is_empty());
     assert!(menu_text(&host).is_some(), "still open");
+}
+
+// ── the sessions pane opens it ──────────────────────────────────────────────
+
+fn row(name: &str, repo: &str) -> SessionRow {
+    SessionRow {
+        id: format!("{name}-0000-0000-0000-000000000000"),
+        name: name.into(),
+        agent: "claude".into(),
+        status: SessionState::Idle,
+        cwd: Some(PathBuf::from(format!("/src/{repo}"))),
+        repo: Some(repo.into()),
+        repos: Vec::new(),
+        branch: Some("main".into()),
+        base_branch: None,
+        backend: "local-tmux".into(),
+        backend_id: Some("%1".into()),
+        remote_host: None,
+        agent_session_id: None,
+        parent_id: None,
+        display_order: None,
+        worktree_count: 0,
+        git: None,
+        stopped: false,
+        hook_state: None,
+        reports_as: None,
+        detected_agent: None,
+        shell_backend_id: None,
+        member_dirs: Vec::new(),
+    }
+}
+
+fn two_sessions() -> Snapshot {
+    Snapshot {
+        sessions: vec![row("alpha", "thurbox"), row("beta", "website")],
+        ..Snapshot::default()
+    }
+}
+
+/// The bundled interface, published two sessions and rendered once.
+fn sessions_host() -> LuaHost {
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &two_sessions());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    host
+}
+
+#[test]
+fn a_right_press_on_a_session_opens_its_menu_at_the_pointer() {
+    let host = sessions_host();
+    let beta = two_sessions().sessions[1].id.clone();
+    assert!(host
+        .on_context(
+            index_of(&host, "sessions"),
+            &right_press_at(7, 4, Some(&beta))
+        )
+        .expect("context"));
+    let float = host
+        .render(index_of(&host, "menu"), ctx())
+        .expect("render")
+        .float
+        .expect("the menu floats");
+    assert_eq!(float.at, Some((7, 4)));
+    let text = menu_text(&host).expect("drawn");
+    for label in [
+        "Open",
+        "Rename",
+        "Fork",
+        "Open in editor",
+        "Restart",
+        "Sync",
+        "Move up",
+        "Move down",
+        "Delete",
+        "Delete + worktree",
+    ] {
+        assert!(text.contains(label), "{label} missing:\n{text}");
+    }
+    assert!(!text.contains("Sort"), "sort targets no session:\n{text}");
+}
+
+/// The entries run the pane's own actions on the SELECTED session, so the
+/// press has to select the row it landed on.
+#[test]
+fn the_right_press_selects_the_session_it_landed_on() {
+    let host = sessions_host();
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(
+        index_of(&host, "sessions"),
+        &right_press_at(7, 4, Some(&beta)),
+    )
+    .expect("context");
+    // Down once, from Open, is Rename; its action opens the rename float for
+    // the selected session once the coordinator runs it.
+    let menu = index_of(&host, "menu");
+    host.on_key(menu, &key("down")).expect("key");
+    host.on_key(menu, &key("enter")).expect("key");
+    assert_eq!(actions(&host), ["sessions.rename"]);
+    assert!(host
+        .on_action(index_of(&host, "sessions"), "sessions.rename")
+        .expect("action"));
+    let rename = host
+        .render(index_of(&host, "rename"), ctx())
+        .expect("render");
+    assert!(rename.float.is_some(), "the rename float opens");
+    assert!(
+        format!("{:?}", rename.node).contains("beta"),
+        "…for beta, the row pressed"
+    );
+}
+
+#[test]
+fn a_right_press_on_no_row_opens_nothing() {
+    let host = sessions_host();
+    assert!(!host
+        .on_context(index_of(&host, "sessions"), &right_press_at(7, 1, None))
+        .expect("context"));
+    assert!(menu_text(&host).is_none());
+}
+
+#[test]
+fn a_right_press_on_an_empty_list_opens_nothing() {
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    publish(&host, &Snapshot::default());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    assert!(!host
+        .on_context(
+            index_of(&host, "sessions"),
+            &right_press_at(7, 4, Some("gone"))
+        )
+        .expect("context"));
+    assert!(menu_text(&host).is_none());
 }

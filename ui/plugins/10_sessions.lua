@@ -446,6 +446,26 @@ local function persist_order(items)
   end
 end
 
+--- The right-press menu: the actions that target one session, in the order
+--- the spec settled. Actions only -- each runs back through `on_action`, so an
+--- entry and its chord cannot come to mean different things, and delete still
+--- asks first when there is work to lose. Sort, the panel toggle and undo are
+--- not here: none of them is about the session that was pressed.
+local SESSION_MENU = {
+  { label = "Open", action = "sessions.open" },
+  { label = "Rename", action = "sessions.rename" },
+  { label = "Fork", action = "sessions.fork" },
+  { label = "Open in editor", action = "sessions.editor" },
+  "sep",
+  { label = "Restart", action = "sessions.restart" },
+  { label = "Sync", action = "sessions.sync" },
+  { label = "Move up", action = "sessions.move_up" },
+  { label = "Move down", action = "sessions.move_down" },
+  "sep",
+  { label = "Delete", action = "sessions.delete" },
+  { label = "Delete + worktree", action = "sessions.force_delete" },
+}
+
 return {
   name = "sessions",
   slot = "sessions",
@@ -768,6 +788,23 @@ return {
     if hit.clicks == 2 then
       command("focus", { text = "agent" })
     end
+    return true
+  end,
+
+  -- A right press on a row selects it, as a left press would, and opens its
+  -- menu where the press was. Selecting is what aims the entries: each runs an
+  -- action on the selected session. Focus stays put -- the kernel's rule for a
+  -- right press -- and the menu takes every key while it is up anyway. A header
+  -- carries no id, so it opens nothing, as it selects nothing on a left press.
+  on_context = function(hit)
+    if not hit.id then
+      return false
+    end
+    local items = session_model.build(sessions())
+    if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
+      return false
+    end
+    store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = SESSION_MENU }
     return true
   end,
 
