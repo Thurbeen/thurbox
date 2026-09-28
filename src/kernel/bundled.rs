@@ -102,6 +102,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
         include_str!("../../ui/plugins/62_rename.lua"),
     ),
     (
+        "plugins/64_menu.lua",
+        include_str!("../../ui/plugins/64_menu.lua"),
+    ),
+    (
         "plugins/65_search.lua",
         include_str!("../../ui/plugins/65_search.lua"),
     ),

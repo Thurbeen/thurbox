@@ -1,0 +1,309 @@
+//! The context menu: the generic float (`ui/plugins/64_menu.lua`) and the
+//! sessions pane that opens it.
+//!
+//! Driven through the host's hooks with the bundled interface, so what is
+//! pinned is the Lua contract — `store.menu` in, `command("action")` out. The
+//! road from the terminal is `tests/tui_e2e.rs`'s.
+
+use std::path::{Path, PathBuf};
+
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
+
+use thurbox::kernel::command::Command;
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::paint::{render_recording, PlaceholderSurfaces};
+use thurbox::kernel::registry::Registry;
+use thurbox::kernel::snapshot::Snapshot;
+use thurbox::kernel::theme::Themes;
+
+/// Opens a menu of three entries and a rule at its right press.
+const OPENER: &str = r#"
+return {
+  name = "opener",
+  slot = "sessions",
+  order = 10,
+  keys = {
+    { key = "x", action = "opener.first", desc = "first", group = "Test" },
+  },
+  render = function()
+    return { type = "text", text = "opener", id = "opener" }
+  end,
+  on_context = function(hit)
+    store.menu = {
+      at = { x = hit.screen_x, y = hit.screen_y },
+      items = {
+        { label = "First", action = "opener.first" },
+        { label = "Second", action = "opener.second" },
+        "sep",
+        { label = "Third", action = "opener.third" },
+      },
+    }
+    return true
+  end,
+}
+"#;
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("mkdir");
+    for entry in std::fs::read_dir(from).expect("read_dir") {
+        let entry = entry.expect("entry");
+        std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copy");
+    }
+}
+
+/// The bundled `lib/` and the menu float, plus `OPENER` — nothing else, so no
+/// bundled pane can answer for the menu.
+fn menu_host() -> (tempfile::TempDir, LuaHost) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    std::fs::create_dir_all(home.path().join("plugins")).expect("mkdir");
+    std::fs::copy(
+        source.join("plugins/64_menu.lua"),
+        home.path().join("plugins/64_menu.lua"),
+    )
+    .expect("copy the menu");
+    std::fs::write(home.path().join("plugins/10_opener.lua"), OPENER).expect("write opener");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &Snapshot::default());
+    (home, host)
+}
+
+fn publish(host: &LuaHost, snapshot: &Snapshot) {
+    let themes = Themes::load(None);
+    let mut registry = Registry::default();
+    let (bindings, settings) = host.declarations();
+    registry.declare(bindings, settings);
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
+        snapshot,
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: None,
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+}
+
+fn index_of(host: &LuaHost, name: &str) -> usize {
+    host.plugins
+        .iter()
+        .position(|p| p.name == name)
+        .unwrap_or_else(|| panic!("{name} should have loaded"))
+}
+
+fn ctx() -> RenderContext {
+    RenderContext {
+        width: 80,
+        height: 24,
+        focused: true,
+        elapsed: 0.0,
+        frame: 0,
+    }
+}
+
+fn right_press_at(x: u16, y: u16, id: Option<&str>) -> Click {
+    Click {
+        id: id.map(str::to_string),
+        role: id.map(|_| "row".to_string()),
+        w: 20,
+        h: 1,
+        screen_x: x,
+        screen_y: y,
+        clicks: 1,
+        ..Click::default()
+    }
+}
+
+fn key(name: &str) -> KeyPress {
+    KeyPress {
+        name: name.into(),
+        ch: (name.chars().count() == 1).then(|| name.chars().next().unwrap()),
+        ..KeyPress::default()
+    }
+}
+
+/// The menu's text, painted into its own rect, one line per row.
+fn menu_text(host: &LuaHost) -> Option<String> {
+    let rendered = host.render(index_of(host, "menu"), ctx()).expect("render");
+    let float = rendered.float?;
+    let (cols, rows) = (float.cols.unwrap_or(40), float.rows.unwrap_or(10));
+    let mut hits = Vec::new();
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            render_recording(frame, frame.area(), &rendered.node, &PlaceholderSurfaces, &mut hits)
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    Some(
+        (0..rows)
+            .map(|y| (0..cols).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn actions(host: &LuaHost) -> Vec<String> {
+    host.drain_commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Action { action, .. } => Some(action),
+            _ => None,
+        })
+        .collect()
+}
+
+fn open(host: &LuaHost) {
+    assert!(host
+        .on_context(index_of(host, "opener"), &right_press_at(12, 5, Some("opener")))
+        .expect("context"));
+}
+
+// ── the menu float ──────────────────────────────────────────────────────────
+
+#[test]
+fn nothing_floats_until_a_menu_is_asked_for() {
+    let (_home, host) = menu_host();
+    assert!(menu_text(&host).is_none());
+}
+
+#[test]
+fn the_menu_opens_at_the_press_sized_to_its_entries() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let float = host
+        .render(index_of(&host, "menu"), ctx())
+        .expect("render")
+        .float
+        .expect("the menu floats");
+    assert_eq!(float.at, Some((12, 5)));
+    assert_eq!(float.rows, Some(6), "four entries and two borders");
+    let text = menu_text(&host).expect("drawn");
+    for label in ["First", "Second", "Third", "─"] {
+        assert!(text.contains(label), "{label} missing:\n{text}");
+    }
+}
+
+/// The hint is read from the registry, so it follows a rebind; an action with
+/// no chord shows none.
+#[test]
+fn an_entry_shows_the_chord_its_action_is_bound_to() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let text = menu_text(&host).expect("drawn");
+    let first = text.lines().find(|l| l.contains("First")).expect("First row");
+    assert!(first.trim_end_matches(['│', ' ']).ends_with('x'), "{first}");
+}
+
+/// Closed before the action runs, so an action that opens a float of its own is
+/// never drawn under a menu that is still up.
+#[test]
+fn enter_closes_the_menu_and_runs_the_highlighted_entry() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let menu = index_of(&host, "menu");
+    assert!(host.on_key(menu, &key("enter")).expect("key"));
+    assert!(menu_text(&host).is_none(), "the menu must be gone");
+    assert_eq!(actions(&host), ["opener.first"]);
+}
+
+#[test]
+fn moving_down_skips_the_rule() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let menu = index_of(&host, "menu");
+    host.on_key(menu, &key("down")).expect("key");
+    host.on_key(menu, &key("j")).expect("key");
+    host.on_key(menu, &key("enter")).expect("key");
+    assert_eq!(actions(&host), ["opener.third"]);
+}
+
+#[test]
+fn moving_past_either_end_stays_put() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let menu = index_of(&host, "menu");
+    host.on_key(menu, &key("up")).expect("key");
+    host.on_key(menu, &key("k")).expect("key");
+    host.on_key(menu, &key("enter")).expect("key");
+    assert_eq!(actions(&host), ["opener.first"]);
+}
+
+#[test]
+fn escape_closes_the_menu_and_runs_nothing() {
+    let (_home, host) = menu_host();
+    open(&host);
+    assert!(host.on_key(index_of(&host, "menu"), &key("esc")).expect("key"));
+    assert!(menu_text(&host).is_none());
+    assert!(actions(&host).is_empty());
+}
+
+/// A modal takes every key while it is up; one it does not know is swallowed.
+#[test]
+fn an_unknown_key_is_swallowed_while_the_menu_is_up() {
+    let (_home, host) = menu_host();
+    open(&host);
+    assert!(host.on_key(index_of(&host, "menu"), &key("q")).expect("key"));
+    assert!(menu_text(&host).is_some(), "still open");
+}
+
+#[test]
+fn a_press_elsewhere_closes_the_menu() {
+    let (_home, host) = menu_host();
+    open(&host);
+    assert!(host
+        .on_outside(index_of(&host, "menu"), &right_press_at(70, 20, None))
+        .expect("outside"));
+    assert!(menu_text(&host).is_none());
+    assert!(actions(&host).is_empty());
+}
+
+#[test]
+fn clicking_an_entry_runs_it() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let menu = index_of(&host, "menu");
+    let click = Click {
+        id: Some("menu-2".into()),
+        role: Some("row".into()),
+        clicks: 1,
+        ..Click::default()
+    };
+    assert!(host.on_click(menu, &click).expect("click"));
+    assert_eq!(actions(&host), ["opener.second"]);
+    assert!(menu_text(&host).is_none());
+}
+
+/// The rule, and the frame around the entries, are part of the menu: a press
+/// on them is the menu's and does nothing.
+#[test]
+fn clicking_the_rule_does_nothing() {
+    let (_home, host) = menu_host();
+    open(&host);
+    assert!(host
+        .on_click(index_of(&host, "menu"), &Click::default())
+        .expect("click"));
+    assert!(actions(&host).is_empty());
+    assert!(menu_text(&host).is_some(), "still open");
+}
