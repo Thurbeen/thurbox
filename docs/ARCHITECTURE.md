@@ -226,7 +226,7 @@ as before. The coalescer is inert where `Event::Paste` arrives on its own, and
 its decisions are unit-tested on every platform against a driven clock.
 
 This is the *inbound* half of a journey whose outbound half is ADR-13's
-`PsmuxPaste`: the reassembled paste is carried to a psmux pane in one piece by
+`psmux::PsmuxPaste`: the reassembled paste is carried to a psmux pane in one piece by
 psmux's own paste command.
 
 ---
@@ -537,7 +537,7 @@ remembered pane id; see ADR-25.
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
-`THURBOX_DATA_DIR` has relocated (`agent::tmux::socket_for`). The data dir is
+`THURBOX_DATA_DIR` has relocated (`agent::mux::socket_for`). The data dir is
 the anchor because it holds the database, and the database is the record of
 which sessions exist: an instance keeping its own record of them has no
 business creating their windows on the operator's server — which is what made
@@ -565,7 +565,7 @@ stdin, wrapped in a `ControlModeWriter` (implements `Write`). On a
 **psmux** backend, which has no `-H`, the same writer encodes the byte
 stream from the primitives psmux does support, and a **paste** leaves
 control mode entirely for psmux's own `send-paste` — see "psmux divergences
-from tmux" under ADR-13 below, and `control_mode::PsmuxPaste`.
+from tmux" under ADR-13 below, and `psmux::PsmuxPaste`.
 
 **Command synchronization**: All commands that precede a
 `send_command` (waited) call must themselves be waited. A
@@ -630,11 +630,22 @@ restored — it is an event, not state.
 implementations. `TmuxTransport` runs tmux locally, over SSH, or inside WSL;
 `PsmuxTransport` runs native psmux locally or over SSH. Their types fix the
 mux binary. `MuxTransport` shares command construction for local execution
-and the SSH/WSL launch prefixes. `MuxBackend` holds common pane bookkeeping,
-control connection ownership, and process I/O; protocol differences such as
-attach responses, command lists, pane options, paste, and version gates are
-selected by the concrete mux protocol. A host's execution location cannot
-silently change its protocol.
+and the SSH/WSL launch prefixes. The crate-private `MuxBackend` core holds
+common pane bookkeeping, control connection ownership, and process I/O, and it
+never names a multiplexer: every divergence — attach responses, command lists,
+window options, key and paste encoding, quoting, session config, resize,
+version gates, the local one-shot syntax — is a question on the `MuxDialect`
+trait, answered by `tmux.rs` for `TmuxTransport` and by `psmux.rs` for
+`PsmuxTransport`. A host's execution location cannot silently change its
+protocol, and a backend-specific optimization lands in its own module.
+`tests/architecture_rules.rs` (`mux_core_names_no_concrete_multiplexer`)
+fails if the core, the transport seam or control mode names one.
+
+`BackendRegistry` is where a platform or a host is mapped to a concrete
+multiplexer: `LocalMuxTransport` (psmux on Windows, tmux elsewhere), and
+`host_backend` / `host_mux` for the headless one-shots against a host.
+Callers reach the platform's mux helpers through `agent::mux`, never through
+`agent::tmux`, which is the tmux backend alone.
 
 Local one-shot helpers select the registered local backend's transport,
 including psmux on Windows, so headless create and liveness inspect the same
@@ -777,6 +788,10 @@ stalls. Worth the most manual testing.
 
 - *A boxed transport trait* — concrete transport types keep the mux binary
   fixed, while `MuxTransport` shares only command launching.
+- *Capability flags on a shared protocol enum* — how the split first landed
+  (`MuxProtocol::supports_*`), and why it was replaced: every divergence was a
+  branch in the shared core, so psmux's behaviour lived in a file named for
+  neither and a third multiplexer would have added flags there.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
@@ -802,7 +817,7 @@ and capabilities (measured against psmux 3.3.6). The
 before touching that path.
 
 - **`send-keys -H`** is not implemented (it injects the hex digits as literal
-  text). `send_keys_commands` rebuilds the same PTY byte stream from the
+  text). psmux's `send_keys_commands` rebuilds the same PTY byte stream from the
   primitives psmux does support (`send-keys -l` literal runs +
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names); tmux (incl. a WSL
   distro's tmux) keeps the byte-exact `-H` path. Literal runs go out as
@@ -820,7 +835,7 @@ before touching that path.
 - **`new-window` trailing tokens are not joined** (psmux keeps only the first
   and drops the rest — the agent launched with **no args**) and **`new-window
   -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
-  `MuxBackend::psmux_window_powershell` folds env + command into **one token**
+  `psmux::psmux_window_powershell` folds env + command into **one token**
   of PowerShell (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs
   it via `powershell -NoLogo -Command`, whose Win32 command line strips
   unescaped double quotes, hence PowerShell single-quoting throughout;
@@ -835,7 +850,7 @@ before touching that path.
   own `Escape` key-name, so the agent saw a bare Escape instead of the
   `ESC[200~` marker and took each embedded CR as Enter — a pasted stack trace
   submitted line by line). It goes **out of band** through psmux's own paste
-  command (`control_mode::PsmuxPaste`, issue #916): psmux's control-mode
+  command (`psmux::PsmuxPaste`, the dialect's `PasteChannel`, issue #916): psmux's control-mode
   dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
   `send-paste` are CLI/server-only), so a bracketed-paste payload
   (`bracketed_paste_text` unwraps one; anything else keeps the key encoding)
@@ -846,7 +861,7 @@ before touching that path.
   beats dropped). Base64 because a raw newline in a psmux command argument is
   cut by the server's line-oriented read, truncating the payload *and*
   executing its tail as a command (psmux #560) — the same reason the headless
-  prompt path (`paste_prompt_args`, feeding `send_prompt_now`/
+  prompt path (`MuxDialect::paste_args`, feeding `send_prompt_now`/
   `deferred_prompt_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
 - **There are no per-window options.** `set-option -w -t <pane> @k v` stores one
@@ -1614,7 +1629,7 @@ created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
-tmux hosts because `session signal` also sets the pane option (`agent::tmux::
+tmux hosts because `session signal` also sets the pane option (`agent::mux::
 set_own_pane_state`). A fork — which resumes the parent's conversation in the
 parent's checkout, two facts the host's `create` does not take — stays on the
 legacy path and is registered on the host by `session sync --adopt`, as is
@@ -1725,7 +1740,7 @@ follow from the host owning the record, none of which the first cut had:
   passes a remote command's status through untouched (a remote `exit 7` exits
   7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
-  (`agent::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  (`agent::mux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
   can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
   deliberately its own answer rather than being rounded to the nearest of the
@@ -1855,7 +1870,7 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `agent::tmux::retire_duplicate_windows` runs after every local stamp
+  `agent::mux::retire_duplicate_windows` runs after every local stamp
   (`stamp_local_window`; the headless `spawn_window`, whose stamp rides in
   `new-window`'s own command list; and `TmuxBackend::stamp_window` for the
   interface's own spawn and for an adopt) and **the highest window id keeps the identity**.

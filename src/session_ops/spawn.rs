@@ -10,7 +10,7 @@ use crate::sync::{SharedSession, SharedWorktree};
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
 
-/// Backend identifier for the local-tmux backend (matches `LocalTmuxBackend`).
+/// Backend identifier for the local-tmux backend (matches `TmuxBackend::local`).
 pub const LOCAL_TMUX_BACKEND_TYPE: &str = crate::session::LOCAL_BACKEND_TYPE;
 
 /// Request to create a new headless session.

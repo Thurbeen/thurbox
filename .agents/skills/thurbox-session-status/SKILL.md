@@ -126,7 +126,7 @@ own, which is the point.
   here — a turn may run for an hour, so a guessed bound would report live work
   as finished; the age is published and the policy is the consumer's. The
   decisive check is the pane: `session get` resolves the foreground process
-  (`agent::tmux::pane_state`, one `display-message` plus one `ps`) and reports
+  (`agent::mux::pane_state`, one `display-message` plus one `ps`) and reports
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
   `hook_state` with the inference. `session list` skips the probe unless
   `--verify`; a remote session is never probed and answers `unavailable`.
@@ -217,14 +217,14 @@ own, which is the point.
   `|| true` swallowed the failure: the host's rows never gained a `hook_state`
   and every session on it read as statusless on the TUI mirroring them. Both
   local spawn paths now put the CLI's own directory in front
-  (`agent::tmux::path_prefix_args` → `resolve_cli_binary`, empty components
+  (`agent::mux::path_prefix_args` → `resolve_cli_binary`, empty components
   dropped). It rides as an `env PATH=…` prefix on the window command because
   `PATH` is the one variable tmux will not take in `-e`: `new-window -e PATH=…`
   and `set-environment -g PATH …` are both ignored and the client's wins
   (verified against tmux 3.5a). `session doctor`'s `cli` finding used to answer
   from the *doctor's* `PATH`, which is why it read `ok` throughout; it now reads
   the pane's own, out of the `env PATH=…` prefix tmux keeps verbatim in
-  `#{pane_start_command}` (`agent::tmux::agent_pane_path`). Not
+  `#{pane_start_command}` (`agent::mux::agent_pane_path`). Not
   `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
   restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
   would answer for a `doctor` run from the TUI and refuse the same question

@@ -87,7 +87,7 @@ struct Discovered {
 /// sanitising collapses others together — so the index keys on the session id
 /// stamped on the window (ADR-25) and keeps every namesake, which is what lets
 /// ambiguity be *reported* rather than resolved by whichever tmux listed last.
-type WindowPanes = crate::agent::tmux::WindowIndex;
+type WindowPanes = crate::agent::mux::WindowIndex;
 
 /// How often a *local* backend's panes may be looked up by window name.
 ///

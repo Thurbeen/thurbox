@@ -239,7 +239,7 @@ impl Terminals {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }
 
-        let window = crate::agent::tmux::program_window_name(
+        let window = crate::agent::mux::program_window_name(
             &crate::kernel::bundled::digest(&key.plugin),
             &key.name,
         );
@@ -304,7 +304,7 @@ impl Terminals {
     /// is one — clearing any corpse that carries the same name on the way.
     ///
     /// This is the whole of re-adoption after a restart: the name is deterministic
-    /// (`tmux::program_window_name`), so it is enough to look. Nothing is
+    /// (`mux::program_window_name`), so it is enough to look. Nothing is
     /// persisted, and therefore nothing can be stale — which is the failure a
     /// stored pane id invites and this repository has been bitten by before.
     ///

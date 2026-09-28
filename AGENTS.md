@@ -289,7 +289,8 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 - Async runtime: tokio (multi-threaded)
 - Session backends: `TmuxBackend` and `PsmuxBackend` own separate
   transport types and `SessionBackend` implementations; common mux mechanics
-  live in `MuxBackend`. Local tmux uses `tmux -L thurbox`; SSH hosts
+  live in the crate-private `MuxBackend` core, which asks each backend's
+  `MuxDialect` rather than naming a multiplexer (ADR-13). Local tmux uses `tmux -L thurbox`; SSH hosts
   register qualified tmux and psmux routes from `hosts.toml`. The local socket is
   `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one
   relocated by `THURBOX_DATA_DIR` derives its own (`thurbox-<digest>`) so it

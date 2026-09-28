@@ -7,7 +7,6 @@ use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
-use base64::Engine as _;
 use tracing::{debug, warn};
 
 use crate::agent::backend::{
@@ -18,12 +17,108 @@ use crate::agent::control_mode::{
     self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
     ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
-use crate::agent::transport::{MuxTransport, PsmuxTransport, TmuxTransport, DEFAULT_MUX};
+use crate::agent::registry::{LocalMuxTransport, DEFAULT_MUX};
+use crate::agent::transport::MuxTransport;
 
-#[cfg(windows)]
-type LocalMuxTransport = PsmuxTransport;
-#[cfg(not(windows))]
-type LocalMuxTransport = TmuxTransport;
+/// A multiplexer's own answers to the questions the shared core asks.
+///
+/// tmux and psmux speak one command language that diverges in places that
+/// matter (ADR-13): which options exist, how an argument is quoted, how a key
+/// or a paste reaches a pane, what a server must be to host an agent. The core
+/// asks here instead of checking which multiplexer it drives, and each backend
+/// module answers for its own transport — `tmux.rs` for `TmuxTransport`,
+/// `psmux.rs` for `PsmuxTransport` — so a divergence, or an optimization one
+/// of them can afford, lives beside that backend and nowhere else.
+pub(crate) trait MuxDialect: MuxTransport {
+    /// `#{@...}` is the window's own option, so a stamp written on one window
+    /// identifies that window (ADR-25). Where it is not, nothing is stamped
+    /// and a window is known by its name alone.
+    const WINDOW_OPTIONS: bool;
+    /// A `;`-separated command list runs as one invocation, so the session
+    /// config can be applied — and checked — in one process.
+    const COMMAND_LISTS: bool;
+    /// `display-message` answers a pane's size and sizer, and a window's
+    /// resize is reported (`%layout-change`), so the grid can follow the pane.
+    const SIZE_REPORTS: bool;
+    /// The control-mode argv attach is answered with a `%begin`/`%end` block.
+    const IMPLICIT_ATTACH_RESPONSE: bool;
+    /// A response block carries the tag of the command it answers.
+    const STRICT_RESPONSE_BLOCKS: bool;
+    /// Format subscriptions (`refresh-client -B`) push option changes.
+    const SUBSCRIPTIONS: bool;
+    /// A pane can end without its window-close being announced, so the
+    /// interface surveys pane liveness instead of waiting to be told.
+    const POLLS_LIVENESS: bool;
+    /// `display-message -p` sanitizes control bytes for a client it does not
+    /// believe speaks UTF-8, so the pane-state readers pass `-u`.
+    const UTF8_FLAG: bool;
+    /// A one-shot `new-window` can append (`-a`), answer with the new pane
+    /// (`-P -F`) and take the window's birth options in the same command list.
+    const ONESHOT_PANE_REPORT: bool;
+    /// The server itself — not only the binary — must be asked its version
+    /// before it births a pane: one started before an upgrade keeps running
+    /// the old code.
+    const ASKS_SERVER_VERSION: bool = false;
+    /// The shell a remote pane falls back to: one that exists on such a host
+    /// by construction.
+    const REMOTE_SHELL: &'static str;
+
+    /// Refuse a multiplexer whose `-V` banner says it cannot host sessions.
+    fn check_banner(banner: &str, socket: &str) -> Result<()>;
+    /// Refuse a server whose `#{version}` (or `-V`) says it cannot birth a
+    /// working pane. Asked only where [`Self::ASKS_SERVER_VERSION`].
+    fn check_server_version(_version: &str, _socket: &str) -> Result<()> {
+        Ok(())
+    }
+    /// Every `set-option` the session config runs, in order. `default_command`
+    /// is the shell a POSIX server should run windows through, when it has one.
+    fn session_config(session: &str, default_command: Option<&str>) -> Vec<ConfigOption>;
+    /// The commands that follow a control-mode `new-window` in the same list
+    /// (see [`birth_options`]).
+    fn birth_option_commands(window_name: &str) -> Vec<String>;
+    /// Quote one argument of a control-mode command line.
+    fn quote_arg(s: &str) -> String;
+    /// The `new-window` arguments carrying the window's environment.
+    fn env_args(env: &HashMap<String, String>) -> String;
+    /// The window command a control-mode `new-window` runs.
+    fn window_command(
+        backend: &MuxBackend<Self>,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> String;
+    /// The ordered `send-keys` lines delivering `buf` to `pane_id`.
+    fn send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String>;
+    /// An out-of-band paste path, where keys cannot carry a paste intact.
+    fn paste_channel(&self, _socket: String) -> Option<control_mode::PasteChannel> {
+        None
+    }
+    /// The command a connection polls hook state with, where there is no
+    /// subscription to push it and a producer can exist.
+    fn hook_poll_command(&self, _session: &str) -> Option<String> {
+        None
+    }
+    /// The detached command list resizing `backend_id`'s window and pane, and
+    /// how many response blocks it answers with.
+    fn resize_commands(backend_id: &str, rows: u16, cols: u16, sizer: &str)
+        -> (Vec<String>, usize);
+    /// The one-shot argv that delivers `text` into `target` as one paste.
+    fn paste_args(target: &str, text: &str) -> Vec<String>;
+    /// The `run-shell` script that pastes `text` into `target`, waits a beat,
+    /// then presses Enter. The server's shell runs it.
+    fn deferred_prompt_script(socket: &str, target: &str, text: &str) -> String;
+    /// The automation heartbeat keeper's loop, as a window command.
+    fn heartbeat_loop_command(cli_path: &Path) -> String;
+    /// Close a one-shot `new-window`'s arguments with the window's environment
+    /// and the program it runs.
+    fn push_window_program(
+        cmd: &mut Command,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    );
+}
 
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
@@ -466,7 +561,7 @@ fn keeps_dead_pane(window_name: &str) -> bool {
 /// corpse was kept every time. A command list runs to completion before the
 /// server returns to its event loop, so there is no moment in it for a pane to
 /// be reaped.
-fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
+pub(crate) fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
     [
         // Both answers are stated, not just the one that differs from the
         // default: the server-wide value is a best-effort write of its own
@@ -510,11 +605,7 @@ fn birth_options(window_name: &str) -> [(&'static str, &'static str); 2] {
 /// window — including when an older window of the same name exists, which
 /// `-t <name>` would resolve to instead (measured: the lowest index wins).
 /// The `-d` path cannot use that and names its window; see [`spawn_window`].
-fn birth_option_commands(window_name: &str, psmux: bool) -> Vec<String> {
-    if psmux {
-        // psmux has neither option.
-        return Vec::new();
-    }
+pub(crate) fn set_window_option_commands(window_name: &str) -> Vec<String> {
     birth_options(window_name)
         .iter()
         .map(|(key, value)| format!("set-window-option {key} {value}"))
@@ -789,13 +880,13 @@ fn stamped_windows_in(listing: &str, session_id: &str, role: WindowRole) -> Vec<
 /// A newest window whose pane has already exited is kept and stays on screen
 /// (`remain-on-exit`), which is how the operator gets to see why it exited.
 ///
-/// Local tmux only. psmux keeps `@` options in one server-global map and hands
-/// the same value back for every window (ADR-13), so every window there would
-/// read as stamped for whoever was stamped last; the stamp is withheld at both
-/// ends for that reason (issue #1168) and this must not be the one place that
-/// believes it.
+/// Only where the local multiplexer has window options. One that keeps `@`
+/// options in a single server-global map hands the same value back for every
+/// window (ADR-13), so every window there would read as stamped for whoever was
+/// stamped last; the stamp is withheld at both ends for that reason (issue
+/// #1168) and this must not be the one place that believes it.
 fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String> {
-    if local_mux_is_psmux() || session_id.is_empty() {
+    if !local_windows_are_stamped() || session_id.is_empty() {
         return None;
     }
     let output = local_mux_command(&["list-windows", "-t", TMUX_SESSION, "-F", RETIRE_FORMAT])
@@ -830,14 +921,15 @@ fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String
 /// `target` is the new window's pane id, or its `session:=window` target where
 /// the spawn could not report one. Best-effort by design, and so returns
 /// nothing to check — but **not attempted at all** on a multiplexer without
-/// window options (psmux, ADR-13), where the sole-namesake rule in
-/// [`WindowIndex`] carries the identity as the name fallback did before.
-/// Writing one there is not the harmless no-op it reads as: psmux keeps a
-/// server-global option under the name and answers `#{@...}` with it for every
-/// window, so a single stamp made every window look like one session's and
-/// cost the interface every pane it had (issue #1168).
+/// window options (`MuxDialect::WINDOW_OPTIONS`, ADR-13), where the
+/// sole-namesake rule in [`WindowIndex`] carries the identity as the name
+/// fallback did before. Writing one there is not the harmless no-op it reads
+/// as: such a multiplexer keeps a server-global option under the name and
+/// answers `#{@...}` with it for every window, so a single stamp made every
+/// window look like one session's and cost the interface every pane it had
+/// (issue #1168).
 pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
-    if local_mux_is_psmux() {
+    if !local_windows_are_stamped() {
         return;
     }
     for (option, value) in [
@@ -876,15 +968,9 @@ pub fn local_window_index() -> Result<WindowIndex> {
 /// asking what a host holds never brings a server into being there.
 pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex> {
     known_host_socket(host)?;
-    Ok(WindowIndex::from_listing(remote_discover_answered(host)?))
-}
-
-fn remote_discover_answered(host: &crate::session::HostDef) -> Result<Vec<DiscoveredSession>> {
-    if host.is_windows() {
-        MuxBackend::<PsmuxTransport>::from_host(host).discover_answered()
-    } else {
-        MuxBackend::<TmuxTransport>::from_host(host).discover_answered()
-    }
+    Ok(WindowIndex::from_listing(
+        crate::agent::registry::host_mux(host).discover_answered()?,
+    ))
 }
 
 /// `ssh`'s own failure code — see [`crate::session_ops::host_cli::Reach`],
@@ -901,7 +987,7 @@ const SSH_ERROR_EXIT: i32 = 255;
 /// enough that a link carrying nothing costs a hitch instead of a freeze.
 const LOOP_COMMAND_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// How often [`MuxBackend::<TmuxTransport>::ctrl_command_within`] retries the control lock
+/// How often [`MuxBackend::ctrl_command_within`] retries the control lock
 /// while its budget lasts. Short enough to be invisible next to the budget,
 /// long enough not to spin.
 const CONTROL_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(2);
@@ -936,8 +1022,8 @@ fn listing_is_absence(is_ssh: bool, code: Option<i32>, stderr: &str) -> bool {
 /// act on, rather than any of the ways a question can fail to be answered.
 ///
 /// The distinction the remote teardown rests on, and the reason this list is
-/// as short as it is. Only the exact answers tmux and psmux are documented to
-/// give for "there is no server" and "there is no such session" count;
+/// as short as it is. Only the exact answers the supported multiplexers are
+/// documented to give for "there is no server" and "there is no such session" count;
 /// everything else — including a failure whose wording merely resembles one —
 /// is unanswered. Over-reporting a live host as unanswered costs one cheap
 /// retry, while the reverse costs an orphaned agent nobody ever looks for
@@ -962,18 +1048,19 @@ fn mux_answered_absent(error: &str) -> bool {
     if error.contains("no server running on") {
         return true;
     }
-    // The server is up and holds no session by that name — tmux, then psmux.
+    // The server is up and holds no session by that name, in the two wordings
+    // the supported multiplexers use.
     error.contains("can't find session") || error.contains("session not found")
 }
 
-/// Whether the local multiplexer is psmux, which has no usable window options
-/// (ADR-13) and so leaves every window unstamped.
+/// Whether the local multiplexer's windows carry stamps at all
+/// ([`MuxDialect::WINDOW_OPTIONS`], ADR-13).
 ///
-/// The one place the name fallback still stands: with nothing stamped, two
+/// Where they do not, the name fallback still stands: with nothing stamped, two
 /// namesakes are genuinely indistinguishable, and refusing to act would be a
-/// regression on Windows rather than the safety it is everywhere else.
-fn local_mux_is_psmux() -> bool {
-    DEFAULT_MUX == "psmux"
+/// regression there rather than the safety it is everywhere else.
+fn local_windows_are_stamped() -> bool {
+    LocalMuxTransport::WINDOW_OPTIONS
 }
 
 /// Resolve the local tmux target for acting on a session's agent pane, or
@@ -1006,9 +1093,8 @@ fn owned_target(session_id: &str, session_name: &str, role: WindowRole) -> Optio
                 Located::At(pane) => Some(pane),
                 _ => None,
             },
-            None => {
-                local_mux_is_psmux().then(|| window_target(&window_name_for(role, session_name)))
-            }
+            None => (!local_windows_are_stamped())
+                .then(|| window_target(&window_name_for(role, session_name))),
         },
     }
 }
@@ -1025,118 +1111,32 @@ fn locate_local(session_id: &str, session_name: &str, role: WindowRole) -> Locat
     }
 }
 
-/// The `terminal-features` slot thurbox writes `*:clipboard` into — see
-/// `session_config`. High enough that neither tmux's defaults nor a
-/// hand-appended list reaches it.
-const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
-
-/// Minimum tmux version required.
-const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
-
-/// Parse a `tmux -V` version string (e.g. `"tmux 3.4"`, `"tmux 3.3a"`) into a
-/// `(major, minor)` pair. Shared by the local and remote backends.
-fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
-    let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
-
-    let parts: Vec<&str> = version_part.split('.').collect();
-    if parts.len() < 2 {
-        bail!("Cannot parse tmux version from: {version_str}");
-    }
-
-    let major: u32 = parts[0]
-        .parse()
-        .with_context(|| format!("Cannot parse tmux major version from: {version_str}"))?;
-    // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
-    let minor_str: String = parts[1].chars().take_while(char::is_ascii_digit).collect();
-    let minor: u32 = minor_str
-        .parse()
-        .with_context(|| format!("Cannot parse tmux minor version from: {version_str}"))?;
-
-    Ok((major, minor))
-}
-
-/// Enforce the minimum-version gate against a multiplexer's `-V` output.
-///
-/// The `>= 3.2` floor only applies to **real tmux** (a `tmux …` banner). A
-/// drop-in clone like psmux numbers itself independently and may print a
-/// different banner, so once it has answered `-V` it is accepted as-is — it
-/// implements the control-mode feature set regardless of its own number. The
-/// psmux floor is a different question, asked where panes are born: see
-/// [`check_psmux_version`].
-fn check_min_version(version_output: &str) -> Result<()> {
-    let trimmed = version_output.trim();
-    if let Some(rest) = trimmed.strip_prefix("tmux ") {
-        let (major, minor) = parse_tmux_version(rest)?;
-        if (major, minor) < MIN_TMUX_VERSION {
-            bail!(
-                "tmux {major}.{minor} is too old; thurbox requires >= {}.{}",
-                MIN_TMUX_VERSION.0,
-                MIN_TMUX_VERSION.1
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The first psmux whose server gives every new pane its own console.
-///
-/// Before 3.3.7 (psmux#450) the server's console attach/detach — which every
-/// `send-keys C-c`, bracketed paste and mouse or VT injection performs — left
-/// its std handle slots on freed, recycled values, and each pane born after
-/// that inherits them. The pane's shell and the agent it launches then have a
-/// stdin that is not the pane at all: Claude Code reports "stdin is unreadable
-/// (EISDIR)" (ENOTCONN, …, depending on what the value was recycled into),
-/// falls into `--print` and exits, and nothing it writes reaches the pane.
-/// Measured on Windows 11: after a burst of `send-keys C-c`, every window 3.3.6
-/// created was born that way and every one 3.3.8 created was not.
-const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 7);
-
-/// Refuse a psmux older than [`MIN_PSMUX_VERSION`].
-///
-/// Reads the server's `#{version}` answer (a bare `3.3.6`) as well as a `-V`
-/// banner: psmux 3.3.6 prints `tmux 3.3.6`, later ones add a `psmux X.Y.Z (…)`
-/// line, which wins when present. An answer with no readable version is let
-/// through: it proves nothing about the fix either way.
-fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
-    let version = version_output.lines().rev().find_map(|line| {
-        let line = line.trim();
-        let rest = line
-            .strip_prefix("psmux ")
-            .or_else(|| line.strip_prefix("tmux "))
-            .unwrap_or(line);
-        let mut parts = rest.split_whitespace().next()?.split('.').map(|p| {
-            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse::<u32>().ok()
-        });
-        Some((
-            parts.next()??,
-            parts.next()??,
-            parts.next().flatten().unwrap_or(0),
-        ))
-    });
-    match version {
-        Some(v) if v < MIN_PSMUX_VERSION => bail!(
-            "psmux {}.{}.{} is too old: its server can start an agent with a stdin that is \
-             not its pane (\"stdin is unreadable (EISDIR)\"). Upgrade psmux to {}.{}.{} or \
-             newer, then restart its server (`psmux -L {socket} kill-server`) — a running \
-             server keeps the old code",
-            v.0,
-            v.1,
-            v.2,
-            MIN_PSMUX_VERSION.0,
-            MIN_PSMUX_VERSION.1,
-            MIN_PSMUX_VERSION.2,
-        ),
-        _ => Ok(()),
-    }
-}
-
 /// One command of the session config — a `set-option`, or the `if-shell` that
 /// guards the tmux clipboard feature slot — and whether failing it means the
 /// server cannot host sessions.
-struct ConfigOption {
+pub(crate) struct ConfigOption {
     args: Vec<String>,
     fatal: bool,
+}
+
+impl ConfigOption {
+    /// A config command that is not a `set-option` (see `config_command_list`
+    /// for why only `set-option` is given `-q`).
+    pub(crate) fn command(args: Vec<String>, fatal: bool) -> Self {
+        Self { args, fatal }
+    }
+
+    /// `set-option <args…>`.
+    pub(crate) fn set(args: &[&str], fatal: bool) -> Self {
+        let mut all = vec!["set-option".to_string()];
+        all.extend(args.iter().map(ToString::to_string));
+        Self { args: all, fatal }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn args(&self) -> &[String] {
+        &self.args
+    }
 }
 
 /// `prefix` then every option in `config`, as one tmux command list.
@@ -1160,17 +1160,6 @@ fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Ve
         list.extend(rest.iter().map(String::as_str));
     }
     list
-}
-
-/// The `set-option` flag for a server-wide option. psmux 3.3.8 refuses `-s`
-/// ("unknown flag -s") and keeps one option table anyway, so it gets `-g`,
-/// which 3.3.7 and 3.3.8 both take.
-fn server_option_scope(psmux: bool) -> &'static str {
-    if psmux {
-        "-g"
-    } else {
-        "-s"
-    }
 }
 
 /// Delay between sending command text and pressing Enter via tmux, used by the
@@ -1197,7 +1186,7 @@ const MAX_TITLE_SEED_BYTES: usize = 512;
 
 /// Common pane and control connection mechanics for a concrete mux backend.
 /// The transport type fixes the mux binary and protocol.
-pub(crate) struct MuxBackend<T: MuxTransport> {
+pub(crate) struct MuxBackend<T: MuxDialect> {
     /// The concrete mux launcher.
     transport: T,
     /// tmux socket name passed via `-L` (e.g. `thurbox`) as configured; read
@@ -1217,9 +1206,9 @@ pub(crate) struct MuxBackend<T: MuxTransport> {
 }
 
 /// `(rows, cols)` within what `resize-window` accepts, so a resize an `if-shell`
-/// runs can never be the one that fails (see `MuxBackend::<TmuxTransport>::resize`). tmux's
+/// runs can never be the one that fails (see `MuxDialect::resize_commands`). tmux's
 /// bounds are 1 and `WINDOW_MAXIMUM`, 10000.
-fn tmux_size(rows: u16, cols: u16) -> (u16, u16) {
+pub(crate) fn tmux_size(rows: u16, cols: u16) -> (u16, u16) {
     (rows.clamp(1, 10_000), cols.clamp(1, 10_000))
 }
 
@@ -1236,15 +1225,24 @@ fn sizer_name() -> String {
     format!("{:x}-{nth:x}-{nanos:x}", std::process::id())
 }
 
-impl<T: MuxTransport> Default for MuxBackend<T> {
+impl<T: MuxDialect> Default for MuxBackend<T> {
     fn default() -> Self {
         Self::local()
     }
 }
 
-impl<T: MuxTransport> MuxBackend<T> {
+impl<T: MuxDialect> MuxBackend<T> {
     pub(crate) fn set_name(&mut self, name: impl Into<String>) {
         self.name = name.into();
+    }
+
+    pub(crate) fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    /// The host an off-local backend was built from; `None` locally.
+    pub(crate) fn host(&self) -> Option<&crate::session::HostDef> {
+        self.host.as_ref()
     }
 
     /// Build the local protocol backend on thurbox's socket.
@@ -1317,15 +1315,11 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 
     /// Whether a `#{@...}` this multiplexer answers with is a **window's**
-    /// option.
-    ///
-    /// psmux's is not: `set-option -w -t <pane> @k v` stores one option for the
-    /// whole server and `#{@k}` expands to it on every window (measured against
-    /// psmux 3.3.6 — ADR-13). So a stamp read back from psmux identifies
-    /// nothing, and [`parse_discovered`] drops it rather than reading one
-    /// session's id as every window's.
+    /// option ([`MuxDialect::WINDOW_OPTIONS`]). Where it is not, a stamp read
+    /// back identifies nothing, and [`parse_discovered`] drops it rather than
+    /// reading one session's id as every window's.
     fn stamps_are_per_window(&self) -> bool {
-        !T::PROTOCOL.needs_psmux_encoding()
+        T::WINDOW_OPTIONS
     }
 
     /// One `list-windows`, with an empty answer only when the multiplexer
@@ -1431,15 +1425,14 @@ impl<T: MuxTransport> MuxBackend<T> {
     /// elsewhere (e.g. a headless spawn) without these options, and re-applying
     /// is the single source of truth for both the TUI and headless paths.
     ///
-    /// On tmux the whole config is **one** invocation (#1243): it runs on every
-    /// `session create`, and as ten processes it was most of that command's
-    /// cost. A failure in the list is then re-run one option at a time, which is
-    /// what tells a fatal option from a best-effort one.
+    /// Where command lists exist ([`MuxDialect::COMMAND_LISTS`]) the whole
+    /// config is **one** invocation (#1243): it runs on every `session create`,
+    /// and as ten processes it was most of that command's cost. A failure in
+    /// the list is then re-run one option at a time, which is what tells a
+    /// fatal option from a best-effort one.
     fn apply_session_config(&self) -> Result<()> {
         let config = self.session_config();
-        if !T::PROTOCOL.needs_psmux_encoding()
-            && self.tmux_run(&config_command_list(&[], &config)).is_ok()
-        {
+        if T::COMMAND_LISTS && self.tmux_run(&config_command_list(&[], &config)).is_ok() {
             return Ok(());
         }
         for option in &config {
@@ -1454,110 +1447,22 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 
     /// Every `set-option` [`apply_session_config`](Self::apply_session_config)
-    /// runs, in order.
+    /// runs, in order — the dialect's config for this session.
     fn session_config(&self) -> Vec<ConfigOption> {
-        let psmux = T::PROTOCOL.needs_psmux_encoding();
-        let scope = server_option_scope(psmux);
-        let mut config = Vec::new();
-        let mut set = |args: &[&str], fatal: bool| {
-            let mut all = vec!["set-option".to_string()];
-            all.extend(args.iter().map(ToString::to_string));
-            config.push(ConfigOption { args: all, fatal });
-        };
-        // Use a non-login shell so that macOS path_helper (/etc/zprofile)
-        // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
-        // For a remote backend the local `$SHELL` path may not exist on the
-        // remote host, so fall back to a POSIX shell there.
-        //
-        // On psmux we deliberately do NOT pin `default-command`: `$SHELL` and
-        // `/bin/sh` don't exist on Windows, and forcing a Windows shell here
-        // would have to match psmux's own command-execution model. Letting psmux
-        // use its native ConPTY default shell is the safe choice. Decided by the
-        // multiplexer, not by the OS thurbox runs on: a Linux thurbox driving a
-        // psmux host used to pin `/bin/sh` there.
+        T::session_config(&self.session, self.default_command().as_deref())
+    }
+
+    /// The shell a POSIX server runs windows through (`default-command`), or
+    /// `None` where there is no POSIX shell to pin.
+    fn default_command(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            None
+        }
         #[cfg(not(windows))]
-        if !psmux {
-            set(&[scope, "default-command", &self.config_shell()], true);
+        {
+            Some(self.config_shell())
         }
-
-        // Server-wide options every supported tmux understands. A failure here
-        // means the server can't host sessions, so it is propagated.
-        set(&[scope, "default-terminal", "xterm-256color"], true);
-        set(&[scope, "extended-keys", "on"], true);
-
-        // `extended-keys-format csi-u` is best-effort: the option landed in tmux
-        // 3.5, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
-        // option"). It is advisory only — thurbox injects keystroke bytes directly
-        // via `send-keys` (not through tmux's key forwarder), so it never
-        // re-encodes what an agent receives; it just sets what `tmux show-options`
-        // reports, which some agents (notably `pi`) probe at startup and warn about
-        // unless it is `csi-u`. Ignoring the error keeps a 3.2–3.4 host working (pi
-        // users there simply miss the hint) while 3.5+ hosts get the preferred
-        // format.
-        set(&[scope, "extended-keys-format", "csi-u"], false);
-
-        // The two silent gates that would otherwise drop an OSC 52 clipboard
-        // write originating **inside** a pane (thurbox's own copy, or an
-        // agent's). Both are no-ops-on-failure by design, hence best-effort:
-        //
-        // 1. `set-clipboard` must be exactly `on`. tmux's `input_osc_52_parse`
-        //    bails on `!= 2`, and the shipped default is `external` (1) — which
-        //    forwards tmux's *own* copy-mode yanks but **discards** an
-        //    application's OSC 52 with no error and no visual artifact. This is
-        //    the default-broken case: without it every other part of the
-        //    clipboard path is dead under tmux.
-        // 2. The `Ms` terminfo capability must be present, or
-        //    `tty_set_selection` returns early — a second, independent silent
-        //    drop. A `*:clipboard` entry in `terminal-features` injects it for
-        //    every terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2
-        //    form was a raw `terminal-overrides` Ms= string). Written at the end
-        //    of the list, below.
-        //
-        // Security tradeoff: `set-clipboard on` lets any process in a pane set
-        // the user's system clipboard — an exfiltration channel, and why tmux
-        // moved the default to `external` in 2.6. Scoped here to thurbox's own
-        // socket, and the price of copy working at all over SSH.
-        //
-        // Skipped on psmux, which has no OSC 52 clipboard forwarding (a local
-        // Windows session copies via the native clipboard path instead).
-        if !psmux {
-            set(&["-s", "set-clipboard", "on"], false);
-        }
-
-        for (key, val) in SESSION_OPTS {
-            set(&["-t", &self.session, key, val], true);
-        }
-        // Apps inside tmux can inspect this option before deciding whether to
-        // request mouse reports. With it off, a full-screen app may leave wheel
-        // capture disabled even though thurbox can forward those reports.
-        if !psmux {
-            set(&["-t", &self.session, "mouse", "on"], true);
-        }
-
-        // Window-level options — see `WINDOW_OPTS` for why these are global to
-        // the server and why failing to set one is not fatal.
-        for (key, val) in WINDOW_OPTS {
-            set(&["-w", "-g", key, val], false);
-        }
-
-        // The `*:clipboard` feature goes into a fixed slot, and only while that
-        // slot is empty. Appending it grew the list by one entry a run, since
-        // this runs on every spawn and the server outlives thurbox (#1278); an
-        // unconditional write to the slot would overwrite an entry the user's
-        // `~/.tmux.conf` put there. Reading the list from Rust first would cost
-        // a process per session create, and a format cannot test the whole
-        // array on 3.2 (`#{terminal-features}` expands to "") — but it can read
-        // one index. `-a` fills the first free index, so appended entries
-        // never land on this one.
-        if !psmux {
-            let slot = format!("#{{{CLIPBOARD_FEATURE_SLOT}}}");
-            let write = format!("set-option -qs {CLIPBOARD_FEATURE_SLOT} *:clipboard");
-            config.push(ConfigOption {
-                args: vec!["if-shell".into(), "-F".into(), slot, String::new(), write],
-                fatal: false,
-            });
-        }
-        config
     }
 
     /// Ensure the thurbox tmux session exists and its options are applied,
@@ -1571,7 +1476,7 @@ impl<T: MuxTransport> MuxBackend<T> {
         // The common case — the session is there — asked and configured in one
         // process: `has-session` failing stops the list before any option is
         // set, and the path below then says why.
-        if !T::PROTOCOL.needs_psmux_encoding() {
+        if T::COMMAND_LISTS {
             let config = self.session_config();
             let list = config_command_list(&["has-session", "-t", &self.session], &config);
             if self.tmux_run(&list).is_ok() {
@@ -1582,8 +1487,8 @@ impl<T: MuxTransport> MuxBackend<T> {
             // No session to ask for `#{version}` yet, and creating one may start
             // a server — with an idle shell in it — that every spawn would then
             // refuse. The binary is what would start it, so it answers instead.
-            if T::PROTOCOL.needs_psmux_encoding() {
-                check_psmux_version(&self.tmux_output(&["-V"])?, &self.socket())?;
+            if T::ASKS_SERVER_VERSION {
+                T::check_server_version(&self.tmux_output(&["-V"])?, &self.socket())?;
             }
             debug!(
                 "Creating tmux session '{}' on socket '{}'",
@@ -1626,8 +1531,8 @@ impl<T: MuxTransport> MuxBackend<T> {
             // Cheap defensiveness on Windows: poll until the freshly-created
             // session answers `has-session` before applying options. (The
             // `no server running on 'thurbox__thurbox'` failure that originally
-            // motivated this was actually psmux session *nesting*, now fixed at
-            // the root by `strip_mux_nesting_env`; this poll is a harmless belt
+            // motivated this was actually session *nesting*, now fixed at the
+            // root by `strip_mux_nesting_env`; this poll is a harmless belt
             // against any genuinely-async `new-session -d` and a no-op when the
             // first probe succeeds — which it does on the normal path.)
             #[cfg(windows)]
@@ -1653,16 +1558,15 @@ impl<T: MuxTransport> MuxBackend<T> {
 
     /// The shell tmux should use for `default-command`. Local uses the user's
     /// `$SHELL`; a remote backend uses a POSIX shell guaranteed to exist on the
-    /// remote host. Not used on Windows (psmux keeps its native default shell —
-    /// see [`apply_session_config`](Self::apply_session_config)).
+    /// remote host. Not used on Windows, and a dialect with no POSIX shell
+    /// ignores it (see [`MuxDialect::session_config`]).
     ///
     /// The value must be a single, space-free token: it round-trips through the
     /// remote transport's per-argument shell-quoting (`ssh`/`wsl.exe`), where a
     /// space would be re-split by the remote shell into extra `set-option` args.
     /// The login-shell `PATH` fix for remote agents (e.g. `claude` under
     /// `~/.local/bin`) is applied at the *window command* instead — see
-    /// [`build_shell_command`](Self::build_shell_command) /
-    /// [`login_wrap_for_remote`](Self::login_wrap_for_remote).
+    /// `TmuxTransport`'s window command.
     #[cfg(not(windows))]
     fn config_shell(&self) -> String {
         if self.transport.is_remote() {
@@ -1670,163 +1574,6 @@ impl<T: MuxTransport> MuxBackend<T> {
         } else {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
         }
-    }
-
-    /// The program a **local** window should launch: the agent's command,
-    /// resolved against thurbox's own `PATH` — see [`resolve_local_program`].
-    /// A remote/WSL backend passes through: its `PATH` is the *host's*, and its
-    /// window command is login-wrapped instead
-    /// ([`login_wrap_for_remote`](Self::login_wrap_for_remote)).
-    fn program_for_window(&self, command: &str) -> String {
-        if self.transport.is_remote() {
-            return command.to_string();
-        }
-        resolve_local_program(command)
-    }
-
-    /// Build the shell command string to pass to tmux new-window.
-    ///
-    /// The whole string is interpreted by the multiplexer server's shell, so
-    /// **every** token — the command itself as well as each argument — is
-    /// shell-escaped. Leaving the command unescaped would break (or allow
-    /// injection through) a command path containing a space or shell
-    /// metacharacter; `shell_escape` is a no-op for ordinary binary names so the
-    /// common case (`claude`, `/usr/bin/codex`) is unchanged.
-    fn build_shell_command(command: &str, args: &[String]) -> String {
-        let mut parts = vec![control_mode::shell_escape(command)];
-        for arg in args {
-            parts.push(control_mode::shell_escape(arg));
-        }
-        parts.join(" ")
-    }
-
-    /// Wrap a window command in a **login** shell for a remote/WSL backend so the
-    /// user's profile `PATH` is present. Agents are commonly installed under
-    /// `~/.local/bin` (e.g. `claude`), which the login profile adds to `PATH`; a
-    /// non-login shell skips those files, so the agent binary isn't found, the
-    /// window command exits 1, and the pane dies instantly — the remote session
-    /// appears to "not launch". `exec` replaces the wrapper so no extra process
-    /// lingers. A **psmux** remote (a Windows SSH host) passes through: it has
-    /// no `/bin/sh` to wrap with (psmux windows are built by
-    /// [`psmux_window_command`] instead).
-    ///
-    /// Local backends pass through too, but **not** because they inherit the
-    /// user's interactive `PATH` — that claim used to stand here and was wrong
-    /// (see [`resolve_local_program`], which is what makes them safe now). They
-    /// are not wrapped because thurbox can resolve a local command itself, and
-    /// an absolute path needs no shell's `PATH` at all; a wrap would only add a
-    /// second shell whose own quoting rules could differ.
-    ///
-    /// `/bin/sh -l` reads `~/.profile` but not the user's own shell's files
-    /// (`~/.zshenv`, `~/.zprofile`), so the host's login `PATH` is assigned
-    /// inside the wrap too ([`crate::agent::host_path`]) — the same `PATH` a
-    /// delegated create gives the pane.
-    ///
-    /// Done here — not via tmux `default-command` — because that value round-trips
-    /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
-    /// space would be re-split into a stray `set-option` argument.
-    fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
-        if self.transport.is_remote() && !T::PROTOCOL.needs_psmux_encoding() {
-            let path = self
-                .host
-                .as_ref()
-                .and_then(crate::agent::host_path::assignment_for)
-                .unwrap_or_default();
-            let inner = control_mode::shell_escape(&format!("{path}exec {shell_cmd}"));
-            format!("/bin/sh -lc {inner}")
-        } else {
-            shell_cmd.to_string()
-        }
-    }
-
-    /// The window command for a **remote/WSL** companion shell pane: the user's
-    /// own login shell, interactively — the same environment an `ssh <host>`
-    /// login gives you, not a bare `/bin/sh`.
-    ///
-    /// [`default_shell`](Self::default_shell) returns `/bin/sh` for a remote
-    /// Unix host (guaranteed to exist), and the generic
-    /// [`login_wrap_for_remote`] would run it as `/bin/sh -lc 'exec /bin/sh'` —
-    /// a login-sourced but then bare POSIX shell. That drops everything a real
-    /// SSH login loads from the account's shell: its rc files (`~/.bashrc` /
-    /// `~/.zshrc`), prompt, aliases, functions, and `PATH` additions. SSH runs
-    /// the shell recorded in the user's passwd entry (which `$SHELL` reflects),
-    /// so we do the same: bootstrap through the always-present `/bin/sh -l`
-    /// (which login-sources the profile and thus exports `$SHELL`), then `exec`
-    /// `"$SHELL"` as a **login** shell — tmux gives it a PTY, so it's
-    /// interactive and sources the interactive rc chain too. If `$SHELL` is
-    /// unset/broken the guard falls back to a plain `/bin/sh -l` so the pane
-    /// still opens.
-    ///
-    /// The fallback is a `command -v` **guard**, never `exec "$SHELL" -l
-    /// 2>/dev/null || …`: bash (and zsh) decide interactivity from
-    /// `isatty(stdin) && isatty(stderr)`, and an `exec … 2>/dev/null`
-    /// redirection **persists** into the exec'd shell — with stderr no longer a
-    /// TTY the shell starts **non-interactive** (no prompt, no rc files, no
-    /// readline), which reads as a blank "not loading" pane. So we probe
-    /// `$SHELL` with `command -v` (whose own `2>/dev/null` is harmless) and only
-    /// then `exec` it with all three std streams still on the PTY.
-    ///
-    /// psmux (Windows) hosts keep [`default_shell`]'s `powershell` (no
-    /// `/bin/sh`); local backends use the platform default directly.
-    fn remote_shell_pane_command(&self) -> String {
-        let inner = control_mode::shell_escape(
-            "command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l",
-        );
-        format!("/bin/sh -lc {inner}")
-    }
-
-    /// Build the PowerShell command a psmux window runs: set the env vars, then
-    /// launch the agent.
-    ///
-    /// psmux ignores `new-window -e` — env vars never reach the window's
-    /// process — so they are folded into the command itself (`Set-Item Env:K
-    /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). psmux runs
-    /// the window command via `powershell -NoLogo -Command <string>`, whose
-    /// Win32 command line strips unescaped double quotes — so all quoting is
-    /// PowerShell **single** quotes (`''` = literal `'`), which Win32
-    /// tokenization passes through. A raw `"` or newline would break the outer
-    /// framing on either delivery path (below) with no escape that survives,
-    /// so both are neutralized to spaces.
-    ///
-    /// Two callers deliver this string as **one unit** (verified against psmux
-    /// 3.3.6; both needed because psmux drops what tmux would keep):
-    /// - [`psmux_window_command`](Self::psmux_window_command) wraps it in
-    ///   double quotes for a control-mode `new-window` line, whose parser keeps
-    ///   only the *first* trailing token (tmux joins them) — the agent launched
-    ///   with no args. psmux's tokenizer concatenates adjacent `'…'` segments
-    ///   but passes `'` through `"…"` tokens untouched (backslash is literal
-    ///   everywhere, so `C:\` paths are safe) — hence single quotes inside,
-    ///   double quotes outside.
-    /// - [`spawn_window`] passes it verbatim as a single argv token (the argv
-    ///   path joins trailing tokens fine, but still ignores `-e`).
-    fn psmux_window_powershell(
-        command: &str,
-        args: &[String],
-        env: &HashMap<String, String>,
-    ) -> String {
-        let mut ps = String::new();
-        // Sort for a deterministic command (HashMap iteration order isn't).
-        let mut pairs: Vec<_> = env.iter().collect();
-        pairs.sort();
-        for (k, v) in pairs {
-            ps.push_str(&format!("Set-Item Env:{k} {}; ", ps_single_quote(v)));
-        }
-        ps.push_str(&format!("& {}", ps_single_quote(command)));
-        for a in args {
-            ps.push(' ');
-            ps.push_str(&ps_single_quote(a));
-        }
-        ps.replace(['"', '\n'], " ")
-    }
-
-    /// [`psmux_window_powershell`](Self::psmux_window_powershell) framed as one
-    /// **double-quoted** control-mode token for a `new-window` line.
-    fn psmux_window_command(
-        command: &str,
-        args: &[String],
-        env: &HashMap<String, String>,
-    ) -> String {
-        format!("\"{}\"", Self::psmux_window_powershell(command, args, env))
     }
 
     /// Run a closure with a reference to the active control mode, or bail if
@@ -1977,7 +1724,8 @@ impl<T: MuxTransport> MuxBackend<T> {
     ///
     /// Answers with where the pane's size will be reported, when it will be: a
     /// `%layout-change` names a window, so only a pane whose window is known
-    /// can be told, and psmux sends none.
+    /// can be told, and a dialect without [`MuxDialect::SIZE_REPORTS`] sends
+    /// none.
     fn register_pane(
         &self,
         pane_id: &str,
@@ -1994,11 +1742,11 @@ impl<T: MuxTransport> MuxBackend<T> {
         //
         // Asked here only when nobody could hand it over: `adopt`, which is
         // given a pane id out of the database and nothing else. Best-effort
-        // there, as it always was — a backend that cannot answer (psmux, a
-        // reconnecting control mode) keeps the old behaviour of no mapping and
+        // there, as it always was — a backend that cannot answer (one without
+        // size reports, a reconnecting control mode) keeps the old behaviour of no mapping and
         // no EOF from a window close, and says so in the log.
         //
-        // On tmux the same question also reads the pane's size and who sizes it,
+        // With size reports the same question also reads the pane's size and who sizes it,
         // for the grid. A pane being adopted may be another instance's to size,
         // in which case the resize `connect_pane` sends next is declined, and a
         // declined resize changes nothing — no `%layout-change` would ever say
@@ -2009,10 +1757,10 @@ impl<T: MuxTransport> MuxBackend<T> {
         let window_id = match window_id {
             Some(id) => Some(id.to_string()),
             None => {
-                let format = if T::PROTOCOL.needs_psmux_encoding() {
-                    "#{window_id}".to_string()
-                } else {
+                let format = if T::SIZE_REPORTS {
                     format!("#{{window_id}} #{{pane_height}} #{{pane_width}} {SIZED_BY}")
+                } else {
+                    "#{window_id}".to_string()
                 };
                 match self.ctrl_command(&format!("display-message -t {pane_id} -p '{format}'")) {
                     Ok(out) => {
@@ -2039,7 +1787,7 @@ impl<T: MuxTransport> MuxBackend<T> {
         };
         let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
         let reader = ControlModeReader::new(rx);
-        let reports = window_id.is_some() && !T::PROTOCOL.needs_psmux_encoding();
+        let reports = window_id.is_some() && T::SIZE_REPORTS;
         let size = reports.then(|| reader.size());
         self.with_control(|ctrl| {
             let mut senders = ctrl
@@ -2104,17 +1852,14 @@ impl<T: MuxTransport> MuxBackend<T> {
 
     /// Create a writer for a specific pane.
     fn pane_writer(&self, pane_id: &str) -> Result<ControlModeWriter> {
-        // psmux lacks tmux's `send-keys -H`, so the writer encodes keystrokes
-        // differently for it (see `control_mode::send_keys_commands`) and routes
-        // a paste out of band (see `control_mode::PsmuxPaste`).
-        let psmux = T::PROTOCOL.needs_psmux_encoding();
-        let paste =
-            psmux.then(|| control_mode::PsmuxPaste::new(self.transport.clone(), self.socket()));
+        // Keys in the dialect's own spelling, and a paste out of band where
+        // the dialect has a channel for it.
+        let paste = self.transport.paste_channel(self.socket());
         self.with_control(|ctrl| {
             Ok(ControlModeWriter {
                 stdin: Arc::clone(&ctrl.stdin),
                 pane_id: pane_id.to_string(),
-                psmux,
+                encode: T::send_keys_commands,
                 paste: paste.clone(),
             })
         })
@@ -2199,8 +1944,8 @@ impl<T: MuxTransport> MuxBackend<T> {
     /// learns a second way of being told.
     ///
     /// Best-effort by construction: a pane title is a nicety and the history
-    /// beside it is not, so a mux that answers this differently (psmux is
-    /// unverified here) loses the line rather than the scrollback.
+    /// beside it is not, so a mux that answers this differently (not every
+    /// dialect is verified here) loses the line rather than the scrollback.
     fn pane_title_seed(&self, pane_id: &str) -> Vec<u8> {
         // One query for both halves: a pane that never had a title set reads
         // back as the host's own short name, which is tmux's default rather
@@ -2239,7 +1984,7 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 }
 
-impl<T: MuxTransport> MuxBackend<T> {
+impl<T: MuxDialect> MuxBackend<T> {
     pub(crate) fn headless_owned_panes_in(
         &self,
         windows: &[DiscoveredSession],
@@ -2382,9 +2127,7 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 
     pub(crate) fn needs_liveness_poll(&self) -> bool {
-        self.host
-            .as_ref()
-            .map_or(cfg!(windows), |host| host.is_windows())
+        T::POLLS_LIVENESS
     }
     pub(crate) fn name(&self) -> &str {
         &self.name
@@ -2407,11 +2150,7 @@ impl<T: MuxTransport> MuxBackend<T> {
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        if T::PROTOCOL.needs_psmux_encoding() {
-            check_psmux_version(&version_str, &self.socket())?;
-        } else {
-            check_min_version(&version_str)?;
-        }
+        T::check_banner(&version_str, &self.socket())?;
         debug!("multiplexer version: {}", version_str.trim());
         Ok(())
     }
@@ -2448,72 +2187,19 @@ impl<T: MuxTransport> MuxBackend<T> {
         rows: u16,
         cols: u16,
     ) -> Result<SpawnedSession> {
-        // psmux can't take the command as joined trailing tokens nor env via
-        // `-e` (see `psmux_window_command`); everything is folded into one
-        // token there. tmux keeps the byte-identical multi-token + `-e` path.
-        let psmux = T::PROTOCOL.needs_psmux_encoding();
         // Asked of the server, per spawn: it is the server's code that births
         // the pane, and one started before an upgrade keeps running the old.
-        if psmux {
+        if T::ASKS_SERVER_VERSION {
             let version = self.ctrl_command("display-message -p '#{version}'")?;
-            check_psmux_version(&version, &self.socket())?;
+            T::check_server_version(&version, &self.socket())?;
         }
-        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
-        // interactive login shell — the SSH-login environment — instead of the
-        // bare `/bin/sh` the generic login-wrap would produce (see
-        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
-        // keep the standard path.
-        let is_remote_shell_pane =
-            self.transport.is_remote() && !psmux && window_name.starts_with(SHELL_WINDOW_PREFIX);
-        let shell_cmd = if psmux {
-            Self::psmux_window_command(command, args, env)
-        } else if is_remote_shell_pane {
-            self.remote_shell_pane_command()
-        } else {
-            let program = self.program_for_window(command);
-            let shell_cmd = Self::build_shell_command(&program, args);
-            // A remote pane's `PATH` is the host's, restored by the login
-            // wrap; a local one is inherited from this process, which need not
-            // have the CLI its hooks call on it (see `path_prefix_args`).
-            let shell_cmd = match self.transport.is_remote() {
-                true => shell_cmd,
-                // A shell reads this whole string, so the prefix has to be
-                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
-                // mangled one (see `path_prefix_args`).
-                false => shell_prefix_tokens()
-                    .map(|tokens| {
-                        tokens
-                            .into_iter()
-                            .chain(std::iter::once(shell_cmd.clone()))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or(shell_cmd),
-            };
-            self.login_wrap_for_remote(&shell_cmd)
-        };
-
-        // psmux's tokenizer can't read POSIX `'\''` escapes (see
-        // `psmux_quote`), so its `-c`/`-n` values get the double-quote framing
-        // it does parse; tmux keeps the byte-identical single-quote path.
-        let quote_arg = |s: &str| {
-            if psmux {
-                control_mode::psmux_quote(s)
-            } else {
-                control_mode::shell_escape(s)
-            }
-        };
+        let shell_cmd = T::window_command(self, window_name, command, args, env);
+        let quote_arg = T::quote_arg;
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", quote_arg(&dir.to_string_lossy())),
             None => String::new(),
         };
-        let env_part: String = if psmux {
-            String::new()
-        } else {
-            env.iter()
-                .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
-                .collect()
-        };
+        let env_part = T::env_args(env);
         let escaped_window_name = quote_arg(window_name);
         let session = &self.session;
         // The window's own options ride along in the same command list — see
@@ -2521,13 +2207,13 @@ impl<T: MuxTransport> MuxBackend<T> {
         let new_window = format!(
             "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}"
         );
-        let options = birth_option_commands(window_name, psmux);
+        let options = T::birth_option_commands(window_name);
         let cmds: Vec<&str> = std::iter::once(new_window.as_str())
             .chain(options.iter().map(String::as_str))
             .collect();
         let result = self.ctrl_command_list(&cmds)?;
         // Two fields, and the second is optional in practice: a multiplexer
-        // that prints only the pane id (psmux's `-P -F` support is unverified
+        // that prints only the pane id (not every dialect's `-P -F` is verified
         // against the documented divergences, ADR-13) leaves `window_id` None
         // and `register_pane` falls back to asking, exactly as before.
         let answer = result.trim();
@@ -2744,8 +2430,8 @@ impl<T: MuxTransport> MuxBackend<T> {
             bail!("refusing to stamp an invalid pane id: {backend_id:?}");
         }
         // Nothing to write where an option is not a window's
-        // ([`Self::stamps_are_per_window`]): psmux would take this as a
-        // *global* one and hand it back as every window's identity. Ok rather
+        // ([`Self::stamps_are_per_window`]): the multiplexer would take this as
+        // a *global* one and hand it back as every window's identity. Ok rather
         // than an error for the same reason `set_remain_on_exit` is — the
         // caller is not being refused, there is simply no per-window option to
         // set, and `WindowIndex` resolves by name there (ADR-25).
@@ -2788,45 +2474,9 @@ impl<T: MuxTransport> MuxBackend<T> {
         // they could be refused separately, and a window resized around a pane
         // that was not leaves the agent wrapping at the old width until some
         // later rect change asks again.
-        let (rows, cols) = tmux_size(rows, cols);
-        let window = format!("resize-window -t {backend_id} -x {cols} -y {rows}");
-        let pane = format!("resize-pane -t {backend_id} -x {cols} -y {rows}");
-        if T::PROTOCOL.needs_psmux_encoding() {
-            // No `if-shell -F` to decide with: the last instance to paint wins.
-            return self.ctrl_command_detached(&[&window, &pane], 2);
-        }
-        // A pane is the size of the rect ONE instance paints it into. Several
-        // instances attached to one server each paint their own rect, and when
-        // each resized to its own, whichever painted last — a toast taking a
-        // row is enough — re-wrapped the agent for everybody. So the window
-        // names its sizer (`SIZER_OPTION`), and a paint resizes only a window
-        // that is this instance's to size: one nobody claims, one it already
-        // sizes, or any window at all while it is the only client attached,
-        // which is what makes a sizer that quit or crashed let go.
-        // `claim_size` is how the name changes hands.
-        //
-        // Decided by tmux, in this same list, so a decision costs no round trip
-        // and two instances cannot both win it. The shape is fixed on purpose:
-        // the response queue expects a known number of `%begin` blocks per
-        // list, and `if-shell` answers with one more block for each command it
-        // runs — four taken and one declined, measured on tmux 3.7c. So the
-        // name is settled first by a `set-option -F` that always answers once,
-        // and each resize is its own `if-shell` whose else runs one command
-        // too: five blocks, whichever way it goes. A pane that is gone fails
-        // the first command and tmux drops the rest, which the queue expects
-        // of any list; an inner command failing does NOT stop the list, which
-        // is why the sizes are clamped to what tmux accepts (`tmux_size`).
-        let me = &self.sizer;
-        let may = format!(
-            "#{{||:#{{==:#{{session_attached}},1}},#{{||:#{{==:#{{{SIZER_OPTION}}},}},#{{==:#{{{SIZER_OPTION}}},{me}}}}}}}"
-        );
-        let settle =
-            format!("set-option -F -w -t {backend_id} {SIZER_OPTION} '#{{?{may},{me},#{{{SIZER_OPTION}}}}}'");
-        let mine = format!("#{{==:#{{{SIZER_OPTION}}},{me}}}");
-        let only_if_mine = |cmd: &str| {
-            format!("if-shell -F -t {backend_id} '{mine}' '{cmd}' 'display-message -p \"\"'")
-        };
-        self.ctrl_command_detached(&[&settle, &only_if_mine(&window), &only_if_mine(&pane)], 5)
+        let (cmds, blocks) = T::resize_commands(backend_id, rows, cols, &self.sizer);
+        let cmds: Vec<&str> = cmds.iter().map(String::as_str).collect();
+        self.ctrl_command_detached(&cmds, blocks)
     }
 
     pub(crate) fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
@@ -2926,16 +2576,9 @@ impl<T: MuxTransport> MuxBackend<T> {
     /// The shell-pane command must match the **host's** OS, not the local
     /// binary's — the trait default reads the local `$SHELL`/`%COMSPEC%`,
     /// which shipped e.g. `/bin/zsh` to a remote Windows pane
-    /// ("CommandNotFoundException"). Remote hosts get a shell that exists
-    /// there by construction: `powershell` on a psmux (Windows) host — the
-    /// same interpreter psmux wraps every window command in — and `/bin/sh`
-    /// on a Unix/WSL host (the local `$SHELL` may not be installed there).
+    /// ("CommandNotFoundException"). Remote hosts get the dialect's
+    /// [`MuxDialect::REMOTE_SHELL`], one that exists there by construction.
     /// Local backends keep the trait default's behavior.
-    ///
-    /// This is only the *bootstrap* for a remote Unix pane: `spawn` upgrades
-    /// it to the user's own interactive login shell via
-    /// `remote_shell_pane_command` so the pane matches an `ssh <host>` login
-    /// (rc files, prompt, aliases, `PATH`).
     pub(crate) fn default_shell(&self) -> String {
         if !self.transport.is_remote() {
             #[cfg(windows)]
@@ -2947,11 +2590,7 @@ impl<T: MuxTransport> MuxBackend<T> {
                 return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
             }
         }
-        if T::PROTOCOL.needs_psmux_encoding() {
-            "powershell".to_string()
-        } else {
-            "/bin/sh".to_string()
-        }
+        T::REMOTE_SHELL.to_string()
     }
 }
 
@@ -2973,34 +2612,8 @@ fn complete_remote_headless_spawn(
 /// kernel's prompt commands call it rather than framing the paste themselves.
 /// The trailing `Enter` is still sent separately by the caller. tmux delivers
 /// these bytes literally via `send-keys -l`.
-fn bracketed_paste(text: &str) -> String {
+pub(crate) fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
-}
-
-/// The one-shot argv that delivers `text` into `target` as one paste.
-///
-/// tmux takes the bracketed-paste-wrapped bytes literally (`send-keys -l`).
-/// psmux instead gets its own `send-paste`, which wraps and writes the payload
-/// itself (see [`control_mode::PsmuxPaste`] for why key-encoded markers do not
-/// survive there): a raw newline inside a psmux command argument is cut by the
-/// server's line-oriented read, so a multi-line prompt arrived truncated *and*
-/// its tail ran as a psmux command (psmux #560).
-fn paste_prompt_args(target: &str, text: &str, psmux: bool) -> Vec<String> {
-    if psmux {
-        return vec![
-            "send-paste".to_string(),
-            "-t".to_string(),
-            target.to_string(),
-            base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
-        ];
-    }
-    vec![
-        "send-keys".to_string(),
-        "-t".to_string(),
-        target.to_string(),
-        "-l".to_string(),
-        bracketed_paste(text),
-    ]
 }
 
 /// Whether a `#{pane_dead}` format string reports an exited pane.
@@ -3014,7 +2627,7 @@ fn parse_pane_dead(output: &str) -> bool {
 }
 
 /// Whether `target`'s pane has exited. The one-shot mirror of
-/// [`MuxBackend::<TmuxTransport>::is_dead`], which asks the same question over control mode.
+/// [`MuxBackend::is_dead`], which asks the same question over control mode.
 ///
 /// Errors read as "not dead" so a tmux hiccup degrades to the previous
 /// behavior (attempt the send) rather than silently dropping a prompt.
@@ -3047,8 +2660,8 @@ pub fn send_prompt_now(session_id: &str, session_name: &str, text: &str) -> Resu
 /// protocol needs — submitting on the way in fires every steer the instant it
 /// is typed. [`send_key_now`] with `enter` is the other half.
 ///
-/// The text goes out bracketed-paste-wrapped either way (see
-/// `paste_prompt_args`), so it arrives literally: no shell is involved, and
+/// The text goes out as one paste either way (see
+/// `MuxDialect::paste_args`), so it arrives literally: no shell is involved, and
 /// the wrap is also what keeps a leading `-` from reading as a `send-keys`
 /// flag and a newline from submitting the line before it.
 ///
@@ -3065,7 +2678,7 @@ pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: b
     if pane_is_dead(&target) {
         bail!("session '{session_name}' has exited; its pane accepts no input");
     }
-    let paste = paste_prompt_args(&target, text, DEFAULT_MUX == "psmux");
+    let paste = LocalMuxTransport::paste_args(&target, text);
     let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
     let out = local_mux_command(&paste_argv)
         .output()
@@ -3116,9 +2729,9 @@ fn mux_failure(out: &std::process::Output) -> String {
 /// `ctrl-z` are resolved generically by [`resolve_key`] and deliberately not
 /// listed here.
 ///
-/// `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` are also the set
-/// psmux implements (see [`crate::agent::control_mode::send_keys_commands`]);
-/// the rest are tmux-only, which is what a Windows host runs into.
+/// Not every dialect implements every name: psmux's key encoding covers
+/// `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>`, which is what a
+/// Windows host runs into.
 pub const NAMED_KEYS: &[(&str, &str)] = &[
     ("enter", "Enter"),
     ("escape", "Escape"),
@@ -3221,12 +2834,12 @@ pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Res
 }
 
 /// Window name for the headless automation heartbeat keeper. Deliberately NOT
-/// `tb-` prefixed so [`LocalMuxBackend::<TmuxTransport>::discover`] ignores it — it is
+/// `tb-` prefixed so [`MuxBackend::discover`] ignores it — it is
 /// infrastructure, not a session.
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
 /// How often the heartbeat keeper invokes `automation tick`.
-const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+pub(crate) const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
 /// List the window names in the thurbox tmux session (empty if the server is
 /// not running).
@@ -3270,7 +2883,7 @@ pub fn send_prompt_after_delay(
     let Some(target) = agent_target(session_id, session_name) else {
         bail!("session '{session_name}' has no window of its own here");
     };
-    let script = deferred_prompt_script(&target, text);
+    let script = LocalMuxTransport::deferred_prompt_script(&local_socket(), &target, text);
     let out = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
         .output()
         .context("Failed to schedule tmux run-shell for deferred prompt")?;
@@ -3278,52 +2891,6 @@ pub fn send_prompt_after_delay(
         bail!("tmux run-shell (deferred prompt) {}", mux_failure(&out));
     }
     Ok(())
-}
-
-/// Build the `run-shell` script that pastes the prompt, waits a beat so the
-/// bracketed paste is consumed, then presses Enter. `run-shell` executes the
-/// script via the multiplexer server's shell, so the syntax is platform-specific.
-///
-/// POSIX path (`tmux` on Linux/macOS): a plain `sh` one-liner.
-#[cfg(not(windows))]
-fn deferred_prompt_script(target: &str, text: &str) -> String {
-    let escaped_target = shell_escape(target);
-    let socket = local_socket();
-    // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
-    // submit early; `-l` makes the multiplexer deliver the bytes literally.
-    let escaped_text = shell_escape(&bracketed_paste(text));
-    format!(
-        "{DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
-         sleep 0.2; \
-         {DEFAULT_MUX} -L {socket} send-keys -t {escaped_target} Enter"
-    )
-}
-
-/// Windows path (`psmux`): psmux's `run-shell` is not a POSIX shell, so drive the
-/// sequence through PowerShell explicitly (`Start-Sleep` for the sub-second beat).
-/// PowerShell single-quoted literals escape an embedded `'` by doubling it.
-///
-/// The prompt travels as psmux's own base64 `send-paste` payload (see
-/// [`paste_prompt_args`]) — which also keeps the script free of the prompt's
-/// newlines and quotes.
-#[cfg(windows)]
-fn deferred_prompt_script(target: &str, text: &str) -> String {
-    let t = ps_single_quote(target);
-    let socket = local_socket();
-    let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    format!(
-        "powershell -NoProfile -Command \"{DEFAULT_MUX} -L {socket} send-paste -t {t} {payload}; \
-         Start-Sleep -Milliseconds 200; \
-         {DEFAULT_MUX} -L {socket} send-keys -t {t} Enter\""
-    )
-}
-
-/// Wrap `s` in a PowerShell single-quoted literal — the shared
-/// [`crate::shell::powershell_quote`], under this file's historical name. Not
-/// `#[cfg(windows)]`: `psmux_window_powershell` quotes for a psmux *host* from
-/// any local OS.
-fn ps_single_quote(s: &str) -> String {
-    crate::shell::powershell_quote(s)
 }
 
 /// Ensure the automation heartbeat keeper window is running.
@@ -3364,7 +2931,7 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
-    let loop_cmd = heartbeat_loop_command(cli_path);
+    let loop_cmd = LocalMuxTransport::heartbeat_loop_command(cli_path);
     let out = local_mux_command(&[
         "new-window",
         "-d",
@@ -3385,30 +2952,6 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
     }
     debug!("Armed automation heartbeat keeper window");
     Ok(())
-}
-
-/// The keeper's loop, as the window command. It runs via the server's shell,
-/// so the CLI path is escaped for it.
-#[cfg(not(windows))]
-fn heartbeat_loop_command(cli_path: &Path) -> String {
-    let cli = shell_escape(&cli_path.display().to_string());
-    format!(
-        "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
-    )
-}
-
-/// Windows: psmux runs a window command via `powershell -NoLogo -Command`, so
-/// the keeper loop is PowerShell — handed over as **one argv token**, dodging
-/// psmux's trailing-token handling entirely (same delivery and
-/// `ps_single_quote` quoting as `psmux_window_powershell`). This used to be a
-/// no-op ("no POSIX shell for the keeper loop"),
-/// which silently degraded headless automation firing to TUI-only on Windows.
-#[cfg(windows)]
-fn heartbeat_loop_command(cli_path: &Path) -> String {
-    let cli = ps_single_quote(&cli_path.display().to_string());
-    format!(
-        "while ($true) {{ & {cli} automation tick *> $null; Start-Sleep {HEARTBEAT_INTERVAL_SECS} }}"
-    )
 }
 
 /// Resolve the path to the `thurbox-cli` binary that sits next to the currently
@@ -3501,7 +3044,7 @@ fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
 /// thinks it is.
 ///
 /// Every field is independently optional and never guessed. A multiplexer that
-/// does not answer a format (psmux expands an unknown `#{…}` to nothing), a
+/// does not answer a format (one may expand an unknown `#{…}` to nothing), a
 /// pane that has gone away between the capture and this call, or a platform
 /// with no `ps` each leave the affected fields `None` rather than a plausible
 /// wrong value — the caller can then say "unknown" instead of acting on a
@@ -3582,8 +3125,8 @@ fn normalized_pane_answer(raw: &str) -> Cow<'_, str> {
 /// `_`, [`PANE_STATE_SEP`] included. Under `LC_ALL=C` or no locale at all — a
 /// systemd unit, a cron job, most containers — the whole answer then parses as
 /// one field and every pane-state field reports null. `-u` sets the flag
-/// outright, so the separator survives whatever the environment says.
-/// psmux is excluded: it has no such sanitizing and need not know the flag.
+/// outright, so the separator survives whatever the environment says. Passed
+/// only where the dialect sanitizes ([`MuxDialect::UTF8_FLAG`]).
 const PANE_STATE_UTF8_FLAG: &str = "-u";
 
 /// Read a session pane's cursor position, foreground process and live cwd.
@@ -3609,7 +3152,7 @@ pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
     .join(&PANE_STATE_SEP.to_string());
 
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if LocalMuxTransport::UTF8_FLAG {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3671,7 +3214,7 @@ pub fn agent_pane_path(session_id: &str, session_name: &str) -> PanePath {
     };
     let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
     let mut argv = Vec::with_capacity(6);
-    if DEFAULT_MUX != "psmux" {
+    if LocalMuxTransport::UTF8_FLAG {
         argv.push(PANE_STATE_UTF8_FLAG);
     }
     argv.extend(["display-message", "-p", "-t", &target, &format]);
@@ -3706,8 +3249,8 @@ pub enum PanePath {
     /// The `PATH` thurbox handed the pane, read off its start command.
     Known(String),
     /// The window is there, but its `PATH` is not one thurbox wrote: a pane
-    /// spawned before the prefix existed, a psmux window (which never gets
-    /// one), or a `PATH` whose quoting tmux had to alter.
+    /// spawned before the prefix existed, a window whose dialect writes none,
+    /// or a `PATH` whose quoting tmux had to alter.
     Unknown,
     /// This machine's server holds no agent window for the session — parked,
     /// gone, or never here. Nothing to read a `PATH` from.
@@ -3862,7 +3405,7 @@ fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
 ///
 /// Single source of truth for both the TUI and headless paths — applied
 /// (alongside the server-wide options + `default-command`) by
-/// [`MuxBackend::<TmuxTransport>::apply_session_config`].
+/// [`MuxBackend::apply_session_config`].
 ///
 /// **Session options only.** `set-option -t <session> <key>` does not mean "for
 /// this session" when `<key>` is a *window* option: tmux resolves the target
@@ -3875,7 +3418,7 @@ fn history_seed_bytes(mut raw: Vec<u8>) -> Vec<u8> {
 /// `remain-on-exit`, which depends on what the window is *for*, and
 /// `window-size`, which no tmux in the supported range survives as a
 /// server-wide default.
-const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "5000")];
+pub(crate) const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "5000")];
 
 /// Window options applied to **every** window on thurbox's own tmux server.
 ///
@@ -3889,7 +3432,7 @@ const SESSION_OPTS: &[(&str, &str)] = &[("status", "off"), ("history-limit", "50
 /// [`birth_options`], where it is said per window instead). Best-effort either
 /// way — `resize-window -x/-y` already flips a window to `manual` when it
 /// resizes it (measured, tmux 3.2a), and thurbox resizes every pane it paints.
-const WINDOW_OPTS: &[(&str, &str)] = &[
+pub(crate) const WINDOW_OPTS: &[(&str, &str)] = &[
     // The default a window is BORN with, so the one role that wants a corpse
     // asks for it (in the same command list as its creation — see
     // `birth_options`) and nothing else inherits one. Said here rather than
@@ -3915,7 +3458,7 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// - tmux copies the *client's* `PATH` into the new pane only for an
 ///   **unattached** client (`spawn.c`: "the session one is replaced from the
 ///   client … only unattached clients"). thurbox's control-mode client is
-///   attached, so [`MuxBackend::<TmuxTransport>::spawn`] — a restart, a plugin program, the
+///   attached, so [`MuxBackend::spawn`] — a restart, a plugin program, the
 ///   shell pane — got the `PATH` of whatever first started the tmux **server**.
 /// - tmux runs a window command given as a **single** argument through its
 ///   `default-shell` (`spawn.c`: `execl(shell, argv0, "-c", cmd)`), and only a
@@ -3934,9 +3477,9 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// An absolute path is immune to both: `execvp` and every shell take it as-is.
 ///
 /// Best-effort by design — the command is returned **unchanged** when it is
-/// already a path, when nothing on `PATH` matches, or on Windows (psmux runs
-/// its own command model, and a bare name there wants `PATHEXT` semantics this
-/// deliberately does not have). A `command` that is a shell function, an alias,
+/// already a path, when nothing on `PATH` matches, or on Windows (whose
+/// multiplexer runs its own command model, and a bare name there wants
+/// `PATHEXT` semantics this deliberately does not have). A `command` that is a shell function, an alias,
 /// or a binary installed *after* this resolves therefore behaves exactly as it
 /// did before: resolution is an improvement where it succeeds, never a new way
 /// to fail.
@@ -3961,11 +3504,10 @@ pub(crate) fn resolve_local_program(command: &str) -> String {
 /// A pane id on stdout outranks a non-zero exit status, which on this path can
 /// belong to a user's tmux hook rather than to the window — see the read below.
 ///
-/// On Windows the local mux is psmux, whose `new-window -P -F` support is
-/// unverified against the documented divergences (ADR-13) — there the id is
-/// not asked for and an empty string is returned, so the stamp is written
-/// against the window name instead (and is best-effort, like the psmux carve-
-/// outs elsewhere). With no id to weigh, a non-zero status is the whole answer
+/// Where the local dialect has no `MuxDialect::ONESHOT_PANE_REPORT` the id
+/// is not asked for and an empty string is returned, so the window is known by
+/// its name instead (and is best-effort, like the other window-option
+/// carve-outs). With no id to weigh, a non-zero status is the whole answer
 /// there, exactly as before.
 pub fn spawn_window(
     session_id: &str,
@@ -3978,8 +3520,8 @@ pub fn spawn_window(
     // Ensure the session exists and is configured, without opening a
     // control-mode connection (headless one-shot path).
     MuxBackend::<LocalMuxTransport>::local().ensure_session_configured()?;
-    if local_mux_is_psmux() {
-        check_local_psmux_server()?;
+    if LocalMuxTransport::ASKS_SERVER_VERSION {
+        check_local_server_version()?;
     }
 
     let window_name = agent_window_name(session_name);
@@ -3989,20 +3531,20 @@ pub fn spawn_window(
     // exactly the new one. The window's *name* cannot say that — `tb-<session
     // name>` is not unique (two sessions can share a name, which is why the
     // stamp exists), and tmux resolves a duplicate name to the lowest index,
-    // which is the older window (measured, tmux 3.2a). psmux keeps the plain
-    // session target: it gets no retention write either, and the shorthand is
-    // tmux's.
-    let create_target = if cfg!(windows) {
-        format!("{TMUX_SESSION}:")
-    } else {
+    // which is the older window (measured, tmux 3.2a). A dialect without the
+    // one-shot pane report keeps the plain session target: it gets no
+    // retention write either, and the shorthand is tmux's.
+    let create_target = if LocalMuxTransport::ONESHOT_PANE_REPORT {
         format!("{TMUX_SESSION}:{{end}}")
+    } else {
+        format!("{TMUX_SESSION}:")
     };
     let mut tmux = new_window_command(&window_name, &create_target, command, args, cwd, env);
     // The stamp rides in the same command list as the creation, like the birth
     // options: two `set-option` processes fewer on every `session create`
     // (#1243). `{end}` still names the new window here, and the pane id it
     // would otherwise be written against is not known until the list returns.
-    let stamped = !local_mux_is_psmux();
+    let stamped = local_windows_are_stamped();
     if stamped {
         for (option, value) in [
             (WINDOW_SESSION_OPTION, session_id),
@@ -4017,12 +3559,11 @@ pub fn spawn_window(
     let output = tmux
         .output()
         .map_err(|e| local_launch_failure("Failed to run tmux new-window for headless spawn", e))?;
-    // psmux reports no pane id, so the stamp goes on the window name — which is
-    // the only handle that path has either way.
-    let pane_id = if cfg!(windows) {
-        String::new()
-    } else {
+    // Without a pane report the window name is the only handle this path has.
+    let pane_id = if LocalMuxTransport::ONESHOT_PANE_REPORT {
         new_window_pane_id(&output.stdout)
+    } else {
+        String::new()
     };
     if !output.status.success() {
         // The exit status is not this command's verdict on its own. tmux hands
@@ -4074,13 +3615,16 @@ pub fn spawn_window(
     Ok(pane_id)
 }
 
-/// [`check_psmux_version`] against the local server's own `#{version}` — the
-/// headless twin of the check in [`MuxBackend::<TmuxTransport>::spawn`].
-fn check_local_psmux_server() -> Result<()> {
+/// [`MuxDialect::check_server_version`] against the local server's own
+/// `#{version}` — the headless twin of the check in [`MuxBackend::spawn`].
+fn check_local_server_version() -> Result<()> {
     let output = local_mux_command(&["display-message", "-t", TMUX_SESSION, "-p", "#{version}"])
         .output()
-        .map_err(|e| local_launch_failure("Failed to ask psmux its version", e))?;
-    check_psmux_version(&String::from_utf8_lossy(&output.stdout), &local_socket())
+        .map_err(|e| local_launch_failure("Failed to ask the multiplexer its version", e))?;
+    LocalMuxTransport::check_server_version(
+        &String::from_utf8_lossy(&output.stdout),
+        &local_socket(),
+    )
 }
 
 /// The pane id out of a one-shot `new-window -P -F '#{pane_id}'`'s stdout.
@@ -4099,8 +3643,8 @@ fn new_window_pane_id(stdout: &[u8]) -> String {
 }
 
 /// The `new-window` command list [`spawn_window`] runs: the window created
-/// detached at `create_target` running `command` — and, on tmux, its birth
-/// options chained into the same invocation.
+/// detached at `create_target` running `command` — and, where the dialect
+/// takes them, its birth options chained into the same invocation.
 fn new_window_command(
     window_name: &str,
     create_target: &str,
@@ -4109,104 +3653,32 @@ fn new_window_command(
     cwd: Option<&Path>,
     env: &HashMap<String, String>,
 ) -> Command {
+    let report = LocalMuxTransport::ONESHOT_PANE_REPORT;
     let mut tmux = local_mux_command(&["new-window", "-d"]);
-    if !cfg!(windows) {
+    if report {
         tmux.arg("-a");
     }
     tmux.args(["-t", create_target, "-n", window_name]);
-    if !cfg!(windows) {
+    if report {
         tmux.args(["-P", "-F", "#{pane_id}"]);
     }
     if let Some(dir) = cwd {
         tmux.args(["-c", &dir.to_string_lossy()]);
     }
-    push_window_program(&mut tmux, command, args, env);
+    LocalMuxTransport::push_window_program(&mut tmux, command, args, env);
 
     // Chained into the same command list as the creation, not sent after it —
     // `birth_options` has the measurement. This path passes `-d`, so the new
     // window is not current and the bare form the control-mode path uses is not
     // available; `{end}` names it instead, which is why the window is created
     // there.
-    if !cfg!(windows) {
+    if report {
         for (key, value) in birth_options(window_name) {
             tmux.args([";", "set-window-option", "-t", create_target]);
             tmux.args([key, value]);
         }
     }
     tmux
-}
-
-/// The window's environment and the program it runs, which close the
-/// `new-window` arguments.
-fn push_window_program(
-    tmux: &mut Command,
-    command: &str,
-    args: &[String],
-    env: &HashMap<String, String>,
-) {
-    if cfg!(windows) {
-        // psmux (the local mux on Windows) ignores `-e`, so the env must be
-        // folded into the window command itself; delivered as a single argv
-        // token (see `psmux_window_powershell`).
-        tmux.arg(MuxBackend::<PsmuxTransport>::psmux_window_powershell(
-            command, args, env,
-        ));
-        return;
-    }
-    for (k, v) in env {
-        tmux.args(["-e", &format!("{k}={v}")]);
-    }
-    // Pass the command + args as a single argv list. tmux treats trailing args
-    // as the command to run inside the window. Resolved here for the same
-    // reason the control-mode path resolves it (see `resolve_local_program`):
-    // this path happens to get thurbox's own `PATH` because its client is
-    // unattached, but a session must not launch differently depending on which
-    // of the two created it — a session created here and later restarted
-    // through control mode would otherwise resolve against two different
-    // environments.
-    let program = resolve_local_program(command);
-    // `PATH` is the one variable `-e` cannot carry, so the CLI's directory
-    // rides in the command instead (see `path_prefix_args`) — but **how many
-    // arguments** that leaves is itself load-bearing, so the prefix is spelled
-    // to keep the count tmux would have seen.
-    //
-    // tmux runs a **one-argument** window command through its `default-shell`
-    // and a multi-argument one through `execvp` (`spawn.c`). A command session
-    // with no args is the one-argument case, and `--command "sleep 300"` only
-    // ever worked because that shell split it. Pushing the prefix as two more
-    // argv entries moved it to `execvp`, which has no splitting to do: the pane
-    // died instantly with status 127 and a `sleep 300: No such file` from
-    // `env`. So with no args the prefix joins the same single token and the
-    // shell still does the splitting it always did.
-    if args.is_empty() {
-        // One token means a shell reads it, and a shell reads text — so this is
-        // the one place the prefix has to be spellable as text. An unspellable
-        // one (a `PATH` that is not UTF-8) and an absent one lead to the same
-        // command: the program alone, exactly as before.
-        //
-        // The program itself is **not** escaped: it is what the shell was
-        // already splitting, and escaping it now would break the very commands
-        // this branch exists to keep working.
-        match shell_prefix_tokens() {
-            Some(mut token) => {
-                token.push(program);
-                tmux.arg(token.join(" "));
-            }
-            None => {
-                tmux.arg(program);
-            }
-        }
-    } else {
-        // Several tokens already go to `execvp`, so the prefix rides as argv
-        // and the `PATH` keeps its bytes.
-        for arg in path_prefix_args() {
-            tmux.arg(arg);
-        }
-        tmux.arg(program);
-    }
-    for a in args {
-        tmux.arg(a);
-    }
 }
 
 /// `env PATH=<…>` in front of a window's program, or nothing.
@@ -4239,7 +3711,7 @@ fn push_window_program(
 /// Empty (no prefix at all) when there is no CLI directory to add or no `env`
 /// to add it with: an improvement where it succeeds, never a new way to fail.
 #[cfg(not(windows))]
-fn path_prefix_args() -> Vec<std::ffi::OsString> {
+pub(crate) fn path_prefix_args() -> Vec<std::ffi::OsString> {
     let (Some(path), Some(env_bin)) = (path_with_cli_directory(), posix_env_binary()) else {
         return Vec::new();
     };
@@ -4259,7 +3731,7 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
 /// UTF-8 — which the callers take as "no prefix", never as a mangled one. Also
 /// `None` when there was no prefix to begin with, since an empty one and an
 /// unspellable one lead to the same command.
-fn shell_prefix_tokens() -> Option<Vec<String>> {
+pub(crate) fn shell_prefix_tokens() -> Option<Vec<String>> {
     let args = path_prefix_args();
     if args.is_empty() {
         return None;
@@ -4309,11 +3781,11 @@ fn posix_env_binary() -> Option<std::path::PathBuf> {
     })
 }
 
-/// Never on Windows: psmux runs its own command model and this path does not
-/// reach it — [`push_window_program`] folds the environment into a PowerShell
-/// token there instead.
+/// Never on Windows: its multiplexer runs its own command model, and its
+/// [`MuxDialect::push_window_program`] folds the environment into the window
+/// command instead.
 #[cfg(windows)]
-fn path_prefix_args() -> Vec<std::ffi::OsString> {
+pub(crate) fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
@@ -4332,12 +3804,16 @@ pub fn spawn_window_remote(
     cwd: Option<&Path>,
     env: &HashMap<String, String>,
 ) -> Result<String> {
-    if host.is_windows() {
-        let backend = crate::agent::psmux::PsmuxBackend::from_host(host);
-        return spawn_window_remote_on(&backend, session_id, session_name, command, args, cwd, env);
-    }
-    let backend = crate::agent::tmux::TmuxBackend::from_host(host);
-    spawn_window_remote_on(&backend, session_id, session_name, command, args, cwd, env)
+    let backend = crate::agent::registry::host_backend(host);
+    spawn_window_remote_on(
+        backend.as_ref(),
+        session_id,
+        session_name,
+        command,
+        args,
+        cwd,
+        env,
+    )
 }
 
 fn spawn_window_remote_on(
@@ -4371,11 +3847,7 @@ fn spawn_window_remote_on(
 /// server/session; an unreachable host or absent server is an `Err` the
 /// caller treats as "no reports this cycle".
 pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(String, String)>> {
-    if host.is_windows() {
-        list_hook_states_on(&MuxBackend::<PsmuxTransport>::from_host(host))
-    } else {
-        list_hook_states_on(&MuxBackend::<TmuxTransport>::from_host(host))
-    }
+    crate::agent::registry::host_mux(host).hook_states()
 }
 
 /// [`list_remote_hook_states`] for this machine's own server: the pane option
@@ -4385,7 +3857,44 @@ pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
     list_hook_states_on(&MuxBackend::<LocalMuxTransport>::local())
 }
 
-fn list_hook_states_on<T: MuxTransport>(backend: &MuxBackend<T>) -> Result<Vec<(String, String)>> {
+/// The one-shot operations a teardown, a rename or a status poll runs against a
+/// host's server, whichever multiplexer the host runs. Chosen by
+/// [`crate::agent::registry::host_mux`]; none of them starts control mode.
+pub(crate) trait HostMux {
+    fn discover_answered(&self) -> Result<Vec<DiscoveredSession>>;
+    fn hook_states(&self) -> Result<Vec<(String, String)>>;
+    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()>;
+    fn kill_windows(
+        &self,
+        host_name: &str,
+        session_id: &str,
+        session_name: &str,
+        panes: SessionPanes<'_>,
+    ) -> Result<bool>;
+}
+
+impl<T: MuxDialect> HostMux for MuxBackend<T> {
+    fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
+        MuxBackend::discover_answered(self)
+    }
+    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+        list_hook_states_on(self)
+    }
+    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()> {
+        rename_session_windows_on(self, session_id, from, to)
+    }
+    fn kill_windows(
+        &self,
+        host_name: &str,
+        session_id: &str,
+        session_name: &str,
+        panes: SessionPanes<'_>,
+    ) -> Result<bool> {
+        kill_remote_windows_on(self, host_name, session_id, session_name, panes)
+    }
+}
+
+fn list_hook_states_on<T: MuxDialect>(backend: &MuxBackend<T>) -> Result<Vec<(String, String)>> {
     if !backend.session_exists() {
         return Ok(Vec::new());
     }
@@ -4419,7 +3928,7 @@ pub fn agent_window(
     let index = WindowIndex::from_listing(match host {
         Some(host) => {
             known_host_socket(host)?;
-            remote_discover_answered(host)?
+            crate::agent::registry::host_mux(host).discover_answered()?
         }
         None => MuxBackend::<LocalMuxTransport>::local().discover_answered()?,
     });
@@ -4444,7 +3953,7 @@ pub fn agent_window_alive(
 ///
 /// Located under the name the session *had*, stamp first, so a namesake's
 /// window is never the one renamed. The name is more than looks where a window
-/// carries no stamp (psmux, or one spawned before stamping): the name is then
+/// carries no stamp (no window options, or one spawned before stamping): the name is then
 /// all that finds it, and a row renamed without its window would lose it — which
 /// is also why ambiguity refuses rather than skips.
 pub fn rename_session_windows(
@@ -4455,20 +3964,7 @@ pub fn rename_session_windows(
 ) -> Result<()> {
     if let Some(host) = host {
         known_host_socket(host)?;
-        if host.is_windows() {
-            return rename_session_windows_on(
-                &MuxBackend::<PsmuxTransport>::from_host(host),
-                session_id,
-                from,
-                to,
-            );
-        }
-        return rename_session_windows_on(
-            &MuxBackend::<TmuxTransport>::from_host(host),
-            session_id,
-            from,
-            to,
-        );
+        return crate::agent::registry::host_mux(host).rename_windows(session_id, from, to);
     }
     rename_session_windows_on(
         &MuxBackend::<LocalMuxTransport>::local(),
@@ -4478,7 +3974,7 @@ pub fn rename_session_windows(
     )
 }
 
-fn rename_session_windows_on<T: MuxTransport>(
+fn rename_session_windows_on<T: MuxDialect>(
     backend: &MuxBackend<T>,
     session_id: &str,
     from: &str,
@@ -4582,8 +4078,8 @@ pub fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
 /// way: the pane a row remembers is a *hint* — the host's tmux server reissues
 /// ids from `%0` when it restarts, so a remembered `%N` can be a live
 /// namesake's pane afterwards. Only a window the host's own listing stamps for
-/// this session is killed. `panes` is the psmux fallback, where nothing is
-/// stamped and a name cannot be told apart from its namesake's.
+/// this session is killed. `panes` is the fallback where nothing is stamped
+/// (no window options) and a name cannot be told apart from its namesake's.
 ///
 /// One listing serves both roles — an ssh round trip per role would double the
 /// cost of every remote teardown — and nothing here starts control mode:
@@ -4597,28 +4093,12 @@ pub fn kill_remote_windows(
     panes: SessionPanes<'_>,
 ) -> Result<bool> {
     known_host_socket(host)?;
-    if host.is_windows() {
-        kill_remote_windows_on(
-            &MuxBackend::<PsmuxTransport>::from_host(host),
-            host,
-            session_id,
-            session_name,
-            panes,
-        )
-    } else {
-        kill_remote_windows_on(
-            &MuxBackend::<TmuxTransport>::from_host(host),
-            host,
-            session_id,
-            session_name,
-            panes,
-        )
-    }
+    crate::agent::registry::host_mux(host).kill_windows(&host.name, session_id, session_name, panes)
 }
 
-fn kill_remote_windows_on<T: MuxTransport>(
+fn kill_remote_windows_on<T: MuxDialect>(
     backend: &MuxBackend<T>,
-    host: &crate::session::HostDef,
+    host_name: &str,
     session_id: &str,
     session_name: &str,
     panes: SessionPanes<'_>,
@@ -4629,20 +4109,21 @@ fn kill_remote_windows_on<T: MuxTransport>(
         index.agent_window(session_id, session_name),
         panes.agent,
         session_name,
-        &host.name,
+        host_name,
     )?;
     kill_located(
         backend,
         index.shell_window(session_id, session_name),
         panes.shell,
         session_name,
-        &host.name,
+        host_name,
     )?;
     Ok(killed)
 }
 
-/// The pane ids a row remembers for its two windows — the psmux fallback and
-/// nothing more, since a stamped window is resolved without them.
+/// The pane ids a row remembers for its two windows — the fallback where
+/// nothing is stamped, and nothing more, since a stamped window is resolved
+/// without them.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SessionPanes<'a> {
     pub agent: &'a str,
@@ -4659,10 +4140,10 @@ impl<'a> SessionPanes<'a> {
 }
 
 /// Kill what a listing placed, if it placed anything this session may claim.
-fn kill_located<T: MuxTransport>(
+fn kill_located<T: MuxDialect>(
     backend: &MuxBackend<T>,
     located: Located,
-    psmux_fallback: &str,
+    remembered: &str,
     session_name: &str,
     host_name: &str,
 ) -> Result<bool> {
@@ -4670,8 +4151,8 @@ fn kill_located<T: MuxTransport>(
         Located::At(pane) => backend.kill_pane_oneshot(&pane).map(|()| true),
         // Already gone, or never this session's to begin with.
         Located::Absent => Ok(false),
-        Located::Unknown if T::PROTOCOL.needs_psmux_encoding() && !psmux_fallback.is_empty() => {
-            backend.kill_pane_oneshot(psmux_fallback).map(|()| true)
+        Located::Unknown if !T::WINDOW_OPTIONS && !remembered.is_empty() => {
+            backend.kill_pane_oneshot(remembered).map(|()| true)
         }
         Located::Unknown => {
             debug!("not killing a window on {host_name}: '{session_name}' is ambiguous there");
@@ -4761,6 +4242,8 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+    use crate::agent::psmux::PsmuxTransport;
+    use crate::agent::tmux::TmuxTransport;
 
     #[test]
     fn local_backend_uses_the_platform_mux_binary() {
@@ -4778,6 +4261,8 @@ mod tests {
         assert_eq!(result.unwrap(), pane_id);
     }
 
+    /// Asked of the dialect, not of the host's preference: a tmux route to a
+    /// host configured for psmux still hears its windows close.
     #[test]
     fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {
         let host = crate::session::HostDef {
@@ -4785,9 +4270,10 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        assert!(MuxBackend::<TmuxTransport>::from_host(&host).needs_liveness_poll());
-        #[cfg(windows)]
-        assert!(MuxBackend::<TmuxTransport>::local().needs_liveness_poll());
+        assert!(MuxBackend::<PsmuxTransport>::from_host(&host).needs_liveness_poll());
+        assert!(MuxBackend::<PsmuxTransport>::local().needs_liveness_poll());
+        assert!(!MuxBackend::<TmuxTransport>::from_host(&host).needs_liveness_poll());
+        assert!(!MuxBackend::<TmuxTransport>::local().needs_liveness_poll());
     }
 
     /// The one distinction the remote teardown rests on. Each answer below is
@@ -4897,28 +4383,6 @@ mod tests {
         );
     }
 
-    // --- parse_tmux_version tests ---
-
-    #[test]
-    fn parse_tmux_version_plain() {
-        assert_eq!(parse_tmux_version("tmux 3.4").unwrap(), (3, 4));
-    }
-
-    #[test]
-    fn parse_tmux_version_trailing_letter() {
-        assert_eq!(parse_tmux_version("tmux 3.3a").unwrap(), (3, 3));
-    }
-
-    #[test]
-    fn parse_tmux_version_without_prefix() {
-        assert_eq!(parse_tmux_version("3.2").unwrap(), (3, 2));
-    }
-
-    #[test]
-    fn parse_tmux_version_rejects_garbage() {
-        assert!(parse_tmux_version("not a version").is_err());
-    }
-
     // --- path_led_by (the PATH a pane is handed) ---
 
     #[cfg(not(windows))]
@@ -4996,83 +4460,6 @@ mod tests {
         );
     }
 
-    // --- check_min_version (multiplexer version gate) ---
-
-    #[test]
-    fn min_version_accepts_recent_tmux() {
-        assert!(check_min_version("tmux 3.4").is_ok());
-        assert!(check_min_version("tmux 3.2").is_ok());
-    }
-
-    #[test]
-    fn min_version_rejects_old_tmux() {
-        assert!(check_min_version("tmux 2.8").is_err());
-    }
-
-    #[test]
-    fn min_version_accepts_non_tmux_clone() {
-        // psmux numbers itself independently and may not print a `tmux ` banner;
-        // once it answers `-V` it is accepted regardless of its own version.
-        assert!(check_min_version("psmux 0.3.1").is_ok());
-        assert!(check_min_version("psmux 1.0").is_ok());
-        assert!(check_min_version("pmux 0.1").is_ok());
-    }
-
-    /// psmux 3.3.8 answers `set-option -s` with "unknown flag -s", which failed
-    /// every session setup against it; 3.3.7 took either scope.
-    #[test]
-    fn psmux_server_options_are_set_in_the_global_scope() {
-        assert_eq!(server_option_scope(true), "-g");
-        assert_eq!(server_option_scope(false), "-s");
-    }
-
-    // --- check_psmux_version (the psmux#450 floor) ---
-
-    /// psmux 3.3.6 answers `-V` with a bare `tmux 3.3.6`, which the tmux gate
-    /// reads as tmux 3.3 and passes. Its server then hands panes born after a
-    /// `send-keys C-c` std handles that are no longer the pane's console, and
-    /// the agent reports "stdin is unreadable (EISDIR)" and exits.
-    #[test]
-    fn psmux_older_than_3_3_7_is_refused_with_the_upgrade() {
-        let err = check_psmux_version("tmux 3.3.6\n", "thurbox")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("3.3.6"), "{err}");
-        assert!(err.contains("3.3.7"), "{err}");
-        assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
-        assert!(check_psmux_version("tmux 3.3.5", "thurbox").is_err());
-        assert!(check_psmux_version("psmux 3.2.9", "thurbox").is_err());
-    }
-
-    /// `#{version}` is answered by the running server, which is what matters:
-    /// upgrading the binary leaves a server started before it on the old code.
-    #[test]
-    fn a_running_server_is_judged_by_its_own_version() {
-        assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());
-        assert!(check_psmux_version("3.3.8", "thurbox").is_ok());
-    }
-
-    #[test]
-    fn psmux_3_3_7_and_newer_is_accepted() {
-        assert!(
-            check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
-                .is_ok()
-        );
-        assert!(check_psmux_version("tmux 3.3.7\npsmux 3.3.7", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux 3.4.0", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
-        // A pre-release suffix on the patch is still that patch, not 0.
-        assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
-    }
-
-    /// A banner this cannot read says nothing about the fix, and refusing it
-    /// would lock out every later psmux that changes how it prints `-V`.
-    #[test]
-    fn an_unreadable_psmux_banner_is_not_refused() {
-        assert!(check_psmux_version("", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux (dev build)", "thurbox").is_ok());
-    }
-
     #[test]
     fn resolve_cli_binary_uses_platform_exe_suffix() {
         let p = resolve_cli_binary();
@@ -5081,48 +4468,6 @@ mod tests {
     }
 
     // --- local command resolution ---
-
-    /// An executable on a directory only *this process* has on `PATH` — the
-    /// shape an agent installed by `fish_add_path` is in.
-    #[cfg(unix)]
-    fn agent_only_thurbox_can_see(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let p = dir.join(name);
-        std::fs::write(&p, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
-        p
-    }
-
-    /// The whole point of the fix: what tmux is handed must not need tmux's own
-    /// `PATH` (nor the `PATH` of the shell tmux runs a single-token command
-    /// with) to be found.
-    #[test]
-    #[cfg(unix)]
-    fn a_local_window_command_is_an_absolute_path() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let expected = agent_only_thurbox_can_see(dir.path(), "tbx-spawn-probe");
-
-        // Through the shared helper: `PATH` is process state, and the unit
-        // tests that set it run concurrently under plain `cargo test`.
-        let (local, free, remote) = crate::paths::with_path(dir.path(), || {
-            (
-                MuxBackend::<TmuxTransport>::local().program_for_window("tbx-spawn-probe"),
-                resolve_local_program("tbx-spawn-probe"),
-                // A remote host's PATH is the host's, so its command is the
-                // host's to resolve — and it is login-wrapped instead.
-                MuxBackend::<TmuxTransport>::from_host(&crate::session::HostDef {
-                    name: "devbox".into(),
-                    destination: "me@devbox".into(),
-                    ..Default::default()
-                })
-                .program_for_window("tbx-spawn-probe"),
-            )
-        });
-
-        assert_eq!(local, expected.to_string_lossy());
-        assert_eq!(free, expected.to_string_lossy());
-        assert_eq!(remote, "tbx-spawn-probe");
-    }
 
     /// Best-effort: a name nothing on `PATH` matches is passed through, so a
     /// shell function, an alias, or a binary installed after this ran keeps
@@ -5137,48 +4482,6 @@ mod tests {
             resolve_local_program("/opt/My Agents/codex"),
             "/opt/My Agents/codex"
         );
-    }
-
-    // --- build_shell_command tests ---
-
-    #[test]
-    fn build_shell_command_simple() {
-        let cmd = MuxBackend::<TmuxTransport>::build_shell_command("claude", &[]);
-        assert_eq!(cmd, "claude");
-    }
-
-    #[test]
-    fn build_shell_command_with_args() {
-        let args = vec![
-            "--resume".to_string(),
-            "abc-123".to_string(),
-            "--permission-mode".to_string(),
-            "default".to_string(),
-        ];
-        let cmd = MuxBackend::<TmuxTransport>::build_shell_command("claude", &args);
-        assert_eq!(cmd, "claude --resume abc-123 --permission-mode default");
-    }
-
-    #[test]
-    fn build_shell_command_with_spaces_in_args() {
-        let args = vec![
-            "--allowed-tools".to_string(),
-            "Read Bash(git:*)".to_string(),
-        ];
-        let cmd = MuxBackend::<TmuxTransport>::build_shell_command("claude", &args);
-        assert_eq!(cmd, "claude --allowed-tools 'Read Bash(git:*)'");
-    }
-
-    #[test]
-    fn build_shell_command_escapes_command_path() {
-        // The command token is interpreted by the server's shell, so a path
-        // with a space (or any metacharacter) must be quoted, not left bare —
-        // otherwise the shell would split it and the launch would break.
-        let cmd = MuxBackend::<TmuxTransport>::build_shell_command(
-            "/opt/My Agents/codex",
-            &["--foo".to_string()],
-        );
-        assert_eq!(cmd, "'/opt/My Agents/codex' --foo");
     }
 
     #[test]
@@ -5453,110 +4756,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn remote_shell_pane_opens_users_login_shell() {
-        // The companion shell pane on a remote/WSL host should give the user
-        // their own interactive login shell (the SSH-login environment: rc
-        // files, prompt, aliases, PATH) — not the bare `/bin/sh` the generic
-        // login-wrap would produce. Bootstrap through the always-present
-        // `/bin/sh -l` (exports `$SHELL`), then `exec "$SHELL" -l`.
-        //
-        // Crucially the `$SHELL` probe is a `command -v` guard, NOT
-        // `exec "$SHELL" -l 2>/dev/null`: an `exec … 2>/dev/null` redirection
-        // persists into the exec'd shell, drops stderr off the TTY, and bash/zsh
-        // then start non-interactive (no prompt) — a blank pane.
-        const EXPECT: &str =
-            "/bin/sh -lc 'command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l'";
-        let ssh = MuxBackend::<TmuxTransport>::from_host(&crate::session::HostDef {
-            name: "devbox".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        });
-        assert_eq!(ssh.remote_shell_pane_command(), EXPECT);
-
-        let wsl = MuxBackend::<TmuxTransport>::from_host(&crate::session::HostDef::wsl("Ubuntu"));
-        assert_eq!(wsl.remote_shell_pane_command(), EXPECT);
-
-        // The interactive shell must keep stderr on the PTY — a stray
-        // `exec … 2>` would make it non-interactive.
-        assert!(!EXPECT.contains("-l 2>"));
-    }
-
-    #[test]
-    fn login_wrap_wraps_remote_command_in_login_shell() {
-        // Remote/WSL: the window command runs under a login shell so the user's
-        // profile PATH (e.g. `~/.local/bin/claude`) is present, or the agent
-        // binary isn't found and the pane dies instantly.
-        let backend =
-            MuxBackend::<TmuxTransport>::from_host(&crate::session::HostDef::wsl("Ubuntu"));
-        let wrapped = backend.login_wrap_for_remote("claude --resume x");
-        assert_eq!(wrapped, "/bin/sh -lc 'exec claude --resume x'");
-    }
-
-    #[test]
-    fn login_wrap_assigns_the_hosts_login_path() {
-        let host = crate::session::HostDef {
-            name: "login-wrap-path".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        };
-        crate::agent::host_path::seed(
-            &host,
-            Some(crate::agent::host_path::HostEnv {
-                home: Some("/home/me".into()),
-                base: vec!["/usr/bin".into()],
-                shell_login: Some(vec!["/home/me/.local/bin".into(), "/usr/bin".into()]),
-                sh_login: None,
-            }),
-        );
-        let backend = MuxBackend::<TmuxTransport>::from_host(&host);
-        assert_eq!(
-            backend.login_wrap_for_remote("claude"),
-            "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
-        );
-    }
-
-    #[test]
-    fn login_wrap_is_noop_for_local() {
-        // Local backends inherit the user's interactive PATH — no wrap needed.
-        let backend = MuxBackend::<TmuxTransport>::local();
-        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
-    }
-
-    // --- one-shot prompt delivery ---
-
-    #[test]
-    fn paste_prompt_args_wraps_literally_for_tmux() {
-        assert_eq!(
-            paste_prompt_args("thurbox:tb-demo", "line one\nline two", false),
-            vec![
-                "send-keys",
-                "-t",
-                "thurbox:tb-demo",
-                "-l",
-                "\x1b[200~line one\nline two\x1b[201~",
-            ]
-        );
-    }
-
-    /// psmux gets its own `send-paste`: the bracketed markers are psmux's to add,
-    /// and the base64 payload keeps the prompt's newlines off a command wire that
-    /// would otherwise cut the line and run the tail as a command (psmux #560).
-    #[test]
-    fn paste_prompt_args_uses_send_paste_for_psmux() {
-        let args = paste_prompt_args("thurbox:tb-demo", "line one\nline two", true);
-        assert_eq!(
-            args,
-            vec![
-                "send-paste",
-                "-t",
-                "thurbox:tb-demo",
-                "bGluZSBvbmUKbGluZSB0d28=",
-            ]
-        );
-        assert!(!args.iter().any(|a| a.contains('\n') || a.contains('\x1b')));
-    }
-
     // --- named keys ---
 
     #[test]
@@ -5609,62 +4808,6 @@ mod tests {
             let resolved = resolve_key(&format!("ctrl-{letter}")).expect("ctrl-<letter>");
             assert_eq!(resolved.tmux, format!("C-{letter}"));
         }
-    }
-
-    // --- psmux_window_command tests ---
-    // psmux keeps only the FIRST trailing new-window token (tmux joins them) and
-    // ignores `-e` entirely, so the whole launch — env included — must be one
-    // double-quoted token of PowerShell (verified against psmux 3.3.6).
-
-    #[test]
-    fn psmux_window_command_is_one_double_quoted_token() {
-        let args = vec!["--session-id".to_string(), "abc-123".to_string()];
-        let cmd =
-            MuxBackend::<PsmuxTransport>::psmux_window_command("claude", &args, &HashMap::new());
-        assert_eq!(cmd, "\"& 'claude' '--session-id' 'abc-123'\"");
-    }
-
-    #[test]
-    fn psmux_window_command_folds_env_as_set_item() {
-        // `Set-Item Env:K 'v'` (not `$env:K`) keeps the string `$`-free; sorted
-        // for determinism. Values with spaces survive the PS single quotes.
-        let mut env = HashMap::new();
-        env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
-        env.insert("B".to_string(), "x y".to_string());
-        let cmd = MuxBackend::<PsmuxTransport>::psmux_window_command("claude", &[], &env);
-        assert_eq!(
-            cmd,
-            "\"Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'\""
-        );
-    }
-
-    #[test]
-    fn psmux_window_command_escapes_and_sanitizes() {
-        // A literal ' doubles (PowerShell escaping); a raw " or newline would
-        // terminate the outer token / split the control-mode line, so both are
-        // neutralized to spaces. Backslash paths pass through untouched (psmux
-        // treats backslash literally everywhere).
-        let args = vec!["it's".to_string(), "say \"hi\"\nnow".to_string()];
-        let cmd = MuxBackend::<PsmuxTransport>::psmux_window_command(
-            "C:\\Tools\\claude.exe",
-            &args,
-            &HashMap::new(),
-        );
-        assert_eq!(cmd, "\"& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'\"");
-    }
-
-    #[test]
-    fn login_wrap_is_noop_for_psmux_remote() {
-        // A Windows SSH host (multiplexer = "psmux") has no `/bin/sh`; wrapping
-        // would replace the agent command with one that can't start at all.
-        let host = crate::session::HostDef {
-            name: "winbox".into(),
-            destination: "me@winbox".into(),
-            multiplexer: Some("psmux".into()),
-            ..Default::default()
-        };
-        let backend = MuxBackend::<PsmuxTransport>::from_host(&host);
-        assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
     }
 
     #[test]
@@ -6141,7 +5284,7 @@ mod tests {
 
         // A multiplexer whose `#{@...}` is not per-window says nothing about
         // whose window this is, so the name decides — the pre-ADR-25 shape
-        // `local_mux_is_psmux` already keeps for it everywhere else.
+        // `local_windows_are_stamped` already keeps for it everywhere else.
         let unstamped = listing(false);
         assert_eq!(
             unstamped.agent_window(TWO, "second"),

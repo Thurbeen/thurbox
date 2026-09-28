@@ -842,7 +842,7 @@ fn owned_windows(row: &DeletedSessionInfo) -> Vec<String> {
 /// A window whose pane has already exited still counts: `remain-on-exit` keeps
 /// it on the server, and leaving it there is the leak the reap exists to stop.
 pub fn owned_windows_in(
-    index: &crate::agent::tmux::WindowIndex,
+    index: &crate::agent::mux::WindowIndex,
     row: &DeletedSessionInfo,
 ) -> Vec<String> {
     let id = row.id.to_string();

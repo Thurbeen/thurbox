@@ -25,7 +25,8 @@
 
 use std::path::Path;
 
-use crate::agent::transport::{MuxTransport, DEFAULT_MUX};
+use crate::agent::registry::DEFAULT_MUX;
+use crate::agent::transport::MuxTransport;
 
 /// How many search directories a one-line message names before it summarizes
 /// the rest. A `PATH` of thirty entries is ordinary; a message that prints all

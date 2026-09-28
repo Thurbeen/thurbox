@@ -1008,7 +1008,7 @@ pub struct WiredPane {
     /// the next start is what stops a restart forgetting the shell and
     /// orphaning its window. A program pane's is deliberately not persisted —
     /// its window *name* is the identity that survives a restart
-    /// (`tmux::program_window_name`), because a deterministic name cannot go
+    /// (`mux::program_window_name`), because a deterministic name cannot go
     /// stale where a stored id can.
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,
@@ -1458,7 +1458,7 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
     ) -> Result<Self> {
         let args = provider.build_args(config);
-        let window_name = crate::agent::tmux::agent_window_name(&name);
+        let window_name = crate::agent::mux::agent_window_name(&name);
 
         let env = config.env.clone();
 
@@ -2122,7 +2122,7 @@ impl Session {
         self.backend.kill(&self.wired.backend_id)?;
 
         let args = self.provider.build_args(config);
-        let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
+        let window_name = crate::agent::mux::agent_window_name(&self.info.name);
 
         let env = config.env.clone();
 
@@ -2221,7 +2221,7 @@ impl Session {
         }
 
         let shell_cmd = self.backend.default_shell();
-        let window_name = crate::agent::tmux::shell_window_name(&self.info.name);
+        let window_name = crate::agent::mux::shell_window_name(&self.info.name);
 
         let env = self.env.clone();
         let cwd = cwd.or(self.info.cwd.as_deref());

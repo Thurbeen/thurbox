@@ -527,7 +527,7 @@ fn tick(db: &Database) -> Result<Value, String> {
 /// Write the `@thurbox_state` pane option of every live local pane into the
 /// hook columns, for sessions whose rows are here. Returns how many changed.
 fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::agent::tmux::list_local_hook_states() {
+    let states = match crate::agent::mux::list_local_hook_states() {
         Ok(states) if !states.is_empty() => states,
         Ok(_) => return 0,
         Err(e) => {
@@ -629,7 +629,7 @@ fn fire_send(
             )
         }
     };
-    if !crate::agent::tmux::window_exists(&target.id.to_string(), &target.name) {
+    if !crate::agent::mux::window_exists(&target.id.to_string(), &target.name) {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
@@ -660,7 +660,7 @@ fn fire_spawn(
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
     // Reuse an existing session window (later fires / restored sessions).
-    if crate::agent::tmux::window_exists("", &name) {
+    if crate::agent::mux::window_exists("", &name) {
         let sessions = match db.find_sessions_by_name(&name) {
             Ok(sessions) => sessions,
             Err(e) => {
@@ -673,7 +673,7 @@ fn fire_spawn(
         };
         let mut local = sessions.into_iter().filter(|s| {
             s.backend_type == "local-tmux"
-                && crate::agent::tmux::window_exists(&s.id.to_string(), &name)
+                && crate::agent::mux::window_exists(&s.id.to_string(), &name)
         });
         if let Some(session) = local.next() {
             if local.next().is_none() {
@@ -694,7 +694,7 @@ fn fire_spawn(
         }
         // A legacy window can outlive its row; multiple unstamped namesakes
         // cannot be assigned a row safely. Deliver without changing status.
-        return match crate::agent::tmux::send_prompt_now("", &name, &auto.prompt) {
+        return match crate::agent::mux::send_prompt_now("", &name, &auto.prompt) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };
@@ -785,8 +785,8 @@ pub(crate) fn arm_heartbeat() {
     if !crate::session::settings::global().features.automations {
         return;
     }
-    let cli = crate::agent::tmux::resolve_cli_binary();
-    if let Err(e) = crate::agent::tmux::ensure_automation_heartbeat(&cli) {
+    let cli = crate::agent::mux::resolve_cli_binary();
+    if let Err(e) = crate::agent::mux::ensure_automation_heartbeat(&cli) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
     }
 }

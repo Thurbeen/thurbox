@@ -94,7 +94,7 @@ Three rules it is written under, each of which a change here must keep:
 
 - **It never blocks.** A `Missing` answer is a warning on the choice, not a
   refusal — a `command` may be a shell function, an alias, or something
-  installed a second later. Same rule as `tmux::resolve_local_program`:
+  installed a second later. Same rule as `mux::resolve_local_program`:
   resolution is an improvement where it succeeds, never a new way to fail.
   `session create` reports it as a `warnings` entry beside `hook_failures`, and
   still creates the session.
@@ -455,11 +455,11 @@ the instant it is typed. **`session key <uuid> <name>`** is the other half: one
 named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
-resolved through the closed table in `agent::tmux::NAMED_KEYS`. The table is
+resolved through the closed table in `agent::mux::NAMED_KEYS`. The table is
 closed on purpose: tmux does **not** validate a key name — an unrecognized one
 is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out
-bracketed-paste-wrapped either way (`paste_prompt_args`), which is what makes it
+one paste either way (`MuxDialect::paste_args`), which is what makes it
 literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and a
 newline cannot submit the line before it. The one-shot helpers themselves drive
 only this machine's tmux server, so `send`/`key`/`capture` on an `ssh:`/`wsl:`

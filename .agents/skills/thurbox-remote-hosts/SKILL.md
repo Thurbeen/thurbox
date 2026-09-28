@@ -67,19 +67,21 @@ field's default is in the comments above and in `docs/CONFIG.md`.
 
 How it works: `TmuxBackend` and `PsmuxBackend` each implement
 `SessionBackend` and own `TmuxTransport` or `PsmuxTransport`. The common
-`MuxBackend` handles pane bookkeeping and control connection I/O. `MuxTransport`
-shares local, SSH, and WSL command launching only. A WSL host runs Linux tmux;
-a native Windows host runs psmux. The local `DEFAULT_MUX` is `tmux` on
+`MuxBackend` handles pane bookkeeping and control connection I/O and asks the
+transport's `MuxDialect` (implemented in `tmux.rs` / `psmux.rs`) wherever the
+two diverge; it never names either. `MuxTransport` shares local, SSH, and WSL
+command launching only. A WSL host runs Linux tmux;
+a native Windows host runs psmux. The local `DEFAULT_MUX` (`agent::registry`, from `LocalMuxTransport`) is `tmux` on
 Linux/macOS and `psmux` on Windows. The control stream has common framing, but
 protocol behavior differs by mux binary. For psmux (verified against 3.3.6),
 spawning needs psmux ≥ 3.3.7; the backend checks the server version before
 birthing a pane (ADR-13). Psmux lacks `send-keys -H`, does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
-keystrokes from the primitives psmux does support (`send_keys_commands`), folds
+keystrokes from the primitives psmux does support (psmux's `send_keys_commands`), folds
 env + command into **one token** of PowerShell (`psmux_window_powershell`),
 routes a bracketed paste out of band through the one-shot CLI
-`psmux send-paste` (`control_mode::PsmuxPaste`), and neither writes nor reads
+`psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `stamp_local_window` /
 `stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
 `#{@...}` then answers with for **every** window, which made one session's id
@@ -205,7 +207,7 @@ session), never on the loop, ADR-P12).
   (an SSH name or an auto-discovered WSL distro name).
 - **The agent's `PATH` on a host** (`agent::host_path`). ssh/`wsl.exe -e` give
   a command a non-login `PATH`, and a delegated `session create` pins its own
-  `PATH` on the pane (`tmux::path_prefix_args`), so the host's login `PATH`
+  `PATH` on the pane (`mux::path_prefix_args`), so the host's login `PATH`
   (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
   included, bounded by `timeout` and a 15 s kill) is assigned in front of every
   POSIX script `host_cli` runs and inside `login_wrap_for_remote`: hosts.toml
@@ -243,7 +245,7 @@ session), never on the loop, ADR-P12).
   provisioned host it is, `resolve_cli_binary` answering with a sibling of the
   running exe — leaves a regular file there alone, and removes an existing
   self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
-  host CLI's `tmux_socket`, which the backend adopts (`agent::tmux::
+  host CLI's `tmux_socket`, which the backend adopts (`agent::mux::
   learn_host_socket`) so a dev laptop attaches to a release host's server.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
   pane-option status channel — is the **legacy path** for a host that cannot

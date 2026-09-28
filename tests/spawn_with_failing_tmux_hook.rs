@@ -85,7 +85,7 @@ fn window_names() -> Vec<String> {
 /// A long-lived program: one that exits before tmux finishes setting the window
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
-    thurbox::agent::tmux::spawn_window(
+    thurbox::agent::mux::spawn_window(
         SESSION_ID,
         name,
         "sh",
@@ -162,7 +162,7 @@ fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
     let found = spawned.as_ref().ok().map(|pane| {
         let out = tmux(&["display-message", "-p", "-t", pane, "#{window_name}"]);
         let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let stamp = window_option(pane, thurbox::agent::tmux::WINDOW_SESSION_OPTION);
+        let stamp = window_option(pane, thurbox::agent::mux::WINDOW_SESSION_OPTION);
         (name, stamp)
     });
 
@@ -200,9 +200,9 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
-    let armed = thurbox::agent::tmux::ensure_automation_heartbeat(&dir.path().join("thurbox-cli"));
+    let armed = thurbox::agent::mux::ensure_automation_heartbeat(&dir.path().join("thurbox-cli"));
     let names = window_names();
-    let running = thurbox::agent::tmux::automation_heartbeat_running();
+    let running = thurbox::agent::mux::automation_heartbeat_running();
 
     if let Err(e) = armed {
         panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");

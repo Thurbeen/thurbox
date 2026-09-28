@@ -652,53 +652,134 @@ fn session_lifecycle_does_not_select_psmux_by_name() {
     }
 }
 
+/// Production source of `file` under `src/`, comments and strings stripped and
+/// the unit-test module cut off, so a guard reads what ships.
+fn production_code(file: &str) -> String {
+    let source = fs::read_to_string(src_root().join(file)).unwrap();
+    let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+    strip_comments_and_strings(production)
+}
+
+/// The shared mux core carries only what tmux and psmux genuinely share. Each
+/// multiplexer's protocol decisions live beside its own backend (`tmux.rs`,
+/// `psmux.rs`), reached through the `MuxDialect` seam, so the core cannot
+/// branch on which multiplexer it is driving — and a third one adds a module
+/// rather than a flag here.
+#[test]
+fn mux_core_names_no_concrete_multiplexer() {
+    for file in [
+        "agent/mux.rs",
+        "agent/transport.rs",
+        "agent/control_mode/mod.rs",
+    ] {
+        let code = production_code(file);
+        for forbidden in [
+            "psmux",
+            "Psmux",
+            "PSMUX",
+            "MuxProtocol",
+            "TmuxTransport",
+            "TmuxBackend",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "src/{file} names {forbidden}: shared mux mechanics must not \
+                 decide per multiplexer (implement `MuxDialect` in that \
+                 backend's module instead)"
+            );
+        }
+    }
+    assert!(production_code("agent/mux.rs").contains("pub(crate) struct MuxBackend"));
+    assert!(production_code("agent/mux.rs").contains("pub(crate) trait MuxDialect"));
+}
+
 #[test]
 fn mux_backends_own_their_protocol_and_transport() {
-    let psmux = fs::read_to_string(src_root().join("agent/psmux.rs")).unwrap();
-    let tmux = fs::read_to_string(src_root().join("agent/tmux.rs")).unwrap();
-    let common = fs::read_to_string(src_root().join("agent/mux.rs")).unwrap();
-    let transport = fs::read_to_string(src_root().join("agent/transport.rs")).unwrap();
-    assert!(
-        !psmux.contains("TmuxBackend"),
-        "psmux delegates through TmuxBackend"
-    );
-    assert!(psmux.contains("impl SessionBackend for PsmuxBackend"));
+    let tmux = production_code("agent/tmux.rs");
+    let psmux = production_code("agent/psmux.rs");
     assert!(tmux.contains("impl SessionBackend for TmuxBackend"));
-    assert!(!tmux.contains("pub use super::mux::*"));
-    assert!(!tmux.contains("impl std::ops::Deref"));
-    assert!(common.contains("pub(crate) struct MuxBackend"));
+    assert!(tmux.contains("pub enum TmuxTransport"));
+    assert!(tmux.contains("impl MuxDialect for TmuxTransport"));
+    assert!(psmux.contains("impl SessionBackend for PsmuxBackend"));
+    assert!(psmux.contains("pub struct PsmuxTransport"));
+    assert!(psmux.contains("impl MuxDialect for PsmuxTransport"));
+    for forbidden in ["psmux", "Psmux", "PSMUX"] {
+        assert!(!tmux.contains(forbidden), "tmux.rs names {forbidden}");
+    }
+    for forbidden in ["TmuxBackend", "TmuxTransport"] {
+        assert!(!psmux.contains(forbidden), "psmux.rs names {forbidden}");
+    }
+    let common = production_code("agent/mux.rs");
     assert!(
         !common.contains("SessionBackend for MuxBackend"),
         "shared mechanics cannot own the backend trait"
     );
-    assert!(
-        !common.contains("transport.uses_psmux()"),
-        "execution path cannot select mux protocol"
-    );
-    assert!(
-        transport.contains("pub struct PsmuxTransport"),
-        "psmux needs its own transport type"
-    );
-    assert!(
-        !transport.contains("psmux_paste_transport"),
-        "shared launch interface must not expose psmux paste"
-    );
 }
 
+/// The platform's local multiplexer is chosen in one place — psmux on Windows,
+/// tmux elsewhere — and every local one-shot helper goes through that choice.
 #[test]
 fn local_mux_helpers_use_the_platform_transport() {
-    let source = fs::read_to_string(src_root().join("agent/mux.rs")).unwrap();
-    let production = source.split("#[cfg(test)]").next().unwrap();
+    let registry = production_code("agent/registry.rs");
     assert!(
-        production.contains("type LocalMuxTransport = PsmuxTransport"),
+        registry.contains("type LocalMuxTransport = PsmuxTransport"),
         "Windows local helpers must use the psmux transport"
     );
+    assert!(registry.contains("type LocalMuxTransport = TmuxTransport"));
+    let common = production_code("agent/mux.rs");
     assert!(
-        !production.contains("MuxBackend::<TmuxTransport>::local()"),
+        !common.contains("MuxBackend::<TmuxTransport>::local()"),
         "local helpers must not hardcode the tmux transport"
     );
 }
 
+/// `agent::tmux` is the tmux backend and nothing else. The platform's mux
+/// helpers — which run psmux on Windows — are `agent::mux`'s, so a caller
+/// reaching one through the tmux module is reading psmux behaviour under a
+/// tmux name.
+#[test]
+fn only_the_tmux_backend_is_reached_through_the_tmux_module() {
+    const ALLOWED: &[&str] = &["TmuxBackend", "TmuxTransport"];
+    let mut files = collect_rs_files(&src_root());
+    files.extend(collect_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"),
+    ));
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.ends_with("agent/tmux.rs") || path.ends_with("architecture_rules.rs") {
+            continue;
+        }
+        let code = strip_comments_and_strings(&fs::read_to_string(&path).unwrap());
+        let bytes = code.as_bytes();
+        for (at, _) in code.match_indices("tmux::") {
+            if at > 0 && is_ident_char(bytes[at - 1]) {
+                continue;
+            }
+            let mut i = at + "tmux::".len();
+            let items: Vec<String> = if bytes.get(i) == Some(&b'{') {
+                let close = code[i..].find('}').map_or(code.len(), |n| i + n);
+                code[i + 1..close]
+                    .split(',')
+                    .map(|item| item.trim().to_string())
+                    .filter(|item| !item.is_empty())
+                    .collect()
+            } else {
+                vec![read_ident(bytes, &mut i)]
+            };
+            for item in items {
+                if !ALLOWED.contains(&item.as_str()) {
+                    let line = code[..at].matches('\n').count() + 1;
+                    offenders.push(format!("{}:{line} tmux::{item}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "reach platform mux helpers through `agent::mux`, not `agent::tmux`:\n{}",
+        offenders.join("\n")
+    );
+}
 #[test]
 fn cli_module_isolation() {
     assert_module_clean("cli");

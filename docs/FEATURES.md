@@ -2553,7 +2553,7 @@ surface. `AGENTS.md` keeps the identity contract and points here.
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
     <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
-    token into the recipient's pane (`agent::tmux::send_prompt_now`) to nudge a
+    token into the recipient's pane (`agent::mux::send_prompt_now`) to nudge a
     drain. **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
     `--task` override.

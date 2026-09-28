@@ -631,7 +631,7 @@ impl PaneProbe {
         let (session, name) = (session.to_string(), name.to_string());
         let registry = std::sync::Arc::clone(registry);
         std::thread::spawn(move || {
-            let pane = crate::agent::tmux::pane_state(&session, &name);
+            let pane = crate::agent::mux::pane_state(&session, &name);
             // Classified on the worker rather than at the fold, so the argv the
             // verdict was read from — a driver's brief runs to kilobytes — never
             // crosses the channel or lands in the snapshot.

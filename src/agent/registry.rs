@@ -6,8 +6,43 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::agent::mux::{HostMux, MuxBackend};
+use crate::agent::psmux::{PsmuxBackend, PsmuxTransport};
+use crate::agent::tmux::{TmuxBackend, TmuxTransport};
+use crate::agent::transport::MuxTransport;
 use crate::agent::SessionBackend;
-use crate::session::HostRegistry;
+use crate::session::{HostDef, HostRegistry};
+
+/// The transport this platform's local sessions run on: psmux on native
+/// Windows, tmux everywhere else. The one place that choice is made — every
+/// local one-shot helper and the local backend follow it.
+#[cfg(windows)]
+pub(crate) type LocalMuxTransport = PsmuxTransport;
+#[cfg(not(windows))]
+pub(crate) type LocalMuxTransport = TmuxTransport;
+
+/// The binary of this platform's local multiplexer.
+pub const DEFAULT_MUX: &str = <LocalMuxTransport as MuxTransport>::BINARY;
+
+/// The backend a headless create reaches `host` through, by the multiplexer
+/// the host is configured with.
+pub(crate) fn host_backend(host: &HostDef) -> Box<dyn SessionBackend> {
+    if host.is_windows() {
+        Box::new(PsmuxBackend::from_host(host))
+    } else {
+        Box::new(TmuxBackend::from_host(host))
+    }
+}
+
+/// The one-shot operations on `host`'s server, by the multiplexer the host is
+/// configured with.
+pub(crate) fn host_mux(host: &HostDef) -> Box<dyn HostMux> {
+    if host.is_windows() {
+        Box::new(MuxBackend::<PsmuxTransport>::from_host(host))
+    } else {
+        Box::new(MuxBackend::<TmuxTransport>::from_host(host))
+    }
+}
 
 /// A registry of session backends keyed by name.
 ///
@@ -47,9 +82,9 @@ impl BackendRegistry {
     /// Build routes from an already resolved host registry without contacting hosts.
     pub fn from_host_registry(hosts: &HostRegistry) -> Self {
         let local: Arc<dyn SessionBackend> = if cfg!(windows) {
-            Arc::new(crate::agent::psmux::PsmuxBackend::local())
+            Arc::new(PsmuxBackend::local())
         } else {
-            Arc::new(crate::agent::tmux::LocalTmuxBackend::new())
+            Arc::new(TmuxBackend::local())
         };
         let mut backends = Self::new(local);
         if cfg!(windows) {
@@ -62,19 +97,18 @@ impl BackendRegistry {
         let mut legacy_aliases = Vec::new();
         for host in &hosts.hosts {
             if host.is_wsl() {
-                backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(host)));
+                backends.register(Arc::new(TmuxBackend::from_host(host)));
                 continue;
             }
             let mut tmux_host = host.clone();
             tmux_host.multiplexer = Some("tmux".into());
-            let mut tmux = crate::agent::tmux::TmuxBackend::from_host(&tmux_host);
+            let mut tmux = TmuxBackend::from_host(&tmux_host);
             tmux.set_name(format!("{}:tmux", host.backend_name()));
             let tmux: Arc<dyn SessionBackend> = Arc::new(tmux);
 
             let mut psmux_host = host.clone();
             psmux_host.multiplexer = Some("psmux".into());
-            let psmux: Arc<dyn SessionBackend> =
-                Arc::new(crate::agent::psmux::PsmuxBackend::from_host(&psmux_host));
+            let psmux: Arc<dyn SessionBackend> = Arc::new(PsmuxBackend::from_host(&psmux_host));
 
             let legacy = if host.mux() == "psmux" {
                 psmux.clone()

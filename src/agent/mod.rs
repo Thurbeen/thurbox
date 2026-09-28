@@ -8,7 +8,7 @@ pub mod host_config;
 pub mod host_path;
 pub mod input;
 pub mod json_merge;
-pub(crate) mod mux;
+pub mod mux;
 mod osc8;
 pub mod output_wake;
 pub mod preflight;
