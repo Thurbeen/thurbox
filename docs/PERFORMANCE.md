@@ -1586,7 +1586,7 @@ into the one ranked `PluginReport` that all three surfaces read — the HUD's
 and `thurbox-cli perf --plugins` (text, or `--json` for a script). Per plugin:
 Lua renders and pure-cache reuses, render time (p50/p95/max and the exact sum),
 share of painted-frame time, time in each handler (`on_key`, `on_action`,
-`on_click`/`on_context`, `on_scroll`, `on_event`, `decorate`), `run` asks plus
+`on_click`/`on_context`/`on_outside`, `on_scroll`, `on_event`, `decorate`), `run` asks plus
 the started programs' durations (`RunStore` emits a `RunEvent` when a program starts and when it
 finishes, and a window counts a finish only if it saw that run start, so a run in
 flight when the HUD opens or across a window roll is never half-counted; off-thread,

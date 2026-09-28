@@ -160,9 +160,10 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
 ## Writing an interface plugin
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
-four floats that occupy no slot — the creation flow (`70_new_session`), the
-confirmation (`60_confirm`), the rename field (`62_rename`, `Ctrl+E`) and the
-restore list (`80_restore`, v1's `Ctrl+U`).
+five floats that occupy no slot — the creation flow (`70_new_session`), the
+confirmation (`60_confirm`), the rename field (`62_rename`, `Ctrl+E`), the
+context menu (`64_menu`, opened at the pointer by a right press on a session) and
+the restore list (`80_restore`, v1's `Ctrl+U`).
 
 ```bash
 thurbox-cli plugin dir            # which directory is live, and which rule chose it

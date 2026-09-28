@@ -295,7 +295,13 @@ to `user.x`. `commands = { { action, desc } }` puts an action in the `Ctrl+P`
 palette with no chord. The list of events is `thurbox-cli plugin events`.
 
 **Interactive hooks**: `on_key`, `on_action`, `on_click`, `on_context`,
-`on_scroll`, and `on_event`.
+`on_outside` (a float's, for a press that missed it), `on_scroll`, and
+`on_event`.
+
+**A menu at the pointer**: from `on_context`, leave `store.menu` holding
+`at = { x = hit.screen_x, y = hit.screen_y }` and
+`items = { { label = "…", action = "…" }, "sep", … }`, and the bundled `64_menu`
+float draws it there and runs the chosen entry's action.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`). It exists because not every capability can be
