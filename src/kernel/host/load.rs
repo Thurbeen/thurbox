@@ -299,7 +299,8 @@ fn read_capabilities(def: &Table, file: &str) -> Result<Vec<Capability>, String>
 /// Read the `float` field off whatever a plugin returned.
 ///
 /// `float = true` takes the default size; a table may set `width`/`height` as
-/// percentages of the screen, or `cols`/`rows` to ask in cells.
+/// percentages of the screen, or `cols`/`rows` to ask in cells; `at = { x, y }`
+/// opens it at that screen cell instead of the centre.
 pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
     let Value::Table(table) = value else {
         return Ok(None);
@@ -323,6 +324,22 @@ pub(super) fn read_float(value: &Value) -> Result<Option<Float>, String> {
                 rows: spec
                     .get::<Option<u16>>("rows")
                     .map_err(|e| format!("float.rows: {e}"))?,
+                at: match spec
+                    .get::<Value>("at")
+                    .map_err(|e| format!("float.at: {e}"))?
+                {
+                    Value::Nil => None,
+                    Value::Table(at) => Some((
+                        at.get::<u16>("x").map_err(|e| format!("float.at.x: {e}"))?,
+                        at.get::<u16>("y").map_err(|e| format!("float.at.y: {e}"))?,
+                    )),
+                    other => {
+                        return Err(format!(
+                            "float.at: expected {{ x, y }}, got {}",
+                            other.type_name()
+                        ))
+                    }
+                },
             }))
         }
         Ok(_) => Ok(None),

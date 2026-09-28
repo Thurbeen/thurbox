@@ -415,6 +415,10 @@ pub struct Float {
     /// height fitted to what is inside them, and this is how a plugin says so.
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    /// The screen cell to open at, instead of the centre: a menu opened by a
+    /// press is drawn where the press was. Where it would run off the area it
+    /// opens the other way round, then is held inside it (`App::float_rect`).
+    pub at: Option<(u16, u16)>,
 }
 
 impl Default for Float {
@@ -424,6 +428,7 @@ impl Default for Float {
             height_pct: 60.0,
             cols: None,
             rows: None,
+            at: None,
         }
     }
 }

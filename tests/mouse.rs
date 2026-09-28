@@ -852,3 +852,58 @@ fn a_press_carries_the_screen_cell_it_landed_on() {
         said(&host, index)
     );
 }
+
+const ANCHORED: &str = r#"
+return {
+  name = "anchored",
+  slot = "float",
+  order = 90,
+  floats = true,
+  render = function()
+    return { float = { at = { x = 5, y = 3 }, cols = 10, rows = 4 }, type = "text", text = "x" }
+  end,
+}
+"#;
+
+const MISANCHORED: &str = r#"
+return {
+  name = "misanchored",
+  slot = "float",
+  order = 91,
+  floats = true,
+  render = function()
+    return { float = { at = "here" }, type = "text", text = "x" }
+  end,
+}
+"#;
+
+fn float_ctx() -> RenderContext {
+    RenderContext {
+        width: 80,
+        height: 24,
+        focused: true,
+        elapsed: 0.0,
+        frame: 0,
+    }
+}
+
+#[test]
+fn a_float_may_ask_to_open_at_a_point() {
+    let (_home, host) = host_with(&[("90_anchored.lua", ANCHORED)]);
+    let float = host
+        .render(index_of(&host, "anchored"), float_ctx())
+        .expect("render")
+        .float
+        .expect("it floats");
+    assert_eq!(float.at, Some((5, 3)));
+    assert_eq!((float.cols, float.rows), (Some(10), Some(4)));
+}
+
+#[test]
+fn a_malformed_anchor_is_reported_by_name() {
+    let (_home, host) = host_with(&[("91_misanchored.lua", MISANCHORED)]);
+    let error = host
+        .render(index_of(&host, "misanchored"), float_ctx())
+        .expect_err("a string is not a point");
+    assert!(error.message.contains("float.at"), "{}", error.message);
+}

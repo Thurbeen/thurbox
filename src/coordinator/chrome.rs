@@ -729,6 +729,18 @@ mod tests {
                         rows: Some(0),
                         ..Float::default()
                     },
+                    Float {
+                        cols: Some(20),
+                        rows: Some(6),
+                        at: Some((width, height)),
+                        ..Float::default()
+                    },
+                    Float {
+                        cols: Some(20),
+                        rows: Some(6),
+                        at: Some((0, 0)),
+                        ..Float::default()
+                    },
                 ] {
                     let rect = App::float_rect(area, float);
                     assert!(
@@ -738,6 +750,83 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn anchored(x: u16, y: u16, cols: u16, rows: u16) -> Float {
+        Float {
+            cols: Some(cols),
+            rows: Some(rows),
+            at: Some((x, y)),
+            ..Float::default()
+        }
+    }
+
+    #[test]
+    fn an_anchored_float_opens_at_its_point() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            App::float_rect(area, anchored(10, 5, 20, 6)),
+            Rect::new(10, 5, 20, 6)
+        );
+    }
+
+    /// Past the right edge it opens leftwards, ending on the point — what a
+    /// desktop menu does, rather than being cut off.
+    #[test]
+    fn an_anchored_float_flips_left_at_the_right_edge() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            App::float_rect(area, anchored(70, 5, 20, 6)),
+            Rect::new(51, 5, 20, 6)
+        );
+    }
+
+    #[test]
+    fn an_anchored_float_flips_up_at_the_bottom() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            App::float_rect(area, anchored(10, 22, 20, 6)),
+            Rect::new(10, 17, 20, 6)
+        );
+    }
+
+    #[test]
+    fn an_anchored_float_in_the_corner_flips_both_ways() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            App::float_rect(area, anchored(79, 23, 20, 6)),
+            Rect::new(60, 18, 20, 6)
+        );
+    }
+
+    #[test]
+    fn a_float_wider_than_the_screen_is_pinned_inside_it() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            App::float_rect(area, anchored(40, 10, 200, 6)),
+            Rect::new(0, 10, 80, 6)
+        );
+    }
+
+    /// The area can start below a band; a point above it is brought down to it.
+    #[test]
+    fn an_anchor_outside_the_area_is_brought_back_into_it() {
+        let area = Rect::new(0, 2, 80, 20);
+        assert_eq!(
+            App::float_rect(area, anchored(10, 0, 20, 6)),
+            Rect::new(10, 2, 20, 6)
+        );
+    }
+
+    #[test]
+    fn a_float_with_no_anchor_still_centres() {
+        let area = Rect::new(0, 0, 80, 24);
+        let float = Float {
+            cols: Some(20),
+            rows: Some(6),
+            ..Float::default()
+        };
+        assert_eq!(App::float_rect(area, float), Rect::new(30, 9, 20, 6));
     }
 
     /// The cap wins over the floor, so a rect never exceeds the space it was

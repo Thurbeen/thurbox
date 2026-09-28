@@ -168,8 +168,16 @@
 
 ---@alias thurbox.Root thurbox.RootText|thurbox.RootBox|thurbox.RootInput|thurbox.RootSurface
 
---- How big a floating pane asks to be: a share of the screen, or exact cells.
+--- A cell on the screen, as `hit.screen_x`/`hit.screen_y` report it: where an
+--- anchored float opens. Past an edge the float opens the other way round.
+---@class (exact) thurbox.FloatAt
+---@field x integer
+---@field y integer
+
+--- How big a floating pane asks to be: a share of the screen, or exact cells —
+--- and, with `at`, where it opens instead of the centre.
 ---@class (exact) thurbox.Float
+---@field at? thurbox.FloatAt
 ---@field width? number
 ---@field height? number
 ---@field cols? integer
