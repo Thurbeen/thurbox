@@ -54,6 +54,12 @@ Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
 to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
 a click anywhere else closes it.
 
+A right-click off the rows — on the empty space below them, or on a repo header
+— is about no session, so it opens the column's general menu instead: New
+session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
+offered only when there are sessions and Undo only when there is a delete to
+undo: an entry that would do nothing is left out rather than shown dead.
+
 **Why run the pane's own actions?** Each entry goes back through the same action
 its chord fires, so the menu cannot drift from the keyboard: Delete still asks
 first when there is work to lose, and a rebound chord shows up in the menu. Sort,

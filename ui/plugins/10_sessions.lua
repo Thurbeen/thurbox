@@ -466,6 +466,33 @@ local SESSION_MENU = {
   { label = "Delete + worktree", action = "sessions.force_delete" },
 }
 
+--- The menu a right press off the rows opens -- empty space or a repo header,
+--- neither of which is about a session. Built when it opens, because two of its
+--- entries are offered only when they would do something: an entry that does
+--- nothing is worse than no entry.
+local function pane_menu(items)
+  local menu = {
+    { label = "New session", action = "new_session.open" },
+    { label = "Restore deleted…", action = "restore.open" },
+  }
+  local middle = {}
+  if #items > 0 then
+    middle[#middle + 1] = { label = "Sort by name", action = "sessions.sort" }
+  end
+  if state.deleted then
+    middle[#middle + 1] = { label = "Undo delete", action = "sessions.undo" }
+  end
+  if #middle > 0 then
+    menu[#menu + 1] = "sep"
+    for _, entry in ipairs(middle) do
+      menu[#menu + 1] = entry
+    end
+  end
+  menu[#menu + 1] = "sep"
+  menu[#menu + 1] = { label = "Hide panel", action = "sessions.toggle_panel" }
+  return menu
+end
+
 return {
   name = "sessions",
   slot = "sessions",
@@ -794,13 +821,15 @@ return {
   -- A right press on a row selects it, as a left press would, and opens its
   -- menu where the press was. Selecting is what aims the entries: each runs an
   -- action on the selected session. Focus stays put -- the kernel's rule for a
-  -- right press -- and the menu takes every key while it is up anyway. A header
-  -- carries no id, so it opens nothing, as it selects nothing on a left press.
+  -- right press -- and the menu takes every key while it is up anyway. Off the
+  -- rows (empty space, or a header, which carries no id) the press is about no
+  -- session, so it opens the pane's general menu instead and selects nothing.
   on_context = function(hit)
-    if not hit.id then
-      return false
-    end
     local items = session_model.build(sessions())
+    if not hit.id then
+      store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = pane_menu(items) }
+      return true
+    end
     if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
       return false
     end

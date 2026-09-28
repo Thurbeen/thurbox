@@ -440,13 +440,76 @@ fn the_right_press_selects_the_session_it_landed_on() {
     );
 }
 
+/// Empty space — and a repo header, which carries no id either — is about no
+/// session, so it opens the pane's own menu of general actions.
 #[test]
-fn a_right_press_on_no_row_opens_nothing() {
+fn a_right_press_off_the_rows_opens_the_panes_menu() {
     let host = sessions_host();
-    assert!(!host
-        .on_context(index_of(&host, "sessions"), &right_press_at(7, 1, None))
+    assert!(host
+        .on_context(index_of(&host, "sessions"), &right_press_at(9, 20, None))
         .expect("context"));
-    assert!(menu_text(&host).is_none());
+    let float = host
+        .render(index_of(&host, "menu"), ctx())
+        .expect("render")
+        .float
+        .expect("the menu floats");
+    assert_eq!(float.at, Some((9, 20)));
+    let text = menu_text(&host).expect("drawn");
+    for label in [
+        "New session",
+        "Restore deleted",
+        "Sort by name",
+        "Hide panel",
+    ] {
+        assert!(text.contains(label), "{label} missing:\n{text}");
+    }
+    for row_only in ["Rename", "Delete"] {
+        assert!(
+            !text.contains(row_only),
+            "{row_only} is a row's entry:\n{text}"
+        );
+    }
+    assert!(
+        !text.contains("Undo delete"),
+        "nothing to undo yet:\n{text}"
+    );
+}
+
+#[test]
+fn new_session_from_the_panes_menu_opens_the_creation_flow() {
+    let host = sessions_host();
+    host.on_context(index_of(&host, "sessions"), &right_press_at(9, 20, None))
+        .expect("context");
+    host.on_key(index_of(&host, "menu"), &key("enter"))
+        .expect("key");
+    assert_eq!(actions(&host), ["new_session.open"]);
+}
+
+/// Offered only when there is something to undo, like every entry here.
+#[test]
+fn undo_delete_is_offered_once_a_session_was_deleted() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    host.on_action(sessions, "sessions.delete").expect("delete");
+    host.drain_commands();
+    host.on_context(sessions, &right_press_at(9, 20, None))
+        .expect("context");
+    let text = menu_text(&host).expect("drawn");
+    assert!(text.contains("Undo delete"), "{text}");
+}
+
+#[test]
+fn an_empty_list_offers_no_sort() {
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    publish(&host, &Snapshot::default());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    assert!(host
+        .on_context(index_of(&host, "sessions"), &right_press_at(9, 20, None))
+        .expect("context"));
+    let text = menu_text(&host).expect("drawn");
+    assert!(text.contains("New session"), "{text}");
+    assert!(!text.contains("Sort by name"), "nothing to sort:\n{text}");
 }
 
 #[test]

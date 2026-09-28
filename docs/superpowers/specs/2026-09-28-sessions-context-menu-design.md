@@ -40,8 +40,27 @@ chord shows none.
 ```
 
 `sessions.sort`, `sessions.toggle_panel` and `sessions.undo` are left out: they
-do not target a session. A right press on a repo header or on empty space opens
-nothing, as `on_click` already does for a node with no `id`.
+do not target a session.
+
+### Off the rows: the pane's menu
+
+A right press on empty space or on a repo header (neither carries an `id`)
+opens the column's general menu at the pointer, with no `target`:
+
+```text
+ New session          ctrl+n     new_session.open
+ Restore deleted…     ctrl+u     restore.open
+ ─────────────────────
+ Sort by name              S     sessions.sort      (only with sessions)
+ Undo delete          ctrl+z     sessions.undo      (only after a delete)
+ ─────────────────────
+ Hide panel               F9     sessions.toggle_panel
+```
+
+It is built when it opens, so an entry that would do nothing is left out, with
+its rule when its group empties. A header opens the same menu rather than a
+per-repo one: "new session in this repo" needs the creation flow to accept a
+prefilled repo, which it does not today.
 
 ## Kernel changes
 
