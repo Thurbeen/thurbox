@@ -19,15 +19,14 @@ pub use super::mux::{
     pane_state, remote_window_index, rename_session_windows, resolve_cli_binary, resolve_key,
     send_key_now, send_prompt_after_delay, send_prompt_now, send_text_now, set_own_pane_state,
     spawn_window, spawn_window_remote, stamp_local_window, stop_automation_heartbeat,
-    window_exists, window_pane_pid, PanePath, PaneState, ResolvedKey, SessionPanes,
-    WindowIndex, NAMED_KEYS, SOCKET_OVERRIDE_ENV, SOCKET_OWNER_ENV, WINDOW_ROLE_OPTION,
-    WINDOW_SESSION_OPTION,
+    window_exists, window_pane_pid, PanePath, PaneState, ResolvedKey, SessionPanes, WindowIndex,
+    NAMED_KEYS, SOCKET_OVERRIDE_ENV, SOCKET_OWNER_ENV, WINDOW_ROLE_OPTION, WINDOW_SESSION_OPTION,
 };
 pub(crate) use super::mux::{
     agent_window_name, program_window_name, sanitize_window_name, shell_window_name, TMUX_SOCKET,
 };
-pub use crate::agent::backend::{Located, WindowRole};
 use super::transport::TmuxTransport;
+pub use crate::agent::backend::{Located, WindowRole};
 
 pub struct TmuxBackend {
     pub(crate) core: MuxBackend<TmuxTransport>,
@@ -163,7 +162,7 @@ impl SessionBackend for TmuxBackend {
         self.core.title_seed(backend_id)
     }
     fn supports_snapshots(&self) -> bool {
-        self.core.supports_snapshots()
+        true
     }
     fn request_snapshot(&self, backend_id: &str) -> Result<()> {
         self.core.request_snapshot(backend_id)

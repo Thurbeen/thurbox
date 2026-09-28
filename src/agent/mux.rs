@@ -2628,20 +2628,9 @@ impl<T: MuxTransport> MuxBackend<T> {
         self.pane_title_seed(backend_id)
     }
 
-    /// Not on psmux: nothing there has verified that a reply queues behind the
-    /// pane output ahead of it, which is the whole of what makes a snapshot
-    /// exact, and its blocks are framed the old way (see
-    /// `ControlMode::reader_thread`).
-    pub(crate) fn supports_snapshots(&self) -> bool {
-        !T::PROTOCOL.needs_psmux_encoding()
-    }
-
     pub(crate) fn request_snapshot(&self, backend_id: &str) -> Result<()> {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to snapshot invalid pane id: {backend_id:?}");
-        }
-        if !self.supports_snapshots() {
-            bail!("psmux cannot snapshot a pane in step with its output");
         }
         // Asked on the loop, so it waits for the lock no longer than any other
         // loop command, and not at all for the answer.
@@ -2653,9 +2642,6 @@ impl<T: MuxTransport> MuxBackend<T> {
     pub(crate) fn snapshot(&self, backend_id: &str) -> Result<control_mode::PaneSnapshot> {
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to snapshot invalid pane id: {backend_id:?}");
-        }
-        if !self.supports_snapshots() {
-            bail!("psmux cannot snapshot a pane");
         }
         // Asked under the control lock, which keeps the answer's place in the
         // queue, and waited for outside it: a search reads many panes at once.
@@ -2670,9 +2656,6 @@ impl<T: MuxTransport> MuxBackend<T> {
         // `remain-on-exit` on whatever window that name picked out.
         if !control_mode::is_valid_pane_id(backend_id) {
             bail!("refusing to set remain-on-exit on invalid pane id: {backend_id:?}");
-        }
-        if T::PROTOCOL.needs_psmux_encoding() {
-            return Ok(());
         }
         let keep = if keep { "on" } else { "off" };
         self.tmux_run(&[
@@ -2841,9 +2824,6 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 
     pub(crate) fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        if T::PROTOCOL.needs_psmux_encoding() {
-            return self.resize(backend_id, rows, cols);
-        }
         // Unconditional: this is the instance being typed into, which is what
         // decides who sizes (see `resize`).
         let (rows, cols) = tmux_size(rows, cols);

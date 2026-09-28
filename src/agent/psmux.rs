@@ -6,11 +6,11 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use super::backend::WindowRole;
 use super::backend::{
     AdoptedSession, BackendLiveness, DiscoveredSession, SessionBackend, SpawnedSession,
 };
 use super::control_mode::PaneSnapshot;
-use super::backend::WindowRole;
 use super::mux::MuxBackend;
 use super::transport::PsmuxTransport;
 
