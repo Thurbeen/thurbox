@@ -24,10 +24,16 @@ pub(crate) type LocalMuxTransport = TmuxTransport;
 /// The binary of this platform's local multiplexer.
 pub const DEFAULT_MUX: &str = <LocalMuxTransport as MuxTransport>::BINARY;
 
+/// Whether `host` is configured to run psmux — the one question both host
+/// selections below answer by.
+fn host_runs_psmux(host: &HostDef) -> bool {
+    host.is_windows()
+}
+
 /// The backend a headless create reaches `host` through, by the multiplexer
 /// the host is configured with.
 pub(crate) fn host_backend(host: &HostDef) -> Box<dyn SessionBackend> {
-    if host.is_windows() {
+    if host_runs_psmux(host) {
         Box::new(PsmuxBackend::from_host(host))
     } else {
         Box::new(TmuxBackend::from_host(host))
@@ -37,7 +43,7 @@ pub(crate) fn host_backend(host: &HostDef) -> Box<dyn SessionBackend> {
 /// The one-shot operations on `host`'s server, by the multiplexer the host is
 /// configured with.
 pub(crate) fn host_mux(host: &HostDef) -> Box<dyn HostMux> {
-    if host.is_windows() {
+    if host_runs_psmux(host) {
         Box::new(MuxBackend::<PsmuxTransport>::from_host(host))
     } else {
         Box::new(MuxBackend::<TmuxTransport>::from_host(host))
@@ -210,6 +216,51 @@ mod tests {
 
     use super::*;
     use crate::agent::backend::{AdoptedSession, DiscoveredSession, SpawnedSession};
+
+    fn host(name: &str, multiplexer: Option<&str>) -> HostDef {
+        HostDef {
+            name: name.into(),
+            destination: format!("me@{name}"),
+            multiplexer: multiplexer.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    /// A headless create on a psmux host must drive the psmux backend, whose
+    /// wire syntax and capabilities differ; the same host configured for tmux
+    /// gets the tmux backend. Observed through what each backend reports.
+    #[test]
+    fn a_host_is_reached_through_the_backend_of_its_configured_multiplexer() {
+        let psmux = host_backend(&host("winbox", Some("psmux")));
+        assert_eq!(psmux.name(), "ssh:winbox:psmux");
+        assert!(psmux.needs_liveness_poll());
+        assert!(!psmux.supports_snapshots());
+
+        for tmux in [host("devbox", None), host("devbox", Some("tmux"))] {
+            let tmux = host_backend(&tmux);
+            assert_eq!(tmux.name(), "ssh:devbox");
+            assert!(!tmux.needs_liveness_poll());
+            assert!(tmux.supports_snapshots());
+        }
+        assert!(host_runs_psmux(&host("winbox", Some("psmux"))));
+        assert!(!host_runs_psmux(&host("devbox", None)));
+    }
+
+    #[test]
+    fn the_local_multiplexer_is_the_platforms() {
+        assert_eq!(DEFAULT_MUX, if cfg!(windows) { "psmux" } else { "tmux" });
+        let registry = BackendRegistry::from_host_registry(&HostRegistry::default());
+        let local = registry.default_backend();
+        assert_eq!(
+            local.name(),
+            if cfg!(windows) {
+                "local-psmux"
+            } else {
+                "local-tmux"
+            }
+        );
+        assert_eq!(local.supports_snapshots(), !cfg!(windows));
+    }
 
     struct StubBackend {
         backend_name: &'static str,
