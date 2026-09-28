@@ -563,6 +563,8 @@ impl App {
             y: y.saturating_sub(target.rect.y),
             w: target.rect.width,
             h: target.rect.height,
+            screen_x: x,
+            screen_y: y,
             dragging,
             clicks,
         }

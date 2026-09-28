@@ -645,6 +645,8 @@ fn bar_press(host: &LuaHost, row: u16, dragging: bool) -> bool {
             y: row,
             w: 1,
             h: BAR_HEIGHT - 2,
+            screen_x: 0,
+            screen_y: 0,
             dragging,
             clicks: 1,
         },

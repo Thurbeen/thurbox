@@ -588,6 +588,8 @@ fn row_click(clicks: u8) -> thurbox::kernel::host::Click {
         y: 0,
         w: 40,
         h: 1,
+        screen_x: 0,
+        screen_y: 0,
         dragging: false,
         clicks,
     }
@@ -811,6 +813,42 @@ fn a_pane_with_only_on_click_never_hears_a_right_press() {
     assert!(
         !said(&host, index).contains("left:"),
         "and on_click must not have run: {}",
+        said(&host, index)
+    );
+}
+
+/// A pane that says where on the SCREEN the press landed.
+const WHERE: &str = r#"
+return {
+  name = "where",
+  slot = "sessions",
+  order = 10,
+  render = function()
+    return { type = "text", text = state.said or "" }
+  end,
+  on_context = function(hit)
+    state.said = "at:" .. hit.screen_x .. "," .. hit.screen_y
+    return true
+  end,
+}
+"#;
+
+/// `hit.x`/`hit.y` are inside the node; a menu opened at the pointer needs the
+/// cell on the screen, which a pane cannot work out — it knows neither where its
+/// slot sits nor where the node landed in it.
+#[test]
+fn a_press_carries_the_screen_cell_it_landed_on() {
+    let (_home, host) = host_with(&[("10_where.lua", WHERE)]);
+    let index = index_of(&host, "where");
+    let click = thurbox::kernel::host::Click {
+        screen_x: 33,
+        screen_y: 7,
+        ..on("a")
+    };
+    assert!(host.on_context(index, &click).expect("context"), "handled");
+    assert!(
+        said(&host, index).contains("at:33,7"),
+        "the screen cell must reach the hook: {}",
         said(&host, index)
     );
 }

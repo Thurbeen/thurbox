@@ -218,6 +218,8 @@
 ---@field y integer
 ---@field w integer
 ---@field h integer
+---@field screen_x integer The pressed cell on the screen, 0-based — what `float.at` takes.
+---@field screen_y integer
 ---@field dragging boolean
 ---@field clicks integer 2 for the second press on the same node in quick succession, else 1.
 

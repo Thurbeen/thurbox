@@ -356,6 +356,11 @@ pub struct Click {
     /// which a `pure` pane cannot do at all, since `render` may not write.
     pub w: u16,
     pub h: u16,
+    /// The cell the press landed on, on the SCREEN rather than in the node.
+    /// What a menu opened at the pointer is anchored to (`float.at`): a pane
+    /// knows neither where its slot sits nor where the node landed in it.
+    pub screen_x: u16,
+    pub screen_y: u16,
     /// Whether this is the pointer moving under a press it already took, rather
     /// than the press itself. Set only for a node that declared
     /// [`super::node::Identity::is_drag_handle`].
@@ -1972,6 +1977,12 @@ impl LuaHost {
         table.set("y", click.y).map_err(|e| fail(e.to_string()))?;
         table.set("w", click.w).map_err(|e| fail(e.to_string()))?;
         table.set("h", click.h).map_err(|e| fail(e.to_string()))?;
+        table
+            .set("screen_x", click.screen_x)
+            .map_err(|e| fail(e.to_string()))?;
+        table
+            .set("screen_y", click.screen_y)
+            .map_err(|e| fail(e.to_string()))?;
         table
             .set("dragging", click.dragging)
             .map_err(|e| fail(e.to_string()))?;
