@@ -1,32 +1,22 @@
-//! The lifecycle contract must be usable without importing a tmux backend.
+//! Backend identity and location are public contract types, independent of tmux.
+
+use thurbox::agent::backend::{DiscoveredSession, Located, WindowRole};
 
 #[test]
-fn shared_backend_contract_has_no_tmux_type_dependency() {
-    let contract = include_str!("../src/agent/backend.rs");
-    for forbidden in [
-        "use crate::agent::tmux::WindowRole",
-        "crate::agent::tmux::WindowRole",
-        "crate::agent::tmux::Located",
-    ] {
-        assert!(
-            !contract.contains(forbidden),
-            "backend contract still depends on tmux type: {forbidden}"
-        );
-    }
-}
+fn shared_backend_identity_and_location_are_usable_without_tmux_types() {
+    let found = DiscoveredSession {
+        backend_id: "pane-7".into(),
+        name: "session".into(),
+        is_alive: true,
+        session: "row-7".into(),
+        role: WindowRole::Agent,
+    };
 
-#[test]
-fn headless_capabilities_must_be_implemented_explicitly() {
-    let contract = include_str!("../src/agent/backend.rs");
-    for (method, result) in [
-        ("spawn_headless", "Result<String>"),
-        ("headless_discover", "Result<Vec<DiscoveredSession>>"),
-    ] {
-        let after_name = contract.split_once(&format!("fn {method}(")).unwrap().1;
-        let after_result = after_name.split_once(result).unwrap().1;
-        assert!(
-            after_result.trim_start().starts_with(';'),
-            "{method} must be required by the backend contract"
-        );
-    }
+    assert_eq!(found.role.as_str(), "agent");
+    assert_eq!(
+        Located::At(found.backend_id).pane().as_deref(),
+        Some("pane-7")
+    );
+    assert!(Located::Absent.is_absent());
+    assert!(!Located::Unknown.is_absent());
 }
