@@ -804,7 +804,11 @@ return {
     if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
       return false
     end
-    store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = SESSION_MENU }
+    store.menu = {
+      at = { x = hit.screen_x, y = hit.screen_y },
+      items = SESSION_MENU,
+      target = hit.id,
+    }
     return true
   end,
 
@@ -840,6 +844,20 @@ return {
     -- column hidden (F9) or a terminal focused, this pane may not render again
     -- before the agent pane does.
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
+
+    -- An entry of the right-press menu is about the session it was opened on,
+    -- not whatever row the cursor holds when the action lands: the cursor may
+    -- have moved since, or that session gone and the cursor fallen back onto a
+    -- neighbour -- which Delete + worktree must never reach in its place.
+    local chosen = store["menu.chosen"]
+    if type(chosen) == "table" and chosen.action == action then
+      store["menu.chosen"] = nil
+      if chosen.target and cursor:select_by_id(chosen.target) == nil then
+        command("message", { text = "that session is gone", level = "error" })
+        return true
+      end
+    end
+
     local at = cursor.index
     local id = cursor:id()
 

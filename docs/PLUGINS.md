@@ -885,6 +885,12 @@ end,
 — so an entry does exactly what its chord does. `esc`, or a press anywhere else,
 closes it. The sessions column opens its own this way.
 
+Give the menu a `target` (the row's id, say) when the entries are about one
+thing: a choice leaves `store["menu.chosen"] = { action, target }` for the
+action's owner to read in `on_action`, since the thing pressed may have moved or
+gone by the time the action lands. The sessions pane re-selects its target that
+way, and refuses when the session is gone.
+
 An entry's `action` has to be one some plugin **declares**, in `keys` or in
 `commands`: that declaration is how `command("action")` finds the pane whose
 `on_action` answers it. An undeclared one falls back to the menu float itself,

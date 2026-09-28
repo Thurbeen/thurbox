@@ -131,13 +131,18 @@ through the existing `on_action`, so delete and force-delete still go through
 - `thurbox.yml`: unchanged — it describes `thurbox.*`, and none of this is
   published there.
 
-## Known limitation
+## The pressed session is pinned
 
-The menu acts on the *selected* session, which the right press set. If the
-list changes under an open menu (another instance deletes that session), the
-cursor's own rules pick the row an entry acts on, as they already do for a
-keypress. The menu is short-lived and modal, so no extra target check is
-added.
+An action carries no argument, so the menu names what it was opened on:
+`store.menu.target`, handed back on a choice as
+`store["menu.chosen"] = { action, target }`. The sessions pane re-selects that
+session before acting, and refuses with a message when it is gone — otherwise a
+session deleted by another instance under an open menu would leave the cursor on
+a neighbour, and Delete + worktree would act on it instead. (Raised in review;
+the first version of this spec accepted that risk.)
+
+A screen shorter than the menu shows a window of the entries, slid to keep the
+highlight in view, so an entry `enter` would run is always visible.
 
 ## Testing (test-first)
 

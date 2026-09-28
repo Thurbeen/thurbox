@@ -463,3 +463,130 @@ fn a_right_press_on_an_empty_list_opens_nothing() {
         .expect("context"));
     assert!(menu_text(&host).is_none());
 }
+
+// ── review follow-ups ───────────────────────────────────────────────────────
+
+/// The node carrying `id`, anywhere in the tree.
+fn node_with_id<'a>(
+    node: &'a thurbox::kernel::node::Node,
+    id: &str,
+) -> Option<&'a thurbox::kernel::node::Node> {
+    use thurbox::kernel::node::Node;
+    match node {
+        Node::Text { identity, .. } if identity.id.as_deref() == Some(id) => Some(node),
+        Node::Box { children, .. } => children.iter().find_map(|child| node_with_id(child, id)),
+        _ => None,
+    }
+}
+
+/// `ui/AGENTS.md`: a highlight is a node style, so the bar covers the row and a
+/// run that names its own colour (the chord hint) keeps it.
+#[test]
+fn the_highlight_is_the_row_nodes_style_not_its_runs() {
+    use thurbox::kernel::node::Node;
+    let (_home, host) = menu_host();
+    open(&host);
+    let rendered = host.render(index_of(&host, "menu"), ctx()).expect("render");
+    let Some(Node::Text { style, lines, .. }) = node_with_id(&rendered.node, "menu-1") else {
+        panic!("the highlighted row is a text node");
+    };
+    assert!(style.bg.is_some(), "the bar is the node's background");
+    assert!(
+        lines.iter().flatten().all(|run| run.style.bg.is_none()),
+        "no run paints the bar itself: {lines:?}"
+    );
+}
+
+/// On a screen shorter than the menu the entries scroll, so the one `enter`
+/// would run is always on screen.
+#[test]
+fn a_menu_taller_than_the_screen_keeps_the_highlight_in_view() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let menu = index_of(&host, "menu");
+    host.on_key(menu, &key("down")).expect("key");
+    host.on_key(menu, &key("down")).expect("key");
+    let short = RenderContext { height: 5, ..ctx() };
+    let rendered = host.render(menu, short).expect("render");
+    let float = rendered.float.expect("floats");
+    assert!(float.rows.unwrap_or(0) <= 5, "fits the screen: {float:?}");
+    let tree = format!("{:?}", rendered.node);
+    assert!(
+        tree.contains("Third"),
+        "the highlighted entry is drawn: {tree}"
+    );
+    assert!(
+        !tree.contains("First"),
+        "the window scrolled past the top: {tree}"
+    );
+}
+
+/// The entries act on the session that was pressed, not on whatever row the
+/// cursor fell back to: if that session is gone, nothing runs.
+#[test]
+fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
+        .expect("context");
+
+    // beta disappears (another instance deleted it) while its menu is up.
+    publish(
+        &host,
+        &Snapshot {
+            sessions: vec![row("alpha", "thurbox")],
+            ..Snapshot::default()
+        },
+    );
+    host.render(sessions, ctx()).expect("render");
+
+    // Delete + worktree is the last entry.
+    let menu = index_of(&host, "menu");
+    for _ in 0..12 {
+        host.on_key(menu, &key("down")).expect("key");
+    }
+    host.on_key(menu, &key("enter")).expect("key");
+    assert_eq!(actions(&host), ["sessions.force_delete"]);
+    // What the coordinator does with that command.
+    host.on_action(sessions, "sessions.force_delete")
+        .expect("action");
+    let issued = host.drain_commands();
+    assert!(
+        !issued.iter().any(|c| c.kind() == "delete"),
+        "alpha must not be deleted in beta's place: {issued:?}"
+    );
+    assert!(
+        host.render(index_of(&host, "confirm"), ctx())
+            .expect("render")
+            .float
+            .is_none(),
+        "nor asked about"
+    );
+}
+
+/// And while the pressed session is still there, its entry acts on it even if
+/// the cursor has moved since.
+#[test]
+fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
+        .expect("context");
+    host.on_key(index_of(&host, "menu"), &key("down"))
+        .expect("key");
+    host.on_key(index_of(&host, "menu"), &key("enter"))
+        .expect("key");
+    assert_eq!(actions(&host), ["sessions.rename"]);
+    // The cursor moves before the action lands.
+    host.on_action(sessions, "sessions.first").expect("action");
+    host.on_action(sessions, "sessions.rename").expect("action");
+    let rename = host
+        .render(index_of(&host, "rename"), ctx())
+        .expect("render");
+    assert!(
+        format!("{:?}", rename.node).contains("beta"),
+        "renames beta, the row pressed"
+    );
+}

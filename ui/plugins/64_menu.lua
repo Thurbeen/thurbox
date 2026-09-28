@@ -6,6 +6,7 @@
 --   store.menu = {
 --     at = { x = hit.screen_x, y = hit.screen_y },
 --     items = { { label = "Rename", action = "sessions.rename" }, "sep", ... },
+--     target = id,   -- optional: what the entries are about
 --   }
 --
 -- and this draws it at that point and, on a choice, closes and runs the
@@ -15,6 +16,10 @@
 -- this float, which has no `on_action`, and does nothing. Closed BEFORE the
 -- action runs, so an action that opens a float of its own (rename, fork,
 -- confirm) is never drawn under a menu that is still up.
+--
+-- A choice also leaves `store["menu.chosen"] = { action, target }` for the
+-- action's owner to read: an action carries no argument, and the thing the menu
+-- was opened on may have moved or gone by the time it lands.
 
 local theme = require("lib.theme")
 local ui = require("lib.ui")
@@ -62,8 +67,18 @@ local function run(menu, i)
   local item = menu.items[i]
   store.menu = nil
   if choosable(item) then
+    store["menu.chosen"] = { action = item.action, target = menu.target }
     command("action", { text = item.action })
   end
+end
+
+--- The first entry drawn: the window slides only as far as keeps `at` in it.
+--- Computed, not stored, so a pure render can answer it.
+local function first_shown(at, shown)
+  if not at or at <= shown then
+    return 1
+  end
+  return at - shown + 1
 end
 
 return {
@@ -77,7 +92,7 @@ return {
   pure = true,
   focusable = false,
 
-  render = function(_)
+  render = function(ctx)
     local menu = pending()
     if not menu then
       return { type = "text", text = "" }
@@ -94,30 +109,37 @@ return {
     -- One column of padding each side, and three between a label and its chord.
     local inner = 1 + label_w + (chord_w > 0 and 3 + chord_w or 0) + 1
 
+    -- A screen shorter than the menu shows a window of it, slid to keep the
+    -- highlight in view: an entry `enter` would run must be one you can see.
+    local shown = math.max(1, math.min(#menu.items, ctx.height - 2))
+    local first = first_shown(at, shown)
+
     local children = {}
-    for i, item in ipairs(menu.items) do
+    for i = first, first + shown - 1 do
+      local item = menu.items[i]
       if choosable(item) then
         local label = item.label or item.action
         local gap = inner - 2 - widgets.len(label) - widgets.len(chords[i])
+        -- The bar is the NODE's style, so it spans the row and the chord keeps
+        -- its own colour on top of it.
         local style = { fg = theme.text }
-        local hint = { fg = theme.hint }
         if i == at then
           style = {
             bg = theme.role("selection_bg"),
             fg = theme.role("selection_fg"),
             bold = true,
           }
-          hint = style
         end
         children[#children + 1] = {
           type = "text",
           len = 1,
           id = "menu-" .. i,
           role = "row",
+          style = style,
           text = {
             {
-              { text = " " .. label .. string.rep(" ", gap), style = style },
-              { text = chords[i] .. " ", style = hint },
+              { text = " " .. label .. string.rep(" ", gap) },
+              { text = chords[i] .. " ", style = { fg = theme.hint } },
             },
           },
         }
@@ -131,7 +153,7 @@ return {
     end
 
     return {
-      float = { at = { x = menu.at.x, y = menu.at.y }, cols = inner + 2, rows = #menu.items + 2 },
+      float = { at = { x = menu.at.x, y = menu.at.y }, cols = inner + 2, rows = shown + 2 },
       type = "box",
       frame = {
         borders = "all",
