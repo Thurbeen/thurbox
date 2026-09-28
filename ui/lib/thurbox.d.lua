@@ -310,6 +310,7 @@
 ---@field on_action? fun(action: string): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
 ---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
+---@field on_outside? fun(hit: thurbox.Hit): boolean A float's: a press of either button that missed it while it held the pointer. `hit.id` is nil.
 ---@field on_scroll? fun(wheel: thurbox.Wheel): boolean
 ---@field on_event? fun(name: string, payload: table<string, any>)
 

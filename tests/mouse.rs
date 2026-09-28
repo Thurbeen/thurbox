@@ -907,3 +907,54 @@ fn a_malformed_anchor_is_reported_by_name() {
         .expect_err("a string is not a point");
     assert!(error.message.contains("float.at"), "{}", error.message);
 }
+
+const DISMISSABLE: &str = r#"
+return {
+  name = "dismissable",
+  slot = "sessions",
+  order = 10,
+  render = function()
+    return { type = "text", text = state.said or "" }
+  end,
+  on_outside = function(hit)
+    state.said = "outside:" .. tostring(hit.id) .. "@" .. hit.screen_x .. "," .. hit.screen_y
+    return true
+  end,
+}
+"#;
+
+#[test]
+fn a_press_that_misses_a_float_reaches_its_on_outside() {
+    let (_home, host) = host_with(&[("10_dismissable.lua", DISMISSABLE)]);
+    let index = index_of(&host, "dismissable");
+    let click = thurbox::kernel::host::Click {
+        screen_x: 4,
+        screen_y: 9,
+        clicks: 1,
+        ..thurbox::kernel::host::Click::default()
+    };
+    assert!(host.on_outside(index, &click).expect("outside"), "handled");
+    assert!(
+        said(&host, index).contains("outside:nil@4,9"),
+        "{}",
+        said(&host, index)
+    );
+}
+
+/// The safety property again: a float written before the hook existed is not
+/// told anything, so it behaves exactly as it always has.
+#[test]
+fn a_float_without_on_outside_hears_nothing() {
+    let (_home, host) = host_with(&[("10_twohanded.lua", TWO_HANDED)]);
+    let index = index_of(&host, "twohanded");
+    let click = thurbox::kernel::host::Click::default();
+    assert!(
+        !host.on_outside(index, &click).expect("outside"),
+        "declined"
+    );
+    assert!(
+        !said(&host, index).contains("left:") && !said(&host, index).contains("right:"),
+        "a miss must not reach on_click or on_context: {}",
+        said(&host, index)
+    );
+}

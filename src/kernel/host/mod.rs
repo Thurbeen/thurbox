@@ -1952,7 +1952,18 @@ impl LuaHost {
         self.pointer_hook(index, click, "on_context")
     }
 
-    /// The body both pointer hooks share: same payload, different name.
+    /// Tell the float holding the pointer that a press — either button —
+    /// landed outside it.
+    ///
+    /// The press is spent either way; this only lets the float react, which a
+    /// menu needs in order to close. Its own hook for `on_context`'s reason: a
+    /// float written before it existed is told nothing, so every modal keeps
+    /// swallowing a stray press exactly as it did.
+    pub fn on_outside(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
+        self.pointer_hook(index, click, "on_outside")
+    }
+
+    /// The body every pointer hook shares: same payload, different name.
     fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, PluginError> {
         let Some(plugin) = self.plugins.get(index) else {
             return Ok(false);

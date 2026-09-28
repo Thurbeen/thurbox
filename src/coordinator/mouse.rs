@@ -291,9 +291,11 @@ impl App {
         let target = match float_grab(self.grabbed, self.target_at(x, y)) {
             Grab::Free(target) => target,
             Grab::Held(target) => {
-                if let Some(target) = target {
-                    self.dispatch_click(target, x, y);
-                }
+                self.dispatch_click(target, x, y);
+                return;
+            }
+            Grab::Outside(float) => {
+                self.dispatch_outside(float, x, y);
                 return;
             }
         };
@@ -351,11 +353,14 @@ impl App {
         // Held or free, a right press has only the one road. The float's rule
         // still matters here: without it a menu opened by a right press could
         // be re-opened by the next one on the pane beneath it, which reads as
-        // the menu having moved.
-        let (Grab::Free(target) | Grab::Held(target)) =
-            float_grab(self.grabbed, self.target_at(x, y));
-        if let Some(target) = target {
-            self.dispatch_context(target, x, y);
+        // the menu having moved. A miss is told to the float instead, which is
+        // how a menu closes on a press elsewhere.
+        match float_grab(self.grabbed, self.target_at(x, y)) {
+            Grab::Free(Some(target)) | Grab::Held(target) => {
+                self.dispatch_context(target, x, y);
+            }
+            Grab::Free(None) => {}
+            Grab::Outside(float) => self.dispatch_outside(float, x, y),
         }
     }
 
@@ -363,6 +368,25 @@ impl App {
     fn dispatch_context(&mut self, target: ClickTarget, x: u16, y: u16) {
         let click = self.click_at(&target, x, y, false, 1);
         match self.host.on_context(target.plugin, &click) {
+            Ok(handled) => {
+                if handled {
+                    self.dirty = true;
+                }
+            }
+            Err(e) => self.errors.push(e),
+        }
+    }
+
+    /// Tell the float holding the pointer that a press missed it. Nothing else
+    /// hears the press: closing a menu must not also act on what was beneath.
+    fn dispatch_outside(&mut self, float: usize, x: u16, y: u16) {
+        let click = Click {
+            screen_x: x,
+            screen_y: y,
+            clicks: 1,
+            ..Click::default()
+        };
+        match self.host.on_outside(float, &click) {
             Ok(handled) => {
                 if handled {
                     self.dirty = true;
@@ -865,19 +889,24 @@ impl App {
 /// modal rather than a pane drawn on top — so a press that misses it is
 /// swallowed rather than reaching what it covers. Both buttons ask
 /// [`float_grab`], so a left and a right press cannot come to disagree about
-/// what a float swallows.
+/// what a float swallows or whom a miss is told to.
 enum Grab {
     /// No float is up; the press goes on down its own path.
     Free(Option<ClickTarget>),
-    /// A float is up and the press is spent: the target is the float's own, or
-    /// `None` when the press landed anywhere else.
-    Held(Option<ClickTarget>),
+    /// A float is up and the press landed on it.
+    Held(ClickTarget),
+    /// A float is up and the press missed it: spent, and told to that float
+    /// (`on_outside`) so a menu can close.
+    Outside(usize),
 }
 
 fn float_grab(grabbed: Option<usize>, target: Option<ClickTarget>) -> Grab {
     match grabbed {
         None => Grab::Free(target),
-        Some(float) => Grab::Held(target.filter(|target| target.plugin == float)),
+        Some(float) => match target.filter(|target| target.plugin == float) {
+            Some(target) => Grab::Held(target),
+            None => Grab::Outside(float),
+        },
     }
 }
 
@@ -1005,24 +1034,25 @@ mod tests {
     }
 
     /// Both presses answer to this one rule, so a left and a right press can
-    /// never disagree about what a float swallows.
+    /// never disagree about what a float swallows — or about whom a miss is
+    /// told to.
     #[test]
     fn a_float_holds_every_press_and_hands_on_only_its_own() {
         match float_grab(None, painted_by(3)) {
             Grab::Free(target) => assert_eq!(plugin_of(&target), Some(3)),
-            Grab::Held(_) => panic!("no float is up, so nothing holds the press"),
+            _ => panic!("no float is up, so nothing holds the press"),
         }
         match float_grab(Some(7), painted_by(7)) {
-            Grab::Held(target) => assert_eq!(plugin_of(&target), Some(7)),
-            Grab::Free(_) => panic!("a press on the float is the float's"),
+            Grab::Held(target) => assert_eq!(target.plugin, 7),
+            _ => panic!("a press on the float is the float's"),
         }
         match float_grab(Some(7), painted_by(3)) {
-            Grab::Held(target) => assert!(target.is_none(), "the pane beneath must not hear it"),
-            Grab::Free(_) => panic!("a press outside the float is swallowed, not freed"),
+            Grab::Outside(float) => assert_eq!(float, 7, "the miss is told to the float"),
+            _ => panic!("a press outside the float is swallowed, not freed"),
         }
         match float_grab(Some(7), None) {
-            Grab::Held(target) => assert!(target.is_none()),
-            Grab::Free(_) => panic!("a press on nothing is still swallowed"),
+            Grab::Outside(float) => assert_eq!(float, 7),
+            _ => panic!("a press on nothing is still swallowed"),
         }
     }
 

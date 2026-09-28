@@ -339,7 +339,8 @@ impl HookStat {
 pub enum Hook {
     Key,
     Action,
-    /// `on_click` and `on_context`: the same payload, from the same pointer.
+    /// `on_click`, `on_context` and `on_outside`: the same payload, from the same
+    /// pointer.
     Click,
     Scroll,
     Event,
