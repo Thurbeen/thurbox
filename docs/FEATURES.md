@@ -46,6 +46,33 @@ worktree), and cwd.
   layout (`<80`, `>=80`, `>=120`); a popup would require its own
   open/close keybinding and dismissal logic.
 
+### Context menu (right-click)
+
+A right-click on a session row selects it and opens a menu of that session's
+actions where the pointer is: Open, Rename, Fork, Open in editor, Restart, Sync,
+Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
+to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
+a click anywhere else closes it.
+
+A right-click off the rows — on the empty space below them, or on a repo header
+— is about no session, so it opens the column's general menu instead: New
+session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
+offered only when there are sessions and Undo only when there is a delete to
+undo: an entry that would do nothing is left out rather than shown dead.
+
+**Why run the pane's own actions?** Each entry goes back through the same action
+its chord fires, so the menu cannot drift from the keyboard: Delete still asks
+first when there is work to lose, and a rebound chord shows up in the menu. Sort,
+the panel toggle and undo are left out because none of them is about the session
+that was pressed.
+
+**Why opened at the pointer, and closed by a click elsewhere?** That is what a
+context menu is. The kernel supplies only the mechanism — the pressed cell on
+`hit`, `float.at`, and `on_outside` for the float holding the pointer — so the
+menu itself stays a plain Lua float (`ui/plugins/64_menu.lua`) that any pane can
+fill. A terminal that keeps the right button for itself never sends the press;
+see *The right button* in `docs/PLUGINS.md`.
+
 ### Fuzzy search
 
 Searching is unified into the **global search** (`Ctrl+/`) — see the

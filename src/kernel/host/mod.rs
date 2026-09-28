@@ -356,6 +356,11 @@ pub struct Click {
     /// which a `pure` pane cannot do at all, since `render` may not write.
     pub w: u16,
     pub h: u16,
+    /// The cell the press landed on, on the SCREEN rather than in the node.
+    /// What a menu opened at the pointer is anchored to (`float.at`): a pane
+    /// knows neither where its slot sits nor where the node landed in it.
+    pub screen_x: u16,
+    pub screen_y: u16,
     /// Whether this is the pointer moving under a press it already took, rather
     /// than the press itself. Set only for a node that declared
     /// [`super::node::Identity::is_drag_handle`].
@@ -410,6 +415,10 @@ pub struct Float {
     /// height fitted to what is inside them, and this is how a plugin says so.
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    /// The screen cell to open at, instead of the centre: a menu opened by a
+    /// press is drawn where the press was. Where it would run off the area it
+    /// opens the other way round, then is held inside it (`App::float_rect`).
+    pub at: Option<(u16, u16)>,
 }
 
 impl Default for Float {
@@ -419,6 +428,7 @@ impl Default for Float {
             height_pct: 60.0,
             cols: None,
             rows: None,
+            at: None,
         }
     }
 }
@@ -1942,7 +1952,18 @@ impl LuaHost {
         self.pointer_hook(index, click, "on_context")
     }
 
-    /// The body both pointer hooks share: same payload, different name.
+    /// Tell the float holding the pointer that a press — either button —
+    /// landed outside it.
+    ///
+    /// The press is spent either way; this only lets the float react, which a
+    /// menu needs in order to close. Its own hook for `on_context`'s reason: a
+    /// float written before it existed is told nothing, so every modal keeps
+    /// swallowing a stray press exactly as it did.
+    pub fn on_outside(&self, index: usize, click: &Click) -> Result<bool, PluginError> {
+        self.pointer_hook(index, click, "on_outside")
+    }
+
+    /// The body every pointer hook shares: same payload, different name.
     fn pointer_hook(&self, index: usize, click: &Click, hook: &str) -> Result<bool, PluginError> {
         let Some(plugin) = self.plugins.get(index) else {
             return Ok(false);
@@ -1972,6 +1993,12 @@ impl LuaHost {
         table.set("y", click.y).map_err(|e| fail(e.to_string()))?;
         table.set("w", click.w).map_err(|e| fail(e.to_string()))?;
         table.set("h", click.h).map_err(|e| fail(e.to_string()))?;
+        table
+            .set("screen_x", click.screen_x)
+            .map_err(|e| fail(e.to_string()))?;
+        table
+            .set("screen_y", click.screen_y)
+            .map_err(|e| fail(e.to_string()))?;
         table
             .set("dragging", click.dragging)
             .map_err(|e| fail(e.to_string()))?;

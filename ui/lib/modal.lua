@@ -1,7 +1,8 @@
 -- The modal float shell, shared by every floating dialog.
 --
--- Four panes float one — the creation flow, the confirmation, the rename field,
--- the restore list — and each needs the same two pieces: the framed float itself, and the
+-- Four of the five floats frame one — the creation flow, the confirmation, the
+-- rename field, the restore list (the context menu has no title or footer) — and
+-- each needs the same two pieces: the framed float itself, and the
 -- key-hint footer with its clickable pills. Each had grown its own copy, and
 -- the copies had already drifted (one clipped its Cancel pill by a column);
 -- this module is the one spelling.

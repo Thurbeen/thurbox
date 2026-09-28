@@ -866,10 +866,36 @@ A RIGHT press has its own hook, `on_context`, with the same `hit` payload:
 ```lua
 on_context = function(hit)
   if not hit.id then return false end
-  store.filemenu = { path = hit.id }   -- open a menu aimed at this row
+  store.menu = {                       -- the bundled menu float, at the pointer
+    at = { x = hit.screen_x, y = hit.screen_y },
+    items = {
+      { label = "Open", action = "files.open" },
+      "sep",
+      { label = "Delete", action = "files.delete" },
+    },
+  }
   return true
 end,
 ```
+
+`hit.screen_x`/`hit.screen_y` are the pressed cell on the screen, where
+`hit.x`/`hit.y` are inside the node. The bundled `64_menu` float draws whatever
+`store.menu` holds at that point, moves over it with `j`/`k` or the arrows, and on
+`enter` or a click closes and runs the entry's action through `command("action")`
+— so an entry does exactly what its chord does. `esc`, or a press anywhere else,
+closes it. The sessions column opens its own this way.
+
+Give the menu a `target` (the row's id, say) when the entries are about one
+thing: a choice leaves `store["menu.chosen"] = { action, target }` for the
+action's owner to read in `on_action`, since the thing pressed may have moved or
+gone by the time the action lands. The sessions pane re-selects its target that
+way, and refuses when the session is gone.
+
+An entry's `action` has to be one some plugin **declares**, in `keys` or in
+`commands`: that declaration is how `command("action")` finds the pane whose
+`on_action` answers it. An undeclared one falls back to the menu float itself,
+which answers nothing, so the entry closes the menu and does nothing — declare
+`files.open` and `files.delete` in the example above, or they are dead entries.
 
 Its own hook rather than a button field on `hit`, because the two presses do not
 mean the same thing to anyone. Every `on_click` ever written reads "act on this
@@ -1033,6 +1059,23 @@ disagree about. While it floats it takes every key — except the reserved ones,
 so it can never trap the user, and except copy and paste, which have to work
 from any pane.
 
+A float is centred unless it names a point to open at:
+
+```lua
+{ float = { at = { x = hit.screen_x, y = hit.screen_y }, cols = 24, rows = 8 }, ... }
+```
+
+It opens with its top-left corner on that cell. Where that would run off the
+screen it opens the other way — to the left of the point, or above it — and is
+then held on screen, so a menu opened in the bottom-right corner is whole.
+
+A float also owns the pointer: a press that misses it is swallowed rather than
+reaching the pane it covers. Declare `on_outside(hit)` to be told about that
+press — either button, `hit.id` nil, `hit.screen_x`/`screen_y` set — which is how
+a menu closes on a click elsewhere. The press is swallowed either way, so closing
+a menu never also selects the row beneath it; a float that declares no
+`on_outside` behaves exactly as before.
+
 ## Decorating another pane
 
 ```lua
@@ -1155,7 +1198,8 @@ plugin that is removed, renamed or turned off has its panes released for it.
 **Telling a running program something.** Starting is idempotent, so asking again
 with different `args` does nothing — the pane is already there. To change what a
 long-lived program is showing, type at it from any interactive hook —
-`on_key`, `on_action`, `on_click`, `on_context`, `on_scroll`, or `on_event`
+`on_key`, `on_action`, `on_click`, `on_context`, `on_outside`, `on_scroll`, or
+`on_event`
 (not from `render`, or it will be re-typed every frame):
 
 ```lua

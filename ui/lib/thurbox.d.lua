@@ -168,8 +168,16 @@
 
 ---@alias thurbox.Root thurbox.RootText|thurbox.RootBox|thurbox.RootInput|thurbox.RootSurface
 
---- How big a floating pane asks to be: a share of the screen, or exact cells.
+--- A cell on the screen, as `hit.screen_x`/`hit.screen_y` report it: where an
+--- anchored float opens. Past an edge the float opens the other way round.
+---@class (exact) thurbox.FloatAt
+---@field x integer
+---@field y integer
+
+--- How big a floating pane asks to be: a share of the screen, or exact cells —
+--- and, with `at`, where it opens instead of the centre.
 ---@class (exact) thurbox.Float
+---@field at? thurbox.FloatAt
 ---@field width? number
 ---@field height? number
 ---@field cols? integer
@@ -218,6 +226,8 @@
 ---@field y integer
 ---@field w integer
 ---@field h integer
+---@field screen_x integer The pressed cell on the screen, 0-based — what `float.at` takes.
+---@field screen_y integer
 ---@field dragging boolean
 ---@field clicks integer 2 for the second press on the same node in quick succession, else 1.
 
@@ -300,6 +310,7 @@
 ---@field on_action? fun(action: string): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
 ---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
+---@field on_outside? fun(hit: thurbox.Hit): boolean A float's: a press of either button that missed it while it held the pointer. `hit.id` is nil.
 ---@field on_scroll? fun(wheel: thurbox.Wheel): boolean
 ---@field on_event? fun(name: string, payload: table<string, any>)
 

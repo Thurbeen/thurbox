@@ -601,6 +601,11 @@ impl App {
         }
     }
 
+    /// Render one plugin, painting an error panel in ITS OWN rect on failure.
+    ///
+    /// This is the isolation rule made concrete: a plugin that throws costs its
+    /// own pane and nothing else. Its neighbours keep drawing, and its state
+    /// survives for when the file is fixed.
     pub(crate) fn draw_plugin(
         &mut self,
         frame: &mut Frame,
@@ -725,12 +730,7 @@ impl App {
         Some(node)
     }
 
-    /// Render one plugin, painting an error panel in ITS OWN rect on failure.
-    ///
-    /// This is the isolation rule made concrete: a plugin that throws costs its
-    /// own pane and nothing else. Its neighbours keep drawing, and its state
-    /// survives for when the file is fixed.
-    /// Centre a rect taking `width_pct` x `height_pct` of `area`.
+    /// Place a float in `area`: centred, or opened at its `at` point.
     pub(crate) fn float_rect(area: Rect, float: thurbox::kernel::host::Float) -> Rect {
         // Cells when the plugin knows them, else a share of the screen. A modal
         // whose height follows its content — v1's pickers, all of them — can only
@@ -749,9 +749,19 @@ impl App {
             3,
             area.height,
         );
+        let (x, y) = match float.at {
+            None => (
+                area.x + (area.width - width) / 2,
+                area.y + (area.height - height) / 2,
+            ),
+            Some((x, y)) => (
+                anchor_span(x, width, area.x, area.width),
+                anchor_span(y, height, area.y, area.height),
+            ),
+        };
         Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
+            x,
+            y,
             width,
             height,
         }
@@ -970,4 +980,21 @@ impl App {
                 identity: hit.identity,
             }));
     }
+}
+
+/// Where an anchored float starts on one axis: at the point, or ending on it
+/// when starting there would run past the area, then held inside the area.
+///
+/// Flip first, clamp second, so a menu opened in the bottom-right corner grows
+/// up and to the left — whole — rather than being shifted under the pointer.
+/// `span` never exceeds `len`: `float_rect` has already clamped it.
+fn anchor_span(at: u16, span: u16, start: u16, len: u16) -> u16 {
+    let end = start.saturating_add(len);
+    let at = at.clamp(start, end.saturating_sub(1).max(start));
+    let origin = if at.saturating_add(span) <= end {
+        at
+    } else {
+        (at + 1).saturating_sub(span)
+    };
+    origin.clamp(start, end.saturating_sub(span).max(start))
 }

@@ -446,6 +446,65 @@ local function persist_order(items)
   end
 end
 
+--- The right-press menu: the actions that target one session, in the order
+--- the spec settled. Actions only -- each runs back through `on_action`, so an
+--- entry and its chord cannot come to mean different things, and delete still
+--- asks first when there is work to lose. Sort, the panel toggle and undo are
+--- not here: none of them is about the session that was pressed.
+local SESSION_MENU = {
+  { label = "Open", action = "sessions.open" },
+  { label = "Rename", action = "sessions.rename" },
+  { label = "Fork", action = "sessions.fork" },
+  { label = "Open in editor", action = "sessions.editor" },
+  "sep",
+  { label = "Restart", action = "sessions.restart" },
+  { label = "Sync", action = "sessions.sync" },
+  { label = "Move up", action = "sessions.move_up" },
+  { label = "Move down", action = "sessions.move_down" },
+  "sep",
+  { label = "Delete", action = "sessions.delete" },
+  { label = "Delete + worktree", action = "sessions.force_delete" },
+}
+
+--- The menu a right press off the rows opens -- empty space or a repo header,
+--- neither of which is about a session. Built when it opens, because two of its
+--- entries are offered only when they would do something: an entry that does
+--- nothing is worse than no entry.
+local function pane_menu(items)
+  -- Entries and "sep" rules in one list: declared, or luals infers a list of
+  -- tables from the first two and rejects the rules.
+  ---@type (table|string)[]
+  local menu = {
+    { label = "New session", action = "new_session.open" },
+    { label = "Restore deleted…", action = "restore.open" },
+  }
+  -- A creation in flight draws a placeholder row with no session behind it,
+  -- so it is not something to sort: count the rows that are sessions.
+  local live = false
+  for _, item in ipairs(items) do
+    if item.session then
+      live = true
+      break
+    end
+  end
+  local middle = {}
+  if live then
+    middle[#middle + 1] = { label = "Sort by name", action = "sessions.sort" }
+  end
+  if state.deleted then
+    middle[#middle + 1] = { label = "Undo delete", action = "sessions.undo" }
+  end
+  if #middle > 0 then
+    menu[#menu + 1] = "sep"
+    for _, entry in ipairs(middle) do
+      menu[#menu + 1] = entry
+    end
+  end
+  menu[#menu + 1] = "sep"
+  menu[#menu + 1] = { label = "Hide panel", action = "sessions.toggle_panel" }
+  return menu
+end
+
 return {
   name = "sessions",
   slot = "sessions",
@@ -771,6 +830,29 @@ return {
     return true
   end,
 
+  -- A right press on a row selects it, as a left press would, and opens its
+  -- menu where the press was. Selecting is what aims the entries: each runs an
+  -- action on the selected session. Focus stays put -- the kernel's rule for a
+  -- right press -- and the menu takes every key while it is up anyway. Off the
+  -- rows (empty space, or a header, which carries no id) the press is about no
+  -- session, so it opens the pane's general menu instead and selects nothing.
+  on_context = function(hit)
+    local items = session_model.build(sessions())
+    if not hit.id then
+      store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = pane_menu(items) }
+      return true
+    end
+    if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
+      return false
+    end
+    store.menu = {
+      at = { x = hit.screen_x, y = hit.screen_y },
+      items = SESSION_MENU,
+      target = hit.id,
+    }
+    return true
+  end,
+
   on_action = function(action)
     -- The two that own no row, handled before the "is there a session" guard:
     -- hiding the column and undoing a delete both work on an empty list.
@@ -803,6 +885,20 @@ return {
     -- column hidden (F9) or a terminal focused, this pane may not render again
     -- before the agent pane does.
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
+
+    -- An entry of the right-press menu is about the session it was opened on,
+    -- not whatever row the cursor holds when the action lands: the cursor may
+    -- have moved since, or that session gone and the cursor fallen back onto a
+    -- neighbour -- which Delete + worktree must never reach in its place.
+    local chosen = store["menu.chosen"]
+    if type(chosen) == "table" and chosen.action == action then
+      store["menu.chosen"] = nil
+      if chosen.target and cursor:select_by_id(chosen.target) == nil then
+        command("message", { text = "that session is gone", level = "error" })
+        return true
+      end
+    end
+
     local at = cursor.index
     local id = cursor:id()
 

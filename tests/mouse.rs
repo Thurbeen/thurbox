@@ -588,6 +588,8 @@ fn row_click(clicks: u8) -> thurbox::kernel::host::Click {
         y: 0,
         w: 40,
         h: 1,
+        screen_x: 0,
+        screen_y: 0,
         dragging: false,
         clicks,
     }
@@ -811,6 +813,148 @@ fn a_pane_with_only_on_click_never_hears_a_right_press() {
     assert!(
         !said(&host, index).contains("left:"),
         "and on_click must not have run: {}",
+        said(&host, index)
+    );
+}
+
+/// A pane that says where on the SCREEN the press landed.
+const WHERE: &str = r#"
+return {
+  name = "where",
+  slot = "sessions",
+  order = 10,
+  render = function()
+    return { type = "text", text = state.said or "" }
+  end,
+  on_context = function(hit)
+    state.said = "at:" .. hit.screen_x .. "," .. hit.screen_y
+    return true
+  end,
+}
+"#;
+
+/// `hit.x`/`hit.y` are inside the node; a menu opened at the pointer needs the
+/// cell on the screen, which a pane cannot work out — it knows neither where its
+/// slot sits nor where the node landed in it.
+#[test]
+fn a_press_carries_the_screen_cell_it_landed_on() {
+    let (_home, host) = host_with(&[("10_where.lua", WHERE)]);
+    let index = index_of(&host, "where");
+    let click = thurbox::kernel::host::Click {
+        screen_x: 33,
+        screen_y: 7,
+        ..on("a")
+    };
+    assert!(host.on_context(index, &click).expect("context"), "handled");
+    assert!(
+        said(&host, index).contains("at:33,7"),
+        "the screen cell must reach the hook: {}",
+        said(&host, index)
+    );
+}
+
+const ANCHORED: &str = r#"
+return {
+  name = "anchored",
+  slot = "float",
+  order = 90,
+  floats = true,
+  render = function()
+    return { float = { at = { x = 5, y = 3 }, cols = 10, rows = 4 }, type = "text", text = "x" }
+  end,
+}
+"#;
+
+const MISANCHORED: &str = r#"
+return {
+  name = "misanchored",
+  slot = "float",
+  order = 91,
+  floats = true,
+  render = function()
+    return { float = { at = "here" }, type = "text", text = "x" }
+  end,
+}
+"#;
+
+fn float_ctx() -> RenderContext {
+    RenderContext {
+        width: 80,
+        height: 24,
+        focused: true,
+        elapsed: 0.0,
+        frame: 0,
+    }
+}
+
+#[test]
+fn a_float_may_ask_to_open_at_a_point() {
+    let (_home, host) = host_with(&[("90_anchored.lua", ANCHORED)]);
+    let float = host
+        .render(index_of(&host, "anchored"), float_ctx())
+        .expect("render")
+        .float
+        .expect("it floats");
+    assert_eq!(float.at, Some((5, 3)));
+    assert_eq!((float.cols, float.rows), (Some(10), Some(4)));
+}
+
+#[test]
+fn a_malformed_anchor_is_reported_by_name() {
+    let (_home, host) = host_with(&[("91_misanchored.lua", MISANCHORED)]);
+    let error = host
+        .render(index_of(&host, "misanchored"), float_ctx())
+        .expect_err("a string is not a point");
+    assert!(error.message.contains("float.at"), "{}", error.message);
+}
+
+const DISMISSABLE: &str = r#"
+return {
+  name = "dismissable",
+  slot = "sessions",
+  order = 10,
+  render = function()
+    return { type = "text", text = state.said or "" }
+  end,
+  on_outside = function(hit)
+    state.said = "outside:" .. tostring(hit.id) .. "@" .. hit.screen_x .. "," .. hit.screen_y
+    return true
+  end,
+}
+"#;
+
+#[test]
+fn a_press_that_misses_a_float_reaches_its_on_outside() {
+    let (_home, host) = host_with(&[("10_dismissable.lua", DISMISSABLE)]);
+    let index = index_of(&host, "dismissable");
+    let click = thurbox::kernel::host::Click {
+        screen_x: 4,
+        screen_y: 9,
+        clicks: 1,
+        ..thurbox::kernel::host::Click::default()
+    };
+    assert!(host.on_outside(index, &click).expect("outside"), "handled");
+    assert!(
+        said(&host, index).contains("outside:nil@4,9"),
+        "{}",
+        said(&host, index)
+    );
+}
+
+/// The safety property again: a float written before the hook existed is not
+/// told anything, so it behaves exactly as it always has.
+#[test]
+fn a_float_without_on_outside_hears_nothing() {
+    let (_home, host) = host_with(&[("10_twohanded.lua", TWO_HANDED)]);
+    let index = index_of(&host, "twohanded");
+    let click = thurbox::kernel::host::Click::default();
+    assert!(
+        !host.on_outside(index, &click).expect("outside"),
+        "declined"
+    );
+    assert!(
+        !said(&host, index).contains("left:") && !said(&host, index).contains("right:"),
+        "a miss must not reach on_click or on_context: {}",
         said(&host, index)
     );
 }
