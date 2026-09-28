@@ -10,7 +10,9 @@
 --
 -- and this draws it at that point and, on a choice, closes and runs the
 -- entry's action through `command("action")` -- the palette's road, so an entry
--- does exactly what its chord does, confirmation included. Closed BEFORE the
+-- does exactly what its chord does, confirmation included. The action must be
+-- declared by some plugin (`keys` or `commands`); an undeclared one falls back to
+-- this float, which has no `on_action`, and does nothing. Closed BEFORE the
 -- action runs, so an action that opens a float of its own (rename, fork,
 -- confirm) is never drawn under a menu that is still up.
 

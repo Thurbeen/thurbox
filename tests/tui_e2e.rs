@@ -1239,6 +1239,31 @@ fn a_float_opens_where_it_was_asked_and_closes_on_a_press_elsewhere() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// A press on a band's pill runs the pill — it is not a pane, and a float never
+/// held it — but it is still a press that missed the float, so the float is told.
+/// Without that a menu left open under the Help modal is still there when the
+/// modal closes, although a press landed elsewhere.
+#[test]
+fn a_press_on_a_band_pill_is_told_to_the_float_it_missed() {
+    let interface = interface_plus("92_opener.lua", PIN_OPENER);
+    std::fs::write(interface.path().join("plugins/91_pinned.lua"), PINNED).expect("add pinned");
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("tb-opener-none-0");
+    let (x, y) = tui.find("tb-opener-none-0");
+    tui.press(2, (x + 4, y));
+    tui.wait_for("tb-pinned");
+    // The footer band's pill, not the agent pane's "F1 Help" hint above it.
+    tui.press(0, tui.find("Help · F1"));
+    tui.wait_gone("tb-pinned");
+    tui.wait_for("tb-opener-none-1");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 /// A pane in the session column that paints what it heard, and from which node.
 fn listening_pane(name: &str, order: u8) -> String {
     format!(

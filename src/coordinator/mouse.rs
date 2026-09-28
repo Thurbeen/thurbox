@@ -270,16 +270,26 @@ impl App {
         // action and leaves focus where it was. v1's footer pills behave the same
         // — you press Help without leaving the terminal you were in.
         if let Some(hit) = self.band_target_at(x, y) {
+            // A band is never under a float's hold, but a press on it still
+            // missed the float: told first, so a menu open when Help is pressed
+            // is not still there when Help closes.
+            let missed = self.grabbed;
             match hit.identity.click_verb() {
                 // `clicked` is only the fallback owner, and a band has no plugin
                 // to fall back to; the action's own declaration is what resolves
                 // it, exactly as for a pill drawn by a pane.
                 Some(ClickVerb::Action(action)) => {
+                    if let Some(float) = missed {
+                        self.dispatch_outside(float, x, y);
+                    }
                     self.run_clicked_action(&action, self.focus);
                     self.dirty = true;
                     return;
                 }
                 Some(ClickVerb::Url(url)) => {
+                    if let Some(float) = missed {
+                        self.dispatch_outside(float, x, y);
+                    }
                     self.open_or_copy_link(&url);
                     self.dirty = true;
                     return;

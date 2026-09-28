@@ -885,6 +885,12 @@ end,
 — so an entry does exactly what its chord does. `esc`, or a press anywhere else,
 closes it. The sessions column opens its own this way.
 
+An entry's `action` has to be one some plugin **declares**, in `keys` or in
+`commands`: that declaration is how `command("action")` finds the pane whose
+`on_action` answers it. An undeclared one falls back to the menu float itself,
+which answers nothing, so the entry closes the menu and does nothing — declare
+`files.open` and `files.delete` in the example above, or they are dead entries.
+
 Its own hook rather than a button field on `hit`, because the two presses do not
 mean the same thing to anyone. Every `on_click` ever written reads "act on this
 row" — open the file, run the action — so a right press arriving there would do

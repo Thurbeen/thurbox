@@ -601,6 +601,11 @@ impl App {
         }
     }
 
+    /// Render one plugin, painting an error panel in ITS OWN rect on failure.
+    ///
+    /// This is the isolation rule made concrete: a plugin that throws costs its
+    /// own pane and nothing else. Its neighbours keep drawing, and its state
+    /// survives for when the file is fixed.
     pub(crate) fn draw_plugin(
         &mut self,
         frame: &mut Frame,
