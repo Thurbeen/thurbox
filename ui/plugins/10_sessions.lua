@@ -478,8 +478,17 @@ local function pane_menu(items)
     { label = "New session", action = "new_session.open" },
     { label = "Restore deleted…", action = "restore.open" },
   }
+  -- A creation in flight draws a placeholder row with no session behind it,
+  -- so it is not something to sort: count the rows that are sessions.
+  local live = false
+  for _, item in ipairs(items) do
+    if item.session then
+      live = true
+      break
+    end
+  end
   local middle = {}
-  if #items > 0 then
+  if live then
     middle[#middle + 1] = { label = "Sort by name", action = "sessions.sort" }
   end
   if state.deleted then

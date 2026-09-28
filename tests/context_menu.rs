@@ -73,6 +73,14 @@ fn menu_host() -> (tempfile::TempDir, LuaHost) {
 }
 
 fn publish(host: &LuaHost, snapshot: &Snapshot) {
+    publish_with(host, snapshot, &[]);
+}
+
+fn publish_with(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    inflight: &[thurbox::kernel::command::InFlight],
+) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -83,7 +91,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
-        inflight: &[],
+        inflight,
         themes: &themes,
         registry: &registry,
         diffs: &diffs,
@@ -651,5 +659,35 @@ fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
     assert!(
         format!("{:?}", rename.node).contains("beta"),
         "renames beta, the row pressed"
+    );
+}
+
+/// A creation in flight draws a placeholder row, but a placeholder is not a
+/// session: there is still nothing to sort.
+#[test]
+fn a_creation_in_flight_is_not_something_to_sort() {
+    use thurbox::kernel::command::{InFlight, Phase};
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    publish_with(
+        &host,
+        &Snapshot::default(),
+        &[InFlight {
+            id: 1,
+            kind: "create",
+            session: String::new(),
+            subject: Some("thurbox".to_string()),
+            host: None,
+            phase: Phase::Running,
+            error: None,
+        }],
+    );
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    host.on_context(index_of(&host, "sessions"), &right_press_at(9, 20, None))
+        .expect("context");
+    let text = menu_text(&host).expect("drawn");
+    assert!(
+        !text.contains("Sort by name"),
+        "a placeholder is not a session:\n{text}"
     );
 }
