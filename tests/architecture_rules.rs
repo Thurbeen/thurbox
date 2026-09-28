@@ -686,6 +686,20 @@ fn mux_backends_own_their_protocol_and_transport() {
 }
 
 #[test]
+fn local_mux_helpers_use_the_platform_transport() {
+    let source = fs::read_to_string(src_root().join("agent/mux.rs")).unwrap();
+    let production = source.split("#[cfg(test)]").next().unwrap();
+    assert!(
+        production.contains("type LocalMuxTransport = PsmuxTransport"),
+        "Windows local helpers must use the psmux transport"
+    );
+    assert!(
+        !production.contains("MuxBackend::<TmuxTransport>::local()"),
+        "local helpers must not hardcode the tmux transport"
+    );
+}
+
+#[test]
 fn cli_module_isolation() {
     assert_module_clean("cli");
 }

@@ -20,6 +20,11 @@ use crate::agent::control_mode::{
 };
 use crate::agent::transport::{MuxTransport, PsmuxTransport, TmuxTransport, DEFAULT_MUX};
 
+#[cfg(windows)]
+type LocalMuxTransport = PsmuxTransport;
+#[cfg(not(windows))]
+type LocalMuxTransport = TmuxTransport;
+
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
 /// "thurbox-dev" to avoid interfering with an installed release binary. An
@@ -200,7 +205,7 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 
 /// Build a [`Command`] for the local multiplexer on the thurbox socket:
 /// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
-/// (send/capture/spawn/kill/heartbeat) bypass the [`TmuxTransport`] seam — they
+/// (send/capture/spawn/kill/heartbeat) bypass the transport seam — they
 /// are local-only — so this centralizes the binary name (`tmux`, or `psmux` on
 /// Windows) and socket instead of hardcoding `tmux` at each call site.
 fn local_mux_command(args: &[&str]) -> Command {
@@ -214,12 +219,12 @@ fn local_mux_command(args: &[&str]) -> Command {
 
 /// What a **local** one-shot reports when the multiplexer will not start.
 ///
-/// Every helper here bypasses the [`TmuxTransport`] seam because it is
+/// Every helper here bypasses the transport seam because it is
 /// local-only, so the transport that failed is always the local one. See
 /// [`crate::agent::preflight::launch_failure`] for why a `NotFound` is answered
 /// with a sentence rather than with `os error 2`.
 fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
-    crate::agent::preflight::launch_failure(&TmuxTransport::Local, context, err)
+    crate::agent::preflight::launch_failure(&LocalMuxTransport::local(), context, err)
 }
 
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
@@ -860,7 +865,7 @@ pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
 /// Every thurbox window on the local server, indexed.
 pub fn local_window_index() -> Result<WindowIndex> {
     Ok(WindowIndex::from_listing(
-        MuxBackend::<TmuxTransport>::local().discover()?,
+        MuxBackend::<LocalMuxTransport>::local().discover()?,
     ))
 }
 
@@ -2290,8 +2295,9 @@ impl<T: MuxTransport> MuxBackend<T> {
                     24,
                     80,
                 )?;
-                self.stamp_window(&spawned.backend_id, session_id, WindowRole::Agent)?;
-                Ok(spawned.backend_id)
+                let pane_id = spawned.backend_id;
+                let stamp = self.stamp_window(&pane_id, session_id, WindowRole::Agent);
+                complete_remote_headless_spawn(pane_id, stamp, window_name)
             }
             None => spawn_window(session_id, window_name, command, args, cwd, env),
         }
@@ -2949,6 +2955,17 @@ impl<T: MuxTransport> MuxBackend<T> {
     }
 }
 
+fn complete_remote_headless_spawn(
+    pane_id: String,
+    stamp: Result<()>,
+    window_name: &str,
+) -> Result<String> {
+    if let Err(e) = stamp {
+        warn!("could not stamp the remote window for '{window_name}': {e:#}");
+    }
+    Ok(pane_id)
+}
+
 /// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
 /// so a multi-line prompt is delivered as a single paste — the embedded
 /// newlines insert as text instead of submitting the prompt on the first one.
@@ -3343,7 +3360,7 @@ pub fn stop_automation_heartbeat() -> bool {
 }
 
 pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
-    MuxBackend::<TmuxTransport>::local().ensure_session_configured()?;
+    MuxBackend::<LocalMuxTransport>::local().ensure_session_configured()?;
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
@@ -3960,7 +3977,7 @@ pub fn spawn_window(
 ) -> Result<String> {
     // Ensure the session exists and is configured, without opening a
     // control-mode connection (headless one-shot path).
-    MuxBackend::<TmuxTransport>::local().ensure_session_configured()?;
+    MuxBackend::<LocalMuxTransport>::local().ensure_session_configured()?;
     if local_mux_is_psmux() {
         check_local_psmux_server()?;
     }
@@ -4340,10 +4357,9 @@ fn spawn_window_remote_on(
     // Headless: no live terminal, so use a sane default geometry. The TUI
     // resizes the pane to its real dimensions when it adopts the session.
     let spawned = backend.spawn(&window_name, command, args, cwd, env, 24, 80)?;
-    if let Err(e) = backend.stamp_window(&spawned.backend_id, session_id, WindowRole::Agent) {
-        debug!("could not stamp the remote window for '{session_name}': {e:#}");
-    }
-    Ok(spawned.backend_id)
+    let pane_id = spawned.backend_id;
+    let stamp = backend.stamp_window(&pane_id, session_id, WindowRole::Agent);
+    complete_remote_headless_spawn(pane_id, stamp, &window_name)
 }
 
 /// One-shot read of every pane's remote-hook state option on `host`:
@@ -4366,7 +4382,7 @@ pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(St
 /// a session created *from afar* on this host sets (its hooks were rewritten to
 /// that form), which nothing here read before sessions were shared.
 pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
-    list_hook_states_on(&MuxBackend::<TmuxTransport>::local())
+    list_hook_states_on(&MuxBackend::<LocalMuxTransport>::local())
 }
 
 fn list_hook_states_on<T: MuxTransport>(backend: &MuxBackend<T>) -> Result<Vec<(String, String)>> {
@@ -4405,7 +4421,7 @@ pub fn agent_window(
             known_host_socket(host)?;
             remote_discover_answered(host)?
         }
-        None => MuxBackend::<TmuxTransport>::local().discover_answered()?,
+        None => MuxBackend::<LocalMuxTransport>::local().discover_answered()?,
     });
     Ok(index.live_agent_window(session_id, session_name))
 }
@@ -4454,7 +4470,12 @@ pub fn rename_session_windows(
             to,
         );
     }
-    rename_session_windows_on(&MuxBackend::<TmuxTransport>::local(), session_id, from, to)
+    rename_session_windows_on(
+        &MuxBackend::<LocalMuxTransport>::local(),
+        session_id,
+        from,
+        to,
+    )
 }
 
 fn rename_session_windows_on<T: MuxTransport>(
@@ -4740,6 +4761,22 @@ mod tests {
     use crate::agent::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
+
+    #[test]
+    fn local_backend_uses_the_platform_mux_binary() {
+        assert_eq!(<LocalMuxTransport as MuxTransport>::BINARY, DEFAULT_MUX);
+    }
+
+    #[test]
+    fn remote_headless_spawn_keeps_created_pane_when_stamping_fails() {
+        let pane_id = "%42".to_string();
+        let result = complete_remote_headless_spawn(
+            pane_id.clone(),
+            Err(anyhow::anyhow!("control connection dropped")),
+            "agent",
+        );
+        assert_eq!(result.unwrap(), pane_id);
+    }
 
     #[test]
     fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {

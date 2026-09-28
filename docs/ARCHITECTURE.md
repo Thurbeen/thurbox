@@ -636,6 +636,11 @@ attach responses, command lists, pane options, paste, and version gates are
 selected by the concrete mux protocol. A host's execution location cannot
 silently change its protocol.
 
+Local one-shot helpers select the registered local backend's transport,
+including psmux on Windows, so headless create and liveness inspect the same
+server. A remote headless spawn keeps the created pane id when stamping fails,
+so the session row can still track and clean up that pane.
+
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
 and WSL distros are additionally **auto-discovered**
