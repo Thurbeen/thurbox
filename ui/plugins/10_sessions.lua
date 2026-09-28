@@ -471,6 +471,9 @@ local SESSION_MENU = {
 --- entries are offered only when they would do something: an entry that does
 --- nothing is worse than no entry.
 local function pane_menu(items)
+  -- Entries and "sep" rules in one list: declared, or luals infers a list of
+  -- tables from the first two and rejects the rules.
+  ---@type (table|string)[]
   local menu = {
     { label = "New session", action = "new_session.open" },
     { label = "Restore deleted…", action = "restore.open" },
