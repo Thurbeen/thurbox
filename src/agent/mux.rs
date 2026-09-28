@@ -6181,7 +6181,7 @@ mod tests {
         assert!(!MuxBackend::<PsmuxTransport>::from_host(&psmux).stamps_are_per_window());
         assert!(MuxBackend::<TmuxTransport>::from_host(&tmux).stamps_are_per_window());
         assert_eq!(
-            MuxBackend::<TmuxTransport>::local().stamps_are_per_window(),
+            MuxBackend::<LocalMuxTransport>::local().stamps_are_per_window(),
             !cfg!(windows),
             "the local multiplexer is psmux on Windows and tmux elsewhere"
         );
