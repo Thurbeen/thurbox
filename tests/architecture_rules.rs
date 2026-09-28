@@ -653,9 +653,12 @@ fn session_lifecycle_does_not_select_psmux_by_name() {
 }
 
 /// Production source of `file` under `src/`, comments and strings stripped and
-/// the unit-test module cut off, so a guard reads what ships.
+/// the unit-test module cut off, so a guard reads what ships. Line endings are
+/// normalized first: a Windows checkout has CRLF, and the cut is on a newline.
 fn production_code(file: &str) -> String {
-    let source = fs::read_to_string(src_root().join(file)).unwrap();
+    let source = fs::read_to_string(src_root().join(file))
+        .unwrap()
+        .replace("\r\n", "\n");
     let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
     strip_comments_and_strings(production)
 }
