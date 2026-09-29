@@ -24,20 +24,9 @@ pub(crate) type LocalMuxTransport = TmuxTransport;
 /// The binary of this platform's local multiplexer.
 pub const DEFAULT_MUX: &str = <LocalMuxTransport as MuxTransport>::BINARY;
 
-/// Whether `host` is configured to run psmux — the one question both host
-/// selections below answer by.
+/// Whether `host` is configured to run psmux — what [`host_mux`] selects by.
 fn host_runs_psmux(host: &HostDef) -> bool {
     host.is_windows()
-}
-
-/// The backend a headless create reaches `host` through, by the multiplexer
-/// the host is configured with.
-pub(crate) fn host_backend(host: &HostDef) -> Box<dyn SessionBackend> {
-    if host_runs_psmux(host) {
-        Box::new(PsmuxBackend::from_host(host))
-    } else {
-        Box::new(TmuxBackend::from_host(host))
-    }
 }
 
 /// The one-shot operations on `host`'s server, by the multiplexer the host is
@@ -226,24 +215,23 @@ mod tests {
         }
     }
 
-    /// A headless create on a psmux host must drive the psmux backend, whose
-    /// wire syntax and capabilities differ; the same host configured for tmux
-    /// gets the tmux backend. Observed through what each backend reports.
+    /// A host's one-shots drive the multiplexer it is configured with, and so
+    /// does its legacy unsuffixed route.
     #[test]
     fn a_host_is_reached_through_the_backend_of_its_configured_multiplexer() {
-        let psmux = host_backend(&host("winbox", Some("psmux")));
-        assert_eq!(psmux.name(), "ssh:winbox:psmux");
-        assert!(psmux.needs_liveness_poll());
-        assert!(!psmux.supports_snapshots());
-
-        for tmux in [host("devbox", None), host("devbox", Some("tmux"))] {
-            let tmux = host_backend(&tmux);
-            assert_eq!(tmux.name(), "ssh:devbox");
-            assert!(!tmux.needs_liveness_poll());
-            assert!(tmux.supports_snapshots());
-        }
         assert!(host_runs_psmux(&host("winbox", Some("psmux"))));
         assert!(!host_runs_psmux(&host("devbox", None)));
+        assert!(!host_runs_psmux(&host("devbox", Some("tmux"))));
+        let registry = BackendRegistry::from_host_registry(&HostRegistry {
+            hosts: vec![host("winbox", Some("psmux")), host("devbox", None)],
+            ..Default::default()
+        });
+        let psmux = registry.get("ssh:winbox").expect("legacy psmux route");
+        assert!(psmux.needs_liveness_poll());
+        assert!(!psmux.supports_snapshots());
+        let tmux = registry.get("ssh:devbox").expect("legacy tmux route");
+        assert!(!tmux.needs_liveness_poll());
+        assert!(tmux.supports_snapshots());
     }
 
     #[test]

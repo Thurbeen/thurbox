@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, warn};
 
 use crate::agent::backend::{
-    AdoptedSession, DiscoveredSession, Located, PaneSize, SessionBackend, SpawnedSession,
+    AdoptedSession, DiscoveredSession, Located, PanePath, PaneSize, PaneState, SpawnedSession,
     WindowRole,
 };
 use crate::agent::control_mode::{
@@ -312,16 +312,6 @@ fn local_mux_command(args: &[&str]) -> Command {
     cmd
 }
 
-/// What a **local** one-shot reports when the multiplexer will not start.
-///
-/// Every helper here bypasses the transport seam because it is
-/// local-only, so the transport that failed is always the local one. See
-/// [`crate::agent::preflight::launch_failure`] for why a `NotFound` is answered
-/// with a sentence rather than with `os error 2`.
-fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
-    crate::agent::preflight::launch_failure(&LocalMuxTransport::local(), context, err)
-}
-
 /// Window-name prefix for thurbox-managed tmux windows. Combined with the
 /// sanitized session name (`{prefix}{sanitized_name}`) to form the tmux
 /// window target.
@@ -456,17 +446,6 @@ fn parse_discovered(line: &str, stamps: bool) -> Option<DiscoveredSession> {
         },
         role: WindowRole::parse(role).unwrap_or(by_name),
     })
-}
-
-/// Build the `session:=window` tmux target for a thurbox agent session.
-///
-/// The `=` prefix forces tmux to match the window name exactly. Without
-/// it tmux falls back to FNMATCH-style prefix matching, so a target of
-/// `tb-foo` would resolve ambiguously when both `tb-foo` and
-/// `tb-foo-bar` exist — `send-keys`/`capture-pane` then fails with
-/// "ambiguous window" and the caller's text is silently dropped.
-fn window_target(window_name: &str) -> String {
-    format!("{TMUX_SESSION}:={window_name}")
 }
 
 /// The window name a session's `role` window carries.
@@ -848,131 +827,6 @@ fn stamped_windows_in(listing: &str, session_id: &str, role: WindowRole) -> Vec<
     found.into_iter().map(|(_, window)| window).collect()
 }
 
-/// Leave one window carrying `session_id`'s `role` stamp, and say which one
-/// kept it — or `None` when there was never more than one to choose between.
-///
-/// ADR-25 gives a stamp its meaning under one invariant: one session, one
-/// window per role. Two windows carrying it is not a weaker answer but no
-/// answer at all — [`WindowIndex::stamped_match`] returns [`Located::Unknown`]
-/// by design, and from then on the session cannot be sent to, killed, captured
-/// or renamed. A restart is kill-then-spawn and a repairer relaunches anything
-/// a listing says is gone, so the two overlapping put one stamp on two windows
-/// and the session was lost for good (issue #1207).
-///
-/// **The highest window id keeps the identity.** The rule is that rather than
-/// "the window I just stamped" because both racers run this: "mine wins" has
-/// each of them retire the other's and can leave the session no window at all,
-/// while a key tmux issues in order and never reissues while the server lives
-/// makes every sweep reach the same verdict from any listing that sees both.
-/// That is also what closes the gap a window opens between being created and
-/// being stamped — the sweep runs *after* each stamp, so the last stamp to land
-/// is followed by a listing that sees every earlier one, whichever order the
-/// windows were created in.
-///
-/// It is the right half to keep, too. The newest window is the one the most
-/// recent restart asked for, and where both panes resume one conversation it is
-/// the connection that displaced the other — the loser is the pane that printed
-/// "another connection took over this session".
-///
-/// Liveness is deliberately **not** the key. It changes between two listings
-/// taken a moment apart, so two sweeps could each keep what the other retired,
-/// and a session with no window at all is the one outcome worse than the pair.
-/// A newest window whose pane has already exited is kept and stays on screen
-/// (`remain-on-exit`), which is how the operator gets to see why it exited.
-///
-/// Only where the local multiplexer has window options. One that keeps `@`
-/// options in a single server-global map hands the same value back for every
-/// window (ADR-13), so every window there would read as stamped for whoever was
-/// stamped last; the stamp is withheld at both ends for that reason (issue
-/// #1168) and this must not be the one place that believes it.
-fn retire_duplicate_windows(session_id: &str, role: WindowRole) -> Option<String> {
-    if !local_windows_are_stamped() || session_id.is_empty() {
-        return None;
-    }
-    let output = local_mux_command(&["list-windows", "-t", TMUX_SESSION, "-F", RETIRE_FORMAT])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let listing = String::from_utf8_lossy(&output.stdout);
-    let windows = stamped_windows_in(&listing, session_id, role);
-    let (keep, retire) = windows.split_last()?;
-    let mut retired = false;
-    for window in retire {
-        match kill_window_at(window) {
-            Ok(()) => {
-                retired = true;
-                warn!(
-                    "retired {window}: it carried session {session_id}'s {} stamp, which \
-                     {keep} now holds alone",
-                    role.as_str()
-                );
-            }
-            Err(e) => warn!("could not retire {window}, stamped for session {session_id}: {e:#}"),
-        }
-    }
-    retired.then(|| keep.clone())
-}
-
-/// Stamp a window on the local server with the identity every reconciler
-/// resolves it by.
-///
-/// `target` is the new window's pane id, or its `session:=window` target where
-/// the spawn could not report one. Best-effort by design, and so returns
-/// nothing to check — but **not attempted at all** on a multiplexer without
-/// window options (`MuxDialect::WINDOW_OPTIONS`, ADR-13), where the
-/// sole-namesake rule in [`WindowIndex`] carries the identity as the name
-/// fallback did before. Writing one there is not the harmless no-op it reads
-/// as: such a multiplexer keeps a server-global option under the name and
-/// answers `#{@...}` with it for every window, so a single stamp made every
-/// window look like one session's and cost the interface every pane it had
-/// (issue #1168).
-pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
-    if !local_windows_are_stamped() {
-        return;
-    }
-    for (option, value) in [
-        (WINDOW_SESSION_OPTION, session_id),
-        (WINDOW_ROLE_OPTION, role.as_str()),
-    ] {
-        if value.is_empty() {
-            continue;
-        }
-        match local_mux_command(&["set-option", "-w", "-t", target, option, value]).output() {
-            Ok(out) if out.status.success() => {}
-            Ok(out) => debug!(
-                "could not stamp {target} with {option}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Err(e) => debug!("could not stamp {target} with {option}: {e}"),
-        }
-    }
-    // The invariant the stamp is only meaningful under, enforced where the
-    // stamp is written rather than left to a resolver that is required to
-    // refuse the pair — see `retire_duplicate_windows`.
-    let _ = retire_duplicate_windows(session_id, role);
-}
-
-/// Every thurbox window on the local server, indexed.
-pub fn local_window_index() -> Result<WindowIndex> {
-    Ok(WindowIndex::from_listing(
-        MuxBackend::<LocalMuxTransport>::local().discover()?,
-    ))
-}
-
-/// Every thurbox window on `host`'s server, indexed — [`local_window_index`]
-/// for a machine that is not this one.
-///
-/// One `list-windows` over the transport and nothing else: no control mode, so
-/// asking what a host holds never brings a server into being there.
-pub fn remote_window_index(host: &crate::session::HostDef) -> Result<WindowIndex> {
-    known_host_socket(host)?;
-    Ok(WindowIndex::from_listing(
-        crate::agent::registry::host_mux(host).discover_answered()?,
-    ))
-}
-
 /// `ssh`'s own failure code — see [`crate::session_ops::host_cli::Reach`],
 /// which draws the same distinction one layer up.
 const SSH_ERROR_EXIT: i32 = 255;
@@ -1053,64 +907,6 @@ fn mux_answered_absent(error: &str) -> bool {
     error.contains("can't find session") || error.contains("session not found")
 }
 
-/// Whether the local multiplexer's windows carry stamps at all
-/// ([`MuxDialect::WINDOW_OPTIONS`], ADR-13).
-///
-/// Where they do not, the name fallback still stands: with nothing stamped, two
-/// namesakes are genuinely indistinguishable, and refusing to act would be a
-/// regression there rather than the safety it is everywhere else.
-fn local_windows_are_stamped() -> bool {
-    LocalMuxTransport::WINDOW_OPTIONS
-}
-
-/// Resolve the local tmux target for acting on a session's agent pane, or
-/// `None` when nothing on the server is this session's to act on.
-///
-/// Every one-shot helper that acts on a session's pane goes through here, so
-/// the stamp decides in one place. What it replaced was `tb-<name>`, a target
-/// tmux matches exactly and resolves to an arbitrary one of a session's
-/// namesakes.
-fn agent_target(session_id: &str, session_name: &str) -> Option<String> {
-    owned_target(session_id, session_name, WindowRole::Agent)
-}
-
-/// [`agent_target`] for any of a session's windows — its agent, or the
-/// companion shell a teardown has to take down with it.
-fn owned_target(session_id: &str, session_name: &str, role: WindowRole) -> Option<String> {
-    match locate_local(session_id, session_name, role) {
-        Located::At(pane) => Some(pane),
-        Located::Absent => None,
-        // One stamp on two windows is repairable, and here is where repairing
-        // it matters: `stamped_match` refuses the pair by design, so without
-        // this nothing would ever look again and the session stayed
-        // unaddressable for good (issue #1207). The refusal itself is
-        // untouched — the choice is made by *retiring* a window, which is a
-        // write, and never by reading one of two as the answer. A name that is
-        // ambiguous rather than a stamp retires nothing and falls through
-        // exactly as before.
-        Located::Unknown => match retire_duplicate_windows(session_id, role) {
-            Some(_) => match locate_local(session_id, session_name, role) {
-                Located::At(pane) => Some(pane),
-                _ => None,
-            },
-            None => (!local_windows_are_stamped())
-                .then(|| window_target(&window_name_for(role, session_name))),
-        },
-    }
-}
-
-/// One listing of the local server, resolved. [`Located::Unknown`] is also what
-/// a listing that could not be taken answers: not knowing is not absence.
-fn locate_local(session_id: &str, session_name: &str, role: WindowRole) -> Located {
-    match local_window_index() {
-        Ok(index) => index.locate(session_id, session_name, role, false),
-        Err(e) => {
-            debug!("could not list windows to resolve '{session_name}': {e:#}");
-            Located::Unknown
-        }
-    }
-}
-
 /// One command of the session config — a `set-option`, or the `if-shell` that
 /// guards the tmux clipboard feature slot — and whether failing it means the
 /// server cannot host sessions.
@@ -1163,7 +959,7 @@ fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Ve
 }
 
 /// Delay between sending command text and pressing Enter via tmux, used by the
-/// synchronous `send_prompt_now` path.
+/// synchronous `send_text_now` path.
 const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Hard cap on the number of scrollback lines `capture_pane_text` will return.
@@ -2007,7 +1803,7 @@ impl<T: MuxDialect> MuxBackend<T> {
         name: &str,
     ) -> Result<Option<u32>> {
         if self.host.is_none() {
-            window_pane_pid(session_id, name)
+            self.window_pane_pid(session_id, name)
         } else {
             self.pane_pid(backend_id)
         }
@@ -2044,7 +1840,7 @@ impl<T: MuxDialect> MuxBackend<T> {
                 let stamp = self.stamp_window(&pane_id, session_id, WindowRole::Agent);
                 complete_remote_headless_spawn(pane_id, stamp, window_name)
             }
-            None => spawn_window(session_id, window_name, command, args, cwd, env),
+            None => self.spawn_window(session_id, window_name, command, args, cwd, env),
         }
     }
 
@@ -2058,7 +1854,7 @@ impl<T: MuxDialect> MuxBackend<T> {
                 known_host_socket(host)?;
                 WindowIndex::from_listing(self.discover_answered()?)
             }
-            None => local_window_index()?,
+            None => self.window_index()?,
         };
         // The old headless path treated a retained dead pane as needing a
         // relaunch; retain that behavior while unknown and unreachable remain
@@ -2111,14 +1907,14 @@ impl<T: MuxDialect> MuxBackend<T> {
                 Ok(agent)
             }
             None => {
-                let index = local_window_index()?;
+                let index = self.window_index()?;
                 let targets = [
                     index.agent_window(session_id, session_name).pane(),
                     index.shell_window(session_id, session_name).pane(),
                 ];
                 let mut killed = false;
                 for target in targets.into_iter().flatten() {
-                    kill_window_at(&target)?;
+                    self.kill_window_at(&target)?;
                     killed = true;
                 }
                 Ok(killed)
@@ -2450,12 +2246,12 @@ impl<T: MuxDialect> MuxBackend<T> {
             "set-option -w -t {backend_id} {WINDOW_ROLE_OPTION} {}",
             role.as_str()
         ))?;
-        // As in `stamp_local_window`, and for the same reason: this is the
+        // As in `stamp_oneshot`, and for the same reason: this is the
         // other half of the paths that write a stamp (the interface's own
         // spawn, and an adopt-by-name). The sweep is a local one-shot, so a
         // host's server is left to the teardown that can reach it.
         if !self.transport.is_remote() {
-            let _ = retire_duplicate_windows(session_id, role);
+            let _ = self.retire_duplicate_windows(session_id, role);
         }
         Ok(())
     }
@@ -2608,7 +2404,7 @@ fn complete_remote_headless_spawn(
 /// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
 /// so a multi-line prompt is delivered as a single paste — the embedded
 /// newlines insert as text instead of submitting the prompt on the first one.
-/// Used by [`send_prompt_now`], which is how the TUI reaches this too — the
+/// Used by [`MuxBackend::send_text_now`], which is how the TUI reaches this too — the
 /// kernel's prompt commands call it rather than framing the paste themselves.
 /// The trailing `Enter` is still sent separately by the caller. tmux delivers
 /// these bytes literally via `send-keys -l`.
@@ -2624,82 +2420,6 @@ pub(crate) fn bracketed_paste(text: &str) -> String {
 /// fail on it.
 fn parse_pane_dead(output: &str) -> bool {
     output.trim() == "1"
-}
-
-/// Whether `target`'s pane has exited. The one-shot mirror of
-/// [`MuxBackend::is_dead`], which asks the same question over control mode.
-///
-/// Errors read as "not dead" so a tmux hiccup degrades to the previous
-/// behavior (attempt the send) rather than silently dropping a prompt.
-fn pane_is_dead(target: &str) -> bool {
-    local_mux_command(&["display-message", "-p", "-t", target, "#{pane_dead}"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| parse_pane_dead(&String::from_utf8_lossy(&out.stdout)))
-        .unwrap_or(false)
-}
-
-/// Send text immediately to a session pane (no scheduling), followed by Enter.
-///
-/// The prompt-delivery shape every caller wants: [`send_text_now`] with the
-/// Enter kept, which is the behaviour this had before the CLI needed to leave
-/// text unsubmitted.
-pub fn send_prompt_now(session_id: &str, session_name: &str, text: &str) -> Result<()> {
-    send_text_now(session_id, session_name, text, true)
-}
-
-/// Type text into a session pane (no scheduling), submitting it or not.
-///
-/// Targets the session's own pane via `agent_target`, which refuses a window
-/// stamped for another session (ADR-25). Submitting uses a "paste text → brief delay → press
-/// Enter" sequence so the target app has time to process the pasted input.
-///
-/// `submit = false` types the text and stops: it lands in the agent's composer
-/// unsent, which is what a "type it, check what the pane shows, then submit"
-/// protocol needs — submitting on the way in fires every steer the instant it
-/// is typed. [`send_key_now`] with `enter` is the other half.
-///
-/// The text goes out as one paste either way (see
-/// `MuxDialect::paste_args`), so it arrives literally: no shell is involved, and
-/// the wrap is also what keeps a leading `-` from reading as a `send-keys`
-/// flag and a newline from submitting the line before it.
-///
-/// Refuses a pane whose process has exited. Sessions run with
-/// `remain-on-exit=on` (`SESSION_OPTS`), so a dead agent leaves its window in
-/// place and `send-keys` still exits 0 while discarding the keystrokes. Every
-/// caller reads that success as "the agent got it" — which is how the mailbox
-/// wake came to report `woke: true` at a pane nothing was listening to — so the
-/// liveness check belongs here, once, rather than in each of them.
-pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: bool) -> Result<()> {
-    let Some(target) = agent_target(session_id, session_name) else {
-        bail!("session '{session_name}' has no window of its own here");
-    };
-    if pane_is_dead(&target) {
-        bail!("session '{session_name}' has exited; its pane accepts no input");
-    }
-    let paste = LocalMuxTransport::paste_args(&target, text);
-    let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
-    let out = local_mux_command(&paste_argv)
-        .output()
-        .context("Failed to paste prompt text into the session pane")?;
-    if !out.status.success() {
-        bail!("{DEFAULT_MUX} {} {}", paste[0], mux_failure(&out));
-    }
-
-    if !submit {
-        return Ok(());
-    }
-
-    std::thread::sleep(SEND_KEYS_ENTER_DELAY);
-
-    let out = local_mux_command(&["send-keys", "-t", &target, "Enter"])
-        .output()
-        .context("Failed to send Enter to the session pane")?;
-    if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys (Enter) {}", mux_failure(&out));
-    }
-    Ok(())
 }
 
 /// How a failed one-shot multiplexer command reads inside an error.
@@ -2720,7 +2440,7 @@ fn mux_failure(out: &std::process::Output) -> String {
     detail.to_string()
 }
 
-/// The special keys [`send_key_now`] can deliver, as
+/// The special keys [`SessionBackend::send_key`](crate::agent::backend::SessionBackend::send_key) can deliver, as
 /// `(canonical spelling, tmux key name)`.
 ///
 /// A closed table because tmux does **not** validate a key name: an
@@ -2810,29 +2530,6 @@ pub fn resolve_key(input: &str) -> Option<ResolvedKey> {
     })
 }
 
-/// Send one named special key to a session pane — no text, no Enter.
-///
-/// `tmux_key` is a [`ResolvedKey::tmux`] name, never a caller's string: tmux
-/// types an unrecognized name into the pane instead of refusing it.
-///
-/// Refuses a dead pane for the same reason [`send_text_now`] does — `send-keys`
-/// exits 0 into a `remain-on-exit` corpse, so success would be a lie.
-pub fn send_key_now(session_id: &str, session_name: &str, tmux_key: &str) -> Result<()> {
-    let Some(target) = agent_target(session_id, session_name) else {
-        bail!("session '{session_name}' has no window of its own here");
-    };
-    if pane_is_dead(&target) {
-        bail!("session '{session_name}' has exited; its pane accepts no input");
-    }
-    let out = local_mux_command(&["send-keys", "-t", &target, tmux_key])
-        .output()
-        .context("Failed to send a key to the session pane")?;
-    if !out.status.success() {
-        bail!("{DEFAULT_MUX} send-keys ({tmux_key}) {}", mux_failure(&out));
-    }
-    Ok(())
-}
-
 /// Window name for the headless automation heartbeat keeper. Deliberately NOT
 /// `tb-` prefixed so [`MuxBackend::discover`] ignores it — it is
 /// infrastructure, not a session.
@@ -2856,41 +2553,6 @@ fn list_window_names() -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
-}
-
-/// Whether the session has an agent pane of its own on the thurbox tmux server.
-///
-/// A window stamped for a namesake does not count (ADR-25). Used by the
-/// headless dispatcher to skip `send`
-/// automations whose target session is no longer running rather than failing
-/// into a dead pane.
-pub fn window_exists(session_id: &str, session_name: &str) -> bool {
-    agent_target(session_id, session_name).is_some()
-}
-
-/// Schedule a one-shot prompt delivery into a session's window after
-/// `delay_secs`, via a detached `tmux run-shell` timer.
-///
-/// Used by the headless automation dispatcher to deliver a Spawn automation's
-/// prompt once the freshly launched agent CLI has had time to boot — offline
-/// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
-pub fn send_prompt_after_delay(
-    session_id: &str,
-    session_name: &str,
-    text: &str,
-    delay_secs: u64,
-) -> Result<()> {
-    let Some(target) = agent_target(session_id, session_name) else {
-        bail!("session '{session_name}' has no window of its own here");
-    };
-    let script = LocalMuxTransport::deferred_prompt_script(&local_socket(), &target, text);
-    let out = local_mux_command(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
-        .output()
-        .context("Failed to schedule tmux run-shell for deferred prompt")?;
-    if !out.status.success() {
-        bail!("tmux run-shell (deferred prompt) {}", mux_failure(&out));
-    }
-    Ok(())
 }
 
 /// Ensure the automation heartbeat keeper window is running.
@@ -2977,41 +2639,6 @@ pub fn resolve_cli_binary() -> std::path::PathBuf {
     std::path::PathBuf::from(cli_name)
 }
 
-/// Capture the rendered contents of a session's pane.
-///
-/// Returns the visible terminal text. `lines` controls how many lines of
-/// scrollback to include before the visible region (capped to a sane max).
-/// With `ansi`, tmux emits the styling escape sequences too (`capture-pane
-/// -e`) instead of flattening the screen to plain text.
-pub fn capture_pane_text(
-    session_id: &str,
-    session_name: &str,
-    lines: u32,
-    ansi: bool,
-) -> Result<String> {
-    let Some(target) = agent_target(session_id, session_name) else {
-        bail!("session '{session_name}' has no window of its own here");
-    };
-    let lines = lines.min(MAX_CAPTURE_LINES);
-    let start = format!("-{lines}");
-
-    let mut args = vec!["capture-pane", "-p", "-J", "-t", &target, "-S", &start];
-    if ansi {
-        args.push("-e");
-    }
-    let output = local_mux_command(&args)
-        .output()
-        .map_err(|e| local_launch_failure("Failed to run tmux capture-pane", e))?;
-    if !output.status.success() {
-        bail!(
-            "tmux capture-pane exited with status {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 /// The OSC 2 that restores `title` as a pane's window title, or empty when
 /// there is nothing to restore.
 ///
@@ -3037,50 +2664,6 @@ fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
         return Vec::new();
     }
     format!("\x1b]2;{text}\x1b\\").into_bytes()
-}
-
-/// A session pane's live state *around* its rendered text: where the cursor
-/// sits, what is running in the foreground of its tty, and where that process
-/// thinks it is.
-///
-/// Every field is independently optional and never guessed. A multiplexer that
-/// does not answer a format (one may expand an unknown `#{…}` to nothing), a
-/// pane that has gone away between the capture and this call, or a platform
-/// with no `ps` each leave the affected fields `None` rather than a plausible
-/// wrong value — the caller can then say "unknown" instead of acting on a
-/// fabrication.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct PaneState {
-    /// Cursor row, 0-based, relative to the visible pane (`#{cursor_y}`).
-    pub cursor_row: Option<u32>,
-    /// Cursor column, 0-based (`#{cursor_x}`).
-    pub cursor_col: Option<u32>,
-    /// The foreground process's argv0 — its executable as invoked.
-    ///
-    /// Resolved from the tty's foreground process group where that is possible,
-    /// falling back to tmux's `#{pane_current_command}`. The two agree in the
-    /// common case; [`foreground_command`](Self::foreground_command) is what
-    /// says which one this is.
-    pub foreground_process: Option<String>,
-    /// The foreground process's **full** command line.
-    ///
-    /// `Some` only when the process group was really resolved, which is also
-    /// what makes this the field worth reading: a Node-based agent CLI is a
-    /// bare `node` in every command-*name* view, and only its argv distinguishes
-    /// `node …/cursor-agent/cli.js` from a REPL.
-    pub foreground_command: Option<String>,
-    /// The pane's live working directory (`#{pane_current_path}`) — where the
-    /// foreground process is, not the directory the session was launched in.
-    pub foreground_cwd: Option<String>,
-    /// Whether the pane's command has **exited** (`#{pane_dead}`).
-    ///
-    /// The backend runs with `remain-on-exit=on`, so a dead pane keeps its
-    /// frame — and keeps answering `#{pane_current_command}` with whatever last
-    /// ran there. Without this, an agent that crashed reports its own name as
-    /// the foreground process: a plausible wrong answer rather than an honest
-    /// absence, which is exactly what a caller reconciling a latched state
-    /// against reality must not be handed.
-    pub dead: Option<bool>,
 }
 
 /// Separator for the one-shot `display-message` that reads a pane's whole
@@ -3128,134 +2711,6 @@ fn normalized_pane_answer(raw: &str) -> Cow<'_, str> {
 /// outright, so the separator survives whatever the environment says. Passed
 /// only where the dialect sanitizes ([`MuxDialect::UTF8_FLAG`]).
 const PANE_STATE_UTF8_FLAG: &str = "-u";
-
-/// Read a session pane's cursor position, foreground process and live cwd.
-///
-/// Best-effort by construction — see [`PaneState`]. One `display-message` for
-/// everything tmux knows, plus at most one `ps` to turn the cheap command
-/// *name* into the foreground process's argv. `session_id`/`session_name`
-/// resolve the window the same way [`capture_pane_text`] does, so the state
-/// describes the pane the capture came from.
-pub fn pane_state(session_id: &str, session_name: &str) -> PaneState {
-    let Some(target) = agent_target(session_id, session_name) else {
-        return PaneState::default();
-    };
-    let format = [
-        "#{cursor_y}",
-        "#{cursor_x}",
-        "#{pane_current_command}",
-        "#{pane_current_path}",
-        "#{pane_tty}",
-        "#{pane_dead}",
-        "#{window_name}",
-    ]
-    .join(&PANE_STATE_SEP.to_string());
-
-    let mut argv = Vec::with_capacity(6);
-    if LocalMuxTransport::UTF8_FLAG {
-        argv.push(PANE_STATE_UTF8_FLAG);
-    }
-    argv.extend(["display-message", "-p", "-t", &target, &format]);
-
-    let Some(raw) = local_mux_command(&argv)
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-    else {
-        return PaneState::default();
-    };
-
-    let (mut state, tty, window) = parse_pane_state(&raw);
-    // `display-message` against a target it cannot resolve does **not** fail:
-    // it answers for the client's current pane and exits 0. Reporting a
-    // stranger's shell as this session's foreground process is the plausible
-    // wrong answer every field here is built to avoid, so the answer is only
-    // kept when it demonstrably came from this session's own window.
-    if window.as_deref() != Some(agent_window_name(session_name).as_str()) {
-        return PaneState::default();
-    }
-    if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
-        state.foreground_process = Some(argv0);
-        state.foreground_command = Some(command);
-    }
-    state
-}
-
-/// The `PATH` thurbox handed a local session's **agent pane**, read back off
-/// the pane's own start command.
-///
-/// A hook command names `thurbox-cli` bare (`thurbox-cli session signal --state
-/// <s> || true`), so the only `PATH` that decides whether it resolves is the
-/// pane's. Anything else — notably the `PATH` of whatever process is asking —
-/// is a different machine-state question that happens to have the same shape,
-/// and answering one with the other is how `session doctor` reported healthy
-/// wiring for panes that could not find the binary at all.
-///
-/// The evidence is the `env PATH=…` prefix a local spawn writes in front of the
-/// window's program, which tmux keeps verbatim in `#{pane_start_command}`. That is deliberately not
-/// `/proc/<pid>/environ`: reading another process's environment needs
-/// `PTRACE_MODE_READ`, which Debian and Ubuntu restrict to a tracer's own
-/// descendants by default (`kernel.yama.ptrace_scope = 1`) — so it would answer
-/// for a `doctor` run from the TUI and refuse the same question typed into a
-/// terminal, which is the way it is usually asked. tmux's own record has no
-/// such rule, and no platform gate either.
-///
-/// Three answers, not two. "This machine's server holds no agent window for the
-/// session" and "the window is there and its `PATH` is not one thurbox wrote"
-/// are different facts, and rounding the second to the first is what let a
-/// broken pane report healthy: a parked session has nothing to verify, while a
-/// live pane that cannot be verified is a live pane that may not work.
-/// Remote sessions are the caller's to exclude: this reads **this** machine's
-/// server.
-pub fn agent_pane_path(session_id: &str, session_name: &str) -> PanePath {
-    let Some(target) = agent_target(session_id, session_name) else {
-        return PanePath::Absent;
-    };
-    let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
-    let mut argv = Vec::with_capacity(6);
-    if LocalMuxTransport::UTF8_FLAG {
-        argv.push(PANE_STATE_UTF8_FLAG);
-    }
-    argv.extend(["display-message", "-p", "-t", &target, &format]);
-    let Some(raw) = local_mux_command(&argv)
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-    else {
-        return PanePath::Absent;
-    };
-    let line = normalized_pane_answer(&raw);
-    let mut fields = line.split(PANE_STATE_SEP);
-    let (Some(start_command), Some(window)) = (fields.next(), fields.next()) else {
-        return PanePath::Absent;
-    };
-    // `display-message` against a target it cannot resolve does **not** fail:
-    // it answers for the client's current pane and exits 0. That is the trap
-    // `pane_state` guards against too, and here it would hand back a stranger's
-    // `PATH` as this session's.
-    if window != agent_window_name(session_name) {
-        return PanePath::Absent;
-    }
-    match path_from_prefix(start_command) {
-        Some(path) => PanePath::Known(path),
-        None => PanePath::Unknown,
-    }
-}
-
-/// What [`agent_pane_path`] found.
-pub enum PanePath {
-    /// The `PATH` thurbox handed the pane, read off its start command.
-    Known(String),
-    /// The window is there, but its `PATH` is not one thurbox wrote: a pane
-    /// spawned before the prefix existed, a window whose dialect writes none,
-    /// or a `PATH` whose quoting tmux had to alter.
-    Unknown,
-    /// This machine's server holds no agent window for the session — parked,
-    /// gone, or never here. Nothing to read a `PATH` from.
-    Absent,
-}
 
 /// The `PATH` out of an `env PATH=… <program> …` window command, or `None` when
 /// the command does not open with one.
@@ -3493,140 +2948,6 @@ pub(crate) fn resolve_local_program(command: &str) -> String {
     }
 }
 
-/// Spawn a new tmux window running `command` with `args` in `cwd`.
-///
-/// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
-/// streams. Returns the new pane's id (`%N`) on success; the command runs
-/// inside it. Window name is `tb-<session_name>` — which is *not* unique (two
-/// sessions can share a name), so the window is stamped with `session_id`
-/// before this returns and every later lookup resolves that (ADR-25).
-///
-/// A pane id on stdout outranks a non-zero exit status, which on this path can
-/// belong to a user's tmux hook rather than to the window — see the read below.
-///
-/// Where the local dialect has no `MuxDialect::ONESHOT_PANE_REPORT` the id
-/// is not asked for and an empty string is returned, so the window is known by
-/// its name instead (and is best-effort, like the other window-option
-/// carve-outs). With no id to weigh, a non-zero status is the whole answer
-/// there, exactly as before.
-pub fn spawn_window(
-    session_id: &str,
-    session_name: &str,
-    command: &str,
-    args: &[String],
-    cwd: Option<&Path>,
-    env: &HashMap<String, String>,
-) -> Result<String> {
-    // Ensure the session exists and is configured, without opening a
-    // control-mode connection (headless one-shot path).
-    MuxBackend::<LocalMuxTransport>::local().ensure_session_configured()?;
-    if LocalMuxTransport::ASKS_SERVER_VERSION {
-        check_local_server_version()?;
-    }
-
-    let window_name = agent_window_name(session_name);
-    // Created at the END of the session's window list, so the retention below
-    // can name the window this command just made: `{end}` is the last window
-    // and `-a` appends after it, so within this one command list `{end}` is
-    // exactly the new one. The window's *name* cannot say that — `tb-<session
-    // name>` is not unique (two sessions can share a name, which is why the
-    // stamp exists), and tmux resolves a duplicate name to the lowest index,
-    // which is the older window (measured, tmux 3.2a). A dialect without the
-    // one-shot pane report keeps the plain session target: it gets no
-    // retention write either, and the shorthand is tmux's.
-    let create_target = if LocalMuxTransport::ONESHOT_PANE_REPORT {
-        format!("{TMUX_SESSION}:{{end}}")
-    } else {
-        format!("{TMUX_SESSION}:")
-    };
-    let mut tmux = new_window_command(&window_name, &create_target, command, args, cwd, env);
-    // The stamp rides in the same command list as the creation, like the birth
-    // options: two `set-option` processes fewer on every `session create`
-    // (#1243). `{end}` still names the new window here, and the pane id it
-    // would otherwise be written against is not known until the list returns.
-    let stamped = local_windows_are_stamped();
-    if stamped {
-        for (option, value) in [
-            (WINDOW_SESSION_OPTION, session_id),
-            (WINDOW_ROLE_OPTION, WindowRole::Agent.as_str()),
-        ] {
-            if !value.is_empty() {
-                tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
-            }
-        }
-    }
-
-    let output = tmux
-        .output()
-        .map_err(|e| local_launch_failure("Failed to run tmux new-window for headless spawn", e))?;
-    // Without a pane report the window name is the only handle this path has.
-    let pane_id = if LocalMuxTransport::ONESHOT_PANE_REPORT {
-        new_window_pane_id(&output.stdout)
-    } else {
-        String::new()
-    };
-    if !output.status.success() {
-        // The exit status is not this command's verdict on its own. tmux hands
-        // a command-mode client the status of the last `run-shell` its command
-        // list triggered, and a *hook* counts: an `after-new-window` left
-        // behind by an uninstalled tmux plugin runs a script that is no longer
-        // there, `/bin/sh` answers 127, and the client exits 127 although
-        // `new-window` succeeded and already printed the pane id (measured,
-        // tmux 3.5a; stderr is empty, so the message named nothing either).
-        // The pane id is the answer to `-P`, so where there is one the window
-        // exists and refusing it tears down a session that started fine
-        // (issue #1154). The control-mode path never sees this: its reply block
-        // carries the `-P` answer alone and no exit status at all.
-        if !control_mode::is_valid_pane_id(&pane_id) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "tmux new-window exited {} for window {}: {}",
-                output.status,
-                window_name,
-                stderr.trim()
-            );
-        }
-        warn!(
-            "tmux answered {} for window {} and created it anyway ({}): a hook \
-             on thurbox's own server failed, which is what an uninstalled \
-             plugin's leftover hook does for the life of that server. `{} -L {} \
-             show-hooks -g` names it. Unset the hook rather than killing that \
-             server — it holds every live session",
-            output.status,
-            window_name,
-            pane_id,
-            DEFAULT_MUX,
-            local_socket()
-        );
-    }
-    // `window_target` takes a window *name*: the session's is `tb-<name>`, and
-    // naming the session itself resolved to whatever window that picked out.
-    let target = if pane_id.is_empty() {
-        window_target(&window_name)
-    } else {
-        pane_id.clone()
-    };
-    if stamped {
-        // What `stamp_local_window` does after writing the stamp.
-        let _ = retire_duplicate_windows(session_id, WindowRole::Agent);
-    } else {
-        stamp_local_window(&target, session_id, WindowRole::Agent);
-    }
-    Ok(pane_id)
-}
-
-/// [`MuxDialect::check_server_version`] against the local server's own
-/// `#{version}` — the headless twin of the check in [`MuxBackend::spawn`].
-fn check_local_server_version() -> Result<()> {
-    let output = local_mux_command(&["display-message", "-t", TMUX_SESSION, "-p", "#{version}"])
-        .output()
-        .map_err(|e| local_launch_failure("Failed to ask the multiplexer its version", e))?;
-    LocalMuxTransport::check_server_version(
-        &String::from_utf8_lossy(&output.stdout),
-        &local_socket(),
-    )
-}
-
 /// The pane id out of a one-shot `new-window -P -F '#{pane_id}'`'s stdout.
 ///
 /// The **first** line, not the whole of it: anything a hook's `run-shell`
@@ -3640,45 +2961,6 @@ fn new_window_pane_id(stdout: &[u8]) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
-}
-
-/// The `new-window` command list [`spawn_window`] runs: the window created
-/// detached at `create_target` running `command` — and, where the dialect
-/// takes them, its birth options chained into the same invocation.
-fn new_window_command(
-    window_name: &str,
-    create_target: &str,
-    command: &str,
-    args: &[String],
-    cwd: Option<&Path>,
-    env: &HashMap<String, String>,
-) -> Command {
-    let report = LocalMuxTransport::ONESHOT_PANE_REPORT;
-    let mut tmux = local_mux_command(&["new-window", "-d"]);
-    if report {
-        tmux.arg("-a");
-    }
-    tmux.args(["-t", create_target, "-n", window_name]);
-    if report {
-        tmux.args(["-P", "-F", "#{pane_id}"]);
-    }
-    if let Some(dir) = cwd {
-        tmux.args(["-c", &dir.to_string_lossy()]);
-    }
-    LocalMuxTransport::push_window_program(&mut tmux, command, args, env);
-
-    // Chained into the same command list as the creation, not sent after it —
-    // `birth_options` has the measurement. This path passes `-d`, so the new
-    // window is not current and the bare form the control-mode path uses is not
-    // available; `{end}` names it instead, which is why the window is created
-    // there.
-    if report {
-        for (key, value) in birth_options(window_name) {
-            tmux.args([";", "set-window-option", "-t", create_target]);
-            tmux.args([key, value]);
-        }
-    }
-    tmux
 }
 
 /// `env PATH=<…>` in front of a window's program, or nothing.
@@ -3789,55 +3071,6 @@ pub(crate) fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
-/// Headless spawn of an agent window on a remote host over SSH.
-///
-/// Returns the remote tmux pane id (`%N`), like the local [`spawn_window`] —
-/// but by driving the SSH backend's control mode rather than `new-window -P`.
-/// The control-mode connection is dropped when this returns; the remote tmux
-/// keeps the window alive for the TUI to adopt later.
-pub fn spawn_window_remote(
-    host: &crate::session::HostDef,
-    session_id: &str,
-    session_name: &str,
-    command: &str,
-    args: &[String],
-    cwd: Option<&Path>,
-    env: &HashMap<String, String>,
-) -> Result<String> {
-    let backend = crate::agent::registry::host_backend(host);
-    spawn_window_remote_on(
-        backend.as_ref(),
-        session_id,
-        session_name,
-        command,
-        args,
-        cwd,
-        env,
-    )
-}
-
-fn spawn_window_remote_on(
-    backend: &dyn SessionBackend,
-    session_id: &str,
-    session_name: &str,
-    command: &str,
-    args: &[String],
-    cwd: Option<&Path>,
-    env: &HashMap<String, String>,
-) -> Result<String> {
-    backend
-        .check_available()
-        .context("remote host is unreachable or tmux is missing")?;
-    backend.ensure_ready()?;
-    let window_name = agent_window_name(session_name);
-    // Headless: no live terminal, so use a sane default geometry. The TUI
-    // resizes the pane to its real dimensions when it adopts the session.
-    let spawned = backend.spawn(&window_name, command, args, cwd, env, 24, 80)?;
-    let pane_id = spawned.backend_id;
-    let stamp = backend.stamp_window(&pane_id, session_id, WindowRole::Agent);
-    complete_remote_headless_spawn(pane_id, stamp, &window_name)
-}
-
 /// One-shot read of every pane's remote-hook state option on `host`:
 /// `list-panes -s -t <session> -F "#{pane_id} #{@thurbox_state}"` over the
 /// host launcher, parsed to the set `(pane_id, state)` pairs. The headless
@@ -3857,20 +3090,12 @@ pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
     list_hook_states_on(&MuxBackend::<LocalMuxTransport>::local())
 }
 
-/// The one-shot operations a teardown, a rename or a status poll runs against a
+/// The one-shot reads a relaunch probe or a status poll runs against a
 /// host's server, whichever multiplexer the host runs. Chosen by
 /// [`crate::agent::registry::host_mux`]; none of them starts control mode.
 pub(crate) trait HostMux {
     fn discover_answered(&self) -> Result<Vec<DiscoveredSession>>;
     fn hook_states(&self) -> Result<Vec<(String, String)>>;
-    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()>;
-    fn kill_windows(
-        &self,
-        host_name: &str,
-        session_id: &str,
-        session_name: &str,
-        panes: SessionPanes<'_>,
-    ) -> Result<bool>;
 }
 
 impl<T: MuxDialect> HostMux for MuxBackend<T> {
@@ -3879,18 +3104,6 @@ impl<T: MuxDialect> HostMux for MuxBackend<T> {
     }
     fn hook_states(&self) -> Result<Vec<(String, String)>> {
         list_hook_states_on(self)
-    }
-    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()> {
-        rename_session_windows_on(self, session_id, from, to)
-    }
-    fn kill_windows(
-        &self,
-        host_name: &str,
-        session_id: &str,
-        session_name: &str,
-        panes: SessionPanes<'_>,
-    ) -> Result<bool> {
-        kill_remote_windows_on(self, host_name, session_id, session_name, panes)
     }
 }
 
@@ -3933,45 +3146,6 @@ pub fn agent_window(
         None => MuxBackend::<LocalMuxTransport>::local().discover_answered()?,
     });
     Ok(index.live_agent_window(session_id, session_name))
-}
-
-/// Whether a session's agent window is running — see [`agent_window`].
-///
-/// `Unknown` counts as running: every caller uses this to decide whether to
-/// launch another agent, and "I cannot tell" must not be the answer that
-/// launches one.
-pub fn agent_window_alive(
-    host: Option<&crate::session::HostDef>,
-    session_id: &str,
-    session_name: &str,
-) -> Result<bool> {
-    Ok(!agent_window(host, session_id, session_name)?.is_absent())
-}
-
-/// Follow a session's rename with the windows named after it: its agent's, and
-/// its companion shell's when it has one.
-///
-/// Located under the name the session *had*, stamp first, so a namesake's
-/// window is never the one renamed. The name is more than looks where a window
-/// carries no stamp (no window options, or one spawned before stamping): the name is then
-/// all that finds it, and a row renamed without its window would lose it — which
-/// is also why ambiguity refuses rather than skips.
-pub fn rename_session_windows(
-    host: Option<&crate::session::HostDef>,
-    session_id: &str,
-    from: &str,
-    to: &str,
-) -> Result<()> {
-    if let Some(host) = host {
-        known_host_socket(host)?;
-        return crate::agent::registry::host_mux(host).rename_windows(session_id, from, to);
-    }
-    rename_session_windows_on(
-        &MuxBackend::<LocalMuxTransport>::local(),
-        session_id,
-        from,
-        to,
-    )
 }
 
 fn rename_session_windows_on<T: MuxDialect>(
@@ -4071,74 +3245,6 @@ pub fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
     )
 }
 
-/// Kill the windows a session owns on `host`: its agent and, when it has one,
-/// its companion shell. Returns whether the *agent* window came down.
-///
-/// Mirror of [`kill_window`] for the SSH transport, and strict in the same
-/// way: the pane a row remembers is a *hint* — the host's tmux server reissues
-/// ids from `%0` when it restarts, so a remembered `%N` can be a live
-/// namesake's pane afterwards. Only a window the host's own listing stamps for
-/// this session is killed. `panes` is the fallback where nothing is stamped
-/// (no window options) and a name cannot be told apart from its namesake's.
-///
-/// One listing serves both roles — an ssh round trip per role would double the
-/// cost of every remote teardown — and nothing here starts control mode:
-/// `ensure_ready` *creates* the server and the thurbox session
-/// on the host, which is how tearing a session down came to leave empty
-/// servers on other people's machines.
-pub fn kill_remote_windows(
-    host: &crate::session::HostDef,
-    session_id: &str,
-    session_name: &str,
-    panes: SessionPanes<'_>,
-) -> Result<bool> {
-    known_host_socket(host)?;
-    crate::agent::registry::host_mux(host).kill_windows(&host.name, session_id, session_name, panes)
-}
-
-fn kill_remote_windows_on<T: MuxDialect>(
-    backend: &MuxBackend<T>,
-    host_name: &str,
-    session_id: &str,
-    session_name: &str,
-    panes: SessionPanes<'_>,
-) -> Result<bool> {
-    let index = WindowIndex::from_listing(backend.discover_answered()?);
-    let killed = kill_located(
-        backend,
-        index.agent_window(session_id, session_name),
-        panes.agent,
-        session_name,
-        host_name,
-    )?;
-    kill_located(
-        backend,
-        index.shell_window(session_id, session_name),
-        panes.shell,
-        session_name,
-        host_name,
-    )?;
-    Ok(killed)
-}
-
-/// The pane ids a row remembers for its two windows — the fallback where
-/// nothing is stamped, and nothing more, since a stamped window is resolved
-/// without them.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SessionPanes<'a> {
-    pub agent: &'a str,
-    /// Usually empty: `shell_backend_id` is written only once the interface has
-    /// opened a shell for the session.
-    pub shell: &'a str,
-}
-
-impl<'a> SessionPanes<'a> {
-    /// The agent's pane alone, for a caller with no shell to speak of.
-    pub fn agent(agent: &'a str) -> Self {
-        Self { agent, shell: "" }
-    }
-}
-
 /// Kill what a listing placed, if it placed anything this session may claim.
 fn kill_located<T: MuxDialect>(
     backend: &MuxBackend<T>,
@@ -4161,79 +3267,924 @@ fn kill_located<T: MuxDialect>(
     }
 }
 
-/// Kill the session's own tmux window, if the local server still holds one.
-///
-/// Resolved through the window's own stamp, so one stamped for another session —
-/// a live namesake's — is never the one that comes down. That is not a
-/// nicety: names are not unique, a soft-deleted row keeps its name until it is
-/// reaped, and `kill-window -t tb-<name>` matches an arbitrary one of them.
-pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
-    match agent_target(session_id, session_name) {
-        Some(target) => kill_window_at(&target),
-        None => Ok(()),
+/// One-shot operations on this backend's own server — the session-scoped
+/// half of the `SessionBackend` pane operations, and what the platform
+/// wrappers below call for the local server.
+impl<T: MuxDialect> MuxBackend<T> {
+    /// A one-shot multiplexer command on this backend's server.
+    fn oneshot(&self, args: &[&str]) -> Command {
+        self.transport.mux_command(&self.socket(), args)
     }
-}
 
-/// Kill the session's companion shell window (`tbs-`), if the local server
-/// still holds one.
-///
-/// The other half of [`kill_window`]: a session owns two windows, and a
-/// teardown that takes only the agent leaves a `tbs-` shell running for a row
-/// that no longer exists. Resolved by the same stamp, so a NULL
-/// `shell_backend_id` — the usual state, since the column is written only when
-/// the interface opens the shell — costs nothing.
-pub fn kill_shell_window(session_id: &str, session_name: &str) -> Result<()> {
-    match owned_target(session_id, session_name, WindowRole::Shell) {
-        Some(target) => kill_window_at(&target),
-        None => Ok(()),
+    /// What a one-shot reports when the multiplexer will not start (see
+    /// [`crate::agent::preflight::launch_failure`]).
+    fn launch_failure(&self, context: &'static str, err: std::io::Error) -> anyhow::Error {
+        crate::agent::preflight::launch_failure(&self.transport, context, err)
     }
-}
 
-/// Run `kill-window` against an already-resolved target, tolerating a window
-/// that is already gone. Shared by [`kill_window`] and the reap, which resolves
-/// its own target through [`WindowIndex`] (`session_ops::delete`) — the two
-/// differ only in how the target is chosen.
-pub fn kill_window_at(target: &str) -> Result<()> {
-    let output = local_mux_command(&["kill-window", "-t", target])
-        .output()
-        .context("Failed to run tmux kill-window")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // It's fine if the window is already gone.
-        if stderr.contains("can't find window") || stderr.contains("window not found") {
+    /// Build the `session:=window` tmux target for a thurbox agent session.
+    ///
+    /// The `=` prefix forces tmux to match the window name exactly. Without
+    /// it tmux falls back to FNMATCH-style prefix matching, so a target of
+    /// `tb-foo` would resolve ambiguously when both `tb-foo` and
+    /// `tb-foo-bar` exist — `send-keys`/`capture-pane` then fails with
+    /// "ambiguous window" and the caller's text is silently dropped.
+    fn window_target(&self, window_name: &str) -> String {
+        format!("{}:={window_name}", self.session)
+    }
+
+    /// Leave one window carrying `session_id`'s `role` stamp, and say which one
+    /// kept it — or `None` when there was never more than one to choose between.
+    ///
+    /// ADR-25 gives a stamp its meaning under one invariant: one session, one
+    /// window per role. Two windows carrying it is not a weaker answer but no
+    /// answer at all — [`WindowIndex::stamped_match`] returns [`Located::Unknown`]
+    /// by design, and from then on the session cannot be sent to, killed, captured
+    /// or renamed. A restart is kill-then-spawn and a repairer relaunches anything
+    /// a listing says is gone, so the two overlapping put one stamp on two windows
+    /// and the session was lost for good (issue #1207).
+    ///
+    /// **The highest window id keeps the identity.** The rule is that rather than
+    /// "the window I just stamped" because both racers run this: "mine wins" has
+    /// each of them retire the other's and can leave the session no window at all,
+    /// while a key tmux issues in order and never reissues while the server lives
+    /// makes every sweep reach the same verdict from any listing that sees both.
+    /// That is also what closes the gap a window opens between being created and
+    /// being stamped — the sweep runs *after* each stamp, so the last stamp to land
+    /// is followed by a listing that sees every earlier one, whichever order the
+    /// windows were created in.
+    ///
+    /// It is the right half to keep, too. The newest window is the one the most
+    /// recent restart asked for, and where both panes resume one conversation it is
+    /// the connection that displaced the other — the loser is the pane that printed
+    /// "another connection took over this session".
+    ///
+    /// Liveness is deliberately **not** the key. It changes between two listings
+    /// taken a moment apart, so two sweeps could each keep what the other retired,
+    /// and a session with no window at all is the one outcome worse than the pair.
+    /// A newest window whose pane has already exited is kept and stays on screen
+    /// (`remain-on-exit`), which is how the operator gets to see why it exited.
+    ///
+    /// Only where the local multiplexer has window options. One that keeps `@`
+    /// options in a single server-global map hands the same value back for every
+    /// window (ADR-13), so every window there would read as stamped for whoever was
+    /// stamped last; the stamp is withheld at both ends for that reason (issue
+    /// #1168) and this must not be the one place that believes it.
+    pub(crate) fn retire_duplicate_windows(
+        &self,
+        session_id: &str,
+        role: WindowRole,
+    ) -> Option<String> {
+        if !T::WINDOW_OPTIONS || session_id.is_empty() {
+            return None;
+        }
+        let output = self
+            .oneshot(&["list-windows", "-t", TMUX_SESSION, "-F", RETIRE_FORMAT])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let windows = stamped_windows_in(&listing, session_id, role);
+        let (keep, retire) = windows.split_last()?;
+        let mut retired = false;
+        for window in retire {
+            match self.kill_window_at(window) {
+                Ok(()) => {
+                    retired = true;
+                    warn!(
+                        "retired {window}: it carried session {session_id}'s {} stamp, which \
+                         {keep} now holds alone",
+                        role.as_str()
+                    );
+                }
+                Err(e) => {
+                    warn!("could not retire {window}, stamped for session {session_id}: {e:#}")
+                }
+            }
+        }
+        retired.then(|| keep.clone())
+    }
+
+    /// Stamp a window on the local server with the identity every reconciler
+    /// resolves it by.
+    ///
+    /// `target` is the new window's pane id, or its `session:=window` target where
+    /// the spawn could not report one. Best-effort by design, and so returns
+    /// nothing to check — but **not attempted at all** on a multiplexer without
+    /// window options (`MuxDialect::WINDOW_OPTIONS`, ADR-13), where the
+    /// sole-namesake rule in [`WindowIndex`] carries the identity as the name
+    /// fallback did before. Writing one there is not the harmless no-op it reads
+    /// as: such a multiplexer keeps a server-global option under the name and
+    /// answers `#{@...}` with it for every window, so a single stamp made every
+    /// window look like one session's and cost the interface every pane it had
+    /// (issue #1168).
+    pub(crate) fn stamp_oneshot(&self, target: &str, session_id: &str, role: WindowRole) {
+        if !T::WINDOW_OPTIONS {
+            return;
+        }
+        for (option, value) in [
+            (WINDOW_SESSION_OPTION, session_id),
+            (WINDOW_ROLE_OPTION, role.as_str()),
+        ] {
+            if value.is_empty() {
+                continue;
+            }
+            match self
+                .oneshot(&["set-option", "-w", "-t", target, option, value])
+                .output()
+            {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => debug!(
+                    "could not stamp {target} with {option}: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+                Err(e) => debug!("could not stamp {target} with {option}: {e}"),
+            }
+        }
+        // The invariant the stamp is only meaningful under, enforced where the
+        // stamp is written rather than left to a resolver that is required to
+        // refuse the pair — see `retire_duplicate_windows`.
+        let _ = self.retire_duplicate_windows(session_id, role);
+    }
+
+    /// Every thurbox window on the local server, indexed.
+    pub(crate) fn window_index(&self) -> Result<WindowIndex> {
+        Ok(WindowIndex::from_listing(self.discover()?))
+    }
+
+    /// Resolve the local tmux target for acting on a session's agent pane, or
+    /// `None` when nothing on the server is this session's to act on.
+    ///
+    /// Every one-shot helper that acts on a session's pane goes through here, so
+    /// the stamp decides in one place. What it replaced was `tb-<name>`, a target
+    /// tmux matches exactly and resolves to an arbitrary one of a session's
+    /// namesakes.
+    pub(crate) fn agent_target(&self, session_id: &str, session_name: &str) -> Option<String> {
+        self.owned_target(session_id, session_name, WindowRole::Agent)
+    }
+
+    /// [`agent_target`] for any of a session's windows — its agent, or the
+    /// companion shell a teardown has to take down with it.
+    pub(crate) fn owned_target(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        role: WindowRole,
+    ) -> Option<String> {
+        match self.locate_here(session_id, session_name, role) {
+            Located::At(pane) => Some(pane),
+            Located::Absent => None,
+            // One stamp on two windows is repairable, and here is where repairing
+            // it matters: `stamped_match` refuses the pair by design, so without
+            // this nothing would ever look again and the session stayed
+            // unaddressable for good (issue #1207). The refusal itself is
+            // untouched — the choice is made by *retiring* a window, which is a
+            // write, and never by reading one of two as the answer. A name that is
+            // ambiguous rather than a stamp retires nothing and falls through
+            // exactly as before.
+            Located::Unknown => match self.retire_duplicate_windows(session_id, role) {
+                Some(_) => match self.locate_here(session_id, session_name, role) {
+                    Located::At(pane) => Some(pane),
+                    _ => None,
+                },
+                None => (!T::WINDOW_OPTIONS)
+                    .then(|| self.window_target(&window_name_for(role, session_name))),
+            },
+        }
+    }
+
+    /// One listing of the local server, resolved. [`Located::Unknown`] is also what
+    /// a listing that could not be taken answers: not knowing is not absence.
+    pub(crate) fn locate_here(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        role: WindowRole,
+    ) -> Located {
+        match self.window_index() {
+            Ok(index) => index.locate(session_id, session_name, role, false),
+            Err(e) => {
+                debug!("could not list windows to resolve '{session_name}': {e:#}");
+                Located::Unknown
+            }
+        }
+    }
+
+    /// Whether `target`'s pane has exited. The one-shot mirror of
+    /// [`MuxBackend::is_dead`], which asks the same question over control mode.
+    ///
+    /// Errors read as "not dead" so a tmux hiccup degrades to the previous
+    /// behavior (attempt the send) rather than silently dropping a prompt.
+    pub(crate) fn pane_is_dead(&self, target: &str) -> bool {
+        self.oneshot(&["display-message", "-p", "-t", target, "#{pane_dead}"])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| parse_pane_dead(&String::from_utf8_lossy(&out.stdout)))
+            .unwrap_or(false)
+    }
+
+    /// Type text into a session pane (no scheduling), submitting it or not.
+    ///
+    /// Targets the session's own pane via `agent_target`, which refuses a window
+    /// stamped for another session (ADR-25). Submitting uses a "paste text → brief delay → press
+    /// Enter" sequence so the target app has time to process the pasted input.
+    ///
+    /// `submit = false` types the text and stops: it lands in the agent's composer
+    /// unsent, which is what a "type it, check what the pane shows, then submit"
+    /// protocol needs — submitting on the way in fires every steer the instant it
+    /// is typed. [`Self::send_key_now`] with `enter` is the other half.
+    ///
+    /// The text goes out as one paste either way (see
+    /// `MuxDialect::paste_args`), so it arrives literally: no shell is involved, and
+    /// the wrap is also what keeps a leading `-` from reading as a `send-keys`
+    /// flag and a newline from submitting the line before it.
+    ///
+    /// Refuses a pane whose process has exited. Sessions run with
+    /// `remain-on-exit=on` (`SESSION_OPTS`), so a dead agent leaves its window in
+    /// place and `send-keys` still exits 0 while discarding the keystrokes. Every
+    /// caller reads that success as "the agent got it" — which is how the mailbox
+    /// wake came to report `woke: true` at a pane nothing was listening to — so the
+    /// liveness check belongs here, once, rather than in each of them.
+    pub(crate) fn send_text_now(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<()> {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            bail!("session '{session_name}' has no window of its own here");
+        };
+        if self.pane_is_dead(&target) {
+            bail!("session '{session_name}' has exited; its pane accepts no input");
+        }
+        let paste = T::paste_args(&target, text);
+        let paste_argv: Vec<&str> = paste.iter().map(String::as_str).collect();
+        let out = self
+            .oneshot(&paste_argv)
+            .output()
+            .context("Failed to paste prompt text into the session pane")?;
+        if !out.status.success() {
+            bail!("{} {} {}", T::BINARY, paste[0], mux_failure(&out));
+        }
+
+        if !submit {
             return Ok(());
         }
-        bail!(
-            "tmux kill-window exited {} for {}: {}",
-            output.status,
-            target,
-            stderr.trim()
-        );
+
+        std::thread::sleep(SEND_KEYS_ENTER_DELAY);
+
+        let out = self
+            .oneshot(&["send-keys", "-t", &target, "Enter"])
+            .output()
+            .context("Failed to send Enter to the session pane")?;
+        if !out.status.success() {
+            bail!("{} send-keys (Enter) {}", T::BINARY, mux_failure(&out));
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Send one named special key to a session pane — no text, no Enter.
+    ///
+    /// `tmux_key` is a [`ResolvedKey::tmux`] name, never a caller's string: tmux
+    /// types an unrecognized name into the pane instead of refusing it.
+    ///
+    /// Refuses a dead pane for the same reason [`send_text_now`] does — `send-keys`
+    /// exits 0 into a `remain-on-exit` corpse, so success would be a lie.
+    pub(crate) fn send_key_now(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        tmux_key: &str,
+    ) -> Result<()> {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            bail!("session '{session_name}' has no window of its own here");
+        };
+        if self.pane_is_dead(&target) {
+            bail!("session '{session_name}' has exited; its pane accepts no input");
+        }
+        let out = self
+            .oneshot(&["send-keys", "-t", &target, tmux_key])
+            .output()
+            .context("Failed to send a key to the session pane")?;
+        if !out.status.success() {
+            bail!("{} send-keys ({tmux_key}) {}", T::BINARY, mux_failure(&out));
+        }
+        Ok(())
+    }
+
+    /// Whether the session has an agent pane of its own on the thurbox tmux server.
+    ///
+    /// A window stamped for a namesake does not count (ADR-25). Used by the
+    /// headless dispatcher to skip `send`
+    /// automations whose target session is no longer running rather than failing
+    /// into a dead pane.
+    pub(crate) fn window_exists(&self, session_id: &str, session_name: &str) -> bool {
+        self.agent_target(session_id, session_name).is_some()
+    }
+
+    /// Schedule a one-shot prompt delivery into a session's window after
+    /// `delay_secs`, via a detached `tmux run-shell` timer.
+    ///
+    /// Used by the headless automation dispatcher to deliver a Spawn automation's
+    /// prompt once the freshly launched agent CLI has had time to boot — offline
+    /// there is no TUI deferred-input queue to lean on. Local-tmux scoped.
+    pub(crate) fn send_prompt_after_delay(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            bail!("session '{session_name}' has no window of its own here");
+        };
+        let script = T::deferred_prompt_script(&self.socket(), &target, text);
+        let out = self
+            .oneshot(&["run-shell", "-b", "-d", &delay_secs.to_string(), &script])
+            .output()
+            .context("Failed to schedule tmux run-shell for deferred prompt")?;
+        if !out.status.success() {
+            bail!("tmux run-shell (deferred prompt) {}", mux_failure(&out));
+        }
+        Ok(())
+    }
+
+    /// Capture the rendered contents of a session's pane.
+    ///
+    /// Returns the visible terminal text. `lines` controls how many lines of
+    /// scrollback to include before the visible region (capped to a sane max).
+    /// With `ansi`, tmux emits the styling escape sequences too (`capture-pane
+    /// -e`) instead of flattening the screen to plain text.
+    pub(crate) fn capture_pane_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        lines: u32,
+        ansi: bool,
+    ) -> Result<String> {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            bail!("session '{session_name}' has no window of its own here");
+        };
+        let lines = lines.min(MAX_CAPTURE_LINES);
+        let start = format!("-{lines}");
+
+        let mut args = vec!["capture-pane", "-p", "-J", "-t", &target, "-S", &start];
+        if ansi {
+            args.push("-e");
+        }
+        let output = self
+            .oneshot(&args)
+            .output()
+            .map_err(|e| self.launch_failure("Failed to run tmux capture-pane", e))?;
+        if !output.status.success() {
+            bail!(
+                "tmux capture-pane exited with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Read a session pane's cursor position, foreground process and live cwd.
+    ///
+    /// Best-effort by construction — see [`PaneState`]. One `display-message` for
+    /// everything tmux knows, plus at most one `ps` to turn the cheap command
+    /// *name* into the foreground process's argv. `session_id`/`session_name`
+    /// resolve the window the same way [`Self::capture_pane_text`] does, so the state
+    /// describes the pane the capture came from.
+    pub(crate) fn pane_state(&self, session_id: &str, session_name: &str) -> PaneState {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            return PaneState::default();
+        };
+        let format = [
+            "#{cursor_y}",
+            "#{cursor_x}",
+            "#{pane_current_command}",
+            "#{pane_current_path}",
+            "#{pane_tty}",
+            "#{pane_dead}",
+            "#{window_name}",
+        ]
+        .join(&PANE_STATE_SEP.to_string());
+
+        let mut argv = Vec::with_capacity(6);
+        if T::UTF8_FLAG {
+            argv.push(PANE_STATE_UTF8_FLAG);
+        }
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
+
+        let Some(raw) = self
+            .oneshot(&argv)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        else {
+            return PaneState::default();
+        };
+
+        let (mut state, tty, window) = parse_pane_state(&raw);
+        // `display-message` against a target it cannot resolve does **not** fail:
+        // it answers for the client's current pane and exits 0. Reporting a
+        // stranger's shell as this session's foreground process is the plausible
+        // wrong answer every field here is built to avoid, so the answer is only
+        // kept when it demonstrably came from this session's own window.
+        if window.as_deref() != Some(agent_window_name(session_name).as_str()) {
+            return PaneState::default();
+        }
+        if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
+            state.foreground_process = Some(argv0);
+            state.foreground_command = Some(command);
+        }
+        state
+    }
+
+    /// The `PATH` thurbox handed a local session's **agent pane**, read back off
+    /// the pane's own start command.
+    ///
+    /// A hook command names `thurbox-cli` bare (`thurbox-cli session signal --state
+    /// <s> || true`), so the only `PATH` that decides whether it resolves is the
+    /// pane's. Anything else — notably the `PATH` of whatever process is asking —
+    /// is a different machine-state question that happens to have the same shape,
+    /// and answering one with the other is how `session doctor` reported healthy
+    /// wiring for panes that could not find the binary at all.
+    ///
+    /// The evidence is the `env PATH=…` prefix a local spawn writes in front of the
+    /// window's program, which tmux keeps verbatim in `#{pane_start_command}`. That is deliberately not
+    /// `/proc/<pid>/environ`: reading another process's environment needs
+    /// `PTRACE_MODE_READ`, which Debian and Ubuntu restrict to a tracer's own
+    /// descendants by default (`kernel.yama.ptrace_scope = 1`) — so it would answer
+    /// for a `doctor` run from the TUI and refuse the same question typed into a
+    /// terminal, which is the way it is usually asked. tmux's own record has no
+    /// such rule, and no platform gate either.
+    ///
+    /// Three answers, not two. "This machine's server holds no agent window for the
+    /// session" and "the window is there and its `PATH` is not one thurbox wrote"
+    /// are different facts, and rounding the second to the first is what let a
+    /// broken pane report healthy: a parked session has nothing to verify, while a
+    /// live pane that cannot be verified is a live pane that may not work.
+    /// Remote sessions are the caller's to exclude: this reads **this** machine's
+    /// server.
+    pub(crate) fn agent_pane_path(&self, session_id: &str, session_name: &str) -> PanePath {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            return PanePath::Absent;
+        };
+        let format = format!("#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}");
+        let mut argv = Vec::with_capacity(6);
+        if T::UTF8_FLAG {
+            argv.push(PANE_STATE_UTF8_FLAG);
+        }
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
+        let Some(raw) = self
+            .oneshot(&argv)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        else {
+            return PanePath::Absent;
+        };
+        let line = normalized_pane_answer(&raw);
+        let mut fields = line.split(PANE_STATE_SEP);
+        let (Some(start_command), Some(window)) = (fields.next(), fields.next()) else {
+            return PanePath::Absent;
+        };
+        // `display-message` against a target it cannot resolve does **not** fail:
+        // it answers for the client's current pane and exits 0. That is the trap
+        // `pane_state` guards against too, and here it would hand back a stranger's
+        // `PATH` as this session's.
+        if window != agent_window_name(session_name) {
+            return PanePath::Absent;
+        }
+        match path_from_prefix(start_command) {
+            Some(path) => PanePath::Known(path),
+            None => PanePath::Unknown,
+        }
+    }
+
+    /// Spawn a new tmux window running `command` with `args` in `cwd`.
+    ///
+    /// Thin helper for headless callers (CLI, MCP) that don't need PTY I/O
+    /// streams. Returns the new pane's id (`%N`) on success; the command runs
+    /// inside it. Window name is `tb-<session_name>` — which is *not* unique (two
+    /// sessions can share a name), so the window is stamped with `session_id`
+    /// before this returns and every later lookup resolves that (ADR-25).
+    ///
+    /// A pane id on stdout outranks a non-zero exit status, which on this path can
+    /// belong to a user's tmux hook rather than to the window — see the read below.
+    ///
+    /// Where the local dialect has no `MuxDialect::ONESHOT_PANE_REPORT` the id
+    /// is not asked for and an empty string is returned, so the window is known by
+    /// its name instead (and is best-effort, like the other window-option
+    /// carve-outs). With no id to weigh, a non-zero status is the whole answer
+    /// there, exactly as before.
+    pub(crate) fn spawn_window(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Result<String> {
+        // Ensure the session exists and is configured, without opening a
+        // control-mode connection (headless one-shot path).
+        self.ensure_session_configured()?;
+        if T::ASKS_SERVER_VERSION {
+            self.check_server_version_oneshot()?;
+        }
+
+        let window_name = agent_window_name(session_name);
+        // Created at the END of the session's window list, so the retention below
+        // can name the window this command just made: `{end}` is the last window
+        // and `-a` appends after it, so within this one command list `{end}` is
+        // exactly the new one. The window's *name* cannot say that — `tb-<session
+        // name>` is not unique (two sessions can share a name, which is why the
+        // stamp exists), and tmux resolves a duplicate name to the lowest index,
+        // which is the older window (measured, tmux 3.2a). A dialect without the
+        // one-shot pane report keeps the plain session target: it gets no
+        // retention write either, and the shorthand is tmux's.
+        let create_target = if T::ONESHOT_PANE_REPORT {
+            format!("{TMUX_SESSION}:{{end}}")
+        } else {
+            format!("{TMUX_SESSION}:")
+        };
+        let mut tmux =
+            self.new_window_command(&window_name, &create_target, command, args, cwd, env);
+        // The stamp rides in the same command list as the creation, like the birth
+        // options: two `set-option` processes fewer on every `session create`
+        // (#1243). `{end}` still names the new window here, and the pane id it
+        // would otherwise be written against is not known until the list returns.
+        let stamped = T::WINDOW_OPTIONS;
+        if stamped {
+            for (option, value) in [
+                (WINDOW_SESSION_OPTION, session_id),
+                (WINDOW_ROLE_OPTION, WindowRole::Agent.as_str()),
+            ] {
+                if !value.is_empty() {
+                    tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
+                }
+            }
+        }
+
+        let output = tmux.output().map_err(|e| {
+            self.launch_failure("Failed to run tmux new-window for headless spawn", e)
+        })?;
+        // Without a pane report the window name is the only handle this path has.
+        let pane_id = if T::ONESHOT_PANE_REPORT {
+            new_window_pane_id(&output.stdout)
+        } else {
+            String::new()
+        };
+        if !output.status.success() {
+            // The exit status is not this command's verdict on its own. tmux hands
+            // a command-mode client the status of the last `run-shell` its command
+            // list triggered, and a *hook* counts: an `after-new-window` left
+            // behind by an uninstalled tmux plugin runs a script that is no longer
+            // there, `/bin/sh` answers 127, and the client exits 127 although
+            // `new-window` succeeded and already printed the pane id (measured,
+            // tmux 3.5a; stderr is empty, so the message named nothing either).
+            // The pane id is the answer to `-P`, so where there is one the window
+            // exists and refusing it tears down a session that started fine
+            // (issue #1154). The control-mode path never sees this: its reply block
+            // carries the `-P` answer alone and no exit status at all.
+            if !control_mode::is_valid_pane_id(&pane_id) {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!(
+                    "tmux new-window exited {} for window {}: {}",
+                    output.status,
+                    window_name,
+                    stderr.trim()
+                );
+            }
+            warn!(
+                "tmux answered {} for window {} and created it anyway ({}): a hook \
+                 on thurbox's own server failed, which is what an uninstalled \
+                 plugin's leftover hook does for the life of that server. `{} -L {} \
+                 show-hooks -g` names it. Unset the hook rather than killing that \
+                 server — it holds every live session",
+                output.status,
+                window_name,
+                pane_id,
+                T::BINARY,
+                self.socket()
+            );
+        }
+        // `window_target` takes a window *name*: the session's is `tb-<name>`, and
+        // naming the session itself resolved to whatever window that picked out.
+        let target = if pane_id.is_empty() {
+            self.window_target(&window_name)
+        } else {
+            pane_id.clone()
+        };
+        if stamped {
+            // What `stamp_oneshot` does after writing the stamp.
+            let _ = self.retire_duplicate_windows(session_id, WindowRole::Agent);
+        } else {
+            self.stamp_oneshot(&target, session_id, WindowRole::Agent);
+        }
+        Ok(pane_id)
+    }
+
+    /// [`MuxDialect::check_server_version`] against the local server's own
+    /// `#{version}` — the headless twin of the check in [`MuxBackend::spawn`].
+    pub(crate) fn check_server_version_oneshot(&self) -> Result<()> {
+        let output = self
+            .oneshot(&["display-message", "-t", TMUX_SESSION, "-p", "#{version}"])
+            .output()
+            .map_err(|e| self.launch_failure("Failed to ask the multiplexer its version", e))?;
+        T::check_server_version(&String::from_utf8_lossy(&output.stdout), &self.socket())
+    }
+
+    /// The `new-window` command list [`spawn_window`] runs: the window created
+    /// detached at `create_target` running `command` — and, where the dialect
+    /// takes them, its birth options chained into the same invocation.
+    pub(crate) fn new_window_command(
+        &self,
+        window_name: &str,
+        create_target: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Command {
+        let report = T::ONESHOT_PANE_REPORT;
+        let mut tmux = self.oneshot(&["new-window", "-d"]);
+        if report {
+            tmux.arg("-a");
+        }
+        tmux.args(["-t", create_target, "-n", window_name]);
+        if report {
+            tmux.args(["-P", "-F", "#{pane_id}"]);
+        }
+        if let Some(dir) = cwd {
+            tmux.args(["-c", &dir.to_string_lossy()]);
+        }
+        T::push_window_program(&mut tmux, command, args, env);
+
+        // Chained into the same command list as the creation, not sent after it —
+        // `birth_options` has the measurement. This path passes `-d`, so the new
+        // window is not current and the bare form the control-mode path uses is not
+        // available; `{end}` names it instead, which is why the window is created
+        // there.
+        if report {
+            for (key, value) in birth_options(window_name) {
+                tmux.args([";", "set-window-option", "-t", create_target]);
+                tmux.args([key, value]);
+            }
+        }
+        tmux
+    }
+
+    /// Kill the session's own tmux window, if the local server still holds one.
+    ///
+    /// Resolved through the window's own stamp, so one stamped for another session —
+    /// a live namesake's — is never the one that comes down. That is not a
+    /// nicety: names are not unique, a soft-deleted row keeps its name until it is
+    /// reaped, and `kill-window -t tb-<name>` matches an arbitrary one of them.
+    pub(crate) fn kill_window(&self, session_id: &str, session_name: &str) -> Result<()> {
+        match self.agent_target(session_id, session_name) {
+            Some(target) => self.kill_window_at(&target),
+            None => Ok(()),
+        }
+    }
+
+    /// Kill the session's companion shell window (`tbs-`), if the local server
+    /// still holds one.
+    ///
+    /// The other half of [`kill_window`]: a session owns two windows, and a
+    /// teardown that takes only the agent leaves a `tbs-` shell running for a row
+    /// that no longer exists. Resolved by the same stamp, so a NULL
+    /// `shell_backend_id` — the usual state, since the column is written only when
+    /// the interface opens the shell — costs nothing.
+    pub(crate) fn kill_shell_window(&self, session_id: &str, session_name: &str) -> Result<()> {
+        match self.owned_target(session_id, session_name, WindowRole::Shell) {
+            Some(target) => self.kill_window_at(&target),
+            None => Ok(()),
+        }
+    }
+
+    /// Run `kill-window` against an already-resolved target, tolerating a window
+    /// that is already gone. Shared by [`kill_window`] and the reap, which resolves
+    /// its own target through [`WindowIndex`] (`session_ops::delete`) — the two
+    /// differ only in how the target is chosen.
+    pub(crate) fn kill_window_at(&self, target: &str) -> Result<()> {
+        let output = self
+            .oneshot(&["kill-window", "-t", target])
+            .output()
+            .context("Failed to run tmux kill-window")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // It's fine if the window is already gone.
+            if stderr.contains("can't find window") || stderr.contains("window not found") {
+                return Ok(());
+            }
+            bail!(
+                "tmux kill-window exited {} for {}: {}",
+                output.status,
+                target,
+                stderr.trim()
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the session's own agent window and return the OS pid of its pane's
+    /// foreground process (`#{pane_pid}`), or `None` when the window is gone or the
+    /// pid can't be read.
+    ///
+    /// One-shot on the local socket. Used by the force-teardown path to reap a live
+    /// pane process **before** removing its cwd on Windows, where a directory that
+    /// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
+    /// so callers only need the returned pid on Windows.
+    pub(crate) fn window_pane_pid(
+        &self,
+        session_id: &str,
+        session_name: &str,
+    ) -> Result<Option<u32>> {
+        let Some(target) = self.agent_target(session_id, session_name) else {
+            return Ok(None);
+        };
+        let output = self
+            .oneshot(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
+            .output()
+            .context("Failed to run tmux display-message for pane pid")?;
+        if !output.status.success() {
+            // No such window (already torn down) — not an error for the caller.
+            return Ok(None);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.trim().parse::<u32>().ok())
+    }
 }
 
-/// Resolve the session's own agent window and return the OS pid of its pane's
-/// foreground process (`#{pane_pid}`), or `None` when the window is gone or the
-/// pid can't be read.
+/// The `SessionBackend` pane operations, for both concrete mux backends.
 ///
-/// One-shot on the local socket. Used by the force-teardown path to reap a live
-/// pane process **before** removing its cwd on Windows, where a directory that
-/// is a live process's cwd cannot be removed (`os error 32`); Unix permits it,
-/// so callers only need the returned pid on Windows.
-pub fn window_pane_pid(session_id: &str, session_name: &str) -> Result<Option<u32>> {
-    let Some(target) = agent_target(session_id, session_name) else {
-        return Ok(None);
-    };
-    let output = local_mux_command(&["display-message", "-p", "-t", &target, "#{pane_pid}"])
-        .output()
-        .context("Failed to run tmux display-message for pane pid")?;
-    if !output.status.success() {
-        // No such window (already torn down) — not an error for the caller.
-        return Ok(None);
+/// A row whose backend is a host's is reached through that host — its CLI
+/// runs these on its own server — so input, capture and adoption are refused
+/// here rather than aimed at whatever this machine's server holds under the
+/// same name. Rename is the exception: it follows the row's windows on the
+/// host's server over the transport, as it always has.
+impl<T: MuxDialect> MuxBackend<T> {
+    fn here_only(&self, session_name: &str) -> Result<()> {
+        match &self.host {
+            Some(host) => bail!(
+                "session '{session_name}' runs on host '{}'; its pane is reached through that host",
+                host.name
+            ),
+            None => Ok(()),
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.trim().parse::<u32>().ok())
+
+    pub(crate) fn session_send_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<()> {
+        self.here_only(session_name)?;
+        self.send_text_now(session_id, session_name, text, submit)
+    }
+
+    pub(crate) fn session_send_key(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        key: &str,
+    ) -> Result<()> {
+        self.here_only(session_name)?;
+        let Some(resolved) = resolve_key(key) else {
+            bail!("unknown key '{key}'");
+        };
+        self.send_key_now(session_id, session_name, &resolved.tmux)
+    }
+
+    pub(crate) fn session_send_text_after(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        self.here_only(session_name)?;
+        self.send_prompt_after_delay(session_id, session_name, text, delay_secs)
+    }
+
+    pub(crate) fn session_capture_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        lines: u32,
+        ansi: bool,
+    ) -> Result<String> {
+        self.here_only(session_name)?;
+        self.capture_pane_text(session_id, session_name, lines, ansi)
+    }
+
+    pub(crate) fn session_pane_state(&self, session_id: &str, session_name: &str) -> PaneState {
+        match self.host {
+            Some(_) => PaneState::default(),
+            None => self.pane_state(session_id, session_name),
+        }
+    }
+
+    pub(crate) fn session_pane_path(&self, session_id: &str, session_name: &str) -> PanePath {
+        match self.host {
+            Some(_) => PanePath::Unknown,
+            None => self.agent_pane_path(session_id, session_name),
+        }
+    }
+
+    pub(crate) fn session_has_window(&self, session_id: &str, session_name: &str) -> bool {
+        self.host.is_none() && self.window_exists(session_id, session_name)
+    }
+
+    pub(crate) fn session_rename_windows(
+        &self,
+        session_id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        if let Some(host) = &self.host {
+            known_host_socket(host)?;
+        }
+        rename_session_windows_on(self, session_id, from, to)
+    }
+
+    pub(crate) fn session_claim_running_window(
+        &self,
+        session_id: &str,
+        session_name: &str,
+    ) -> Result<Option<String>> {
+        self.here_only(session_name)?;
+        let index = WindowIndex::from_listing(self.discover_answered()?);
+        let Some(pane) = index.live_agent_window(session_id, session_name).pane() else {
+            return Ok(None);
+        };
+        self.stamp_oneshot(&pane, session_id, WindowRole::Agent);
+        Ok(Some(pane))
+    }
+}
+
+/// The platform's local multiplexer on thurbox's own socket — what the
+/// platform-level one-shots below (and callers with no row to route by) act on.
+fn platform() -> MuxBackend<LocalMuxTransport> {
+    MuxBackend::<LocalMuxTransport>::local()
+}
+
+/// `MuxBackend::stamp_oneshot` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn stamp_local_window(target: &str, session_id: &str, role: WindowRole) {
+    platform().stamp_oneshot(target, session_id, role)
+}
+
+/// `MuxBackend::window_index` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn local_window_index() -> Result<WindowIndex> {
+    platform().window_index()
+}
+
+/// `MuxBackend::send_text_now` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn send_text_now(session_id: &str, session_name: &str, text: &str, submit: bool) -> Result<()> {
+    platform().send_text_now(session_id, session_name, text, submit)
+}
+
+/// `MuxBackend::window_exists` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn window_exists(session_id: &str, session_name: &str) -> bool {
+    platform().window_exists(session_id, session_name)
+}
+
+/// `MuxBackend::spawn_window` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn spawn_window(
+    session_id: &str,
+    session_name: &str,
+    command: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    env: &HashMap<String, String>,
+) -> Result<String> {
+    platform().spawn_window(session_id, session_name, command, args, cwd, env)
+}
+
+/// `MuxBackend::kill_window` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn kill_window(session_id: &str, session_name: &str) -> Result<()> {
+    platform().kill_window(session_id, session_name)
+}
+
+/// `MuxBackend::kill_shell_window` on the platform's local server, for a caller with no
+/// session row to route by.
+pub fn kill_shell_window(session_id: &str, session_name: &str) -> Result<()> {
+    platform().kill_shell_window(session_id, session_name)
 }
 
 #[cfg(test)]
@@ -5284,7 +5235,7 @@ mod tests {
 
         // A multiplexer whose `#{@...}` is not per-window says nothing about
         // whose window this is, so the name decides — the pre-ADR-25 shape
-        // `local_windows_are_stamped` already keeps for it everywhere else.
+        // `MuxDialect::WINDOW_OPTIONS` already keeps for it everywhere else.
         let unstamped = listing(false);
         assert_eq!(
             unstamped.agent_window(TWO, "second"),
@@ -5380,9 +5331,10 @@ mod tests {
         // Without `=`, tmux treats the window name as a pattern and will
         // resolve `tb-foo` ambiguously when both `tb-foo` and
         // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
-        let t = window_target(&agent_window_name("foo"));
+        let backend = MuxBackend::<TmuxTransport>::local();
+        let t = backend.window_target(&agent_window_name("foo"));
         assert!(t.ends_with(":=tb-foo"), "got {t}");
-        let shell = window_target(&shell_window_name("foo"));
+        let shell = backend.window_target(&shell_window_name("foo"));
         assert!(shell.ends_with(":=tbs-foo"), "got {shell}");
     }
 
@@ -5951,7 +5903,7 @@ mod dialect_characterization {
         );
         w(
             "windows_stamped",
-            format!("{}", local_windows_are_stamped()),
+            format!("{}", LocalMuxTransport::WINDOW_OPTIONS),
         );
         let sock = local_socket();
         w(
@@ -5966,7 +5918,7 @@ mod dialect_characterization {
             "heartbeat",
             LocalMuxTransport::heartbeat_loop_command(Path::new("/opt/tbx/thurbox-cli")),
         );
-        let with_args = new_window_command(
+        let with_args = platform().new_window_command(
             "tb-demo",
             "thurbox:{end}",
             COMMAND,
@@ -5975,7 +5927,8 @@ mod dialect_characterization {
             &env1(),
         );
         w("new_window_command args", format!("{:?}", argv(&with_args)));
-        let no_args = new_window_command("tb-demo", "thurbox:{end}", COMMAND, &[], None, &env1());
+        let no_args =
+            platform().new_window_command("tb-demo", "thurbox:{end}", COMMAND, &[], None, &env1());
         w(
             "new_window_command no-args",
             format!("{:?}", argv(&no_args)),

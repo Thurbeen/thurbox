@@ -161,15 +161,14 @@ pub(crate) fn spawn_and_deliver(
     let spawned =
         crate::session_ops::spawn_session_headless(db, req).map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;
-    crate::agent::mux::send_prompt_after_delay(
-        &session_id.to_string(),
-        name,
-        prompt,
-        BOOT_DELAY_SECS,
-    )
-    .map_err(|e| SpawnDeliverError::Deliver {
-        session_id,
-        message: format!("spawned {name} but prompt delivery failed: {e}"),
-    })?;
+    crate::session_ops::registered_backend(&spawned.backend_type)
+        .map_err(anyhow::Error::msg)
+        .and_then(|backend| {
+            backend.send_text_after(&session_id.to_string(), name, prompt, BOOT_DELAY_SECS)
+        })
+        .map_err(|e| SpawnDeliverError::Deliver {
+            session_id,
+            message: format!("spawned {name} but prompt delivery failed: {e}"),
+        })?;
     Ok(session_id)
 }

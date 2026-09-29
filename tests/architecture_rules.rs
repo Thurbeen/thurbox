@@ -946,3 +946,54 @@ fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
     out.sort();
     out
 }
+
+/// Session-scoped pane operations reach the backend the session's row names
+/// (`SessionBackend`, resolved by `backend_type`), never the platform's local
+/// multiplexer directly: a session on another registered backend would
+/// otherwise have its input, capture or rename land on the wrong server.
+#[test]
+fn session_pane_operations_go_through_the_rows_backend() {
+    const SESSION_SCOPED: &[&str] = &[
+        "send_text_now",
+        "send_prompt_now",
+        "send_key_now",
+        "send_prompt_after_delay",
+        "capture_pane_text",
+        "pane_state",
+        "agent_pane_path",
+        "window_exists",
+        "rename_session_windows",
+        "agent_window",
+        "agent_window_alive",
+        "stamp_local_window",
+        "kill_window",
+        "kill_shell_window",
+        "spawn_window",
+        "window_pane_pid",
+        "local_window_index",
+    ];
+    let mut offenders = Vec::new();
+    for path in collect_rs_files(&src_root()) {
+        if path.starts_with(src_root().join("agent")) {
+            continue;
+        }
+        let code = strip_comments_and_strings(&fs::read_to_string(&path).unwrap());
+        let bytes = code.as_bytes();
+        for (at, _) in code.match_indices("mux::") {
+            if at > 0 && is_ident_char(bytes[at - 1]) {
+                continue;
+            }
+            let mut i = at + "mux::".len();
+            let item = read_ident(bytes, &mut i);
+            if SESSION_SCOPED.contains(&item.as_str()) {
+                let line = code[..at].matches('\n').count() + 1;
+                offenders.push(format!("{}:{line} mux::{item}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "resolve the row's backend (session_ops::registered_backend) instead:\n{}",
+        offenders.join("\n")
+    );
+}

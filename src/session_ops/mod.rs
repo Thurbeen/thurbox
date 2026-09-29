@@ -81,6 +81,18 @@ pub fn send_text_with_status(
     text: &str,
     submit: bool,
 ) -> anyhow::Result<()> {
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    send_text_with_status_with_registry(db, &backends, session, text, submit)
+}
+
+/// [`send_text_with_status`] against an explicit registry.
+pub fn send_text_with_status_with_registry(
+    db: &Database,
+    backends: &crate::agent::BackendRegistry,
+    session: &SharedSession,
+    text: &str,
+    submit: bool,
+) -> anyhow::Result<()> {
     let prior = if submit && session.agent == "codex" {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
@@ -92,7 +104,10 @@ pub fn send_text_with_status(
     } else {
         None
     };
-    crate::agent::mux::send_text_now(&session.id.to_string(), &session.name, text, submit)?;
+    let backend = backends
+        .get(&session.backend_type)
+        .ok_or_else(|| anyhow::anyhow!("no registered backend for '{}'", session.backend_type))?;
+    backend.send_text(&session.id.to_string(), &session.name, text, submit)?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");

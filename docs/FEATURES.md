@@ -1505,7 +1505,7 @@ claim-then-act (at-most-once): a crash between claim and side effect
 loses a run rather than duplicating one.
 
 **Headless send vs spawn.** `send` types into the still-alive tmux
-window (`send_prompt_now`). `spawn` creates the session headlessly
+window (the row's backend's `send_text`). `spawn` creates the session headlessly
 (`spawn_session_headless`); the prompt is delivered via a short
 deferred `tmux run-shell` timer once the agent boots, and the TUI
 adopts the `auto-<id>` session by name on its next startup. All of
@@ -2553,7 +2553,7 @@ surface. `AGENTS.md` keeps the identity contract and points here.
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
     <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
-    token into the recipient's pane (`agent::mux::send_prompt_now`) to nudge a
+    token into the recipient's pane (the row's backend's `send_text`) to nudge a
     drain. **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
     `--task` override.

@@ -19,6 +19,7 @@ struct ProbeBackend {
     spawns: Arc<AtomicUsize>,
     kills: Arc<AtomicUsize>,
     panes: Mutex<Vec<DiscoveredSession>>,
+    input: Mutex<Vec<String>>,
 }
 
 impl ProbeBackend {
@@ -28,6 +29,7 @@ impl ProbeBackend {
             spawns,
             kills,
             panes: Mutex::new(Vec::new()),
+            input: Mutex::new(Vec::new()),
         }
     }
 }
@@ -127,6 +129,13 @@ impl SessionBackend for ProbeBackend {
     }
     fn pane_pid(&self, _: &str) -> Result<Option<u32>> {
         Ok(None)
+    }
+    fn send_text(&self, session_id: &str, _: &str, text: &str, submit: bool) -> Result<()> {
+        self.input
+            .lock()
+            .unwrap()
+            .push(format!("{session_id} {text} submit={submit}"));
+        Ok(())
     }
 }
 
@@ -373,4 +382,51 @@ fn create_and_force_delete_use_the_registered_backend() {
             .backend_id,
         "probe-pane-3"
     );
+}
+
+/// Input for a session goes to the backend its row names, not to the
+/// platform's local multiplexer: the path every prompt delivery — the CLI's
+/// `send`, automations, tasks, the kernel's task dispatch — goes through.
+#[test]
+fn session_input_reaches_the_rows_registered_backend() {
+    let db = Database::open_in_memory().unwrap();
+    let local = Arc::new(ProbeBackend::new(
+        "local-tmux",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let probe = Arc::new(ProbeBackend::new(
+        "local-probe",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let mut registry = BackendRegistry::new(local.clone());
+    registry.register(probe.clone());
+    let row = SharedSession {
+        id: SessionId::default(),
+        name: "routed-input-probe".into(),
+        agent: "probe".into(),
+        backend_id: "probe-pane-1".into(),
+        backend_type: "local-probe".into(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    };
+    db.upsert_session(&row).unwrap();
+
+    let sent = thurbox::session_ops::send_text_with_status_with_registry(
+        &db, &registry, &row, "hello", true,
+    );
+    assert_eq!(
+        *probe.input.lock().unwrap(),
+        vec![format!("{} hello submit=true", row.id)],
+        "the row's backend never received the input ({sent:?})"
+    );
+    assert!(local.input.lock().unwrap().is_empty());
 }

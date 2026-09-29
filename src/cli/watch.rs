@@ -121,6 +121,7 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), Command
             let row = states.get(&session.id).cloned().unwrap_or_default();
             let hook = assess(
                 &registry,
+                session.id,
                 facts,
                 &row,
                 facts.stopped,
@@ -286,6 +287,7 @@ fn line(
         .unwrap_or_default();
     let hook = assess(
         registry,
+        event.session_id,
         facts,
         &HookRow {
             state: event.to_state.clone(),
@@ -355,6 +357,7 @@ fn base(id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
 /// this stream uses are the words every other surface uses.
 fn assess(
     registry: &crate::session::AgentRegistry,
+    session_id: SessionId,
     facts: &SessionFacts,
     columns: &HookRow,
     stopped: bool,
@@ -384,7 +387,10 @@ fn assess(
         .get(&facts.agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| facts.agent.clone());
-    let pane = crate::agent::mux::pane_state(&facts.name, &facts.backend_id);
+    let pane = match crate::session_ops::registered_backend(backend_type) {
+        Ok(backend) => backend.pane_state(&session_id.to_string(), &facts.name),
+        Err(_) => return hook.pane_unavailable(),
+    };
     hook.with_pane(
         &command,
         registry,

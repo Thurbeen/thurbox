@@ -348,6 +348,63 @@ impl BackendLiveness {
     }
 }
 
+/// A session pane's live state *around* its rendered text: where the cursor
+/// sits, what is running in the foreground of its tty, and where that process
+/// thinks it is.
+///
+/// Every field is independently optional and never guessed. A multiplexer that
+/// does not answer a format (one may expand an unknown `#{…}` to nothing), a
+/// pane that has gone away between the capture and this call, or a platform
+/// with no `ps` each leave the affected fields `None` rather than a plausible
+/// wrong value — the caller can then say "unknown" instead of acting on a
+/// fabrication.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PaneState {
+    /// Cursor row, 0-based, relative to the visible pane (`#{cursor_y}`).
+    pub cursor_row: Option<u32>,
+    /// Cursor column, 0-based (`#{cursor_x}`).
+    pub cursor_col: Option<u32>,
+    /// The foreground process's argv0 — its executable as invoked.
+    ///
+    /// Resolved from the tty's foreground process group where that is possible,
+    /// falling back to tmux's `#{pane_current_command}`. The two agree in the
+    /// common case; [`foreground_command`](Self::foreground_command) is what
+    /// says which one this is.
+    pub foreground_process: Option<String>,
+    /// The foreground process's **full** command line.
+    ///
+    /// `Some` only when the process group was really resolved, which is also
+    /// what makes this the field worth reading: a Node-based agent CLI is a
+    /// bare `node` in every command-*name* view, and only its argv distinguishes
+    /// `node …/cursor-agent/cli.js` from a REPL.
+    pub foreground_command: Option<String>,
+    /// The pane's live working directory (`#{pane_current_path}`) — where the
+    /// foreground process is, not the directory the session was launched in.
+    pub foreground_cwd: Option<String>,
+    /// Whether the pane's command has **exited** (`#{pane_dead}`).
+    ///
+    /// The backend runs with `remain-on-exit=on`, so a dead pane keeps its
+    /// frame — and keeps answering `#{pane_current_command}` with whatever last
+    /// ran there. Without this, an agent that crashed reports its own name as
+    /// the foreground process: a plausible wrong answer rather than an honest
+    /// absence, which is exactly what a caller reconciling a latched state
+    /// against reality must not be handed.
+    pub dead: Option<bool>,
+}
+
+/// What [`SessionBackend::pane_path`] found.
+pub enum PanePath {
+    /// The `PATH` thurbox handed the pane, read off its start command.
+    Known(String),
+    /// The window is there, but its `PATH` is not one thurbox wrote: a pane
+    /// spawned before the prefix existed, a window whose dialect writes none,
+    /// or a `PATH` whose quoting tmux had to alter.
+    Unknown,
+    /// This machine's server holds no agent window for the session — parked,
+    /// gone, or never here. Nothing to read a `PATH` from.
+    Absent,
+}
+
 /// A backend listing's answer for one pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
@@ -543,6 +600,98 @@ pub trait SessionBackend: Send + Sync {
             killed = true;
         }
         Ok(killed)
+    }
+
+    /// Type `text` into the session's own agent pane without attaching, then
+    /// press Enter when `submit`. Refuses a pane that has exited: a dead pane
+    /// can swallow input and still report success. Default: refused, for a
+    /// backend with no headless input path.
+    fn send_text(
+        &self,
+        _session_id: &str,
+        session_name: &str,
+        _text: &str,
+        _submit: bool,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "{} cannot deliver input to '{session_name}' headlessly",
+            self.name()
+        )
+    }
+
+    /// Press one named key in the session's agent pane. `key` is a canonical
+    /// thurbox key name (`enter`, `ctrl-c`), which the backend spells in its
+    /// own terms. Default: refused.
+    fn send_key(&self, _session_id: &str, session_name: &str, _key: &str) -> Result<()> {
+        anyhow::bail!(
+            "{} cannot deliver a key to '{session_name}' headlessly",
+            self.name()
+        )
+    }
+
+    /// Deliver `text` and submit it after `delay_secs`, without blocking the
+    /// caller — for a freshly launched agent that is not yet reading input.
+    /// Default: refused.
+    fn send_text_after(
+        &self,
+        _session_id: &str,
+        session_name: &str,
+        _text: &str,
+        _delay_secs: u64,
+    ) -> Result<()> {
+        anyhow::bail!("{} cannot schedule input for '{session_name}'", self.name())
+    }
+
+    /// The rendered text of the session's agent pane, with `lines` of history
+    /// before the visible region, styled when `ansi`. Default: refused.
+    fn capture_text(
+        &self,
+        _session_id: &str,
+        session_name: &str,
+        _lines: u32,
+        _ansi: bool,
+    ) -> Result<String> {
+        anyhow::bail!("{} cannot capture '{session_name}'", self.name())
+    }
+
+    /// What is running in the session's agent pane. Best-effort by contract
+    /// ([`PaneState`]): the default knows nothing, and says so.
+    fn pane_state(&self, _session_id: &str, _session_name: &str) -> PaneState {
+        PaneState::default()
+    }
+
+    /// The `PATH` thurbox handed the session's agent pane. Default: the pane
+    /// cannot be verified.
+    fn pane_path(&self, _session_id: &str, _session_name: &str) -> PanePath {
+        PanePath::Unknown
+    }
+
+    /// Whether the session has an agent window of its own here, running or
+    /// kept after exiting. Default: asked of [`Self::headless_liveness`], with
+    /// an unanswered probe read as no window.
+    fn has_window(&self, session_id: &str, session_name: &str) -> bool {
+        matches!(
+            self.headless_liveness(session_id, session_name),
+            Ok(BackendLiveness::Live | BackendLiveness::Exited)
+        )
+    }
+
+    /// Follow a session rename with the windows named after it. Default:
+    /// nothing, for a backend whose windows do not carry the session's name.
+    fn rename_windows(&self, _session_id: &str, _from: &str, _to: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Claim the one live agent window that is unambiguously this session's —
+    /// for a row registered onto a running window — stamp it with the row's
+    /// id, and return its pane. Default: [`Self::headless_live_pane`] then
+    /// [`Self::stamp_window`].
+    fn claim_running_window(&self, session_id: &str, session_name: &str) -> Result<Option<String>> {
+        let Some(pane) = self.headless_live_pane(session_id, session_name)? else {
+            return Ok(None);
+        };
+        self.stamp_window(&pane, session_id, WindowRole::Agent)?;
+        Ok(Some(pane))
     }
 
     /// Reconnect to an existing session. `seed` is the pre-captured pane state

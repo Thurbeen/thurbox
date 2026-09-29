@@ -643,9 +643,16 @@ fails if the core, the transport seam or control mode names one.
 
 `BackendRegistry` is where a platform or a host is mapped to a concrete
 multiplexer: `LocalMuxTransport` (psmux on Windows, tmux elsewhere), and
-`host_backend` / `host_mux` for the headless one-shots against a host.
-Callers reach the platform's mux helpers through `agent::mux`, never through
-`agent::tmux`, which is the tmux backend alone.
+`host_mux` for the one-shot reads against a host. Every session-scoped
+operation outside `agent/` — input, keys, delayed prompts, capture, pane
+state and `PATH`, window existence, rename, registering a running window —
+is a `SessionBackend` method resolved from the row's `backend_type`
+(`session_ops::registered_backend`), so a session on any registered backend
+is acted on through that backend and never through the platform's local
+multiplexer; `tests/architecture_rules.rs`
+(`session_pane_operations_go_through_the_rows_backend`) holds the line. What
+stays in `agent::mux` as a free function is platform-level: the heartbeat
+keeper, local hook-state polling, naming, and the socket.
 
 Local one-shot helpers select the registered local backend's transport,
 including psmux on Windows, so headless create and liveness inspect the same
@@ -861,7 +868,7 @@ before touching that path.
   beats dropped). Base64 because a raw newline in a psmux command argument is
   cut by the server's line-oriented read, truncating the payload *and*
   executing its tail as a command (psmux #560) — the same reason the headless
-  prompt path (`MuxDialect::paste_args`, feeding `send_prompt_now`/
+  prompt path (`MuxDialect::paste_args`, feeding `send_text_now`/
   `deferred_prompt_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
 - **There are no per-window options.** `set-option -w -t <pane> @k v` stores one
@@ -1723,11 +1730,11 @@ follow from the host owning the record, none of which the first cut had:
   refused connection, a timeout and a rejected key alike. A force delete taken
   while a host was briefly down therefore found nothing to kill, recorded *no
   error at all*, and reported success — the leak above, with the operator told
-  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows`,
-  `remote_window_index`, and `agent_window`) returns an empty listing only when
+  nothing. `MuxBackend::discover_answered` (used by the host backends'
+  `kill_headless` and `headless_liveness`, and by `agent_window`) returns an empty listing only when
   the multiplexer itself refused. It also replaces the `has-session` round
   trip, since `list-windows` on an absent server gives exactly that refusal.
-  `agent_window` backs `agent_window_alive`, which
+  `headless_liveness` is what
   `restart_session`'s `--if-missing` path uses to decide whether the agent is
   gone and needs relaunching — an unreachable host now aborts the relaunch
   instead of reading as "no window", which used to start a second agent beside

@@ -623,3 +623,52 @@ fn session_filter_reports_only_that_session() {
     assert_eq!(event["to_state"], Value::String("blocked".into()));
     watch.silent_for(Duration::from_secs(1));
 }
+
+/// `--verify` reads the row's own pane: the window stamped with the row's id,
+/// under the row's name. A pane running a different agent than the row was
+/// created with is reported as `detected_agent`.
+#[cfg(unix)]
+#[test]
+fn verify_reads_the_rows_own_pane() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    std::fs::write(
+        env.path("config").join("agents.toml"),
+        format!("{AGENTS_TOML}\n[[agents]]\nname = \"codex\"\ncommand = \"codex\"\n"),
+    )
+    .expect("write agents.toml");
+    let db = env.db();
+    let id = seed(&db, "worker");
+    db.set_hook_state(id, "working").expect("working");
+
+    let fake = env.path("home").join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nwhile :; do sleep 1; done\n").expect("write");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    const SESSION: &str = "thurbox-dev";
+    let ok = |args: &[&str]| assert!(env.server.tmux(args).status.success(), "{args:?}");
+    ok(&["new-session", "-d", "-s", SESSION, "-n", "keep", "sh"]);
+    ok(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-worker",
+        &fake.to_string_lossy(),
+    ]);
+    let target = format!("{SESSION}:tb-worker");
+    ok(&[
+        "set-option",
+        "-w",
+        "-t",
+        &target,
+        "@thurbox_session",
+        &id.to_string(),
+    ]);
+    ok(&["set-option", "-w", "-t", &target, "@thurbox_role", "agent"]);
+
+    let watch = env.watch(&["--json", "--initial", "--verify", "--for-secs", "30"]);
+    let baseline = watch.event("the verified baseline");
+    let detected = baseline["detected_agent"].clone();
+    assert_eq!(detected, Value::String("codex".into()), "{baseline}");
+}

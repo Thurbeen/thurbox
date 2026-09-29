@@ -224,7 +224,7 @@ own, which is the point.
   (verified against tmux 3.5a). `session doctor`'s `cli` finding used to answer
   from the *doctor's* `PATH`, which is why it read `ok` throughout; it now reads
   the pane's own, out of the `env PATH=…` prefix tmux keeps verbatim in
-  `#{pane_start_command}` (`agent::mux::agent_pane_path`). Not
+  `#{pane_start_command}` (`SessionBackend::pane_path`). Not
   `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
   restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
   would answer for a `doctor` run from the TUI and refuse the same question

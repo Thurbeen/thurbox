@@ -629,7 +629,9 @@ fn fire_send(
             )
         }
     };
-    if !crate::agent::mux::window_exists(&target.id.to_string(), &target.name) {
+    let running = crate::session_ops::registered_backend(&target.backend_type)
+        .is_ok_and(|backend| backend.has_window(&target.id.to_string(), &target.name));
+    if !running {
         return (
             AutomationRunStatus::Skipped,
             "target session not running".into(),
@@ -659,8 +661,12 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
-    // Reuse an existing session window (later fires / restored sessions).
-    if crate::agent::mux::window_exists("", &name) {
+    // Reuse an existing session window (later fires / restored sessions). A
+    // window with no row to route by is looked for on the local default
+    // backend, where a headless spawn with no host puts it.
+    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    let local_default = backends.default_backend();
+    if local_default.has_window("", &name) {
         let sessions = match db.find_sessions_by_name(&name) {
             Ok(sessions) => sessions,
             Err(e) => {
@@ -672,8 +678,9 @@ fn fire_spawn(
             }
         };
         let mut local = sessions.into_iter().filter(|s| {
-            s.backend_type == "local-tmux"
-                && crate::agent::mux::window_exists(&s.id.to_string(), &name)
+            backends
+                .get(&s.backend_type)
+                .is_some_and(|backend| backend.has_window(&s.id.to_string(), &name))
         });
         if let Some(session) = local.next() {
             if local.next().is_none() {
@@ -694,7 +701,7 @@ fn fire_spawn(
         }
         // A legacy window can outlive its row; multiple unstamped namesakes
         // cannot be assigned a row safely. Deliver without changing status.
-        return match crate::agent::mux::send_prompt_now("", &name, &auto.prompt) {
+        return match local_default.send_text("", &name, &auto.prompt, true) {
             Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
             Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
         };

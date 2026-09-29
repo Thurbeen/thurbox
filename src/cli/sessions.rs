@@ -1032,7 +1032,8 @@ fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, Co
     } else {
         None
     };
-    crate::agent::mux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
+    crate::session_ops::registered_backend(&session.backend_type)?
+        .send_key(&session.id.to_string(), &session.name, &resolved.name)
         .map_err(|e| format!("send_key_now: {e}"))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
@@ -1312,13 +1313,14 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output =
-        crate::agent::mux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
-            .map_err(|e| format!("capture_pane_text: {e}"))?;
+    let backend = crate::session_ops::registered_backend(&session.backend_type)?;
+    let output = backend
+        .capture_text(&session.id.to_string(), &session.name, lines, ansi)
+        .map_err(|e| format!("capture_pane_text: {e}"))?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.
-    let state = crate::agent::mux::pane_state(&session.id.to_string(), &session.name);
+    let state = backend.pane_state(&session.id.to_string(), &session.name);
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -2271,7 +2273,10 @@ impl SessionFacts {
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let pane = crate::agent::mux::pane_state(&s.id.to_string(), &s.name);
+        let pane = match crate::session_ops::registered_backend(&s.backend_type) {
+            Ok(backend) => backend.pane_state(&s.id.to_string(), &s.name),
+            Err(_) => return hook.pane_unavailable(),
+        };
         hook.with_pane(
             &command,
             registry,
@@ -2363,9 +2368,10 @@ fn register_running_session(
     // for its id yet; passing the real id (rather than "") still lets the
     // by-name fallback require the sole match to be unstamped, refusing to
     // steal a window already stamped for a different, live session.
-    let pane = crate::agent::mux::agent_window(None, &session.id.to_string(), &session.name)
+    let backend = crate::session_ops::registered_backend(&session.backend_type)?;
+    let pane = backend
+        .claim_running_window(&session.id.to_string(), &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
-        .pane()
         .ok_or_else(|| {
             format!(
                 "no live window for '{}' on this machine's tmux server that is \
@@ -2374,13 +2380,6 @@ fn register_running_session(
                 session.name
             )
         })?;
-    // Adopted, so stamp it: the row now owns that window by id rather than by
-    // a name a later namesake could take.
-    crate::agent::mux::stamp_local_window(
-        &pane,
-        &session.id.to_string(),
-        crate::agent::backend::WindowRole::Agent,
-    );
     session.backend_id = pane;
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)
         .map_err(|e| format!("upsert_session: {e}"))?;

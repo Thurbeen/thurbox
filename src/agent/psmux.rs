@@ -17,7 +17,8 @@ use base64::Engine as _;
 use tracing::warn;
 
 use super::backend::{
-    AdoptedSession, BackendLiveness, DiscoveredSession, SessionBackend, SpawnedSession, WindowRole,
+    AdoptedSession, BackendLiveness, DiscoveredSession, PanePath, PaneState, SessionBackend,
+    SpawnedSession, WindowRole,
 };
 use super::control_mode::{PaneSnapshot, PasteChannel, SEND_KEYS_CHUNK_BYTES};
 use super::mux::{
@@ -621,6 +622,56 @@ impl PsmuxBackend {
 }
 
 impl SessionBackend for PsmuxBackend {
+    fn send_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<()> {
+        self.protocol
+            .session_send_text(session_id, session_name, text, submit)
+    }
+    fn send_key(&self, session_id: &str, session_name: &str, key: &str) -> Result<()> {
+        self.protocol
+            .session_send_key(session_id, session_name, key)
+    }
+    fn send_text_after(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        self.protocol
+            .session_send_text_after(session_id, session_name, text, delay_secs)
+    }
+    fn capture_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        lines: u32,
+        ansi: bool,
+    ) -> Result<String> {
+        self.protocol
+            .session_capture_text(session_id, session_name, lines, ansi)
+    }
+    fn pane_state(&self, session_id: &str, session_name: &str) -> PaneState {
+        self.protocol.session_pane_state(session_id, session_name)
+    }
+    fn pane_path(&self, session_id: &str, session_name: &str) -> PanePath {
+        self.protocol.session_pane_path(session_id, session_name)
+    }
+    fn has_window(&self, session_id: &str, session_name: &str) -> bool {
+        self.protocol.session_has_window(session_id, session_name)
+    }
+    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()> {
+        self.protocol.session_rename_windows(session_id, from, to)
+    }
+    fn claim_running_window(&self, session_id: &str, session_name: &str) -> Result<Option<String>> {
+        self.protocol
+            .session_claim_running_window(session_id, session_name)
+    }
     fn name(&self) -> &str {
         self.protocol.name()
     }

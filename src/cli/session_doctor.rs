@@ -586,15 +586,19 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     // Spelled out at every mention rather than imported: `cli` may reach
     // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
     // that holds for a `use` inside a function too.
-    match crate::agent::mux::agent_pane_path(&session.id.to_string(), &session.name) {
-        crate::agent::mux::PanePath::Known(path) => {
+    let path = match crate::session_ops::registered_backend(&session.backend_type) {
+        Ok(backend) => backend.pane_path(&session.id.to_string(), &session.name),
+        Err(_) => crate::agent::backend::PanePath::Unknown,
+    };
+    match path {
+        crate::agent::backend::PanePath::Known(path) => {
             match resolve_cli_on(std::ffi::OsStr::new(&path)) {
                 Some(found) => HookCli::OnPanePath(found),
                 None => HookCli::NotOnPanePath,
             }
         }
-        crate::agent::mux::PanePath::Unknown => HookCli::PaneUnverifiable,
-        crate::agent::mux::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
+        crate::agent::backend::PanePath::Unknown => HookCli::PaneUnverifiable,
+        crate::agent::backend::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
     }
 }
 

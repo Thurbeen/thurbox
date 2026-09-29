@@ -326,13 +326,13 @@ session), never on the loop, ADR-P12).
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` resolves the
   session's `HostDef` from its `backend_type` and, for a remote session, kills
-  its windows via `kill_remote_windows(host, session_id, name, SessionPanes)` and
+  its windows via the host backend's `kill_headless(session_id, name, agent_pane, shell_pane)` and
   removes each worktree via `git::remove_worktree_on(Some(host), …)` (local
   sessions keep the `kill_window`/`remove_worktree` + Windows pane-reap path).
   Every kill is resolved from the window's own `@thurbox_session` stamp, not the
   row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
   when it restarts, so a remembered `%N` there can be a live namesake's pane; the
-  `SessionPanes` argument is the psmux fallback only. An unreachable host or a
+  remembered panes are the psmux fallback only. An unreachable host or a
   missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
   row is still soft-/force-deleted — a host that is down is often *why* someone
@@ -384,11 +384,11 @@ session), never on the loop, ADR-P12).
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,
   so a force delete taken while a host was briefly down found nothing to kill
-  and recorded *no error at all*. `TmuxBackend::discover_answered` (used by
-  `kill_remote_windows`, `remote_window_index` and `agent_window`) answers
+  and recorded *no error at all*. `MuxBackend::discover_answered` (used by the
+  host backends' `kill_headless` and `headless_liveness`, and `agent_window`) answers
   empty only on the multiplexer's own refusal, and drops the `has-session`
-  round trip while it is there. `agent_window` backs `agent_window_alive`,
-  which `restart --if-missing` uses to decide whether to relaunch after a
+  round trip while it is there. `headless_liveness` is what
+  `restart --if-missing` uses to decide whether to relaunch after a
   reboot — an unreachable host now aborts the relaunch instead of reading as
   "no window", which used to start a second agent beside the one still running
   once the host answered again (`restart_if_missing_probe`).
@@ -435,7 +435,7 @@ session), never on the loop, ADR-P12).
 - **A remote teardown never starts a server.** `ensure_ready` creates the
   multiplexer server *and* the thurbox session as a side effect, so a one-shot
   `thurbox-cli` tearing a session down used to leave an empty server on the
-  host. `kill_remote_windows` / `remote_window_index` / `agent_window` read one
+  host. `kill_headless` / `headless_liveness` / `agent_window` read one
   `list-windows` (`discover_answered`, above) and kill with a one-shot
   `kill-pane`. And they only act on a socket the host has vouched for:
   `known_host_socket` takes `hosts.toml`'s `socket`, else what the host's own

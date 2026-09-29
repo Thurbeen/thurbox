@@ -96,14 +96,15 @@ pub fn rename_session_headless(
     }
 
     let id = session_id.to_string();
-    let written =
-        crate::agent::mux::rename_session_windows(host.as_ref(), &id, &session.name, name)
-            .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
-            .and_then(|()| match db.rename_session(session_id, name) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(format!("Session not found: {session_id}")),
-                Err(e) => Err(format!("rename_session: {e}")),
-            });
+    let backend = super::registered_backend(&session.backend_type)?;
+    let written = backend
+        .rename_windows(&id, &session.name, name)
+        .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
+        .and_then(|()| match db.rename_session(session_id, name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("Session not found: {session_id}")),
+            Err(e) => Err(format!("rename_session: {e}")),
+        });
     if let Err(error) = written {
         // Some window may now carry a name the row does not — the agent's, when
         // the shell's rename failed after it, or both, when the row could not be
@@ -111,9 +112,7 @@ pub fn rename_session_headless(
         // like this it reads as gone, and a relaunch would start a second agent
         // beside it. Nothing renamed is found under the new name, so putting
         // back is harmless when the first rename failed outright.
-        if let Err(e) =
-            crate::agent::mux::rename_session_windows(host.as_ref(), &id, name, &session.name)
-        {
+        if let Err(e) = backend.rename_windows(&id, name, &session.name) {
             tracing::warn!(
                 "could not put back the windows of '{}': {e:#}",
                 session.name

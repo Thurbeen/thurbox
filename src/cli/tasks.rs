@@ -340,7 +340,8 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if !crate::agent::mux::window_exists(&target.id.to_string(), &target.name) {
+            let backend = crate::session_ops::registered_backend(&target.backend_type)?;
+            if !backend.has_window(&target.id.to_string(), &target.name) {
                 return Err("target session not running".into());
             }
             crate::session_ops::send_text_with_status(db, &target, &prompt, true)
@@ -365,7 +366,8 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 .into_iter()
                 .find(|s| {
                     task.matches_spawn_session(&s.name)
-                        && crate::agent::mux::window_exists(&s.id.to_string(), &s.name)
+                        && crate::session_ops::registered_backend(&s.backend_type)
+                            .is_ok_and(|backend| backend.has_window(&s.id.to_string(), &s.name))
                 });
             if let Some(session) = existing {
                 crate::session_ops::send_text_with_status(db, &session, &prompt, true)

@@ -1281,9 +1281,9 @@ mod tests {
     }
 
     // The resolved-remote-host kill/worktree path (a configured, reachable
-    // host) is not unit-tested here: it needs a live SSH/WSL host and
-    // `kill_remote_windows` would issue a real connection. The routing is thin —
-    // `remove_worktree_on` / `kill_remote_windows` are exercised where they live —
+    // host) is not unit-tested here: it needs a live SSH/WSL host and the host
+    // backend's `kill_headless` would issue a real connection. The routing is thin —
+    // `remove_worktree_on` / `kill_headless` are exercised where they live —
     // so these tests cover the two host-resolution failure modes instead.
     // (cfg(test) sandboxes the config dir, so `load_all` sees an empty
     // `hosts.toml` and never touches the real network.)
@@ -1898,7 +1898,7 @@ mod tests {
         assert!(reap_overdue_soft_deletes(&db).is_empty());
     }
 
-    /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
+    /// The sweep's ownership gate. Its old test was a by-name liveness check, so an
     /// overdue row whose pane had long gone was re-reported as reaped on every
     /// tick on the strength of a live namesake's window. Ownership is now the
     /// window's own stamp (ADR-25): with no window carrying this row's id — here

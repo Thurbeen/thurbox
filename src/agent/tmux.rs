@@ -12,7 +12,8 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use super::backend::{
-    AdoptedSession, BackendLiveness, DiscoveredSession, SessionBackend, SpawnedSession, WindowRole,
+    AdoptedSession, BackendLiveness, DiscoveredSession, PanePath, PaneState, SessionBackend,
+    SpawnedSession, WindowRole,
 };
 use super::control_mode::{self, shell_escape, PaneSnapshot, SIZER_OPTION};
 use super::mux::{
@@ -554,6 +555,55 @@ impl TmuxBackend {
 }
 
 impl SessionBackend for TmuxBackend {
+    fn send_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        submit: bool,
+    ) -> Result<()> {
+        self.core
+            .session_send_text(session_id, session_name, text, submit)
+    }
+    fn send_key(&self, session_id: &str, session_name: &str, key: &str) -> Result<()> {
+        self.core.session_send_key(session_id, session_name, key)
+    }
+    fn send_text_after(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        text: &str,
+        delay_secs: u64,
+    ) -> Result<()> {
+        self.core
+            .session_send_text_after(session_id, session_name, text, delay_secs)
+    }
+    fn capture_text(
+        &self,
+        session_id: &str,
+        session_name: &str,
+        lines: u32,
+        ansi: bool,
+    ) -> Result<String> {
+        self.core
+            .session_capture_text(session_id, session_name, lines, ansi)
+    }
+    fn pane_state(&self, session_id: &str, session_name: &str) -> PaneState {
+        self.core.session_pane_state(session_id, session_name)
+    }
+    fn pane_path(&self, session_id: &str, session_name: &str) -> PanePath {
+        self.core.session_pane_path(session_id, session_name)
+    }
+    fn has_window(&self, session_id: &str, session_name: &str) -> bool {
+        self.core.session_has_window(session_id, session_name)
+    }
+    fn rename_windows(&self, session_id: &str, from: &str, to: &str) -> Result<()> {
+        self.core.session_rename_windows(session_id, from, to)
+    }
+    fn claim_running_window(&self, session_id: &str, session_name: &str) -> Result<Option<String>> {
+        self.core
+            .session_claim_running_window(session_id, session_name)
+    }
     fn name(&self) -> &str {
         self.core.name()
     }
