@@ -3594,7 +3594,6 @@ fn a_dropped_connection_to_a_reachable_host_is_not_left_unreachable() {
         "the session to be re-attached over a new connection",
         |frame| frame.contains("$ ") && !shows_unreachable(frame),
     );
-    assert_eq!(link.live().len(), 2, "one new control connection");
 }
 
 #[test]

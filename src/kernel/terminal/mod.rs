@@ -825,7 +825,7 @@ impl Terminals {
                 //
                 // No failure is recorded. A connection ending says nothing about
                 // whether the host can be reached — thurbox replaces its own on a
-                // timed-out command, and a blip is over by the time it is seen —
+                // timed-out command, and a blip can be over before it is seen —
                 // and recording one held the attach off for
                 // `ATTACH_RETRY_INTERVAL`, showing a reachable host as
                 // unreachable. The attach that follows asks the host, and its
