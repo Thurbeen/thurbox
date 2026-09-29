@@ -1,36 +1,54 @@
-//! Architecture rules enforced as tests (allowlist model).
+//! Architecture rules enforced as tests (allowlist model over resolved edges).
 //!
 //! Every module under `src/` must appear in [`MODULE_RULES`] (or in
-//! [`EXEMPT`]) and may only reference the crate-internal modules its entry
-//! allows — `every_module_is_governed` fails when a new module is added
-//! without a rule, so the architecture is an explicit decision per module.
+//! [`EXEMPT`]) and may only reference the nodes its entry allows —
+//! `every_module_is_governed` fails when a new module is added without a rule,
+//! so the architecture is an explicit decision per module.
 //!
-//! References are extracted from comment- and string-stripped source, so all
-//! import shapes are covered: `use` / `pub use`, brace groups
-//! (`use crate::{a, b}`), bare imports (`use crate::a;`), multi-line
-//! statements, and fully-qualified paths in code (`crate::a::item(…)`).
+//! A rule's name is a **node**: a top-level module (`kernel`) or a governed
+//! submodule (`agent::tmux`). A file belongs to the deepest node containing it,
+//! and a reference is judged by the node it *resolves to* (see `resolver`):
+//! `super::`, `self::`, bare child-module paths, nested brace groups, `as`
+//! renames, imported names, `pub use` re-exports and `type` aliases are all
+//! followed, so no import shape and no alias carries a crossing past a rule. A
+//! grant names exactly one node and never its children: allowing `agent`
+//! admits nothing in a governed `agent::tmux`.
+//!
+//! The graph is checked as a whole too: the actual production edges and the
+//! declared allowlist must both be acyclic, and every allowance must be used
+//! by production code. A crossing that is known and scheduled for removal is
+//! listed in [`TRANSITIONAL`], which must equal the violations found — both
+//! ways, so a new crossing fails and so does a stale entry.
 //!
 //! The layering mirrors AGENTS.md ("Module Dependency Rules") and
 //! docs/CONSTITUTION.md §2. If a rule change is intentional, update those
 //! docs in the same PR.
 
+#[path = "architecture/resolver.rs"]
+mod resolver;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Per-module dependency allowlist.
+use resolver::{cycles, strip_comments_and_strings, Edge, Tree};
+
+/// Per-node dependency allowlist.
 struct ModuleRules {
-    /// Module name: a directory `src/<name>/` or a file `src/<name>.rs`.
+    /// A top-level module (`src/<name>/` or `src/<name>.rs`) or a governed
+    /// submodule path (`agent::tmux`).
     name: &'static str,
-    /// Crate modules this module may reference in any form.
+    /// Nodes this node may reference in any form.
     allowed: &'static [&'static str],
-    /// Crate modules additionally reachable via fully-qualified paths
+    /// Nodes additionally reachable via fully-qualified paths
     /// (`crate::module::item(…)`) but **not** importable with `use` —
     /// keeps the dependency visible at every call site.
     allowed_path_only: &'static [&'static str],
 }
 
-/// Which crate-internal modules each module may touch.
+/// Which nodes each node may touch.
 const MODULE_RULES: &[ModuleRules] = &[
     // Pure data: the dependency sink. No crate-internal references at all.
     ModuleRules {
@@ -38,10 +56,77 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Side-effect layer (PTY/tmux). Never ui, git, or app.
+    // Coding-agent definitions and their config: agents.toml, extensions,
+    // hooks, settings, themes, preflight, self-update. Never a session
+    // backend: those live in their own nodes below, and a backend may read an
+    // agent's config, so the reverse would be a cycle.
     ModuleRules {
         name: "agent",
         allowed: &["session", "paths", "shell"],
+        allowed_path_only: &[],
+    },
+    // hosts.toml, and the cached registry of it every process shares. Its own
+    // node so that reading global host config is a visible decision: the
+    // backend contract and the pure registry must not.
+    ModuleRules {
+        name: "agent::host_config",
+        allowed: &["session", "paths", "agent"],
+        allowed_path_only: &[],
+    },
+    // The session-backend contract, and the pane machinery every backend's
+    // stream is wired into. It names no concrete backend, no protocol helper
+    // and no global config.
+    ModuleRules {
+        name: "agent::backend",
+        allowed: &["session", "agent", "agent::osc8", "agent::output_wake"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::osc8",
+        allowed: &["session"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::output_wake",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    // A container of backends. Knows the contract and nothing that builds one.
+    ModuleRules {
+        name: "agent::registry",
+        allowed: &["session", "agent::backend"],
+        allowed_path_only: &[],
+    },
+    // The tmux command and control-mode protocol. Shared grammar, not an
+    // adapter: it may know the contract, never the adapter using it.
+    ModuleRules {
+        name: "agent::control_mode",
+        allowed: &[
+            "session",
+            "shell",
+            "agent",
+            "agent::backend",
+            "agent::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::transport",
+        allowed: &["shell"],
+        allowed_path_only: &[],
+    },
+    // The tmux adapter.
+    ModuleRules {
+        name: "agent::tmux",
+        allowed: &[
+            "session",
+            "paths",
+            "shell",
+            "agent",
+            "agent::backend",
+            "agent::control_mode",
+            "agent::transport",
+        ],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -68,12 +153,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         // credential files cross-platform ($HOME / %USERPROFILE%).
         allowed_path_only: &["paths"],
     },
-    // Headless session ops: no TUI state or PTY-attached backend. Talks to
-    // tmux through the narrow helpers in `agent::tmux` via fully-qualified
-    // paths only (never `use`), same pattern as the cli module. `shell` for
-    // the same reason `agent` has it: `host_cli` spells a `thurbox-cli`
-    // invocation for a host's `sh` or PowerShell, and the two quoting rules
-    // have exactly one home (`shell::posix_quote` / `powershell_quote`).
+    // Headless session ops: no TUI state or PTY-attached backend. Reaches the
+    // agent config and the backend contract via fully-qualified paths only
+    // (never `use`), same pattern as the cli module. `shell` for the same
+    // reason `agent` has it: `host_cli` spells a `thurbox-cli` invocation for a
+    // host's `sh` or PowerShell, and the two quoting rules have exactly one
+    // home (`shell::posix_quote` / `powershell_quote`).
     ModuleRules {
         name: "session_ops",
         allowed: &[
@@ -85,7 +170,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "workspace",
             "shell",
         ],
-        allowed_path_only: &["agent"],
+        allowed_path_only: &["agent", "agent::host_config", "agent::registry"],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
     ModuleRules {
@@ -108,13 +193,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "kernel"],
+        allowed_path_only: &["agent", "agent::host_config", "kernel"],
     },
-    // v2 plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
+    // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
     // `sync` for the rows, `session` for the types, `paths` for the DB and
-    // plugin directories). Never `ui` or `app` — it is their replacement, not
-    // their peer.
+    // plugin directories).
     //
     // `git` IS allowed, and the rule is about *where*: the worker-backed stores
     // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
@@ -124,9 +208,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     //
     // `shell` for the reason `session_ops` has it: `runs` spells a `cd <dir> &&
     // <program>` script for a host, and POSIX quoting has exactly one home
-    // (`shell::posix_quote`). The rule used to omit it while no test checked
-    // `kernel`, so the reference went in unnoticed; a second copy of the quoting
-    // rule would be the worse fix.
+    // (`shell::posix_quote`).
     ModuleRules {
         name: "kernel",
         allowed: &[
@@ -141,11 +223,18 @@ const MODULE_RULES: &[ModuleRules] = &[
             "shell",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
-        // and paints its vt100 screen. `kernel::metrics` fetches account usage
-        // through `usage`. Both are reachable by fully-qualified path only
-        // (never `use`), the same rule `session_ops` and `cli` follow, so every
-        // crossing into the side-effect layer is visible at its call site.
-        allowed_path_only: &["agent", "usage"],
+        // through the backend contract and paints its vt100 screen.
+        // `kernel::metrics` fetches account usage through `usage`. All are
+        // reachable by fully-qualified path only (never `use`), the same rule
+        // `session_ops` and `cli` follow, so every crossing into the
+        // side-effect layer is visible at its call site.
+        allowed_path_only: &[
+            "agent",
+            "agent::host_config",
+            "agent::backend",
+            "agent::registry",
+            "usage",
+        ],
     },
     // Leaf utilities.
     ModuleRules {
@@ -173,6 +262,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         name: "coordinator",
         allowed: &[
             "agent",
+            "agent::output_wake",
             "clipboard",
             "kernel",
             "paths",
@@ -209,412 +299,277 @@ const MODULE_RULES: &[ModuleRules] = &[
 /// Modules exempt from the allowlist: `bin`, `lib`, and `main` are crate roots,
 /// not architecture modules.
 ///
-/// `coordinator` is **not** exempt any more. It is `main`'s own body split
-/// across files, and it does wire every layer together — but "wires everything"
-/// was never the same claim as "may reach anything", and an exemption made the
-/// one module that touches the most layers the one nobody had to decide about.
-/// It has an entry above listing what it actually reaches today.
+/// `coordinator` is **not** exempt. It is `main`'s own body split across
+/// files, and it does wire every layer together — but "wires everything" was
+/// never the same claim as "may reach anything". It has an entry above listing
+/// what it actually reaches today.
 const EXEMPT: &[&str] = &["bin", "lib", "main"];
 
-/// A single architecture violation: a forbidden crate-module reference.
-struct Violation {
-    file: PathBuf,
-    line_number: usize,
-    line: String,
-    segment: String,
-    in_use: bool,
+/// Nodes whose every child module must be a governed node of its own, so a
+/// new file there is a decision rather than something its parent's rule
+/// silently covers.
+const SUBMODULE_GOVERNED: &[&str] = &[];
+
+/// The task in the backend-boundary sequence that removes a transitional
+/// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Remover {
+    /// Lifecycle through the contract, one registry injected at the roots.
+    F5a,
+    /// Pane I/O through `locate` and the contract's pane verbs.
+    F5b,
+    /// Host platform and launcher separated from the multiplexer.
+    F6,
+    /// psmux extracted into its own adapter.
+    F6b,
+    /// Status delivery and the heartbeat owned by the backend.
+    F7,
 }
 
-/// A `crate::<segment>` reference found in stripped source.
-struct RefSite {
-    /// Byte offset of the `crate::` token (for line lookup).
-    offset: usize,
-    segment: String,
-    /// Whether the reference sits inside a `use …;` statement.
-    in_use: bool,
+impl Remover {
+    const ALL: [Remover; 5] = [
+        Remover::F5a,
+        Remover::F5b,
+        Remover::F6,
+        Remover::F6b,
+        Remover::F7,
+    ];
 }
+
+/// A crossing that breaks a rule today, is known, and is scheduled to go.
+///
+/// Not an allowance: [`every_module_rule_holds`] fails on any violation this
+/// table does not name, and [`transitional_table_names_only_live_crossings`]
+/// fails on an entry naming one that no longer exists — so the table is
+/// always exactly today's debt, item by item, and deleting an entry is how
+/// the task that removes it proves it did.
+struct Transitional {
+    from: &'static str,
+    to: &'static str,
+    /// Items of `to` that `from` still reaches.
+    items: &'static [&'static str],
+    remover: Remover,
+    why: &'static str,
+}
+
+const TRANSITIONAL: &[Transitional] = &[];
 
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
-/// Recursively collect all `.rs` files under `dir`, panicking on I/O errors
-/// so a renamed or unreadable module can never pass vacuously.
-fn collect_rs_files(dir: &Path) -> Vec<PathBuf> {
-    collect_files_with_extension(dir, "rs")
+/// The real tree, parsed once for every test in this file.
+fn src_tree() -> &'static Tree {
+    static TREE: OnceLock<Tree> = OnceLock::new();
+    TREE.get_or_init(|| Tree::load(&src_root()))
 }
 
-/// The `.rs` files making up module `name` (`src/<name>/` or `src/<name>.rs`).
-fn module_files(name: &str) -> Vec<PathBuf> {
-    let root = src_root();
-    let dir = root.join(name);
-    if dir.is_dir() {
-        let files = collect_rs_files(&dir);
-        assert!(!files.is_empty(), "src/{name}/ contains no .rs files");
-        return files;
+fn node_names(rules: &[ModuleRules]) -> Vec<&'static str> {
+    rules.iter().map(|r| r.name).collect()
+}
+
+fn rules_for<'a>(rules: &'a [ModuleRules], node: &str) -> &'a ModuleRules {
+    rules
+        .iter()
+        .find(|r| r.name == node)
+        .unwrap_or_else(|| panic!("no rule for node `{node}`"))
+}
+
+/// Whether an edge is one its source node's rule forbids.
+fn breaks_rules(rules: &ModuleRules, edge: &Edge) -> bool {
+    let to = edge.to.as_str();
+    if rules.allowed.contains(&to) {
+        return false;
     }
-    let file = root.join(format!("{name}.rs"));
+    edge.in_use || !rules.allowed_path_only.contains(&to)
+}
+
+/// Every edge any rule forbids — test code included: a test may not reach
+/// what its module may not.
+fn violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
+    tree.edges(&node_names(rules))
+        .into_iter()
+        .filter(|e| breaks_rules(rules_for(rules, &e.from), e))
+        .collect()
+}
+
+fn describe(tree: &Tree, rules: &[ModuleRules], edge: &Edge) -> String {
+    let note = if edge.in_use
+        && rules_for(rules, &edge.from)
+            .allowed_path_only
+            .contains(&edge.to.as_str())
+    {
+        " (allowed via fully-qualified path only, not `use`)"
+    } else {
+        ""
+    };
+    format!(
+        "{} → {} @ {}{}{note}",
+        edge.from,
+        edge.target(),
+        edge.site(&tree.root),
+        if edge.test { " [test]" } else { "" },
+    )
+}
+
+fn transitional_keys(table: &[Transitional]) -> BTreeSet<(String, String, String)> {
+    table
+        .iter()
+        .flat_map(|t| {
+            t.items
+                .iter()
+                .map(|item| (t.from.to_string(), t.to.to_string(), item.to_string()))
+        })
+        .collect()
+}
+
+/// Every rule holds, except for the crossings [`TRANSITIONAL`] names.
+#[test]
+fn every_module_rule_holds() {
+    let tree = src_tree();
+    let listed = transitional_keys(TRANSITIONAL);
+    let mut report = String::new();
+    for edge in violations(tree, MODULE_RULES) {
+        let key = (edge.from.clone(), edge.to.clone(), edge.item.clone());
+        if !listed.contains(&key) {
+            writeln!(report, "  {}", describe(tree, MODULE_RULES, &edge)).unwrap();
+        }
+    }
     assert!(
-        file.is_file(),
-        "module `{name}` not found as src/{name}/ or src/{name}.rs — \
-         update MODULE_RULES in tests/architecture_rules.rs if it was renamed"
+        report.is_empty(),
+        "\narchitecture violation(s), as `from → resolved item @ file:line`:\n{report}\
+         Fix the reference, or — if the architecture is changing on purpose — update \
+         MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and \
+         docs/CONSTITUTION.md. A crossing scheduled for removal belongs in TRANSITIONAL, \
+         naming the task that removes it.\n"
     );
-    vec![file]
 }
 
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Strip comments and string/char-literal contents from Rust source,
-/// preserving newlines so byte offsets still map to line numbers.
-///
-/// One `skip_*` helper per lexical form, each returning the index just past what
-/// it consumed and pushing only the newlines it swallowed.
-fn strip_comments_and_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        i = match bytes[i] {
-            b'/' if bytes.get(i + 1) == Some(&b'/') => skip_line_comment(bytes, i),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => skip_block_comment(bytes, i, &mut out),
-            b'"' => skip_string(bytes, i, &mut out),
-            // Raw strings: r"…", r#"…"#, br#"…"# (the `b` is consumed as a
-            // normal byte before we land on the `r`).
-            b'r' if !(i > 0 && is_ident_char(bytes[i - 1]) && bytes[i - 1] != b'b') => {
-                skip_raw_string(bytes, i, &mut out)
-            }
-            // Char literal vs lifetime: 'x' / '\n' are literals; 'a is a
-            // lifetime (kept — it contains no `crate::`).
-            b'\'' => skip_char_literal(bytes, i, &mut out),
-            b => {
-                out.push(b);
-                i + 1
-            }
-        };
-    }
-    String::from_utf8(out).expect("stripped source remains valid UTF-8")
-}
-
-/// `// …` to the end of the line. The newline itself is left for the caller.
-fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i] != b'\n' {
-        i += 1;
-    }
-    i
-}
-
-/// `/* … */`, nested.
-fn skip_block_comment(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
-    let mut depth = 1usize;
-    i += 2;
-    while i < bytes.len() && depth > 0 {
-        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-            depth += 1;
-            i += 2;
-        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-            depth -= 1;
-            i += 2;
-        } else {
-            if bytes[i] == b'\n' {
-                out.push(b'\n');
-            }
-            i += 1;
-        }
-    }
-    i
-}
-
-/// `"…"`, honouring backslash escapes — including a `\` line continuation,
-/// whose newline is kept so a violation below it reports the right line.
-fn skip_string(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
-    i += 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => {
-                if bytes.get(i + 1) == Some(&b'\n') {
-                    out.push(b'\n');
-                }
-                i += 2;
-            }
-            b'"' => return i + 1,
-            b'\n' => {
-                out.push(b'\n');
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    i
-}
-
-/// `r"…"` / `r#"…"#`. Not a raw string after all (a bare `r` identifier) → emit
-/// the `r` and move on.
-fn skip_raw_string(bytes: &[u8], i: usize, out: &mut Vec<u8>) -> usize {
-    let mut j = i + 1;
-    while bytes.get(j) == Some(&b'#') {
-        j += 1;
-    }
-    if bytes.get(j) != Some(&b'"') {
-        out.push(b'r');
-        return i + 1;
-    }
-    let hashes = j - (i + 1);
-    let mut close = vec![b'"'];
-    close.extend(std::iter::repeat(b'#').take(hashes));
-    let mut at = j + 1;
-    while at < bytes.len() && bytes[at..].len() >= close.len() {
-        if bytes[at..at + close.len()] == close[..] {
-            return at + close.len();
-        }
-        if bytes[at] == b'\n' {
-            out.push(b'\n');
-        }
-        at += 1;
-    }
-    at
-}
-
-/// `'x'` / `'\n'` are literals and are consumed; `'a` is a lifetime and the
-/// quote is kept, since a lifetime contains no `crate::`.
-fn skip_char_literal(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
-    if bytes.get(i + 1) == Some(&b'\\') {
-        i += 3;
-        while i < bytes.len() && bytes[i] != b'\'' {
-            i += 1;
-        }
-        return i + 1;
-    }
-    if bytes.get(i + 2) == Some(&b'\'') && bytes.get(i + 1) != Some(&b'\'') {
-        return i + 3;
-    }
-    out.push(b'\'');
-    i + 1
-}
-
-/// Byte spans of `use …;` statements in stripped source.
-fn use_spans(stripped: &str) -> Vec<(usize, usize)> {
-    let bytes = stripped.as_bytes();
-    let mut spans = Vec::new();
-    let mut search = 0;
-    while let Some(found) = stripped[search..].find("use") {
-        let start = search + found;
-        search = start + 3;
-        let before_ok = start == 0 || !is_ident_char(bytes[start - 1]);
-        let after_ok = bytes.get(start + 3).is_some_and(u8::is_ascii_whitespace);
-        if before_ok && after_ok {
-            let end = stripped[start..]
-                .find(';')
-                .map_or(stripped.len(), |e| start + e + 1);
-            spans.push((start, end));
-            search = end;
-        }
-    }
-    spans
-}
-
-fn read_ident(bytes: &[u8], i: &mut usize) -> String {
-    let start = *i;
-    while *i < bytes.len() && is_ident_char(bytes[*i]) {
-        *i += 1;
-    }
-    String::from_utf8_lossy(&bytes[start..*i]).into_owned()
-}
-
-/// First path segments of a `crate::{…}` brace group (top level only):
-/// `crate::{agent::x, ui::y}` yields `agent` and `ui`.
-fn brace_group_segments(bytes: &[u8], open: usize) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut depth = 0usize;
-    let mut expect_segment = false;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => {
-                depth += 1;
-                expect_segment = depth == 1;
-                i += 1;
-            }
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-                i += 1;
-            }
-            b',' => {
-                expect_segment |= depth == 1;
-                i += 1;
-            }
-            b if depth == 1 && expect_segment && !b.is_ascii_whitespace() => {
-                if is_ident_char(b) {
-                    segments.push(read_ident(bytes, &mut i));
-                } else {
-                    i += 1;
-                }
-                expect_segment = false;
-            }
-            _ => i += 1,
-        }
-    }
-    segments
-}
-
-/// All `crate::<segment>` references in stripped source.
-fn crate_refs(stripped: &str) -> Vec<RefSite> {
-    let bytes = stripped.as_bytes();
-    let spans = use_spans(stripped);
-    let mut refs = Vec::new();
-    // `thurbox::` alongside `crate::` because the binary's own modules
-    // (`coordinator`) reach the library by its name — the same crossing, spelt
-    // the only way it can be spelt from there.
-    for token in ["crate::", "thurbox::"] {
-        let mut search = 0;
-        while let Some(found) = stripped[search..].find(token) {
-            let pos = search + found;
-            search = pos + token.len();
-            if is_crate_tail(bytes, pos) {
-                continue;
-            }
-            let in_use = spans.iter().any(|&(s, e)| pos >= s && pos < e);
-            for segment in refs_after(bytes, pos + token.len()) {
-                refs.push(RefSite {
-                    offset: pos,
-                    segment,
-                    in_use,
-                });
+/// The other half of [`TRANSITIONAL`]'s contract: each entry names a crossing
+/// that still exists, from and to real nodes, and a task that will remove it.
+#[test]
+fn transitional_table_names_only_live_crossings() {
+    let tree = src_tree();
+    let live: BTreeSet<(String, String, String)> = violations(tree, MODULE_RULES)
+        .into_iter()
+        .map(|e| (e.from, e.to, e.item))
+        .collect();
+    let mut stale = Vec::new();
+    for entry in TRANSITIONAL {
+        assert!(
+            !entry.items.is_empty() && !entry.why.is_empty(),
+            "TRANSITIONAL entry {} → {} names no items or no reason",
+            entry.from,
+            entry.to
+        );
+        assert!(
+            Remover::ALL.contains(&entry.remover),
+            "TRANSITIONAL entry {} → {} names no remover",
+            entry.from,
+            entry.to
+        );
+        for item in entry.items {
+            let key = (
+                entry.from.to_string(),
+                entry.to.to_string(),
+                item.to_string(),
+            );
+            if !live.contains(&key) {
+                stale.push(format!(
+                    "  {} → {}::{item} ({:?}) no longer crosses — delete it",
+                    entry.from, entry.to, entry.remover
+                ));
             }
         }
     }
-    refs
-}
-
-/// Whether `name` is a module under `src/` — `src/<name>/` or `src/<name>.rs`.
-///
-/// What separates a module reference from a root item: the binary crate root
-/// holds constants the coordinator reads by `crate::NAME`, and those are not
-/// architecture edges. A misspelt module never reaches this test, since it does
-/// not compile.
-fn is_module(name: &str) -> bool {
-    let root = src_root();
-    root.join(name).is_dir() || root.join(format!("{name}.rs")).is_file()
-}
-
-/// Whether the `crate::` at `pos` is really the tail of something else —
-/// `$crate::` (macros) or a path like `my_crate::`.
-fn is_crate_tail(bytes: &[u8], pos: usize) -> bool {
-    if pos == 0 {
-        return false;
-    }
-    let prev = bytes[pos - 1];
-    is_ident_char(prev) || prev == b':' || prev == b'$'
-}
-
-/// The segment(s) a `crate::` names: a brace group's members, or one identifier.
-fn refs_after(bytes: &[u8], from: usize) -> Vec<String> {
-    let mut i = from;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if bytes.get(i) == Some(&b'{') {
-        return brace_group_segments(bytes, i);
-    }
-    match bytes.get(i).is_some_and(|&b| is_ident_char(b)) {
-        true => vec![read_ident(bytes, &mut i)],
-        false => Vec::new(),
-    }
-}
-
-/// Check one module against its allowlist.
-fn check_module(rules: &ModuleRules) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for file in module_files(rules.name) {
-        let content = fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
-        let stripped = strip_comments_and_strings(&content);
-        for site in crate_refs(&stripped) {
-            if !breaks_rules(rules, &site.segment, site.in_use) {
-                continue;
-            }
-            let line_number = stripped[..site.offset].matches('\n').count() + 1;
-            let line = content
-                .lines()
-                .nth(line_number - 1)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            violations.push(Violation {
-                file: file.clone(),
-                line_number,
-                line,
-                segment: site.segment,
-                in_use: site.in_use,
-            });
-        }
-    }
-    violations
-}
-
-/// Whether a reference to `crate::<segment>` — inside a `use` when `in_use` —
-/// is one `rules` forbid.
-fn breaks_rules(rules: &ModuleRules, segment: &str, in_use: bool) -> bool {
-    // `self` (`use crate::{self, …}`) names the crate root, which
-    // declares only modules — harmless. Own-module refs are fine.
-    if segment == "self" || segment == rules.name {
-        return false;
-    }
-    if !is_module(segment) || rules.allowed.contains(&segment) {
-        return false;
-    }
-    in_use || !rules.allowed_path_only.contains(&segment)
-}
-
-fn format_violations(rules: &ModuleRules, violations: &[Violation]) -> String {
-    let mut msg = format!(
-        "\n{} architecture violation(s) in `{}` (allowed: {:?}; path-only: {:?}):\n",
-        violations.len(),
-        rules.name,
-        rules.allowed,
-        rules.allowed_path_only,
+    assert!(
+        stale.is_empty(),
+        "stale TRANSITIONAL entries:\n{}",
+        stale.join("\n")
     );
-    for v in violations {
-        let note = if v.in_use && rules.allowed_path_only.contains(&v.segment.as_str()) {
-            " (allowed via fully-qualified path only, not `use`)"
-        } else {
-            ""
-        };
-        writeln!(
-            msg,
-            "  {}:{}: references `crate::{}`{note}: {}",
-            v.file.display(),
-            v.line_number,
-            v.segment,
-            v.line,
-        )
-        .unwrap();
+}
+
+/// Production edges between distinct nodes, one representative site each.
+fn production_graph(tree: &Tree, rules: &[ModuleRules]) -> BTreeMap<(String, String), String> {
+    let mut graph = BTreeMap::new();
+    for edge in tree.edges(&node_names(rules)) {
+        if !edge.test {
+            let site = format!("{} @ {}", edge.target(), edge.site(&tree.root));
+            graph.entry((edge.from, edge.to)).or_insert(site);
+        }
     }
-    msg.push_str(
-        "Fix the import, or — if the architecture is changing on purpose — update \
-         MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and docs/CONSTITUTION.md.\n",
-    );
+    graph
+}
+
+fn format_cycles(cycles: &[Vec<String>], graph: &BTreeMap<(String, String), String>) -> String {
+    let mut msg = String::new();
+    for component in cycles {
+        writeln!(msg, "  cycle {{{}}}:", component.join(", ")).unwrap();
+        for ((from, to), site) in graph {
+            if component.contains(from) && component.contains(to) {
+                writeln!(msg, "    {from} → {site}").unwrap();
+            }
+        }
+    }
     msg
 }
 
-/// Every entry in [`MODULE_RULES`] is checked — by one loop, so an entry can
-/// never be declared and then left unasserted. Per-module `#[test]`s used to
-/// do this, and three entries (`kernel`, `coordinator`, `clipboard`) had none,
-/// so their rules read as enforced while nothing enforced them.
+/// The nodes as production code actually uses them form no cycle: a module
+/// that reaches another and is reached back by it is one module in two files.
+/// `#[cfg(test)]` code is left out — a test may exercise its caller.
 #[test]
-fn every_module_rule_holds() {
-    let report: String = MODULE_RULES
+fn the_production_graph_is_acyclic() {
+    let tree = src_tree();
+    let graph = production_graph(tree, MODULE_RULES);
+    let edges: BTreeSet<(String, String)> = graph.keys().cloned().collect();
+    let found = cycles(&edges);
+    assert!(
+        found.is_empty(),
+        "\ndependency cycle(s) between nodes:\n{}",
+        format_cycles(&found, &graph)
+    );
+}
+
+/// The declared allowlist forms no cycle either: two nodes allowed to reach
+/// each other are a cycle waiting for its first reference.
+#[test]
+fn the_declared_graph_is_acyclic() {
+    let found = cycles(&declared_edges(MODULE_RULES));
+    assert!(
+        found.is_empty(),
+        "\nMODULE_RULES allow a cycle: {found:?} — drop one direction"
+    );
+}
+
+fn declared_edges(rules: &[ModuleRules]) -> BTreeSet<(String, String)> {
+    rules
         .iter()
-        .filter_map(|rules| {
-            let violations = check_module(rules);
-            (!violations.is_empty()).then(|| format_violations(rules, &violations))
+        .flat_map(|r| {
+            r.allowed
+                .iter()
+                .chain(r.allowed_path_only)
+                .map(|to| (r.name.to_string(), to.to_string()))
         })
+        .collect()
+}
+
+/// Every allowance is used by production code. An unused grant is a door
+/// nobody decided to open, and test code alone does not keep one open.
+#[test]
+fn every_allowance_is_used() {
+    let tree = src_tree();
+    let used: BTreeSet<(String, String)> =
+        production_graph(tree, MODULE_RULES).into_keys().collect();
+    let unused: Vec<String> = declared_edges(MODULE_RULES)
+        .into_iter()
+        .filter(|edge| !used.contains(edge))
+        .map(|(from, to)| format!("  {from} → {to}"))
         .collect();
-    assert!(report.is_empty(), "{report}");
+    assert!(
+        unused.is_empty(),
+        "\nallowances no production code uses — delete them:\n{}",
+        unused.join("\n")
+    );
 }
 
 /// Stripping keeps every newline of every source file, which is what lets a
@@ -635,7 +590,7 @@ fn stripping_keeps_every_line() {
             "stripping {src:?} lost or added a line"
         );
     }
-    for file in collect_rs_files(&src_root()) {
+    for file in collect_files_with_extension(&src_root(), "rs") {
         let content = fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
         assert_eq!(
@@ -648,14 +603,16 @@ fn stripping_keeps_every_line() {
 }
 
 /// Every module under `src/` must be governed: either a MODULE_RULES entry
-/// or an explicit EXEMPT listing. Adding a module without deciding its place
-/// in the architecture fails here. Also catches stale rule entries.
+/// or an explicit EXEMPT listing, and every child of a
+/// [`SUBMODULE_GOVERNED`] node a rule of its own. Adding a module without
+/// deciding its place in the architecture fails here. Also catches stale rule
+/// entries.
 #[test]
 fn every_module_is_governed() {
+    let tree = src_tree();
     let root = src_root();
     let entries =
         fs::read_dir(&root).unwrap_or_else(|e| panic!("cannot read {}: {e}", root.display()));
-    let mut found = Vec::new();
     for entry in entries {
         let path = entry.expect("readable directory entry").path();
         let name = if path.is_dir() {
@@ -676,24 +633,202 @@ fn every_module_is_governed() {
             "src/{name} has no architecture rules — add a MODULE_RULES entry \
              (or EXEMPT it) in tests/architecture_rules.rs"
         );
-        found.push(name);
+    }
+    for parent in SUBMODULE_GOVERNED {
+        for child in tree.children(parent) {
+            assert!(
+                MODULE_RULES.iter().any(|r| r.name == child),
+                "`{child}` has no architecture rule — every module of `{parent}` is a \
+                 node of its own; add a MODULE_RULES entry"
+            );
+        }
     }
 
     // Stale-entry checks: every rule and allowlist target must still exist.
     for rules in MODULE_RULES {
         assert!(
-            found.iter().any(|n| n == rules.name),
+            tree.has_module(rules.name),
             "MODULE_RULES entry `{}` matches nothing under src/ — remove or rename it",
             rules.name
         );
         for target in rules.allowed.iter().chain(rules.allowed_path_only) {
             assert!(
-                found.iter().any(|n| n == target),
+                tree.has_module(target),
                 "MODULE_RULES entry `{}` allows nonexistent module `{target}`",
                 rules.name
             );
         }
     }
+    for entry in TRANSITIONAL {
+        for node in [entry.from, entry.to] {
+            assert!(
+                MODULE_RULES.iter().any(|r| r.name == node),
+                "TRANSITIONAL names `{node}`, which is not a node"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The resolver on fixture trees: each is a tiny `src/` under
+// `tests/fixtures/architecture/`, never compiled, holding one shape the
+// resolver must see through.
+// ---------------------------------------------------------------------------
+
+fn fixture(name: &str) -> Tree {
+    Tree::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/architecture")
+            .join(name),
+    )
+}
+
+fn edge_set(tree: &Tree, nodes: &[&str], production_only: bool) -> BTreeSet<(String, String)> {
+    tree.edges(nodes)
+        .into_iter()
+        .filter(|e| !(production_only && e.test))
+        .map(|e| (e.from, e.to))
+        .collect()
+}
+
+/// The cycle this suite was written for: the contract names the tmux adapter's
+/// role type, the adapter implements the contract, and the protocol helper
+/// takes the contract's pane size while the contract takes the helper's
+/// snapshot — reached through `super::`, a nested brace group with `self`, a
+/// re-export and a bare child path, none of which the old first-segment check
+/// followed.
+#[test]
+fn the_resolver_sees_the_three_node_backend_cycle() {
+    let tree = fixture("backend_cycle");
+    let nodes = [
+        "agent",
+        "agent::backend",
+        "agent::tmux",
+        "agent::control_mode",
+    ];
+    let edges = edge_set(&tree, &nodes, true);
+    assert_eq!(
+        cycles(&edges),
+        vec![vec![
+            "agent::backend".to_string(),
+            "agent::control_mode".to_string(),
+            "agent::tmux".to_string(),
+        ]],
+        "edges found: {edges:?}"
+    );
+}
+
+/// PR #1272's shape: a `mux` core importing the registry's transport while the
+/// registry builds every adapter, and the core and control mode importing each
+/// other. Two cycles in one component.
+#[test]
+fn the_resolver_sees_the_mux_registry_cycles() {
+    let tree = fixture("mux_registry_cycle");
+    let nodes = [
+        "agent",
+        "agent::mux",
+        "agent::registry",
+        "agent::tmux",
+        "agent::psmux",
+        "agent::control_mode",
+    ];
+    let found = cycles(&edge_set(&tree, &nodes, true));
+    assert_eq!(
+        found,
+        vec![vec![
+            "agent::control_mode".to_string(),
+            "agent::mux".to_string(),
+            "agent::psmux".to_string(),
+            "agent::registry".to_string(),
+            "agent::tmux".to_string(),
+        ]]
+    );
+}
+
+/// Aliases and re-exports are edges: a `type` alias of an adapter's type is a
+/// crossing where it is declared, a use of that alias from elsewhere resolves
+/// to the adapter, and so does a `pub use` re-export read through its parent.
+/// A grant of the parent (`agent`) admits none of it.
+#[test]
+fn aliases_and_reexports_launder_nothing() {
+    let tree = fixture("laundering");
+    let rules = [
+        ModuleRules {
+            name: "agent",
+            allowed: &["agent::tmux"],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "agent::tmux",
+            allowed: &[],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "kernel",
+            allowed: &[],
+            allowed_path_only: &["agent"],
+        },
+    ];
+    let found: BTreeSet<String> = violations(&tree, &rules)
+        .iter()
+        .map(|e| format!("{} → {} @ {}", e.from, e.target(), e.site(&tree.root)))
+        .collect();
+    let expected: BTreeSet<String> = [
+        // The alias itself, declared in kernel.
+        "kernel → agent::tmux::Index @ kernel/mod.rs:1",
+        // The alias used from another kernel file resolves through it.
+        "kernel → agent::tmux::Index @ kernel/other.rs:2",
+        // The parent's `pub use … as` re-export, read by path.
+        "kernel → agent::tmux::Index @ kernel/other.rs:3",
+        // A glob-free brace import holding `self`, then used by its binding.
+        "kernel → agent::tmux @ kernel/other.rs:4",
+        "kernel → agent::tmux::spawn @ kernel/other.rs:6",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
+}
+
+/// `#[cfg(test)]` code is marked — an item, an inline module and a file
+/// declared under `#[cfg(test)] mod x;` — so it cannot make a production cycle
+/// (while still being checked against the rules, see [`violations`]).
+#[test]
+fn test_code_makes_no_production_edge() {
+    let tree = fixture("test_edges");
+    let nodes = ["a", "b"];
+    assert_eq!(
+        edge_set(&tree, &nodes, true),
+        [("a".to_string(), "b".to_string())].into_iter().collect()
+    );
+    assert_eq!(
+        tree.edges(&nodes).iter().filter(|e| e.test).count(),
+        4,
+        "{:?}",
+        tree.edges(&nodes)
+    );
+}
+
+/// The declared graph is checked for what it permits, not what is used:
+/// `storage` and `sync` allowed to reach each other are a cycle.
+#[test]
+fn the_declared_check_sees_a_mutual_allowance() {
+    let rules = [
+        ModuleRules {
+            name: "storage",
+            allowed: &["sync"],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "sync",
+            allowed: &[],
+            allowed_path_only: &["storage"],
+        },
+    ];
+    assert_eq!(
+        cycles(&declared_edges(&rules)),
+        vec![vec!["storage".to_string(), "sync".to_string()]]
+    );
 }
 
 /// Every persisted proptest seed must still name a source file that exists.
