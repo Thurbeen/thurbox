@@ -148,6 +148,13 @@ embedded hook assets live in
 [`extensions/hooks/`](../extensions/hooks/) and are `include_str!`'d by
 [`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs).
 
+A config-dir path in the manifest (`~/.codex/…`, `~/.pi/agent/…`,
+`~/.copilot/…`) is the agent's *default*: when the variable that agent itself
+reads to move its dir is set (`CODEX_HOME`, `PI_CODING_AGENT_DIR`,
+`COPILOT_HOME`), install and `session doctor` use that dir instead
+(`session::AGENT_DIR_OVERRIDES`). A new pair belongs there only once checked
+against the agent's own resolver — a wrong one moves the hook out of reach.
+
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
   - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's

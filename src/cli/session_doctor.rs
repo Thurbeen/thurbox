@@ -551,7 +551,8 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
         .home()?;
         return Some(std::path::PathBuf::from(home).join(file));
     }
-    Some(crate::paths::expand_tilde(file))
+    let file = crate::session::relocate_agent_dir(file, |name| std::env::var(name).ok());
+    Some(crate::paths::expand_tilde(&file))
 }
 
 /// What a hook running in this session's pane would resolve `thurbox-cli` to.

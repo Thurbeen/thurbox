@@ -71,6 +71,7 @@ pub fn install_extension(
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
     let (def, warnings) = load_manifest_for_install(target, &source)?;
+    let def = def.with_agent_dirs(|name| std::env::var(name).ok());
     for w in &warnings {
         tracing::warn!("{w}");
     }

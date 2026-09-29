@@ -209,6 +209,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # [[agents]]
 # name = "claude-opus"
 # command = "claude"
+# hook_schema = "claude"        # keeps claude's status hooks on this variant
 # args = ["--model", "opus"]    # always-on flag
 # resume_args = ["--resume", "{id}"]
 # fork_args = ["--resume", "{id}", "--fork-session"]
@@ -497,6 +498,26 @@ pub(crate) fn compact_toml_error(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seeded "Pin a model" example, uncommented the way a user would,
+    /// still gets claude's status hooks. The hooks extension patches claude's
+    /// `--settings` by name or by `hook_schema`, so a variant that names neither
+    /// launched with no hooks and read `uncovered` for its whole life.
+    #[test]
+    fn the_seeded_model_pin_example_keeps_claudes_hooks() {
+        let seeded = builtin_agents_toml();
+        let start = seeded
+            .find("# name = \"claude-opus\"")
+            .expect("the seeded file carries the claude-opus example");
+        let block: String = seeded[start..]
+            .lines()
+            .take_while(|l| l.starts_with("# ") && !l.starts_with("# Set "))
+            .map(|l| l.trim_start_matches("# ").to_string() + "\n")
+            .collect();
+        let (reg, _) = parse_agents_toml(&format!("[[agents]]\n{block}"));
+        let opus = reg.get("claude-opus").expect("the example parses");
+        assert_eq!(opus.hook_schema.as_deref(), Some("claude"));
+    }
 
     #[test]
     fn builtin_registry_parses_and_has_claude_default() {

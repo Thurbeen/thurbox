@@ -25,6 +25,38 @@ use super::AgentDef;
 /// `substitute`). The only template token the installer understands.
 pub const HOME_TOKEN: &str = "{home}";
 
+/// An agent's default config dir, and the environment variable the agent itself
+/// reads to move it. An agent run with that variable set never looks in the
+/// default, so a hook written there reports nothing — and a `requires_dir`
+/// guard on the default skips the agent as not installed. Each pair is checked
+/// against the agent's own resolver: codex's `CODEX_HOME`, pi's documented
+/// `PI_CODING_AGENT_DIR` (which names `~/.pi/agent` itself), and copilot's
+/// `COPILOT_HOME`.
+pub const AGENT_DIR_OVERRIDES: &[(&str, &str)] = &[
+    ("~/.codex", "CODEX_HOME"),
+    ("~/.pi/agent", "PI_CODING_AGENT_DIR"),
+    ("~/.copilot", "COPILOT_HOME"),
+];
+
+/// `path` moved into the config dir its agent actually reads, per
+/// [`AGENT_DIR_OVERRIDES`]; unchanged when it is under none of them or the
+/// variable is unset or empty. `var` looks a variable up — injected so this
+/// module stays free of environment reads.
+pub fn relocate_agent_dir(path: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    for (dir, name) in AGENT_DIR_OVERRIDES {
+        let Some(rest) = path.strip_prefix(dir) else {
+            continue;
+        };
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            continue;
+        }
+        if let Some(moved) = var(name).filter(|v| !v.is_empty()) {
+            return format!("{}{rest}", moved.trim_end_matches('/'));
+        }
+    }
+    path.to_string()
+}
+
 /// A file the installer lays down under the extension home directory. The
 /// content comes from the install source (`<source>/<source_path>`); only
 /// `path` is required.
@@ -318,6 +350,22 @@ pub struct ExtensionDef {
 }
 
 impl ExtensionDef {
+    /// Every outside-reaching payload moved to the config dir its agent reads
+    /// (see [`relocate_agent_dir`]). Applied before install, and the result is
+    /// what gets persisted, so uninstall removes what was actually written.
+    pub fn with_agent_dirs(mut self, var: impl Fn(&str) -> Option<String>) -> ExtensionDef {
+        let relocate = |p: &mut String| *p = relocate_agent_dir(p, &var);
+        for f in &mut self.external_files {
+            relocate(&mut f.path);
+            f.requires_dir.iter_mut().for_each(relocate);
+        }
+        for m in &mut self.config_merges {
+            relocate(&mut m.path);
+            m.requires_dir.iter_mut().for_each(relocate);
+        }
+        self
+    }
+
     /// Whether the manifest declares no runtime resources (nothing to ensure).
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty() && self.automations.is_empty()
@@ -496,6 +544,29 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a whole leading path component moves, and only when the agent's
+    /// variable holds a value: `~/.codexish` is not codex's dir, and an empty
+    /// `CODEX_HOME` is how a shell unsets one for a child.
+    #[test]
+    fn a_path_moves_only_into_a_set_override() {
+        let set = |name: &str| (name == "CODEX_HOME").then(|| "/alt/codex/".to_string());
+        assert_eq!(
+            relocate_agent_dir("~/.codex/hooks.json", set),
+            "/alt/codex/hooks.json"
+        );
+        assert_eq!(relocate_agent_dir("~/.codex", set), "/alt/codex");
+        assert_eq!(relocate_agent_dir("~/.codexish/x", set), "~/.codexish/x");
+        assert_eq!(
+            relocate_agent_dir("~/.gemini/settings.json", set),
+            "~/.gemini/settings.json"
+        );
+        let empty = |_: &str| Some(String::new());
+        assert_eq!(
+            relocate_agent_dir("~/.codex/hooks.json", empty),
+            "~/.codex/hooks.json"
+        );
+    }
 
     /// Every manifest thurbox ships must parse, and every payload it names must
     /// be in the directory beside it. A manifest that survives a payload rename
