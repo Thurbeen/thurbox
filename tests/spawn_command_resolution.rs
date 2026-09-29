@@ -306,6 +306,69 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
     );
 }
 
+/// The **first** session a fresh install creates is launched with its status
+/// hooks wired.
+///
+/// The built-in hooks extension patches claude's `--settings` into
+/// `agents.toml`, and only the TUI's boot and the heartbeat's tick used to run
+/// that install. A machine driven by `thurbox-cli` alone — a lead agent, a
+/// shared-sessions host — armed the heartbeat *after* its first `session
+/// create`, so that session launched without the flag and never reported a
+/// state, while `session doctor` found the payload on disk and passed it.
+#[test]
+fn the_first_cli_session_on_a_fresh_install_launches_with_its_hooks() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+
+    // A claude-family agent (the patch fans out by `hook_schema`) that writes
+    // down the arguments it was launched with.
+    std::fs::write(
+        root.path().join("config/agents.toml"),
+        format!(
+            "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"sh\"\n\
+             hook_schema = \"claude\"\n\
+             args = [\"-c\", \"echo \\\"$*\\\" > {}; sleep 30\", \"probe\"]\n",
+            argv.display()
+        ),
+    )
+    .expect("write agents.toml");
+
+    let out = create_session(
+        &server,
+        root.path(),
+        &[
+            "--name",
+            "first",
+            "--repo-path",
+            checkout.to_str().expect("utf-8 path"),
+            "--agent",
+            "probe",
+        ],
+    );
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("tmux") || stderr.contains("multiplexer") {
+            eprintln!("skipping: tmux would not spawn a window: {stderr}");
+            return;
+        }
+        panic!("the spawn itself failed: {stderr}");
+    }
+
+    wait_for(&argv);
+    let launched = std::fs::read_to_string(&argv).expect("the agent ran and wrote its argv");
+    let settings = root.path().join("config/hooks/claude.json");
+    assert_eq!(
+        launched.trim(),
+        format!("--settings {}", settings.display()),
+        "the first session launched without the hooks' --settings, so it can \
+         never report a state"
+    );
+}
+
 /// A command session with **no arguments** is still split by a shell.
 ///
 /// tmux runs a one-argument window command through its `default-shell` and a
