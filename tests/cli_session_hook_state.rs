@@ -1159,9 +1159,10 @@ fn tick_with_home(root: &Path, env: &[(&str, &Path)]) {
         cmd.env_remove(var);
     }
     cmd.env("THURBOX_CONFIG_DIR", root.join("config"))
-        .env("THURBOX_DATA_DIR", root.join("data"))
-        .env("THURBOX_SOCKET", "thurbox-hook-config-dirs")
-        .env("TMUX_TMPDIR", root.join("tmux"));
+        .env("THURBOX_DATA_DIR", root.join("data"));
+    // The tick polls pane options, so it gets a server of its own to find.
+    let server = TmuxServer::private("thurbox-hook-config-dirs");
+    server.scope(&mut cmd);
     for (key, value) in env {
         cmd.env(key, value);
     }
@@ -1185,7 +1186,7 @@ fn tick_with_home(root: &Path, env: &[(&str, &Path)]) {
 #[test]
 fn hooks_follow_an_agents_relocated_config_dir() {
     let root = tempfile::tempdir().expect("tempdir");
-    for sub in ["home", "config", "data", "tmux"] {
+    for sub in ["home", "config", "data"] {
         std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
     }
     let codex = root.path().join("elsewhere/codex");
