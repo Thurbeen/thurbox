@@ -46,7 +46,8 @@ pub struct Counters {
     pub renders_skipped: AtomicU64,
     /// Published `thurbox.*` groups reused instead of rebuilt.
     pub groups_reused: AtomicU64,
-    /// Keystroke echoes painted with no frame floor (ADR-P28).
+    /// Keystroke echoes painted with no frame floor (ADR-P28): a key's first
+    /// answer and each of its pane's tail frames (`ECHO_TAIL_FRAMES`).
     pub echoes: AtomicU64,
     /// Of those, the ones painted as the last frame with only the echoing
     /// surface redrawn, rather than as a full frame.

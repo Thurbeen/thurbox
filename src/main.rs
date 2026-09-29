@@ -148,11 +148,22 @@ const OUTPUT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// frame with no floor, and the loop watches for it at [`ECHO_POLL`] rather
 /// than at [`TICK`], since nothing wakes the input poll when output lands.
 ///
-/// One floor-free frame per keystroke, not per chunk: an agent streaming while
-/// you type would otherwise be painted at the poll rate. Long enough for a slow
-/// agent or a remote host to answer; an echo later than this is painted on the
+/// The first answer is not always the echo. Codex answers a key with a
+/// synchronized frame that only moves the cursor, then paints the glyph ~22 ms
+/// later across three writes; counting that first frame as the whole echo left
+/// the glyph on the output floor. So the pane stays owed until this runs out,
+/// for at most [`ECHO_TAIL_FRAMES`] more frames. Long enough for a slow agent
+/// or a remote host to answer; output later than this is painted on the
 /// ordinary floors, as all output was before.
 const ECHO_WINDOW: Duration = Duration::from_millis(150);
+
+/// How many more floor-free frames a keystroke's pane gets after its first
+/// answer, within [`ECHO_WINDOW`].
+///
+/// Bounded per key, not per chunk: an agent streaming while you type would
+/// otherwise be painted at the poll rate. Enough for Codex's split redraw (a
+/// hide-cursor write, the glyph, a show-cursor write) with one to spare.
+const ECHO_TAIL_FRAMES: u8 = 4;
 
 /// How long the keystroke's own frame waits for the echo.
 ///
@@ -335,6 +346,9 @@ struct App {
     /// The echoes keystrokes sent to terminals are owed, until each arrives or
     /// [`ECHO_WINDOW`] runs out. See `App::settle_echo`.
     echo: std::collections::VecDeque<coordinator::EchoWait>,
+    /// The pane the last answered keystroke went to, still owed its later
+    /// output until [`ECHO_WINDOW`] runs out. Watched only while no echo is.
+    echo_tail: Option<coordinator::EchoTail>,
     /// The surface an owed echo has arrived from: the next frame is painted at
     /// once, with no floor at all.
     echo_due: Option<String>,
