@@ -12,13 +12,16 @@
 //! resolves to the wrong handler fails here rather than in the terminal.
 
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use thurbox::agent::preflight::Presence;
 use thurbox::git::ExistingWorktree;
 use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
-use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::node::Identity;
+use thurbox::kernel::paint::Hit;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::repos::{
     BookmarkRow, Branches, BrowseEntry, Listing, RepoStore, Wants, Worktrees,
@@ -181,6 +184,12 @@ impl Default for World {
 }
 
 fn publish(host: &LuaHost, world: &World) {
+    publish_hovered(host, world, None);
+}
+
+/// Publish with the pointer over `hovered`, the identity the kernel resolved
+/// through the same hitboxes a click is routed by.
+fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -207,7 +216,7 @@ fn publish(host: &LuaHost, world: &World) {
         wants: &world.wants,
         focus: None,
         selection: None,
-        hovered: None,
+        hovered,
         printing: &Default::default(),
     })
     .expect("publish");
@@ -216,7 +225,20 @@ fn publish(host: &LuaHost, world: &World) {
 /// What the flow draws, as text. Empty when it is closed — a closed modal draws
 /// nothing at all, which is how the kernel knows it is not floating.
 fn drawn(host: &LuaHost, world: &World) -> String {
-    publish(host, world);
+    match painted(host, world, None) {
+        Some((buffer, _)) => screen_of(&buffer),
+        None => String::new(),
+    }
+}
+
+/// The flow painted into its own rect, with the hitboxes the paint recorded —
+/// what the loop routes a press through. `None` while the flow is closed.
+fn painted(
+    host: &LuaHost,
+    world: &World,
+    hovered: Option<&Identity>,
+) -> Option<(Buffer, Vec<Hit>)> {
+    publish_hovered(host, world, hovered);
     let index = index_of(host, PLUGIN);
     let rendered = host
         .render(
@@ -230,9 +252,7 @@ fn drawn(host: &LuaHost, world: &World) -> String {
             },
         )
         .expect("render");
-    let Some(float) = rendered.float else {
-        return String::new();
-    };
+    let float = rendered.float?;
     // The flow asks in cells for both, and cells win over the percentage just
     // as they do in the kernel — a dump wider than the real modal hides every
     // truncation the user would see.
@@ -240,6 +260,7 @@ fn drawn(host: &LuaHost, world: &World) -> String {
     let width = float
         .cols
         .unwrap_or((120.0 * float.width_pct / 100.0) as u16);
+    let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(width, rows)).expect("terminal");
     terminal
         .draw(|frame| {
@@ -248,11 +269,14 @@ fn drawn(host: &LuaHost, world: &World) -> String {
                 Rect::new(0, 0, width, rows),
                 &rendered.node,
                 &thurbox::kernel::terminal::Terminals::new(),
-                &mut Vec::new(),
+                &mut hits,
             );
         })
         .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
+    Some((terminal.backend().buffer().clone(), hits))
+}
+
+fn screen_of(buffer: &Buffer) -> String {
     (0..buffer.area.height)
         .map(|y| {
             (0..buffer.area.width)
@@ -263,6 +287,53 @@ fn drawn(host: &LuaHost, world: &World) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The cell where `needle` starts, counted in cells rather than bytes.
+fn locate(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    let first = needle.chars().next().expect("a needle");
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let fits = needle.chars().enumerate().all(|(offset, ch)| {
+                let at = x + offset as u16;
+                at < buffer.area.width && buffer[(at, y)].symbol().starts_with(ch)
+            });
+            if buffer[(x, y)].symbol().starts_with(first) && fits {
+                return (x, y);
+            }
+        }
+    }
+    panic!("{needle:?} is not on screen:\n{}", screen_of(buffer));
+}
+
+/// The identity the kernel resolves at a cell: the innermost hitbox, which is
+/// the last one recorded — `App::target_at`'s rule.
+fn identity_at(hits: &[Hit], x: u16, y: u16) -> Identity {
+    let position = ratatui::layout::Position::new(x, y);
+    hits.iter()
+        .rev()
+        .find(|hit| hit.rect.contains(position))
+        .map(|hit| hit.identity.clone())
+        .unwrap_or_default()
+}
+
+/// A left press on the cell where `needle` is drawn, resolved against the
+/// paint's own hitboxes and delivered as the loop delivers it. `below` moves the
+/// press that many rows down, for a field whose label is its frame's title.
+fn click_on(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
+    let (buffer, hits) = painted(host, world, None).expect("the flow is open");
+    let (x, y) = locate(&buffer, needle);
+    let identity = identity_at(&hits, x, y + below);
+    let click = Click {
+        id: identity.id.clone(),
+        classes: identity.classes.clone(),
+        role: identity.role.clone(),
+        clicks: 1,
+        ..Click::default()
+    };
+    host.on_click(index_of(host, PLUGIN), &click)
+        .expect("on_click");
+    identity
 }
 
 /// Press a key the way the loop does: a declared chord resolves through the
@@ -2751,5 +2822,251 @@ fn a_fork_never_warns_about_the_wrong_agent() {
     assert!(
         !screen.contains("pane will exit at once"),
         "the fork flow warned about an agent it was never asked to pick: {screen}"
+    );
+}
+
+// ── Left click and hover, field by field ───────────────────────────────────
+//
+// A press is resolved against the hitboxes the paint recorded, exactly as the
+// loop resolves it, so each test proves both halves: the field is a target, and
+// pressing it does what its key already does. "What its key does" is checked
+// by comparing against a second flow driven by that key alone.
+
+fn browse_world() -> World {
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/srv",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "repos".into(),
+                is_git: false,
+            },
+            BrowseEntry {
+                name: "other".into(),
+                is_git: true,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/srv".into()));
+    world
+}
+
+#[test]
+fn clicking_the_path_field_focuses_it_as_tab_does() {
+    let world = World::default();
+    let clicked = host();
+    open(&clicked, &world);
+    let hit = click_on(&clicked, &world, "Add Repo Path", 0);
+    assert!(
+        hit.id.is_some(),
+        "the path field is a click target: {hit:?}"
+    );
+    type_text(&clicked, &world, "zz");
+
+    let keyed = host();
+    open(&keyed, &world);
+    press(&keyed, &world, "tab");
+    type_text(&keyed, &world, "zz");
+
+    let screen = drawn(&clicked, &world);
+    assert_eq!(screen, drawn(&keyed, &world), "a click is tab, no more");
+    assert!(screen.contains("zz"), "typing went to the path: {screen}");
+}
+
+#[test]
+fn clicking_the_search_field_takes_focus_back_as_backtab_does() {
+    let world = World::default();
+    let clicked = host();
+    open(&clicked, &world);
+    press(&clicked, &world, "tab");
+    click_on(&clicked, &world, "Search (", 0);
+    type_text(&clicked, &world, "no");
+
+    let keyed = host();
+    open(&keyed, &world);
+    press(&keyed, &world, "tab");
+    press(&keyed, &world, "backtab");
+    type_text(&keyed, &world, "no");
+
+    let screen = drawn(&clicked, &world);
+    assert_eq!(screen, drawn(&keyed, &world), "a click is backtab, no more");
+    assert!(
+        screen.contains("(1/2)"),
+        "typing filtered the list: {screen}"
+    );
+}
+
+#[test]
+fn clicking_a_browsed_folder_selects_it_as_the_arrows_do() {
+    let world = browse_world();
+    let open_browse = |host: &LuaHost| {
+        open(host, &world);
+        press(host, &world, "tab");
+        type_text(host, &world, "/srv/");
+        press(host, &world, "tab");
+    };
+    let clicked = host();
+    open_browse(&clicked);
+    let hit = click_on(&clicked, &world, "other/", 0);
+    assert!(hit.id.is_some(), "a browsed folder is a click target");
+
+    let keyed = host();
+    open_browse(&keyed);
+    press(&keyed, &world, "down");
+
+    assert_eq!(drawn(&clicked, &world), drawn(&keyed, &world));
+    // And `enter` then acts on the clicked row, as it would on the arrowed one.
+    press(&clicked, &world, "enter");
+    press(&keyed, &world, "enter");
+    let issued = |host: &LuaHost| format!("{:?}", host.drain_commands());
+    let command = issued(&clicked);
+    assert!(
+        command.contains("/srv/other"),
+        "enter adds the clicked repo: {command}"
+    );
+    assert_eq!(command, issued(&keyed));
+}
+
+/// Every cell's `(fg, bg)` with the pointer over `hovered`.
+fn colours(host: &LuaHost, world: &World, hovered: Option<&Identity>) -> Buffer {
+    painted(host, world, hovered).expect("the flow is open").0
+}
+
+/// The identity drawn at `needle`, as the kernel would publish it on hover.
+fn identity_of(host: &LuaHost, world: &World, needle: &str, below: u16) -> Identity {
+    let (buffer, hits) = painted(host, world, None).expect("the flow is open");
+    let (x, y) = locate(&buffer, needle);
+    identity_at(&hits, x, y + below)
+}
+
+#[test]
+fn a_hovered_repository_row_is_banded_and_keeps_its_colours() {
+    let world = World::default();
+    let host = host();
+    open(&host, &world);
+    // The second row: the first carries the cursor, whose bar would hide a band.
+    let hovered = identity_of(&host, &world, "notes", 0);
+    assert!(hovered.id.is_some(), "a repository row is a target");
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&hovered));
+    let (_, y) = locate(&resting, "notes");
+    let row = |b: &Buffer| {
+        (0..b.area.width)
+            .map(|x| b[(x, y)].clone())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        row(&resting)
+            .iter()
+            .zip(row(&lit))
+            .any(|(a, b)| a.bg != b.bg),
+        "hovering the row bands it"
+    );
+    assert!(
+        row(&resting)
+            .iter()
+            .zip(row(&lit))
+            .all(|(a, b)| a.fg == b.fg),
+        "a band repaints no foreground"
+    );
+    let (_, first) = locate(&resting, "thurbox");
+    assert!(
+        (0..resting.area.width).all(|x| resting[(x, first)] == lit[(x, first)]),
+        "the row under the cursor is untouched"
+    );
+}
+
+#[test]
+fn a_hovered_host_row_is_banded() {
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+        multiplexer: None,
+        available_multiplexers: vec!["tmux".into()],
+    }];
+    let host = host();
+    press(&host, &world, "ctrl+n");
+    let hovered = identity_of(&host, &world, "devbox", 0);
+    assert!(hovered.id.is_some(), "a host row is a target");
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&hovered));
+    let (x, y) = locate(&resting, "devbox");
+    assert_ne!(
+        resting[(x, y)].bg,
+        lit[(x, y)].bg,
+        "hovering the row bands it"
+    );
+}
+
+#[test]
+fn a_hovered_browsed_folder_is_banded() {
+    let world = browse_world();
+    let host = host();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/srv/");
+    press(&host, &world, "tab");
+    let hovered = identity_of(&host, &world, "other/", 0);
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&hovered));
+    let (x, y) = locate(&resting, "other/");
+    assert_ne!(
+        resting[(x, y)].bg,
+        lit[(x, y)].bg,
+        "hovering the folder bands it"
+    );
+}
+
+#[test]
+fn a_hovered_field_lights_its_border_and_focus_outranks_it() {
+    let world = World::default();
+    let host = host();
+    open(&host, &world);
+    let path = identity_of(&host, &world, "Add Repo Path", 0);
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&path));
+    let (x, y) = locate(&resting, "Add Repo Path");
+    // The corner, which is border and nothing else.
+    let corner = (x - 2, y);
+    assert_ne!(
+        resting[corner].fg, lit[corner].fg,
+        "hovering the unfocused field lights its border"
+    );
+
+    // The focused search field already wears the focused border: hovering it
+    // must not replace that with the weaker hover colour.
+    let search = identity_of(&host, &world, "Search (", 0);
+    let (sx, sy) = locate(&resting, "Search (");
+    let search_corner = (sx - 2, sy);
+    let lit_search = colours(&host, &world, Some(&search));
+    assert_eq!(
+        resting[search_corner].fg, lit_search[search_corner].fg,
+        "the focused field keeps its focused border under the pointer"
+    );
+}
+
+#[test]
+fn a_hovered_pill_lights_and_its_neighbour_does_not() {
+    let world = World::default();
+    let host = host();
+    open(&host, &world);
+    let cancel = identity_of(&host, &world, "[ Cancel ]", 0);
+    assert_eq!(cancel.role.as_deref(), Some("key:esc"));
+    let resting = colours(&host, &world, None);
+    let lit = colours(&host, &world, Some(&cancel));
+    let (x, y) = locate(&resting, "[ Cancel ]");
+    assert_ne!(
+        resting[(x, y)].bg,
+        lit[(x, y)].bg,
+        "the hovered pill lights"
+    );
+    let (px, py) = locate(&resting, "[ Next ]");
+    assert_eq!(
+        resting[(px, py)],
+        lit[(px, py)],
+        "the pill beside it is untouched"
     );
 }

@@ -11,6 +11,8 @@
 -- pointer moving WITHIN one affordance changes nothing, so crossing a pane
 -- costs one repaint per affordance rather than one per cell.
 
+local theme = require("lib.theme")
+
 local hover = {}
 
 local function current()
@@ -38,6 +40,35 @@ function hover.style(role, lit, base)
     return lit
   end
   return base
+end
+
+--- The band a list row wears under the pointer: the background only, so a
+--- status dot or a match highlight keeps its colour. The selection bar is the
+--- stronger fill, which is why a caller skips this on the selected row.
+function hover.row_style()
+  return { bg = theme.role("selection_bg") }
+end
+
+--- A button under the pointer: `accent_bright` rather than `accent`, so a
+--- primary pill already filled with the accent still visibly answers, and
+--- `inverted_fg` so a secondary pill stays legible once its fill is replaced.
+--- The kernel's own pills and chips use the same pair.
+function hover.button_style()
+  return { fg = theme.role("inverted_fg"), bg = theme.role("accent_bright"), bold = true }
+end
+
+--- The border a field wears: focused outranks hovered, which outranks resting.
+--- Hover is the primary text colour rather than the accent, so a lit border is
+--- never mistaken for the focused one on a palette whose focus colour IS the
+--- accent.
+function hover.border(focused, id)
+  if focused then
+    return theme.border_focused
+  end
+  if hover.id(id) then
+    return theme.text
+  end
+  return theme.border
 end
 
 return hover

@@ -21,6 +21,7 @@
 -- action's owner to read: an action carries no argument, and the thing the menu
 -- was opened on may have moved or gone by the time it lands.
 
+local hover = require("lib.hover")
 local theme = require("lib.theme")
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
@@ -122,6 +123,7 @@ return {
         local gap = inner - 2 - widgets.len(label) - widgets.len(chords[i])
         -- The bar is the NODE's style, so it spans the row and the chord keeps
         -- its own colour on top of it.
+        local id = "menu-" .. i
         local style = { fg = theme.text }
         if i == at then
           style = {
@@ -129,11 +131,13 @@ return {
             fg = theme.role("selection_fg"),
             bold = true,
           }
+        elseif hover.id(id) then
+          style = { fg = theme.text, bg = hover.row_style().bg }
         end
         children[#children + 1] = {
           type = "text",
           len = 1,
-          id = "menu-" .. i,
+          id = id,
           role = "row",
           style = style,
           text = {

@@ -465,7 +465,9 @@ than patching the returned table — and windows itself: when the rows outrun
 `height` it spends a line of its own on an `↑ N more` / `↓ N more` marker, so
 the count is exactly what you cannot see and no row is drawn over. Give it
 `selected_style` and `hover_style` and it puts them on the row itself, which is
-the `text` style below.
+the `text` style below. `lib/hover.lua` holds the styles every bundled pane
+lights a row, a pill and a field border with (`hover.row_style`,
+`hover.button_style`, `hover.border`) — `ui/README.md` → Hover.
 
 A `text` node takes a **`style` of its own**, painted across its whole rect
 before the spans go on top:

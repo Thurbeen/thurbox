@@ -373,3 +373,101 @@ fn a_role_that_matches_no_affordance_lights_nothing() {
         "an unmatched role must not light a chip"
     );
 }
+
+/// A chip built with `ui.row():button`, the lib's in-line click target. It
+/// lights on the identity a press on it resolves to, and only that chip does.
+#[test]
+fn a_hovered_row_button_lights_and_its_neighbour_does_not() {
+    const PANE: &str = r#"
+local ui = require("lib.ui")
+return {
+  name = "chips",
+  slot = "sessions",
+  render = function()
+    local row = ui.row():button("[one]", { fg = "white" }, "action:chips.one")
+    row:gap(1):button("[two]", { fg = "white" }, "action:chips.two")
+    return { type = "text", text = { row:spans_list() } }
+  end,
+}
+"#;
+    let home = tempfile::tempdir().expect("tempdir");
+    let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/lib");
+    std::fs::create_dir_all(home.path().join("lib")).expect("mkdir");
+    for entry in std::fs::read_dir(&source).expect("read lib") {
+        let entry = entry.expect("entry");
+        std::fs::copy(
+            entry.path(),
+            home.path().join("lib").join(entry.file_name()),
+        )
+        .expect("copy");
+    }
+    std::fs::create_dir_all(home.path().join("plugins")).expect("mkdir");
+    std::fs::write(home.path().join("plugins/10_chips.lua"), PANE).expect("write pane");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+
+    let backgrounds = |hovered: Option<&Identity>| -> Vec<Color> {
+        let themes = Themes::load(None);
+        let registry = Registry::default();
+        let diffs = thurbox::kernel::diff::DiffStore::new();
+        let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+        host.publish(&Published {
+            epoch: thurbox::kernel::host::Epoch::always_fresh(),
+            snapshot: &Snapshot::default(),
+            attach_errors: &Default::default(),
+            inflight: &[],
+            themes: &themes,
+            registry: &registry,
+            diffs: &diffs,
+            links: &Default::default(),
+            search: None,
+            meta: &Default::default(),
+            metrics: &Default::default(),
+            status_rows: 0,
+            can_open: true,
+            inventory: &[],
+            ui_dir: "ui",
+            settings: &Default::default(),
+            repos: &repos,
+            wants: &Default::default(),
+            focus: None,
+            selection: None,
+            hovered,
+            printing: &Default::default(),
+        })
+        .expect("publish");
+        let index = host.index_of("chips").expect("chips plugin");
+        let node = host
+            .render(
+                index,
+                RenderContext {
+                    width: 20,
+                    height: 1,
+                    focused: false,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                thurbox::kernel::paint::render(
+                    frame,
+                    frame.area(),
+                    &node,
+                    &thurbox::kernel::paint::PlaceholderSurfaces,
+                )
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..20).map(|x| buffer[(x, 0)].bg).collect()
+    };
+
+    let resting = backgrounds(None);
+    let lit = backgrounds(Some(&hover_on("action:chips.two")));
+    // `[one]` is cells 0..5 and `[two]` cells 6..11.
+    assert_ne!(resting[6], lit[6], "the hovered chip lights");
+    assert_eq!(resting[..5], lit[..5], "its neighbour is untouched");
+}

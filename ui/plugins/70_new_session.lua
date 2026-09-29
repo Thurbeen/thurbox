@@ -33,6 +33,7 @@
 -- back as a failed command and the band reports it, as it does for every command.
 
 local fuzzy = require("lib.fuzzy")
+local hover = require("lib.hover")
 local modal = require("lib.modal")
 local pathpicker = require("lib.pathpicker")
 local repo_picker = require("lib.repo_picker")
@@ -429,12 +430,23 @@ local function message_row(flow)
   }
 end
 
+--- The band a row wears under the pointer, which the row under the cursor
+--- never does: it already reads as the cursor, and a band on it would say
+--- nothing a click there could change.
+local function row_hover(id, is_cursor)
+  if not is_cursor and hover.id(id) then
+    return hover.row_style()
+  end
+  return nil
+end
+
 --- v1's selector: `▸ ` on the current row, accent+bold, plain otherwise.
 local function selector_rows(labels, index, height)
   local children = {}
   local first, last = widgets.window(#labels, height, index)
   for position = first, last do
     local selected = position == index
+    local id = tostring(position)
     children[#children + 1] = {
       type = "text",
       len = 1,
@@ -446,7 +458,8 @@ local function selector_rows(labels, index, height)
           },
         },
       },
-      id = tostring(position),
+      style = row_hover(id, selected),
+      id = id,
       role = "row",
     }
   end
@@ -522,6 +535,12 @@ end
 
 local REPO_LIST_MAX = 10
 local BROWSE_MAX = 8
+
+-- The repo step's click targets that are not bookmark rows. A browsed folder
+-- is prefixed because its bare name could be a bookmark's path.
+local SEARCH_FIELD = "field:search"
+local PATH_FIELD = "field:input"
+local BROWSE_ROW = "browse:"
 
 --- One row of the bookmark list. v1's `bookmark_item`, marker for marker.
 local function repo_row(entry, selected, flow, is_cursor)
@@ -661,6 +680,7 @@ local function render_repo(flow)
   children[#children + 1] = textinput.node(flow.search, {
     label = "Search (" .. #entries .. "/" .. total .. ")",
     focused = flow.focus == "search",
+    id = SEARCH_FIELD,
   })
 
   local list = {}
@@ -683,17 +703,12 @@ local function render_repo(flow)
     for position = first, last do
       local entry = entries[position]
       local path = entry.row.path
+      local is_cursor = position == cursor and flow.focus == "search"
       list[#list + 1] = {
         type = "text",
         len = 1,
-        text = {
-          repo_row(
-            entry,
-            flow.selected[path] == true,
-            flow,
-            position == cursor and flow.focus == "search"
-          ),
-        },
+        text = { repo_row(entry, flow.selected[path] == true, flow, is_cursor) },
+        style = row_hover(path, is_cursor),
         id = path,
         role = "row",
       }
@@ -730,10 +745,12 @@ local function render_repo(flow)
     frame = {
       title = " " .. label .. " ",
       borders = "all",
-      border_style = {
-        fg = flow.focus == "input" and theme.border_focused or theme.border,
-      },
+      border_style = { fg = hover.border(flow.focus == "input", PATH_FIELD) },
     },
+    -- The whole framed field is the target, not the input inside it: the input
+    -- is sized to its text, so a press on the empty rest of the field would
+    -- otherwise land on nothing.
+    id = PATH_FIELD,
     children = {
       {
         type = "input",
@@ -782,6 +799,7 @@ local function render_repo(flow)
       for position = first, last do
         local entry = entries_shown[position]
         local selected = position == index
+        local id = BROWSE_ROW .. entry.name
         local spans = {
           {
             text = " " .. entry.name .. "/",
@@ -791,8 +809,14 @@ local function render_repo(flow)
         if entry.is_git then
           spans[#spans + 1] = { text = " ●git", style = { fg = theme.accent } }
         end
-        rows[#rows + 1] =
-          { type = "text", len = 1, text = { spans }, id = entry.name, role = "row" }
+        rows[#rows + 1] = {
+          type = "text",
+          len = 1,
+          text = { spans },
+          style = row_hover(id, selected),
+          id = id,
+          role = "row",
+        }
       end
     end
     children[#children + 1] = {
@@ -1909,10 +1933,44 @@ return {
   --- A click selects the row it landed on, exactly as `j`/`k` would. Rows carry
   --- their path rather than an index, so a list that changed between the paint
   --- and the press still selects what was pointed at.
+  ---
+  --- On the repo step a press on a field moves the focus there, as `tab`
+  --- (into the path) and `shift+tab` (back to the search) do, and a press on a
+  --- browsed folder selects it as the arrows do. A press on the field that
+  --- already has focus changes nothing: `tab` there completes or browses, and
+  --- a click is not asking for either.
   on_click = function(hit)
     local flow = load()
     if not flow or not hit.id then
       return false
+    end
+    if flow.step == "repo" and hit.id == SEARCH_FIELD then
+      if flow.focus ~= "search" then
+        flow.browse = false
+        flow.focus = "search"
+        save(flow)
+      end
+      return true
+    end
+    if flow.step == "repo" and hit.id == PATH_FIELD then
+      if flow.focus ~= "input" then
+        enter_path_field(flow)
+        save(flow)
+        ask(flow)
+      end
+      return true
+    end
+    local browsed = flow.step == "repo" and hit.id:match("^" .. BROWSE_ROW .. "(.*)$")
+    if browsed then
+      local index = widgets.index_of(browse_entries(flow), browsed, function(entry)
+        return entry.name
+      end)
+      if not index then
+        return false
+      end
+      flow.browse_index = index
+      save(flow)
+      return true
     end
     if flow.step == "repo" then
       local index = widgets.index_of(rows_for(flow), hit.id, function(entry)
