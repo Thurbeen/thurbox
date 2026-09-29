@@ -5947,10 +5947,34 @@ mod dialect_characterization {
         dump.replace(&multiplex.concat(), "")
     }
 
+    /// Fixes that landed on `main` after the fixture was written, applied to
+    /// it as `(was, is)` so each one stays visible rather than being folded
+    /// into a regenerated fixture that no pre-split code could produce.
+    const LANDED_SINCE: &[(&str, &str)] = &[
+        // #1280: the clipboard feature is no longer appended on every setup.
+        // It is written into a fixed slot, last, and only while that slot is
+        // empty. Only a tmux row sets `mouse`, so the second pair cannot
+        // touch a psmux row.
+        (
+            r##", (["set-option", "-as", "terminal-features", ",*:clipboard"], false)"##,
+            "",
+        ),
+        (
+            r##"(["set-option", "-t", "SESS", "mouse", "on"], true), (["set-option", "-w", "-g", "remain-on-exit", "off"], false)]"##,
+            r##"(["set-option", "-t", "SESS", "mouse", "on"], true), (["set-option", "-w", "-g", "remain-on-exit", "off"], false), (["if-shell", "-F", "#{terminal-features[100]}", "", "set-option -qs terminal-features[100] *:clipboard"], false)]"##,
+        ),
+    ];
+
+    fn with_landed_fixes(before: &str) -> String {
+        LANDED_SINCE
+            .iter()
+            .fold(before.to_string(), |acc, (was, is)| acc.replace(was, is))
+    }
+
     #[test]
     fn every_dialect_answers_as_the_core_did_before_the_split() {
         let now = machine_neutral(&current());
-        let before = machine_neutral(BEFORE);
+        let before = machine_neutral(&with_landed_fixes(BEFORE));
         let before: Vec<&str> = before.lines().collect();
         let after: Vec<&str> = now.lines().collect();
         assert_eq!(before.len(), after.len(), "a key was added or dropped");

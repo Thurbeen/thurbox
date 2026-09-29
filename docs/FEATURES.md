@@ -2953,7 +2953,8 @@ over ~74 KB skips OSC 52 — tmux discards an oversized sequence
 carry it either.
 
 thurbox sets `set-clipboard on` and a `*:clipboard` entry in
-`terminal-features` on its own tmux server (`TmuxBackend::session_config`).
+`terminal-features` on its own tmux server (`TmuxTransport::session_config`, the
+tmux dialect in `src/agent/tmux.rs`).
 The entry is written at a fixed index (`terminal-features[100]`), and only
 while that slot is empty, rather than appended: the config is re-applied on
 every spawn and the server outlives thurbox, so appending grew the list by one
