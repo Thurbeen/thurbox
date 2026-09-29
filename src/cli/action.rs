@@ -150,6 +150,20 @@ pub(crate) enum SpawnDeliverError {
     },
 }
 
+/// Wire the built-in extensions just before a command launches an agent.
+///
+/// The TUI's boot and the heartbeat's tick each run the install, but a machine
+/// driven by `thurbox-cli` alone reaches its first spawn before either has: the
+/// heartbeat is armed only *after* `session create`, so that first session
+/// launched without claude's `--settings` and never reported a state. Called
+/// once a command is committed to spawning, so one that is refused or answered
+/// by an existing session leaves the agent config alone.
+pub(crate) fn ensure_hooks_wired(db: &Database) {
+    for m in &crate::session_ops::ensure_builtin_extensions(db) {
+        tracing::info!("{m}");
+    }
+}
+
 /// Spawn a fresh headless session for `req` and deliver `prompt` once the agent
 /// boots (after [`BOOT_DELAY_SECS`]). Returns the new session id on success.
 pub(crate) fn spawn_and_deliver(
@@ -159,6 +173,7 @@ pub(crate) fn spawn_and_deliver(
     req: SpawnRequest,
     prompt: &str,
 ) -> Result<SessionId, SpawnDeliverError> {
+    ensure_hooks_wired(db);
     let spawned = crate::session_ops::spawn_session_headless(db, backends, req)
         .map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;

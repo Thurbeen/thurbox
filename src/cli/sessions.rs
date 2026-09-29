@@ -787,18 +787,6 @@ struct CreateArgs {
     reports_as: Option<String>,
 }
 
-/// Wire the built-in extensions before this command launches an agent.
-///
-/// The TUI's boot and the heartbeat's tick each run the install, but a machine
-/// driven by `thurbox-cli` alone reaches its first spawn before either has: the
-/// heartbeat is armed only *after* `session create`, so that first session
-/// launched without claude's `--settings` and never reported a state.
-fn ensure_hooks_wired(db: &Database) {
-    for m in &crate::session_ops::ensure_builtin_extensions(db) {
-        tracing::info!("{m}");
-    }
-}
-
 fn run_create(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -822,7 +810,6 @@ fn run_create(
         on_existing,
         reports_as,
     } = args;
-    ensure_hooks_wired(db);
     let parent_session_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
@@ -856,6 +843,7 @@ fn run_create(
     if let Existing::Answered(output) = existing {
         return Ok(*output);
     }
+    super::action::ensure_hooks_wired(db);
     let req = crate::session_ops::SpawnRequest {
         name,
         repo_path,
@@ -985,7 +973,7 @@ fn run_restart(
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    ensure_hooks_wired(db);
+    super::action::ensure_hooks_wired(db);
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
@@ -1189,7 +1177,7 @@ fn run_start(
     session: String,
 ) -> Result<CommandOutput, CommandError> {
     let target = resolve(db, &session)?;
-    ensure_hooks_wired(db);
+    super::action::ensure_hooks_wired(db);
     let report = crate::session_ops::restart::start_session_headless(db, backends, target.id)?;
     let mut human = format!("Started '{}' ({})", target.name, target.id);
     push_hook_failures(&mut human, &report.hook_failures);
@@ -1211,7 +1199,7 @@ fn run_fork(
     name: Option<String>,
 ) -> Result<CommandOutput, CommandError> {
     let source = resolve(db, &session)?;
-    ensure_hooks_wired(db);
+    super::action::ensure_hooks_wired(db);
     let res = crate::session_ops::fork_session_headless(
         db,
         backends,
