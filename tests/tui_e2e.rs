@@ -6670,10 +6670,13 @@ fn a_pane_printing_while_you_type_into_it_is_not_painted_per_chunk() {
     // The pane typed into rewrites a status line every couple of
     // milliseconds. Its output after each key is owed floor-free frames, but
     // only a few per key (`ECHO_TAIL_FRAMES`, 4): per chunk, it would be
-    // painted at the poll rate for the whole echo window.
-    const TYPED_AND_BUSY: &str = "printf 'ready> '; while :; do \
-         if IFS= read -rs -n1 -t 0.002 c; then printf '\\r[%s]' \"$c\"; fi; \
-         printf '\\e[3;1Hbusy %05d\\e[1;8H' $RANDOM; done";
+    // painted at the poll rate for the whole echo window. The printer is a
+    // process of its own, so the key is read by a plain blocking `read`. A
+    // stand-in that polled with `read -t` between status lines now and then
+    // never echoed a key on CI, and the timeout was a race of its own.
+    const TYPED_AND_BUSY: &str = "printf 'ready> '; \
+         (while :; do printf '\\e7\\e[3;1Hbusy %05d\\e8' $RANDOM; sleep 0.002; done) & \
+         while IFS= read -rs -n1 c; do printf '\\r[%s]' \"$c\"; done";
     let Some((profile, mut tui)) = echo_session(TYPED_AND_BUSY, |_, _| {}) else {
         return;
     };
