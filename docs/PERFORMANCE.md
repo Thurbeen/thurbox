@@ -2307,28 +2307,28 @@ answer is owed.
 **Measured** with an isolated local tmux harness: private sockets, keys typed
 one at a time and paced 60 ms and 150 ms apart, raw echo detected on the
 client's output. Each row is 180 keys from two interleaved runs on a 12-thread
-Linux desktop with load under 1.1, with tmux 3.7c and Codex 0.157.1 on a
+Linux desktop with load under 2.3, with tmux 3.7c and Codex 0.157.1 on a
 loopback mock. Raw tmux is the control: its Codex rows are Codex's own time
 (paste-burst hold plus its redraw), not a multiplexer's.
 
 | agent | pace | host | median ms | p90 ms | keys > 50 ms |
 |---|---|---|---|---|---|
 | bash | 60 | raw tmux | 0.8 | 0.9 | 0 % |
-| bash | 60 | thurbox before | 3.6 | 4.2 | 0 % |
-| bash | 60 | thurbox after | 3.6 | 4.3 | 0 % |
+| bash | 60 | thurbox before | 3.6 | 4.3 | 0 % |
+| bash | 60 | thurbox after | 3.1 | 4.1 | 0 % |
 | bash | 150 | raw tmux | 0.8 | 0.9 | 0 % |
-| bash | 150 | thurbox before | 3.6 | 5.0 | 0 % |
-| bash | 150 | thurbox after | 3.6 | 5.3 | 0 % |
-| Codex | 60 | raw tmux | 26.4 | 27.9 | 0 % |
-| Codex | 60 | thurbox before | 29.5 | 68.0 | 18 % |
-| Codex | 60 | thurbox after | 28.2 | 30.7 | 0 % |
-| Codex | 150 | raw tmux | 26.1 | 27.9 | 0 % |
-| Codex | 150 | thurbox before | 29.5 | 68.0 | 16 % |
-| Codex | 150 | thurbox after | 27.6 | 30.2 | 0 % |
+| bash | 150 | thurbox before | 3.6 | 5.3 | 0 % |
+| bash | 150 | thurbox after | 3.5 | 4.4 | 0 % |
+| Codex | 60 | raw tmux | 26.2 | 27.9 | 0 % |
+| Codex | 60 | thurbox before | 28.6 | 65.6 | 23 % |
+| Codex | 60 | thurbox after | 28.9 | 30.7 | 0 % |
+| Codex | 150 | raw tmux | 26.3 | 28.0 | 0 % |
+| Codex | 150 | thurbox before | 29.5 | 65.8 | 21 % |
+| Codex | 150 | thurbox after | 29.1 | 31.2 | 0 % |
 
-The worst Codex key went from 72–75 ms to 31–34 ms. What is left is ADR-P28's
-constant cost of a few milliseconds per key. Local tmux only: psmux, remote
-hosts and macOS were not measured.
+The worst Codex key went from 70–73 ms to 32–34 ms (raw tmux: 29–30 ms).
+What is left is ADR-P28's constant cost of a few milliseconds per key. Local
+tmux only: psmux, remote hosts and macOS were not measured.
 
 **Guarded** on counters (ADR-P5). `tests/tui_e2e.rs` runs a stand-in agent that
 redraws the way Codex does, with a cursor-only synchronized frame, then the glyph
