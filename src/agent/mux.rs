@@ -5981,10 +5981,21 @@ mod dialect_characterization {
             .replace(&format!("-L {sock} "), "-L SOCK ")
     }
 
+    /// `ssh_command` adds its multiplexing options only where `~/.ssh` exists:
+    /// a property of the machine, the same before and after the split.
+    fn machine_neutral(dump: &str) -> String {
+        let multiplex: Vec<String> = crate::shell::SSH_MULTIPLEX_OPTS
+            .iter()
+            .map(|opt| format!("{opt:?}, "))
+            .collect();
+        dump.replace(&multiplex.concat(), "")
+    }
+
     #[test]
     fn every_dialect_answers_as_the_core_did_before_the_split() {
-        let now = current();
-        let before: Vec<&str> = BEFORE.lines().collect();
+        let now = machine_neutral(&current());
+        let before = machine_neutral(BEFORE);
+        let before: Vec<&str> = before.lines().collect();
         let after: Vec<&str> = now.lines().collect();
         assert_eq!(before.len(), after.len(), "a key was added or dropped");
         let mut moved = Vec::new();
