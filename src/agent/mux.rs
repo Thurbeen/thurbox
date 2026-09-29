@@ -5763,7 +5763,10 @@ mod dialect_characterization {
         let mut w = |k: &str, v: String| writeln!(out, "{label} {k} = {v}").unwrap();
         w(
             "mux_command",
-            format!("{:?}", argv(&b.transport.mux_command("thurbox", &["-V"]))),
+            format!(
+                "{:?}",
+                argv(&b.transport.mux_command("LAUNCH-SOCK", &["-V"]))
+            ),
         );
         w(
             "stamps_per_window",
@@ -5839,10 +5842,10 @@ mod dialect_characterization {
         for banner in BANNERS {
             w(
                 &format!("check_banner {banner:?}"),
-                verdict(T::check_banner(banner, "thurbox")),
+                verdict(T::check_banner(banner, "VERSION-SOCK")),
             );
             let server = if T::ASKS_SERVER_VERSION {
-                T::check_server_version(banner, "thurbox")
+                T::check_server_version(banner, "VERSION-SOCK")
             } else {
                 Ok(())
             };

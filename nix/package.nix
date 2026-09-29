@@ -29,6 +29,8 @@ rustPlatform.buildRustPackage {
       ../examples
       # Named by Cargo.toml's [[bench]], so the manifest does not load without it.
       ../benches
+      # Read by a unit test in src/agent/mux.rs, which `cargoTestFlags` runs.
+      ../tests/fixtures/mux_dialects_before_split.txt
     ];
   };
 

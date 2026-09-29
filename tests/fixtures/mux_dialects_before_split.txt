@@ -1,4 +1,4 @@
-tmux@local mux_command = ["tmux", "-L", "thurbox", "-V"]
+tmux@local mux_command = ["tmux", "-L", "LAUNCH-SOCK", "-V"]
 tmux@local stamps_per_window = true
 tmux@local command_lists = true
 tmux@local size_reports = true
@@ -39,7 +39,7 @@ tmux@local check_banner "3.3.6" = ok
 tmux@local check_server_version "3.3.6" = ok
 tmux@local check_banner "" = ok
 tmux@local check_server_version "" = ok
-tmux@ssh mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@devbox", "tmux", "-L", "thurbox", "-V"]
+tmux@ssh mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@devbox", "tmux", "-L", "LAUNCH-SOCK", "-V"]
 tmux@ssh stamps_per_window = true
 tmux@ssh command_lists = true
 tmux@ssh size_reports = true
@@ -82,7 +82,7 @@ tmux@ssh check_banner "3.3.6" = ok
 tmux@ssh check_server_version "3.3.6" = ok
 tmux@ssh check_banner "" = ok
 tmux@ssh check_server_version "" = ok
-tmux@wsl mux_command = ["wsl.exe", "-d", "Ubuntu", "--cd", "/", "tmux", "-L", "thurbox", "-V"]
+tmux@wsl mux_command = ["wsl.exe", "-d", "Ubuntu", "--cd", "/", "tmux", "-L", "LAUNCH-SOCK", "-V"]
 tmux@wsl stamps_per_window = true
 tmux@wsl command_lists = true
 tmux@wsl size_reports = true
@@ -125,7 +125,7 @@ tmux@wsl check_banner "3.3.6" = ok
 tmux@wsl check_server_version "3.3.6" = ok
 tmux@wsl check_banner "" = ok
 tmux@wsl check_server_version "" = ok
-tmux@psmuxhost mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@winbox", "tmux", "-L", "thurbox", "-V"]
+tmux@psmuxhost mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@winbox", "tmux", "-L", "LAUNCH-SOCK", "-V"]
 tmux@psmuxhost stamps_per_window = true
 tmux@psmuxhost command_lists = true
 tmux@psmuxhost size_reports = true
@@ -168,7 +168,7 @@ tmux@psmuxhost check_banner "3.3.6" = ok
 tmux@psmuxhost check_server_version "3.3.6" = ok
 tmux@psmuxhost check_banner "" = ok
 tmux@psmuxhost check_server_version "" = ok
-psmux@local mux_command = ["psmux", "-L", "thurbox", "-V"]
+psmux@local mux_command = ["psmux", "-L", "LAUNCH-SOCK", "-V"]
 psmux@local stamps_per_window = false
 psmux@local command_lists = false
 psmux@local size_reports = false
@@ -200,18 +200,18 @@ psmux@local resize clamped = (["resize-window -t %1 -x 10000 -y 1", "resize-pane
 psmux@local paste_args = ["send-paste", "-t", "thurbox:tb-demo", "bGluZSBvbmUKbGluZSB0d28="]
 psmux@local check_banner "tmux 3.4" = ok
 psmux@local check_server_version "tmux 3.4" = ok
-psmux@local check_banner "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@local check_server_version "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@local check_banner "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@local check_server_version "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
+psmux@local check_banner "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@local check_server_version "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@local check_banner "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@local check_server_version "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
 psmux@local check_banner "psmux 3.3.8" = ok
 psmux@local check_server_version "psmux 3.3.8" = ok
-psmux@local check_banner "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@local check_server_version "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
+psmux@local check_banner "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@local check_server_version "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
 psmux@local check_banner "" = ok
 psmux@local check_server_version "" = ok
 psmux@local push_window_program = ["Set-Item Env:A '1'; Set-Item Env:B 'x y'; & '/opt/agent/claude' '--resume' 'it''s x'"]
-psmux@ssh mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@winbox", "psmux", "-L", "thurbox", "-V"]
+psmux@ssh mux_command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1", "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", "ControlPath=~/.ssh/thurbox-%C", "me@winbox", "psmux", "-L", "LAUNCH-SOCK", "-V"]
 psmux@ssh stamps_per_window = false
 psmux@ssh command_lists = false
 psmux@ssh size_reports = false
@@ -244,14 +244,14 @@ psmux@ssh resize clamped = (["resize-window -t %1 -x 10000 -y 1", "resize-pane -
 psmux@ssh paste_args = ["send-paste", "-t", "thurbox:tb-demo", "bGluZSBvbmUKbGluZSB0d28="]
 psmux@ssh check_banner "tmux 3.4" = ok
 psmux@ssh check_server_version "tmux 3.4" = ok
-psmux@ssh check_banner "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@ssh check_server_version "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@ssh check_banner "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@ssh check_server_version "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
+psmux@ssh check_banner "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@ssh check_server_version "tmux 2.8" = err: psmux 2.8.0 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@ssh check_banner "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@ssh check_server_version "tmux 3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
 psmux@ssh check_banner "psmux 3.3.8" = ok
 psmux@ssh check_server_version "psmux 3.3.8" = ok
-psmux@ssh check_banner "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
-psmux@ssh check_server_version "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L thurbox kill-server`) — a running server keeps the old code
+psmux@ssh check_banner "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
+psmux@ssh check_server_version "3.3.6" = err: psmux 3.3.6 is too old: its server can start an agent with a stdin that is not its pane ("stdin is unreadable (EISDIR)"). Upgrade psmux to 3.3.7 or newer, then restart its server (`psmux -L VERSION-SOCK kill-server`) — a running server keeps the old code
 psmux@ssh check_banner "" = ok
 psmux@ssh check_server_version "" = ok
 psmux@ssh push_window_program = ["Set-Item Env:A '1'; Set-Item Env:B 'x y'; & '/opt/agent/claude' '--resume' 'it''s x'"]
