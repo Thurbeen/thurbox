@@ -4356,11 +4356,14 @@ fn a_glyph_that_follows_a_cursor_only_frame_is_painted_as_the_keys_echo() {
         return;
     };
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
-    // At least the cursor-only frame and the glyph for every key. Without the
-    // fix this can never exceed one per key, whatever the timing.
-    let (echoes, echo_frames) = echo_counters(&profile, 2 * ECHO_KEYS);
+    // Three for every key: the cursor-only frame, the hide-cursor chunk, and a
+    // third that can only be owed once the glyph has arrived (15 ms after the
+    // chunk before it, so the two are not one frame). Counting two would pass
+    // with the glyph still on the floor. Without the fix this can never exceed
+    // one per key, whatever the timing.
+    let (echoes, echo_frames) = echo_counters(&profile, 3 * ECHO_KEYS);
     assert!(
-        echoes >= 2 * ECHO_KEYS,
+        echoes >= 3 * ECHO_KEYS,
         "{echoes} floor-free echo paints for {ECHO_KEYS} keys: the glyph after a \
          cursor-only frame was left to the output floor ({echo_frames} echo frames)"
     );
@@ -4387,6 +4390,80 @@ fn a_pane_printing_while_you_type_into_it_is_not_painted_per_chunk() {
         (ECHO_KEYS..=ECHO_KEYS * ECHO_PAINTS_PER_KEY).contains(&echoes),
         "{echoes} floor-free paints for {ECHO_KEYS} keys into a printing pane \
          (bounded at 1 + 4 a key)"
+    );
+    assert!(tui.quit().success());
+}
+
+/// The published perf snapshot's `(captured_at, frames, echo_frames)`, or
+/// `None` while there is none.
+fn frame_counters(profile: &Profile) -> Option<(u64, u64, u64)> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let out = cmd.args(["perf", "--json"]).output().ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let counter = |name: &str| json["counters"][name].as_u64();
+    Some((
+        json["captured_at"].as_u64()?,
+        counter("frames")?,
+        counter("echo_frames")?,
+    ))
+}
+
+#[test]
+fn typing_into_a_printing_pane_does_not_starve_the_rest_of_the_screen() {
+    // An echo frame repaints only the typed pane and restarts the frame floor.
+    // A pane that prints every ~12 ms while keys arrive every ~45 ms keeps its
+    // echo frames under the 16 ms floor apart, so without a bound nothing else
+    // on screen — the list, the bands, another visible pane — would be
+    // painted until the typing stopped. Full frames must keep coming at
+    // about the output floor while it lasts.
+    const TICKING: &str = "printf 'ready> '; while :; do \
+         if IFS= read -rs -n1 -t 0.012 c; then printf '\\r[%s]' \"$c\"; fi; \
+         printf '\\e[3;1Htick %05d\\e[1;8H' $RANDOM; done";
+    let Some((profile, mut tui)) = echo_session(TICKING, |_, _| {}) else {
+        return;
+    };
+    let typing = Duration::from_secs(13);
+    let snapshots = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut seen: Vec<(u64, u64, u64)> = Vec::new();
+            let until = Instant::now() + typing;
+            while Instant::now() < until {
+                if let Some(snap) = frame_counters(&profile) {
+                    if seen.last().map_or(true, |last| last.0 != snap.0) {
+                        seen.push(snap);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            seen
+        });
+        let until = Instant::now() + typing;
+        let mut i = 0u8;
+        while Instant::now() < until {
+            tui.send(&[b'a' + i % 26]);
+            i = i.wrapping_add(1);
+            std::thread::sleep(Duration::from_millis(45));
+        }
+        watcher.join().expect("snapshot watcher")
+    });
+    // The first snapshot seen may predate the typing; the ones after it were
+    // all published while keys were arriving.
+    let during = &snapshots[1.min(snapshots.len())..];
+    let (Some(first), Some(last)) = (during.first(), during.last()) else {
+        panic!("no perf snapshot was published while typing: {snapshots:?}");
+    };
+    assert!(
+        last.0 > first.0,
+        "only one perf snapshot published while typing: {snapshots:?}"
+    );
+    let full = |snap: &(u64, u64, u64)| snap.1 - snap.2;
+    let per_second = (full(last) - full(first)) as f64 / (last.0 - first.0) as f64;
+    assert!(
+        per_second >= 10.0,
+        "{per_second:.1} full frames a second while typing into a printing pane \
+         (the output floor allows 30): echo frames starved the rest of the screen \
+         ({snapshots:?})"
     );
     assert!(tui.quit().success());
 }

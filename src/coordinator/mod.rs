@@ -316,6 +316,7 @@ impl App {
                         .output_seq(&echo.surface)
                         .map(|seen| EchoTail::new(echo.surface.clone(), seen, echo.sent));
                     self.echo_due = Some(echo.surface);
+                    self.echo_due_is_tail = false;
                 }
                 self.dirty = true;
                 break;
@@ -331,6 +332,7 @@ impl App {
                     tail.spend(seq);
                 }
                 self.echo_due = Some(tail.surface.clone());
+                self.echo_due_is_tail = true;
                 self.dirty = true;
             }
         }
