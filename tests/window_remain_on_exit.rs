@@ -22,6 +22,8 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+use thurbox::agent::tmux::TmuxBackend;
+use thurbox::agent::SessionBackend;
 
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
@@ -99,7 +101,7 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     // applies its options on the way, exactly as a restart does. A long-lived
     // program: one that exits before tmux finishes setting the window up turns a
     // real failure into a skip.
-    let spawned = thurbox::agent::mux::spawn_window(
+    let spawned = TmuxBackend::local().spawn_headless(
         "11111111-1111-4111-8111-111111111111",
         "remain-on-exit",
         "sh",
@@ -234,7 +236,7 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::agent::mux::spawn_window(
+    let spawned = TmuxBackend::local().spawn_headless(
         "22222222-2222-4222-8222-222222222222",
         "dies-at-once",
         "sh",
@@ -289,7 +291,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
 
     // The older namesake, from the other session that shares the name. Spawned
     // through the same path, so it is a real one rather than a hand-made window.
-    let first = thurbox::agent::mux::spawn_window(
+    let first = TmuxBackend::local().spawn_headless(
         "33333333-3333-4333-8333-333333333333",
         "same-name",
         "sh",
@@ -301,7 +303,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         panic!("the first window could not be spawned: {first:?}");
     }
 
-    let second = thurbox::agent::mux::spawn_window(
+    let second = TmuxBackend::local().spawn_headless(
         "44444444-4444-4444-8444-444444444444",
         "same-name",
         "sh",
@@ -365,7 +367,7 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::agent::mux::spawn_window(
+    let spawned = TmuxBackend::local().spawn_headless(
         "55555555-5555-4555-8555-555555555555",
         "hand-sized",
         "sh",

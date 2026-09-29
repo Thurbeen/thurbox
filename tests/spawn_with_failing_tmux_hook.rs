@@ -33,6 +33,8 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+use thurbox::agent::tmux::TmuxBackend;
+use thurbox::agent::SessionBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -85,7 +87,7 @@ fn window_names() -> Vec<String> {
 /// A long-lived program: one that exits before tmux finishes setting the window
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
-    thurbox::agent::mux::spawn_window(
+    TmuxBackend::local().spawn_headless(
         SESSION_ID,
         name,
         "sh",
@@ -199,7 +201,9 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
     let _server = server_with_a_dead_hook(dir.path());
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
-    // and the window holding it — exists whether or not the path resolves.
+    // and the window holding it — exists whether or not the path resolves. It
+    // belongs to no session, so it runs on the platform's multiplexer rather
+    // than through a backend: tmux here, as this file is unix-only.
     let armed = thurbox::agent::mux::ensure_automation_heartbeat(&dir.path().join("thurbox-cli"));
     let names = window_names();
     let running = thurbox::agent::mux::automation_heartbeat_running();
