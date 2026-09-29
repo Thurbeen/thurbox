@@ -15,19 +15,30 @@ if something truly unexpected happens.
 
 ### 2. Module isolation
 
-Domain dependency flow is one-directional:
+Domain dependency flow is one-directional. Every module under `src/` has
+exactly one line here, and each line is the rule `tests/architecture_rules.rs`
+asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
-session      (no crate-internal references — the dependency sink)
-agent        → session, paths, shell
-git          → session, paths, shell
-storage      → session, sync, paths
-sync         → session, storage, workspace
-session_ops  → session, storage, git, sync, paths, workspace
-kernel       → session, storage, sync, paths, session_ops, git,
-               notifications, clipboard
-cli          → session, storage, session_ops, sync, paths, notifications
-main         → the coordinator: the loop, the workers, the chrome
+session        (no crate-internal references — the dependency sink)
+agent          → session, paths, shell
+git            → session, paths, shell
+storage        → session, sync, paths
+sync           → session, storage, workspace
+usage          → session, shell                [path-only: paths]
+session_ops    → session, storage, git, sync, paths, workspace, shell
+                                               [path-only: agent]
+kernel         → session, storage, sync, paths, session_ops, git,
+                 notifications, clipboard, shell
+                                               [path-only: agent, usage]
+cli            → session, storage, session_ops, sync, paths, notifications
+                                               [path-only: agent, kernel]
+notifications  → session, paths, shell         [path-only: storage]
+clipboard      → session, paths
+workspace      → paths
+paths, shell   (leaf utilities — no crate-internal references)
+coordinator    → agent, clipboard, kernel, paths, session, session_ops,
+                 shell, storage
 ```
 
 `agent` is the side-effect layer (PTY/tmux) and never touches `git`,
@@ -35,16 +46,19 @@ main         → the coordinator: the loop, the workers, the chrome
 nothing, which is what lets every other module depend on it.
 
 Some crossings are permitted **by fully-qualified path only**, never by
-`use`: `session_ops`, `cli` and `kernel` reach `agent` that way (and
-`kernel` also reaches `usage`, `cli` also `kernel`). The restriction is
+`use` — not even a function-local `use` or an alias. The restriction is
 the point — every crossing into the side-effect layer stays visible at
 its call site instead of disappearing into an import list.
 
-The full per-module allowlist lives in `tests/architecture_rules.rs`,
-which is an **allowlist**: a new `src/` module fails the test until its
-dependencies are declared there. Exempt are only `main` and its own body
-split out as `src/coordinator/` — the coordinator wires every layer
-together by definition — plus the trivial `bin`/`lib` entry points.
+`coordinator` is `main`'s own body split across files — the loop, the
+workers and the chrome. It wires the layers together, so its list is
+the widest, but it **is** a list: a new layer reached from the loop is
+a decision recorded in the test, not an exemption. Only the crate roots
+(`bin`, `lib`, `main`) are exempt.
+
+`tests/architecture_rules.rs` is an **allowlist** and checks every entry
+in one loop: a new `src/` module fails until its dependencies are
+declared there, and a declared rule cannot go unasserted.
 
 ### 3. Zero-warning policy
 

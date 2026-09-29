@@ -1382,9 +1382,10 @@ at TUI startup. An extension's own installer delegates its bootstrap to
 > taken — `App` and its state stay in `main.rs`, its methods live in
 > `src/coordinator/` split by purpose (loop/workers, commands, publish, draw,
 > input, mouse, focus, interface — plus boot, chrome and editor, `main`'s
-> startup and terminal-side helpers), the coordinator is `EXEMPT` in
-> `tests/architecture_rules.rs`, and there is still exactly one model and one
-> loop. The rejected alternatives below still stand.
+> startup and terminal-side helpers), and there is still exactly one model and
+> one loop. Unlike `app`, the coordinator is **not** `EXEMPT`: it has its own
+> entry in `tests/architecture_rules.rs` listing the layers it wires
+> (`docs/CONSTITUTION.md` §2). The rejected alternatives below still stand.
 
 **Choice**: Keep the single `App` model (ADR-1, TEA) but split its
 ~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,

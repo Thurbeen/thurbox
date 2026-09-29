@@ -42,8 +42,9 @@ slash matches by basename at any depth.
 
 Module boundaries are enforced by tests/architecture_rules.rs as an allowlist:
 session is pure data, agent may not reference git, and kernel reaches agent or
-usage by fully-qualified path only, never a use. A new module fails that test
-until its rules entry is declared.
+usage by fully-qualified path only, never a use - a function-local use or an
+alias included. A new module fails that test until its rules entry is declared,
+and every entry, coordinator's too, is asserted by one loop.
 
 Anything that touches the world - terminal attach, commands, diffs, metrics,
 git, repository reads, update checks - runs on a worker and publishes back,

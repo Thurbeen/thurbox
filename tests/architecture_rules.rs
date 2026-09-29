@@ -121,6 +121,12 @@ const MODULE_RULES: &[ModuleRules] = &[
     // is rule 5 rather than an exception to it. What must not happen is a `git`
     // call from a render path — that is enforced by the loop's shape (a plugin
     // returns a tree; it cannot call Rust), not by this allowlist.
+    //
+    // `shell` for the reason `session_ops` has it: `runs` spells a `cd <dir> &&
+    // <program>` script for a host, and POSIX quoting has exactly one home
+    // (`shell::posix_quote`). The rule used to omit it while no test checked
+    // `kernel`, so the reference went in unnoticed; a second copy of the quoting
+    // rule would be the worse fix.
     ModuleRules {
         name: "kernel",
         allowed: &[
@@ -132,6 +138,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "git",
             "notifications",
             "clipboard",
+            "shell",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
         // and paints its vt100 screen. `kernel::metrics` fetches account usage

@@ -51,11 +51,26 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-session  ← pure data types, no crate-internal references
-agent    ← session (+ paths/shell utils; NEVER git)
-kernel   ← session + storage + sync + paths + session_ops + git
-           (+ agent/usage by fully-qualified path only)
-main     ← the coordinator: the loop, the workers, the chrome
+module         may reference                           [fully-qualified path only]
+session        nothing — pure data, the dependency sink
+agent          session, paths, shell (NEVER git)
+git            session, paths, shell
+storage        session, sync, paths
+sync           session, storage, workspace
+usage          session, shell                          [paths]
+session_ops    session, storage, git, sync, paths,     [agent]
+               workspace, shell
+kernel         session, storage, sync, paths,          [agent, usage]
+               session_ops, git, notifications,
+               clipboard, shell
+cli            session, storage, session_ops, sync,    [agent, kernel]
+               paths, notifications
+notifications  session, paths, shell                   [storage]
+clipboard      session, paths
+workspace      paths
+paths, shell   nothing — leaf utilities
+coordinator    agent, clipboard, kernel, paths,        (main's body: the loop,
+               session, session_ops, shell, storage     the workers, the chrome)
 ```
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
@@ -67,7 +82,9 @@ declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 "wires everything" was never the same claim as "may reach anything". `kernel` reaches
 `agent`/`usage` by fully-qualified path only — never `use` — so every crossing into
 the side-effect layer is visible at its call site, the rule `session_ops` and `cli`
-already follow.
+already follow. A function-local `use crate::agent::…` (or `as` alias) breaks it
+too. One test, `every_module_rule_holds`, loops over every entry — a rule used to
+be able to exist with no test calling it, which is how `kernel` drifted.
 
 ### Module Responsibilities
 
