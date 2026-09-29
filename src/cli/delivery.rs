@@ -501,9 +501,12 @@ impl Outcome {
 /// ([`Database::lease_message_delivery`]): a drain racing it skips the row, so
 /// the body reaches the agent or the mailbox consumer, not both. The lease
 /// lapses rather than marking the row read, so a sender killed mid-send delays
-/// the message by the lease but never hides it. The one duplicate left is a
-/// sender killed after a successful send and before it records it — once the
-/// lease lapses, a drain hands that body over again.
+/// the message by the lease but never hides it. It is renewed before each
+/// attempt, and each attempt is bounded well inside it (a 5 s socket write, a
+/// 20 s `codex queue`), so a live send does not outlive its lease; one that
+/// has lost it does not start. The one duplicate left is a sender killed after
+/// a successful send and before it records it — once the lease lapses, a drain
+/// hands that body over again.
 pub(crate) fn deliver(
     db: &Database,
     message: &SessionMessage,
@@ -515,9 +518,9 @@ pub(crate) fn deliver(
         Ok(routes) => routes,
         Err(why) => return Outcome::mailbox(why),
     };
-    match db.lease_message_delivery(message.id) {
-        Ok(true) => {}
-        Ok(false) => {
+    let lease = match db.lease_message_delivery(message.id) {
+        Ok(Some(lease)) => lease,
+        Ok(None) => {
             return Outcome::mailbox(
                 "it was drained from the mailbox, or is being delivered, before this send",
             )
@@ -526,10 +529,23 @@ pub(crate) fn deliver(
             tracing::warn!("message #{}: take the delivery lease: {e}", message.id);
             return Outcome::mailbox(format!("could not take the delivery lease: {e}"));
         }
-    }
+    };
     let mut failures = Vec::new();
     for route in routes {
         let via = route.via().as_str();
+        // Each attempt starts with a full lease, and none starts without one:
+        // a lease that lapsed may already be another sender's or a drain's.
+        match db.renew_message_delivery(message.id, &lease) {
+            Ok(true) => {}
+            Ok(false) => {
+                failures.push("the delivery lease was lost; another reader took it".into());
+                break;
+            }
+            Err(e) => {
+                failures.push(format!("renew the delivery lease: {e}"));
+                break;
+            }
+        }
         let sent = match &route {
             Route::ClaudeSocket(socket) => transport.post_to_claude(socket, text),
             Route::CodexQueue(thread) => transport.queue_to_codex(thread, text),
@@ -540,9 +556,17 @@ pub(crate) fn deliver(
         };
         match sent {
             Ok(()) => {
-                if let Err(e) = db.complete_message_delivery(message.id, via) {
+                match db.complete_message_delivery(message.id, &lease, via) {
+                    Ok(true) => {}
+                    // The send outran its lease and a drain took the row.
+                    Ok(false) => tracing::warn!(
+                        "message #{}: {via} delivered after the lease was lost",
+                        message.id
+                    ),
                     // Delivered; once the lease lapses a drain repeats it.
-                    tracing::warn!("message #{}: record {via} delivery: {e}", message.id);
+                    Err(e) => {
+                        tracing::warn!("message #{}: record {via} delivery: {e}", message.id)
+                    }
                 }
                 return Outcome {
                     via: route.via(),
@@ -558,7 +582,7 @@ pub(crate) fn deliver(
             }
         }
     }
-    if let Err(e) = db.release_message_delivery(message.id) {
+    if let Err(e) = db.release_message_delivery(message.id, &lease) {
         tracing::warn!("message #{}: release the delivery lease: {e}", message.id);
     }
     Outcome::mailbox(format!("native delivery failed: {}", failures.join("; ")))
@@ -743,11 +767,66 @@ mod tests {
             .is_empty());
     }
 
+    /// Fails the Claude attempt slowly enough that the lease lapses and
+    /// another sender takes it, then records whether Codex was tried anyway.
+    struct LosesTheLease<'a> {
+        db: &'a Database,
+        codex_tried: RefCell<bool>,
+    }
+
+    impl Transport for LosesTheLease<'_> {
+        fn post_to_claude(&self, _socket: &Path, _text: &str) -> Result<(), String> {
+            let stale = crate::sync::current_time_millis() as i64
+                - crate::storage::messages::DELIVERY_LEASE_MS
+                - 1;
+            self.db
+                .conn_ref()
+                .execute(
+                    "UPDATE session_messages SET delivering_at = ?1 WHERE id = 1",
+                    [stale],
+                )
+                .unwrap();
+            self.db.lease_message_delivery(1).unwrap().unwrap();
+            Err("connect: timed out".into())
+        }
+        fn queue_to_codex(&self, _thread: &str, _text: &str) -> Result<(), String> {
+            *self.codex_tried.borrow_mut() = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_sender_that_lost_its_lease_tries_no_further_route() {
+        let db = Database::open_in_memory().unwrap();
+        let msg = enqueued(&db);
+        assert_eq!(msg.id, 1);
+        let transport = LosesTheLease {
+            db: &db,
+            codex_tried: RefCell::new(false),
+        };
+        let evidence = Evidence {
+            codex_thread: Some(THREAD.into()),
+            ..claude("/s/slow.sock")
+        };
+        let out = deliver(&db, &msg, "text", &evidence, &transport);
+        assert_eq!(out.via, DeliveredVia::Mailbox);
+        assert!(out.note.unwrap().contains("lease was lost"));
+        assert!(
+            !*transport.codex_tried.borrow(),
+            "the new holder sends, not us"
+        );
+        // Its release did not free the new holder's lease.
+        assert!(db
+            .claim_messages(msg.to_session_id, None)
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn a_second_sender_leaves_a_message_in_flight_alone() {
         let db = Database::open_in_memory().unwrap();
         let msg = enqueued(&db);
-        assert!(db.lease_message_delivery(msg.id).unwrap());
+        db.lease_message_delivery(msg.id).unwrap().unwrap();
         let fake = Fake::default();
         let out = deliver(&db, &msg, "text", &claude("/s/a.sock"), &fake);
         assert_eq!(out.via, DeliveredVia::Mailbox);

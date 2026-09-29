@@ -935,7 +935,8 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
 /// nothing is mid-send across an upgrade.
 pub(super) fn migrate_v48_message_delivered_via(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "session_messages", "delivered_via", "TEXT")?;
-    add_column_if_absent(conn, "session_messages", "delivering_at", "INTEGER")
+    add_column_if_absent(conn, "session_messages", "delivering_at", "INTEGER")?;
+    add_column_if_absent(conn, "session_messages", "delivery_lease", "TEXT")
 }
 
 /// See [`super::SCHEMA_VERSION`] v47: record that the WSL-loopback repair is

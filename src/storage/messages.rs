@@ -188,8 +188,11 @@ impl Database {
     ) -> rusqlite::Result<Vec<SessionMessage>> {
         let limit = limit.unwrap_or(DEFAULT_INBOX_LIMIT) as i64;
         let now = current_time_millis() as i64;
+        // Claiming a row whose lease lapsed also voids that lease, so its
+        // stalled holder cannot record a delivery of a row a drain now owns.
         let sql = format!(
-            "UPDATE session_messages SET read_at = ?3 \
+            "UPDATE session_messages \
+             SET read_at = ?3, delivering_at = NULL, delivery_lease = NULL \
              WHERE id IN ( \
                 SELECT id FROM session_messages \
                 WHERE to_session_id = ?1 AND read_at IS NULL \
@@ -212,42 +215,66 @@ impl Database {
 
     /// Take the delivery lease on an unread message before a native send, so a
     /// concurrent drain (`inbox --claim`) skips it rather than handing the same
-    /// body over while the send is in flight. `false` means it is no longer
-    /// deliverable: already read, or another sender holds a live lease.
+    /// body over while the send is in flight. Returns the lease's token, or
+    /// `None` when the message is no longer deliverable: already read, or
+    /// another sender holds a live lease.
     ///
     /// A lease, not a read mark: a sender killed mid-send cannot release it,
     /// and a read mark would then hide a message that never arrived. The lease
     /// lapses after [`DELIVERY_LEASE_MS`] and the row is an ordinary unread one
-    /// again.
-    pub fn lease_message_delivery(&self, id: i64) -> rusqlite::Result<bool> {
+    /// again. Every later call names the token, so a sender whose lease lapsed
+    /// and was taken over cannot complete or release someone else's.
+    pub fn lease_message_delivery(&self, id: i64) -> rusqlite::Result<Option<String>> {
+        let token = uuid::Uuid::new_v4().to_string();
         let now = current_time_millis() as i64;
         let changed = self.conn.execute(
-            "UPDATE session_messages SET delivering_at = ?2 \
+            "UPDATE session_messages SET delivering_at = ?2, delivery_lease = ?3 \
              WHERE id = ?1 AND read_at IS NULL \
-               AND (delivering_at IS NULL OR delivering_at < ?3)",
-            params![id, now, now - DELIVERY_LEASE_MS],
+               AND (delivering_at IS NULL OR delivering_at < ?4)",
+            params![id, now, token, now - DELIVERY_LEASE_MS],
+        )?;
+        Ok((changed == 1).then_some(token))
+    }
+
+    /// Restart the lease clock before each send attempt, so every attempt
+    /// begins with a full [`DELIVERY_LEASE_MS`]. `false` means the lease lapsed
+    /// and was taken, or the row was read: the caller must not send.
+    pub fn renew_message_delivery(&self, id: i64, token: &str) -> rusqlite::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE session_messages SET delivering_at = ?3 \
+             WHERE id = ?1 AND delivery_lease = ?2 AND read_at IS NULL",
+            params![id, token, current_time_millis() as i64],
         )?;
         Ok(changed == 1)
     }
 
-    /// Close a lease after the native send succeeded: mark the row read with
-    /// the inbox that carried it, so no later drain repeats the body.
-    pub fn complete_message_delivery(&self, id: i64, via: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
+    /// Close the lease after the native send succeeded: mark the row read with
+    /// the inbox that carried it, so no later drain repeats the body. `false`
+    /// when `token` no longer holds the lease.
+    pub fn complete_message_delivery(
+        &self,
+        id: i64,
+        token: &str,
+        via: &str,
+    ) -> rusqlite::Result<bool> {
+        let changed = self.conn.execute(
             "UPDATE session_messages \
-             SET read_at = COALESCE(read_at, ?2), delivered_via = ?3, delivering_at = NULL \
-             WHERE id = ?1",
-            params![id, current_time_millis() as i64, via],
+             SET read_at = COALESCE(read_at, ?3), delivered_via = ?4, \
+                 delivering_at = NULL, delivery_lease = NULL \
+             WHERE id = ?1 AND delivery_lease = ?2",
+            params![id, token, current_time_millis() as i64, via],
         )?;
-        Ok(())
+        Ok(changed == 1)
     }
 
-    /// Drop a lease after the native send failed: the row is an ordinary
-    /// unread message again, for the next drain.
-    pub fn release_message_delivery(&self, id: i64) -> rusqlite::Result<()> {
+    /// Drop the lease after the native send failed: the row is an ordinary
+    /// unread message again, for the next drain. A no-op for a lease `token`
+    /// no longer holds.
+    pub fn release_message_delivery(&self, id: i64, token: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE session_messages SET delivering_at = NULL WHERE id = ?1",
-            params![id],
+            "UPDATE session_messages SET delivering_at = NULL, delivery_lease = NULL \
+             WHERE id = ?1 AND delivery_lease = ?2",
+            params![id, token],
         )?;
         Ok(())
     }
@@ -548,14 +575,17 @@ mod tests {
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
 
-        assert!(db.lease_message_delivery(id).unwrap());
-        db.complete_message_delivery(id, "claude-socket").unwrap();
+        let lease = db.lease_message_delivery(id).unwrap().unwrap();
+        assert!(db.renew_message_delivery(id, &lease).unwrap());
+        assert!(db
+            .complete_message_delivery(id, &lease, "claude-socket")
+            .unwrap());
         let m = db.get_message(id).unwrap().unwrap();
         assert!(!m.is_unread());
         assert_eq!(m.delivered_via.as_deref(), Some("claude-socket"));
         assert!(db.claim_messages(to, None).unwrap().is_empty());
         // Already delivered: not leasable a second time.
-        assert!(!db.lease_message_delivery(id).unwrap());
+        assert_eq!(db.lease_message_delivery(id).unwrap(), None);
     }
 
     #[test]
@@ -565,9 +595,10 @@ mod tests {
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
         let other = db.enqueue_message(&new_msg(to, "note", "other")).unwrap();
 
-        assert!(db.lease_message_delivery(id).unwrap());
-        assert!(
-            !db.lease_message_delivery(id).unwrap(),
+        let lease = db.lease_message_delivery(id).unwrap().unwrap();
+        assert_eq!(
+            db.lease_message_delivery(id).unwrap(),
+            None,
             "one sender at a time"
         );
         // Mid-send: a drain takes only what is not in flight.
@@ -579,18 +610,15 @@ mod tests {
         // Still unread, so it is counted and shown while in flight.
         assert_eq!(db.count_unread_messages(to).unwrap(), 1);
 
-        db.release_message_delivery(id).unwrap();
+        db.release_message_delivery(id, &lease).unwrap();
         let claimed = db.claim_messages(to, None).unwrap();
         assert_eq!(claimed.iter().map(|m| m.id).collect::<Vec<_>>(), vec![id]);
         assert_eq!(claimed[0].delivered_via, None);
     }
 
-    #[test]
-    fn a_lapsed_lease_is_drained_like_any_unread_message() {
-        let db = Database::open_in_memory().unwrap();
-        let to = SessionId::default();
-        let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
-        // A sender that took the lease and was killed before finishing.
+    /// Age a lease past [`DELIVERY_LEASE_MS`], as a sender that stalled or was
+    /// killed would leave it.
+    fn lapse(db: &Database, id: i64) {
         let stale = current_time_millis() as i64 - DELIVERY_LEASE_MS - 1;
         db.conn_ref()
             .execute(
@@ -598,16 +626,57 @@ mod tests {
                 params![id, stale],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn a_lapsed_lease_is_drained_like_any_unread_message() {
+        let db = Database::open_in_memory().unwrap();
+        let to = SessionId::default();
+        let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
+        db.lease_message_delivery(id).unwrap().unwrap();
+        lapse(&db, id);
         assert_eq!(db.claim_messages(to, None).unwrap().len(), 1);
     }
 
     #[test]
-    fn a_claimed_message_cannot_be_leased() {
+    fn a_sender_whose_lease_was_taken_over_cannot_touch_the_new_one() {
         let db = Database::open_in_memory().unwrap();
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
+        let stalled = db.lease_message_delivery(id).unwrap().unwrap();
+        lapse(&db, id);
+        let current = db.lease_message_delivery(id).unwrap().unwrap();
+
+        // The stalled sender may neither send again, finish, nor let go of
+        // the lease it no longer holds.
+        assert!(!db.renew_message_delivery(id, &stalled).unwrap());
+        assert!(!db
+            .complete_message_delivery(id, &stalled, "codex-queue")
+            .unwrap());
+        db.release_message_delivery(id, &stalled).unwrap();
+        assert!(db.get_message(id).unwrap().unwrap().is_unread());
+        assert!(
+            db.claim_messages(to, None).unwrap().is_empty(),
+            "still leased"
+        );
+
+        assert!(db
+            .complete_message_delivery(id, &current, "claude-socket")
+            .unwrap());
+        let m = db.get_message(id).unwrap().unwrap();
+        assert_eq!(m.delivered_via.as_deref(), Some("claude-socket"));
+    }
+
+    #[test]
+    fn a_claimed_message_cannot_be_leased_or_renewed() {
+        let db = Database::open_in_memory().unwrap();
+        let to = SessionId::default();
+        let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
+        let lease = db.lease_message_delivery(id).unwrap().unwrap();
+        lapse(&db, id);
         db.claim_messages(to, None).unwrap();
-        assert!(!db.lease_message_delivery(id).unwrap());
+        assert!(!db.renew_message_delivery(id, &lease).unwrap());
+        assert_eq!(db.lease_message_delivery(id).unwrap(), None);
     }
 
     #[test]

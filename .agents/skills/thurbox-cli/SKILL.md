@@ -786,8 +786,9 @@ without double-processing.
   `$CLAUDE_CODE_MESSAGING_SOCKET` alone. `session signal` records a proven hook
   socket (`thurbox.claude_messaging_socket`) and its registry dir
   (`thurbox.claude_registry_dir`, searched too when the sender's
-  `CLAUDE_CONFIG_DIR` differs). The send holds a 60 s lease (`delivering_at`)
-  that `claim` skips; success marks the row read + `delivered_via` (schema
+  `CLAUDE_CONFIG_DIR` differs). The send holds a 60 s token-owned lease
+  (`delivering_at`, `delivery_lease`) that `claim` skips and that is renewed
+  before each attempt; success marks the row read + `delivered_via` (schema
   v48), failure releases it, and a killed sender's lease just lapses.
   Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
   `delivery_note`. `tests/architecture_rules.rs` keeps tmux unreachable from

@@ -77,8 +77,9 @@ use rusqlite::Connection;
 /// v48 adds `delivered_via` to `session_messages`: which agent-native inbox
 /// (`claude-socket` / `codex-queue`) a `message send` handed the body to.
 /// A natively delivered row is also marked read, so a later `inbox --claim`
-/// does not hand the agent the same text a second time. `delivering_at` is the
-/// lease a sender holds while that send is in flight, which `claim` honours.
+/// does not hand the agent the same text a second time. `delivering_at` and
+/// `delivery_lease` are the lease a sender holds while that send is in flight
+/// (when it was taken, and whose it is), which `claim` honours.
 /// Gaps in the step table are fine (there is no v18 step either).
 pub const SCHEMA_VERSION: u32 = 48;
 
@@ -327,7 +328,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             created_at      INTEGER NOT NULL,
             read_at         INTEGER,
             delivered_via   TEXT,
-            delivering_at   INTEGER
+            delivering_at   INTEGER,
+            delivery_lease  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session_messages_unread
             ON session_messages(to_session_id) WHERE read_at IS NULL;

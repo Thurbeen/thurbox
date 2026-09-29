@@ -2611,9 +2611,16 @@ Why a lease rather than marking the row read *before* the send: a sender killed
 between the mark and the send would leave a row that reads as delivered, is
 skipped by every drain and is eventually pruned, for a body that never arrived.
 A lease cannot outlive its sender — it lapses after `DELIVERY_LEASE_MS` (60 s,
-above the 20 s a `codex queue` is allowed) and the row is drainable again. The
-one duplicate left is a sender killed after a successful send and before it
-records it: once the lease lapses, a drain hands that body over a second time.
+above the 20 s a `codex queue` is allowed) and the row is drainable again.
+
+A lease is **owned**: taking it returns a token (`delivery_lease`), and renew,
+complete and release all name it, so a sender whose lease lapsed and was taken
+over can neither finish nor free the new holder's. The sender renews it before
+each attempt and each attempt is bounded well inside it, so a live send does
+not outlive its lease, and one that has lost it does not start; a claim of a
+lapsed row voids the lease outright. The one duplicate left is a sender killed
+after a successful send and before it records it: once the lease lapses, a
+drain hands that body over a second time.
 
 ### Why exactly-once and bounded
 
@@ -2643,7 +2650,8 @@ surface. `AGENTS.md` keeps the identity contract and points here.
   `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
   the TUI and a cron tick drain concurrently without double-processing or
   dropping, and it skips a row a native send holds the lease on
-  (`lease_message_delivery` / `complete_…` / `release_…`, `delivering_at`).
+  (`lease_message_delivery` / `renew_…` / `complete_…` / `release_…`, with
+  `delivering_at` + the owner token `delivery_lease`).
   `list_messages` peeks without consuming.
 - **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
   (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
