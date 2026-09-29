@@ -622,6 +622,19 @@ fn every_module_rule_holds() {
 /// string once swallowed one, and every report below it pointed a line early.
 #[test]
 fn stripping_keeps_every_line() {
+    // Fixed inputs first, so the property is pinned even once no file under
+    // `src/` happens to hold a continuation.
+    for src in [
+        "let s = \"a \\\nb\";\ncrate::x",
+        "let s = \"a \\\r\nb\";\r\ncrate::x",
+        "let s = r#\"a\nb\"#; /* c\nd */ // e\ncrate::x",
+    ] {
+        assert_eq!(
+            strip_comments_and_strings(src).matches('\n').count(),
+            src.matches('\n').count(),
+            "stripping {src:?} lost or added a line"
+        );
+    }
     for file in collect_rs_files(&src_root()) {
         let content = fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
