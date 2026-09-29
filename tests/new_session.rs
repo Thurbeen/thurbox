@@ -3075,12 +3075,14 @@ fn a_hovered_pill_lights_and_its_neighbour_does_not() {
 fn a_bookmark_named_like_a_reserved_target_is_still_selected_by_a_click() {
     // A remembered path can be relative, and a relative path can be any string
     // — including one spelled like the flow's own field or folder targets.
-    let mut world = World::default();
-    world.repos = store_with(vec![
-        bookmark("/src/thurbox", Some(true)),
-        bookmark("browse:notes", Some(false)),
-        bookmark("field:input", Some(false)),
-    ]);
+    let world = World {
+        repos: store_with(vec![
+            bookmark("/src/thurbox", Some(true)),
+            bookmark("browse:notes", Some(false)),
+            bookmark("field:input", Some(false)),
+        ]),
+        ..World::default()
+    };
     let pick = |needle: &str, downs: usize| {
         let clicked = host();
         open(&clicked, &world);
