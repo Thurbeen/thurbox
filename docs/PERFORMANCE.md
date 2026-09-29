@@ -2356,6 +2356,13 @@ answer is owed.
 - **Bounded, not per chunk.** A pane streaming while you type buys at most four
   extra one-surface frames per key, not a frame per chunk for 150 ms. Other
   sessions never get a tail, so a busy neighbour is still painted on the floors.
+- **A tail frame never stands in for an overdue full frame.** An echo frame
+  moves `last_paint`, so a pane printing every ~12 ms while keys came every
+  ~45 ms kept every frame an echo frame, and the rest of the screen went
+  unpainted for as long as the typing lasted (measured: 0 full frames in five
+  seconds). Once the last *full* frame is `OUTPUT_FRAME_INTERVAL` old
+  (`last_full_paint`), the tail's frame is painted as a full frame instead. It
+  is still floor-free, and it still shows the glyph.
 - **Backend-neutral.** The decision reads only a surface's output sequence
   (`Terminals::output_seq`, bumped by any backend's reader after it parses)
   and the clock. It does not look at how the multiplexer split the bytes, or
@@ -2395,11 +2402,15 @@ hosts and macOS were not measured.
 **Guarded** on counters (ADR-P5). `tests/tui_e2e.rs` runs a stand-in agent that
 redraws the way Codex does, with a cursor-only synchronized frame, then the glyph
 split across three writes. A 15 ms gap before the glyph pins a paint between
-the chunks. The test fails unless every key got at least two floor-free paints;
-before the change it can never get more than one. A second test types into a
+the chunks. The test fails unless every key got at least three floor-free
+paints, the third of which can only be owed once the glyph has arrived; before
+the change it can never get more than one. A second test types into a
 pane that rewrites a status line every couple of milliseconds, and fails if the
-paints exceed one plus `ECHO_TAIL_FRAMES` a key. `EchoTail`'s own unit tests
-drive it with synthetic output sequences and no backend at all.
+paints exceed one plus `ECHO_TAIL_FRAMES` a key. A third types every ~45 ms
+into a pane printing every ~12 ms, and fails unless full frames keep coming at
+10 a second or more between two perf snapshots published during the typing.
+`EchoTail`'s own unit tests drive it with synthetic output sequences and no
+backend at all.
 
 ## Measuring: the bench and the load harness (2026-08-29)
 
