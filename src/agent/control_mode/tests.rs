@@ -65,6 +65,14 @@ fn pane_pids_parse_skips_malformed_lines() {
     assert_eq!(map.get("%3"), Some(&8));
 }
 
+#[test]
+fn pane_ids_parse_keeps_every_listed_pane_whatever_its_pid() {
+    let ids = parse_pane_ids("%1\n%2 \n not-a-pane\n\n %3 \n%\n");
+    let mut ids: Vec<_> = ids.into_iter().collect();
+    ids.sort();
+    assert_eq!(ids, ["%1", "%2", "%3"]);
+}
+
 // --- is_valid_pane_id tests ---
 
 #[test]

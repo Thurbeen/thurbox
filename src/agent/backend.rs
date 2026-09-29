@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{
@@ -549,6 +549,16 @@ pub trait SessionBackend: Send + Sync {
     /// per-pane [`Self::pane_pid`], which every backend must provide.
     fn pane_pids(&self) -> Result<HashMap<String, u32>> {
         anyhow::bail!("batched pane pid lookup not supported by this backend")
+    }
+
+    /// Every pane the backend lists, dead ones included, in one round trip.
+    ///
+    /// Whether a pane still *exists*, which [`Self::pane_pids`] cannot say: a
+    /// pane is missing from that map whenever it has no pid to report.
+    ///
+    /// Default: unsupported.
+    fn pane_ids(&self) -> Result<HashSet<String>> {
+        anyhow::bail!("pane listing not supported by this backend")
     }
 
     /// Drain queued `(backend_id, hook-state)` events reported by a remote
@@ -2023,14 +2033,23 @@ impl Session {
     /// primary repo (`info.cwd`) when `None`. The command is the backend's
     /// [`SessionBackend::default_shell`]. The window name uses the `tbs-` prefix
     /// to distinguish from the agent's `tb-` windows.
+    ///
+    /// A shell whose stream has ended is replaced rather than kept: nothing
+    /// else lets go of it while the agent beside it runs on, and once its grid
+    /// has been dropped off screen there is no pane left to rebuild it from —
+    /// the tab would stay blank for good. Not when the agent's stream ended
+    /// too: that is the connection going, and the session is re-attached whole,
+    /// its still-running shell included, so a new one would orphan it.
     pub fn ensure_shell_pane(
         &mut self,
         rows: u16,
         cols: u16,
         cwd: Option<&std::path::Path>,
     ) -> Result<()> {
-        if self.shell_pane.is_some() {
-            return Ok(());
+        if let Some(shell) = &self.shell_pane {
+            if !shell.has_exited() || self.has_exited() {
+                return Ok(());
+            }
         }
 
         let shell_cmd = self.backend.default_shell();
@@ -2065,7 +2084,20 @@ impl Session {
     }
 
     /// Re-adopt an existing shell pane from a backend_id (for restore on restart).
+    ///
+    /// Fails for a pane the backend's listing does not have. `adopt` itself
+    /// does not: its capture is best-effort and tmux accepts `refresh-client
+    /// -A` for any id, so a window that went while the interface was away
+    /// would come back as a shell that never prints, never ends, and keeps the
+    /// next toggle from spawning a real one. Asked of the listing and not of
+    /// the pane, because `display-message -t` answers a missing pane with the
+    /// current one. A backend with no listing adopts as before.
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        if let Ok(listed) = self.backend.pane_ids() {
+            if !listed.contains(backend_id) {
+                anyhow::bail!("shell pane {backend_id} is gone");
+            }
+        }
         let adopted = self.backend.adopt(backend_id, rows, cols, None)?;
 
         let (wired, _signals) = Self::wire_up(

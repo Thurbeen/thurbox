@@ -89,7 +89,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)
   — and, where tmux exists, a headlessly created session attached, painted and
   typed into (`sh` as the agent), the classic Shell tab raised, lowered and
-  still holding its shell, and a v2.32.0 layout-preset profile (fixture in
+  still holding its shell (and replaced by a working one after it exited
+  behind the agent, or its window went while thurbox was closed), and a v2.32.0 layout-preset profile (fixture in
   `tests/fixtures/v2_32_0_split_shell/`) upgrading back to classic. Also
   `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.

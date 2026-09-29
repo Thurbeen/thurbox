@@ -3239,6 +3239,12 @@ other panel toggles' F-keys.
   per session, so flipping to the shell on one does not flip it on the next.
   That is the pane's own state, not the kernel's — see the section below.
 - Input reaches the pane the surface names, `<id>#shell` or the bare id.
+- **A shell that has ended is replaced.** `exit`, or its window closing from
+  outside, ends the shell's stream while the agent runs on; the next raise of
+  the tab spawns a fresh shell rather than showing the dead one, whose grid —
+  once dropped off screen after `hidden_terminal_secs` — has no pane left to be
+  rebuilt from and would stay blank. For the same reason a restart does not
+  re-adopt a recorded shell id the multiplexer's listing no longer has.
 - **Remote/WSL sessions**: the shell pane opens the host user's own
   interactive **login shell** — the same environment an `ssh <host>` login
   gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It
