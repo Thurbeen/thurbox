@@ -319,12 +319,18 @@ fn skip_block_comment(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
     i
 }
 
-/// `"…"`, honouring backslash escapes.
+/// `"…"`, honouring backslash escapes — including a `\` line continuation,
+/// whose newline is kept so a violation below it reports the right line.
 fn skip_string(bytes: &[u8], mut i: usize, out: &mut Vec<u8>) -> usize {
     i += 1;
     while i < bytes.len() {
         match bytes[i] {
-            b'\\' => i += 2,
+            b'\\' => {
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    out.push(b'\n');
+                }
+                i += 2;
+            }
             b'"' => return i + 1,
             b'\n' => {
                 out.push(b'\n');
@@ -588,69 +594,37 @@ fn format_violations(rules: &ModuleRules, violations: &[Violation]) -> String {
     msg
 }
 
-fn assert_module_clean(name: &str) {
-    let rules = MODULE_RULES
+/// Every entry in [`MODULE_RULES`] is checked — by one loop, so an entry can
+/// never be declared and then left unasserted. Per-module `#[test]`s used to
+/// do this, and three entries (`kernel`, `coordinator`, `clipboard`) had none,
+/// so their rules read as enforced while nothing enforced them.
+#[test]
+fn every_module_rule_holds() {
+    let report: String = MODULE_RULES
         .iter()
-        .find(|r| r.name == name)
-        .unwrap_or_else(|| panic!("no MODULE_RULES entry for `{name}`"));
-    let violations = check_module(rules);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        format_violations(rules, &violations)
-    );
+        .filter_map(|rules| {
+            let violations = check_module(rules);
+            (!violations.is_empty()).then(|| format_violations(rules, &violations))
+        })
+        .collect();
+    assert!(report.is_empty(), "{report}");
 }
 
+/// Stripping keeps every newline of every source file, which is what lets a
+/// violation's byte offset name its line. A `\` line continuation inside a
+/// string once swallowed one, and every report below it pointed a line early.
 #[test]
-fn session_module_purity() {
-    assert_module_clean("session");
-}
-
-#[test]
-fn agent_module_isolation() {
-    assert_module_clean("agent");
-}
-
-#[test]
-fn git_module_independence() {
-    assert_module_clean("git");
-}
-
-#[test]
-fn storage_module_isolation() {
-    assert_module_clean("storage");
-}
-
-#[test]
-fn sync_module_isolation() {
-    assert_module_clean("sync");
-}
-
-#[test]
-fn usage_module_isolation() {
-    assert_module_clean("usage");
-}
-
-#[test]
-fn session_ops_module_isolation() {
-    assert_module_clean("session_ops");
-}
-
-#[test]
-fn cli_module_isolation() {
-    assert_module_clean("cli");
-}
-
-#[test]
-fn util_modules_are_leaves() {
-    for name in ["paths", "shell", "workspace"] {
-        assert_module_clean(name);
+fn stripping_keeps_every_line() {
+    for file in collect_rs_files(&src_root()) {
+        let content = fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        assert_eq!(
+            strip_comments_and_strings(&content).matches('\n').count(),
+            content.matches('\n').count(),
+            "stripping {} lost or added a line",
+            file.display()
+        );
     }
-}
-
-#[test]
-fn notifications_module_isolation() {
-    assert_module_clean("notifications");
 }
 
 /// Every module under `src/` must be governed: either a MODULE_RULES entry
