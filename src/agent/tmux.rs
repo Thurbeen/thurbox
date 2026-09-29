@@ -4726,7 +4726,7 @@ mod tests {
     #[test]
     fn control_mode_reexports_resolve() {
         assert_eq!(shell_escape("hello world"), "'hello world'");
-        assert_eq!(decode_octal("\\033"), vec![27]);
+        assert_eq!(decode_octal(b"\\033"), vec![27]);
         assert_eq!(format_send_keys("%1", b"A"), "send-keys -t %1 -H 41\n");
         assert_eq!(
             parse_notification("%pause %1"),
