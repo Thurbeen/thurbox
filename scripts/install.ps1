@@ -174,7 +174,15 @@ function Install-Archive {
                     throw "Cannot replace $target - it is in use by $who. Close it and run the installer again."
                 }
             }
-            Move-Item -LiteralPath $file.FullName -Destination $target
+            try {
+                Move-Item -LiteralPath $file.FullName -Destination $target
+            } catch {
+                # Leave the old file in place rather than nothing at all.
+                if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) {
+                    Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
+                }
+                throw
+            }
             Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
         }
     }

@@ -1103,7 +1103,8 @@ fn install(host: &HostDef) -> Result<String, String> {
 /// moved aside to `.<name>.old` before the new one is moved in: the swap
 /// `scripts/install.ps1`'s `Install-Archive` does, whose comment has the rest.
 /// A backup still running is removed by the next provisioning; one that cannot
-/// be moved because it is still running fails naming the process to close.
+/// be moved because it is still running fails naming the process to close, and
+/// a new file that cannot be moved in puts the old one back.
 fn windows_extract_script(archive: &str, bin_dir: &str) -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -1128,7 +1129,14 @@ try {{
                 throw "cannot replace $target - it is in use by $who; close it and try again"
             }}
         }}
-        Move-Item -LiteralPath $file.FullName -Destination $target
+        try {{
+            Move-Item -LiteralPath $file.FullName -Destination $target
+        }} catch {{
+            if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) {{
+                Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
+            }}
+            throw
+        }}
         Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
     }}
 }} finally {{

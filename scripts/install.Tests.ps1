@@ -243,6 +243,21 @@ Describe 'Install-Archive' {
         }
     }
 
+    It 'puts the installed file back when the new one cannot be moved in' {
+        $exe = Join-Path $script:Dest 'thurbox.exe'
+        Set-Content -Path $exe -Value 'old' -NoNewline
+        # Only the move of the new thurbox.exe fails - after the installed one
+        # has been moved aside, which is the state that must not be left.
+        $real = Get-Command Move-Item -CommandType Cmdlet
+        Mock Move-Item { & $real @PesterBoundParameters }
+        Mock Move-Item { throw 'simulated failure' } -ParameterFilter {
+            $LiteralPath -like '*.install-*' -and (Split-Path -Leaf $LiteralPath) -eq 'thurbox.exe'
+        }
+        { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
+            Should -Throw '*simulated failure*'
+        Get-Content -Raw $exe | Should -Be 'old'
+    }
+
     It 'removes the backup a previous update left once nothing runs from it' {
         $old = Join-Path $script:Dest '.thurbox.exe.old'
         Set-Content -Path $old -Value 'stale' -NoNewline
