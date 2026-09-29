@@ -930,6 +930,12 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
     )
 }
 
+/// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
+/// before this version delivered a body natively, only a keystroke nudge.
+pub(super) fn migrate_v48_message_delivered_via(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "session_messages", "delivered_via", "TEXT")
+}
+
 /// See [`super::SCHEMA_VERSION`] v47: record that the WSL-loopback repair is
 /// **owed**, without performing it.
 ///

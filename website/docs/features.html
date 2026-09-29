@@ -731,17 +731,18 @@ timeout_secs = 300</code></pre>
               <strong>Push, not poll.</strong>
               A worker pushes a clean payload with
               <code>thurbox-cli message send</code>
-              ; a wake nudge types a short
-              <code>inbox</code>
-              token into the recipient's pane so it drains immediately. The payload always travels
-              through the durable database, never the pane.
+              , and the body is handed straight to the recipient agent's own inbox &mdash; Claude
+              Code's inbox socket, or
+              <code>codex queue</code>
+              for Codex &mdash; between tool calls or as a new turn. Other agents read it from the
+              durable mailbox. Nothing is ever typed into the recipient's pane.
             </li>
             <li>
               <strong>Exactly-once drain.</strong>
               <code>message inbox --claim</code>
               is a single atomic
               <code>UPDATE &hellip; RETURNING</code>
-              , so the TUI, a cron tick, and a wake nudge can drain the same inbox concurrently
+              , so the TUI, a cron tick, and a native delivery can race on the same inbox
               without ever double-processing or dropping a message.
             </li>
             <li>

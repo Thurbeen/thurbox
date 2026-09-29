@@ -773,8 +773,19 @@ is addressed **to** a session and carries a
 free-form `kind` tag (`questions`/`plan`/`result`/… are conventions, not an enum),
 a `body`, and optional provenance. Storage is the `session_messages` table (schema
 **v32**, CRUD in `storage/messages.rs`); `Database::claim_messages` is a single
-`UPDATE … RETURNING`, so the TUI, a cron tick, and a wake nudge can drain
-concurrently without double-processing.
+`UPDATE … RETURNING`, so the TUI, a cron tick, and a native delivery can race
+without double-processing.
+
+- **Delivery is native, never keystrokes.** `send`/`reply` hand the body to the
+  recipient agent's own inbox (`cli/delivery.rs`): Claude Code's inbox socket
+  (captured from `$CLAUDE_CODE_MESSAGING_SOCKET` by `session signal` into meta
+  `thurbox.claude_messaging_socket`, else found in `~/.claude/sessions/*.json`
+  by pane), or `codex queue --thread <thurbox.codex_conversation_id>`. Anything
+  else stays mailbox-only. The row is reserved (`read_at` + `delivered_via`,
+  schema v48) before the send and released on failure, so a drain never repeats
+  a delivered body. Output: `delivered_via` = `claude-socket` | `codex-queue` |
+  `mailbox`, plus `delivery_note`. `tests/architecture_rules.rs` keeps tmux
+  unreachable from this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is
   **stable for life** — `respawn_stale_session` reuses the original id on
@@ -789,8 +800,7 @@ concurrently without double-processing.
   --to <uuid|name>` stamps provenance from the injected identity, `message reply
   <message_id>` routes back to that message's sender (the replier never learns a
   peer's session id), and `message inbox [--claim]` defaults `--for` to the
-  calling session. A send/reply with a wake also arms the automation heartbeat so
-  a missed wake is still drained headless.
+  calling session.
 
 **Full flag list, the body/kind limits, backpressure cap, and retention/pruning
 are in the Inter-Session Messages section of `docs/FEATURES.md`.**

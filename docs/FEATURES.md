@@ -2511,17 +2511,86 @@ mapping a task to a session id.
 Agent CLIs are TUIs: their output is rendered with box chrome, prefixes,
 and line-wrapping, so grepping a captured pane for a sentinel is fragile
 and only as timely as the next poll. The queue inverts the channel — a
-worker **pushes** a clean payload (`message send`) and a `--wake` nudge
-types a short `inbox` token into the recipient's pane so it drains
-immediately. The payload always travels through the durable DB, never the
-pane; the wake is just an idempotent "go look" (a missed or colliding wake
-only delays a drain to the next nudge/tick).
+worker **pushes** a clean payload (`message send`), and the body is handed
+to the recipient agent's **own inbox**:
+
+- **Claude Code** binds a Unix socket per session and exports its path to
+  hooks as `CLAUDE_CODE_MESSAGING_SOCKET`. One stream-json line
+  (`{"type":"user","message":{"role":"user","content":…}}`) is read between
+  tool calls during a turn, or starts a new turn when the session is idle.
+- **Codex** queues it on the session's thread with `codex queue --thread
+  <id>` (the shared app-server daemon): a new turn when idle, the next turn
+  when one is running — a running turn is never interrupted.
+- **Any other agent** (or a remote session, or a failed native send) keeps
+  the message in the mailbox for `message inbox`. Nothing is typed into the
+  pane.
+
+### Why not keystrokes
+
+`send` used to type the word `inbox` into the recipient's pane and rely on
+the agent draining its mailbox. Only the nudge travelled that way, and it
+was keystroke injection: every consumer had to decide from screen contents
+whether typing was safe — is the composer empty, is a turn running, is the
+pane a shell that would *execute* the word. Those gates cannot be made
+reliable from a rendered screen (Claude Code's dim suggested-prompt
+placeholder reads as typed text), and a session handed the bare word
+`inbox` was as likely to be confused as woken. An inbox the agent itself
+exposes has the right semantics by construction, so there is no keystroke
+fallback: `tests/architecture_rules.rs` (`message_delivery_never_reaches_the_multiplexer`)
+keeps the multiplexer unreachable from the message path.
+
+### Finding the recipient's inbox
+
+The agent is **detected from what it announced**, not from the row's agent
+name — `claude-coder` or `flow` may be a wrapper script around `claude`:
+
+1. **Captured socket** — `session signal`, which every thurbox Claude hook
+   runs (from `SessionStart` on), records `$CLAUDE_CODE_MESSAGING_SOCKET` in
+   session meta (`thurbox.claude_messaging_socket`) when it changes. With an
+   explicit `--session` it records nothing: the environment is the caller's.
+2. **Claude's session registry** — `~/.claude/sessions/<pid>.json` (or under
+   `$CLAUDE_CONFIG_DIR`) names each session's pane as `tmux:
+   "<session>:@<window>.%<pane>"`; an interactive entry on the recipient's
+   pane gives its `messagingSocketPath`. Matched by pane, never by
+   `agent_session_id`, which drifts from Claude's own id after a resume.
+   This covers a session started before capture existed until its next hook.
+3. **Codex thread** — `thurbox.codex_conversation_id`, bound by the Codex
+   `SessionStart` hook (`session bind-codex`).
+
+Only a path that is still a socket counts, and a stale one (the process
+died) fails its connect and falls through to the next candidate. No auth
+line is sent: the token is optional on macOS/Linux, where the socket is
+already mode 0600 to the user; native Windows named pipes are out of scope.
+
+A session in `bypassPermissions` holds a peer message for a 5-minute
+approval dialog unless `crossSessionInbound: accept` is set in the settings
+thurbox passes it; the send still reports `claude-socket`, since the socket
+accepted it.
+
+### Delivered rows and unread counts
+
+What the agent receives is one provenance line, then the body verbatim:
+
+```text
+[thurbox message #12 · kind: result · from: coder-x]
+
+<body>
+```
+
+There is deliberately no "run `message inbox`" instruction: the body *is*
+the delivery. The row is **reserved before the send** — one `UPDATE … WHERE
+read_at IS NULL` stamps `read_at` and `delivered_via` (schema **v48**) — so a
+concurrent `inbox --claim` finds it already read and cannot hand the same
+text over twice; a failed send releases it back to unread for the next
+drain. A natively delivered message therefore does **not** count as unread
+in `home` or the TUI (the agent already has it in its conversation), and
+`message inbox --all` still lists it with its `delivered_via`.
 
 ### Why exactly-once and bounded
 
 `claim_messages` is a single `UPDATE … WHERE read_at IS NULL … RETURNING`
-statement: SQLite serializes writers, so the TUI, a cron tick, and a wake
-nudge can drain the same inbox concurrently without ever handing one
+statement: SQLite serializes writers, so the TUI, a cron tick, and a native
+delivery's reservation can race on the same inbox without ever handing one
 message to two claimers or dropping one. Growth is bounded on both ends —
 `enqueue_message` rejects past a per-recipient unread cap (backpressure,
 not silent loss) and caps `kind`/`body` size, while a time-based retention
@@ -2543,8 +2612,9 @@ surface. `AGENTS.md` keeps the identity contract and points here.
   CRUD in `storage/messages.rs`.
 - **Exactly-once delivery**: `Database::claim_messages` is a single
   `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
-  the TUI, a cron tick, and a worker's wake nudge drain concurrently without
-  double-processing or dropping. `list_messages` peeks without consuming.
+  the TUI, a cron tick, and a native delivery's reservation
+  (`reserve_message_delivery`) race without double-processing or dropping.
+  `list_messages` peeks without consuming.
 - **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
   (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
   limits; `prune_messages`/`prune_old_messages` (read messages older than
@@ -2552,25 +2622,27 @@ surface. `AGENTS.md` keeps the identity contract and points here.
   mirroring audit-log pruning. The mailbox is **not** audited (high-churn).
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
-    <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
-    token into the recipient's pane (`backend::tmux::send_prompt_now`) to nudge a
-    drain. **Provenance + task tag default to the caller's injected identity**
+    <text> [--no-wake]` enqueues and, unless `--no-wake`, delivers the body to
+    the recipient agent's own inbox (`cli::delivery`). The output's
+    `delivered_via` is `claude-socket`, `codex-queue` or `mailbox`, with
+    `delivery_note` saying why a message stayed in the mailbox. A failed
+    native send is logged at `warn` and never fails the command.
+    **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
     `--task` override.
   - `reply <message_id> --body <text> [--kind k] [--from …] [--no-wake]` —
     enqueues back to the *original message's sender* (looked up via
-    `get_message`) and wakes them, carrying the original `from_task_id`. The
-    replier handles only the opaque message id — never a peer's session id. This
-    is how flow relays the user's answer without name-scraping.
+    `get_message`) and delivers it the same way, carrying the original
+    `from_task_id`. The replier handles only the opaque message id — never a
+    peer's session id. This is how flow relays the user's answer without
+    name-scraping.
   - `inbox [--for <uuid|name>] [--claim] [--all] [--limit N]` reads it (`--claim`
     = atomic drain); **`--for` defaults to the calling session** so an agent
     reads its own mail with no id.
   - `prune [--older-than-days N] [--read-only]`.
   - `cli::messages` resolves a session by UUID **or** name (`resolve_uuid_or_name`
-    → `Database::get_session_by_name`); a `send`/`reply` with a wake also arms the
-    automation heartbeat (`cli::automations::arm_heartbeat`) so a missed wake is
-    still drained headless. `PRAGMA data_version` already surfaces writes to the
-    TUI — no sync/`SharedState` change.
+    → `Database::get_session_by_name`). `PRAGMA data_version` already surfaces
+    writes to the TUI — no sync/`SharedState` change.
 
 ---
 
