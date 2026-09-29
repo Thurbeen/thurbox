@@ -37,8 +37,8 @@ use thurbox::kernel::bands::Level;
 use thurbox::kernel::perf::Counters;
 
 use crate::{
-    App, DEBOUNCE, ECHO_HOLD, ECHO_POLL, ECHO_WINDOW, IDLE_TICK, PERF_PUBLISH_INTERVAL,
-    PERF_WINDOW_TICKS, QUIESCENT_AFTER, REAP_INTERVAL, TICK,
+    App, DEBOUNCE, ECHO_HOLD, ECHO_POLL, ECHO_TAIL_FRAMES, ECHO_WINDOW, IDLE_TICK,
+    PERF_PUBLISH_INTERVAL, PERF_WINDOW_TICKS, QUIESCENT_AFTER, REAP_INTERVAL, TICK,
 };
 
 // The chrome helpers keep their bare names at every call site in this
@@ -60,6 +60,49 @@ impl EchoWait {
     /// two are painted as one — see [`ECHO_HOLD`].
     pub(crate) fn hold_until(&self) -> Instant {
         self.sent + ECHO_HOLD
+    }
+}
+
+/// What a keystroke's pane is still owed after its first answer was painted —
+/// see [`ECHO_TAIL_FRAMES`].
+///
+/// Decided from the surface's output sequence and the clock alone, which every
+/// session backend provides: nothing here knows how the output was chunked on
+/// its way in, or by which multiplexer.
+pub(crate) struct EchoTail {
+    surface: String,
+    /// The output sequence the last floor-free frame was owed for.
+    seen: u64,
+    /// When the key was sent; the tail ends [`ECHO_WINDOW`] after it.
+    sent: Instant,
+    /// Floor-free frames left.
+    frames: u8,
+}
+
+impl EchoTail {
+    fn new(surface: String, seen: u64, sent: Instant) -> Self {
+        Self {
+            surface,
+            seen,
+            sent,
+            frames: ECHO_TAIL_FRAMES,
+        }
+    }
+
+    fn live(&self, now: Instant) -> bool {
+        self.frames > 0 && now.saturating_duration_since(self.sent) < ECHO_WINDOW
+    }
+
+    /// Whether the pane, now at `seq`, has printed since the last frame it was
+    /// owed.
+    fn owed(&self, seq: u64, now: Instant) -> bool {
+        self.live(now) && seq > self.seen
+    }
+
+    /// Spend a floor-free frame on the pane's output up to `seq`.
+    fn spend(&mut self, seq: u64) {
+        self.seen = seq;
+        self.frames = self.frames.saturating_sub(1);
     }
 }
 
@@ -235,21 +278,45 @@ impl App {
         })
     }
 
-    /// Wake the loop only for the oldest echo still owed.
+    /// Whether the typed pane has printed since its last floor-free frame.
+    /// Only while no keystroke's first answer is owed: that one comes first.
+    fn tail_arrived(&self) -> bool {
+        self.echo.is_empty()
+            && self.echo_tail.as_ref().is_some_and(|tail| {
+                self.terminals
+                    .output_seq(&tail.surface)
+                    .is_some_and(|seq| tail.owed(seq, Instant::now()))
+            })
+    }
+
+    /// Wake the loop only for the oldest echo still owed, or else for the
+    /// typed pane's tail.
     pub(crate) fn arm_echo_wake(&self) {
-        let seq = self
-            .echo
-            .front()
-            .and_then(|echo| self.terminals.output_seq_cell(&echo.surface));
+        let surface = match self.echo.front() {
+            Some(echo) => Some(&echo.surface),
+            None => self
+                .echo_tail
+                .as_ref()
+                .filter(|tail| tail.live(Instant::now()))
+                .map(|tail| &tail.surface),
+        };
+        let seq = surface.and_then(|surface| self.terminals.output_seq_cell(surface));
         thurbox::backend::output_wake::arm(seq);
     }
 
-    /// Owe the next frame to an echo that has arrived, or stop waiting for one
-    /// that is not coming — see [`ECHO_WINDOW`].
+    /// Owe the next frame to an echo that has arrived, or to the typed pane's
+    /// later output, or stop waiting for either once it is not coming — see
+    /// [`ECHO_WINDOW`].
     pub(crate) fn settle_echo(&mut self) {
         while let Some(echo) = self.echo.front() {
             if self.echo_arrived() {
-                self.echo_due = self.echo.pop_front().map(|echo| echo.surface);
+                if let Some(echo) = self.echo.pop_front() {
+                    self.echo_tail = self
+                        .terminals
+                        .output_seq(&echo.surface)
+                        .map(|seen| EchoTail::new(echo.surface.clone(), seen, echo.sent));
+                    self.echo_due = Some(echo.surface);
+                }
                 self.dirty = true;
                 break;
             }
@@ -257,6 +324,19 @@ impl App {
                 break;
             }
             self.echo.pop_front();
+        }
+        if self.echo_due.is_none() && self.tail_arrived() {
+            if let Some(tail) = self.echo_tail.as_mut() {
+                if let Some(seq) = self.terminals.output_seq(&tail.surface) {
+                    tail.spend(seq);
+                }
+                self.echo_due = Some(tail.surface.clone());
+                self.dirty = true;
+            }
+        }
+        let now = Instant::now();
+        if self.echo_tail.as_ref().is_some_and(|tail| !tail.live(now)) {
+            self.echo_tail = None;
         }
         self.arm_echo_wake();
     }
@@ -271,19 +351,18 @@ impl App {
         &self,
         timeout: Duration,
     ) -> std::io::Result<Option<crossterm::event::Event>> {
-        let Some(echo) = self.echo.front() else {
-            return next_event(timeout);
-        };
-        // Back in time to paint the held keystroke frame if no echo came.
+        let hold = self.echo.front().map(EchoWait::hold_until);
         let now = Instant::now();
-        let hold = echo.hold_until();
-        let deadline = if hold > now {
-            (now + timeout).min(hold)
-        } else {
-            now + timeout
+        if hold.is_none() && !self.echo_tail.as_ref().is_some_and(|tail| tail.live(now)) {
+            return next_event(timeout);
+        }
+        // Back in time to paint the held keystroke frame if no echo came.
+        let deadline = match hold {
+            Some(hold) if hold > now => (now + timeout).min(hold),
+            _ => now + timeout,
         };
         loop {
-            if self.echo_arrived() {
+            if self.echo_arrived() || self.tail_arrived() {
                 return Ok(None);
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -866,5 +945,62 @@ impl App {
         if let Err(e) = self.snapshots.remember_shell(session, &pane) {
             tracing::warn!("could not record the shell pane for {session}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane's output as any backend reports it: one sequence bump per chunk
+    /// parsed. Codex answers a key with a cursor-only frame (the key's first
+    /// answer, before the tail starts at `seen`), then a hide-cursor write, the
+    /// glyph and a show-cursor write — every one of them owed a frame.
+    #[test]
+    fn a_split_redraw_after_the_first_answer_is_owed_a_frame_per_chunk() {
+        let sent = Instant::now();
+        let mut tail = EchoTail::new("s".into(), 1, sent);
+        let at = sent + Duration::from_millis(25);
+        assert!(!tail.owed(1, at), "nothing printed since the first answer");
+        for seq in 2..=4 {
+            assert!(tail.owed(seq, at), "chunk {seq} is not owed a frame");
+            tail.spend(seq);
+            assert!(!tail.owed(seq, at), "chunk {seq} is owed twice");
+        }
+    }
+
+    /// Frames a chunk arrived for but the loop painted as one are one frame:
+    /// spending up to the newest sequence covers everything before it.
+    #[test]
+    fn chunks_painted_together_spend_one_frame() {
+        let sent = Instant::now();
+        let mut tail = EchoTail::new("s".into(), 1, sent);
+        tail.spend(4);
+        assert_eq!(tail.frames, ECHO_TAIL_FRAMES - 1);
+    }
+
+    /// A pane streaming while you type gets at most `ECHO_TAIL_FRAMES` more
+    /// floor-free frames per key, however fast it prints.
+    #[test]
+    fn a_flooding_pane_is_owed_only_a_bounded_number_of_frames() {
+        let sent = Instant::now();
+        let mut tail = EchoTail::new("s".into(), 0, sent);
+        let at = sent + Duration::from_millis(1);
+        let mut paid = 0;
+        for seq in 1..=1000 {
+            if tail.owed(seq, at) {
+                tail.spend(seq);
+                paid += 1;
+            }
+        }
+        assert_eq!(paid, ECHO_TAIL_FRAMES);
+    }
+
+    #[test]
+    fn output_after_the_echo_window_is_left_to_the_ordinary_floors() {
+        let sent = Instant::now();
+        let tail = EchoTail::new("s".into(), 0, sent);
+        assert!(tail.owed(1, sent + ECHO_WINDOW - Duration::from_millis(1)));
+        assert!(!tail.owed(1, sent + ECHO_WINDOW));
     }
 }

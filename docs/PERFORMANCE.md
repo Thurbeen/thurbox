@@ -2151,8 +2151,10 @@ for, so it gets its own path, and the floors keep pacing everything else.
   the surface and its output sequence (`EchoWait`). Rapid keys queue those waits,
   each reserving the next output sequence instead of replacing the one before
   it. The first eligible output from that surface within `ECHO_WINDOW` (150 ms)
-  is painted with no floor at all — one such frame per keystroke, not per chunk,
-  so an agent streaming while you type is still painted at 30 fps.
+  is painted with no floor at all. That first output is not always the echo, so
+  the surface's later output within the window gets up to `ECHO_TAIL_FRAMES`
+  more such frames (ADR-P29) — a bounded number per keystroke, not one per
+  chunk, so an agent streaming while you type is still painted at 30 fps.
 - **The loop is woken by it.** `WiredPane::output_seq` counts chunks the parser
   has taken, bumped *after* the parse, and the reader loop of the pane the echo
   is owed by then pokes a self-pipe (`backend::output_wake`, armed with that

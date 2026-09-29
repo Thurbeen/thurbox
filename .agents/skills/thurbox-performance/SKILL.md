@@ -36,8 +36,10 @@ terminal owes an echo (`EchoWait`), the loop sleeps in `poll(2)` on the terminal
 and on the `backend::output_wake` self-pipe (poked only by that pane's reader) until it comes, holds the key's own
 frame for it (`ECHO_HOLD`), and paints it at once as the last full frame with
 only that surface repainted (`paint_echo_frame`) — rapid keys queue successive
-output sequences rather than replacing one pending wait; one such frame per
-key, and declined whenever anything is drawn over the panes. What marks the screen dirty:
+output sequences rather than replacing one pending wait; the typed pane's
+later output inside `ECHO_WINDOW` gets up to `ECHO_TAIL_FRAMES` more such frames
+per key (ADR-P29: Codex answers with a cursor-only frame before the glyph), and
+an echo frame is declined whenever anything is drawn over the panes. What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
 `Terminals::output_generation` is summed each iteration, which is what stops a
 printing agent being drawn at 4 fps. It sums each pane's `output_seq`, bumped

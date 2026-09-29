@@ -4230,6 +4230,10 @@ fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(P
 /// Keys typed in the two scenarios below.
 const ECHO_KEYS: u64 = 20;
 
+/// The most floor-free paints one key can buy: its first answer, then
+/// `ECHO_TAIL_FRAMES` (4) more of its pane's output.
+const ECHO_PAINTS_PER_KEY: u64 = 5;
+
 /// What both scenarios assert: every key's echo was painted with no frame
 /// floor, and all but the first as a frame that redrew only the pane — the
 /// first key after a pause has no kept frame to redraw over (see
@@ -4237,12 +4241,16 @@ const ECHO_KEYS: u64 = 20;
 ///
 /// Asserted on the loop's counters rather than on the clock (ADR-P5): the
 /// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
-/// and this pins that nothing puts it back on a floor.
+/// and this pins that nothing puts it back on a floor. A range, not a count: an
+/// echo that reaches the interface as two chunks earns its second a floor-free
+/// frame too (`ECHO_TAIL_FRAMES`), and how the pty splits a write is not the
+/// test's to decide.
 fn assert_every_echo_painted_at_once(profile: &Profile) {
     let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
-    assert_eq!(
-        echoes, ECHO_KEYS,
-        "every keystroke's echo is painted with no floor ({echo_frames} of them as echo frames)"
+    assert!(
+        (ECHO_KEYS..=ECHO_KEYS * ECHO_PAINTS_PER_KEY).contains(&echoes),
+        "{echoes} floor-free paints for {ECHO_KEYS} keys: every keystroke's echo is painted with \
+         no floor ({echo_frames} of them as echo frames)"
     );
     assert!(
         echo_frames >= ECHO_KEYS - 1,
@@ -4280,7 +4288,10 @@ fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
     });
     let expected = ECHO_KEYS + BATCHED_KEYS;
     let (echoes, echo_frames) = echo_counters(&profile, expected);
-    assert_eq!(echoes, expected, "every batched key retained its echo wait");
+    assert!(
+        (expected..=expected * ECHO_PAINTS_PER_KEY).contains(&echoes),
+        "{echoes} floor-free paints for {expected} keys: every batched key retained its echo wait"
+    );
     // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
     // so the batch's first echo may need a full frame; its second must reuse
     // that frame.
@@ -4316,6 +4327,67 @@ fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
     };
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
     assert_every_echo_painted_at_once(&profile);
+    assert!(tui.quit().success());
+}
+
+/// A stand-in for an agent that redraws the way Codex does: on each key, a
+/// synchronized frame that only moves the cursor, then 20 ms later the glyph,
+/// as three separate writes inside a second synchronized update.
+///
+/// tmux forwards each write as its own output line, so the cursor-only frame is
+/// the first output after the key and the glyph is not. The 15 ms before the
+/// glyph is longer than the loop's input poll, which pins the race that stalled
+/// real keys: a frame is painted between the chunks, and a glyph not treated as
+/// the key's answer then waits out the output floor from that frame.
+const SPLIT_ECHO: &str = "printf 'ready> '; while IFS= read -rs -n1 c; do \
+     printf '\\e[?2026h\\e[9G\\e[?25h\\e[?2026l'; sleep 0.02; \
+     printf '\\e[?2026h\\e[?25l'; sleep 0.015; \
+     printf '\\r[%s]' \"$c\"; sleep 0.002; \
+     printf '\\e[?25h\\e[?2026l'; done";
+
+#[test]
+fn a_glyph_that_follows_a_cursor_only_frame_is_painted_as_the_keys_echo() {
+    // Treating the first chunk after a key as the whole echo spent the key's
+    // floor-free frame on a frame that showed nothing, and the glyph was
+    // painted on the output floor: 8–35 % of Codex keys took ~65 ms under
+    // thurbox against ~25 ms under raw tmux. Each key's pane stays owed until
+    // the echo window closes, so the glyph gets a floor-free frame of its own.
+    let Some((profile, mut tui)) = echo_session(SPLIT_ECHO, |_, _| {}) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    // At least the cursor-only frame and the glyph for every key. Without the
+    // fix this can never exceed one per key, whatever the timing.
+    let (echoes, echo_frames) = echo_counters(&profile, 2 * ECHO_KEYS);
+    assert!(
+        echoes >= 2 * ECHO_KEYS,
+        "{echoes} floor-free echo paints for {ECHO_KEYS} keys: the glyph after a \
+         cursor-only frame was left to the output floor ({echo_frames} echo frames)"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_pane_printing_while_you_type_into_it_is_not_painted_per_chunk() {
+    // The pane typed into rewrites a status line every couple of
+    // milliseconds. Its output after each key is owed floor-free frames, but
+    // only a few per key (`ECHO_TAIL_FRAMES`, 4): per chunk, it would be
+    // painted at the poll rate for the whole echo window.
+    const TYPED_AND_BUSY: &str = "printf 'ready> '; while :; do \
+         if IFS= read -rs -n1 -t 0.002 c; then printf '\\r[%s]' \"$c\"; fi; \
+         printf '\\e[3;1Hbusy %05d\\e[1;8H' $RANDOM; done";
+    let Some((profile, mut tui)) = echo_session(TYPED_AND_BUSY, |_, _| {}) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    // A snapshot published after the last key: they come every five seconds.
+    std::thread::sleep(Duration::from_secs(6));
+    let (echoes, _) = echo_counters(&profile, ECHO_KEYS);
+    assert!(
+        (ECHO_KEYS..=ECHO_KEYS * ECHO_PAINTS_PER_KEY).contains(&echoes),
+        "{echoes} floor-free paints for {ECHO_KEYS} keys into a printing pane \
+         (bounded at 1 + 4 a key)"
+    );
     assert!(tui.quit().success());
 }
 
