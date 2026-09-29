@@ -87,6 +87,15 @@ fn publish_with(host: &LuaHost, search: Option<&Answer>) {
 }
 
 fn publish_snapshot(host: &LuaHost, snap: &Snapshot, search: Option<&Answer>) {
+    publish_hovered(host, snap, search, None);
+}
+
+fn publish_hovered(
+    host: &LuaHost,
+    snap: &Snapshot,
+    search: Option<&Answer>,
+    hovered: Option<&thurbox::kernel::node::Identity>,
+) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -114,7 +123,7 @@ fn publish_snapshot(host: &LuaHost, snap: &Snapshot, search: Option<&Answer>) {
         wants: &Default::default(),
         focus: None,
         selection: None,
-        hovered: None,
+        hovered,
         printing: &Default::default(),
     })
     .expect("publish");
@@ -1329,4 +1338,62 @@ fn settled_strip_keeps_the_list_cached() {
         20,
         "the session list was re-rendered while nothing it reads changed"
     );
+}
+
+/// The pointer bands the result a click would open, and only that one: the
+/// row under the cursor keeps its own look, and so does every other row.
+#[test]
+fn a_hovered_result_is_banded_and_the_others_are_not() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use thurbox::kernel::node::Identity;
+    use thurbox::kernel::paint::{render as paint_render, PlaceholderSurfaces};
+
+    let host = host();
+    open(&host);
+    let backgrounds = |hovered: Option<&Identity>| {
+        publish_hovered(&host, &snapshot(), None, hovered);
+        let index = host.index_of(PLUGIN).expect("no search plugin");
+        let node = host
+            .render(
+                index,
+                RenderContext {
+                    width: 60,
+                    height: 12,
+                    focused: true,
+                    elapsed: 2.0,
+                    frame: 0,
+                },
+            )
+            .expect("render")
+            .node;
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).expect("terminal");
+        terminal
+            .draw(|frame| paint_render(frame, frame.area(), &node, &PlaceholderSurfaces))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let line_of = |name: &str| {
+            (0..12)
+                .find(|&y| {
+                    (0..60)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(name)
+                })
+                .unwrap_or_else(|| panic!("{name} is not drawn"))
+        };
+        ["fix-osc52", "fix-branch", "docs-remote-hooks"].map(|name| buffer[(3, line_of(name))].bg)
+    };
+    let resting = backgrounds(None);
+    let lit = backgrounds(Some(&Identity {
+        id: Some("bbb".into()),
+        role: Some("row".into()),
+        ..Identity::default()
+    }));
+    assert_ne!(resting[1], lit[1], "the hovered result is banded");
+    assert_eq!(
+        resting[0], lit[0],
+        "the result under the cursor is untouched"
+    );
+    assert_eq!(resting[2], lit[2], "a result not pointed at is untouched");
 }

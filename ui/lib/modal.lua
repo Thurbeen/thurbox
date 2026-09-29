@@ -11,6 +11,7 @@
 -- inside a modal is truncated against a column budget, and a percentage float
 -- clips rows on a narrow terminal and leaves dead space on a wide one.
 
+local hover = require("lib.hover")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -78,22 +79,27 @@ function modal.footer(hints, primary, opts)
   end
   local hint_row = { type = "text", fill = 1, text = { spans } }
   local children = { opts.stack and { type = "text", fill = 1, text = "" } or hint_row }
-  if primary then
-    local done = " [ " .. primary .. " ]"
-    children[#children + 1] = {
+  -- A pill lights under the pointer — matched on the very role a click
+  -- replays, so the lit pill is the one a press runs. The leading space is
+  -- the pill's own run and stays unlit, so the fill covers the brackets only.
+  local function pill(label, role, style)
+    local lit = hover.role(role)
+    return {
       type = "text",
-      len = widgets.len(done),
-      text = { { { text = done, style = opts.style or { fg = theme.accent, bold = true } } } },
-      role = "key:" .. (opts.key or "enter"),
+      len = widgets.len(label) + 1,
+      text = { { { text = " " }, { text = label, style = lit and hover.button_style() or style } } },
+      role = role,
     }
   end
-  local cancel = " [ " .. (opts.cancel or "Cancel") .. " ]"
-  children[#children + 1] = {
-    type = "text",
-    len = widgets.len(cancel),
-    text = { { { text = cancel, style = { fg = theme.muted } } } },
-    role = "key:esc",
-  }
+  if primary then
+    children[#children + 1] = pill(
+      "[ " .. primary .. " ]",
+      "key:" .. (opts.key or "enter"),
+      opts.style or { fg = theme.accent, bold = true }
+    )
+  end
+  children[#children + 1] =
+    pill("[ " .. (opts.cancel or "Cancel") .. " ]", "key:esc", { fg = theme.muted })
   local pills = { type = "box", axis = "horizontal", len = 1, children = children }
   if opts.stack then
     hint_row.len, hint_row.fill = 1, nil

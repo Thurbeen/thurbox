@@ -238,7 +238,9 @@ end
 --- full-width bar with no spacer span to pad it and no style merged into every
 --- span by hand — and a span that names its own colour keeps it, so a search
 --- highlight stays visible under the bar. `hover_style` is matched on `row.id`
---- and skipped on the selected row, which already wears the stronger one.
+--- and skipped on the selected row, which already wears the stronger one, and
+--- on a row marked `hover = false` — a heading that has an id only so a click
+--- on it resolves to nothing must not light up as if it did something.
 ---
 --- opts: rows, selected, height, frame, empty, len, fill, selected_style,
 --- hover_style
@@ -302,7 +304,7 @@ function widgets.list(opts)
     local style = nil
     if is_selected then
       style = opts.selected_style
-    elseif hover.id(id) then
+    elseif row.hover ~= false and hover.id(id) then
       style = opts.hover_style
     end
 

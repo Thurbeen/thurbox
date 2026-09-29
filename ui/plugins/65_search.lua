@@ -31,6 +31,7 @@
 
 local chrome = require("lib.chrome")
 local fuzzy = require("lib.fuzzy")
+local hover = require("lib.hover")
 local panels = require("lib.panels")
 local textinput = require("lib.textinput")
 local theme = require("lib.theme")
@@ -606,8 +607,10 @@ local function result_rows(rows, cursor, width, height, info, scope)
     elseif entry.header then
       lines[at] = {
         spans = { { text = entry.header, style = { fg = theme.muted } } },
-        -- Not addressable: a click on a header must not resolve to a result.
+        -- Not addressable: a click on a header must not resolve to a result,
+        -- so it does not light under the pointer either.
         id = "header:" .. entry.key,
+        hover = false,
       }
     elseif entry.row.hit then
       lines[at] = text_line(entry.row, entry.index == cursor, width)
@@ -767,6 +770,7 @@ return {
       height = list_height,
       fill = 1,
       empty = empty_text(search, info),
+      hover_style = hover.row_style(),
     })
 
     return {

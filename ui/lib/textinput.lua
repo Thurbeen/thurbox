@@ -26,6 +26,7 @@
 -- word only where the terminal tells the two apart (the kitty keyboard
 -- protocol); elsewhere `alt+backspace` and `ctrl+w` do it.
 
+local hover = require("lib.hover")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
@@ -244,7 +245,9 @@ end
 ---
 --- `focused` drives the border AND the caret: the kernel paints the caret in the
 --- one input that claims it, so a screen holding two fields puts it in the one
---- being typed into rather than in whichever holds text.
+--- being typed into rather than in whichever holds text. A field given an `id`
+--- is a click target, and its border lights under the pointer
+--- (`hover.border`) — the caller's `on_click` decides what the press does.
 function textinput.node(field, opts)
   opts = opts or {}
   return {
@@ -258,7 +261,7 @@ function textinput.node(field, opts)
     frame = {
       title = " " .. (opts.label or "") .. " ",
       borders = "all",
-      border_style = { fg = opts.focused and theme.border_focused or theme.border },
+      border_style = { fg = hover.border(opts.focused, opts.id) },
     },
     id = opts.id,
     role = opts.id and "row" or nil,

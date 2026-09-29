@@ -12,6 +12,7 @@ use ratatui::Terminal;
 
 use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::node::Identity;
 use thurbox::kernel::paint::{render_recording, PlaceholderSurfaces};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
@@ -81,6 +82,15 @@ fn publish_with(
     snapshot: &Snapshot,
     inflight: &[thurbox::kernel::command::InFlight],
 ) {
+    publish_hovered(host, snapshot, inflight, None);
+}
+
+fn publish_hovered(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    inflight: &[thurbox::kernel::command::InFlight],
+    hovered: Option<&Identity>,
+) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -108,7 +118,7 @@ fn publish_with(
         wants: &Default::default(),
         focus: None,
         selection: None,
-        hovered: None,
+        hovered,
         printing: &Default::default(),
     })
     .expect("publish");
@@ -322,6 +332,47 @@ fn clicking_an_entry_runs_it() {
     assert!(host.on_click(menu, &click).expect("click"));
     assert_eq!(actions(&host), ["opener.second"]);
     assert!(menu_text(&host).is_none());
+}
+
+/// The background of each menu row's first label cell, with the pointer over
+/// `hovered`.
+fn row_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<ratatui::style::Color> {
+    publish_hovered(host, &Snapshot::default(), &[], hovered);
+    let rendered = host.render(index_of(host, "menu"), ctx()).expect("render");
+    let float = rendered.float.expect("the menu floats");
+    let (cols, rows) = (float.cols.unwrap_or(40), float.rows.unwrap_or(10));
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            render_recording(
+                frame,
+                frame.area(),
+                &rendered.node,
+                &PlaceholderSurfaces,
+                &mut Vec::new(),
+            )
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (1..rows - 1).map(|y| buffer[(2, y)].bg).collect()
+}
+
+/// The pointer bands the entry it is over, the one a click would run, and
+/// leaves the highlighted entry and the rest as they were.
+#[test]
+fn a_hovered_entry_is_banded_and_the_others_are_not() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let resting = row_backgrounds(&host, None);
+    let second = Identity {
+        id: Some("menu-2".into()),
+        role: Some("row".into()),
+        ..Identity::default()
+    };
+    let lit = row_backgrounds(&host, Some(&second));
+    assert_ne!(resting[1], lit[1], "the hovered entry is banded");
+    assert_eq!(resting[0], lit[0], "the highlighted entry keeps its bar");
+    assert_eq!(resting[3], lit[3], "an entry not pointed at is untouched");
 }
 
 /// The rule, and the frame around the entries, are part of the menu: a press

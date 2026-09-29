@@ -175,6 +175,28 @@ full-width bar** (the row's own `style`, so a span that names a colour keeps it)
 and **hints come from the key registry**, so a rebind moves the hint and a
 removed action takes its hint with it.
 
+### Hover (`lib/hover.lua`)
+
+Every separately clickable thing has two looks beyond its resting one: **hover**
+while the pointer is over it, and **selected** or **focused** once it has been
+picked. The second is what carries the feedback on a terminal that reports no
+motion, so hover is only ever an extra, and it never overrides it. The kernel
+publishes the identity under the pointer (`thurbox.hover`), resolved through the
+same hitboxes a click is routed by, so matching on the node's own `id` or `role`
+means the lit thing is the thing a press lands on.
+
+| | lights |
+|---|---|
+| `hover.id(id)` / `hover.role(role)` / `hover.style(role, lit, base)` | the questions: is the pointer on this? |
+| `hover.row_style()` | a list row: a `selection_bg` band, background only, so a status dot or a match highlight keeps its colour. Skip it on the selected row, which wears the stronger bar |
+| `hover.button_style()` | a pill or chip: `inverted_fg` on `accent_bright`, the pair the kernel's own buttons use |
+| `hover.border(focused, id)` | a field's border: `border_focused` when focused, `text_primary` when hovered, else `border_unfocused` |
+
+`ui.list`, `widgets.list` (pass `hover_style`), `ui.row():button`,
+`modal.footer`'s pills and `textinput.node` given an `id` already do this. A row
+`widgets.list` draws with `hover = false` stays unlit, for a heading that has an
+id only so a press on it resolves to nothing.
+
 `10_sessions.lua` and `80_restore.lua` are the two worked examples — a
 full-height pane and a float.
 

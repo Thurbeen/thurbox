@@ -17,8 +17,11 @@ fuzzy.match_fields function
 fuzzy.passes function
 fuzzy.query function
 fuzzy.spans function
+hover.border function
+hover.button_style function
 hover.id function
 hover.role function
+hover.row_style function
 hover.style function
 modal.footer function
 modal.frame function

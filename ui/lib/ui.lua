@@ -414,10 +414,15 @@ function Row:gap(n)
 end
 
 --- Append a run that is its own click target. A run carries `id`/`role` of its
---- own, so a chip inside a line needs no node with a hand-computed `len`.
+--- own, so a chip inside a line needs no node with a hand-computed `len`. It
+--- lights under the pointer (`hover.button_style`), matched on that same
+--- identity, so the lit chip is the one a press lands on.
 function Row:button(label, style, role, id)
   if label == nil or label == "" then
     return self
+  end
+  if hover.role(role) or hover.id(id) then
+    style = hover.button_style()
   end
   self.spans[#self.spans + 1] = { text = label, style = self:_tone(style), role = role, id = id }
   self.used = self.used + widgets.len(label)
