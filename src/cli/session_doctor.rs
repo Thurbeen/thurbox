@@ -735,6 +735,25 @@ mod tests {
         assert_eq!(report.verdict, Level::Fail);
     }
 
+    /// A codex whose `CODEX_HOME` moved its config dir reads its hooks from
+    /// there, so that is the file the payload check has to find — not the
+    /// default `~/.codex/hooks.json` the agent never opens.
+    #[test]
+    fn the_payload_check_reads_the_config_dir_the_agent_reads() {
+        let home = tempfile::tempdir().unwrap();
+        let moved = tempfile::tempdir().unwrap();
+        std::fs::write(
+            moved.path().join("hooks.json"),
+            "thurbox-cli session signal --state done || true",
+        )
+        .unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("CODEX_HOME", moved.path());
+        let hook = Assessment::from_hooks(&registry(), "codex", None, None, None, 0);
+        let report = diagnose_agent(&row("s", "codex", "local-tmux"), &hook, true, Some("/x"));
+        assert_eq!(level_of(&report, "payload"), Level::Ok);
+    }
+
     #[test]
     fn a_deactivated_extension_is_a_failure_not_a_silence() {
         let hook = Assessment::from_hooks(&registry(), "claude", None, None, None, 0);
