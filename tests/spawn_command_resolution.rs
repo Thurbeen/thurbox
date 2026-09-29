@@ -473,6 +473,52 @@ fn a_refused_create_leaves_the_agent_config_alone() {
     );
 }
 
+/// A `task run` whose session name is refused leaves the agent config alone.
+///
+/// `task create` takes any title, but the spawned session is named after it,
+/// and a `/` makes that name unsafe as a path — so the run is refused only once
+/// it reaches the spawn.
+#[test]
+fn a_refused_task_run_leaves_the_agent_config_alone() {
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+    write_argv_probe(root.path(), &argv);
+    let before = std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap();
+
+    let repo = checkout.to_str().expect("utf-8 path");
+    let task = cli(
+        &server,
+        root.path(),
+        &[
+            "task",
+            "create",
+            "--title",
+            "Fix foo/bar",
+            "--repo",
+            repo,
+            "--agent",
+            "probe",
+        ],
+    );
+    assert!(
+        task.status.success(),
+        "task create failed: {}",
+        String::from_utf8_lossy(&task.stderr)
+    );
+    let id = serde_json::from_slice::<serde_json::Value>(&task.stdout).expect("task JSON")["id"]
+        .to_string();
+    let run = cli(&server, root.path(), &["task", "run", id.trim_matches('"')]);
+    assert!(
+        !run.status.success(),
+        "a task named with a '/' spawned a session"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap(),
+        before,
+        "a task run that spawned nothing rewrote agents.toml"
+    );
+}
+
 /// A command session with **no arguments** is still split by a shell.
 ///
 /// tmux runs a one-argument window command through its `default-shell` and a
