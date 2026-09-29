@@ -352,6 +352,9 @@ struct App {
     /// The surface an owed echo has arrived from: the next frame is painted at
     /// once, with no floor at all.
     echo_due: Option<String>,
+    /// Whether [`Self::echo_due`] is owed to a key's tail rather than to its
+    /// first answer — see `App::paint_if_due`.
+    echo_due_is_tail: bool,
     /// The last full frame, kept while it can be reused as the ground of an
     /// echo frame (see `App::paint_echo_frame`) and somebody is typing.
     last_frame: Option<ratatui::buffer::Buffer>,
@@ -556,6 +559,10 @@ struct App {
     /// reading the cache instead is what reported a closed modal as visible.
     drawn_floats: std::collections::HashSet<usize>,
     last_paint: Instant,
+    /// When the last full frame was painted. An echo frame moves
+    /// [`Self::last_paint`] but repaints one surface, so this is what says how
+    /// long the rest of the screen has waited.
+    last_full_paint: Instant,
     /// The slot rects the arrangement placed last frame — the signal that the
     /// screen owes a full repaint, because they moved.
     ///
