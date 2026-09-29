@@ -1079,11 +1079,7 @@ fn install(host: &HostDef) -> Result<String, String> {
     let remote_archive = format!("{bin_dir}/{}", archive.name);
     ship(host, &bytes, &remote_archive)?;
     let extract = if host.is_windows() {
-        format!(
-            "Expand-Archive -Force -LiteralPath {a} -DestinationPath {d}; Remove-Item -Force {a}",
-            a = crate::shell::powershell_quote(&remote_archive),
-            d = crate::shell::powershell_quote(&bin_dir)
-        )
+        windows_extract_script(&remote_archive, &bin_dir)
     } else {
         format!(
             "cd {d} && tar -xzf {a} && rm -f {a} && chmod +x thurbox-cli",
@@ -1093,6 +1089,55 @@ fn install(host: &HostDef) -> Result<String, String> {
     };
     run_script(host, &extract, "thurbox-cli extraction")?;
     Ok(dest)
+}
+
+/// The PowerShell that unpacks the shipped `archive` into a Windows host's
+/// `bin_dir`, replacing what is there.
+///
+/// Not `Expand-Archive -Force` straight into `bin_dir`: that deletes each file
+/// it overwrites, and Windows will not delete an executable a process runs
+/// from — which the host's `thurbox-cli.exe` is whenever an agent hook there is
+/// mid-call. Worse, the refusal is a non-terminating error, so the script still
+/// exited 0 and the old binary stayed. Windows does let a running image be
+/// renamed, so the zip is unpacked beside `bin_dir` and each installed file is
+/// moved aside to `.<name>.old` before the new one is moved in: the swap
+/// `scripts/install.ps1`'s `Install-Archive` does, whose comment has the rest.
+/// A backup still running is removed by the next provisioning; one that cannot
+/// be moved because it is still running fails naming the process to close.
+fn windows_extract_script(archive: &str, bin_dir: &str) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$archive = {a}
+$bin = [System.IO.Path]::GetFullPath({d})
+$staging = Join-Path $bin ('.install-' + [System.Guid]::NewGuid().ToString('N'))
+try {{
+    Expand-Archive -LiteralPath $archive -DestinationPath $staging
+    foreach ($file in Get-ChildItem -LiteralPath $staging -File) {{
+        $target = Join-Path $bin $file.Name
+        $backup = Join-Path $bin ".$($file.Name).old"
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $target) {{
+            try {{
+                Move-Item -LiteralPath $target -Destination $backup -Force
+            }} catch {{
+                $using = @(Get-Process -Name 'thurbox', 'thurbox-cli' -ErrorAction SilentlyContinue |
+                    Where-Object {{ $_.Path -and (@($target, $backup) -contains $_.Path) }} |
+                    ForEach-Object {{ "$($_.ProcessName) (PID $($_.Id))" }})
+                $who = if ($using) {{ $using -join ', ' }} else {{ 'another program' }}
+                throw "cannot replace $target - it is in use by $who; close it and try again"
+            }}
+        }}
+        Move-Item -LiteralPath $file.FullName -Destination $target
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }}
+}} finally {{
+    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+}}"#,
+        a = crate::shell::powershell_quote(archive),
+        d = crate::shell::powershell_quote(bin_dir)
+    )
 }
 
 fn ship(host: &HostDef, bytes: &[u8], dest: &str) -> Result<(), String> {
@@ -1257,6 +1302,71 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provisioning a Windows host whose `thurbox-cli.exe` is running — an
+    /// agent hook mid-call, say — replaces it rather than failing on the file
+    /// Windows will not delete. Run for real: the script goes to this machine's
+    /// own PowerShell, against a copy of `PING.EXE` kept running under the
+    /// installed name.
+    #[cfg(windows)]
+    #[test]
+    fn provisioning_a_windows_host_replaces_a_running_thurbox_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        for name in ["thurbox.exe", "thurbox-cli.exe"] {
+            std::fs::write(src.join(name), "new").unwrap();
+        }
+        let archive = bin.join("release.zip");
+        let powershell = |script: &str| {
+            std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .output()
+                .unwrap()
+        };
+        let zipped = powershell(&format!(
+            "Compress-Archive -Path {} -DestinationPath {}",
+            crate::shell::powershell_quote(&src.join("*").to_string_lossy()),
+            crate::shell::powershell_quote(&archive.to_string_lossy()),
+        ));
+        assert!(zipped.status.success(), "{zipped:?}");
+
+        let installed = bin.join("thurbox-cli.exe");
+        let system_root = std::env::var("SystemRoot").unwrap();
+        std::fs::copy(
+            std::path::Path::new(&system_root).join(r"System32\PING.EXE"),
+            &installed,
+        )
+        .unwrap();
+        let mut running = std::process::Command::new(&installed)
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let out = powershell(&windows_extract_script(
+            &archive.to_string_lossy(),
+            &bin.to_string_lossy(),
+        ));
+        let _ = running.kill();
+        let _ = running.wait();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read(&installed).unwrap(), b"new");
+        assert!(!archive.exists(), "the shipped archive is removed");
+        // The staging directory went too; the running image's backup stays
+        // until the next provisioning, when nothing runs from it any more.
+        let left: Vec<_> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!left.iter().any(|n| n.starts_with(".install-")), "{left:?}");
+    }
 
     /// Which layer failed, decided from the exit status and whether the host
     /// CLI wrote its own structured answer — never from the message. The two

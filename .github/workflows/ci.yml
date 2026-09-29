@@ -344,17 +344,25 @@ jobs:
         run: bats scripts/install.bats
 
   install-script-ps:
-    name: Install Script Tests (PowerShell)
+    name: Install Script Tests (${{ matrix.shell }} on ${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.install_ps == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The helpers are platform-independent (the tests set
+        # PROCESSOR_ARCHITECTURE themselves), but updating over a running
+        # thurbox.exe is only reproducible on Windows, and the installer must
+        # keep working on the Windows PowerShell 5.1 that ships with it.
+        include:
+          - { os: ubuntu-latest, shell: pwsh }
+          - { os: windows-latest, shell: pwsh }
+          - { os: windows-latest, shell: powershell }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # pwsh is preinstalled on GitHub-hosted runners. The install.ps1 helpers
-      # are platform-independent (the tests set PROCESSOR_ARCHITECTURE
-      # themselves), so they run on ubuntu rather than needing a windows runner.
-      - name: Run install.ps1 helper tests (Pester)
-        shell: pwsh
+      - name: Run install.ps1 tests (Pester)
+        shell: ${{ matrix.shell }}
         run: |
           $mod = Get-Module -ListAvailable Pester |
             Sort-Object Version -Descending | Select-Object -First 1
