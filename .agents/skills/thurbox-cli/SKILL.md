@@ -784,9 +784,11 @@ without double-processing.
   `kind: interactive` and that pid's own environment holds
   `THURBOX_SESSION=<recipient>` — never by pane id or an inherited
   `$CLAUDE_CODE_MESSAGING_SOCKET` alone. `session signal` records a proven hook
-  socket in meta `thurbox.claude_messaging_socket` as an ordering hint. The row
-  is marked read + `delivered_via` (schema v48) **after** the send
-  (at-least-once: a killed sender can repeat a message, never hide one).
+  socket (`thurbox.claude_messaging_socket`) and its registry dir
+  (`thurbox.claude_registry_dir`, searched too when the sender's
+  `CLAUDE_CONFIG_DIR` differs). The send holds a 60 s lease (`delivering_at`)
+  that `claim` skips; success marks the row read + `delivered_via` (schema
+  v48), failure releases it, and a killed sender's lease just lapses.
   Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
   `delivery_note`. `tests/architecture_rules.rs` keeps tmux unreachable from
   this path.

@@ -2570,7 +2570,10 @@ consulted. `session signal`, which every thurbox Claude hook runs, records the
 hook's `$CLAUDE_CODE_MESSAGING_SOCKET` in session meta
 (`thurbox.claude_messaging_socket`) once it passes the same proof; that is
 only an ordering hint for the next send, which proves it again (the process
-may have exited and its pid been reused).
+may have exited and its pid been reused). It also records the registry the
+hook itself sees (`thurbox.claude_registry_dir`): a sender running with a
+different `CLAUDE_CONFIG_DIR` searches that one too, since the recipient's
+Claude never registers in the sender's.
 
 A **Codex** session is reached through `thurbox.codex_conversation_id`, bound
 by the Codex `SessionStart` hook (`session bind-codex`).
@@ -2594,27 +2597,29 @@ What the agent receives is one provenance line, then the body verbatim:
 ```
 
 There is deliberately no "run `message inbox`" instruction: the body *is*
-the delivery. After a native send succeeds, the row is marked read with the
-inbox that carried it (`delivered_via`, schema **v48**), so a later
-`inbox --claim` does not hand the same text over again; a failed send leaves it
-unread for the next drain. A natively delivered message therefore does **not**
-count as unread in `home` or the TUI (the agent already has it in its
-conversation), and `message inbox --all` still lists it with its
-`delivered_via`.
+the delivery. A native send runs under a **delivery lease**: the sender stamps
+`delivering_at` on the still-unread row (`lease_message_delivery`), and
+`claim_messages` skips a row with a live lease, so a drain racing the send
+cannot hand the same body over too. A successful send marks the row read with
+the inbox that carried it (`delivered_via`, schema **v48**) and clears the
+lease; a failed one just clears it, leaving an ordinary unread message for the
+next drain. A natively delivered message therefore does **not** count as
+unread in `home` or the TUI (the agent already has it in its conversation), and
+`message inbox --all` still lists it with its `delivered_via`.
 
-Native delivery is **at-least-once**, on purpose. Marking the row *before* the
-send would make it exactly-once only while the sender survives: killed between
-the mark and the send, it would leave a row that reads as delivered, is skipped
-by every drain and is eventually pruned, for a body that never arrived. Sending
-first means the only failure is a repeat — the sender killed after the send, or
-a drain landing between the send and the mark hands the agent the same text a
-second time, which it can see and discard.
+Why a lease rather than marking the row read *before* the send: a sender killed
+between the mark and the send would leave a row that reads as delivered, is
+skipped by every drain and is eventually pruned, for a body that never arrived.
+A lease cannot outlive its sender — it lapses after `DELIVERY_LEASE_MS` (60 s,
+above the 20 s a `codex queue` is allowed) and the row is drainable again. The
+one duplicate left is a sender killed after a successful send and before it
+records it: once the lease lapses, a drain hands that body over a second time.
 
 ### Why exactly-once and bounded
 
 `claim_messages` is a single `UPDATE … WHERE read_at IS NULL … RETURNING`
-statement: SQLite serializes writers, so the TUI and a cron tick can drain
-the same inbox without ever handing one
+statement: SQLite serializes writers, so the TUI, a cron tick and a native
+send's lease can race on the same inbox without ever handing one
 message to two claimers or dropping one. Growth is bounded on both ends —
 `enqueue_message` rejects past a per-recipient unread cap (backpressure,
 not silent loss) and caps `kind`/`body` size, while a time-based retention
@@ -2637,8 +2642,9 @@ surface. `AGENTS.md` keeps the identity contract and points here.
 - **Exactly-once delivery**: `Database::claim_messages` is a single
   `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
   the TUI and a cron tick drain concurrently without double-processing or
-  dropping; native delivery records itself afterwards
-  (`mark_message_delivered`). `list_messages` peeks without consuming.
+  dropping, and it skips a row a native send holds the lease on
+  (`lease_message_delivery` / `complete_…` / `release_…`, `delivering_at`).
+  `list_messages` peeks without consuming.
 - **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
   (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
   limits; `prune_messages`/`prune_old_messages` (read messages older than

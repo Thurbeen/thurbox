@@ -2,14 +2,16 @@
 //!
 //! A message is addressed **to** a session (the recipient drains its inbox) and
 //! optionally carries provenance (`from_session_id`, `from_task_id`). Delivery is
-//! **exactly-once** among drains: [`claim_messages`](Database::claim_messages)
-//! selects the unread tail and marks it read in a single transaction, so the
-//! TUI and a cron tick can race without double-processing or losing a message.
-//! Native delivery into the agent's own inbox is at-least-once: it marks the
-//! row ([`mark_message_delivered`](Database::mark_message_delivered)) only
-//! after the send, so a sender killed mid-send cannot hide a message it never
-//! delivered. Growth is bounded by a per-recipient unread cap on enqueue plus
-//! the time-based [`prune_messages`](Database::prune_messages) retention sweep.
+//! **exactly-once**: [`claim_messages`](Database::claim_messages) selects the
+//! unread tail and marks it read in a single transaction, so the TUI and a cron
+//! tick can race without double-processing or losing a message. A native send
+//! into the agent's own inbox holds a short lease
+//! ([`lease_message_delivery`](Database::lease_message_delivery)) that `claim`
+//! skips, so a drain cannot hand over a body that is mid-send either. The lease
+//! lapses rather than marking the row read, so a sender killed mid-send delays
+//! a message but never hides it. Growth is bounded by a per-recipient unread
+//! cap on enqueue plus the time-based
+//! [`prune_messages`](Database::prune_messages) retention sweep.
 //!
 //! The table is agent-neutral and reusable by any extension; `flow` is its first
 //! consumer. Unlike high-value entities, mailbox traffic is **not** audited (it
@@ -37,6 +39,13 @@ pub const DEFAULT_INBOX_LIMIT: usize = 100;
 pub const DEFAULT_RETENTION_DAYS: u64 = 14;
 
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+
+/// How long a native send may hold a message out of `claim` (see
+/// [`Database::lease_message_delivery`]). Comfortably above the slowest send
+/// (a `codex queue` is given 20 s), so a live send is never overtaken by a
+/// drain, and short enough that a sender killed mid-send delays the message
+/// by a minute rather than hiding it.
+pub const DELIVERY_LEASE_MS: i64 = 60_000;
 
 /// Fields needed to enqueue a message.
 pub struct NewMessage {
@@ -184,29 +193,61 @@ impl Database {
              WHERE id IN ( \
                 SELECT id FROM session_messages \
                 WHERE to_session_id = ?1 AND read_at IS NULL \
+                  AND (delivering_at IS NULL OR delivering_at < ?4) \
                 ORDER BY id ASC LIMIT ?2 \
              ) \
              RETURNING {COLS}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![for_session.to_string(), limit, now], map_message)?;
+        let lapsed = now - DELIVERY_LEASE_MS;
+        let rows = stmt.query_map(
+            params![for_session.to_string(), limit, now, lapsed],
+            map_message,
+        )?;
         let mut claimed: Vec<SessionMessage> = rows.collect::<rusqlite::Result<_>>()?;
         // RETURNING does not guarantee row order; restore oldest-first.
         claimed.sort_by_key(|m| m.id);
         Ok(claimed)
     }
 
-    /// Record that the body was handed to the recipient agent's own inbox
-    /// through `via`, and mark it read so a drain (`inbox --claim`) does not
-    /// hand the same text over again. Called *after* the native send
-    /// succeeded, so a sender killed mid-send leaves the row unread rather than
-    /// hiding a message that never arrived. A row a drain already claimed keeps
-    /// its `read_at`.
-    pub fn mark_message_delivered(&self, id: i64, via: &str) -> rusqlite::Result<()> {
+    /// Take the delivery lease on an unread message before a native send, so a
+    /// concurrent drain (`inbox --claim`) skips it rather than handing the same
+    /// body over while the send is in flight. `false` means it is no longer
+    /// deliverable: already read, or another sender holds a live lease.
+    ///
+    /// A lease, not a read mark: a sender killed mid-send cannot release it,
+    /// and a read mark would then hide a message that never arrived. The lease
+    /// lapses after [`DELIVERY_LEASE_MS`] and the row is an ordinary unread one
+    /// again.
+    pub fn lease_message_delivery(&self, id: i64) -> rusqlite::Result<bool> {
+        let now = current_time_millis() as i64;
+        let changed = self.conn.execute(
+            "UPDATE session_messages SET delivering_at = ?2 \
+             WHERE id = ?1 AND read_at IS NULL \
+               AND (delivering_at IS NULL OR delivering_at < ?3)",
+            params![id, now, now - DELIVERY_LEASE_MS],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Close a lease after the native send succeeded: mark the row read with
+    /// the inbox that carried it, so no later drain repeats the body.
+    pub fn complete_message_delivery(&self, id: i64, via: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE session_messages \
-             SET read_at = COALESCE(read_at, ?2), delivered_via = ?3 WHERE id = ?1",
+             SET read_at = COALESCE(read_at, ?2), delivered_via = ?3, delivering_at = NULL \
+             WHERE id = ?1",
             params![id, current_time_millis() as i64, via],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a lease after the native send failed: the row is an ordinary
+    /// unread message again, for the next drain.
+    pub fn release_message_delivery(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE session_messages SET delivering_at = NULL WHERE id = ?1",
+            params![id],
         )?;
         Ok(())
     }
@@ -502,29 +543,71 @@ mod tests {
     }
 
     #[test]
-    fn marking_delivered_records_the_inbox_and_reads_the_row() {
+    fn a_completed_delivery_is_read_and_never_drained() {
         let db = Database::open_in_memory().unwrap();
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
 
-        db.mark_message_delivered(id, "claude-socket").unwrap();
+        assert!(db.lease_message_delivery(id).unwrap());
+        db.complete_message_delivery(id, "claude-socket").unwrap();
         let m = db.get_message(id).unwrap().unwrap();
         assert!(!m.is_unread());
         assert_eq!(m.delivered_via.as_deref(), Some("claude-socket"));
-        // Already delivered natively: a drain must not hand it over again.
         assert!(db.claim_messages(to, None).unwrap().is_empty());
+        // Already delivered: not leasable a second time.
+        assert!(!db.lease_message_delivery(id).unwrap());
     }
 
     #[test]
-    fn marking_a_claimed_row_keeps_its_claim_time() {
+    fn a_drain_skips_a_message_mid_send_and_gets_it_back_on_release() {
         let db = Database::open_in_memory().unwrap();
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
-        let claimed_at = db.claim_messages(to, None).unwrap()[0].read_at;
-        db.mark_message_delivered(id, "codex-queue").unwrap();
-        let m = db.get_message(id).unwrap().unwrap();
-        assert_eq!(m.read_at, claimed_at);
-        assert_eq!(m.delivered_via.as_deref(), Some("codex-queue"));
+        let other = db.enqueue_message(&new_msg(to, "note", "other")).unwrap();
+
+        assert!(db.lease_message_delivery(id).unwrap());
+        assert!(
+            !db.lease_message_delivery(id).unwrap(),
+            "one sender at a time"
+        );
+        // Mid-send: a drain takes only what is not in flight.
+        let claimed = db.claim_messages(to, None).unwrap();
+        assert_eq!(
+            claimed.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![other]
+        );
+        // Still unread, so it is counted and shown while in flight.
+        assert_eq!(db.count_unread_messages(to).unwrap(), 1);
+
+        db.release_message_delivery(id).unwrap();
+        let claimed = db.claim_messages(to, None).unwrap();
+        assert_eq!(claimed.iter().map(|m| m.id).collect::<Vec<_>>(), vec![id]);
+        assert_eq!(claimed[0].delivered_via, None);
+    }
+
+    #[test]
+    fn a_lapsed_lease_is_drained_like_any_unread_message() {
+        let db = Database::open_in_memory().unwrap();
+        let to = SessionId::default();
+        let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
+        // A sender that took the lease and was killed before finishing.
+        let stale = current_time_millis() as i64 - DELIVERY_LEASE_MS - 1;
+        db.conn_ref()
+            .execute(
+                "UPDATE session_messages SET delivering_at = ?2 WHERE id = ?1",
+                params![id, stale],
+            )
+            .unwrap();
+        assert_eq!(db.claim_messages(to, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_claimed_message_cannot_be_leased() {
+        let db = Database::open_in_memory().unwrap();
+        let to = SessionId::default();
+        let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
+        db.claim_messages(to, None).unwrap();
+        assert!(!db.lease_message_delivery(id).unwrap());
     }
 
     #[test]

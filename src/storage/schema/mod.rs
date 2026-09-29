@@ -77,7 +77,8 @@ use rusqlite::Connection;
 /// v48 adds `delivered_via` to `session_messages`: which agent-native inbox
 /// (`claude-socket` / `codex-queue`) a `message send` handed the body to.
 /// A natively delivered row is also marked read, so a later `inbox --claim`
-/// does not hand the agent the same text a second time.
+/// does not hand the agent the same text a second time. `delivering_at` is the
+/// lease a sender holds while that send is in flight, which `claim` honours.
 /// Gaps in the step table are fine (there is no v18 step either).
 pub const SCHEMA_VERSION: u32 = 48;
 
@@ -325,7 +326,8 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             body            TEXT NOT NULL,
             created_at      INTEGER NOT NULL,
             read_at         INTEGER,
-            delivered_via   TEXT
+            delivered_via   TEXT,
+            delivering_at   INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_session_messages_unread
             ON session_messages(to_session_id) WHERE read_at IS NULL;
@@ -875,13 +877,15 @@ mod tests {
 
         migrate(&conn).unwrap();
 
-        // Nothing before v48 delivered a body natively.
-        let via: Option<String> = conn
-            .query_row("SELECT delivered_via FROM session_messages", [], |r| {
-                r.get(0)
-            })
+        // Nothing before v48 delivered a body natively, or is mid-send.
+        let (via, lease): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT delivered_via, delivering_at FROM session_messages",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(via, None);
+        assert_eq!((via, lease), (None, None));
         let version: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",

@@ -30,6 +30,11 @@ use crate::sync::SharedSession;
 /// own hook environment by `session signal` (see [`remember_claude_socket`]).
 pub(crate) const CLAUDE_SOCKET_META: &str = "thurbox.claude_messaging_socket";
 
+/// Session-meta key holding the Claude session registry the recipient's own
+/// hook saw, which differs from the sender's when the two run with different
+/// `$CLAUDE_CONFIG_DIR`s.
+const CLAUDE_REGISTRY_META: &str = "thurbox.claude_registry_dir";
+
 /// Session-meta key `session bind-codex` records the Codex thread under.
 const CODEX_THREAD_META: &str = "thurbox.codex_conversation_id";
 
@@ -140,9 +145,21 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
         };
     }
     let meta = |key| db.get_session_meta(recipient.id, key).ok().flatten();
-    let mut claude_sockets = claude_registry_dir()
-        .map(|dir| owned_sockets(&dir, &recipient.id.to_string()))
-        .unwrap_or_default();
+    // This process's registry, and the one the recipient's own hook reported:
+    // they differ when the two sessions run with different `CLAUDE_CONFIG_DIR`s.
+    let mut dirs: Vec<PathBuf> = claude_registry_dir().into_iter().collect();
+    if let Some(theirs) = meta(CLAUDE_REGISTRY_META).map(PathBuf::from) {
+        if !dirs.contains(&theirs) {
+            dirs.push(theirs);
+        }
+    }
+    let id = recipient.id.to_string();
+    let mut claude_sockets: Vec<PathBuf> = Vec::new();
+    for socket in dirs.iter().flat_map(|dir| owned_sockets(dir, &id)) {
+        if !claude_sockets.contains(&socket) {
+            claude_sockets.push(socket);
+        }
+    }
     // The captured socket is only an ordering hint: it is used when, and only
     // when, it is also one of the proven ones.
     if let Some(captured) = meta(CLAUDE_SOCKET_META).map(PathBuf::from) {
@@ -324,22 +341,31 @@ pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     else {
         return;
     };
-    let stored = db.get_session_meta(session.id, CLAUDE_SOCKET_META);
-    if matches!(stored, Ok(Some(ref s)) if *s == socket) {
+    // The hook runs in the agent's environment, so this is *its* registry.
+    let Some(dir) = claude_registry_dir() else {
+        return;
+    };
+    let dir_str = dir.to_string_lossy().into_owned();
+    let recorded = |key| db.get_session_meta(session.id, key).ok().flatten();
+    if recorded(CLAUDE_SOCKET_META).as_deref() == Some(socket.as_str())
+        && recorded(CLAUDE_REGISTRY_META).as_deref() == Some(dir_str.as_str())
+    {
         return;
     }
-    let proven = claude_registry_dir().is_some_and(|dir| {
-        owned_sockets(&dir, &session.id.to_string()).contains(&PathBuf::from(&socket))
-    });
-    if !proven {
+    if !owned_sockets(&dir, &session.id.to_string()).contains(&PathBuf::from(&socket)) {
         tracing::debug!(
             "not recording {socket}: it does not belong to '{}'",
             session.name
         );
         return;
     }
-    if let Err(e) = db.set_session_meta(session.id, CLAUDE_SOCKET_META, &socket) {
-        tracing::warn!("could not record the Claude inbox socket: {e}");
+    for (key, value) in [
+        (CLAUDE_SOCKET_META, &socket),
+        (CLAUDE_REGISTRY_META, &dir_str),
+    ] {
+        if let Err(e) = db.set_session_meta(session.id, key, value) {
+            tracing::warn!("could not record {key}: {e}");
+        }
     }
 }
 
@@ -471,13 +497,13 @@ impl Outcome {
 /// ends at [`DeliveredVia::Mailbox`] with the reason, logged at `warn` when a
 /// native attempt was made and did not land.
 ///
-/// The send comes **before** the row is marked delivered, so delivery is
-/// at-least-once. Marking first would make it exactly-once only while the
-/// sender survives: killed between the mark and the send, it would leave a
-/// row that reads as delivered, is skipped by every drain and is eventually
-/// pruned, for a body that never arrived. The reverse failure — killed after
-/// the send, or a drain racing it — hands the agent the text twice, which it
-/// can see and discard.
+/// The send runs under a delivery lease
+/// ([`Database::lease_message_delivery`]): a drain racing it skips the row, so
+/// the body reaches the agent or the mailbox consumer, not both. The lease
+/// lapses rather than marking the row read, so a sender killed mid-send delays
+/// the message by the lease but never hides it. The one duplicate left is a
+/// sender killed after a successful send and before it records it — once the
+/// lease lapses, a drain hands that body over again.
 pub(crate) fn deliver(
     db: &Database,
     message: &SessionMessage,
@@ -489,10 +515,17 @@ pub(crate) fn deliver(
         Ok(routes) => routes,
         Err(why) => return Outcome::mailbox(why),
     };
-    if matches!(db.get_message(message.id), Ok(Some(ref m)) if !m.is_unread()) {
-        return Outcome::mailbox(
-            "the recipient drained it from the mailbox before native delivery",
-        );
+    match db.lease_message_delivery(message.id) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Outcome::mailbox(
+                "it was drained from the mailbox, or is being delivered, before this send",
+            )
+        }
+        Err(e) => {
+            tracing::warn!("message #{}: take the delivery lease: {e}", message.id);
+            return Outcome::mailbox(format!("could not take the delivery lease: {e}"));
+        }
     }
     let mut failures = Vec::new();
     for route in routes {
@@ -507,8 +540,8 @@ pub(crate) fn deliver(
         };
         match sent {
             Ok(()) => {
-                if let Err(e) = db.mark_message_delivered(message.id, via) {
-                    // Delivered, but a drain may hand it over once more.
+                if let Err(e) = db.complete_message_delivery(message.id, via) {
+                    // Delivered; once the lease lapses a drain repeats it.
                     tracing::warn!("message #{}: record {via} delivery: {e}", message.id);
                 }
                 return Outcome {
@@ -524,6 +557,9 @@ pub(crate) fn deliver(
                 failures.push(format!("{via} ({target}): {e}"));
             }
         }
+    }
+    if let Err(e) = db.release_message_delivery(message.id) {
+        tracing::warn!("message #{}: release the delivery lease: {e}", message.id);
     }
     Outcome::mailbox(format!("native delivery failed: {}", failures.join("; ")))
 }
@@ -667,6 +703,55 @@ mod tests {
         let row = db.get_message(msg.id).unwrap().unwrap();
         assert_eq!(row.delivered_via, None);
         assert!(row.is_unread());
+        // The lease is given back: the next drain takes it straight away.
+        assert_eq!(db.claim_messages(msg.to_session_id, None).unwrap().len(), 1);
+    }
+
+    /// Drains the recipient's inbox from inside the send, the race a
+    /// concurrent `inbox --claim` would make.
+    struct DrainsMidSend<'a> {
+        db: &'a Database,
+        drained: RefCell<usize>,
+    }
+
+    impl Transport for DrainsMidSend<'_> {
+        fn post_to_claude(&self, _socket: &Path, _text: &str) -> Result<(), String> {
+            let to = self.db.get_message(1).unwrap().unwrap().to_session_id;
+            *self.drained.borrow_mut() += self.db.claim_messages(to, None).unwrap().len();
+            Ok(())
+        }
+        fn queue_to_codex(&self, _thread: &str, _text: &str) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_drain_racing_the_send_does_not_also_hand_it_over() {
+        let db = Database::open_in_memory().unwrap();
+        let msg = enqueued(&db);
+        assert_eq!(msg.id, 1);
+        let racing = DrainsMidSend {
+            db: &db,
+            drained: RefCell::new(0),
+        };
+        let out = deliver(&db, &msg, "text", &claude("/s/a.sock"), &racing);
+        assert_eq!(out.via, DeliveredVia::ClaudeSocket);
+        assert_eq!(*racing.drained.borrow(), 0, "the body went one way only");
+        assert!(db
+            .claim_messages(msg.to_session_id, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_second_sender_leaves_a_message_in_flight_alone() {
+        let db = Database::open_in_memory().unwrap();
+        let msg = enqueued(&db);
+        assert!(db.lease_message_delivery(msg.id).unwrap());
+        let fake = Fake::default();
+        let out = deliver(&db, &msg, "text", &claude("/s/a.sock"), &fake);
+        assert_eq!(out.via, DeliveredVia::Mailbox);
+        assert!(fake.sent.borrow().is_empty());
     }
 
     #[test]
@@ -865,13 +950,16 @@ mod tests {
         assert!(owned_sockets(dir.path(), me).is_empty());
     }
 
-    /// One test, because both halves point `CLAUDE_CONFIG_DIR` at a fixture.
+    /// One test, because every step points `CLAUDE_CONFIG_DIR` at a fixture.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn only_a_proven_socket_is_recorded_and_it_is_tried_first() {
+        // The recipient's Claude runs under its own config dir; the sender,
+        // later, under another one with an empty registry.
         let config = tempfile::TempDir::new().unwrap();
         let dir = config.path().join("sessions");
         std::fs::create_dir(&dir).unwrap();
+        let senders = tempfile::TempDir::new().unwrap();
         std::env::set_var("CLAUDE_CONFIG_DIR", config.path());
 
         let db = Database::open_in_memory().unwrap();
@@ -909,7 +997,11 @@ mod tests {
         std::env::set_var(CLAUDE_SOCKET_ENV, &older);
         remember_claude_socket(&db, &session);
         assert_eq!(stored().map(PathBuf::from), Some(older.clone()));
-        // Newest first, except the one the hooks reported, which leads.
+
+        // A sender with a different `CLAUDE_CONFIG_DIR` still finds them,
+        // through the registry the recipient's hook reported. Newest first,
+        // except the one the hooks reported, which leads.
+        std::env::set_var("CLAUDE_CONFIG_DIR", senders.path());
         assert_eq!(gather(&db, &session).claude_sockets, vec![older, newer]);
 
         std::env::remove_var(CLAUDE_SOCKET_ENV);
