@@ -66,6 +66,7 @@ Describe 'install.ps1 source' {
         @{ Name = 'Get-LatestVersion' }
         @{ Name = 'Get-ExpectedChecksum' }
         @{ Name = 'Add-ToUserPath' }
+        @{ Name = 'Install-Archive' }
         @{ Name = 'Invoke-Install' }
         @{ Name = 'Show-Banner' }
     ) {
@@ -152,5 +153,115 @@ Describe 'Get-ExpectedChecksum' {
         Set-Content -Path $script:Checksums -Value "$script:Hash  some-other-file.zip"
         { Get-ExpectedChecksum -ChecksumFile $script:Checksums -ArchiveName $script:Archive } |
             Should -Throw "*$script:Archive*"
+    }
+}
+
+BeforeDiscovery {
+    # -Skip is read at discovery, before any BeforeAll. $IsWindows does not
+    # exist on Windows PowerShell 5.1, which only runs on Windows.
+    $script:OnWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
+}
+
+Describe 'Install-Archive' {
+    BeforeAll {
+        function New-ReleaseZip {
+            param([string]$Dir, [string]$Payload)
+            $src = Join-Path $Dir 'zip-src'
+            New-Item -ItemType Directory -Path $src -Force | Out-Null
+            foreach ($name in 'thurbox.exe', 'thurbox-cli.exe') {
+                Set-Content -Path (Join-Path $src $name) -Value $Payload -NoNewline
+            }
+            $zip = Join-Path $Dir 'release.zip'
+            Compress-Archive -Path (Join-Path $src '*') -DestinationPath $zip -Force
+            return $zip
+        }
+    }
+
+    BeforeEach {
+        $script:Work = Join-Path ([System.IO.Path]::GetTempPath()) ('thurbox-test-' + [guid]::NewGuid().ToString('N'))
+        $script:Dest = Join-Path $script:Work 'install'
+        New-Item -ItemType Directory -Path $script:Dest -Force | Out-Null
+        $script:Zip = New-ReleaseZip -Dir $script:Work -Payload 'new'
+    }
+
+    AfterEach {
+        Remove-Item -Recurse -Force $script:Work -ErrorAction SilentlyContinue
+    }
+
+    It 'installs into an empty directory' {
+        Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+        Get-Content -Raw (Join-Path $script:Dest 'thurbox.exe') | Should -Be 'new'
+        Get-Content -Raw (Join-Path $script:Dest 'thurbox-cli.exe') | Should -Be 'new'
+    }
+
+    It 'replaces an existing install and leaves no backup behind' {
+        foreach ($name in 'thurbox.exe', 'thurbox-cli.exe') {
+            Set-Content -Path (Join-Path $script:Dest $name) -Value 'old' -NoNewline
+        }
+        Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+        Get-Content -Raw (Join-Path $script:Dest 'thurbox.exe') | Should -Be 'new'
+        @(Get-ChildItem -Force $script:Dest -Filter '*.old').Count | Should -Be 0
+    }
+
+    It 'replaces thurbox.exe while it is running' -Skip:(-not $script:OnWindows) {
+        # A real executable, so Windows maps it the way it maps a running
+        # thurbox: deleting it is refused, renaming it is not.
+        $exe = Join-Path $script:Dest 'thurbox.exe'
+        Copy-Item (Join-Path $env:SystemRoot 'System32\PING.EXE') $exe
+        $proc = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
+        try {
+            Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+            Get-Content -Raw $exe | Should -Be 'new'
+        }
+        finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $proc.WaitForExit()
+        }
+    }
+
+    It 'names the process to close when the backup is still running too' -Skip:(-not $script:OnWindows) {
+        $exe = Join-Path $script:Dest 'thurbox.exe'
+        $ping = Join-Path $env:SystemRoot 'System32\PING.EXE'
+        Copy-Item $ping $exe
+        $first = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
+        $second = $null
+        try {
+            # The first update moves the running image to .thurbox.exe.old ...
+            Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+            # ... and a second thurbox, started from the new binary, then holds
+            # both files the next update has to move.
+            Copy-Item $ping $exe -Force
+            $second = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
+            { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
+                Should -Throw "*in use by thurbox (PID *$($first.Id)*Close it and run the installer again*"
+        }
+        finally {
+            foreach ($p in @($first, $second) | Where-Object { $_ }) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                $p.WaitForExit()
+            }
+        }
+    }
+
+    It 'puts the installed file back when the new one cannot be moved in' {
+        $exe = Join-Path $script:Dest 'thurbox.exe'
+        Set-Content -Path $exe -Value 'old' -NoNewline
+        # Only the move of the new thurbox.exe fails - after the installed one
+        # has been moved aside, which is the state that must not be left.
+        $real = Get-Command Move-Item -CommandType Cmdlet
+        Mock Move-Item { & $real @PesterBoundParameters }
+        Mock Move-Item { throw 'simulated failure' } -ParameterFilter {
+            $LiteralPath -like '*.install-*' -and (Split-Path -Leaf $LiteralPath) -eq 'thurbox.exe'
+        }
+        { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
+            Should -Throw '*simulated failure*'
+        Get-Content -Raw $exe | Should -Be 'old'
+    }
+
+    It 'removes the backup a previous update left once nothing runs from it' {
+        $old = Join-Path $script:Dest '.thurbox.exe.old'
+        Set-Content -Path $old -Value 'stale' -NoNewline
+        Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+        Test-Path $old | Should -BeFalse
     }
 }

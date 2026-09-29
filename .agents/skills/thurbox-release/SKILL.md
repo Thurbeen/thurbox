@@ -223,10 +223,18 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 - ASCII-only source (no BOM needed; survives `irm | iex` decoding on Windows
   PowerShell 5.1); `Write-Host` for UI is intentional (`Write-Output` would leak
   into the `iex` pipeline)
-- Pure helpers (`Get-Target`, `Get-ExpectedChecksum`) are guarded by
-  `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing without
-  running the installer
+- Updating while thurbox runs works: `Install-Archive` unpacks into a staging
+  directory and renames each installed file to `.<name>.old` before moving the
+  new one in, because Windows refuses to *delete* a running executable (what
+  `Expand-Archive -Force` does) but allows renaming it. A backup still running
+  is removed by the next run; one that cannot be moved fails naming the
+  `thurbox` / `thurbox-cli` PIDs to close. `session_ops::host_cli`'s
+  `windows_extract_script` provisions a Windows host's `thurbox-cli` the same way
+- The helpers (`Get-Target`, `Get-ExpectedChecksum`, `Install-Archive`) are
+  guarded by `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing
+  without running the installer
 - Tested by `scripts/install.Tests.ps1` (Pester 5; CI `install-script-ps` job,
-  run with `pwsh` on ubuntu since the helpers are platform-independent) —
-  the PowerShell mirror of `install.bats`
+  on ubuntu with `pwsh` and on Windows with both `pwsh` and Windows PowerShell
+  5.1 — the running-`thurbox.exe` cases only run on Windows) — the PowerShell
+  mirror of `install.bats`
 

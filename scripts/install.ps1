@@ -134,6 +134,63 @@ function Add-ToUserPath {
     return $true
 }
 
+# --- Extraction -------------------------------------------------------------
+# The running thurbox processes started from any of $Path, for the message that
+# asks the user to close them. Path is $null for a process we may not inspect.
+function Get-LockingProcess {
+    param([string[]]$Path)
+    Get-Process -Name 'thurbox', 'thurbox-cli' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and ($Path -contains $_.Path) }
+}
+
+# Extract the release zip into $Destination, replacing what is there.
+#
+# Not Expand-Archive -Force straight into $Destination: that deletes each file
+# it overwrites, and Windows refuses to delete an executable a process is
+# running from, so updating while thurbox (or a thurbox-cli a hook started) was
+# running died with Remove-Item's access-denied trace. Windows does let such a
+# file be renamed, so each one is moved aside to .<name>.old - the backup name
+# the in-app updater (src/agent/self_update.rs) uses - and the new one moved
+# in. A backup a process still runs from stays until the next update.
+function Install-Archive {
+    param([string]$ZipPath, [string]$Destination)
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $Destination = (Resolve-Path -LiteralPath $Destination).ProviderPath
+    # Inside $Destination so every move below is a rename on one volume.
+    $staging = Join-Path $Destination ('.install-' + [System.Guid]::NewGuid().ToString('N'))
+    try {
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $staging
+        foreach ($file in Get-ChildItem -LiteralPath $staging -File) {
+            $target = Join-Path $Destination $file.Name
+            $backup = Join-Path $Destination ".$($file.Name).old"
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $target) {
+                try {
+                    Move-Item -LiteralPath $target -Destination $backup -Force
+                } catch {
+                    $using = @(Get-LockingProcess -Path $target, $backup |
+                        ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" })
+                    $who = if ($using) { $using -join ', ' } else { 'another program' }
+                    throw "Cannot replace $target - it is in use by $who. Close it and run the installer again."
+                }
+            }
+            try {
+                Move-Item -LiteralPath $file.FullName -Destination $target
+            } catch {
+                # Leave the old file in place rather than nothing at all.
+                if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) {
+                    Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
+                }
+                throw
+            }
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- Main -------------------------------------------------------------------
 function Invoke-Install {
     Show-Banner
@@ -170,8 +227,7 @@ function Invoke-Install {
         }
 
         Write-Info "Installing to $InstallDir ..."
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force
+        Install-Archive -ZipPath $zipPath -Destination $InstallDir
     }
     finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

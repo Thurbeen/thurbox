@@ -695,7 +695,9 @@ running process keeps its old image until the next launch, as on Unix. The swap
 is one system call, so a thurbox killed or closed mid-update leaves the old
 binary or the new one, never neither. The `.old` file is removed by the next
 update, once nothing runs from it; updating again while a thurbox still does is
-refused with nothing changed.
+refused with nothing changed. Re-running `install.ps1` over a running thurbox
+works the same way: it renames each installed binary to `.<name>.old` rather
+than deleting it, and names the process to close when even that is refused.
 
 **Auto-update never crosses a major version.** A 1.x install is told that 2.x
 exists (the badge, and `thurbox-cli version --check`, both report it) and is
