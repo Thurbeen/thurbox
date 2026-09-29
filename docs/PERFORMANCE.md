@@ -205,7 +205,7 @@ won't pay off.
   schedule string. Automations are typically a handful, and ADR-P1 bounds the
   frequency — not worth the split. Left as-is.
 - **vt100 parser lock contention** (`src/app/view.rs` render vs.
-  `src/agent/backend.rs` reader thread): the reader locks the parser per output
+  `src/backend/pane.rs` reader thread): the reader locks the parser per output
   chunk; the UI locked it per frame. ADR-P1 collapses idle-frame UI locks to
   near zero (`parser_locks_render`), so the contention window shrinks for free.
   Cloning the vt100 screen for lock-free rendering was rejected — the screen is
@@ -2155,7 +2155,7 @@ for, so it gets its own path, and the floors keep pacing everything else.
   so an agent streaming while you type is still painted at 30 fps.
 - **The loop is woken by it.** `WiredPane::output_seq` counts chunks the parser
   has taken, bumped *after* the parse, and the reader loop of the pane the echo
-  is owed by then pokes a self-pipe (`agent::output_wake`, armed with that
+  is owed by then pokes a self-pipe (`backend::output_wake`, armed with that
   pane's counter). Every other pane, and every pane while nothing is owed, pays
   one atomic load: a session flooding output beside the one being typed into
   does not wake the loop per chunk. While owed, the loop sleeps in `poll(2)` on
@@ -2402,9 +2402,9 @@ spawn path never received the same treatment.
 
 #### 3. The mailbox wake reports success at a pane nothing is listening to
 
-`send_prompt_now` (`src/agent/tmux.rs`) targets the session's tmux window and
+`send_prompt_now` (`src/backend/tmux.rs`) targets the session's tmux window and
 treats a zero exit from `send-keys` as delivery. thurbox sets
-`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/agent/tmux.rs`;
+`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/backend/tmux.rs`;
 at the time of this measurement it was asked for session-wide in `SESSION_OPTS`,
 which — being a window option — actually reached only whichever window was
 current), so an agent that exits or crashes **leaves its window and pane in

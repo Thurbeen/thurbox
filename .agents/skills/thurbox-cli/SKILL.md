@@ -224,7 +224,7 @@ second agent on it and the ADR-25 stamp landed on two windows (issue #1207).
 and a repairer stands down while somebody holds it. `restart` and `start`
 themselves do not: a hold outlives its holder by minutes by design, and one left
 behind by a restart killed mid-flight must not refuse the verb the operator
-typed. What keeps two of those to one window is `agent::tmux`, which retires
+typed. What keeps two of those to one window is `backend::tmux`, which retires
 every window but the highest-numbered one carrying a session's stamp each time a
 stamp is written, and again before it gives up on an ambiguous one.
 
@@ -455,7 +455,7 @@ the instant it is typed. **`session key <uuid> <name>`** is the other half: one
 named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
-resolved through the closed table in `agent::tmux::NAMED_KEYS`. The table is
+resolved through the closed table in `backend::tmux::NAMED_KEYS`. The table is
 closed on purpose: tmux does **not** validate a key name — an unrecognized one
 is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out

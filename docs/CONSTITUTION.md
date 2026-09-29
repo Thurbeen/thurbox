@@ -20,30 +20,51 @@ exactly one line here, and each line is the rule `tests/architecture_rules.rs`
 asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
-session        (no crate-internal references — the dependency sink)
-agent          → session, paths, shell
-git            → session, paths, shell
-storage        → session, sync, paths
-sync           → session, storage, workspace
-usage          → session, shell                [path-only: paths]
-session_ops    → session, storage, git, sync, paths, workspace, shell
-                                               [path-only: agent]
-kernel         → session, storage, sync, paths, session_ops, git,
-                 notifications, clipboard, shell
-                                               [path-only: agent, usage]
-cli            → session, storage, session_ops, sync, paths, notifications
-                                               [path-only: agent, kernel]
-notifications  → session, paths, shell         [path-only: storage]
-clipboard      → session, paths
-workspace      → paths
-paths, shell   (leaf utilities — no crate-internal references)
-coordinator    → agent, clipboard, kernel, paths, session, session_ops,
-                 shell, storage
+session              (no crate-internal references — the dependency sink)
+agent                → session, paths, shell
+agent::host_config   → session, paths, agent
+backend              → backend::{contract, pane, registry}   (re-exports only)
+backend::contract    (no crate-internal references)
+backend::identity    → backend::contract
+backend::pane        → session, backend::{contract, identity, osc8, output_wake}
+backend::osc8        → session
+backend::output_wake (no crate-internal references)
+backend::registry    → session, backend::contract
+backend::wiring      → session, agent::host_config,
+                       backend::{contract, registry, tmux}
+backend::tmux_compat → session, shell, agent, backend::contract
+backend::tmux        → session, paths, shell, agent,
+                       backend::{contract, identity, tmux_compat}
+git                  → session, paths, shell
+storage              → session, sync, paths
+sync                 → session
+usage                → session, shell           [path-only: paths]
+session_ops          → session, storage, git, sync, paths, workspace, shell
+                       [path-only: agent, agent::host_config,
+                        backend::{contract, identity}]
+kernel               → session, storage, sync, paths, session_ops, git,
+                       notifications, shell
+                       [path-only: agent, agent::host_config,
+                        backend::{contract, identity, pane, registry}, usage]
+cli                  → session, storage, session_ops, sync, paths,
+                       notifications
+                       [path-only: agent, agent::host_config,
+                        backend::contract, kernel]
+notifications        → session, paths, shell    [path-only: storage]
+clipboard            → session, paths
+workspace            → paths
+paths, shell         (leaf utilities — no crate-internal references)
+coordinator          → agent, backend::output_wake, clipboard, kernel, paths,
+                       session, session_ops, shell, storage
 ```
 
-`agent` is the side-effect layer (PTY/tmux) and never touches `git`,
-`storage` or `kernel`; `session` holds plain data and references
-nothing, which is what lets every other module depend on it.
+`agent` holds coding-agent definitions and their config and never touches
+`git`, `storage`, `kernel` or `backend`; `session` holds plain data and
+references nothing, which is what lets every other module depend on it.
+`backend` is the session-backend boundary: consumers name its contract
+(`backend::contract`, `backend::identity`, `backend::pane`,
+`backend::registry`), and only the factory, `backend::wiring`, names an
+adapter. Only a composition root may reach the factory.
 
 Some crossings are permitted **by fully-qualified path only**, never by
 `use` — not even a function-local `use` or an alias. The restriction is
@@ -58,7 +79,14 @@ a decision recorded in the test, not an exemption. Only the crate roots
 
 `tests/architecture_rules.rs` is an **allowlist** and checks every entry
 in one loop: a new `src/` module fails until its dependencies are
-declared there, and a declared rule cannot go unasserted.
+declared there, and a declared rule cannot go unasserted. It judges a
+reference by what it **resolves to** — through `super::`, brace groups,
+re-exports and `type` aliases — so an alias crosses nothing a path could
+not. The graph of actual edges and the graph the rules declare must both
+be acyclic, and a grant nothing uses fails. A crossing that breaks a rule
+today and is scheduled to go is listed item by item, with the task that
+removes it, in the test's `TRANSITIONAL` table; the table must equal the
+crossings the source makes, and it ends empty.
 
 ### 3. Zero-warning policy
 

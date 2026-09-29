@@ -33,7 +33,7 @@ frame is agent output. Applying the tight floor to both made a chatty agent driv
 60 paints a second to show 30 lines; the split is worth 30% of the loaded cost
 (ADR-P17). **A keystroke's echo is on neither floor** (ADR-P28): a key sent to a
 terminal owes an echo (`EchoWait`), the loop sleeps in `poll(2)` on the terminal
-and on the `agent::output_wake` self-pipe (poked only by that pane's reader) until it comes, holds the key's own
+and on the `backend::output_wake` self-pipe (poked only by that pane's reader) until it comes, holds the key's own
 frame for it (`ECHO_HOLD`), and paints it at once as the last full frame with
 only that surface repainted (`paint_echo_frame`) — rapid keys queue successive
 output sequences rather than replacing one pending wait; one such frame per
@@ -186,7 +186,7 @@ anything keyed on what was read off a grid keys on `content_stamp`, which moves
 on a rebuild, not `last_output_at`.
 
 **A vt100 grid is never given fewer than two rows or two columns**
-(`agent::backend::vt_floor`). A cramped layout really does compute a one-cell pane,
+(`backend::pane::vt_floor`). A cramped layout really does compute a one-cell pane,
 and vt100 underflows on the next byte written into one — in `row_inc_scroll` when a
 line wraps, in `col_wrap` (`cols - width`) when a double-width character arrives.
 The panic lands on the session's *reader* thread, so the process lives while that

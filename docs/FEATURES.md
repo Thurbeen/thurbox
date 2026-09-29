@@ -2553,7 +2553,7 @@ surface. `AGENTS.md` keeps the identity contract and points here.
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
     <text> [--no-wake]` enqueues and, unless `--no-wake`, types a short `inbox`
-    token into the recipient's pane (`agent::tmux::send_prompt_now`) to nudge a
+    token into the recipient's pane (`backend::tmux::send_prompt_now`) to nudge a
     drain. **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
     `--task` override.
@@ -3288,7 +3288,7 @@ a cell (`App::url_at_click`):
   `OSC 8 ; ; <url>` + label + `OSC 8 ; ;`, so the screen holds only
   the label (`Github`, never `https://github.com`) and the URL exists
   *solely* in the escape, which `vt100` discards. The parser callbacks
-  capture each run instead (`agent::osc8` → `session::hyperlink`): the
+  capture each run instead (`backend::osc8` → `session::hyperlink`): the
   label is read off the screen between the cursor position at the open
   and the one at the close (the closing escape arrives after its label
   printed), and stored with its **start column**, not its row — the row

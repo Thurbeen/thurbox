@@ -66,7 +66,7 @@ Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
 How it works: `TmuxBackend` is transport-neutral
-(`agent::transport::TmuxTransport`). The local backend launches
+(`backend::tmux_compat::transport::TmuxTransport`). The local backend launches
 `<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
 a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
 (`TmuxTransport::Wsl`). `wsl.exe` forwards whitespace-free tokens to the
@@ -252,7 +252,7 @@ session), never on the loop, ADR-P12).
   provisioned host it is, `resolve_cli_binary` answering with a sibling of the
   running exe — leaves a regular file there alone, and removes an existing
   self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
-  host CLI's `tmux_socket`, which the backend adopts (`agent::tmux::
+  host CLI's `tmux_socket`, which the backend adopts (`backend::tmux::
   learn_host_socket`) so a dev laptop attaches to a release host's server.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
   pane-option status channel — is the **legacy path** for a host that cannot

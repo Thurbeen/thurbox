@@ -96,7 +96,7 @@ when `tick()` polls `try_recv()`:
   published as `thurbox.worktrees`. No `git fetch`, unlike the branch
   list: a worktree is local state and the read happens on a keypress.
 - **Interactive spawn** — `git worktree add` (`spawn_worktree_session`)
-  and `Session::spawn` (PTY/tmux window creation, 500 ms+) for the
+  and the multiplexer window creation (500 ms+) for the
   new-session wizard run on blocking tasks, with the follow-up
   (session adoption, task-prompt delivery) carried in a `Pending*`
   continuation applied on completion. Programmatic spawns
@@ -414,7 +414,7 @@ from `sessions`, `vms`, and `containers`.
 ## ADR-11: Trait-based session backends
 
 **Choice**: Session lifecycle is abstracted behind a
-`SessionBackend` trait (`src/agent/backend.rs`). The `Session`
+`SessionBackend` trait (`src/backend/contract.rs`). The `Session`
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
@@ -531,7 +531,7 @@ remembered pane id; see ADR-25.
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
-`THURBOX_DATA_DIR` has relocated (`agent::tmux::socket_for`). The data dir is
+`THURBOX_DATA_DIR` has relocated (`backend::tmux::socket_for`). The data dir is
 the anchor because it holds the database, and the database is the record of
 which sessions exist: an instance keeping its own record of them has no
 business creating their windows on the operator's server — which is what made
@@ -622,7 +622,7 @@ restored — it is an event, not state.
 
 **Choice**: Run agent sessions on a remote host (over SSH) or in a
 local WSL distro (via `wsl.exe`) by launching the same tmux
-control-mode protocol behind a launch prefix. `LocalTmuxBackend` is
+control-mode protocol behind a launch prefix. The local tmux backend is
 generalized into `TmuxBackend { transport, socket, session, name }`
 where `transport: TmuxTransport` is `Local` (a bare
 `Command::new("tmux")`), `Ssh { destination, ssh_opts, mux }`
@@ -1069,7 +1069,7 @@ on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
 made by `thurbox-cli` appear
 automatically — no new synchronization mechanism is needed. The
 `cli` module imports `storage`, `session`, `session_ops`, `sync`,
-and `agent::tmux`, but never `app` or `ui`, so it can operate
+and `backend::tmux`, but never `app` or `ui`, so it can operate
 without a terminal UI.
 
 **Rejected**:
@@ -1608,7 +1608,7 @@ created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
-tmux hosts because `session signal` also sets the pane option (`agent::tmux::
+tmux hosts because `session signal` also sets the pane option (`backend::tmux::
 set_own_pane_state`). A fork — which resumes the parent's conversation in the
 parent's checkout, two facts the host's `create` does not take — stays on the
 legacy path and is registered on the host by `session sync --adopt`, as is
@@ -1719,7 +1719,7 @@ follow from the host owning the record, none of which the first cut had:
   passes a remote command's status through untouched (a remote `exit 7` exits
   7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
-  (`agent::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  (`backend::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
   can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
   deliberately its own answer rather than being rounded to the nearest of the
@@ -1766,11 +1766,26 @@ follow from the host owning the record, none of which the first cut had:
 **Choice**: every thurbox tmux window carries two window options written at
 spawn — `@thurbox_session`, the id of the session row that owns it, and
 `@thurbox_role` (`agent` / `shell` / `program`). `discover`'s format string
-reads both, `WindowIndex` (`agent::tmux`) indexes a listing by
+reads both, `WindowIndex` (`backend::identity`) indexes a listing by
 `(session id, role)`, and every reconciler that used to resolve `tb-<name>`
 asks it instead. The answer is three-valued: **at** a pane, **absent**, or
 **unknown** — several windows answer to the name and at least one carries no
 stamp. Nothing may read `unknown` as absence.
+
+**Where it lives**: the rule is backend-neutral, so it is not the tmux
+adapter's. The role vocabulary (`WindowRole`) and the listing a backend
+answers with (`DiscoveredSession`) are contract values
+(`backend::contract`); thurbox's window-naming convention (`tb-` / `tbs-` /
+`tbp-` and `sanitize_window_name`, which is also the name-uniqueness rule in
+`session_ops::names`) and the resolution rule (`WindowIndex`, `Located`) are
+`backend::identity`, which depends on the contract and nothing else. How a
+stamp is *stored* is an adapter's business: tmux keeps it in the two window
+options above, and a backend with no window options leaves every window
+unstamped and resolvable by name as before. Moving the code changed no value
+on a live server — the prefixes and both option names are what running
+windows already carry, and changing either would orphan them. It used to live
+inside `agent::tmux`, which made the contract and the tmux adapter import each
+other; `tests/architecture_rules.rs` now fails on that cycle.
 
 **Why**: a window's only identity was its name, and a name is neither unique
 nor injective. Two sessions may legitimately be given one (`--on-existing
@@ -1849,7 +1864,7 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `agent::tmux::retire_duplicate_windows` runs after every local stamp
+  `backend::tmux::retire_duplicate_windows` runs after every local stamp
   (`stamp_local_window`; the headless `spawn_window`, whose stamp rides in
   `new-window`'s own command list; and `TmuxBackend::stamp_window` for the
   interface's own spawn and for an adopt) and **the highest window id keeps the identity**.
