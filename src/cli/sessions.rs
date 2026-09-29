@@ -852,7 +852,6 @@ fn run_create(
     if let Existing::Answered(output) = existing {
         return Ok(*output);
     }
-    super::action::ensure_hooks_wired(db);
     let req = crate::session_ops::SpawnRequest {
         name,
         repo_path,
@@ -869,7 +868,9 @@ fn run_create(
         resume_session_id: resume,
         ..Default::default()
     };
-    let res = match crate::session_ops::spawn_session_headless(db, backends, req) {
+    let spawned = super::action::ensure_hooks_wired_for(db, &req)
+        .and_then(|()| crate::session_ops::spawn_session_headless(db, backends, req));
+    let res = match spawned {
         Ok(res) => res,
         // `replace` tore the old session down first, so a spawn that
         // fails here would otherwise leave the caller with neither

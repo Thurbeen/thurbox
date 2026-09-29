@@ -164,6 +164,15 @@ pub(crate) fn ensure_hooks_wired(db: &Database) {
     }
 }
 
+/// [`ensure_hooks_wired`] for a new session, once `req` would be accepted: a
+/// request the spawn refuses (a task title with a `/` is an unsafe session
+/// name) must not change the agent config either.
+pub(crate) fn ensure_hooks_wired_for(db: &Database, req: &SpawnRequest) -> Result<(), String> {
+    crate::session_ops::spawn::validate_request(db, req)?;
+    ensure_hooks_wired(db);
+    Ok(())
+}
+
 /// Spawn a fresh headless session for `req` and deliver `prompt` once the agent
 /// boots (after [`BOOT_DELAY_SECS`]). Returns the new session id on success.
 pub(crate) fn spawn_and_deliver(
@@ -173,7 +182,7 @@ pub(crate) fn spawn_and_deliver(
     req: SpawnRequest,
     prompt: &str,
 ) -> Result<SessionId, SpawnDeliverError> {
-    ensure_hooks_wired(db);
+    ensure_hooks_wired_for(db, &req).map_err(SpawnDeliverError::Spawn)?;
     let spawned = crate::session_ops::spawn_session_headless(db, backends, req)
         .map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;
