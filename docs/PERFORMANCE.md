@@ -2243,9 +2243,10 @@ stand-in agent that answers each 5 ms late — the case the floor used to catch 
 and fails unless every one was counted, alone and with another session
 printing. The idle case then sends two keys in one input burst and separates
 the agent's replies, so replacing a pending wait fails the counter assertion.
-Since ADR-P29 those assertions are a range — at least one floor-free paint a
-key, at most one plus `ECHO_TAIL_FRAMES` — because an echo the pty hands over
-in two chunks earns its second one too.
+Since ADR-P29, `echoes` counts only a key's first answer and a tail frame is
+counted in `echo_tails`, so a tail cannot stand in for a missed echo: the second
+batched key's reply lands inside the first key's tail and would otherwise be
+painted floor-free anyway.
 
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
 re-applying the same server options twice (#1243). The options are now one tmux
@@ -2330,14 +2331,16 @@ The worst Codex key went from 70–73 ms to 32–34 ms (raw tmux: 29–30 ms).
 What is left is ADR-P28's constant cost of a few milliseconds per key. Local
 tmux only: psmux, remote hosts and macOS were not measured.
 
-**Guarded** on counters (ADR-P5). `tests/tui_e2e.rs` runs a stand-in agent that
-redraws the way Codex does, with a cursor-only synchronized frame, then the glyph
-split across three writes. A 15 ms gap before the glyph pins a paint between
-the chunks. The test fails unless every key got at least three floor-free
-paints, the third of which can only be owed once the glyph has arrived; before
-the change it can never get more than one. A second test types into a
-pane that rewrites a status line every couple of milliseconds, and fails if the
-paints exceed one plus `ECHO_TAIL_FRAMES` a key. A third types every ~45 ms
+**Guarded** on counters (ADR-P5). Tail frames are counted apart, in
+`echo_tails`, and `echo_frames` counts every one-surface frame of either kind,
+so `frames - echo_frames` is the full frames. `tests/tui_e2e.rs` runs a stand-in
+agent that redraws the way Codex does, with a cursor-only synchronized frame,
+then the glyph split across three writes. A 15 ms gap before the glyph pins a
+paint between the chunks. The test fails unless every key got two tail frames,
+the second of which can only be owed once the glyph has arrived; before the
+change there are none. A second test types into a pane that rewrites a status
+line every couple of milliseconds, and fails if the tail frames exceed
+`ECHO_TAIL_FRAMES` a key. A third types every ~45 ms
 into a pane printing every ~12 ms, and fails unless full frames keep coming at
 10 a second or more between two perf snapshots published during the typing.
 `EchoTail`'s own unit tests drive it with synthetic output sequences and no
