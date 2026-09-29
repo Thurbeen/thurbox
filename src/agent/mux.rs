@@ -5678,3 +5678,330 @@ ERROR: something ps printed
         assert!(parser.screen().contents().contains("line10"));
     }
 }
+
+/// Every dialect answer the shared core relies on, pinned to what the core
+/// emitted before the psmux split (`MuxProtocol`, commit `29e17e3`).
+///
+/// The fixture was written by that commit's own code for these same inputs;
+/// what it composed inline (the spawn window command, the resize list, the
+/// `new-window` quoting and `-e` arguments) was dumped through a copy of those
+/// lines. A dialect that drifts fails here with the key that moved. Unix only:
+/// the local one-shot rows are tmux's.
+#[cfg(all(test, unix))]
+mod dialect_characterization {
+    use std::fmt::Write as _;
+
+    use super::*;
+    use crate::agent::psmux::PsmuxTransport;
+    use crate::agent::tmux::TmuxTransport;
+
+    const BEFORE: &str = include_str!("../../tests/fixtures/mux_dialects_before_split.txt");
+
+    /// Answers that changed on purpose, as `(key, before, after)`.
+    const DELIBERATE: &[(&str, &str, &str)] = &[
+        // A tmux route polled liveness when its host *preferred* psmux. The
+        // dialect answers for the multiplexer actually driven, and the
+        // registry builds a host's tmux route with `multiplexer = tmux`.
+        (
+            "backend tmux@psmuxhost needs_liveness_poll",
+            "true",
+            "false",
+        ),
+    ];
+
+    const COMMAND: &str = "/opt/agent/claude";
+    const BANNERS: &[&str] = &[
+        "tmux 3.4",
+        "tmux 2.8",
+        "tmux 3.3.6",
+        "psmux 3.3.8",
+        "3.3.6",
+        "",
+    ];
+    const QUOTED: &[&str] = &["tb-demo", "/tmp/my dir", "it's"];
+    const WINDOWS: &[&str] = &["tb-demo", "tbs-demo", "tbp-x-y"];
+
+    fn args() -> Vec<String> {
+        vec!["--resume".into(), "it's x".into()]
+    }
+    fn env2() -> HashMap<String, String> {
+        [("B", "x y"), ("A", "1")]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect()
+    }
+    fn env1() -> HashMap<String, String> {
+        [("A", "1")]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect()
+    }
+    fn bufs() -> Vec<Vec<u8>> {
+        vec![
+            b"ls\r".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"it's -x 0x41".to_vec(),
+            "é".repeat(3).into_bytes(),
+            b"\x1b[200~a\nb\x1b[201~".to_vec(),
+        ]
+    }
+    fn verdict(r: Result<()>) -> String {
+        match r {
+            Ok(()) => "ok".into(),
+            Err(e) => format!("err: {e}"),
+        }
+    }
+    fn argv(cmd: &Command) -> Vec<String> {
+        std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn dump<T: MuxDialect>(out: &mut String, label: &str, b: &MuxBackend<T>) {
+        let remote = b.transport.is_remote();
+        let mut w = |k: &str, v: String| writeln!(out, "{label} {k} = {v}").unwrap();
+        w(
+            "mux_command",
+            format!("{:?}", argv(&b.transport.mux_command("thurbox", &["-V"]))),
+        );
+        w(
+            "stamps_per_window",
+            format!("{}", b.stamps_are_per_window()),
+        );
+        w("command_lists", format!("{}", T::COMMAND_LISTS));
+        w("size_reports", format!("{}", T::SIZE_REPORTS));
+        w(
+            "implicit_attach",
+            format!("{}", T::IMPLICIT_ATTACH_RESPONSE),
+        );
+        w("strict_blocks", format!("{}", T::STRICT_RESPONSE_BLOCKS));
+        w("subscriptions", format!("{}", T::SUBSCRIPTIONS));
+        w("asks_server_version", format!("{}", T::ASKS_SERVER_VERSION));
+        w(
+            "paste_channel",
+            format!("{}", b.transport.paste_channel("SOCK".into()).is_some()),
+        );
+        w(
+            "kill_remembered_when_ambiguous",
+            format!("{}", !T::WINDOW_OPTIONS),
+        );
+        w(
+            "hook_poll",
+            format!("{}", b.transport.hook_poll_command("SESS").is_some()),
+        );
+        if remote {
+            w("default_shell", b.default_shell());
+        }
+        if remote || !T::WINDOW_OPTIONS {
+            let config: Vec<_> = b
+                .session_config()
+                .iter()
+                .map(|o| (o.args.clone(), o.fatal))
+                .collect();
+            w("session_config", format!("{config:?}"));
+        }
+        for window in WINDOWS {
+            w(
+                &format!("window_command {window}"),
+                T::window_command(b, window, COMMAND, &args(), &env2()),
+            );
+            w(
+                &format!("birth {window}"),
+                format!("{:?}", T::birth_option_commands(window)),
+            );
+        }
+        for s in QUOTED {
+            w(&format!("quote_arg {s:?}"), T::quote_arg(s));
+        }
+        w("env_args", format!("{:?}", T::env_args(&env1())));
+        for buf in bufs() {
+            w(
+                &format!("send_keys {:?}", String::from_utf8_lossy(&buf)),
+                format!("{:?}", T::send_keys_commands("%1", &buf)),
+            );
+        }
+        w(
+            "resize",
+            format!("{:?}", T::resize_commands("%1", 40, 120, "SIZER")),
+        );
+        w(
+            "resize clamped",
+            format!("{:?}", T::resize_commands("%1", 0, 20000, "SIZER")),
+        );
+        w(
+            "paste_args",
+            format!(
+                "{:?}",
+                T::paste_args("thurbox:tb-demo", "line one\nline two")
+            ),
+        );
+        for banner in BANNERS {
+            w(
+                &format!("check_banner {banner:?}"),
+                verdict(T::check_banner(banner, "thurbox")),
+            );
+            let server = if T::ASKS_SERVER_VERSION {
+                T::check_server_version(banner, "thurbox")
+            } else {
+                Ok(())
+            };
+            w(&format!("check_server_version {banner:?}"), verdict(server));
+        }
+        if !T::WINDOW_OPTIONS {
+            let mut cmd = Command::new("probe");
+            T::push_window_program(&mut cmd, COMMAND, &args(), &env2());
+            let pushed: Vec<_> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            w("push_window_program", format!("{pushed:?}"));
+        }
+    }
+
+    fn current() -> String {
+        let pin = |mut h: crate::session::HostDef| {
+            h.socket = Some("SOCK".into());
+            h.session = Some("SESS".into());
+            h
+        };
+        let ssh = pin(crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        });
+        let win = pin(crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        });
+        let wsl = pin(crate::session::HostDef::wsl("Ubuntu"));
+        let local_tmux = MuxBackend::<TmuxTransport>::with_transport(
+            TmuxTransport::local(),
+            "SOCK",
+            "SESS",
+            "local",
+        );
+        let local_psmux = MuxBackend::<PsmuxTransport>::with_transport(
+            PsmuxTransport::local(),
+            "SOCK",
+            "SESS",
+            "local",
+        );
+        let mut out = String::new();
+        dump(&mut out, "tmux@local", &local_tmux);
+        dump(
+            &mut out,
+            "tmux@ssh",
+            &MuxBackend::<TmuxTransport>::from_host(&ssh),
+        );
+        dump(
+            &mut out,
+            "tmux@wsl",
+            &MuxBackend::<TmuxTransport>::from_host(&wsl),
+        );
+        dump(
+            &mut out,
+            "tmux@psmuxhost",
+            &MuxBackend::<TmuxTransport>::from_host(&win),
+        );
+        dump(&mut out, "psmux@local", &local_psmux);
+        dump(
+            &mut out,
+            "psmux@ssh",
+            &MuxBackend::<PsmuxTransport>::from_host(&win),
+        );
+        {
+            use crate::agent::backend::SessionBackend;
+            use crate::agent::psmux::PsmuxBackend;
+            use crate::agent::tmux::TmuxBackend;
+            let backends: Vec<(&str, Box<dyn SessionBackend>)> = vec![
+                ("tmux@local", Box::new(TmuxBackend::local())),
+                ("tmux@ssh", Box::new(TmuxBackend::from_host(&ssh))),
+                ("tmux@wsl", Box::new(TmuxBackend::from_host(&wsl))),
+                ("tmux@psmuxhost", Box::new(TmuxBackend::from_host(&win))),
+                ("psmux@local", Box::new(PsmuxBackend::local())),
+                ("psmux@ssh", Box::new(PsmuxBackend::from_host(&win))),
+            ];
+            for (label, backend) in backends {
+                writeln!(out, "backend {label} name = {}", backend.name()).unwrap();
+                writeln!(
+                    out,
+                    "backend {label} needs_liveness_poll = {}",
+                    backend.needs_liveness_poll()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "backend {label} supports_snapshots = {}",
+                    backend.supports_snapshots()
+                )
+                .unwrap();
+            }
+        }
+        let mut w = |k: &str, v: String| writeln!(out, "local {k} = {v}").unwrap();
+        w("utf8_flag", format!("{}", LocalMuxTransport::UTF8_FLAG));
+        w(
+            "oneshot_pane_report",
+            format!("{}", LocalMuxTransport::ONESHOT_PANE_REPORT),
+        );
+        w(
+            "windows_stamped",
+            format!("{}", local_windows_are_stamped()),
+        );
+        let sock = local_socket();
+        w(
+            "deferred",
+            LocalMuxTransport::deferred_prompt_script(
+                &sock,
+                "thurbox:tb-demo",
+                "line one\nline two",
+            ),
+        );
+        w(
+            "heartbeat",
+            LocalMuxTransport::heartbeat_loop_command(Path::new("/opt/tbx/thurbox-cli")),
+        );
+        let with_args = new_window_command(
+            "tb-demo",
+            "thurbox:{end}",
+            COMMAND,
+            &args(),
+            Some(Path::new("/tmp/w")),
+            &env1(),
+        );
+        w("new_window_command args", format!("{:?}", argv(&with_args)));
+        let no_args = new_window_command("tb-demo", "thurbox:{end}", COMMAND, &[], None, &env1());
+        w(
+            "new_window_command no-args",
+            format!("{:?}", argv(&no_args)),
+        );
+        out.replace(&format!("\"-L\", \"{sock}\""), "\"-L\", \"SOCK\"")
+            .replace(&format!("-L {sock} "), "-L SOCK ")
+    }
+
+    #[test]
+    fn every_dialect_answers_as_the_core_did_before_the_split() {
+        let now = current();
+        let before: Vec<&str> = BEFORE.lines().collect();
+        let after: Vec<&str> = now.lines().collect();
+        assert_eq!(before.len(), after.len(), "a key was added or dropped");
+        let mut moved = Vec::new();
+        for (b, a) in before.iter().zip(&after) {
+            let deliberate = DELIBERATE.iter().any(|(key, was, is)| {
+                *b == format!("{key} = {was}") && *a == format!("{key} = {is}")
+            });
+            if b != a && !deliberate {
+                moved.push(format!("before: {b}\n after: {a}"));
+            }
+        }
+        assert!(moved.is_empty(), "{}", moved.join("\n"));
+        for (key, _, is) in DELIBERATE {
+            assert!(
+                after.contains(&format!("{key} = {is}").as_str()),
+                "deliberate change to `{key}` is no longer in effect"
+            );
+        }
+    }
+}
