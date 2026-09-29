@@ -27,8 +27,9 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use thurbox::agent::backend::{ProgramPane, SessionBackend};
-use thurbox::agent::tmux::TmuxBackend;
+use thurbox::backend::pane::ProgramPane;
+use thurbox::backend::tmux::TmuxBackend;
+use thurbox::backend::SessionBackend;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;

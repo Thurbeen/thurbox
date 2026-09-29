@@ -69,7 +69,7 @@ pub fn which_on_path(exe: &str) -> bool {
 }
 
 /// Where `exe` resolves on `PATH`, as a path a caller can hand to something
-/// that does *not* share this process's `PATH` — `agent::tmux`'s
+/// that does *not* share this process's `PATH` — `backend::tmux`'s
 /// `resolve_local_program`, which hands a local window command to the
 /// multiplexer, is why this exists rather than [`which_on_path`] alone.
 ///
@@ -297,7 +297,7 @@ fn data_app_dir() -> Option<PathBuf> {
 /// set" is a different question from "this instance was moved".
 ///
 /// A relocated instance keeps its own database, and so its own record of which
-/// sessions exist; `agent::tmux` reads this to put those sessions on a tmux
+/// sessions exist; `backend::tmux` reads this to put those sessions on a tmux
 /// socket of their own instead of the operator's shared server.
 #[cfg(not(test))]
 pub fn relocated_data_dir() -> Option<PathBuf> {
@@ -494,7 +494,7 @@ pub fn worktrees_directory() -> Option<PathBuf> {
 ///
 /// [`relocated_data_dir`] answers the narrower "was this instance *moved*";
 /// this answers "where is it", which is what a consumer comparing against
-/// somebody else's recorded data dir needs (`agent::tmux::socket_for`, deciding
+/// somebody else's recorded data dir needs (`backend::tmux::socket_for`, deciding
 /// whether an inherited socket still belongs to this instance).
 pub fn data_directory() -> Option<PathBuf> {
     data_app_dir()

@@ -73,59 +73,53 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths", "agent"],
         allowed_path_only: &[],
     },
+    // The boundary's root: re-exports of the contract, nothing of its own.
+    ModuleRules {
+        name: "backend",
+        allowed: &["backend::pane", "backend::registry"],
+        allowed_path_only: &[],
+    },
     // The session-backend contract, and the pane machinery every backend's
     // stream is wired into. It names no concrete backend, no protocol helper
     // and no global config.
     ModuleRules {
-        name: "agent::backend",
-        allowed: &["session", "agent", "agent::osc8", "agent::output_wake"],
+        name: "backend::pane",
+        allowed: &["session", "agent", "backend::osc8", "backend::output_wake"],
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::osc8",
+        name: "backend::osc8",
         allowed: &["session"],
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::output_wake",
+        name: "backend::output_wake",
         allowed: &[],
         allowed_path_only: &[],
     },
     // A container of backends. Knows the contract and nothing that builds one.
     ModuleRules {
-        name: "agent::registry",
-        allowed: &["session", "agent::backend"],
+        name: "backend::registry",
+        allowed: &["session", "backend::pane"],
         allowed_path_only: &[],
     },
     // The tmux command and control-mode protocol. Shared grammar, not an
     // adapter: it may know the contract, never the adapter using it.
     ModuleRules {
-        name: "agent::control_mode",
-        allowed: &[
-            "session",
-            "shell",
-            "agent",
-            "agent::backend",
-            "agent::transport",
-        ],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::transport",
-        allowed: &["shell"],
+        name: "backend::tmux_compat",
+        allowed: &["session", "shell", "agent", "backend::pane"],
         allowed_path_only: &[],
     },
     // The tmux adapter.
     ModuleRules {
-        name: "agent::tmux",
+        name: "backend::tmux",
         allowed: &[
             "session",
             "paths",
             "shell",
             "agent",
-            "agent::backend",
-            "agent::control_mode",
-            "agent::transport",
+            "backend::pane",
+            "backend::tmux_compat",
         ],
         allowed_path_only: &[],
     },
@@ -170,7 +164,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "workspace",
             "shell",
         ],
-        allowed_path_only: &["agent", "agent::host_config", "agent::registry"],
+        allowed_path_only: &["agent", "agent::host_config", "backend::registry"],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
     ModuleRules {
@@ -231,8 +225,8 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[
             "agent",
             "agent::host_config",
-            "agent::backend",
-            "agent::registry",
+            "backend::pane",
+            "backend::registry",
             "usage",
         ],
     },
@@ -262,7 +256,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         name: "coordinator",
         allowed: &[
             "agent",
-            "agent::output_wake",
+            "backend::output_wake",
             "clipboard",
             "kernel",
             "paths",
@@ -308,7 +302,7 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// Nodes whose every child module must be a governed node of its own, so a
 /// new file there is a decision rather than something its parent's rule
 /// silently covers.
-const SUBMODULE_GOVERNED: &[&str] = &[];
+const SUBMODULE_GOVERNED: &[&str] = &["backend"];
 
 /// The task in the backend-boundary sequence that removes a transitional
 /// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.

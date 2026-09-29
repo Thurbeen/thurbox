@@ -1115,7 +1115,7 @@ mod transport_proptests {
 
     use proptest::prelude::*;
 
-    use crate::agent::control_mode::{
+    use crate::backend::tmux_compat::control_mode::{
         decode_octal, format_send_keys, parse_notification, ControlModeReader, Notification,
     };
 

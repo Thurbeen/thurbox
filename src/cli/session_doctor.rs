@@ -586,15 +586,15 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
     // Spelled out at every mention rather than imported: `cli` may reach
     // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
     // that holds for a `use` inside a function too.
-    match crate::agent::tmux::agent_pane_path(&session.id.to_string(), &session.name) {
-        crate::agent::tmux::PanePath::Known(path) => {
+    match crate::backend::tmux::agent_pane_path(&session.id.to_string(), &session.name) {
+        crate::backend::tmux::PanePath::Known(path) => {
             match resolve_cli_on(std::ffi::OsStr::new(&path)) {
                 Some(found) => HookCli::OnPanePath(found),
                 None => HookCli::NotOnPanePath,
             }
         }
-        crate::agent::tmux::PanePath::Unknown => HookCli::PaneUnverifiable,
-        crate::agent::tmux::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
+        crate::backend::tmux::PanePath::Unknown => HookCli::PaneUnverifiable,
+        crate::backend::tmux::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
     }
 }
 
@@ -604,7 +604,7 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
 /// decides, and answering with this one is the confusion the `cli` check was
 /// built on.
 ///
-/// Deliberately not [`crate::agent::tmux::resolve_cli_binary`], which prefers
+/// Deliberately not [`crate::backend::tmux::resolve_cli_binary`], which prefers
 /// the sibling of the running executable — a hook command carries the bare name
 /// and gets whatever `PATH` gives it, which is precisely the failure being
 /// looked for.

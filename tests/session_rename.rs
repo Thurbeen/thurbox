@@ -163,8 +163,8 @@ impl Env {
         let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
         assert!(pane.starts_with('%'), "new-window said {pane:?}");
         for (option, value) in [
-            (thurbox::agent::tmux::WINDOW_SESSION_OPTION, session_id),
-            (thurbox::agent::tmux::WINDOW_ROLE_OPTION, "shell"),
+            (thurbox::backend::tmux::WINDOW_SESSION_OPTION, session_id),
+            (thurbox::backend::tmux::WINDOW_ROLE_OPTION, "shell"),
         ] {
             self.tmux(&["set-option", "-w", "-t", &pane, option, value]);
         }

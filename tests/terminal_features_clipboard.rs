@@ -68,7 +68,7 @@ fn clipboard_entries(features: &[String]) -> usize {
 
 fn spawn(n: usize, dir: &std::path::Path) {
     let id = format!("11111111-1111-4111-8111-{n:012}");
-    let spawned = thurbox::agent::tmux::spawn_window(
+    let spawned = thurbox::backend::tmux::spawn_window(
         &id,
         &format!("features-{n}"),
         "sh",

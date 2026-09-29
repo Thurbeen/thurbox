@@ -387,7 +387,7 @@ fn assess(
         .get(&facts.agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| facts.agent.clone());
-    let pane = crate::agent::tmux::pane_state(&id.to_string(), &facts.name);
+    let pane = crate::backend::tmux::pane_state(&id.to_string(), &facts.name);
     hook.with_pane(
         &command,
         registry,

@@ -33,7 +33,7 @@ use tmux_server::TmuxServer;
 const SOCKET: &str = "thurbox-hookstate-test";
 
 /// The tmux session name the local backend groups its windows under. Mirrors
-/// `agent::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
+/// `backend::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
 /// because a test build carries the same `dev_build` marker a dev binary does.
 const SESSION: &str = "thurbox-dev";
 
@@ -685,16 +685,16 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &format!("tb-{name}"),
         &fake.to_string_lossy(),
     ]);
-    thurbox::agent::tmux::stamp_local_window(
+    thurbox::backend::tmux::stamp_local_window(
         &format!("{SESSION}:tb-{name}"),
         &row.id.to_string(),
-        thurbox::agent::tmux::WindowRole::Agent,
+        thurbox::backend::tmux::WindowRole::Agent,
     );
-    assert!(thurbox::agent::tmux::window_exists(
+    assert!(thurbox::backend::tmux::window_exists(
         &row.id.to_string(),
         &name
     ));
-    assert!(!thurbox::agent::tmux::window_exists(
+    assert!(!thurbox::backend::tmux::window_exists(
         &namesake.id.to_string(),
         &name
     ));

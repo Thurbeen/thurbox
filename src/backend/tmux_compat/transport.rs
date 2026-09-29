@@ -1,7 +1,7 @@
 //! Transport seam for the tmux backend.
 //!
 //! The tmux control-mode protocol is identical whether tmux runs on the local
-//! machine or on a remote host reached over SSH (see [`crate::agent::control_mode`]).
+//! machine or on a remote host reached over SSH (see [`crate::backend::tmux_compat::control_mode`]).
 //! The *only* thing that differs is how the `tmux` process is launched: a bare
 //! `Command::new("tmux")` locally, or `ssh <dest> tmux …` remotely.
 //!
@@ -159,7 +159,7 @@ impl TmuxTransport {
 
     /// Whether the multiplexer is psmux (the native-Windows tmux clone). psmux
     /// lacks tmux's `send-keys -H` hex flag, so the keystroke-encoding path
-    /// branches on this — see [`crate::agent::control_mode::send_keys_commands`].
+    /// branches on this — see [`crate::backend::tmux_compat::control_mode::send_keys_commands`].
     pub fn uses_psmux(&self) -> bool {
         self.mux() == "psmux"
     }

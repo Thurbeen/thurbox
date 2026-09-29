@@ -10,14 +10,12 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use tracing::{debug, warn};
 
-use crate::agent::backend::{
-    AdoptedSession, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession,
-};
-use crate::agent::control_mode::{
+use crate::backend::tmux_compat::control_mode::{
     self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
     ControlModeWriter, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
-use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
+use crate::backend::tmux_compat::transport::{TmuxTransport, DEFAULT_MUX};
+use crate::backend::{AdoptedSession, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession};
 
 /// Dedicated tmux socket name for an instance running out of the **default**
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
@@ -207,7 +205,7 @@ fn local_mux_command(args: &[&str]) -> Command {
     cmd.arg("-L").arg(local_socket()).args(args);
     // Strip nesting env so these one-shots target thurbox's own socket even when
     // thurbox is launched inside a tmux/psmux pane (see `strip_mux_nesting_env`).
-    crate::agent::transport::strip_mux_nesting_env(&mut cmd);
+    crate::backend::tmux_compat::transport::strip_mux_nesting_env(&mut cmd);
     cmd
 }
 
@@ -642,8 +640,8 @@ impl WindowIndex {
         &self,
         session_id: &str,
         session_name: &str,
-    ) -> crate::agent::backend::BackendLiveness {
-        use crate::agent::backend::BackendLiveness;
+    ) -> crate::backend::BackendLiveness {
+        use crate::backend::BackendLiveness;
         match self.agent_window(session_id, session_name) {
             Located::At(_) => match self.live_agent_window(session_id, session_name) {
                 Located::At(_) => BackendLiveness::Live,
@@ -3041,7 +3039,7 @@ fn mux_failure(out: &std::process::Output) -> String {
 /// listed here.
 ///
 /// `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` are also the set
-/// psmux implements (see [`crate::agent::control_mode::send_keys_commands`]);
+/// psmux implements (see [`crate::backend::tmux_compat::control_mode::send_keys_commands`]);
 /// the rest are tmux-only, which is what a Windows host runs into.
 pub const NAMED_KEYS: &[(&str, &str)] = &[
     ("enter", "Enter"),
@@ -4613,7 +4611,7 @@ pub fn window_pane_pid(session_id: &str, session_name: &str) -> Result<Option<u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::control_mode::{
+    use crate::backend::tmux_compat::control_mode::{
         decode_octal, format_send_keys, parse_notification, shell_escape, Notification,
     };
 

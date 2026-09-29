@@ -63,7 +63,7 @@ impl From<Vec<u8>> for PaneChunk {
 
 /// A pane's screen and history as tmux holds them, read back through
 /// [`snapshot_commands`] — enough to rebuild a terminal that was dropped (see
-/// `agent::backend::WiredPane::evict`).
+/// `backend::pane::WiredPane::evict`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneSnapshot {
     pub cols: u16,
@@ -174,7 +174,7 @@ impl SnapshotArrived {
 }
 
 /// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
-pub(super) struct PendingSnapshot {
+pub(in crate::backend) struct PendingSnapshot {
     rx: Receiver<CommandResponse>,
     cmd: String,
     pane: String,
@@ -182,7 +182,7 @@ pub(super) struct PendingSnapshot {
 
 impl PendingSnapshot {
     /// The answer, or the error the command ran into.
-    pub(super) fn wait(self) -> Result<PaneSnapshot> {
+    pub(in crate::backend) fn wait(self) -> Result<PaneSnapshot> {
         let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
         PaneSnapshot::parse(response.blocks)
             .with_context(|| format!("unexpected answer to a snapshot of {}", self.pane))
@@ -230,7 +230,7 @@ pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
 
 /// Where each registered pane's reader applies the sizes tmux reports, for a
 /// size its channel had no room for (see `ControlMode::dispatch_resize`).
-pub type PaneSizesMap = HashMap<String, crate::agent::backend::PaneSize>;
+pub type PaneSizesMap = HashMap<String, crate::backend::PaneSize>;
 pub type PaneSizesMapShared = Arc<Mutex<PaneSizesMap>>;
 
 /// Response from a tmux control mode command.
@@ -344,7 +344,7 @@ pub struct ControlModeReader {
     receiver: std::sync::mpsc::Receiver<PaneChunk>,
     buffer: Vec<u8>,
     pos: usize,
-    size: crate::agent::backend::PaneSize,
+    size: crate::backend::PaneSize,
 }
 
 impl ControlModeReader {
@@ -353,13 +353,13 @@ impl ControlModeReader {
             receiver,
             buffer: Vec::new(),
             pos: 0,
-            size: crate::agent::backend::PaneSize::default(),
+            size: crate::backend::PaneSize::default(),
         }
     }
 
     /// Where this reader leaves the sizes tmux reports for its pane, for the
     /// loop that feeds the pane's grid.
-    pub fn size(&self) -> crate::agent::backend::PaneSize {
+    pub fn size(&self) -> crate::backend::PaneSize {
         self.size.clone()
     }
 }
@@ -568,7 +568,7 @@ fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
 /// literal run never contains a newline (LF and CR map to key-names), but the
 /// control-mode line is `\n`-delimited, so newlines are replaced defensively.
 /// Also the argument encoding for any other psmux control-mode line (e.g.
-/// `new-window -c/-n` in [`super::tmux`]) — same tokenizer, so
+/// `new-window -c/-n` in [`crate::backend::tmux`]) — same tokenizer, so
 /// [`shell_escape`]'s POSIX `'\''` idiom would arrive mangled there too.
 pub(crate) fn psmux_quote(s: &str) -> String {
     format!(
@@ -1075,15 +1075,15 @@ const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// which avoids numbering mismatches between our counter and tmux's internal
 /// counter (e.g., from `send_command_nowait` calls that still consume a tmux
 /// command number).
-pub(super) struct ControlMode {
-    pub(super) stdin: Arc<Mutex<ChildStdin>>,
-    pub(super) pane_senders: PaneSendersMapShared,
+pub(in crate::backend) struct ControlMode {
+    pub(in crate::backend) stdin: Arc<Mutex<ChildStdin>>,
+    pub(in crate::backend) pane_senders: PaneSendersMapShared,
     /// Where each registered pane lives, for turning `%window-close` into EOF.
     /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
-    pub(super) pane_windows: PaneWindowsMapShared,
+    pub(in crate::backend) pane_windows: PaneWindowsMapShared,
     /// Where each pane's reader applies a size — written and read as
     /// `pane_windows` is, and only for a pane whose sizes are reported.
-    pub(super) pane_sizes: PaneSizesMapShared,
+    pub(in crate::backend) pane_sizes: PaneSizesMapShared,
     /// FIFO queue of waiters — one per command written, in the order written.
     /// Every sender takes a place, including the ones that will not read the
     /// answer (`send_command_detached`) or will stop waiting for it
@@ -1145,7 +1145,7 @@ impl ControlMode {
     /// given transport (local or ssh).
     /// `sizer` is this client's name in [`SIZER_OPTION`], so a pane named for
     /// anybody else can be reported as sized elsewhere.
-    pub(super) fn start(
+    pub(in crate::backend) fn start(
         transport: &TmuxTransport,
         socket: &str,
         session: &str,
@@ -1624,7 +1624,7 @@ impl ControlMode {
     ///
     /// Only a pane registered with its window can be told, which is every pane
     /// this connection wired up once it learnt the window
-    /// ([`crate::agent::tmux`]'s `register_pane`). The reader thread must never
+    /// ([`crate::backend::tmux`]'s `register_pane`). The reader thread must never
     /// block, but a size must not be dropped the way output is when a channel is
     /// full: a resident grid has nothing that would ever correct it. So a size
     /// with no room in the channel goes straight to where the pane's reader
@@ -1766,7 +1766,7 @@ impl ControlMode {
     }
 
     /// Drain the queued `(pane_id, state)` remote-hook status events.
-    pub(super) fn take_sub_events(&self) -> Vec<(String, String)> {
+    pub(in crate::backend) fn take_sub_events(&self) -> Vec<(String, String)> {
         self.sub_events
             .lock()
             .map(|mut events| events.drain(..).collect())
@@ -1786,7 +1786,7 @@ impl ControlMode {
     }
 
     /// Send a command and wait for its response.
-    pub(super) fn send_command(&self, cmd: &str) -> Result<String> {
+    pub(in crate::backend) fn send_command(&self, cmd: &str) -> Result<String> {
         Self::send_command_on(&self.stdin, &self.response_queue, cmd, 1)
     }
 
@@ -1797,7 +1797,7 @@ impl ControlMode {
     /// its event loop in between (what `birth_options` relies on). Each entry
     /// must be a single command: one that chains its own `;` answers with more
     /// blocks than are counted here, and the surplus reaches the next waiter.
-    pub(super) fn send_command_list(&self, cmds: &[&str]) -> Result<String> {
+    pub(in crate::backend) fn send_command_list(&self, cmds: &[&str]) -> Result<String> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
         }
@@ -1914,7 +1914,7 @@ impl ControlMode {
     ///
     /// For the callers that are the interface's own loop, where the answer is
     /// worth a short wait and nothing is worth a long one.
-    pub(super) fn send_command_within(
+    pub(in crate::backend) fn send_command_within(
         &self,
         cmd: &str,
         budget: std::time::Duration,
@@ -1926,7 +1926,7 @@ impl ControlMode {
     /// Ask for a [`PaneSnapshot`] of `pane_id` and do not wait for it: it is
     /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
     /// the byte it describes, for that pane's reader to take up in order.
-    pub(super) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
+    pub(in crate::backend) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
         let cmds = snapshot_commands(pane_id, history, true);
         Self::enqueue_command_on(
             &self.stdin,
@@ -1944,7 +1944,11 @@ impl ControlMode {
     /// is [`PendingSnapshot::wait`]ed for separately, so a caller holding the
     /// backend's control lock can let go of it first and several searches'
     /// round trips overlap.
-    pub(super) fn ask_snapshot(&self, pane_id: &str, history: usize) -> Result<PendingSnapshot> {
+    pub(in crate::backend) fn ask_snapshot(
+        &self,
+        pane_id: &str,
+        history: usize,
+    ) -> Result<PendingSnapshot> {
         let cmds = snapshot_commands(pane_id, history, false);
         let cmd = cmds.join(" ; ");
         let rx =
@@ -1980,7 +1984,11 @@ impl ControlMode {
     /// is one per command **plus one per command an `if-shell` in it runs** —
     /// those answer separately (measured, tmux 3.7c). A wrong count hands the
     /// surplus to the next waiter and shifts every later answer.
-    pub(super) fn send_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
+    pub(in crate::backend) fn send_command_detached(
+        &self,
+        cmds: &[&str],
+        blocks: usize,
+    ) -> Result<()> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
         }
@@ -2001,7 +2009,7 @@ impl ControlMode {
     /// response is consumed, the nowait response may steal the waiter.
     /// Only use this when no `send_command` follows, or when the caller
     /// is the reader thread itself (e.g., pause resume).
-    pub(super) fn send_command_nowait(&self, cmd: &str) -> Result<()> {
+    pub(in crate::backend) fn send_command_nowait(&self, cmd: &str) -> Result<()> {
         let mut stdin = self
             .stdin
             .lock()
@@ -2057,7 +2065,7 @@ impl Drop for ControlMode {
 }
 
 /// Check if an error is caused by a broken pipe (control mode stdin closed).
-pub(super) fn is_broken_pipe(err: &anyhow::Error) -> bool {
+pub(in crate::backend) fn is_broken_pipe(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()
@@ -2066,7 +2074,7 @@ pub(super) fn is_broken_pipe(err: &anyhow::Error) -> bool {
 }
 
 /// Check if an error is caused by a recv timeout (reader thread died, response never arrives).
-pub(super) fn is_recv_timeout(err: &anyhow::Error) -> bool {
+pub(in crate::backend) fn is_recv_timeout(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
             .downcast_ref::<std::sync::mpsc::RecvTimeoutError>()

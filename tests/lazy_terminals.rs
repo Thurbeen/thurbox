@@ -39,7 +39,7 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-lazy-test";
 
-/// `agent::tmux::TMUX_SESSION` in a test build — see `tests/attach_by_name.rs`.
+/// `backend::tmux::TMUX_SESSION` in a test build — see `tests/attach_by_name.rs`.
 const SESSION: &str = "thurbox-dev";
 
 const ID: &str = "22222222-2222-2222-2222-222222222222";
@@ -201,7 +201,7 @@ fn paint(terminals: &Terminals, scroll: u16) -> Vec<String> {
         .collect()
 }
 
-fn agent_parser(terminals: &Terminals) -> Arc<Mutex<thurbox::agent::SessionParser>> {
+fn agent_parser(terminals: &Terminals) -> Arc<Mutex<thurbox::backend::SessionParser>> {
     terminals
         .search_sources(&[ID.to_string()])
         .into_iter()

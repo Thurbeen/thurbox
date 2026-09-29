@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::agent::SessionBackend;
+use crate::backend::SessionBackend;
 use crate::session::HostRegistry;
 
 /// A registry of session backends keyed by name.
@@ -44,7 +44,8 @@ impl BackendRegistry {
     /// read of `hosts.toml`. The warnings are that read's, for callers that
     /// surface them.
     pub fn from_configured_hosts() -> (Self, HostRegistry, Vec<String>) {
-        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::LocalTmuxBackend::new());
+        let local: Arc<dyn SessionBackend> =
+            Arc::new(crate::backend::tmux::LocalTmuxBackend::new());
         let mut backends = Self::new(local);
         let (hosts, warnings) = crate::agent::host_config::cached_registry();
         let hosts = hosts.clone();
@@ -53,7 +54,7 @@ impl BackendRegistry {
             if matches!(routed.mux().as_str(), "rmux" | "herdr") {
                 routed.multiplexer = Some("tmux".into());
             }
-            backends.register(Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+            backends.register(Arc::new(crate::backend::tmux::TmuxBackend::from_host(
                 &routed,
             )));
         }
@@ -116,7 +117,7 @@ mod tests {
     use anyhow::Result;
 
     use super::*;
-    use crate::agent::backend::{AdoptedSession, DiscoveredSession, SpawnedSession};
+    use crate::backend::{AdoptedSession, DiscoveredSession, SpawnedSession};
 
     struct StubBackend {
         backend_name: &'static str,

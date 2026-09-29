@@ -895,7 +895,7 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
             "backend_id": res.backend_id,
             "backend_type": res.backend_type,
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::agent::tmux::local_socket_name(),
+            "tmux_socket": crate::backend::tmux::local_socket_name(),
             "cwd": res.cwd.display().to_string(),
             "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             "hook_failures": res.hook_failures,
@@ -1015,7 +1015,7 @@ fn run_send(
 
 fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    let resolved = crate::agent::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
+    let resolved = crate::backend::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, &resolved.name])? {
@@ -1032,7 +1032,7 @@ fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, Co
     } else {
         None
     };
-    crate::agent::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
+    crate::backend::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
         .map_err(|e| format!("send_key_now: {e}"))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
@@ -1194,7 +1194,7 @@ fn run_signal(
     }
     // The same state on the pane, for a peer's live subscription:
     // best-effort, and nothing at all outside tmux.
-    if let Err(e) = crate::agent::tmux::set_own_pane_state(&state) {
+    if let Err(e) = crate::backend::tmux::set_own_pane_state(&state) {
         tracing::debug!("could not set the pane state option: {e:#}");
     }
     Ok(CommandOutput::new(
@@ -1312,13 +1312,17 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output =
-        crate::agent::tmux::capture_pane_text(&session.id.to_string(), &session.name, lines, ansi)
-            .map_err(|e| format!("capture_pane_text: {e}"))?;
+    let output = crate::backend::tmux::capture_pane_text(
+        &session.id.to_string(),
+        &session.name,
+        lines,
+        ansi,
+    )
+    .map_err(|e| format!("capture_pane_text: {e}"))?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // Same target resolution, so the state describes the pane just captured.
-    let state = crate::agent::tmux::pane_state(&session.id.to_string(), &session.name);
+    let state = crate::backend::tmux::pane_state(&session.id.to_string(), &session.name);
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -2060,7 +2064,7 @@ fn existing_session_output(db: &Database, session: &SharedSession) -> CommandOut
             "agent_session_id": session.agent_session_id,
             "backend_id": session.backend_id,
             "worktrees": session.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::agent::tmux::local_socket_name(),
+            "tmux_socket": crate::backend::tmux::local_socket_name(),
             "cwd": session.cwd.as_ref().map(|p| p.display().to_string()),
             "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
             "hook_failures": Vec::<String>::new(),
@@ -2113,7 +2117,7 @@ pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, C
 
 /// Run a pane command on the machine the session actually lives on.
 ///
-/// `agent::tmux`'s one-shot helpers talk to the *local* multiplexer, so a
+/// `backend::tmux`'s one-shot helpers talk to the *local* multiplexer, so a
 /// session created with `--host` has no pane here. That used to be a refusal,
 /// which made `--host` produce a shape no other verb accepted: creatable, and
 /// then undrivable. thurbox already knows how to run its own CLI on a host —
@@ -2159,7 +2163,7 @@ fn delegate_to_host(
 /// What `session key` says about a spelling it does not know, listing the set
 /// so the answer is in the error rather than in `--help`.
 fn unknown_key(key: &str) -> String {
-    let names = crate::agent::tmux::NAMED_KEYS
+    let names = crate::backend::tmux::NAMED_KEYS
         .iter()
         .map(|(name, _)| *name)
         .collect::<Vec<_>>()
@@ -2278,7 +2282,7 @@ impl SessionFacts {
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let pane = crate::agent::tmux::pane_state(&s.id.to_string(), &s.name);
+        let pane = crate::backend::tmux::pane_state(&s.id.to_string(), &s.name);
         hook.with_pane(
             &command,
             registry,
@@ -2370,7 +2374,7 @@ fn register_running_session(
     // for its id yet; passing the real id (rather than "") still lets the
     // by-name fallback require the sole match to be unstamped, refusing to
     // steal a window already stamped for a different, live session.
-    let pane = crate::agent::tmux::agent_window(None, &session.id.to_string(), &session.name)
+    let pane = crate::backend::tmux::agent_window(None, &session.id.to_string(), &session.name)
         .map_err(|e| format!("could not list windows: {e:#}"))?
         .pane()
         .ok_or_else(|| {
@@ -2383,10 +2387,10 @@ fn register_running_session(
         })?;
     // Adopted, so stamp it: the row now owns that window by id rather than by
     // a name a later namesake could take.
-    crate::agent::tmux::stamp_local_window(
+    crate::backend::tmux::stamp_local_window(
         &pane,
         &session.id.to_string(),
-        crate::agent::tmux::WindowRole::Agent,
+        crate::backend::tmux::WindowRole::Agent,
     );
     session.backend_id = pane;
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)

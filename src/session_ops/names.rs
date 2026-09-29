@@ -132,13 +132,14 @@ pub fn window_namesakes(
     backend: &str,
 ) -> Result<Vec<SharedSession>, String> {
     // Fully-qualified per the session_ops → agent path-only architecture rule.
-    let window = crate::agent::tmux::sanitize_window_name(name);
+    let window = crate::backend::tmux::sanitize_window_name(name);
     Ok(db
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?
         .into_iter()
         .filter(|s| {
-            s.backend_type == backend && crate::agent::tmux::sanitize_window_name(&s.name) == window
+            s.backend_type == backend
+                && crate::backend::tmux::sanitize_window_name(&s.name) == window
         })
         .collect())
 }

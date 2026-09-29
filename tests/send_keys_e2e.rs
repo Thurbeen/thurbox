@@ -26,7 +26,7 @@ use tmux_server::TmuxServer;
 const SOCKET: &str = "thurbox-send-keys-e2e";
 
 /// The tmux session thurbox groups its windows under, which is where every
-/// resolver looks. Mirrors `agent::tmux::TMUX_SESSION`, which is private — and
+/// resolver looks. Mirrors `backend::tmux::TMUX_SESSION`, which is private — and
 /// is `thurbox-dev` here, because a test build carries the same `dev_build`
 /// marker a dev binary does.
 const THURBOX_TMUX_SESSION: &str = "thurbox-dev";

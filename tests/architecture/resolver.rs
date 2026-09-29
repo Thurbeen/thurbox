@@ -769,7 +769,9 @@ fn use_tree(
 
 /// Every multi-segment path in code: `(offset, segments)`. A path starts at an
 /// identifier not itself preceded by `::`, `$` or an identifier character, and
-/// ends before a turbofish, a brace group or a glob.
+/// ends before a turbofish, a brace group or a glob. The path of a
+/// `pub(in path)` visibility names who may see an item, not a dependency, and
+/// is left out.
 pub fn code_paths(stripped: &str) -> Vec<(usize, Vec<String>)> {
     let bytes = stripped.as_bytes();
     let mut out = Vec::new();
@@ -792,11 +794,18 @@ pub fn code_paths(stripped: &str) -> Vec<(usize, Vec<String>)> {
             i += 2;
             segs.push(read_ident(bytes, &mut i));
         }
-        if !preceded && segs.len() > 1 {
+        if !preceded && segs.len() > 1 && !is_visibility_path(bytes, start) {
             out.push((start, segs));
         }
     }
     out
+}
+
+/// Whether the path at `start` is the `path` of `pub(in path)`.
+fn is_visibility_path(bytes: &[u8], start: usize) -> bool {
+    let before = String::from_utf8_lossy(&bytes[start.saturating_sub(16)..start]);
+    let before: String = before.chars().filter(|c| !c.is_whitespace()).collect();
+    before.ends_with("pub(in")
 }
 
 /// `type Name<…> = rhs;` declarations: `(offset, name, rhs span)`. An

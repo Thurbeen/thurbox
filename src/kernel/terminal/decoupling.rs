@@ -109,7 +109,7 @@ impl Recorder {
     }
 }
 
-impl crate::agent::backend::SessionBackend for Recorder {
+impl crate::backend::SessionBackend for Recorder {
     fn name(&self) -> &str {
         "local-tmux"
     }
@@ -128,9 +128,9 @@ impl crate::agent::backend::SessionBackend for Recorder {
         _: &HashMap<String, String>,
         _: u16,
         _: u16,
-    ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+    ) -> anyhow::Result<crate::backend::SpawnedSession> {
         let (output, input) = self.io();
-        Ok(crate::agent::backend::SpawnedSession {
+        Ok(crate::backend::SpawnedSession {
             backend_id: SHELL_PANE.to_string(),
             output,
             input,
@@ -143,16 +143,16 @@ impl crate::agent::backend::SessionBackend for Recorder {
         _: u16,
         _: u16,
         _: Option<Vec<u8>>,
-    ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+    ) -> anyhow::Result<crate::backend::AdoptedSession> {
         let (output, input) = self.io();
-        Ok(crate::agent::backend::AdoptedSession {
+        Ok(crate::backend::AdoptedSession {
             output,
             input,
             seed_len: 0,
             size: None,
         })
     }
-    fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+    fn discover(&self) -> anyhow::Result<Vec<crate::backend::DiscoveredSession>> {
         Ok(Vec::new())
     }
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> anyhow::Result<()> {
@@ -207,11 +207,11 @@ impl Harness {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = crate::paths::TestPathGuard::new(dir.path());
         let recorder = Arc::new(Recorder::default());
-        let backend: Arc<dyn crate::agent::backend::SessionBackend> = recorder.clone();
+        let backend: Arc<dyn crate::backend::SessionBackend> = recorder.clone();
         let provider: Arc<dyn crate::agent::AgentProvider> = Arc::new(
             crate::agent::GenericProvider::new(crate::session::AgentDef::default()),
         );
-        let mut session = crate::agent::Session::adopt(
+        let mut session = crate::backend::Session::adopt(
             "probe".to_string(),
             rows,
             cols,
@@ -785,11 +785,11 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _paths = crate::paths::TestPathGuard::new(dir.path());
     let recorder = Arc::new(Recorder::default());
-    let backend: Arc<dyn crate::agent::backend::SessionBackend> = recorder.clone();
+    let backend: Arc<dyn crate::backend::SessionBackend> = recorder.clone();
     let provider: Arc<dyn crate::agent::AgentProvider> = Arc::new(
         crate::agent::GenericProvider::new(crate::session::AgentDef::default()),
     );
-    let session = crate::agent::Session::adopt_dormant(
+    let session = crate::backend::Session::adopt_dormant(
         "probe".to_string(),
         24,
         80,

@@ -482,7 +482,7 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
         if host.is_windows() && !crate::session::psmux_hook_rewrite_supported() {
             continue;
         }
-        let polled = match crate::agent::tmux::list_remote_hook_states(host) {
+        let polled = match crate::backend::tmux::list_remote_hook_states(host) {
             Ok(polled) => polled,
             Err(e) => {
                 tracing::debug!("remote status poll skipped for host '{}': {e:#}", host.name);

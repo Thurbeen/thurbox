@@ -128,7 +128,7 @@ pub struct SpawnResult {
     /// the caller is told the session exists and finds a row with no pane and
     /// no reason. It is not an error because the command may still be
     /// launchable — a shell function, or something installed a second later —
-    /// which is the same rule `agent::tmux::resolve_local_program` is written
+    /// which is the same rule `backend::tmux::resolve_local_program` is written
     /// under.
     pub warnings: Vec<String>,
     /// Why this session on a remote host was **not** created by the host's own
@@ -522,7 +522,7 @@ fn launch_window(
 ) -> Result<String, String> {
     match host {
         Some(h) => {
-            crate::agent::tmux::spawn_window_remote(h, stamp, name, command, args, Some(cwd), env)
+            crate::backend::tmux::spawn_window_remote(h, stamp, name, command, args, Some(cwd), env)
                 .map_err(
                     |e| match crate::agent::preflight::is_missing_dependency(&e) {
                         // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
@@ -532,7 +532,7 @@ fn launch_window(
                     },
                 )
         }
-        None => crate::agent::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
+        None => crate::backend::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
             .map_err(
                 |e| match crate::agent::preflight::is_missing_dependency(&e) {
                     // Already a sentence naming the binary, the search and the fix;
@@ -555,13 +555,13 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
     // sessions share destroys a live one. Leaking the window we already
     // leaked is the cheap failure; killing someone else's is not.
     let cleanup = match host {
-        Some(h) => crate::agent::tmux::kill_remote_windows(
+        Some(h) => crate::backend::tmux::kill_remote_windows(
             h,
             stamp,
             name,
-            crate::agent::tmux::SessionPanes::agent(backend_id),
+            crate::backend::tmux::SessionPanes::agent(backend_id),
         ),
-        None => crate::agent::tmux::kill_window(stamp, name).map(|()| true),
+        None => crate::backend::tmux::kill_window(stamp, name).map(|()| true),
     };
     match cleanup {
         Ok(true) => {}
@@ -1483,7 +1483,7 @@ fn resolve_backend(
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
     if !backends.supports_choice(&choice) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",

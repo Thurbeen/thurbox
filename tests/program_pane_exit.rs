@@ -34,8 +34,9 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use thurbox::agent::backend::{ProgramPane, SessionBackend};
-use thurbox::agent::tmux::TmuxBackend;
+use thurbox::backend::pane::ProgramPane;
+use thurbox::backend::tmux::TmuxBackend;
+use thurbox::backend::SessionBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]

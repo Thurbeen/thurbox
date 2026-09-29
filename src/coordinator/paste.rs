@@ -33,7 +33,7 @@
 //!   it was pressed, and under load ordinary input bunches up. Coalescing that
 //!   on length alone is what announced a phantom "pasted 2 characters" mid-type.
 //!
-//! The outbound half of the journey is `agent::control_mode`'s `PsmuxPaste`,
+//! The outbound half of the journey is `backend::tmux_compat::control_mode`'s `PsmuxPaste`,
 //! which carries the reassembled paste to a psmux pane in one piece (ADR-13);
 //! the rationale for both halves is ADR-4.
 

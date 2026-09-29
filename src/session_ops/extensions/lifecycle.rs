@@ -315,7 +315,7 @@ fn ensure_automation(
 /// active set so self-heal keeps them alive. Idempotent.
 ///
 /// Note: this does NOT arm the tmux automation heartbeat — the CLI layer does
-/// that (it owns the `agent::tmux` dependency). A `Send` automation only fires
+/// that (it owns the `backend::tmux` dependency). A `Send` automation only fires
 /// while something ticks it (TUI tick loop, or the heartbeat keeper window).
 pub fn activate_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureReport, String> {
     let report = ensure_extension(db, def)?;

@@ -631,7 +631,7 @@ impl PaneProbe {
         let (session, name) = (session.to_string(), name.to_string());
         let registry = std::sync::Arc::clone(registry);
         std::thread::spawn(move || {
-            let pane = crate::agent::tmux::pane_state(&session, &name);
+            let pane = crate::backend::tmux::pane_state(&session, &name);
             // Classified on the worker rather than at the fold, so the argv the
             // verdict was read from — a driver's brief runs to kilobytes — never
             // crosses the channel or lands in the snapshot.
@@ -1715,7 +1715,7 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
     let presence = crate::agent::preflight::look_up(binary);
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
     let available = ["tmux", "psmux", "rmux", "herdr"]
         .into_iter()
         .filter_map(|name| {
@@ -1739,7 +1739,7 @@ fn read_mux() -> MuxRow {
 /// asking.
 fn read_hosts() -> Vec<HostRow> {
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    let (backends, _, _) = crate::agent::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
     registry
         .hosts
         .iter()

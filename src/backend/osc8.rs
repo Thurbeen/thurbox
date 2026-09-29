@@ -133,7 +133,7 @@ fn row_glyphs(screen: &vt100::Screen, row: u16, from: u16, to: u16) -> String {
 mod tests {
     use super::*;
 
-    /// Drive a parser the way [`crate::agent::TermSignals`] does, so these
+    /// Drive a parser the way [`crate::backend::TermSignals`] does, so these
     /// tests exercise the real escape → table path.
     #[derive(Default)]
     struct Capture {

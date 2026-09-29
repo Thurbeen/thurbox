@@ -11,9 +11,9 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use crate::agent::osc8;
 use crate::agent::provider::AgentProvider;
-use crate::agent::tmux::WindowRole;
+use crate::backend::osc8;
+use crate::backend::tmux::WindowRole;
 use crate::session::{HyperlinkTable, SessionConfig, SessionInfo};
 
 pub(crate) fn now_millis() -> u64 {
@@ -298,10 +298,10 @@ pub struct DiscoveredSession {
     /// The id of the session row that owns this window, as the window itself
     /// carries it (`@thurbox_session`). Empty for a window spawned before
     /// windows were stamped, or by a multiplexer with no window options — see
-    /// [`crate::agent::tmux::WindowIndex`] for what that leaves resolvable.
+    /// [`crate::backend::tmux::WindowIndex`] for what that leaves resolvable.
     pub session: String,
     /// What the window is for.
-    pub role: crate::agent::tmux::WindowRole,
+    pub role: crate::backend::tmux::WindowRole,
 }
 
 /// A backend's observation of one agent window. Only `Missing` is proof that
@@ -416,7 +416,7 @@ pub trait SessionBackend: Send + Sync {
 
     /// Ask for the pane's state to arrive **in its own output stream**, at the
     /// byte it describes, as a
-    /// [`SnapshotArrived`](crate::agent::control_mode::SnapshotArrived) the
+    /// [`SnapshotArrived`](crate::backend::tmux_compat::control_mode::SnapshotArrived) the
     /// reader loop takes up in order. Returns once asked, not once answered.
     fn request_snapshot(&self, _backend_id: &str) -> Result<()> {
         anyhow::bail!("this backend cannot snapshot a pane")
@@ -425,7 +425,10 @@ pub trait SessionBackend: Send + Sync {
     /// The pane's state as it stands, answered to the caller rather than put
     /// into the stream: for a reader that wants the text and has no parser to
     /// keep in step (the content search of a pane that has no grid).
-    fn snapshot(&self, _backend_id: &str) -> Result<crate::agent::control_mode::PaneSnapshot> {
+    fn snapshot(
+        &self,
+        _backend_id: &str,
+    ) -> Result<crate::backend::tmux_compat::control_mode::PaneSnapshot> {
         anyhow::bail!("this backend cannot snapshot a pane")
     }
 
@@ -443,16 +446,16 @@ pub trait SessionBackend: Send + Sync {
 
     /// Stamp a window with the identity every reconciler resolves it by: which
     /// session row owns it, and in what role (see
-    /// [`crate::agent::tmux::WINDOW_SESSION_OPTION`]).
+    /// [`crate::backend::tmux::WINDOW_SESSION_OPTION`]).
     ///
     /// Defaults to doing nothing, for a backend with no place to keep it —
     /// such a backend's windows read as unstamped, which
-    /// [`crate::agent::tmux::WindowIndex`] resolves by name as before.
+    /// [`crate::backend::tmux::WindowIndex`] resolves by name as before.
     fn stamp_window(
         &self,
         _backend_id: &str,
         _session_id: &str,
-        _role: crate::agent::tmux::WindowRole,
+        _role: crate::backend::tmux::WindowRole,
     ) -> Result<()> {
         Ok(())
     }
@@ -773,7 +776,7 @@ fn carried_state(screen: &vt100::Screen) -> Vec<u8> {
 /// history in order — the screen is the pane's, not the capture's text pushed
 /// to the top. Wrapped rows arrive joined and wrap again at the same width.
 pub fn snapshot_seed(
-    snapshot: &crate::agent::control_mode::PaneSnapshot,
+    snapshot: &crate::backend::tmux_compat::control_mode::PaneSnapshot,
     dormant: &vt100::Screen,
 ) -> Vec<u8> {
     let mut out = Vec::new();
@@ -802,7 +805,9 @@ pub fn snapshot_seed(
 
 /// A parser holding the pane `snapshot` describes, for a reader that wants it
 /// as it stands (the content search) and not as the pane's own grid.
-pub fn parser_from_snapshot(snapshot: &crate::agent::control_mode::PaneSnapshot) -> SessionParser {
+pub fn parser_from_snapshot(
+    snapshot: &crate::backend::tmux_compat::control_mode::PaneSnapshot,
+) -> SessionParser {
     let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
     let blank = vt100::Parser::new(DORMANT_GRID.0, DORMANT_GRID.1, 0);
     let mut parser = vt100::Parser::new_with_callbacks(
@@ -948,7 +953,7 @@ impl WiredPane {
     }
 
     /// The cell behind [`Self::output_seq`], which is how
-    /// [`crate::agent::output_wake::arm`] names this pane.
+    /// [`crate::backend::output_wake::arm`] names this pane.
     pub fn output_seq_cell(&self) -> &AtomicU64 {
         &self.output_seq
     }
@@ -1139,7 +1144,7 @@ impl ProgramPane {
         if let Err(e) = backend.stamp_window(
             &spawned.backend_id,
             "",
-            crate::agent::tmux::WindowRole::Program,
+            crate::backend::tmux::WindowRole::Program,
         ) {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
@@ -1290,7 +1295,7 @@ impl Session {
         provider: &Arc<dyn AgentProvider>,
     ) -> Result<Self> {
         let args = provider.build_args(config);
-        let window_name = crate::agent::tmux::agent_window_name(&name);
+        let window_name = crate::backend::tmux::agent_window_name(&name);
 
         let env = config.env.clone();
 
@@ -1630,7 +1635,7 @@ impl Session {
     ///
     /// `seed_len` is the number of bytes at the front of `reader` that are
     /// replayed history (an adopt's scrollback seed, chained ahead of the
-    /// live stream — see [`crate::agent::tmux::TmuxBackend::adopt`]) rather
+    /// live stream — see [`crate::backend::tmux::TmuxBackend::adopt`]) rather
     /// than genuine pane activity. Those bytes still reach the parser, but
     /// must not stamp `last_output_at`: a restart/reattach replaying hours of
     /// scrollback would otherwise look identical to the agent having just
@@ -1699,15 +1704,17 @@ impl Session {
                     seed_len = seed_len.saturating_sub(n);
                     if ready > 0 {
                         signals.output_seq.fetch_add(1, Ordering::Release);
-                        crate::agent::output_wake::notify(&signals.output_seq);
+                        crate::backend::output_wake::notify(&signals.output_seq);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    if let Some(snapshot) = crate::agent::control_mode::SnapshotArrived::take(e) {
+                    if let Some(snapshot) =
+                        crate::backend::tmux_compat::control_mode::SnapshotArrived::take(e)
+                    {
                         Self::install(&parser, &residency, &snapshot);
                         // A rebuilt grid is new content to paint, like output.
                         signals.output_seq.fetch_add(1, Ordering::Release);
-                        crate::agent::output_wake::notify(&signals.output_seq);
+                        crate::backend::output_wake::notify(&signals.output_seq);
                     }
                 }
                 Err(e) => {
@@ -1731,7 +1738,7 @@ impl Session {
     fn install(
         parser: &Mutex<SessionParser>,
         residency: &Residency,
-        snapshot: &crate::agent::control_mode::PaneSnapshot,
+        snapshot: &crate::backend::tmux_compat::control_mode::PaneSnapshot,
     ) {
         if let Ok(mut parser) = parser.lock() {
             if !residency.is_resident() {
@@ -1954,7 +1961,7 @@ impl Session {
         self.backend.kill(&self.wired.backend_id)?;
 
         let args = self.provider.build_args(config);
-        let window_name = crate::agent::tmux::agent_window_name(&self.info.name);
+        let window_name = crate::backend::tmux::agent_window_name(&self.info.name);
 
         let env = config.env.clone();
 
@@ -2053,7 +2060,7 @@ impl Session {
         }
 
         let shell_cmd = self.backend.default_shell();
-        let window_name = crate::agent::tmux::shell_window_name(&self.info.name);
+        let window_name = crate::backend::tmux::shell_window_name(&self.info.name);
 
         let env = self.env.clone();
         let cwd = cwd.or(self.info.cwd.as_deref());
@@ -2415,15 +2422,15 @@ mod tests {
             ..Default::default()
         };
         let ssh: Arc<dyn SessionBackend> =
-            Arc::new(crate::agent::tmux::TmuxBackend::from_host(&host));
+            Arc::new(crate::backend::tmux::TmuxBackend::from_host(&host));
         assert_eq!(remote_host_from_backend(&ssh).as_deref(), Some("devbox"));
 
-        let wsl: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::TmuxBackend::from_host(
+        let wsl: Arc<dyn SessionBackend> = Arc::new(crate::backend::tmux::TmuxBackend::from_host(
             &crate::session::HostDef::wsl("Ubuntu"),
         ));
         assert_eq!(remote_host_from_backend(&wsl).as_deref(), Some("Ubuntu"));
 
-        let local: Arc<dyn SessionBackend> = Arc::new(crate::agent::tmux::TmuxBackend::local());
+        let local: Arc<dyn SessionBackend> = Arc::new(crate::backend::tmux::TmuxBackend::local());
         assert_eq!(remote_host_from_backend(&local), None);
     }
 

@@ -141,7 +141,11 @@ impl Terminals {
     /// See [`Terminals::rows_cache`]. The stamp is read while the caller
     /// already holds the parser lock, so a cached answer and the grid it was
     /// read from cannot disagree.
-    fn cached_rows(&self, surface: &str, parser: &crate::agent::SessionParser) -> Rc<Vec<String>> {
+    fn cached_rows(
+        &self,
+        surface: &str,
+        parser: &crate::backend::SessionParser,
+    ) -> Rc<Vec<String>> {
         let stamp = self.output_stamp(surface).unwrap_or(0);
         if let Some((at, rows)) = self.rows_cache.borrow().get(surface) {
             if *at == stamp {
