@@ -644,9 +644,7 @@ pub fn use_spans(stripped: &str) -> Vec<(usize, usize)> {
 /// which makes each of its bindings nameable from elsewhere.
 fn is_public(stripped: &str, start: usize) -> bool {
     let before = &stripped[..start];
-    let from = before
-        .rfind(|c| c == ';' || c == '{' || c == '}')
-        .map_or(0, |i| i + 1);
+    let from = before.rfind([';', '{', '}']).map_or(0, |i| i + 1);
     let prefix = before[from..].trim();
     prefix.ends_with("pub") || prefix.contains("pub(")
 }

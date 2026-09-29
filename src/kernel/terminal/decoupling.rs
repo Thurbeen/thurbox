@@ -208,16 +208,12 @@ impl Harness {
         let paths = crate::paths::TestPathGuard::new(dir.path());
         let recorder = Arc::new(Recorder::default());
         let backend: Arc<dyn crate::backend::SessionBackend> = recorder.clone();
-        let provider: Arc<dyn crate::agent::AgentProvider> = Arc::new(
-            crate::agent::GenericProvider::new(crate::session::AgentDef::default()),
-        );
         let mut session = crate::backend::Session::adopt(
             "probe".to_string(),
             rows,
             cols,
             AGENT_PANE,
             &backend,
-            &provider,
             HashMap::new(),
             None,
         )
@@ -786,16 +782,12 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
     let _paths = crate::paths::TestPathGuard::new(dir.path());
     let recorder = Arc::new(Recorder::default());
     let backend: Arc<dyn crate::backend::SessionBackend> = recorder.clone();
-    let provider: Arc<dyn crate::agent::AgentProvider> = Arc::new(
-        crate::agent::GenericProvider::new(crate::session::AgentDef::default()),
-    );
     let session = crate::backend::Session::adopt_dormant(
         "probe".to_string(),
         24,
         80,
         AGENT_PANE,
         &backend,
-        &provider,
         HashMap::new(),
     )
     .expect("adopt");

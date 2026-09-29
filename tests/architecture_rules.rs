@@ -73,18 +73,40 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths", "agent"],
         allowed_path_only: &[],
     },
-    // The boundary's root: re-exports of the contract, nothing of its own.
+    // The boundary's root: re-exports of the contract, nothing of its own —
+    // and never an adapter, which would put one a `use` away from every
+    // consumer.
     ModuleRules {
         name: "backend",
-        allowed: &["backend::pane", "backend::registry"],
+        allowed: &["backend::contract", "backend::pane", "backend::registry"],
         allowed_path_only: &[],
     },
-    // The session-backend contract, and the pane machinery every backend's
-    // stream is wired into. It names no concrete backend, no protocol helper
-    // and no global config.
+    // The contract every adapter implements and the values that cross it.
+    // Names no adapter, no protocol helper and no global config: the bottom of
+    // the boundary.
+    ModuleRules {
+        name: "backend::contract",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    // Which window is whose: thurbox's window-naming convention and the
+    // resolution rule (ADR-25), over the listing the contract defines.
+    ModuleRules {
+        name: "backend::identity",
+        allowed: &["backend::contract"],
+        allowed_path_only: &[],
+    },
+    // The pane machinery every backend's stream is wired into: the reader
+    // loop, the vt100 parser, the signals it raises.
     ModuleRules {
         name: "backend::pane",
-        allowed: &["session", "agent", "backend::osc8", "backend::output_wake"],
+        allowed: &[
+            "session",
+            "backend::contract",
+            "backend::identity",
+            "backend::osc8",
+            "backend::output_wake",
+        ],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -100,17 +122,32 @@ const MODULE_RULES: &[ModuleRules] = &[
     // A container of backends. Knows the contract and nothing that builds one.
     ModuleRules {
         name: "backend::registry",
-        allowed: &["session", "backend::pane"],
+        allowed: &["session", "backend::contract"],
+        allowed_path_only: &[],
+    },
+    // What fills the registry: the only node that names an adapter, and the
+    // only one that reads host config to do it. Referenced only by the
+    // composition roots — see `only_the_composition_roots_name_the_factory`.
+    ModuleRules {
+        name: "backend::wiring",
+        allowed: &[
+            "session",
+            "agent::host_config",
+            "backend::contract",
+            "backend::registry",
+            "backend::tmux",
+        ],
         allowed_path_only: &[],
     },
     // The tmux command and control-mode protocol. Shared grammar, not an
-    // adapter: it may know the contract, never the adapter using it.
+    // adapter: it may know the contract, never an adapter using it.
     ModuleRules {
         name: "backend::tmux_compat",
-        allowed: &["session", "shell", "agent", "backend::pane"],
+        allowed: &["session", "shell", "agent", "backend::contract"],
         allowed_path_only: &[],
     },
-    // The tmux adapter.
+    // The tmux adapter. Reaches the contract, the identity rule and the
+    // protocol helper; nothing reaches it but the factory.
     ModuleRules {
         name: "backend::tmux",
         allowed: &[
@@ -118,7 +155,8 @@ const MODULE_RULES: &[ModuleRules] = &[
             "paths",
             "shell",
             "agent",
-            "backend::pane",
+            "backend::contract",
+            "backend::identity",
             "backend::tmux_compat",
         ],
         allowed_path_only: &[],
@@ -135,7 +173,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "sync",
-        allowed: &["session", "storage", "workspace"],
+        allowed: &["session"],
         allowed_path_only: &[],
     },
     // `shell` builds the host launchers (ssh/wsl) for reading a remote
@@ -164,7 +202,12 @@ const MODULE_RULES: &[ModuleRules] = &[
             "workspace",
             "shell",
         ],
-        allowed_path_only: &["agent", "agent::host_config", "backend::registry"],
+        allowed_path_only: &[
+            "agent",
+            "agent::host_config",
+            "backend::contract",
+            "backend::identity",
+        ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
     ModuleRules {
@@ -187,7 +230,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "agent::host_config", "kernel"],
+        allowed_path_only: &["agent", "agent::host_config", "backend::contract", "kernel"],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
@@ -213,7 +256,6 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session_ops",
             "git",
             "notifications",
-            "clipboard",
             "shell",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
@@ -225,6 +267,8 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[
             "agent",
             "agent::host_config",
+            "backend::contract",
+            "backend::identity",
             "backend::pane",
             "backend::registry",
             "usage",
@@ -346,7 +390,150 @@ struct Transitional {
     why: &'static str,
 }
 
-const TRANSITIONAL: &[Transitional] = &[];
+const TRANSITIONAL: &[Transitional] = &[
+    // Registry construction outside the composition roots: one registry, built
+    // at `coordinator::boot` and `bin/thurbox-cli`, injected everywhere else.
+    Transitional {
+        from: "kernel",
+        to: "backend::wiring",
+        items: &["configured"],
+        remover: Remover::F5a,
+        why: "Terminals::new and the create-flow snapshot build their own registry",
+    },
+    Transitional {
+        from: "session_ops",
+        to: "backend::wiring",
+        items: &["configured"],
+        remover: Remover::F5a,
+        why: "spawn builds a registry to ask supports_choice, then drops it",
+    },
+    // Lifecycle — spawn, restart, restore, stop, delete, reap, owed teardown,
+    // rename, register — through the tmux adapter's free functions.
+    Transitional {
+        from: "session_ops",
+        to: "backend::tmux",
+        items: &[
+            "SessionPanes",
+            "agent_window",
+            "agent_window_alive",
+            "kill_remote_windows",
+            "kill_shell_window",
+            "kill_window",
+            "kill_window_at",
+            "known_host_socket",
+            "local_window_index",
+            "remote_window_index",
+            "rename_session_windows",
+            "spawn_window",
+            "spawn_window_remote",
+            "stamp_local_window",
+            "window_pane_pid",
+        ],
+        remover: Remover::F5a,
+        why: "every lifecycle verb calls the tmux adapter instead of the row's backend",
+    },
+    Transitional {
+        from: "cli",
+        to: "backend::tmux",
+        items: &["agent_window", "stamp_local_window"],
+        remover: Remover::F5a,
+        why: "`session register` locates and stamps a local tmux window directly",
+    },
+    // Pane I/O addressed by (id, name) on the local tmux server.
+    Transitional {
+        from: "session_ops",
+        to: "backend::tmux",
+        items: &["send_text_now"],
+        remover: Remover::F5b,
+        why: "text reaches a pane through the tmux adapter, not locate + the contract",
+    },
+    Transitional {
+        from: "cli",
+        to: "backend::tmux",
+        items: &[
+            "NAMED_KEYS",
+            "PanePath",
+            "agent_pane_path",
+            "capture_pane_text",
+            "pane_state",
+            "resolve_key",
+            "send_key_now",
+            "send_prompt_after_delay",
+            "send_prompt_now",
+            "window_exists",
+        ],
+        remover: Remover::F5b,
+        why: "send, key, capture, watch, automations, tasks and doctor read panes via tmux",
+    },
+    Transitional {
+        from: "kernel",
+        to: "backend::tmux",
+        items: &["pane_state", "send_prompt_after_delay"],
+        remover: Remover::F5b,
+        why: "dispatch_task and the snapshot's pane state go around the contract",
+    },
+    // Not multiplexer code at all: where this build's thurbox-cli lives, which
+    // host CLI shipping decides once platform is its own dimension.
+    Transitional {
+        from: "session_ops",
+        to: "backend::tmux",
+        items: &["resolve_cli_binary"],
+        remover: Remover::F6,
+        why: "host_cli finds the local thurbox-cli through the tmux adapter",
+    },
+    Transitional {
+        from: "cli",
+        to: "backend::tmux",
+        items: &["resolve_cli_binary"],
+        remover: Remover::F6,
+        why: "the heartbeat's CLI path is resolved in the tmux adapter",
+    },
+    Transitional {
+        from: "coordinator",
+        to: "backend::tmux",
+        items: &["resolve_cli_binary"],
+        remover: Remover::F6,
+        why: "the heartbeat's CLI path is resolved in the tmux adapter",
+    },
+    // Status delivery, the heartbeat, and the instance socket (ADR-12) they
+    // are addressed by — backend-owned once status is.
+    Transitional {
+        from: "session_ops",
+        to: "backend::tmux",
+        items: &[
+            "SOCKET_OVERRIDE_ENV",
+            "SOCKET_OWNER_ENV",
+            "TMUX_SOCKET",
+            "host_socket",
+            "learn_host_socket",
+            "list_remote_hook_states",
+            "local_socket_name",
+        ],
+        remover: Remover::F7,
+        why: "hook provisioning and the remote status poll name tmux's socket and options",
+    },
+    Transitional {
+        from: "cli",
+        to: "backend::tmux",
+        items: &[
+            "automation_heartbeat_running",
+            "ensure_automation_heartbeat",
+            "list_local_hook_states",
+            "local_socket_name",
+            "set_own_pane_state",
+            "stop_automation_heartbeat",
+        ],
+        remover: Remover::F7,
+        why: "session signal, the headless status poll, the heartbeat and the socket report",
+    },
+    Transitional {
+        from: "coordinator",
+        to: "backend::tmux",
+        items: &["ensure_automation_heartbeat"],
+        remover: Remover::F7,
+        why: "the interface arms the heartbeat window on the local tmux server",
+    },
+];
 
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -481,6 +668,50 @@ fn transitional_table_names_only_live_crossings() {
         "stale TRANSITIONAL entries:\n{}",
         stale.join("\n")
     );
+}
+
+/// The node that builds the registry, naming every concrete adapter.
+const FACTORY: &str = "backend::wiring";
+
+/// The concrete adapters. Each is reached only through [`FACTORY`].
+const ADAPTERS: &[&str] = &["backend::tmux"];
+
+/// Only the composition roots may build the registry — `coordinator` here, and
+/// the exempt crate roots (`main`, `bin/`) — and only the factory may name an
+/// adapter. A consumer that builds its own registry sees a different set of
+/// backends from the one the process was wired with, and one that names an
+/// adapter has stopped using the contract. Either kind of crossing that exists
+/// today is transitional, and a factory call outside the roots is F5a's to
+/// remove.
+#[test]
+fn only_the_composition_roots_name_the_factory() {
+    for rules in MODULE_RULES {
+        let grants = || rules.allowed.iter().chain(rules.allowed_path_only);
+        if rules.name != "coordinator" {
+            assert!(
+                !grants().any(|to| *to == FACTORY),
+                "`{}` may reference {FACTORY}; only a composition root may",
+                rules.name
+            );
+        }
+        if rules.name != FACTORY {
+            for adapter in ADAPTERS {
+                assert!(
+                    !grants().any(|to| to == adapter),
+                    "`{}` may reference the adapter {adapter}; only {FACTORY} may",
+                    rules.name
+                );
+            }
+        }
+    }
+    for entry in TRANSITIONAL.iter().filter(|t| t.to == FACTORY) {
+        assert_eq!(
+            entry.remover,
+            Remover::F5a,
+            "{} → {FACTORY} is removed by injecting the registry (F5a)",
+            entry.from
+        );
+    }
 }
 
 /// Production edges between distinct nodes, one representative site each.

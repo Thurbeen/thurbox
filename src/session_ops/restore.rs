@@ -400,7 +400,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
             crate::backend::tmux::stamp_local_window(
                 &pane,
                 &stamp,
-                crate::backend::tmux::WindowRole::Agent,
+                crate::backend::WindowRole::Agent,
             );
             db.set_backend_id(session.id, &pane)
                 .map_err(|e| format!("record the live pane: {e}"))?;

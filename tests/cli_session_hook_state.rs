@@ -688,7 +688,7 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     thurbox::backend::tmux::stamp_local_window(
         &format!("{SESSION}:tb-{name}"),
         &row.id.to_string(),
-        thurbox::backend::tmux::WindowRole::Agent,
+        thurbox::backend::WindowRole::Agent,
     );
     assert!(thurbox::backend::tmux::window_exists(
         &row.id.to_string(),

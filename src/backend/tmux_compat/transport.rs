@@ -133,15 +133,24 @@ impl TmuxTransport {
     ///
     /// The multiplexer itself locally; the launcher (`ssh`, `wsl.exe`) for a
     /// remote backend, whose own multiplexer runs on the host and cannot be
-    /// what failed to start here. Read by
-    /// [`crate::agent::preflight::launch_failure`], which has to name the
-    /// binary that is missing rather than the one it was on the way to.
+    /// what failed to start here. Read by [`Self::launch_failure`], which has
+    /// to name the binary that is missing rather than the one it was on the
+    /// way to.
     pub fn launcher(&self) -> &str {
         match self {
             TmuxTransport::Local => DEFAULT_MUX,
             TmuxTransport::Ssh { .. } => "ssh",
             TmuxTransport::Wsl { .. } => "wsl.exe",
         }
+    }
+
+    /// What a failure to launch through this transport means, in words a user
+    /// can act on — see [`crate::agent::preflight::launch_failure`]. A remote
+    /// transport's missing binary is its launcher; a local one's is the
+    /// multiplexer.
+    pub fn launch_failure(&self, context: &'static str, err: std::io::Error) -> anyhow::Error {
+        let launcher = self.is_remote().then(|| self.launcher());
+        crate::agent::preflight::launch_failure(launcher, context, err)
     }
 
     /// Whether the multiplexer is reached over `ssh`, and so whether ssh's own

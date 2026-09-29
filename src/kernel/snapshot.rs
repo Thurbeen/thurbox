@@ -1715,7 +1715,7 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
     let presence = crate::agent::preflight::look_up(binary);
-    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::wiring::configured();
     let available = ["tmux", "psmux", "rmux", "herdr"]
         .into_iter()
         .filter_map(|name| {
@@ -1739,7 +1739,7 @@ fn read_mux() -> MuxRow {
 /// asking.
 fn read_hosts() -> Vec<HostRow> {
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::wiring::configured();
     registry
         .hosts
         .iter()
@@ -1765,7 +1765,7 @@ fn read_hosts() -> Vec<HostRow> {
 }
 
 /// A remote session's host name, using the registry to resolve suffixes.
-fn remote_host_of(backend: &str) -> Option<String> {
+pub(super) fn remote_host_of(backend: &str) -> Option<String> {
     let (hosts, _) = crate::agent::host_config::cached_registry();
     hosts
         .get_by_backend(backend)

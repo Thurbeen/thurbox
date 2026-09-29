@@ -10,7 +10,7 @@ use crate::sync::{SharedSession, SharedWorktree};
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
 
-/// Backend identifier for the local-tmux backend (matches `LocalTmuxBackend`).
+/// Backend identifier for the local-tmux backend (the local `TmuxBackend`'s name).
 pub const LOCAL_TMUX_BACKEND_TYPE: &str = crate::session::LOCAL_BACKEND_TYPE;
 
 /// Request to create a new headless session.
@@ -1483,7 +1483,7 @@ fn resolve_backend(
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::backend::BackendRegistry::from_configured_hosts();
+    let (backends, _, _) = crate::backend::wiring::configured();
     if !backends.supports_choice(&choice) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",

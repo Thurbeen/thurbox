@@ -49,7 +49,7 @@ pub fn rename_session_headless(
         });
     }
 
-    let window = crate::backend::tmux::sanitize_window_name(name);
+    let window = crate::backend::identity::sanitize_window_name(name);
     let taken: Vec<String> = db
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?
@@ -57,7 +57,7 @@ pub fn rename_session_headless(
         .filter(|s| {
             s.id != session_id
                 && s.backend_type == session.backend_type
-                && crate::backend::tmux::sanitize_window_name(&s.name) == window
+                && crate::backend::identity::sanitize_window_name(&s.name) == window
         })
         .map(|s| s.id.to_string())
         .collect();

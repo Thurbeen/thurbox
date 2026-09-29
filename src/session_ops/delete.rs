@@ -514,7 +514,7 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
     let now = crate::sync::current_time_millis();
     let window = UNDO_WINDOW.as_millis() as u64;
     let mut reaped = Vec::new();
-    let mut windows: std::collections::HashMap<String, crate::backend::tmux::WindowIndex> =
+    let mut windows: std::collections::HashMap<String, crate::backend::identity::WindowIndex> =
         std::collections::HashMap::new();
     for row in rows {
         if row.force_deleted || now.saturating_sub(row.deleted_at) < window {
@@ -554,16 +554,16 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// resolved is never reaped, so without this one such row re-probed its host at
 /// that rate for the life of the process — spawning `wsl.exe` from the
 /// interface's own loop and writing 3.9 MB of log in a day (issue #1182).
-fn window_index_on(db: &Database, backend_type: &str) -> crate::backend::tmux::WindowIndex {
+fn window_index_on(db: &Database, backend_type: &str) -> crate::backend::identity::WindowIndex {
     if !crate::session::is_remote_backend(backend_type) {
         return crate::backend::tmux::local_window_index().unwrap_or_default();
     }
     if !claim_listing(db, backend_type) {
-        return crate::backend::tmux::WindowIndex::default();
+        return crate::backend::identity::WindowIndex::default();
     }
     let Some(host) = super::resolve_host(backend_type).flatten() else {
         listing_failed(db, backend_type);
-        return crate::backend::tmux::WindowIndex::default();
+        return crate::backend::identity::WindowIndex::default();
     };
     match crate::backend::tmux::remote_window_index(&host) {
         Ok(index) => {
@@ -578,7 +578,7 @@ fn window_index_on(db: &Database, backend_type: &str) -> crate::backend::tmux::W
             // start would leave it already expired the moment it was written,
             // and the next pass five seconds later would probe again.
             listing_failed(db, backend_type);
-            crate::backend::tmux::WindowIndex::default()
+            crate::backend::identity::WindowIndex::default()
         }
     }
 }
@@ -782,7 +782,7 @@ fn owned_windows(row: &DeletedSessionInfo) -> Vec<String> {
 /// A window whose pane has already exited still counts: `remain-on-exit` keeps
 /// it on the server, and leaving it there is the leak the reap exists to stop.
 pub fn owned_windows_in(
-    index: &crate::backend::tmux::WindowIndex,
+    index: &crate::backend::identity::WindowIndex,
     row: &DeletedSessionInfo,
 ) -> Vec<String> {
     let id = row.id.to_string();
@@ -791,7 +791,7 @@ pub fn owned_windows_in(
         index.shell_window(&id, &row.name),
     ]
     .into_iter()
-    .filter_map(crate::backend::tmux::Located::pane)
+    .filter_map(crate::backend::identity::Located::pane)
     .collect()
 }
 

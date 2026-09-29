@@ -87,7 +87,7 @@ struct Discovered {
 /// sanitising collapses others together — so the index keys on the session id
 /// stamped on the window (ADR-25) and keeps every namesake, which is what lets
 /// ambiguity be *reported* rather than resolved by whichever tmux listed last.
-type WindowPanes = crate::backend::tmux::WindowIndex;
+type WindowPanes = crate::backend::identity::WindowIndex;
 
 /// How often a *local* backend's panes may be looked up by window name.
 ///
@@ -556,9 +556,9 @@ impl Terminals {
     /// Build the backend registry the same way the v1 binary does: the local
     /// multiplexer plus every configured or discovered host. How that set is
     /// assembled — and why nothing is readied here — is the registry's own
-    /// knowledge (`BackendRegistry::from_configured_hosts`), not the kernel's.
+    /// knowledge (`backend::wiring::configured`), not the kernel's.
     pub fn new() -> Self {
-        let (backends, hosts, _warnings) = crate::backend::BackendRegistry::from_configured_hosts();
+        let (backends, hosts, _warnings) = crate::backend::wiring::configured();
 
         Self {
             backends,
@@ -840,9 +840,9 @@ impl Terminals {
 
     /// Hand one session's attach to a worker.
     ///
-    /// Everything the worker needs is cloned across: the backend and the agent
-    /// provider are both behind an `Arc`, and the resulting `Session` owns its
-    /// own reader/writer threads, so nothing here is borrowed from the loop.
+    /// Everything the worker needs is cloned across: the backend is behind an
+    /// `Arc`, and the resulting `Session` owns its own reader/writer threads,
+    /// so nothing here is borrowed from the loop.
     fn start_attach(
         &mut self,
         row: &super::snapshot::SessionRow,
@@ -859,20 +859,25 @@ impl Terminals {
             );
             return;
         };
-        // Only consulted when relaunching, but adopt wants one.
-        let Some(def) = self
+        // A row whose agent has no definition is not attached. Nothing here
+        // launches the agent (that is `session_ops`), so the definition itself
+        // is not needed — only that there is one, as there always had to be.
+        if self
             .agents
             .get(&row.agent)
             .or_else(|| self.agents.default_agent())
-            .cloned()
-        else {
+            .is_none()
+        {
             self.fail(
                 &row.id,
                 Some(backend_id),
                 format!("no agent definition for {}", row.agent),
             );
             return;
-        };
+        }
+        // The host a remote session's list row names, resolved here rather
+        // than inside the backend contract, which reads no global config.
+        let remote_host = super::snapshot::remote_host_of(&row.backend);
 
         let already_ready = self.backend_is_ready(&row.backend);
         let tx = self.attached.0.clone();
@@ -897,37 +902,38 @@ impl Terminals {
             // parser with it is what makes an adopted pane show the conversation
             // that is already there rather than a blank screen until the agent
             // next prints. A failure to read it is not a failure to attach.
-            let result = session_handle.and_then(|()| {
-                let provider: Arc<dyn crate::agent::AgentProvider> =
-                    Arc::new(crate::agent::GenericProvider::new(def));
-                // Nothing is looking at it yet, so where the grid can be had
-                // back later it is not built now — nor its history captured,
-                // which was a round trip per pane on every start.
-                if lazy && backend.supports_snapshots() {
-                    return crate::backend::Session::adopt_dormant(
+            let result = session_handle
+                .and_then(|()| {
+                    // Nothing is looking at it yet, so where the grid can be had
+                    // back later it is not built now — nor its history captured,
+                    // which was a round trip per pane on every start.
+                    if lazy && backend.supports_snapshots() {
+                        return crate::backend::Session::adopt_dormant(
+                            name,
+                            rows,
+                            cols,
+                            &pane,
+                            &backend,
+                            HashMap::new(),
+                        )
+                        .map_err(|e| e.to_string());
+                    }
+                    let seed = backend.capture_history(&pane).ok();
+                    crate::backend::Session::adopt(
                         name,
                         rows,
                         cols,
                         &pane,
                         &backend,
-                        &provider,
                         HashMap::new(),
+                        seed,
                     )
-                    .map_err(|e| e.to_string());
-                }
-                let seed = backend.capture_history(&pane).ok();
-                crate::backend::Session::adopt(
-                    name,
-                    rows,
-                    cols,
-                    &pane,
-                    &backend,
-                    &provider,
-                    HashMap::new(),
-                    seed,
-                )
-                .map_err(|e| e.to_string())
-            });
+                    .map_err(|e| e.to_string())
+                })
+                .map(|mut adopted| {
+                    adopted.info.remote_host = remote_host;
+                    adopted
+                });
             // Adopted by name, so the window carries no stamp — this is the one
             // moment its owner is known for certain (the name resolved to
             // exactly one window). Stamping it here is what stops the row
@@ -935,7 +941,7 @@ impl Terminals {
             // persisted for the same reason, by `drain_adopted_panes`.
             if via_name && result.is_ok() {
                 if let Err(e) =
-                    backend.stamp_window(&pane, &session, crate::backend::tmux::WindowRole::Agent)
+                    backend.stamp_window(&pane, &session, crate::backend::WindowRole::Agent)
                 {
                     tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
                 }
@@ -2546,7 +2552,7 @@ mod tests {
                     name: "tb-demo".into(),
                     is_alive: false,
                     session: "a".into(),
-                    role: crate::backend::tmux::WindowRole::Agent,
+                    role: crate::backend::WindowRole::Agent,
                 }]),
             }
         }
@@ -2655,7 +2661,7 @@ mod tests {
                 name: (*window).to_string(),
                 is_alive: true,
                 session: String::new(),
-                role: crate::backend::tmux::WindowRole::Agent,
+                role: crate::backend::WindowRole::Agent,
             })
         });
         terminals
@@ -2770,7 +2776,7 @@ mod tests {
                 name: "tb-demo".into(),
                 is_alive: true,
                 session: "b".into(),
-                role: crate::backend::tmux::WindowRole::Agent,
+                role: crate::backend::WindowRole::Agent,
             }]),
         );
 

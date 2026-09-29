@@ -21,6 +21,7 @@ use base64::Engine as _;
 use tracing::{debug, warn};
 
 use super::transport::TmuxTransport;
+use crate::backend::contract::{PaneSize, PaneSnapshot, SnapshotArrived};
 
 /// Per-pane output channel capacity. Sized large enough to buffer heavy output
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
@@ -61,25 +62,8 @@ impl From<Vec<u8>> for PaneChunk {
     }
 }
 
-/// A pane's screen and history as tmux holds them, read back through
-/// [`snapshot_commands`] — enough to rebuild a terminal that was dropped (see
-/// `backend::pane::WiredPane::evict`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneSnapshot {
-    pub cols: u16,
-    pub rows: u16,
-    /// Where the cursor is, `(column, row)` from the top-left of the screen.
-    pub cursor: (u16, u16),
-    /// The normal screen's history and then its rows, one entry per line with
-    /// wrapped rows joined (`capture-pane -J`), and styled with SGR sequences
-    /// when the snapshot was asked for styled.
-    pub normal: Vec<String>,
-    /// The alternate screen's rows, when that is the one showing.
-    pub alternate: Option<Vec<String>>,
-}
-
 /// The format [`snapshot_commands`] asks `display-message` for, and
-/// [`PaneSnapshot::parse`] reads back.
+/// [`parse_snapshot`] reads back.
 const SNAPSHOT_FORMAT: &str =
     "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{alternate_on}";
 
@@ -104,73 +88,38 @@ pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<Str
     ]
 }
 
-impl PaneSnapshot {
-    /// Read the answer to [`snapshot_commands`], one entry per `%begin`/`%end`
-    /// block. `None` for anything that is not that answer.
-    pub fn parse(mut blocks: Vec<Vec<String>>) -> Option<Self> {
-        if blocks.len() != 3 {
-            return None;
-        }
-        let saved = blocks.pop()?;
-        let current = blocks.pop()?;
-        let fields: Vec<u16> = blocks
-            .pop()?
-            .first()?
-            .split_whitespace()
-            .map(|field| field.parse().ok())
-            .collect::<Option<_>>()?;
-        let [cols, rows, x, y, alternate] = fields[..] else {
-            return None;
-        };
-        if cols == 0 || rows == 0 {
-            return None;
-        }
-        let (normal, alternate) = if alternate == 1 {
-            (saved, Some(current))
-        } else {
-            (current, None)
-        };
-        Some(Self {
-            cols,
-            rows,
-            cursor: (x, y),
-            normal,
-            alternate,
-        })
+/// Read the answer to [`snapshot_commands`], one entry per `%begin`/`%end`
+/// block. `None` for anything that is not that answer.
+pub fn parse_snapshot(mut blocks: Vec<Vec<String>>) -> Option<PaneSnapshot> {
+    if blocks.len() != 3 {
+        return None;
     }
-}
-
-/// How a [`PaneSnapshot`] reaches a `Read`er: [`ControlModeReader::read`]
-/// returns it as an [`std::io::ErrorKind::Interrupted`] error carrying this.
-///
-/// The reader loop reads panes through `Box<dyn Read>` — an adopted pane's
-/// output is its history seed chained ahead of this reader — so an error kind
-/// that means "nothing read, call again" is how an item that is not bytes gets
-/// through without a second channel, and so without a second ordering to keep.
-/// A reader that does not know about snapshots simply retries, as `Interrupted`
-/// asks.
-#[derive(Debug)]
-pub struct SnapshotArrived(pub Box<PaneSnapshot>);
-
-impl std::fmt::Display for SnapshotArrived {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "a pane snapshot arrived in the output stream")
+    let saved = blocks.pop()?;
+    let current = blocks.pop()?;
+    let fields: Vec<u16> = blocks
+        .pop()?
+        .first()?
+        .split_whitespace()
+        .map(|field| field.parse().ok())
+        .collect::<Option<_>>()?;
+    let [cols, rows, x, y, alternate] = fields[..] else {
+        return None;
+    };
+    if cols == 0 || rows == 0 {
+        return None;
     }
-}
-
-impl std::error::Error for SnapshotArrived {}
-
-impl SnapshotArrived {
-    /// The snapshot an error carries, if it is one of these.
-    pub fn take(err: std::io::Error) -> Option<Box<PaneSnapshot>> {
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return None;
-        }
-        err.into_inner()?
-            .downcast::<SnapshotArrived>()
-            .ok()
-            .map(|arrived| arrived.0)
-    }
+    let (normal, alternate) = if alternate == 1 {
+        (saved, Some(current))
+    } else {
+        (current, None)
+    };
+    Some(PaneSnapshot {
+        cols,
+        rows,
+        cursor: (x, y),
+        normal,
+        alternate,
+    })
 }
 
 /// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
@@ -184,7 +133,7 @@ impl PendingSnapshot {
     /// The answer, or the error the command ran into.
     pub(in crate::backend) fn wait(self) -> Result<PaneSnapshot> {
         let response = ControlMode::await_blocks(self.rx, &self.cmd, COMMAND_TIMEOUT)?;
-        PaneSnapshot::parse(response.blocks)
+        parse_snapshot(response.blocks)
             .with_context(|| format!("unexpected answer to a snapshot of {}", self.pane))
     }
 }
@@ -230,7 +179,7 @@ pub type PaneWindowsMapShared = Arc<Mutex<PaneWindowsMap>>;
 
 /// Where each registered pane's reader applies the sizes tmux reports, for a
 /// size its channel had no room for (see `ControlMode::dispatch_resize`).
-pub type PaneSizesMap = HashMap<String, crate::backend::PaneSize>;
+pub type PaneSizesMap = HashMap<String, PaneSize>;
 pub type PaneSizesMapShared = Arc<Mutex<PaneSizesMap>>;
 
 /// Response from a tmux control mode command.
@@ -344,7 +293,7 @@ pub struct ControlModeReader {
     receiver: std::sync::mpsc::Receiver<PaneChunk>,
     buffer: Vec<u8>,
     pos: usize,
-    size: crate::backend::PaneSize,
+    size: PaneSize,
 }
 
 impl ControlModeReader {
@@ -353,13 +302,13 @@ impl ControlModeReader {
             receiver,
             buffer: Vec::new(),
             pos: 0,
-            size: crate::backend::PaneSize::default(),
+            size: PaneSize::default(),
         }
     }
 
     /// Where this reader leaves the sizes tmux reports for its pane, for the
     /// loop that feeds the pane's grid.
-    pub fn size(&self) -> crate::backend::PaneSize {
+    pub fn size(&self) -> PaneSize {
         self.size.clone()
     }
 }
@@ -1162,13 +1111,7 @@ impl ControlMode {
             // No `tmux`/`ssh`/`wsl.exe` on this machine at all: the message
             // names which, where thurbox looked and the fix, rather than the
             // errno the launcher raised.
-            .map_err(|e| {
-                crate::agent::preflight::launch_failure(
-                    transport,
-                    "Failed to start tmux control mode",
-                    e,
-                )
-            })?;
+            .map_err(|e| transport.launch_failure("Failed to start tmux control mode", e))?;
 
         let stdin = child
             .stdin
@@ -1755,7 +1698,7 @@ impl ControlMode {
         // `%output` ahead of this answer has been handed to the pane already and
         // none behind it has, which is the one place the snapshot is exact.
         if let (false, Some(pane)) = (is_error, &answer.waiter.splice) {
-            if let Some(snapshot) = PaneSnapshot::parse(answer.blocks.clone()) {
+            if let Some(snapshot) = parse_snapshot(answer.blocks.clone()) {
                 Self::dispatch(pane_senders, pane, PaneChunk::Snapshot(Box::new(snapshot)));
             }
         }

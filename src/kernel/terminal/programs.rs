@@ -239,7 +239,7 @@ impl Terminals {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }
 
-        let window = crate::backend::tmux::program_window_name(
+        let window = crate::backend::identity::program_window_name(
             &crate::kernel::bundled::digest(&key.plugin),
             &key.name,
         );
