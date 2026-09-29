@@ -2027,19 +2027,19 @@ impl Session {
     /// A shell whose stream has ended is replaced rather than kept: nothing
     /// else lets go of it while the agent beside it runs on, and once its grid
     /// has been dropped off screen there is no pane left to rebuild it from —
-    /// the tab would stay blank for good.
+    /// the tab would stay blank for good. Not when the agent's stream ended
+    /// too: that is the connection going, and the session is re-attached whole,
+    /// its still-running shell included, so a new one would orphan it.
     pub fn ensure_shell_pane(
         &mut self,
         rows: u16,
         cols: u16,
         cwd: Option<&std::path::Path>,
     ) -> Result<()> {
-        if self
-            .shell_pane
-            .as_ref()
-            .is_some_and(|shell| !shell.has_exited())
-        {
-            return Ok(());
+        if let Some(shell) = &self.shell_pane {
+            if !shell.has_exited() || self.has_exited() {
+                return Ok(());
+            }
         }
 
         let shell_cmd = self.backend.default_shell();
