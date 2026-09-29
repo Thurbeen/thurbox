@@ -358,20 +358,12 @@ enum Remover {
     F5b,
     /// Host platform and launcher separated from the multiplexer.
     F6,
-    /// psmux extracted into its own adapter.
+    /// psmux extracted into its own adapter. It owns no crossing today; the
+    /// variant is here so an entry can name it once one exists.
+    #[allow(dead_code)]
     F6b,
     /// Status delivery and the heartbeat owned by the backend.
     F7,
-}
-
-impl Remover {
-    const ALL: [Remover; 5] = [
-        Remover::F5a,
-        Remover::F5b,
-        Remover::F6,
-        Remover::F6b,
-        Remover::F7,
-    ];
 }
 
 /// A crossing that breaks a rule today, is known, and is scheduled to go.
@@ -604,18 +596,36 @@ fn transitional_keys(table: &[Transitional]) -> BTreeSet<(String, String, String
         .collect()
 }
 
+/// Today's violations checked against a transitional table, both ways: the
+/// violations it does not name, and the entries naming no violation.
+fn reconcile(violations: &[Edge], table: &[Transitional]) -> (Vec<Edge>, Vec<String>) {
+    let listed = transitional_keys(table);
+    let live: BTreeSet<(String, String, String)> = violations
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone(), e.item.clone()))
+        .collect();
+    let unlisted = violations
+        .iter()
+        .filter(|e| !listed.contains(&(e.from.clone(), e.to.clone(), e.item.clone())))
+        .cloned()
+        .collect();
+    let stale = listed
+        .into_iter()
+        .filter(|key| !live.contains(key))
+        .map(|(from, to, item)| format!("  {from} → {to}::{item} no longer crosses — delete it"))
+        .collect();
+    (unlisted, stale)
+}
+
 /// Every rule holds, except for the crossings [`TRANSITIONAL`] names.
 #[test]
 fn every_module_rule_holds() {
     let tree = src_tree();
-    let listed = transitional_keys(TRANSITIONAL);
-    let mut report = String::new();
-    for edge in violations(tree, MODULE_RULES) {
-        let key = (edge.from.clone(), edge.to.clone(), edge.item.clone());
-        if !listed.contains(&key) {
-            writeln!(report, "  {}", describe(tree, MODULE_RULES, &edge)).unwrap();
-        }
-    }
+    let (unlisted, _) = reconcile(&violations(tree, MODULE_RULES), TRANSITIONAL);
+    let report: String = unlisted
+        .iter()
+        .map(|edge| format!("  {}\n", describe(tree, MODULE_RULES, edge)))
+        .collect();
     assert!(
         report.is_empty(),
         "\narchitecture violation(s), as `from → resolved item @ file:line`:\n{report}\
@@ -627,15 +637,11 @@ fn every_module_rule_holds() {
 }
 
 /// The other half of [`TRANSITIONAL`]'s contract: each entry names a crossing
-/// that still exists, from and to real nodes, and a task that will remove it.
+/// that still exists, says why, and names each item once.
 #[test]
 fn transitional_table_names_only_live_crossings() {
     let tree = src_tree();
-    let live: BTreeSet<(String, String, String)> = violations(tree, MODULE_RULES)
-        .into_iter()
-        .map(|e| (e.from, e.to, e.item))
-        .collect();
-    let mut stale = Vec::new();
+    let mut seen = BTreeSet::new();
     for entry in TRANSITIONAL {
         assert!(
             !entry.items.is_empty() && !entry.why.is_empty(),
@@ -643,26 +649,16 @@ fn transitional_table_names_only_live_crossings() {
             entry.from,
             entry.to
         );
-        assert!(
-            Remover::ALL.contains(&entry.remover),
-            "TRANSITIONAL entry {} → {} names no remover",
-            entry.from,
-            entry.to
-        );
         for item in entry.items {
-            let key = (
-                entry.from.to_string(),
-                entry.to.to_string(),
-                item.to_string(),
+            assert!(
+                seen.insert((entry.from, entry.to, *item)),
+                "TRANSITIONAL names {} → {}::{item} twice",
+                entry.from,
+                entry.to
             );
-            if !live.contains(&key) {
-                stale.push(format!(
-                    "  {} → {}::{item} ({:?}) no longer crosses — delete it",
-                    entry.from, entry.to, entry.remover
-                ));
-            }
         }
     }
+    let (_, stale) = reconcile(&violations(tree, MODULE_RULES), TRANSITIONAL);
     assert!(
         stale.is_empty(),
         "stale TRANSITIONAL entries:\n{}",
@@ -1031,6 +1027,50 @@ fn test_code_makes_no_production_edge() {
         4,
         "{:?}",
         tree.edges(&nodes)
+    );
+}
+
+/// The table is checked both ways: a crossing it does not name fails, and so
+/// does an entry naming a crossing that is gone.
+#[test]
+fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
+    let tree = fixture("laundering");
+    let rules = [
+        ModuleRules {
+            name: "agent",
+            allowed: &["agent::tmux"],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "agent::tmux",
+            allowed: &[],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "kernel",
+            allowed: &[],
+            allowed_path_only: &["agent"],
+        },
+    ];
+    let table = [Transitional {
+        from: "kernel",
+        to: "agent::tmux",
+        items: &["Index", "gone"],
+        remover: Remover::F5a,
+        why: "fixture",
+    }];
+    let (unlisted, stale) = reconcile(&violations(&tree, &rules), &table);
+    let unlisted: BTreeSet<String> = unlisted.iter().map(Edge::target).collect();
+    assert_eq!(
+        unlisted,
+        ["agent::tmux", "agent::tmux::spawn"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
+    assert_eq!(
+        stale,
+        vec!["  kernel → agent::tmux::gone no longer crosses — delete it".to_string()]
     );
 }
 

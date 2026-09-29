@@ -81,7 +81,7 @@ pub(crate) fn program_window_name(owner: &str, pane: &str) -> String {
 }
 
 /// The window name a session's `role` window carries.
-pub(crate) fn window_name_for(role: WindowRole, session_name: &str) -> String {
+pub(in crate::backend) fn window_name_for(role: WindowRole, session_name: &str) -> String {
     match role {
         WindowRole::Shell => shell_window_name(session_name),
         _ => agent_window_name(session_name),

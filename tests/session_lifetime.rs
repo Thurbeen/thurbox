@@ -6,8 +6,8 @@
 //!
 //!   * Restarting a session killed its window, spawned a new one, and left the
 //!     interface attached to the pane it had just killed — a frozen last frame
-//!     that takes no keys. v1 has no equivalent because `Session::restart`
-//!     rebinds the live object in place.
+//!     that takes no keys. v1 had no equivalent because its `Session::restart`
+//!     (since removed) rebound the live object in place.
 //!   * Restarting *thurbox* after the tmux server had gone left every session
 //!     unattached forever. v1 relaunches the agent when restore finds no
 //!     matching window (`respawn_stale_session`), which is how a session
