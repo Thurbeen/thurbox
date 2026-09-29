@@ -2277,6 +2277,9 @@ stand-in agent that answers each 5 ms late — the case the floor used to catch 
 and fails unless every one was counted, alone and with another session
 printing. The idle case then sends two keys in one input burst and separates
 the agent's replies, so replacing a pending wait fails the counter assertion.
+Since ADR-P30 those assertions are a range — at least one floor-free paint a
+key, at most one plus `ECHO_TAIL_FRAMES` — because an echo the pty hands over
+in two chunks earns its second one too.
 
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
 re-applying the same server options twice (#1243). The options are now one tmux
@@ -2321,6 +2324,82 @@ held diffs. `scripts/dev/perf-run.sh --focus-last -n 33 -p 20 -u 0` selects a qu
 surface while the other sessions print, so the whole-binary comparison measures
 hidden output rather than visible scrolling. Measurements use paired runs at the
 same size, session count and build profile; timing is not a test assertion.
+
+## ADR-P30: The echo is not always the first thing a key prints (2026-09-29)
+
+**Context**: after ADR-P28 a shell's echo took ~3.6 ms under thurbox, but Codex
+keys had a stall tail: with keys typed one at a time, 16–18 % took ~68 ms,
+against none over 50 ms under raw tmux with the same Codex. Syscall traces
+showed the order of what Codex writes after a key:
+
+```text
++1–3 ms   ?2026h CUP ?25h ?2026l        cursor only, no glyph
++~25 ms   ?2026h ?25l                   separate write
+          CUP "x" SGR CUP               separate write: the glyph
+          ?25h ?2026l                   separate write
+```
+
+tmux forwards each write as its own output line. ADR-P28 counted the first
+parsed chunk as the whole echo, so the floor-free frame showed a moved cursor,
+and the glyph ~22 ms later was ordinary output with nothing awake for it. When a
+full frame fell between the hide-cursor chunk and the glyph, it reset the frame
+budget, and the glyph waited out `OUTPUT_FRAME_INTERVAL` from that frame plus a
+tick.
+
+**Choice**: a key's pane stays owed after its first answer. For the rest of
+`ECHO_WINDOW`, each time that surface's output sequence moves, the loop is woken
+(the same `output_wake` arming) and paints it floor-free, for at most
+`ECHO_TAIL_FRAMES` (4) more frames per key (`EchoTail`). The next keystroke
+anywhere ends the tail, and the tail is only watched while no keystroke's first
+answer is owed.
+
+- **Bounded, not per chunk.** A pane streaming while you type buys at most four
+  extra one-surface frames per key, not a frame per chunk for 150 ms. Other
+  sessions never get a tail, so a busy neighbour is still painted on the floors.
+- **Backend-neutral.** The decision reads only a surface's output sequence
+  (`Terminals::output_seq`, bumped by any backend's reader after it parses)
+  and the clock. It does not look at how the multiplexer split the bytes, or
+  whether they were tmux control-mode lines.
+- **Synchronized output (DEC 2026) is still not honoured.** With the tail, a
+  partial frame between Codex's chunks costs one extra echo frame instead of the
+  floor, so the regression did not need it. Honouring it would stop the tearing
+  but would not by itself stop an unrelated full frame from resetting the
+  budget.
+
+**Measured** with an isolated local tmux harness: private sockets, keys typed
+one at a time and paced 60 ms and 150 ms apart, raw echo detected on the
+client's output. Each row is 180 keys from two interleaved runs on a 12-thread
+Linux desktop with load under 1.1, with tmux 3.7c and Codex 0.157.1 on a
+loopback mock. Raw tmux is the control: its Codex rows are Codex's own time
+(paste-burst hold plus its redraw), not a multiplexer's.
+
+| agent | pace | host | median ms | p90 ms | keys > 50 ms |
+|---|---|---|---|---|---|
+| bash | 60 | raw tmux | 0.8 | 0.9 | 0 % |
+| bash | 60 | thurbox before | 3.6 | 4.2 | 0 % |
+| bash | 60 | thurbox after | 3.6 | 4.3 | 0 % |
+| bash | 150 | raw tmux | 0.8 | 0.9 | 0 % |
+| bash | 150 | thurbox before | 3.6 | 5.0 | 0 % |
+| bash | 150 | thurbox after | 3.6 | 5.3 | 0 % |
+| Codex | 60 | raw tmux | 26.4 | 27.9 | 0 % |
+| Codex | 60 | thurbox before | 29.5 | 68.0 | 18 % |
+| Codex | 60 | thurbox after | 28.2 | 30.7 | 0 % |
+| Codex | 150 | raw tmux | 26.1 | 27.9 | 0 % |
+| Codex | 150 | thurbox before | 29.5 | 68.0 | 16 % |
+| Codex | 150 | thurbox after | 27.6 | 30.2 | 0 % |
+
+The worst Codex key went from 72–75 ms to 31–34 ms. What is left is ADR-P28's
+constant cost of a few milliseconds per key. Local tmux only: psmux, remote
+hosts and macOS were not measured.
+
+**Guarded** on counters (ADR-P5). `tests/tui_e2e.rs` runs a stand-in agent that
+redraws the way Codex does, with a cursor-only synchronized frame, then the glyph
+split across three writes. A 15 ms gap before the glyph pins a paint between
+the chunks. The test fails unless every key got at least two floor-free paints;
+before the change it can never get more than one. A second test types into a
+pane that rewrites a status line every couple of milliseconds, and fails if the
+paints exceed one plus `ECHO_TAIL_FRAMES` a key. `EchoTail`'s own unit tests
+drive it with synthetic output sequences and no backend at all.
 
 ## Measuring: the bench and the load harness (2026-08-29)
 
