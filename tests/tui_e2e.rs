@@ -4162,12 +4162,23 @@ fn type_and_see_echoes(tui: &mut Tui, keys: usize) {
     }
 }
 
-/// The loop's `(echoes, echo_frames)` counters, once its published perf
-/// snapshot has counted at least `at_least` echoes — or as they stand when it
-/// gives up. Published every few seconds while `THURBOX_PERF_LOG` is set.
-fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
+/// The loop's echo counters from its published perf snapshot.
+#[derive(Debug, Default, Clone, Copy)]
+struct EchoCounts {
+    /// Keys whose first answer was painted with no floor.
+    echoes: u64,
+    /// Floor-free frames that redrew only the pane, first answers and tails.
+    frames: u64,
+    /// Floor-free frames owed to a pane's output after its key's first answer.
+    tails: u64,
+}
+
+/// The loop's echo counters once its published perf snapshot satisfies
+/// `done` — or as they stand when it gives up. Published every few seconds
+/// while `THURBOX_PERF_LOG` is set.
+fn echo_counters(profile: &Profile, done: impl Fn(&EchoCounts) -> bool) -> EchoCounts {
     let deadline = Instant::now() + WAIT;
-    let mut seen = (0, 0);
+    let mut seen = EchoCounts::default();
     while Instant::now() < deadline {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         profile.apply(&mut cmd);
@@ -4177,8 +4188,12 @@ fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
             .expect("thurbox-cli perf");
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
             let counter = |name: &str| json["counters"][name].as_u64().unwrap_or(0);
-            seen = (counter("echoes"), counter("echo_frames"));
-            if seen.0 >= at_least {
+            seen = EchoCounts {
+                echoes: counter("echoes"),
+                frames: counter("echo_frames"),
+                tails: counter("echo_tails"),
+            };
+            if done(&seen) {
                 break;
             }
         }
@@ -4230,9 +4245,9 @@ fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(P
 /// Keys typed in the two scenarios below.
 const ECHO_KEYS: u64 = 20;
 
-/// The most floor-free paints one key can buy: its first answer, then
-/// `ECHO_TAIL_FRAMES` (4) more of its pane's output.
-const ECHO_PAINTS_PER_KEY: u64 = 5;
+/// The most floor-free frames one key's pane can get after its first answer
+/// (`ECHO_TAIL_FRAMES`).
+const ECHO_TAIL_FRAMES: u64 = 4;
 
 /// What both scenarios assert: every key's echo was painted with no frame
 /// floor, and all but the first as a frame that redrew only the pane — the
@@ -4241,20 +4256,17 @@ const ECHO_PAINTS_PER_KEY: u64 = 5;
 ///
 /// Asserted on the loop's counters rather than on the clock (ADR-P5): the
 /// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
-/// and this pins that nothing puts it back on a floor. A range, not a count: an
-/// echo that reaches the interface as two chunks earns its second a floor-free
-/// frame too (`ECHO_TAIL_FRAMES`), and how the pty splits a write is not the
-/// test's to decide.
+/// and this pins that nothing puts it back on a floor. First answers only: a
+/// tail frame (ADR-P29) must never stand in for a key's missed echo.
 fn assert_every_echo_painted_at_once(profile: &Profile) {
-    let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
-    assert!(
-        (ECHO_KEYS..=ECHO_KEYS * ECHO_PAINTS_PER_KEY).contains(&echoes),
-        "{echoes} floor-free paints for {ECHO_KEYS} keys: every keystroke's echo is painted with \
-         no floor ({echo_frames} of them as echo frames)"
+    let EchoCounts { echoes, frames, .. } = echo_counters(profile, |c| c.echoes >= ECHO_KEYS);
+    assert_eq!(
+        echoes, ECHO_KEYS,
+        "every keystroke's echo is painted with no floor ({frames} echo frames)"
     );
     assert!(
-        echo_frames >= ECHO_KEYS - 1,
-        "{echo_frames} of {echoes} echoes were painted by redrawing only the pane"
+        frames >= ECHO_KEYS - 1,
+        "{frames} of {echoes} echoes were painted by redrawing only the pane"
     );
 }
 
@@ -4287,17 +4299,17 @@ fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
         frame.contains(&last)
     });
     let expected = ECHO_KEYS + BATCHED_KEYS;
-    let (echoes, echo_frames) = echo_counters(&profile, expected);
-    assert!(
-        (expected..=expected * ECHO_PAINTS_PER_KEY).contains(&echoes),
-        "{echoes} floor-free paints for {expected} keys: every batched key retained its echo wait"
-    );
+    let EchoCounts { echoes, frames, .. } = echo_counters(&profile, |c| c.echoes >= expected);
+    // Counted apart from tail frames: the second key's echo lands inside the
+    // first key's tail, which would otherwise paint it floor-free anyway and
+    // hide a dropped wait.
+    assert_eq!(echoes, expected, "every batched key retained its echo wait");
     // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
     // so the batch's first echo may need a full frame; its second must reuse
     // that frame.
     assert!(
-        echo_frames >= expected - 2,
-        "{echo_frames} of {echoes} batched echoes redrew only the pane"
+        frames >= expected - 2,
+        "{frames} of {echoes} batched echoes redrew only the pane"
     );
     assert!(tui.quit().success());
 }
@@ -4356,16 +4368,21 @@ fn a_glyph_that_follows_a_cursor_only_frame_is_painted_as_the_keys_echo() {
         return;
     };
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
-    // Three for every key: the cursor-only frame, the hide-cursor chunk, and a
-    // third that can only be owed once the glyph has arrived (15 ms after the
-    // chunk before it, so the two are not one frame). Counting two would pass
-    // with the glyph still on the floor. Without the fix this can never exceed
-    // one per key, whatever the timing.
-    let (echoes, echo_frames) = echo_counters(&profile, 3 * ECHO_KEYS);
+    // After each key's first answer (the cursor-only frame), two tail frames:
+    // the hide-cursor chunk, and a second that can only be owed once the glyph
+    // has arrived (15 ms after the chunk before it, so the two are not one
+    // frame). One would pass with the glyph still on the floor. Without the
+    // fix there are none, whatever the timing.
+    let counts = echo_counters(&profile, |c| c.tails >= 2 * ECHO_KEYS);
+    assert_eq!(
+        counts.echoes, ECHO_KEYS,
+        "every key's first answer: {counts:?}"
+    );
     assert!(
-        echoes >= 3 * ECHO_KEYS,
-        "{echoes} floor-free echo paints for {ECHO_KEYS} keys: the glyph after a \
-         cursor-only frame was left to the output floor ({echo_frames} echo frames)"
+        counts.tails >= 2 * ECHO_KEYS,
+        "{} tail frames for {ECHO_KEYS} keys: the glyph after a cursor-only frame was \
+         left to the output floor ({counts:?})",
+        counts.tails
     );
     assert!(tui.quit().success());
 }
@@ -4388,11 +4405,12 @@ fn a_pane_printing_while_you_type_into_it_is_not_painted_per_chunk() {
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
     // A snapshot published after the last key: they come every five seconds.
     std::thread::sleep(Duration::from_secs(6));
-    let (echoes, _) = echo_counters(&profile, ECHO_KEYS);
+    let counts = echo_counters(&profile, |c| c.echoes >= ECHO_KEYS);
     assert!(
-        (ECHO_KEYS..=ECHO_KEYS * ECHO_PAINTS_PER_KEY).contains(&echoes),
-        "{echoes} floor-free paints for {ECHO_KEYS} keys into a printing pane \
-         (bounded at 1 + 4 a key)"
+        counts.tails <= ECHO_KEYS * ECHO_TAIL_FRAMES,
+        "{} tail frames for {ECHO_KEYS} keys into a printing pane (bounded at 4 a key): \
+         {counts:?}",
+        counts.tails
     );
     assert!(tui.quit().success());
 }

@@ -515,7 +515,7 @@ pub(crate) fn render_hud(
     // Counters first — they are the exact half. The timings below them are
     // wall-clock and so only ever indicative (ADR-P11).
     let mut text = format!(
-        "iterations {}\nframes     {}\nskipped    {}\nrenders    {}\nreused r/g {}/{}\nechoes e/f {}/{}\nfailures   {}\nreloads    {}\n",
+        "iterations {}\nframes     {}\nskipped    {}\nrenders    {}\nreused r/g {}/{}\nechoes e/f/t {}/{}/{}\nfailures   {}\nreloads    {}\n",
         counters.iterations,
         counters.frames,
         counters.skipped,
@@ -524,6 +524,7 @@ pub(crate) fn render_hud(
         counters.groups_reused,
         counters.echoes,
         counters.echo_frames,
+        counters.echo_tails,
         counters.failures,
         counters.reloads,
     );

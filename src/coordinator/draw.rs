@@ -61,14 +61,18 @@ impl App {
             return Ok(());
         }
         if let Some(surface) = self.echo_due.take() {
-            Counters::bump(&self.perf.echoes);
+            let tail = std::mem::take(&mut self.echo_due_is_tail);
+            Counters::bump(if tail {
+                &self.perf.echo_tails
+            } else {
+                &self.perf.echoes
+            });
             // A tail frame never stands in for a full frame the rest of the
             // screen has waited the output floor for: a pane printing faster
             // than the input floor while you type would otherwise keep every
             // frame an echo frame, and nothing else would be painted until the
             // typing stopped. The full frame shows the tail's output too.
-            let overdue = std::mem::take(&mut self.echo_due_is_tail)
-                && self.last_full_paint.elapsed() >= OUTPUT_FRAME_INTERVAL;
+            let overdue = tail && self.last_full_paint.elapsed() >= OUTPUT_FRAME_INTERVAL;
             if !overdue && self.paint_echo_frame(terminal, &surface)? {
                 Counters::bump(&self.perf.echo_frames);
                 return Ok(());
