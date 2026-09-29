@@ -32,9 +32,13 @@ backend::output_wake (no crate-internal references)
 backend::registry    → session, backend::contract
 backend::wiring      → session, agent::host_config,
                        backend::{contract, registry, tmux}
-backend::tmux_compat → session, shell, agent, backend::contract
+backend::tmux_compat (declares the two below — no references)
+  ::control_mode     → session, shell, backend::contract,
+                       backend::tmux_compat::transport
+  ::transport        → shell, agent
 backend::tmux        → session, paths, shell, agent,
-                       backend::{contract, identity, tmux_compat}
+                       backend::{contract, identity},
+                       backend::tmux_compat::{control_mode, transport}
 git                  → session, paths, shell
 storage              → session, sync, paths
 sync                 → session

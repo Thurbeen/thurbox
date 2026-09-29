@@ -140,6 +140,13 @@ impl Tree {
     }
 
     fn index(&mut self) {
+        self.index_modules();
+        self.bind_uses();
+        self.index_aliases();
+    }
+
+    /// Every file and inline module, and which of them are test-only.
+    fn index_modules(&mut self) {
         for file in &self.files {
             self.modules.insert(file.module.clone());
             for (_, _, scope) in &file.scopes {
@@ -162,13 +169,31 @@ impl Tree {
         }) {
             self.test_modules.push(scope.clone());
         }
-        // Bindings first (use leaves resolve their first segment against
-        // modules only), then aliases, which may resolve through bindings.
+    }
+
+    /// Every `use` leaf's binding, and the public ones as re-exports.
+    ///
+    /// Before aliases, which may resolve through bindings. A `use` path may
+    /// itself start at an imported name (`use x as y;` then `pub use
+    /// y::Item;`), so leaves are bound in passes until a pass binds nothing
+    /// new: each pass can only add a binding, so it terminates.
+    fn bind_uses(&mut self) {
+        let mut pending: Vec<(ModPath, UseLeaf)> = self
+            .files
+            .iter()
+            .flat_map(|f| {
+                f.uses
+                    .iter()
+                    .map(|leaf| (f.scope_at(leaf.offset), leaf.clone()))
+            })
+            .collect();
         let mut public = Vec::new();
-        for file in &self.files {
-            for leaf in &file.uses {
-                let scope = file.scope_at(leaf.offset);
-                let Some(abs) = self.absolute_use(&scope, &leaf.raw) else {
+        loop {
+            let before = pending.len();
+            let mut unresolved = Vec::new();
+            for (scope, leaf) in pending {
+                let Some(abs) = self.absolute_code(&scope, &leaf.raw) else {
+                    unresolved.push((scope, leaf));
                     continue;
                 };
                 match &leaf.binding {
@@ -178,21 +203,30 @@ impl Tree {
                             .or_default()
                             .insert(name.clone(), abs.clone());
                         if leaf.public {
-                            public.push(((scope.clone(), name.clone()), abs));
+                            public.push(((scope, name.clone()), abs));
                         }
                     }
                     Some(_) => {}
                     None => {
                         if leaf.raw == ["super"] {
-                            self.glob_parent.insert(scope.clone());
+                            self.glob_parent.insert(scope);
                         }
                     }
                 }
+            }
+            pending = unresolved;
+            if pending.len() == before {
+                break;
             }
         }
         for (key, abs) in public {
             self.reexports.entry(key).or_default().push(abs);
         }
+    }
+
+    /// Every `type` alias, as a re-export of each crate path on its right-hand
+    /// side.
+    fn index_aliases(&mut self) {
         let mut aliases = Vec::new();
         for file in &self.files {
             for (offset, name, rhs) in type_aliases(&file.stripped) {
@@ -250,8 +284,9 @@ impl Tree {
         Some(base)
     }
 
-    /// A path in code made absolute: as for `use`, plus a name the scope
-    /// imported (`use crate::agent::tmux;` then `tmux::x()`).
+    /// A path made absolute: as for [`Self::absolute_use`], plus a name the
+    /// scope imported (`use crate::agent::tmux;` then `tmux::x()`, or `pub use
+    /// tmux::X;`).
     fn absolute_code(&self, scope: &[String], raw: &[String]) -> Option<ModPath> {
         if let Some(abs) = self.absolute_use(scope, raw) {
             return Some(abs);
@@ -326,7 +361,7 @@ impl Tree {
             let mut refs: Vec<(usize, ModPath, bool)> = Vec::new();
             for leaf in &file.uses {
                 let scope = file.scope_at(leaf.offset);
-                if let Some(abs) = self.absolute_use(&scope, &leaf.raw) {
+                if let Some(abs) = self.absolute_code(&scope, &leaf.raw) {
                     refs.push((leaf.offset, abs, true));
                 }
             }
@@ -380,12 +415,15 @@ impl Tree {
         edges
     }
 
-    /// Direct children of `parent` that exist as modules.
-    pub fn children(&self, parent: &str) -> BTreeSet<String> {
+    /// Every module under `parent` that has a file of its own, at any depth,
+    /// test modules left out. An inline `mod x { … }` is part of the file
+    /// holding it: splitting it out means a new file, which this then names.
+    pub fn file_descendants(&self, parent: &str) -> BTreeSet<String> {
         let parent = segments(parent);
-        self.modules
+        self.files
             .iter()
-            .filter(|m| m.len() == parent.len() + 1 && m.starts_with(&parent))
+            .map(|f| &f.module)
+            .filter(|m| m.len() > parent.len() && m.starts_with(&parent))
             .filter(|m| !self.is_test_module(m))
             .map(|m| m.join("::"))
             .collect()
@@ -591,9 +629,7 @@ fn keyword_at(bytes: &[u8], i: usize, word: &str) -> bool {
     bytes.len() >= i + w.len()
         && &bytes[i..i + w.len()] == w
         && (i == 0 || !is_ident_char(bytes[i - 1]))
-        && bytes
-            .get(i + w.len())
-            .is_some_and(|b| b.is_ascii_whitespace())
+        && bytes.get(i + w.len()).is_some_and(u8::is_ascii_whitespace)
 }
 
 /// Inline `mod x { … }` spans (start, end, name) and `mod x;` declarations.

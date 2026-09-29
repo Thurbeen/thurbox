@@ -5,3 +5,4 @@ fn f(
     // `tmux` is bound by the import above.
     tmux::spawn();
 }
+fn g() { crate::agent::start(); }

@@ -64,10 +64,13 @@ backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, agent::host_config,      (the factory: the only
                      backend::{contract,registry,tmux}  node naming an adapter)
-backend::tmux_compat session, shell, agent,            (tmux protocol helper)
-                     backend::contract
+backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+  ::control_mode     session, shell, backend::contract,
+                     backend::tmux_compat::transport
+  ::transport        shell, agent
 backend::tmux        session, paths, shell, agent,     (the tmux adapter)
-                     backend::{contract,identity,tmux_compat}
+                     backend::{contract,identity},
+                     backend::tmux_compat::{control_mode,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
@@ -104,7 +107,7 @@ entry — a rule used to be able to exist with no test calling it, which is how
 `kernel` drifted.
 
 A rule names a **node**: a top-level module, or a submodule governed on its own —
-every module of `backend` is one (`SUBMODULE_GOVERNED`), and so is
+every file module of `backend`, at any depth, is one (`SUBMODULE_GOVERNED`), and so is
 `agent::host_config`. A grant covers exactly its node, never the node's children,
 and a reference is judged where it **resolves** (`tests/architecture/resolver.rs`):
 `super::`, `self::`, nested brace groups, `as`, an imported name, a `pub use`

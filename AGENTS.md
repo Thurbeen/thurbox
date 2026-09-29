@@ -262,10 +262,13 @@ backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, agent::host_config,      (the factory: the only
                      backend::{contract,registry,tmux}  node naming an adapter)
-backend::tmux_compat session, shell, agent,            (tmux protocol helper)
-                     backend::contract
+backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+  ::control_mode     session, shell, backend::contract,
+                     backend::tmux_compat::transport
+  ::transport        shell, agent
 backend::tmux        session, paths, shell, agent,     (the tmux adapter)
-                     backend::{contract,identity,tmux_compat}
+                     backend::{contract,identity},
+                     backend::tmux_compat::{control_mode,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
@@ -291,7 +294,7 @@ Enforcement is an **allowlist** over **resolved** edges: every module under
 `src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so
 a new module fails the test until its place is declared, and one loop asserts
 every entry, so no rule can be declared and left unchecked. A node is a top-level
-module or a governed submodule (every module of `backend` is one), and a
+module or a governed submodule (every file module of `backend` is one), and a
 reference counts where it resolves — through `super::`, brace groups, re-exports
 and `type` aliases. Both the actual and the declared graph must be acyclic, an
 unused grant fails, and the crossings still scheduled for removal are listed,

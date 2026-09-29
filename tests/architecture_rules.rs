@@ -140,10 +140,27 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     // The tmux command and control-mode protocol. Shared grammar, not an
-    // adapter: it may know the contract, never an adapter using it.
+    // adapter: it may know the contract, never an adapter using it. Its root
+    // only declares the two below.
     ModuleRules {
         name: "backend::tmux_compat",
-        allowed: &["session", "shell", "agent", "backend::contract"],
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "backend::tmux_compat::control_mode",
+        allowed: &[
+            "session",
+            "shell",
+            "backend::contract",
+            "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    // How the multiplexer is launched: locally, over ssh, or in a WSL distro.
+    ModuleRules {
+        name: "backend::tmux_compat::transport",
+        allowed: &["shell", "agent"],
         allowed_path_only: &[],
     },
     // The tmux adapter. Reaches the contract, the identity rule and the
@@ -157,7 +174,8 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent",
             "backend::contract",
             "backend::identity",
-            "backend::tmux_compat",
+            "backend::tmux_compat::control_mode",
+            "backend::tmux_compat::transport",
         ],
         allowed_path_only: &[],
     },
@@ -343,9 +361,10 @@ const MODULE_RULES: &[ModuleRules] = &[
 /// what it actually reaches today.
 const EXEMPT: &[&str] = &["bin", "lib", "main"];
 
-/// Nodes whose every child module must be a governed node of its own, so a
-/// new file there is a decision rather than something its parent's rule
-/// silently covers.
+/// Nodes whose every file module, at any depth, must be a governed node of
+/// its own, so a new file there is a decision rather than something its
+/// parent's rule silently covers. An inline `mod x { … }` belongs to the file
+/// that holds it.
 const SUBMODULE_GOVERNED: &[&str] = &["backend"];
 
 /// The task in the backend-boundary sequence that removes a transitional
@@ -824,7 +843,7 @@ fn stripping_keeps_every_line() {
 }
 
 /// Every module under `src/` must be governed: either a MODULE_RULES entry
-/// or an explicit EXEMPT listing, and every child of a
+/// or an explicit EXEMPT listing, and every module under a
 /// [`SUBMODULE_GOVERNED`] node a rule of its own. Adding a module without
 /// deciding its place in the architecture fails here. Also catches stale rule
 /// entries.
@@ -856,7 +875,7 @@ fn every_module_is_governed() {
         );
     }
     for parent in SUBMODULE_GOVERNED {
-        for child in tree.children(parent) {
+        for child in tree.file_descendants(parent) {
             assert!(
                 MODULE_RULES.iter().any(|r| r.name == child),
                 "`{child}` has no architecture rule — every module of `{parent}` is a \
@@ -1004,6 +1023,8 @@ fn aliases_and_reexports_launder_nothing() {
         // A glob-free brace import holding `self`, then used by its binding.
         "kernel → agent::tmux @ kernel/other.rs:4",
         "kernel → agent::tmux::spawn @ kernel/other.rs:6",
+        // A re-export whose path starts at an imported name (`adapter`).
+        "kernel → agent::tmux::spawn @ kernel/other.rs:8",
     ]
     .into_iter()
     .map(str::to_string)
