@@ -13,8 +13,9 @@
 //! tmux server on a private socket: the rebuilt terminal is the one that was
 //! never dropped, output that arrives while it is gone is neither lost nor
 //! doubled, the first frame after coming back is the current screen, a search
-//! still finds history nobody is looking at, and a session off screen still
-//! reports its title and its output.
+//! still finds history nobody is looking at, a session off screen still
+//! reports its title and its output, and non-ASCII text printed while a grid
+//! is live reaches it with every character intact.
 
 use std::path::Path;
 use std::process::Command;
@@ -637,4 +638,87 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Two-byte characters throughout, so nearly every cut tmux makes in the
+/// stream lands inside one.
+const CYRILLIC: &str = "съешь же ещё этих мягких французских булок да выпей чаю";
+
+/// tmux hands a pane's output to control mode in `%output` lines cut wherever
+/// its read ended — often inside a multi-byte character — and passes bytes
+/// `>= 0x80` through raw. Decoding each line as text on its own turned both
+/// halves of such a character into U+FFFD, which vt100 drops, so a word lost a
+/// letter at random until the agent next redrew it.
+///
+/// Only output that arrives while the grid is live goes that way: what a pane
+/// printed before comes in as a `capture-pane` snapshot of whole lines, which
+/// is why every test above that prints first and looks second never saw it.
+#[tokio::test(flavor = "multi_thread")]
+async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let go = dir.path().join("go");
+    let text: String = (0..1000)
+        .map(|i| format!("{i:04} {CYRILLIC}\n"))
+        .chain(std::iter::once("done> ".to_string()))
+        .collect();
+    let file = write(dir.path(), "cyrillic", text.as_bytes());
+    // It waits for `go`, so every byte of it is live `%output` and none is in
+    // the snapshot the grid is rebuilt from.
+    let pane = pane_running(&format!(
+        "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; cat {file}; exec sleep 100000'",
+        go = go.display()
+    ));
+    wait_for("the pane to start", || tmux_text(&pane).contains(""));
+
+    let mut terminals = Terminals::new();
+    let snap = snapshot(&pane);
+    attach(&mut terminals, &snap).await;
+    wait_for("the grid", || {
+        paint(&terminals, 0);
+        grid_size(&terminals) == (ROWS, COLS)
+    });
+    std::fs::write(&go, b"").expect("go");
+    wait_for("the output to reach tmux", || {
+        tmux_text(&pane).contains("done>")
+    });
+    settle(&terminals, true).await;
+
+    let parser = agent_parser(&terminals);
+    let mut parser = parser.lock().expect("parser");
+    let lines: Vec<String> = all_rows(&mut parser)
+        .into_iter()
+        .map(|(cells, _)| {
+            cells
+                .iter()
+                .map(|cell| match cell.split('|').next().unwrap_or("") {
+                    "" => " ",
+                    text => text,
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .filter(|line| line.len() > 4 && line.as_bytes()[..4].iter().all(u8::is_ascii_digit))
+        .collect();
+    assert!(
+        lines.len() > 200,
+        "only {} lines reached the grid",
+        lines.len()
+    );
+    let damaged: Vec<&String> = lines
+        .iter()
+        .filter(|line| **line != format!("{} {CYRILLIC}", &line[..4]))
+        .collect();
+    assert!(
+        damaged.is_empty(),
+        "{} of {} lines differ from what the pane printed, e.g. {:?}",
+        damaged.len(),
+        lines.len(),
+        &damaged[..damaged.len().min(3)]
+    );
 }

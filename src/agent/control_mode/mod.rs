@@ -833,8 +833,8 @@ pub fn parse_notification(line: &str) -> Notification {
 /// wherever its read ended — often inside a multi-byte character. Decoding a
 /// line as UTF-8 on its own turns both halves of that character into U+FFFD,
 /// which vt100 drops; the reader's `carry` rejoins them only if they reach it
-/// as bytes (`tests/live_output_utf8.rs`).
-pub fn parse_output(line: &[u8]) -> Option<Notification> {
+/// as bytes (`tests/lazy_terminals.rs`).
+fn parse_output(line: &[u8]) -> Option<Notification> {
     if let Some(rest) = line.strip_prefix(b"%output ") {
         // Format: %output %<pane_id> <octal-encoded data>
         let split = rest.iter().position(|&b| b == b' ')?;
@@ -1389,10 +1389,11 @@ impl ControlMode {
 
     /// [`Self::read_control_line`] as text, or `None` where it returns `false`.
     ///
-    /// Lossy, which is only safe for a line read whole: a pane's output is not
-    /// one (see [`parse_output`]), so the reader takes `%output` from the bytes
-    /// before converting anything. A command's reply is — tmux writes it in one
-    /// piece, and a `capture-pane` line never ends mid-character.
+    /// Lossy, which is only safe for a line that holds whole characters. A
+    /// pane's output does not (see [`parse_output`]), so the reader takes
+    /// `%output` from the bytes before converting anything. A command's reply
+    /// does: tmux writes it in one piece, and a `capture-pane` line is a row
+    /// of whole cells.
     fn next_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> Option<String> {
         Self::read_control_line(reader, line_buf)
             .then(|| String::from_utf8_lossy(line_buf).into_owned())
