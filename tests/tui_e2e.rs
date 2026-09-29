@@ -1952,6 +1952,92 @@ fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// A shell session whose panes lose their grid after a second off screen.
+fn shell_session_dropping_hidden_grids() -> Option<(Profile, Tui)> {
+    shell_session_prepared(
+        |profile| {
+            let settings = profile.path("config/settings.toml");
+            let seeded = std::fs::read_to_string(&settings).expect("read settings");
+            std::fs::write(&settings, format!("hidden_terminal_secs = 1\n{seeded}"))
+                .expect("seed settings");
+        },
+        plain_shell,
+    )
+}
+
+/// Raise the Shell tab and prove a live shell is behind it: `marker`, typed
+/// into it, is echoed back.
+fn raise_a_working_shell(tui: &mut Tui, marker: &str) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_until_quiet();
+    let (head, tail) = marker.split_at(marker.len() / 2);
+    tui.send(format!("echo {head}\"\"{tail}\r").as_bytes());
+    tui.wait_for(marker);
+}
+
+#[test]
+fn a_shell_that_exited_behind_the_agent_is_replaced_when_raised() {
+    // The long-lived session's shell, left for later: it ends while the agent
+    // has the pane (here `exit`; a window closed from outside is the same),
+    // stays off screen long enough for its grid to be dropped, and is raised
+    // again. The shell tab must hold a working shell, not the dead one's
+    // blank grid — which no snapshot can rebuild, since the pane is gone.
+    let Some((_profile, mut tui)) = shell_session_dropping_hidden_grids() else {
+        return;
+    };
+    raise_a_working_shell(&mut tui, "tb-first-shell");
+    tui.send(b"exit\r");
+    tui.wait_until_quiet();
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Agent");
+    // Past the setting, and past the snapshot tick that does the dropping.
+    std::thread::sleep(Duration::from_secs(4));
+
+    raise_a_working_shell(&mut tui, "tb-second-shell");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
+    // The shell's pane id outlives the interface in the session's row, so a
+    // restart re-adopts it. A window that went in the meantime (a tmux server
+    // restart, a kill from outside) must not be adopted as a shell that never
+    // prints: raising the tab has to give a working one.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    raise_a_working_shell(&mut tui, "tb-first-shell");
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
+    let shells: Vec<String> = String::from_utf8_lossy(&windows.stdout)
+        .lines()
+        .filter(|line| line.contains(" tbs-"))
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect();
+    assert_eq!(shells.len(), 1, "one shell window to close: {windows:?}");
+    profile.server.tmux(&["kill-window", "-t", &shells[0]]);
+
+    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    raise_a_working_shell(&mut tui, "tb-second-shell");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 /// Leave `profile` as v2.32.0 left someone who chose the `split-shell` preset:
 /// that release's layout, shell pane, agent pane and `lib/panels.lua` on disk,
 /// the delivery manifest recording them as written, and `layout` in
