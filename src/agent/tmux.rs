@@ -1176,6 +1176,10 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
+/// The `terminal-features` entry thurbox owns — see `session_config`. High
+/// enough that neither tmux's defaults nor a hand-appended list reaches it.
+const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
+
 /// One `set-option` of the session config, and whether failing to set it means
 /// the server cannot host sessions.
 struct ConfigOption {
@@ -1187,7 +1191,7 @@ struct ConfigOption {
 ///
 /// tmux skips the rest of a list after a command fails, so a best-effort
 /// option is given `-q`: an option this tmux does not know is then not an
-/// error, and cannot stop the options after it (tmux 3.2 has no
+/// error, and cannot stop the options after it (tmux before 3.5 has no
 /// `extended-keys-format`).
 fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Vec<&'a str> {
     let mut list = prefix.to_vec();
@@ -1545,13 +1549,13 @@ impl TmuxBackend {
         set(&[scope, "extended-keys", "on"], true);
 
         // `extended-keys-format csi-u` is best-effort: the option landed in tmux
-        // 3.3, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
+        // 3.5, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
         // option"). It is advisory only — thurbox injects keystroke bytes directly
         // via `send-keys` (not through tmux's key forwarder), so it never
         // re-encodes what an agent receives; it just sets what `tmux show-options`
         // reports, which some agents (notably `pi`) probe at startup and warn about
-        // unless it is `csi-u`. Ignoring the error keeps a 3.2 host working (pi
-        // users there simply miss the hint) while 3.3+ hosts get the preferred
+        // unless it is `csi-u`. Ignoring the error keeps a 3.2–3.4 host working (pi
+        // users there simply miss the hint) while 3.5+ hosts get the preferred
         // format.
         set(&[scope, "extended-keys-format", "csi-u"], false);
 
@@ -1567,9 +1571,15 @@ impl TmuxBackend {
         //    clipboard path is dead under tmux.
         // 2. The `Ms` terminfo capability must be present, or
         //    `tty_set_selection` returns early — a second, independent silent
-        //    drop. `terminal-features ,*:clipboard` injects it for every
-        //    terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2 form was
-        //    a raw `terminal-overrides` Ms= string).
+        //    drop. A `*:clipboard` entry in `terminal-features` injects it for
+        //    every terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2
+        //    form was a raw `terminal-overrides` Ms= string). It is written at a
+        //    fixed index rather than appended: this runs on every spawn and the
+        //    server outlives thurbox, so `-a` grew the list by one entry a run
+        //    (#1278). Reading the list first would cost a process per session
+        //    create, and a format test cannot see an array on 3.2 (it expands
+        //    to ""). `-a` fills the first free index, so a user's appended
+        //    entries never land on this one.
         //
         // Security tradeoff: `set-clipboard on` lets any process in a pane set
         // the user's system clipboard — an exfiltration channel, and why tmux
@@ -1580,7 +1590,7 @@ impl TmuxBackend {
         // Windows session copies via the native clipboard path instead).
         if !psmux {
             set(&["-s", "set-clipboard", "on"], false);
-            set(&["-as", "terminal-features", ",*:clipboard"], false);
+            set(&["-s", CLIPBOARD_FEATURE_SLOT, "*:clipboard"], false);
         }
 
         for (key, val) in SESSION_OPTS {
