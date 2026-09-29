@@ -1176,8 +1176,14 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
-/// One `set-option` of the session config, and whether failing to set it means
-/// the server cannot host sessions.
+/// The `terminal-features` slot thurbox writes `*:clipboard` into — see
+/// `session_config`. High enough that neither tmux's defaults nor a
+/// hand-appended list reaches it.
+const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
+
+/// One command of the session config — a `set-option`, or the `if-shell` that
+/// guards [`CLIPBOARD_FEATURE_SLOT`] — and whether failing it means the server
+/// cannot host sessions.
 struct ConfigOption {
     args: Vec<String>,
     fatal: bool,
@@ -1187,8 +1193,9 @@ struct ConfigOption {
 ///
 /// tmux skips the rest of a list after a command fails, so a best-effort
 /// option is given `-q`: an option this tmux does not know is then not an
-/// error, and cannot stop the options after it (tmux 3.2 has no
-/// `extended-keys-format`).
+/// error, and cannot stop the options after it (tmux before 3.5 has no
+/// `extended-keys-format`). Only `set-option` takes it; `if-shell` refuses the
+/// flag and quiets its own inner command instead.
 fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Vec<&'a str> {
     let mut list = prefix.to_vec();
     for option in config {
@@ -1197,7 +1204,7 @@ fn config_command_list<'a>(prefix: &[&'a str], config: &'a [ConfigOption]) -> Ve
         }
         let (verb, rest) = option.args.split_first().expect("a set-option verb");
         list.push(verb.as_str());
-        if !option.fatal {
+        if !option.fatal && verb == "set-option" {
             list.push("-q");
         }
         list.extend(rest.iter().map(String::as_str));
@@ -1545,13 +1552,13 @@ impl TmuxBackend {
         set(&[scope, "extended-keys", "on"], true);
 
         // `extended-keys-format csi-u` is best-effort: the option landed in tmux
-        // 3.3, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
+        // 3.5, but thurbox's floor is 3.2, so an older tmux rejects it ("invalid
         // option"). It is advisory only — thurbox injects keystroke bytes directly
         // via `send-keys` (not through tmux's key forwarder), so it never
         // re-encodes what an agent receives; it just sets what `tmux show-options`
         // reports, which some agents (notably `pi`) probe at startup and warn about
-        // unless it is `csi-u`. Ignoring the error keeps a 3.2 host working (pi
-        // users there simply miss the hint) while 3.3+ hosts get the preferred
+        // unless it is `csi-u`. Ignoring the error keeps a 3.2–3.4 host working (pi
+        // users there simply miss the hint) while 3.5+ hosts get the preferred
         // format.
         set(&[scope, "extended-keys-format", "csi-u"], false);
 
@@ -1567,9 +1574,10 @@ impl TmuxBackend {
         //    clipboard path is dead under tmux.
         // 2. The `Ms` terminfo capability must be present, or
         //    `tty_set_selection` returns early — a second, independent silent
-        //    drop. `terminal-features ,*:clipboard` injects it for every
-        //    terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2 form was
-        //    a raw `terminal-overrides` Ms= string).
+        //    drop. A `*:clipboard` entry in `terminal-features` injects it for
+        //    every terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2
+        //    form was a raw `terminal-overrides` Ms= string). Written at the end
+        //    of the list, below.
         //
         // Security tradeoff: `set-clipboard on` lets any process in a pane set
         // the user's system clipboard — an exfiltration channel, and why tmux
@@ -1580,7 +1588,6 @@ impl TmuxBackend {
         // Windows session copies via the native clipboard path instead).
         if !psmux {
             set(&["-s", "set-clipboard", "on"], false);
-            set(&["-as", "terminal-features", ",*:clipboard"], false);
         }
 
         for (key, val) in SESSION_OPTS {
@@ -1597,6 +1604,24 @@ impl TmuxBackend {
         // the server and why failing to set one is not fatal.
         for (key, val) in WINDOW_OPTS {
             set(&["-w", "-g", key, val], false);
+        }
+
+        // The `*:clipboard` feature goes into a fixed slot, and only while that
+        // slot is empty. Appending it grew the list by one entry a run, since
+        // this runs on every spawn and the server outlives thurbox (#1278); an
+        // unconditional write to the slot would overwrite an entry the user's
+        // `~/.tmux.conf` put there. Reading the list from Rust first would cost
+        // a process per session create, and a format cannot test the whole
+        // array on 3.2 (`#{terminal-features}` expands to "") — but it can read
+        // one index. `-a` fills the first free index, so appended entries
+        // never land on this one.
+        if !psmux {
+            let slot = format!("#{{{CLIPBOARD_FEATURE_SLOT}}}");
+            let write = format!("set-option -qs {CLIPBOARD_FEATURE_SLOT} *:clipboard");
+            config.push(ConfigOption {
+                args: vec!["if-shell".into(), "-F".into(), slot, String::new(), write],
+                fatal: false,
+            });
         }
         config
     }

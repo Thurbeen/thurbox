@@ -2952,8 +2952,14 @@ over ~74 KB skips OSC 52 — tmux discards an oversized sequence
 **entirely** — and is an error only when the native write did not
 carry it either.
 
-thurbox sets `set-clipboard on` and `terminal-features ,*:clipboard`
-on its own tmux server (`TmuxBackend::apply_clipboard_config`). Both
+thurbox sets `set-clipboard on` and a `*:clipboard` entry in
+`terminal-features` on its own tmux server (`TmuxBackend::session_config`).
+The entry is written at a fixed index (`terminal-features[100]`), and only
+while that slot is empty, rather than appended: the config is re-applied on
+every spawn and the server outlives thurbox, so appending grew the list by one
+duplicate a run (#1278), and a slot your `~/.tmux.conf` already set is yours.
+Duplicates an older thurbox left are not removed; they are harmless and go
+with the server. Both
 are required: tmux's default `set-clipboard external` **silently
 discards** an OSC 52 originating inside a pane, and a missing `Ms`
 terminfo capability drops it again at a second gate. Note the

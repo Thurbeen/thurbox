@@ -485,7 +485,8 @@ bugs (#641, #2989), required 3 external deps in the data path
 - `extended-keys-format csi-u` — the modern, unambiguous format some agents
   (e.g. `pi`) probe for at startup; thurbox injects keys via `send-keys` so this
   only sets the reported format, not the bytes agents receive. Best-effort: the
-  option is tmux 3.3+ while thurbox's floor is 3.2, so a 3.2 host silently skips it
+  option is tmux 3.5+ while thurbox's floor is 3.2, so a 3.2–3.4 host silently
+  skips it
 - `window-size manual` — each window sizes independently of the smallest
   attached client. Said **per window, as it is born** (`birth_options`), never
   server-wide: tmux asks a window's size before the window exists, and a
