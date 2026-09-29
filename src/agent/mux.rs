@@ -5631,14 +5631,17 @@ ERROR: something ps printed
     }
 }
 
-/// Every dialect answer the shared core relies on, pinned to what the core
-/// emitted before the psmux split (`MuxProtocol`, commit `29e17e3`).
+/// Every answer a dialect gives the shared core, for fixed inputs, pinned in
+/// `tests/fixtures/mux_dialect_answers.txt`: capabilities, session config,
+/// window commands, quoting, key encoding, resize lists, paste arguments,
+/// version verdicts, backend names and liveness, and the local one-shot argv.
+/// A dialect that drifts fails here with the rows that moved. A deliberate
+/// change edits those rows in the same change, so the fixture's history is the
+/// record of every protocol decision.
 ///
-/// The fixture was written by that commit's own code for these same inputs;
-/// what it composed inline (the spawn window command, the resize list, the
-/// `new-window` quoting and `-e` arguments) was dumped through a copy of those
-/// lines. A dialect that drifts fails here with the key that moved. Unix only:
-/// the local one-shot rows are tmux's.
+/// The rows were first captured from the core as it stood before tmux and psmux
+/// became separate dialects, so the split itself is proven not to have moved
+/// any answer. Unix only: the local one-shot rows are tmux's.
 #[cfg(all(test, unix))]
 mod dialect_characterization {
     use std::fmt::Write as _;
@@ -5647,19 +5650,7 @@ mod dialect_characterization {
     use crate::agent::psmux::PsmuxTransport;
     use crate::agent::tmux::TmuxTransport;
 
-    const BEFORE: &str = include_str!("../../tests/fixtures/mux_dialects_before_split.txt");
-
-    /// Answers that changed on purpose, as `(key, before, after)`.
-    const DELIBERATE: &[(&str, &str, &str)] = &[
-        // A tmux route polled liveness when its host *preferred* psmux. The
-        // dialect answers for the multiplexer actually driven, and the
-        // registry builds a host's tmux route with `multiplexer = tmux`.
-        (
-            "backend tmux@psmuxhost needs_liveness_poll",
-            "true",
-            "false",
-        ),
-    ];
+    const PINNED: &str = include_str!("../../tests/fixtures/mux_dialect_answers.txt");
 
     const COMMAND: &str = "/opt/agent/claude";
     const BANNERS: &[&str] = &[
@@ -5938,7 +5929,7 @@ mod dialect_characterization {
     }
 
     /// `ssh_command` adds its multiplexing options only where `~/.ssh` exists:
-    /// a property of the machine, the same before and after the split.
+    /// a property of the machine, not of any dialect.
     fn machine_neutral(dump: &str) -> String {
         let multiplex: Vec<String> = crate::shell::SSH_MULTIPLEX_OPTS
             .iter()
@@ -5947,52 +5938,24 @@ mod dialect_characterization {
         dump.replace(&multiplex.concat(), "")
     }
 
-    /// Fixes that landed on `main` after the fixture was written, applied to
-    /// it as `(was, is)` so each one stays visible rather than being folded
-    /// into a regenerated fixture that no pre-split code could produce.
-    const LANDED_SINCE: &[(&str, &str)] = &[
-        // #1280: the clipboard feature is no longer appended on every setup.
-        // It is written into a fixed slot, last, and only while that slot is
-        // empty. Only a tmux row sets `mouse`, so the second pair cannot
-        // touch a psmux row.
-        (
-            r##", (["set-option", "-as", "terminal-features", ",*:clipboard"], false)"##,
-            "",
-        ),
-        (
-            r##"(["set-option", "-t", "SESS", "mouse", "on"], true), (["set-option", "-w", "-g", "remain-on-exit", "off"], false)]"##,
-            r##"(["set-option", "-t", "SESS", "mouse", "on"], true), (["set-option", "-w", "-g", "remain-on-exit", "off"], false), (["if-shell", "-F", "#{terminal-features[100]}", "", "set-option -qs terminal-features[100] *:clipboard"], false)]"##,
-        ),
-    ];
-
-    fn with_landed_fixes(before: &str) -> String {
-        LANDED_SINCE
-            .iter()
-            .fold(before.to_string(), |acc, (was, is)| acc.replace(was, is))
-    }
-
     #[test]
-    fn every_dialect_answers_as_the_core_did_before_the_split() {
+    fn every_dialect_answers_as_pinned() {
+        let pinned = machine_neutral(PINNED);
         let now = machine_neutral(&current());
-        let before = machine_neutral(&with_landed_fixes(BEFORE));
-        let before: Vec<&str> = before.lines().collect();
-        let after: Vec<&str> = now.lines().collect();
-        assert_eq!(before.len(), after.len(), "a key was added or dropped");
-        let mut moved = Vec::new();
-        for (b, a) in before.iter().zip(&after) {
-            let deliberate = DELIBERATE.iter().any(|(key, was, is)| {
-                *b == format!("{key} = {was}") && *a == format!("{key} = {is}")
-            });
-            if b != a && !deliberate {
-                moved.push(format!("before: {b}\n after: {a}"));
-            }
-        }
-        assert!(moved.is_empty(), "{}", moved.join("\n"));
-        for (key, _, is) in DELIBERATE {
-            assert!(
-                after.contains(&format!("{key} = {is}").as_str()),
-                "deliberate change to `{key}` is no longer in effect"
-            );
-        }
+        let pinned: Vec<&str> = pinned.lines().collect();
+        let now: Vec<&str> = now.lines().collect();
+        assert_eq!(pinned.len(), now.len(), "a row was added or dropped");
+        let moved: Vec<String> = pinned
+            .iter()
+            .zip(&now)
+            .filter(|(p, n)| p != n)
+            .map(|(p, n)| format!("pinned: {p}\n   now: {n}"))
+            .collect();
+        assert!(
+            moved.is_empty(),
+            "a dialect answer moved; if on purpose, update the row in \
+             tests/fixtures/mux_dialect_answers.txt:\n{}",
+            moved.join("\n")
+        );
     }
 }
