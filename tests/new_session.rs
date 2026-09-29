@@ -2928,7 +2928,7 @@ fn clicking_a_browsed_folder_selects_it_as_the_arrows_do() {
     assert_eq!(command, issued(&keyed));
 }
 
-/// Every cell's `(fg, bg)` with the pointer over `hovered`.
+/// The flow as painted with the pointer over `hovered`, for its colours.
 fn colours(host: &LuaHost, world: &World, hovered: Option<&Identity>) -> Buffer {
     painted(host, world, hovered).expect("the flow is open").0
 }
