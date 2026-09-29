@@ -3258,6 +3258,7 @@ const REMOTE_NAME: &str = "afar-on-bad-link";
 fn fake_ssh(profile: &Profile) -> Link {
     use std::os::unix::fs::PermissionsExt;
     let pids = profile.root.path().join("ssh-pids");
+    let down = profile.root.path().join("host-down");
     let script = profile.bin.join("ssh");
     std::fs::write(
         &script,
@@ -3271,6 +3272,10 @@ fn fake_ssh(profile: &Profile) -> Link {
              \x20 esac\n\
              done\n\
              [ \"$#\" -gt 0 ] && shift\n\
+             if [ -e {down} ]; then\n\
+             \x20 echo 'ssh: connect to host localhost port 22: Connection refused' >&2\n\
+             \x20 exit 255\n\
+             fi\n\
              [ \"$#\" -eq 0 ] && exit 0\n\
              printf '%s\\n' \"$$\" >> {pids}\n\
              case \" $* \" in\n\
@@ -3285,12 +3290,13 @@ fn fake_ssh(profile: &Profile) -> Link {
              esac\n\
              eval \"exec $*\"\n",
             pids = shell_word(&pids),
+            down = shell_word(&down),
             root = shell_word(profile.root.path()),
         ),
     )
     .expect("write the ssh stand-in");
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-    Link { pids }
+    Link { pids, down, script }
 }
 
 /// A path as one shell word. The profile root is a tempdir, so it is ordinary —
@@ -3299,9 +3305,13 @@ fn shell_word(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
-/// The link the stand-in carries, and the switch that takes it away.
+/// The link the stand-in carries, and the switches that take it away.
 struct Link {
     pids: PathBuf,
+    /// While this file exists the stand-in refuses every new connection, the
+    /// way ssh does for a host that is down.
+    down: PathBuf,
+    script: PathBuf,
 }
 
 impl Link {
@@ -3345,6 +3355,43 @@ impl Link {
 
     fn heal(&self) {
         self.signal(libc::SIGCONT);
+    }
+
+    /// Drop the control connection the way a network blip does: its pumps die,
+    /// so both ends of the link see it close.
+    fn drop_connection(&self) {
+        assert_eq!(
+            self.signal(libc::SIGKILL),
+            2,
+            "the session cannot have attached over the stand-in"
+        );
+    }
+
+    /// Take the host down (`true`) or bring it back: new connections are
+    /// refused while it is down.
+    fn host_down(&self, down: bool) {
+        if down {
+            std::fs::write(&self.down, b"").expect("take the host down");
+        } else {
+            let _ = std::fs::remove_file(&self.down);
+        }
+    }
+
+    /// What a person checking the host by hand would run: a fresh `ssh` asking
+    /// the host's multiplexer whether it is there.
+    fn probe(&self, profile: &Profile) -> bool {
+        let mut cmd = Command::new(&self.script);
+        profile.apply(&mut cmd);
+        cmd.args([
+            "e2e@localhost",
+            "tmux",
+            "-L",
+            profile.server.socket(),
+            "has-session",
+        ])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
     }
 }
 
@@ -3504,6 +3551,85 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
 
     link.heal();
     assert!(tui.quit().success());
+}
+
+/// Whether the session list marks the remote session unreachable (`⊘`).
+fn shows_unreachable(frame: &str) -> bool {
+    frame.contains('⊘')
+}
+
+#[test]
+fn a_dropped_connection_to_a_reachable_host_is_not_left_unreachable() {
+    // A connection that ends is not a host that is gone. The host is still
+    // there — a fresh ssh reaches it — so the next attach succeeds as soon as
+    // it is made, and the row must not sit at `unreachable` in the meantime.
+    //
+    // It used to: `drop_lost_panes` recorded every pane on the connection as
+    // "host unreachable", and the retry rule then left that attempt alone for
+    // `ATTACH_RETRY_INTERVAL` (20 s). The same happens after thurbox replaces a
+    // connection itself — a command that times out reconnects, and the old
+    // connection's panes end with it — so a healthy host read unreachable for
+    // twenty seconds at a time, and a restart looked like the cure.
+    let Some((profile, link, tui)) = remote_shell_session() else {
+        return;
+    };
+
+    link.drop_connection();
+    assert!(
+        link.probe(&profile),
+        "the host must still be reachable over a fresh ssh"
+    );
+
+    let deadline = Instant::now() + RESPONSIVE;
+    while Instant::now() < deadline {
+        let frame = tui.frame();
+        assert!(
+            !shows_unreachable(&frame),
+            "a reachable host read unreachable after its connection dropped:\n{frame}"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    tui.wait_within(
+        RESPONSIVE,
+        "the session to be re-attached over a new connection",
+        |frame| frame.contains("$ ") && !shows_unreachable(frame),
+    );
+    assert_eq!(link.live().len(), 2, "one new control connection");
+}
+
+#[test]
+fn a_host_that_cannot_be_reached_reads_unreachable_until_it_is_back() {
+    // The other half: a lost connection to a host that refuses new ones is
+    // exactly what `unreachable` is for, and it must say so — and keep saying
+    // so rather than flicker back — until the host answers again.
+    let Some((profile, link, tui)) = remote_shell_session() else {
+        return;
+    };
+
+    link.host_down(true);
+    link.drop_connection();
+    assert!(!link.probe(&profile), "the host must be down");
+
+    tui.wait_within(RESPONSIVE, "the session to read unreachable", |frame| {
+        shows_unreachable(frame)
+    });
+    let deadline = Instant::now() + RESPONSIVE;
+    while Instant::now() < deadline {
+        let frame = tui.frame();
+        assert!(
+            shows_unreachable(&frame),
+            "a host that is down stopped reading unreachable:\n{frame}"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    // Recovery is the attach worker's retry, on its own interval.
+    link.host_down(false);
+    tui.wait_within(
+        Duration::from_secs(40),
+        "the session to recover once the host is back",
+        |frame| frame.contains("$ ") && !shows_unreachable(frame),
+    );
 }
 
 // --- links handed back to the terminal thurbox itself runs in ----------------
