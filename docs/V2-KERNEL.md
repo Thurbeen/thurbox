@@ -306,8 +306,8 @@ were found by running it, not by reading the spec.
 ## Where the boundary sits
 
 `kernel` may reference `session`, `storage`, `sync`, `paths`, `session_ops`,
-`git`, `notifications` and `clipboard`, plus `agent` by fully-qualified path
-only — enforced by `tests/architecture_rules.rs`. It may never reference `ui` or
+`git`, `notifications`, `clipboard` and `shell`, plus `agent` and `usage` by
+fully-qualified path only — enforced by `tests/architecture_rules.rs`. It may never reference `ui` or
 `app`: it is their replacement, not their peer.
 
 ## Testing

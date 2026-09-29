@@ -1768,14 +1768,13 @@ impl Terminals {
         &self,
         row: &super::snapshot::SessionRow,
     ) -> crate::agent::backend::BackendLiveness {
-        use crate::agent::backend::BackendLiveness;
         if self.unreachable.contains(&row.backend) {
-            return BackendLiveness::Unreachable;
+            return crate::agent::backend::BackendLiveness::Unreachable;
         }
         self.discovered
             .get(&row.backend)
             .map(|windows| windows.agent_liveness(&row.id, &row.name))
-            .unwrap_or(BackendLiveness::Unknown)
+            .unwrap_or(crate::agent::backend::BackendLiveness::Unknown)
     }
 
     /// Drain every backend's queued remote hook reports.

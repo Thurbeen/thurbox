@@ -249,17 +249,34 @@ because the squash throws them away.
 ## Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-session  ← pure data types, no crate-internal references
-agent    ← session (+ paths/shell utils; NEVER git)
-kernel   ← session + storage + sync + paths + session_ops + git
-           (+ agent/usage by fully-qualified path only)
-main     ← the coordinator: the loop, the workers, the chrome
+module         may reference                           [fully-qualified path only]
+session        nothing — pure data, the dependency sink
+agent          session, paths, shell (NEVER git)
+git            session, paths, shell
+storage        session, sync, paths
+sync           session, storage, workspace
+usage          session, shell                          [paths]
+session_ops    session, storage, git, sync, paths,     [agent]
+               workspace, shell
+kernel         session, storage, sync, paths,          [agent, usage]
+               session_ops, git, notifications,
+               clipboard, shell
+cli            session, storage, session_ops, sync,    [agent, kernel]
+               paths, notifications
+notifications  session, paths, shell                   [storage]
+clipboard      session, paths
+workspace      paths
+paths, shell   nothing — leaf utilities
+coordinator    agent, clipboard, kernel, paths,        (main's body: the loop,
+               session, session_ops, shell, storage     the workers, the chrome)
 ```
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form, so a new module fails the test
-until its place is declared. The full rule, the module responsibilities and the
-event loop are in the `thurbox-kernel` skill.
+until its place is declared, and one loop asserts every entry, so no rule can be
+declared and left unchecked. `docs/CONSTITUTION.md` §2 lists the same graph. The
+full rule, the module responsibilities and the event loop are in the
+`thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 

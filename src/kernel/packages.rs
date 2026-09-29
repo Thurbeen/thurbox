@@ -411,27 +411,26 @@ pub struct Resolved {
 /// otherwise ignored. For a bare name it selects the git ref, which is what makes
 /// a lock reproducible after the binary moves on.
 pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
-    use crate::agent::extension_config as ext;
     let bare = plugin_spec::is_bare_name(src);
     let version = match (pin, bare) {
         (Some(pin), _) => pin.to_string(),
         // A bare name is fetched at the binary's release tag, so that IS the
         // version of a freshly-installed one.
-        (None, true) => ext::official_ref(),
+        (None, true) => crate::agent::extension_config::official_ref(),
         (None, false) => String::new(),
     };
     let source = if bare {
-        ext::ExtensionSource::Remote(format!(
+        crate::agent::extension_config::ExtensionSource::Remote(format!(
             "{}/{src}",
-            ext::official_set_base_at(EXAMPLE_SET, &version)
+            crate::agent::extension_config::official_set_base_at(EXAMPLE_SET, &version)
         ))
     } else {
-        ext::resolve_source_in(src, EXAMPLE_SET)
+        crate::agent::extension_config::resolve_source_in(src, EXAMPLE_SET)
     };
     let at = match &source {
-        ext::ExtensionSource::Remote(base) => base.clone(),
-        ext::ExtensionSource::Local(dir) => dir.display().to_string(),
-        ext::ExtensionSource::Git(url) => url.clone(),
+        crate::agent::extension_config::ExtensionSource::Remote(base) => base.clone(),
+        crate::agent::extension_config::ExtensionSource::Local(dir) => dir.display().to_string(),
+        crate::agent::extension_config::ExtensionSource::Git(url) => url.clone(),
     };
     Resolved {
         source,
@@ -458,8 +457,6 @@ pub struct Fetched {
 /// pane a package declares or selects among several. It is required for the
 /// degenerate shape, which proposes no destination at all.
 pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fetched, String> {
-    use crate::agent::extension_config as ext;
-
     if src.trim().ends_with(".lua") {
         let file = as_file
             .ok_or_else(|| {
@@ -470,27 +467,38 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         // Fetched relative to the *parent*, since the source names the file itself.
         let (base, name) = split_last(src);
         let source = match &resolved.source {
-            ext::ExtensionSource::Remote(_) => ext::ExtensionSource::Remote(base),
-            ext::ExtensionSource::Local(_) => ext::ExtensionSource::Local(ext::expand_tilde(&base)),
+            crate::agent::extension_config::ExtensionSource::Remote(_) => {
+                crate::agent::extension_config::ExtensionSource::Remote(base)
+            }
+            crate::agent::extension_config::ExtensionSource::Local(_) => {
+                crate::agent::extension_config::ExtensionSource::Local(
+                    crate::agent::extension_config::expand_tilde(&base),
+                )
+            }
             // A `.lua` source cannot also be a repository: `git_url` matched first,
             // so a `git+…/x.lua` never reaches here.
-            ext::ExtensionSource::Git(url) => ext::ExtensionSource::Git(url.clone()),
+            crate::agent::extension_config::ExtensionSource::Git(url) => {
+                crate::agent::extension_config::ExtensionSource::Git(url.clone())
+            }
         };
-        let contents = ext::fetch_file(&source, &name)?;
+        let contents = crate::agent::extension_config::fetch_file(&source, &name)?;
         return Ok(Fetched {
             manifest: None,
             payloads: vec![Payload { file, contents }],
         });
     }
 
-    let manifest_text = ext::fetch_file(&resolved.source, crate::session::PackageManifest::FILE)
-        .map_err(|e| {
-            format!(
-                "{src}: no {} at {} ({e})",
-                crate::session::PackageManifest::FILE,
-                resolved.at
-            )
-        })?;
+    let manifest_text = crate::agent::extension_config::fetch_file(
+        &resolved.source,
+        crate::session::PackageManifest::FILE,
+    )
+    .map_err(|e| {
+        format!(
+            "{src}: no {} at {} ({e})",
+            crate::session::PackageManifest::FILE,
+            resolved.at
+        )
+    })?;
     let manifest = crate::session::PackageManifest::parse(&manifest_text)
         .map_err(|e| format!("{src}: {e}"))?;
 
@@ -499,7 +507,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         plugin_spec::validate_destination(&destination)?;
         payloads.push(Payload {
             file: destination,
-            contents: ext::fetch_file(&resolved.source, &file.source)?,
+            contents: crate::agent::extension_config::fetch_file(&resolved.source, &file.source)?,
         });
     }
     Ok(Fetched {
