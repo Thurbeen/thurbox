@@ -31,17 +31,31 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-fn tmux(args: &[&str]) -> std::process::Output {
-    Command::new("tmux")
-        .args(["-L", SOCKET])
-        .args(args)
-        .output()
-        .expect("run tmux")
+/// A tmux command that sets up the state a test is about, which must succeed:
+/// a staging step that failed silently would let the assertion after it pass
+/// against a state nobody staged.
+fn stage(server: &TmuxServer, args: &[&str]) {
+    let out = server.tmux(args);
+    assert!(
+        out.status.success(),
+        "staging `tmux {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A server started the way a pre-fix thurbox or the operator's own config
+/// would leave it, before thurbox touches it.
+fn start_bare(server: &TmuxServer) {
+    stage(
+        server,
+        &["-f", "/dev/null", "new-session", "-d", "-s", "bare"],
+    );
 }
 
 /// Every entry of the server's `terminal-features`, in order.
-fn terminal_features() -> Vec<String> {
-    let out = tmux(&["show-options", "-sv", "terminal-features"]);
+fn terminal_features(server: &TmuxServer) -> Vec<String> {
+    let out = server.tmux(&["show-options", "-sv", "terminal-features"]);
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::to_string)
@@ -76,22 +90,29 @@ async fn repeated_setup_adds_clipboard_once_and_keeps_every_other_feature() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let _server = TmuxServer::pin(SOCKET);
+    let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
     spawn(1, dir.path());
     // A feature the operator added by hand, which a fix must not disturb.
-    tmux(&[
-        "set-option",
-        "-as",
-        "terminal-features",
-        ",xterm-ghostty:extkeys",
-    ]);
-    let before = terminal_features();
+    stage(
+        &server,
+        &[
+            "set-option",
+            "-as",
+            "terminal-features",
+            ",xterm-ghostty:extkeys",
+        ],
+    );
+    let before = terminal_features(&server);
     assert_eq!(
         clipboard_entries(&before),
         1,
         "the first setup must add `*:clipboard`: {before:?}"
+    );
+    assert!(
+        before.iter().any(|f| f == "xterm-ghostty:extkeys"),
+        "the test could not stage the feature it is about: {before:?}"
     );
 
     // Each spawn re-applies the config, exactly as a restart does.
@@ -99,11 +120,43 @@ async fn repeated_setup_adds_clipboard_once_and_keeps_every_other_feature() {
         spawn(n, dir.path());
     }
 
-    let after = terminal_features();
+    let after = terminal_features(&server);
     assert_eq!(
         after, before,
         "re-applying the config must leave terminal-features as it was"
     );
+}
+
+/// The slot thurbox writes is one a user's `~/.tmux.conf` — which thurbox's
+/// server reads — could have claimed too. Theirs wins: thurbox's entry is only
+/// written into an empty slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slot_the_user_already_set_is_left_alone() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = TmuxServer::pin(SOCKET);
+    thurbox::paths::set_test_dir(dir.path());
+
+    start_bare(&server);
+    stage(
+        &server,
+        &[
+            "set-option",
+            "-s",
+            "terminal-features[100]",
+            "xterm-kitty:title",
+        ],
+    );
+    let before = terminal_features(&server);
+
+    spawn(1, dir.path());
+    spawn(2, dir.path());
+
+    assert_eq!(terminal_features(&server), before);
 }
 
 /// A server a pre-fix thurbox already filled with duplicates is left as found:
@@ -117,25 +170,18 @@ async fn existing_duplicates_stop_growing_and_are_not_removed() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let _server = TmuxServer::pin(SOCKET);
+    let server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    // What a pre-fix thurbox left: the server started with tmux's defaults,
-    // then one appended `*:clipboard` per run.
-    tmux(&[
-        "-f",
-        "/dev/null",
-        "start-server",
-        ";",
-        "new-session",
-        "-d",
-        "-s",
-        "legacy",
-    ]);
+    // One appended `*:clipboard` per pre-fix run.
+    start_bare(&server);
     for _ in 0..3 {
-        tmux(&["set-option", "-as", "terminal-features", ",*:clipboard"]);
+        stage(
+            &server,
+            &["set-option", "-as", "terminal-features", ",*:clipboard"],
+        );
     }
-    let staged = terminal_features();
+    let staged = terminal_features(&server);
     assert_eq!(
         clipboard_entries(&staged),
         3,
@@ -143,7 +189,7 @@ async fn existing_duplicates_stop_growing_and_are_not_removed() {
     );
 
     spawn(1, dir.path());
-    let first = terminal_features();
+    let first = terminal_features(&server);
     assert!(
         staged.iter().all(|f| first.contains(f)) && first.len() <= staged.len() + 1,
         "setup must keep every existing entry and add at most its own: \
@@ -151,5 +197,9 @@ async fn existing_duplicates_stop_growing_and_are_not_removed() {
     );
 
     spawn(2, dir.path());
-    assert_eq!(terminal_features(), first, "the list must stop growing");
+    assert_eq!(
+        terminal_features(&server),
+        first,
+        "the list must stop growing"
+    );
 }
