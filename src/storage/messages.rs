@@ -2,13 +2,14 @@
 //!
 //! A message is addressed **to** a session (the recipient drains its inbox) and
 //! optionally carries provenance (`from_session_id`, `from_task_id`). Delivery is
-//! **exactly-once**: [`claim_messages`](Database::claim_messages) selects the
-//! unread tail and marks it read in a single transaction, so the TUI, a cron
-//! tick, and a sender's native delivery
-//! ([`reserve_message_delivery`](Database::reserve_message_delivery)) can race
-//! without double-processing or losing a message. Growth is bounded by a
-//! per-recipient unread cap on enqueue plus the time-based
-//! [`prune_messages`](Database::prune_messages) retention sweep.
+//! **exactly-once** among drains: [`claim_messages`](Database::claim_messages)
+//! selects the unread tail and marks it read in a single transaction, so the
+//! TUI and a cron tick can race without double-processing or losing a message.
+//! Native delivery into the agent's own inbox is at-least-once: it marks the
+//! row ([`mark_message_delivered`](Database::mark_message_delivered)) only
+//! after the send, so a sender killed mid-send cannot hide a message it never
+//! delivered. Growth is bounded by a per-recipient unread cap on enqueue plus
+//! the time-based [`prune_messages`](Database::prune_messages) retention sweep.
 //!
 //! The table is agent-neutral and reusable by any extension; `flow` is its first
 //! consumer. Unlike high-value entities, mailbox traffic is **not** audited (it
@@ -169,9 +170,8 @@ impl Database {
     /// mark the oldest unread read and return exactly those, in a **single**
     /// `UPDATE … RETURNING` statement. SQLite serializes writers, so the
     /// `read_at IS NULL` sub-select can never hand the same row to two concurrent
-    /// claimers — exactly-once delivery across the TUI, a cron tick, and a
-    /// native delivery. A second claim returns the next batch (or nothing),
-    /// never a repeat.
+    /// claimers — exactly-once delivery across the TUI and a cron tick. A
+    /// second claim returns the next batch (or nothing), never a repeat.
     pub fn claim_messages(
         &self,
         for_session: SessionId,
@@ -196,32 +196,17 @@ impl Database {
         Ok(claimed)
     }
 
-    /// Reserve an unread message for native delivery through `via`: mark it
-    /// read and record the inbox, in one statement that only matches a row
-    /// still unread. `false` means a drain (`inbox --claim`) got there first,
-    /// so the body has already been handed over and must not be sent again.
-    ///
-    /// Reserving *before* the send, rather than recording after it, is what
-    /// keeps delivery exactly-once: a claim racing the send finds the row
-    /// already read. A send that then fails gives the row back with
-    /// [`release_message_delivery`](Self::release_message_delivery).
-    pub fn reserve_message_delivery(&self, id: i64, via: &str) -> rusqlite::Result<bool> {
-        let changed = self.conn.execute(
-            "UPDATE session_messages SET read_at = ?2, delivered_via = ?3 \
-             WHERE id = ?1 AND read_at IS NULL",
-            params![id, current_time_millis() as i64, via],
-        )?;
-        Ok(changed == 1)
-    }
-
-    /// Undo [`reserve_message_delivery`](Self::reserve_message_delivery) after
-    /// the native send failed: the message is unread again, for the next drain.
-    /// Matches on `via` so it can only undo its own reservation.
-    pub fn release_message_delivery(&self, id: i64, via: &str) -> rusqlite::Result<()> {
+    /// Record that the body was handed to the recipient agent's own inbox
+    /// through `via`, and mark it read so a drain (`inbox --claim`) does not
+    /// hand the same text over again. Called *after* the native send
+    /// succeeded, so a sender killed mid-send leaves the row unread rather than
+    /// hiding a message that never arrived. A row a drain already claimed keeps
+    /// its `read_at`.
+    pub fn mark_message_delivered(&self, id: i64, via: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE session_messages SET read_at = NULL, delivered_via = NULL \
-             WHERE id = ?1 AND delivered_via = ?2",
-            params![id, via],
+            "UPDATE session_messages \
+             SET read_at = COALESCE(read_at, ?2), delivered_via = ?3 WHERE id = ?1",
+            params![id, current_time_millis() as i64, via],
         )?;
         Ok(())
     }
@@ -517,37 +502,29 @@ mod tests {
     }
 
     #[test]
-    fn reserve_marks_delivered_and_release_restores_unread() {
+    fn marking_delivered_records_the_inbox_and_reads_the_row() {
         let db = Database::open_in_memory().unwrap();
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
 
-        assert!(db.reserve_message_delivery(id, "claude-socket").unwrap());
+        db.mark_message_delivered(id, "claude-socket").unwrap();
         let m = db.get_message(id).unwrap().unwrap();
         assert!(!m.is_unread());
         assert_eq!(m.delivered_via.as_deref(), Some("claude-socket"));
         // Already delivered natively: a drain must not hand it over again.
         assert!(db.claim_messages(to, None).unwrap().is_empty());
-        // Nor can a second reservation take it.
-        assert!(!db.reserve_message_delivery(id, "codex-queue").unwrap());
-
-        db.release_message_delivery(id, "claude-socket").unwrap();
-        let m = db.get_message(id).unwrap().unwrap();
-        assert!(m.is_unread());
-        assert_eq!(m.delivered_via, None);
-        assert_eq!(db.claim_messages(to, None).unwrap().len(), 1);
     }
 
     #[test]
-    fn reserve_refuses_a_message_already_claimed() {
+    fn marking_a_claimed_row_keeps_its_claim_time() {
         let db = Database::open_in_memory().unwrap();
         let to = SessionId::default();
         let id = db.enqueue_message(&new_msg(to, "note", "hi")).unwrap();
-        db.claim_messages(to, None).unwrap();
-        assert!(!db.reserve_message_delivery(id, "claude-socket").unwrap());
-        // Releasing a reservation it never made leaves the claim alone.
-        db.release_message_delivery(id, "claude-socket").unwrap();
-        assert!(!db.get_message(id).unwrap().unwrap().is_unread());
+        let claimed_at = db.claim_messages(to, None).unwrap()[0].read_at;
+        db.mark_message_delivered(id, "codex-queue").unwrap();
+        let m = db.get_message(id).unwrap().unwrap();
+        assert_eq!(m.read_at, claimed_at);
+        assert_eq!(m.delivered_via.as_deref(), Some("codex-queue"));
     }
 
     #[test]

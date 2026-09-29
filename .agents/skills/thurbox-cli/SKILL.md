@@ -773,19 +773,23 @@ is addressed **to** a session and carries a
 free-form `kind` tag (`questions`/`plan`/`result`/… are conventions, not an enum),
 a `body`, and optional provenance. Storage is the `session_messages` table (schema
 **v32**, CRUD in `storage/messages.rs`); `Database::claim_messages` is a single
-`UPDATE … RETURNING`, so the TUI, a cron tick, and a native delivery can race
+`UPDATE … RETURNING`, so the TUI and a cron tick can drain concurrently
 without double-processing.
 
 - **Delivery is native, never keystrokes.** `send`/`reply` hand the body to the
-  recipient agent's own inbox (`cli/delivery.rs`): Claude Code's inbox socket
-  (captured from `$CLAUDE_CODE_MESSAGING_SOCKET` by `session signal` into meta
-  `thurbox.claude_messaging_socket`, else found in `~/.claude/sessions/*.json`
-  by pane), or `codex queue --thread <thurbox.codex_conversation_id>`. Anything
-  else stays mailbox-only. The row is reserved (`read_at` + `delivered_via`,
-  schema v48) before the send and released on failure, so a drain never repeats
-  a delivered body. Output: `delivered_via` = `claude-socket` | `codex-queue` |
-  `mailbox`, plus `delivery_note`. `tests/architecture_rules.rs` keeps tmux
-  unreachable from this path.
+  recipient agent's own inbox (`cli/delivery.rs`): a Claude Code inbox socket,
+  or `codex queue --thread <thurbox.codex_conversation_id>`. Anything else stays
+  mailbox-only. A Claude socket is used only when **proven** the recipient's
+  (`owned_sockets`): its `~/.claude/sessions/<pid>.json` entry is
+  `kind: interactive` and that pid's own environment holds
+  `THURBOX_SESSION=<recipient>` — never by pane id or an inherited
+  `$CLAUDE_CODE_MESSAGING_SOCKET` alone. `session signal` records a proven hook
+  socket in meta `thurbox.claude_messaging_socket` as an ordering hint. The row
+  is marked read + `delivered_via` (schema v48) **after** the send
+  (at-least-once: a killed sender can repeat a message, never hide one).
+  Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
+  `delivery_note`. `tests/architecture_rules.rs` keeps tmux unreachable from
+  this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is
   **stable for life** — `respawn_stale_session` reuses the original id on

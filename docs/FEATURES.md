@@ -2542,24 +2542,40 @@ keeps the multiplexer unreachable from the message path.
 ### Finding the recipient's inbox
 
 The agent is **detected from what it announced**, not from the row's agent
-name — `claude-coder` or `flow` may be a wrapper script around `claude`:
+name — `claude-coder` or `flow` may be a wrapper script around `claude`.
 
-1. **Captured socket** — `session signal`, which every thurbox Claude hook
-   runs (from `SessionStart` on), records `$CLAUDE_CODE_MESSAGING_SOCKET` in
-   session meta (`thurbox.claude_messaging_socket`) when it changes. With an
-   explicit `--session` it records nothing: the environment is the caller's.
-2. **Claude's session registry** — `~/.claude/sessions/<pid>.json` (or under
-   `$CLAUDE_CONFIG_DIR`) names each session's pane as `tmux:
-   "<session>:@<window>.%<pane>"`; an interactive entry on the recipient's
-   pane gives its `messagingSocketPath`. Matched by pane, never by
-   `agent_session_id`, which drifts from Claude's own id after a resume.
-   This covers a session started before capture existed until its next hook.
-3. **Codex thread** — `thurbox.codex_conversation_id`, bound by the Codex
-   `SessionStart` hook (`session bind-codex`).
+A **Claude** socket is used only when it is **proven** to belong to the
+recipient (`cli::delivery::owned_sockets`). Claude Code's session registry,
+`~/.claude/sessions/<pid>.json` (or under `$CLAUDE_CONFIG_DIR`), names each
+process's `pid`, `kind` and `messagingSocketPath`; a socket counts when its
+entry is `kind: "interactive"`, the path is still a socket, **and that
+process's own environment holds `THURBOX_SESSION=<recipient id>`** — the
+identity thurbox injects into every pane it spawns, read with
+`sysctl(KERN_PROCARGS2)` on macOS and `/proc/<pid>/environ` on Linux. Each
+weaker signal is wrong somewhere, and each wrong answer puts the body in
+another conversation:
 
-Only a path that is still a socket counts, and a stale one (the process
-died) fails its connect and falls through to the next candidate. No auth
-line is sent: the token is optional on macOS/Linux, where the socket is
+- the registry's `tmux` field names a pane id (`%N`), which another tmux
+  server reuses;
+- `$CLAUDE_CODE_MESSAGING_SOCKET` in a hook is inherited by every pane of a
+  tmux server started from inside some other Claude session (a sandbox, a
+  lead's `session create`), so a Codex pane's hook can carry the lead's socket;
+- a `claude -p` run inside the recipient's pane has the recipient's identity
+  but is not the session the pane shows — only its `kind` tells them apart.
+
+A process whose environment cannot be read proves nothing, so the message
+waits in the mailbox rather than risk the wrong recipient. Neither the pane id
+nor `agent_session_id` (which drifts from Claude's own after a resume) is
+consulted. `session signal`, which every thurbox Claude hook runs, records the
+hook's `$CLAUDE_CODE_MESSAGING_SOCKET` in session meta
+(`thurbox.claude_messaging_socket`) once it passes the same proof; that is
+only an ordering hint for the next send, which proves it again (the process
+may have exited and its pid been reused).
+
+A **Codex** session is reached through `thurbox.codex_conversation_id`, bound
+by the Codex `SessionStart` hook (`session bind-codex`).
+
+No auth line is sent: the token is optional on macOS/Linux, where the socket is
 already mode 0600 to the user; native Windows named pipes are out of scope.
 
 A session in `bypassPermissions` holds a peer message for a 5-minute
@@ -2578,19 +2594,27 @@ What the agent receives is one provenance line, then the body verbatim:
 ```
 
 There is deliberately no "run `message inbox`" instruction: the body *is*
-the delivery. The row is **reserved before the send** — one `UPDATE … WHERE
-read_at IS NULL` stamps `read_at` and `delivered_via` (schema **v48**) — so a
-concurrent `inbox --claim` finds it already read and cannot hand the same
-text over twice; a failed send releases it back to unread for the next
-drain. A natively delivered message therefore does **not** count as unread
-in `home` or the TUI (the agent already has it in its conversation), and
-`message inbox --all` still lists it with its `delivered_via`.
+the delivery. After a native send succeeds, the row is marked read with the
+inbox that carried it (`delivered_via`, schema **v48**), so a later
+`inbox --claim` does not hand the same text over again; a failed send leaves it
+unread for the next drain. A natively delivered message therefore does **not**
+count as unread in `home` or the TUI (the agent already has it in its
+conversation), and `message inbox --all` still lists it with its
+`delivered_via`.
+
+Native delivery is **at-least-once**, on purpose. Marking the row *before* the
+send would make it exactly-once only while the sender survives: killed between
+the mark and the send, it would leave a row that reads as delivered, is skipped
+by every drain and is eventually pruned, for a body that never arrived. Sending
+first means the only failure is a repeat — the sender killed after the send, or
+a drain landing between the send and the mark hands the agent the same text a
+second time, which it can see and discard.
 
 ### Why exactly-once and bounded
 
 `claim_messages` is a single `UPDATE … WHERE read_at IS NULL … RETURNING`
-statement: SQLite serializes writers, so the TUI, a cron tick, and a native
-delivery's reservation can race on the same inbox without ever handing one
+statement: SQLite serializes writers, so the TUI and a cron tick can drain
+the same inbox without ever handing one
 message to two claimers or dropping one. Growth is bounded on both ends —
 `enqueue_message` rejects past a per-recipient unread cap (backpressure,
 not silent loss) and caps `kind`/`body` size, while a time-based retention
@@ -2612,9 +2636,9 @@ surface. `AGENTS.md` keeps the identity contract and points here.
   CRUD in `storage/messages.rs`.
 - **Exactly-once delivery**: `Database::claim_messages` is a single
   `UPDATE … WHERE read_at IS NULL … RETURNING` — SQLite serializes writers, so
-  the TUI, a cron tick, and a native delivery's reservation
-  (`reserve_message_delivery`) race without double-processing or dropping.
-  `list_messages` peeks without consuming.
+  the TUI and a cron tick drain concurrently without double-processing or
+  dropping; native delivery records itself afterwards
+  (`mark_message_delivered`). `list_messages` peeks without consuming.
 - **Bounded growth**: `enqueue_message` enforces a per-recipient unread cap
   (`MAX_UNREAD_PER_RECIPIENT`, backpressure not silent loss) + the body/kind
   limits; `prune_messages`/`prune_old_messages` (read messages older than

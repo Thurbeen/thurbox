@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::session::SessionMessage;
 use crate::storage::Database;
@@ -42,6 +42,7 @@ const CODEX_QUEUE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Claude Code closes a connection without a complete line within 30 s; a
 /// local socket write that blocks this long means the reader is wedged.
+#[cfg(unix)]
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Which inbox carried a message. Reported as `delivered_via` and stored on the
@@ -84,17 +85,15 @@ impl Route {
 ///
 /// The agent is *detected* from this rather than read off the row's agent name:
 /// a registry entry is a name (`claude-coder`, `flow`) whose command may be a
-/// wrapper script, while a captured socket or a bound Codex thread is the agent
+/// wrapper script, while a proven socket or a bound Codex thread is the agent
 /// having announced itself.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Evidence {
     /// The session runs on another machine, where its agent's inbox is.
     pub remote: bool,
-    /// The socket the agent's own hooks reported (`session signal`).
-    pub captured_socket: Option<PathBuf>,
-    /// Sockets of live interactive Claude sessions registered against the
-    /// recipient's pane, newest first.
-    pub registry_sockets: Vec<PathBuf>,
+    /// Inbox sockets proven to belong to the recipient ([`owned_sockets`]),
+    /// the one its hooks last reported first.
+    pub claude_sockets: Vec<PathBuf>,
     /// The Codex thread `session bind-codex` recorded.
     pub codex_thread: Option<String>,
 }
@@ -103,23 +102,16 @@ pub(crate) struct Evidence {
 ///
 /// Claude comes first because its evidence is proof of a live process (a
 /// socket exists only while its session runs), where a Codex thread id outlives
-/// the process that opened it. Both Claude sockets are kept: a captured one can
-/// be stale after a restart that has not yet re-run a hook, and the registry is
-/// the fallback for sessions started before capture existed.
+/// the process that opened it.
 pub(crate) fn routes(evidence: &Evidence) -> Result<Vec<Route>, String> {
     if evidence.remote {
         return Err(
-            "the session runs on a remote host, whose agent inbox is not \
-                    reachable from here"
+            "the session runs on a remote host, whose agent inbox is not reachable from here"
                 .into(),
         );
     }
     let mut routes: Vec<Route> = Vec::new();
-    for socket in evidence
-        .captured_socket
-        .iter()
-        .chain(&evidence.registry_sockets)
-    {
+    for socket in &evidence.claude_sockets {
         let route = Route::ClaudeSocket(socket.clone());
         if !routes.contains(&route) {
             routes.push(route);
@@ -148,14 +140,20 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
         };
     }
     let meta = |key| db.get_session_meta(recipient.id, key).ok().flatten();
+    let mut claude_sockets = claude_registry_dir()
+        .map(|dir| owned_sockets(&dir, &recipient.id.to_string()))
+        .unwrap_or_default();
+    // The captured socket is only an ordering hint: it is used when, and only
+    // when, it is also one of the proven ones.
+    if let Some(captured) = meta(CLAUDE_SOCKET_META).map(PathBuf::from) {
+        if let Some(at) = claude_sockets.iter().position(|s| *s == captured) {
+            let socket = claude_sockets.remove(at);
+            claude_sockets.insert(0, socket);
+        }
+    }
     Evidence {
         remote: false,
-        captured_socket: meta(CLAUDE_SOCKET_META)
-            .map(PathBuf::from)
-            .filter(|p| is_socket(p)),
-        registry_sockets: claude_registry_dir()
-            .map(|dir| registry_sockets(&dir, &recipient.backend_id))
-            .unwrap_or_default(),
+        claude_sockets,
         codex_thread: meta(CODEX_THREAD_META).filter(|id| uuid::Uuid::parse_str(id).is_ok()),
     }
 }
@@ -170,19 +168,31 @@ fn claude_registry_dir() -> Option<PathBuf> {
     Some(base.join("sessions"))
 }
 
-/// Inbox sockets of the interactive Claude sessions whose registry entry names
-/// `pane` (thurbox's `backend_id`, `%N`), newest first.
+/// Inbox sockets of the interactive Claude sessions running *as* thurbox
+/// session `session_id`, newest first.
 ///
-/// Each running Claude Code writes `<pid>.json` with a `tmux` field of
-/// `<session>:@<window>.%<pane>`. The pane id is matched rather than the
-/// conversation id, because thurbox's `agent_session_id` drifts from Claude's
-/// after a resume. An entry outlives a crashed process, so only a path that is
-/// still a socket counts — and a stale one fails the connect and is skipped.
-fn registry_sockets(dir: &Path, pane: &str) -> Vec<PathBuf> {
-    if !pane.starts_with('%') {
-        return Vec::new();
-    }
-    let suffix = format!(".{pane}");
+/// Each running Claude Code writes `<pid>.json` naming its pid, its `kind` and
+/// its `messagingSocketPath`. A socket counts only when all of these hold,
+/// because anything weaker delivers a message into somebody else's
+/// conversation:
+///
+/// - **`kind` is `interactive`.** A `claude -p` run from inside the pane
+///   inherits the pane's identity, so only the kind tells it apart from the
+///   session the pane shows.
+/// - **The process's own environment carries `THURBOX_SESSION=<session_id>`.**
+///   thurbox injects that into every pane it spawns, so it is the recipient's
+///   identity read off the process that owns the socket. The weaker signals
+///   are each wrong somewhere: the registry's `tmux` field names a pane id,
+///   which another tmux server reuses; and `$CLAUDE_CODE_MESSAGING_SOCKET` in a
+///   hook is inherited by every pane of a tmux server started from inside some
+///   other Claude session.
+/// - **The path is still a socket.** An entry outlives a crashed process.
+///
+/// A process whose environment cannot be read proves nothing, and its socket
+/// is not used: the message then waits in the mailbox rather than risking the
+/// wrong recipient. The pane id is not consulted at all, and neither is
+/// thurbox's `agent_session_id`, which drifts from Claude's after a resume.
+fn owned_sockets(dir: &Path, session_id: &str) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -191,14 +201,13 @@ fn registry_sockets(dir: &Path, pane: &str) -> Vec<PathBuf> {
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| std::fs::read_to_string(e.path()).ok())
         .filter_map(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .filter(|v| v["tmux"].as_str().is_some_and(|t| t.ends_with(&suffix)))
-        // A `claude -p` run from inside the pane registers against it too;
-        // only the interactive session is the one the pane shows.
-        // `map_or(true, ..)`: `is_none_or` postdates the 1.75 MSRV.
-        .filter(|v| v["kind"].as_str().map_or(true, |k| k == "interactive"))
+        .filter(|v| v["kind"].as_str() == Some("interactive"))
         .filter_map(|v| {
             let socket = PathBuf::from(v["messagingSocketPath"].as_str()?);
-            is_socket(&socket).then(|| (v["startedAt"].as_i64().unwrap_or(0), socket))
+            let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
+            let owned = is_socket(&socket)
+                && process_env_var(pid, "THURBOX_SESSION").as_deref() == Some(session_id);
+            owned.then(|| (v["startedAt"].as_i64().unwrap_or(0), socket))
         })
         .collect();
     found.sort_by_key(|(started, _)| std::cmp::Reverse(*started));
@@ -216,15 +225,98 @@ fn is_socket(_path: &Path) -> bool {
     false
 }
 
+/// `name` from the environment process `pid` started with, if it is readable.
+///
+/// Denied, exited and foreign-user processes all read as `None`, which
+/// [`owned_sockets`] treats as unproven.
+#[cfg(target_os = "linux")]
+fn process_env_var(pid: u32, name: &str) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env_value(raw.split(|b| *b == 0), name)
+}
+
+#[cfg(target_os = "macos")]
+fn process_env_var(pid: u32, name: &str) -> Option<String> {
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROCARGS2,
+        libc::c_int::try_from(pid).ok()?,
+    ];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a size query — a null buffer with a valid length out-pointer.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    // SAFETY: `buf` is `size` bytes long and `size` says so; the kernel writes
+    // at most that much and reports what it wrote back through `size`.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    procargs_env_var(&buf, name)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_env_var(_pid: u32, _name: &str) -> Option<String> {
+    None
+}
+
+/// `name` from a `KERN_PROCARGS2` buffer: a native-endian `argc`, the exec
+/// path, NUL padding, `argc` argument strings, then the environment.
+#[cfg(any(target_os = "macos", test))]
+fn procargs_env_var(buf: &[u8], name: &str) -> Option<String> {
+    let argc = usize::try_from(i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
+    let rest = buf.get(4..)?;
+    let rest = &rest[rest.iter().position(|b| *b == 0)?..];
+    let rest = &rest[rest.iter().position(|b| *b != 0)?..];
+    let mut fields = rest.split(|b| *b == 0);
+    for _ in 0..argc {
+        fields.next()?;
+    }
+    env_value(fields, name)
+}
+
+/// The value of `name` among `NAME=value` fields, stopping at the first empty
+/// one (the end of an environment block).
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn env_value<'a>(fields: impl Iterator<Item = &'a [u8]>, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    fields
+        .take_while(|f| !f.is_empty())
+        .find_map(|f| f.strip_prefix(prefix.as_bytes()))
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+}
+
 /// Record the Claude inbox socket of the calling agent, from the environment
 /// Claude Code gives its hooks. Called by `session signal`, which every thurbox
-/// Claude hook runs — so a session started before this existed is captured on
-/// its next tool call, and a restarted one on its `SessionStart`.
+/// Claude hook runs, so a restarted session is recorded on its `SessionStart`.
 ///
-/// A `claude -p` launched from inside the pane would report its own socket
-/// here; that socket disappears when it exits, [`gather`] drops a path that is
-/// no longer a socket, and the interactive session's next hook writes its own
-/// back.
+/// Recorded only once [`owned_sockets`] proves the socket belongs to
+/// `session`: the variable is inherited by panes that are not that Claude's
+/// (a nested `claude -p`, or every pane of a tmux server started from inside
+/// another Claude session). [`gather`] proves it again before use, since the
+/// process may have gone and its pid been reused.
 pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     let Some(socket) = std::env::var(CLAUDE_SOCKET_ENV)
         .ok()
@@ -234,6 +326,16 @@ pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     };
     let stored = db.get_session_meta(session.id, CLAUDE_SOCKET_META);
     if matches!(stored, Ok(Some(ref s)) if *s == socket) {
+        return;
+    }
+    let proven = claude_registry_dir().is_some_and(|dir| {
+        owned_sockets(&dir, &session.id.to_string()).contains(&PathBuf::from(&socket))
+    });
+    if !proven {
+        tracing::debug!(
+            "not recording {socket}: it does not belong to '{}'",
+            session.name
+        );
         return;
     }
     if let Err(e) = db.set_session_meta(session.id, CLAUDE_SOCKET_META, &socket) {
@@ -321,10 +423,11 @@ impl Transport for Native {
     }
 }
 
-/// The two-line-shaped stream-json message Claude Code's inbox reads: a user
-/// turn, newline-terminated.
+/// The stream-json message Claude Code's inbox reads: one user turn,
+/// newline-terminated.
+#[cfg(unix)]
 fn claude_envelope(text: &str) -> String {
-    let line = json!({
+    let line = serde_json::json!({
         "type": "user",
         "message": { "role": "user", "content": text },
     });
@@ -367,6 +470,14 @@ impl Outcome {
 /// Never fails the send: the row is already durable, so every failure path
 /// ends at [`DeliveredVia::Mailbox`] with the reason, logged at `warn` when a
 /// native attempt was made and did not land.
+///
+/// The send comes **before** the row is marked delivered, so delivery is
+/// at-least-once. Marking first would make it exactly-once only while the
+/// sender survives: killed between the mark and the send, it would leave a
+/// row that reads as delivered, is skipped by every drain and is eventually
+/// pruned, for a body that never arrived. The reverse failure — killed after
+/// the send, or a drain racing it — hands the agent the text twice, which it
+/// can see and discard.
 pub(crate) fn deliver(
     db: &Database,
     message: &SessionMessage,
@@ -378,45 +489,39 @@ pub(crate) fn deliver(
         Ok(routes) => routes,
         Err(why) => return Outcome::mailbox(why),
     };
+    if matches!(db.get_message(message.id), Ok(Some(ref m)) if !m.is_unread()) {
+        return Outcome::mailbox(
+            "the recipient drained it from the mailbox before native delivery",
+        );
+    }
     let mut failures = Vec::new();
     for route in routes {
         let via = route.via().as_str();
-        match db.reserve_message_delivery(message.id, via) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Outcome::mailbox(
-                    "the recipient drained it from the mailbox before native delivery",
-                )
-            }
-            Err(e) => {
-                tracing::warn!("message #{}: reserve for {via}: {e}", message.id);
-                return Outcome::mailbox(format!("could not mark the row for delivery: {e}"));
-            }
-        }
         let sent = match &route {
             Route::ClaudeSocket(socket) => transport.post_to_claude(socket, text),
             Route::CodexQueue(thread) => transport.queue_to_codex(thread, text),
         };
+        let target = match &route {
+            Route::ClaudeSocket(socket) => socket.display().to_string(),
+            Route::CodexQueue(thread) => format!("thread {thread}"),
+        };
         match sent {
             Ok(()) => {
+                if let Err(e) = db.mark_message_delivered(message.id, via) {
+                    // Delivered, but a drain may hand it over once more.
+                    tracing::warn!("message #{}: record {via} delivery: {e}", message.id);
+                }
                 return Outcome {
                     via: route.via(),
                     note: None,
-                }
+                };
             }
             Err(e) => {
-                let target = match &route {
-                    Route::ClaudeSocket(socket) => socket.display().to_string(),
-                    Route::CodexQueue(thread) => format!("thread {thread}"),
-                };
                 tracing::warn!(
                     "message #{}: {via} delivery to {target} failed: {e}",
                     message.id
                 );
                 failures.push(format!("{via} ({target}): {e}"));
-                if let Err(e) = db.release_message_delivery(message.id, via) {
-                    tracing::warn!("message #{}: release after failed {via}: {e}", message.id);
-                }
             }
         }
     }
@@ -477,7 +582,7 @@ mod tests {
 
     fn claude(path: &str) -> Evidence {
         Evidence {
-            captured_socket: Some(path.into()),
+            claude_sockets: vec![path.into()],
             ..Evidence::default()
         }
     }
@@ -508,10 +613,9 @@ mod tests {
     }
 
     #[test]
-    fn captured_socket_is_tried_before_the_registry_and_not_twice() {
+    fn each_socket_is_tried_once_in_order() {
         let evidence = Evidence {
-            captured_socket: Some("/s/a.sock".into()),
-            registry_sockets: vec!["/s/b.sock".into(), "/s/a.sock".into()],
+            claude_sockets: vec!["/s/a.sock".into(), "/s/b.sock".into(), "/s/a.sock".into()],
             ..Evidence::default()
         };
         assert_eq!(
@@ -622,6 +726,7 @@ mod tests {
         assert!(!text.contains("message inbox"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn claude_envelope_is_one_user_line() {
         let line = claude_envelope("a \"quoted\"\nbody");
@@ -661,7 +766,114 @@ mod tests {
     }
 
     #[test]
-    fn remember_records_the_hook_socket() {
+    fn procargs_env_is_read_past_the_arguments() {
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/bin/claude\0\0\0claude\0THURBOX_SESSION=arg\0");
+        buf.extend_from_slice(b"HOME=/h\0THURBOX_SESSION=abc\0\0junk=1\0");
+        // The argument that merely looks like the variable is skipped.
+        assert_eq!(
+            procargs_env_var(&buf, "THURBOX_SESSION").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(procargs_env_var(&buf, "HOME").as_deref(), Some("/h"));
+        // Past the environment's terminating empty field is not environment.
+        assert_eq!(procargs_env_var(&buf, "junk"), None);
+        assert_eq!(procargs_env_var(&buf[..3], "HOME"), None);
+    }
+
+    /// A live process started with `THURBOX_SESSION=<session>`, standing in for
+    /// the Claude Code a thurbox pane runs. It is this test binary running
+    /// [`idle_as_a_claude_stand_in`]: macOS will not read the arguments of an
+    /// Apple platform binary such as `/bin/sleep`, even a copy of one.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn process_as(session: &str) -> std::process::Child {
+        // `spawn` returns once the exec happened, so the environment is final.
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::delivery::tests::idle_as_a_claude_stand_in",
+                "--ignored",
+            ])
+            .env("THURBOX_SESSION", session)
+            .env(STAND_IN_ENV, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const STAND_IN_ENV: &str = "THURBOX_DELIVERY_TEST_STAND_IN";
+
+    /// Not a test: the body of [`process_as`]'s child. Idles only when that
+    /// child is what runs it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "helper process for the ownership tests"]
+    fn idle_as_a_claude_stand_in() {
+        if std::env::var_os(STAND_IN_ENV).is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    /// Write a Claude registry entry for `pid` into `dir`, with a live socket
+    /// under `socks` unless `live` is false. Returns the socket path and the
+    /// listener keeping it live.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn register(
+        dir: &Path,
+        name: &str,
+        pid: u32,
+        kind: &str,
+        started: i64,
+        live: bool,
+    ) -> (PathBuf, Option<std::os::unix::net::UnixListener>) {
+        let socket = dir.join(format!("{name}.sock"));
+        let listener = live.then(|| std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        let entry = serde_json::json!({
+            "pid": pid, "kind": kind, "startedAt": started,
+            "tmux": "thurbox:@7.%7", "messagingSocketPath": socket,
+        });
+        std::fs::write(dir.join(format!("{name}.json")), entry.to_string()).unwrap();
+        (socket, listener)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_socket_counts_only_when_its_process_is_the_session() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, other) = ("11111111-1111-4111-8111-111111111111", "other-session");
+        let mut mine = process_as(me);
+        let mut older = process_as(me);
+        let mut theirs = process_as(other);
+        let (newest, _a) = register(dir.path(), "a", mine.id(), "interactive", 200, true);
+        let (oldest, _b) = register(dir.path(), "b", older.id(), "interactive", 100, true);
+        // Same pane id, another server's (or an inherited) session: refused.
+        let _c = register(dir.path(), "c", theirs.id(), "interactive", 300, true);
+        // A `claude -p` in the recipient's own pane: same identity, refused.
+        let _d = register(dir.path(), "d", mine.id(), "print", 400, true);
+        // The recipient's process, but its socket is gone.
+        let _e = register(dir.path(), "e", mine.id(), "interactive", 500, false);
+        std::fs::write(dir.path().join("junk.json"), "not json").unwrap();
+
+        assert_eq!(owned_sockets(dir.path(), me), vec![newest, oldest]);
+        for child in [&mut mine, &mut older, &mut theirs] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        // The processes are gone, so nothing is proven any more.
+        assert!(owned_sockets(dir.path(), me).is_empty());
+    }
+
+    /// One test, because both halves point `CLAUDE_CONFIG_DIR` at a fixture.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn only_a_proven_socket_is_recorded_and_it_is_tried_first() {
+        let config = tempfile::TempDir::new().unwrap();
+        let dir = config.path().join("sessions");
+        std::fs::create_dir(&dir).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", config.path());
+
         let db = Database::open_in_memory().unwrap();
         let session = SharedSession {
             id: SessionId::default(),
@@ -680,55 +892,31 @@ mod tests {
             tombstone_at: None,
         };
         db.upsert_session(&session).unwrap();
+        let id = session.id.to_string();
+        let mut a = process_as(&id);
+        let mut b = process_as(&id);
+        let mut lead = process_as("the-lead");
+        let (older, _a) = register(&dir, "a", a.id(), "interactive", 100, true);
+        let (newer, _b) = register(&dir, "b", b.id(), "interactive", 200, true);
+        let (leads, _l) = register(&dir, "lead", lead.id(), "interactive", 300, true);
         let stored = || db.get_session_meta(session.id, CLAUDE_SOCKET_META).unwrap();
 
-        std::env::set_var(CLAUDE_SOCKET_ENV, "");
+        // A lead's socket inherited through the tmux server's environment.
+        std::env::set_var(CLAUDE_SOCKET_ENV, &leads);
         remember_claude_socket(&db, &session);
-        assert_eq!(stored(), None, "an empty variable is no socket");
+        assert_eq!(stored(), None);
 
-        std::env::set_var(CLAUDE_SOCKET_ENV, "/tmp/cc-socks/9.sock");
+        std::env::set_var(CLAUDE_SOCKET_ENV, &older);
         remember_claude_socket(&db, &session);
-        assert_eq!(stored().as_deref(), Some("/tmp/cc-socks/9.sock"));
+        assert_eq!(stored().map(PathBuf::from), Some(older.clone()));
+        // Newest first, except the one the hooks reported, which leads.
+        assert_eq!(gather(&db, &session).claude_sockets, vec![older, newer]);
 
-        // A restart binds a new socket; the next hook replaces the old path.
-        std::env::set_var(CLAUDE_SOCKET_ENV, "/tmp/cc-socks/10.sock");
-        remember_claude_socket(&db, &session);
-        assert_eq!(stored().as_deref(), Some("/tmp/cc-socks/10.sock"));
         std::env::remove_var(CLAUDE_SOCKET_ENV);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn registry_matches_the_interactive_session_on_the_pane() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let socks = dir.path().join("socks");
-        std::fs::create_dir(&socks).unwrap();
-        let _old = UnixListener::bind(socks.join("1.sock")).unwrap();
-        let _new = UnixListener::bind(socks.join("2.sock")).unwrap();
-        let _print = UnixListener::bind(socks.join("3.sock")).unwrap();
-        let _other = UnixListener::bind(socks.join("4.sock")).unwrap();
-        let entry = |pid: u32, pane: &str, kind: &str, started: i64, sock: &str| {
-            let v = json!({
-                "pid": pid, "kind": kind, "startedAt": started,
-                "tmux": format!("thurbox:@7.{pane}"),
-                "messagingSocketPath": socks.join(sock),
-            });
-            std::fs::write(dir.path().join(format!("{pid}.json")), v.to_string()).unwrap();
-        };
-        entry(1, "%7", "interactive", 100, "1.sock");
-        entry(2, "%7", "interactive", 200, "2.sock");
-        entry(3, "%7", "print", 300, "3.sock");
-        entry(4, "%77", "interactive", 400, "4.sock");
-        // Registered against the pane, but its socket is gone.
-        entry(5, "%7", "interactive", 500, "5.sock");
-        std::fs::write(dir.path().join("junk.json"), "not json").unwrap();
-
-        assert_eq!(
-            registry_sockets(dir.path(), "%7"),
-            vec![socks.join("2.sock"), socks.join("1.sock")]
-        );
-        assert!(registry_sockets(dir.path(), "").is_empty());
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        for child in [&mut a, &mut b, &mut lead] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
