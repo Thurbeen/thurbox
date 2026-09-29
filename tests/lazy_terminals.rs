@@ -673,7 +673,6 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
         "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; cat {file}; exec sleep 100000'",
         go = go.display()
     ));
-    wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
     let mut terminals = Terminals::new();
     let snap = snapshot(&pane);
