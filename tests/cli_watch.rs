@@ -9,9 +9,9 @@
 //! driving the real binary against a real database file, because the property
 //! under test is the cross-process one: the writer is a different connection.
 //!
-//! No tmux and no agent anywhere here. Every event these tests care about is a
-//! row in the database, written by the storage layer a spawn would have gone
-//! through.
+//! Every event these tests care about is a row in the database, written by the
+//! storage layer a spawn would have gone through. Only `--verify` needs a pane,
+//! so only its test starts one, on a private tmux server.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -43,6 +43,10 @@ default = "claude"
 [[agents]]
 name = "claude"
 command = "claude"
+
+[[agents]]
+name = "codex"
+command = "codex"
 "#;
 
 /// A throwaway thurbox instance: its own config, data, home and multiplexer
@@ -622,4 +626,86 @@ fn session_filter_reports_only_that_session() {
     assert_eq!(event["session"], Value::String(mine.to_string()));
     assert_eq!(event["to_state"], Value::String("blocked".into()));
     watch.silent_for(Duration::from_secs(1));
+}
+
+/// `--verify` reads the event's own pane: an agent the registry knows, running
+/// in the session's window, is named on the line.
+///
+/// The pane lookup takes the session's id and name; it was once handed the
+/// name and the backend id instead, which resolved no window, so every
+/// `--verify` field stayed null however live the pane was.
+#[test]
+fn verify_names_the_agent_running_in_the_sessions_pane() {
+    let have = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .output()
+            .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
+    };
+    let pid = std::process::id().to_string();
+    if !have("tmux", &["-V"]) || !have("ps", &["-o", "pid=,pgid=,tpgid=,args=", "-p", &pid]) {
+        eprintln!("skipping: needs tmux and a ps that knows tpgid");
+        return;
+    }
+    let env = Env::new();
+    // A stand-in for the real binary: what `--verify` reads is that the pane's
+    // foreground process is named after an agent the registry knows.
+    let bin = env.path("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\nwhile :; do sleep 1; done\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    // `thurbox-dev` is the group a test build's local backend puts its
+    // windows under, and `tb-<name>` is a session's agent window.
+    let started = env.server.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "thurbox-dev",
+        "-n",
+        "tb-worker",
+        &fake.to_string_lossy(),
+    ]);
+    assert!(started.status.success(), "start the pane: {started:?}");
+
+    let db = env.db();
+    let id = seed(&db, "worker");
+    let watch = env.watch(&["--json", "--verify", "--for-secs", "30"]);
+    settle();
+
+    // tmux starts the window asynchronously, so an early event can find nothing
+    // in the pane yet; each write is a fresh probe.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let event = loop {
+        db.set_hook_state(id, "working").expect("working");
+        let event = watch.event("a verified transition");
+        if event["detected_agent"] == Value::String("codex".into())
+            || std::time::Instant::now() >= deadline
+        {
+            break event;
+        }
+        db.set_hook_state(id, "idle").expect("idle");
+        let _ = watch.event("the idle transition");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        event["detected_agent"],
+        Value::String("codex".into()),
+        "the pane runs codex: {event}"
+    );
+
+    // The `--initial` baseline assesses each row on its own path, before any
+    // event exists.
+    let baseline = env.watch(&["--json", "--verify", "--initial", "--for-secs", "5"]);
+    let present = baseline.event("the verified baseline");
+    assert_eq!(event_of(&present), ("present", ""));
+    assert_eq!(
+        present["detected_agent"],
+        Value::String("codex".into()),
+        "the pane runs codex: {present}"
+    );
 }
