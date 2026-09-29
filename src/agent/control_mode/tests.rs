@@ -155,65 +155,65 @@ fn shell_escape_newline_only() {
 
 #[test]
 fn decode_octal_esc() {
-    assert_eq!(decode_octal("\\033"), vec![27]);
+    assert_eq!(decode_octal(b"\\033"), vec![27]);
 }
 
 #[test]
 fn decode_octal_backslash() {
-    assert_eq!(decode_octal("\\134"), vec![b'\\']);
+    assert_eq!(decode_octal(b"\\134"), vec![b'\\']);
 }
 
 #[test]
 fn decode_octal_newline() {
-    assert_eq!(decode_octal("\\012"), vec![b'\n']);
+    assert_eq!(decode_octal(b"\\012"), vec![b'\n']);
 }
 
 #[test]
 fn decode_octal_passthrough() {
-    assert_eq!(decode_octal("hello"), b"hello");
+    assert_eq!(decode_octal(b"hello"), b"hello");
 }
 
 #[test]
 fn decode_octal_incomplete() {
-    assert_eq!(decode_octal("\\01"), b"\\01");
+    assert_eq!(decode_octal(b"\\01"), b"\\01");
 }
 
 #[test]
 fn decode_octal_non_octal_digits() {
-    assert_eq!(decode_octal("\\089"), b"\\089");
+    assert_eq!(decode_octal(b"\\089"), b"\\089");
 }
 
 #[test]
 fn decode_octal_mixed() {
     assert_eq!(
-        decode_octal("A\\033[1mB"),
+        decode_octal(b"A\\033[1mB"),
         vec![b'A', 27, b'[', b'1', b'm', b'B']
     );
 }
 
 #[test]
 fn decode_octal_consecutive() {
-    assert_eq!(decode_octal("\\033\\033"), vec![27, 27]);
+    assert_eq!(decode_octal(b"\\033\\033"), vec![27, 27]);
 }
 
 #[test]
 fn decode_octal_empty() {
-    assert_eq!(decode_octal(""), b"");
+    assert_eq!(decode_octal(b""), b"");
 }
 
 #[test]
 fn decode_octal_trailing_backslash() {
-    assert_eq!(decode_octal("a\\"), b"a\\");
+    assert_eq!(decode_octal(b"a\\"), b"a\\");
 }
 
 #[test]
 fn decode_octal_max_value() {
-    assert_eq!(decode_octal("\\377"), vec![0xFF]);
+    assert_eq!(decode_octal(b"\\377"), vec![0xFF]);
 }
 
 #[test]
 fn decode_octal_overflow_wraps() {
-    assert_eq!(decode_octal("\\400"), vec![0u8]);
+    assert_eq!(decode_octal(b"\\400"), vec![0u8]);
 }
 
 // --- window close → reader EOF ---
@@ -408,6 +408,35 @@ fn parse_extended_output_notification() {
             ],
         }
     );
+}
+
+/// tmux cuts a pane's output wherever its read ended, here inside the `и` of
+/// `мир` (`d0 b8`): each half must come out as the raw byte it was, so the two
+/// rejoin downstream, not as the U+FFFD a text decode would make of each.
+#[test]
+fn parse_output_keeps_a_character_split_across_two_lines() {
+    let halves = [
+        &b"%output %0 \\015\\012\xd0\xbc\xd0"[..],
+        b"%output %0 \xb8\xd1\x80",
+    ];
+    let data: Vec<u8> = halves
+        .iter()
+        .flat_map(|line| match parse_output(line) {
+            Some(Notification::Output { pane_id, data }) => {
+                assert_eq!(pane_id, "%0");
+                data
+            }
+            other => panic!("not output: {other:?}"),
+        })
+        .collect();
+    assert_eq!(std::str::from_utf8(&data).unwrap(), "\r\nмир");
+    match parse_output(b"%extended-output %3 12 : \xd1\x80\\033") {
+        Some(Notification::Output { pane_id, data }) => {
+            assert_eq!(pane_id, "%3");
+            assert_eq!(data, b"\xd1\x80\x1b");
+        }
+        other => panic!("not output: {other:?}"),
+    }
 }
 
 #[test]
@@ -1168,7 +1197,7 @@ mod transport_proptests {
         #[test]
         fn decode_octal_inverts_tmux_encoding(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
             let encoded = tmux_octal_encode(&bytes);
-            prop_assert_eq!(decode_octal(&encoded), bytes);
+            prop_assert_eq!(decode_octal(encoded.as_bytes()), bytes);
         }
 
         /// `ControlModeReader` reassembles a chunked byte stream identically,

@@ -757,10 +757,10 @@ impl Write for ControlModeWriter {
 /// Decode tmux control mode octal escapes in `%output` data.
 ///
 /// Scans for `\` followed by exactly 3 octal digits (0-7). Emits the decoded byte.
-/// All other characters pass through unchanged.
-pub fn decode_octal(input: &str) -> Vec<u8> {
-    let mut result = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
+/// All other bytes pass through unchanged — including raw bytes `>= 0x80`,
+/// which tmux does not escape.
+pub fn decode_octal(bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(bytes.len());
     let mut i = 0;
 
     while i < bytes.len() {
@@ -788,7 +788,7 @@ fn is_octal(b: u8) -> bool {
 
 /// Parse a line from tmux control mode into a notification.
 pub fn parse_notification(line: &str) -> Notification {
-    if let Some(output) = parse_output(line) {
+    if let Some(output) = parse_output(line.as_bytes()) {
         return output;
     }
 
@@ -827,23 +827,32 @@ pub fn parse_notification(line: &str) -> Notification {
 }
 
 /// `%output` and `%extended-output`: a pane's bytes.
-fn parse_output(line: &str) -> Option<Notification> {
-    if let Some(rest) = line.strip_prefix("%output ") {
+///
+/// Read from the raw line, never from text: tmux escapes only bytes below
+/// `0x20` and `\`, passes the rest through, and cuts a pane's output into lines
+/// wherever its read ended — often inside a multi-byte character. Decoding a
+/// line as UTF-8 on its own turns both halves of that character into U+FFFD,
+/// which vt100 drops; the reader's `carry` rejoins them only if they reach it
+/// as bytes (`tests/live_output_utf8.rs`).
+pub fn parse_output(line: &[u8]) -> Option<Notification> {
+    if let Some(rest) = line.strip_prefix(b"%output ") {
         // Format: %output %<pane_id> <octal-encoded data>
-        let (pane_id, data) = rest.split_once(' ')?;
+        let split = rest.iter().position(|&b| b == b' ')?;
         return Some(Notification::Output {
-            pane_id: pane_id.to_string(),
-            data: decode_octal(data),
+            pane_id: String::from_utf8_lossy(&rest[..split]).into_owned(),
+            data: decode_octal(&rest[split + 1..]),
         });
     }
     // Format: %extended-output %<pane_id> <age> : <octal-encoded data>
     // The " : " separator divides metadata from payload.
-    let (meta, data) = line.strip_prefix("%extended-output ")?.split_once(" : ")?;
+    let rest = line.strip_prefix(b"%extended-output ")?;
+    let split = rest.windows(3).position(|w| w == b" : ")?;
     // meta is "%<pane_id> <age>" — extract pane_id.
-    let (pane_id, _) = meta.split_once(' ')?;
+    let meta = &rest[..split];
+    let pane_id = &meta[..meta.iter().position(|&b| b == b' ')?];
     Some(Notification::Output {
-        pane_id: pane_id.to_string(),
-        data: decode_octal(data),
+        pane_id: String::from_utf8_lossy(pane_id).into_owned(),
+        data: decode_octal(&rest[split + 3..]),
     })
 }
 
@@ -1359,27 +1368,34 @@ impl ControlMode {
         }
     }
 
-    /// One newline-terminated control-mode line, or `None` at EOF / on an I/O
-    /// error (both of which end the reader).
-    ///
-    /// Lossy conversion: tmux control mode is mostly ASCII, but raw bytes can
-    /// appear (e.g. in `%extended-output`). Replacing invalid sequences with
-    /// U+FFFD is safe — the octal-encoded payload in `%output` lines is always
-    /// valid ASCII.
-    fn next_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> Option<String> {
+    /// One newline-terminated control-mode line into `line_buf`, without its
+    /// newline; `false` at EOF / on an I/O error (both of which end the
+    /// reader).
+    fn read_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> bool {
         line_buf.clear();
         match reader.read_until(b'\n', line_buf) {
-            Ok(0) => return None,
+            Ok(0) => return false,
             Ok(_) => {}
             Err(e) => {
                 debug!("Control reader I/O error: {e}");
-                return None;
+                return false;
             }
         }
         if line_buf.last() == Some(&b'\n') {
             line_buf.pop();
         }
-        Some(String::from_utf8_lossy(line_buf).into_owned())
+        true
+    }
+
+    /// [`Self::read_control_line`] as text, or `None` where it returns `false`.
+    ///
+    /// Lossy, which is only safe for a line read whole: a pane's output is not
+    /// one (see [`parse_output`]), so the reader takes `%output` from the bytes
+    /// before converting anything. A command's reply is — tmux writes it in one
+    /// piece, and a `capture-pane` line never ends mid-character.
+    fn next_control_line(reader: &mut impl BufRead, line_buf: &mut Vec<u8>) -> Option<String> {
+        Self::read_control_line(reader, line_buf)
+            .then(|| String::from_utf8_lossy(line_buf).into_owned())
     }
 
     /// Synchronously consume tmux's implicit `%begin`/`%end`(`%error`) reply
@@ -1435,7 +1451,16 @@ impl ControlMode {
         let mut answering: Option<Answer> = None;
         let mut line_buf = Vec::new();
 
-        while let Some(line) = Self::next_control_line(&mut reader, &mut line_buf) {
+        while Self::read_control_line(&mut reader, &mut line_buf) {
+            // A pane's bytes, taken before the line is text (`parse_output`).
+            // Not inside a tagged block, whose every line is the reply's.
+            if !matches!(collecting, Some((Some(_), _))) {
+                if let Some(Notification::Output { pane_id, data }) = parse_output(&line_buf) {
+                    Self::dispatch_output(&pane_senders, &pane_id, data);
+                    continue;
+                }
+            }
+            let line = String::from_utf8_lossy(&line_buf).into_owned();
             // Inside a block every line is the command's output until the
             // `%end`/`%error` that carries the `%begin`'s tag — tmux writes a
             // command's output in one piece, never with a notification in it,

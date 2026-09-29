@@ -467,11 +467,19 @@ Control mode (`-C`) supports multiple concurrent client connections,
 each receiving independent output streams. Each thurbox instance
 establishes its own control mode connection, allowing all instances
 to simultaneously monitor and interact with the same tmux sessions.
-Output arrives as `%output` notifications (octal-encoded), input is
-sent via `send-keys -H` (hex-encoded). This eliminates the previous
+Output arrives as `%output` notifications, input is sent via
+`send-keys -H` (hex-encoded). This eliminates the previous
 `pipe-pane` + FIFO approach which suffered from tmux data-loss
 bugs (#641, #2989), required 3 external deps in the data path
 (`mkfifo`, `stdbuf`, `cat`), and had no flow control.
+
+Only bytes below `0x20` and `\` are
+octal-escaped in `%output`; the rest arrive raw, and tmux cuts a pane's
+output into lines wherever its read ended, often inside a multi-byte
+character. So the reader takes a `%output` payload as bytes and never
+decodes a line as text first: decoding each half of a split character
+made U+FFFD, which vt100 drops, and non-ASCII words lost letters
+(`tests/live_output_utf8.rs`).
 
 **Configuration on init**:
 
