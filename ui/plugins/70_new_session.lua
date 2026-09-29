@@ -536,11 +536,13 @@ end
 local REPO_LIST_MAX = 10
 local BROWSE_MAX = 8
 
--- The repo step's click targets that are not bookmark rows. A browsed folder
--- is prefixed because its bare name could be a bookmark's path.
+-- The repo step's click targets. Every kind carries its own prefix, so no
+-- remembered path — a relative one can be any string — can be read as a field
+-- or a browsed folder, nor a folder's name as a bookmark.
 local SEARCH_FIELD = "field:search"
 local PATH_FIELD = "field:input"
 local BROWSE_ROW = "browse:"
+local REPO_ROW = "repo:"
 
 --- One row of the bookmark list. v1's `bookmark_item`, marker for marker.
 local function repo_row(entry, selected, flow, is_cursor)
@@ -704,12 +706,13 @@ local function render_repo(flow)
       local entry = entries[position]
       local path = entry.row.path
       local is_cursor = position == cursor and flow.focus == "search"
+      local id = REPO_ROW .. path
       list[#list + 1] = {
         type = "text",
         len = 1,
         text = { repo_row(entry, flow.selected[path] == true, flow, is_cursor) },
-        style = row_hover(path, is_cursor),
-        id = path,
+        style = row_hover(id, is_cursor),
+        id = id,
         role = "row",
       }
     end
@@ -1974,7 +1977,7 @@ return {
     end
     if flow.step == "repo" then
       local index = widgets.index_of(rows_for(flow), hit.id, function(entry)
-        return entry.row.path
+        return REPO_ROW .. entry.row.path
       end)
       if not index then
         return false

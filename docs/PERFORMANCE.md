@@ -960,7 +960,11 @@ the work wasted only after paying for it.
   to measure: what a pane is doing changes on every byte of output, so it counts
   **set membership** — which sessions are printing — rather than the output
   clock itself, since a group gated on the clock would rebuild on every frame
-  under a working agent and be worth nothing.
+  under a working agent and be worth nothing. The pointer is the same shape:
+  `App::hover` moves `data_epoch` when the identity under the pointer changes,
+  once per affordance crossed and never per cell, because `thurbox.hover` is
+  published and a pure pane that lights what it is under would otherwise be
+  served the tree it built before the pointer arrived.
 - **Gated publish**: each `thurbox.*` group names the versions it is built from
   and is rebuilt only when one moves. The outer table is still assembled fresh
   every frame, so a gating mistake can produce a stale *group* but never a torn

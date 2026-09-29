@@ -2807,6 +2807,81 @@ fn a_bare_move_reaches_a_terminal_that_asked_for_every_motion() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// How soon a hovered affordance must light. Well under the idle frame floor
+/// (250ms), because the failure it catches is a pure pane served its cached
+/// tree until something unrelated moves the epoch: that still lights the
+/// affordance, just late — measured at 280ms and 850ms before the fix.
+const HOVER_BUDGET: Duration = Duration::from_millis(200);
+
+#[test]
+fn a_bare_move_lights_the_pill_under_it_in_a_pure_pane() {
+    // The new-session flow is a `pure` pane: the kernel serves its cached tree
+    // until something it reads moves. The pointer's identity is one of those
+    // reads, so moving onto a pill has to move the epoch the cache is keyed on
+    // — otherwise the lit pill is drawn only once something unrelated moves it,
+    // and hover lags in every pure pane while every render-level test (which
+    // publishes fresh each time) passes.
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("[ Cancel ]");
+    tui.wait_until_quiet();
+
+    let (x, y) = tui.find("[ Cancel ]");
+    let bg = |tui: &Tui| {
+        tui.screen
+            .lock()
+            .unwrap()
+            .screen()
+            .cell(y, x)
+            .map(|cell| cell.bgcolor())
+    };
+    let resting = bg(&tui);
+    // 35 is SGR's "motion, no button".
+    tui.send(format!("\x1b[<35;{};{}M", x + 1, y + 1).as_bytes());
+    let deadline = Instant::now() + HOVER_BUDGET;
+    while bg(&tui) == resting && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(bg(&tui), resting, "the pill under the pointer must light");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_bare_move_lights_a_chip_on_a_docked_pure_pane() {
+    // The same rule for a pane that is not a float: the agent pane is `pure`
+    // and docked, so its cached tree is what the kernel paints unless the
+    // pointer's identity moving is something it notices.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.wait_for("Shell · F8");
+    tui.wait_until_quiet();
+    // The chip, not the banner: the banner also says "Agent".
+    let (x, y) = tui.find("Shell · F8");
+    let bg = |tui: &Tui| {
+        tui.screen
+            .lock()
+            .unwrap()
+            .screen()
+            .cell(y, x)
+            .map(|cell| cell.bgcolor())
+    };
+    let resting = bg(&tui);
+    tui.send(format!("\x1b[<35;{};{}M", x + 1, y + 1).as_bytes());
+    let deadline = Instant::now() + HOVER_BUDGET;
+    while bg(&tui) == resting && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(bg(&tui), resting, "the chip under the pointer must light");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 #[test]
 fn a_new_press_frees_a_capture_whose_release_never_came() {
     // A release is the outer terminal's to deliver, and it can fail to — a

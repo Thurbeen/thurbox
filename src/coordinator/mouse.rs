@@ -232,6 +232,9 @@ impl App {
         if self.modals.is_open() {
             let moved = self.modals.on_hover(x, y);
             let dropped = self.hovered.take().is_some();
+            if dropped {
+                self.note_published_change();
+            }
             if moved || dropped {
                 self.dirty = true;
             }
@@ -243,8 +246,14 @@ impl App {
             .map(|hit| hit.identity.clone())
             .or_else(|| self.target_at(x, y).map(|target| target.identity))
             .filter(|identity| !identity.is_empty());
+        // `thurbox.hover` is published, so its change has to move the epoch a
+        // pure pane's cached tree is keyed on — a repaint alone would hand the
+        // pane its old tree, and the affordance under the pointer would light
+        // only once something unrelated moved. Once per affordance crossed,
+        // never per cell.
         if under != self.hovered {
             self.hovered = under;
+            self.note_published_change();
             self.dirty = true;
         }
     }
