@@ -968,6 +968,17 @@ pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Parse `list-panes -a -F "#{pane_id}"` output into the set of panes the
+/// server has, dead ones included. Malformed lines are skipped. Backs
+/// `SessionBackend::pane_ids`, the existence question a pid cannot answer.
+pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
+    body.lines()
+        .map(str::trim)
+        .filter(|id| is_valid_pane_id(id))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Parse `list-panes -a -F "#{pane_id} #{pane_pid}"` output into a
 /// `pane_id → pid` map — the same line shape [`parse_pane_hook_states`] reads,
 /// with a pid where the option value was. Malformed lines and non-numeric pids

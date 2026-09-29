@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{
@@ -549,6 +549,16 @@ pub trait SessionBackend: Send + Sync {
     /// per-pane [`Self::pane_pid`], which every backend must provide.
     fn pane_pids(&self) -> Result<HashMap<String, u32>> {
         anyhow::bail!("batched pane pid lookup not supported by this backend")
+    }
+
+    /// Every pane the backend lists, dead ones included, in one round trip.
+    ///
+    /// Whether a pane still *exists*, which [`Self::pane_pids`] cannot say: a
+    /// pane is missing from that map whenever it has no pid to report.
+    ///
+    /// Default: unsupported.
+    fn pane_ids(&self) -> Result<HashSet<String>> {
+        anyhow::bail!("pane listing not supported by this backend")
     }
 
     /// Drain queued `(backend_id, hook-state)` events reported by a remote
@@ -2083,8 +2093,8 @@ impl Session {
     /// the pane, because `display-message -t` answers a missing pane with the
     /// current one. A backend with no listing adopts as before.
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        if let Ok(live) = self.backend.pane_pids() {
-            if !live.contains_key(backend_id) {
+        if let Ok(listed) = self.backend.pane_ids() {
+            if !listed.contains(backend_id) {
                 anyhow::bail!("shell pane {backend_id} is gone");
             }
         }
