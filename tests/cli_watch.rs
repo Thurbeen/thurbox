@@ -697,4 +697,15 @@ fn verify_names_the_agent_running_in_the_sessions_pane() {
         Value::String("codex".into()),
         "the pane runs codex: {event}"
     );
+
+    // The `--initial` baseline assesses each row on its own path, before any
+    // event exists.
+    let baseline = env.watch(&["--json", "--verify", "--initial", "--for-secs", "5"]);
+    let present = baseline.event("the verified baseline");
+    assert_eq!(event_of(&present), ("present", ""));
+    assert_eq!(
+        present["detected_agent"],
+        Value::String("codex".into()),
+        "the pane runs codex: {present}"
+    );
 }
