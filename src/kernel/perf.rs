@@ -47,11 +47,16 @@ pub struct Counters {
     /// Published `thurbox.*` groups reused instead of rebuilt.
     pub groups_reused: AtomicU64,
     /// Keystroke echoes painted with no frame floor (ADR-P28): a key's first
-    /// answer and each of its pane's tail frames (`ECHO_TAIL_FRAMES`).
+    /// answer, one per key.
     pub echoes: AtomicU64,
-    /// Of those, the ones painted as the last frame with only the echoing
-    /// surface redrawn, rather than as a full frame.
+    /// Of those and of [`Self::echo_tails`], the ones painted as the last
+    /// frame with only the echoing surface redrawn, rather than as a full
+    /// frame: `frames - echo_frames` is the full frames.
     pub echo_frames: AtomicU64,
+    /// Floor-free frames owed to a typed pane's later output, after its key's
+    /// first answer (ADR-P30, `ECHO_TAIL_FRAMES`). Counted apart from
+    /// [`Self::echoes`] so a missed first answer cannot hide behind them.
+    pub echo_tails: AtomicU64,
 }
 
 impl Counters {
@@ -76,6 +81,7 @@ impl Counters {
             groups_reused: Self::get(&self.groups_reused),
             echoes: Self::get(&self.echoes),
             echo_frames: Self::get(&self.echo_frames),
+            echo_tails: Self::get(&self.echo_tails),
         }
     }
 }
@@ -93,6 +99,7 @@ pub struct Snapshot {
     pub groups_reused: u64,
     pub echoes: u64,
     pub echo_frames: u64,
+    pub echo_tails: u64,
 }
 
 impl Snapshot {
@@ -110,6 +117,7 @@ impl Snapshot {
             groups_reused: self.groups_reused.saturating_sub(earlier.groups_reused),
             echoes: self.echoes.saturating_sub(earlier.echoes),
             echo_frames: self.echo_frames.saturating_sub(earlier.echo_frames),
+            echo_tails: self.echo_tails.saturating_sub(earlier.echo_tails),
         }
     }
 }
@@ -807,6 +815,7 @@ pub fn snapshot_json(
             "groups_reused": counters.groups_reused,
             "echoes": counters.echoes,
             "echo_frames": counters.echo_frames,
+            "echo_tails": counters.echo_tails,
         },
         "frame": histogram_json(&timings.frame),
         "tick": histogram_json(&timings.tick),
