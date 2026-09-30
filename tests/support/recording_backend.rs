@@ -21,8 +21,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
-use thurbox::backend::WindowRole;
-use thurbox::backend::{AdoptedSession, DiscoveredSession, SessionBackend, SpawnedSession};
+use thurbox::backend::identity::{window_name_for, WindowIndex};
+use thurbox::backend::{
+    AdoptedSession, DiscoveredSession, Located, Owner, Placed, SessionBackend, SpawnedSession,
+    WindowRole, WindowSpec,
+};
 use thurbox::session::Route;
 
 /// One window, as the fake multiplexer holds it.
@@ -132,6 +135,25 @@ impl RecordingBackend {
 }
 
 impl State {
+    fn index(&self) -> WindowIndex {
+        WindowIndex::from_listing(self.windows.iter().map(|w| DiscoveredSession {
+            backend_id: w.pane.clone(),
+            name: w.name.clone(),
+            is_alive: w.alive,
+            session: w.session.clone(),
+            role: w.role,
+        }))
+    }
+
+    /// Where `owner`'s `role` window is, by the listing's own rule.
+    fn place(&self, owner: Owner<'_>, role: WindowRole) -> Located {
+        let index = self.index();
+        match role {
+            WindowRole::Shell => index.shell_window(owner.session_id, owner.name),
+            _ => index.agent_window(owner.session_id, owner.name),
+        }
+    }
+
     fn issue(&mut self) -> String {
         let pane = format!("%{}", self.next);
         self.next += 1;
@@ -262,6 +284,56 @@ impl SessionBackend for RecordingBackend {
             seed_len: 0,
             size: None,
         })
+    }
+
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+        let name = window_name_for(spec.role, spec.owner.name);
+        let mut state = self.lock(format!("create_window {name} {}", spec.owner.session_id))?;
+        let pane = state.issue();
+        state.windows.push(Window {
+            pane: pane.clone(),
+            name,
+            // Stamped as it is created, which is what makes it findable by id.
+            session: spec.owner.session_id.to_string(),
+            role: spec.role,
+            alive: true,
+            command: std::iter::once(spec.command.to_string())
+                .chain(spec.args.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" "),
+            cwd: spec.cwd.map(|p| p.display().to_string()),
+        });
+        state.retire_duplicates(spec.owner.session_id, spec.role);
+        Ok(pane)
+    }
+
+    fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
+        let state = self.lock(format!("locate {}", owner.session_id))?;
+        // Every window here carries its own stamp, so an ambiguous name is
+        // left ambiguous: nothing the fake could do would be proof.
+        Ok(Placed {
+            agent: state.place(owner, WindowRole::Agent),
+            shell: state.place(owner, WindowRole::Shell),
+        })
+    }
+
+    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()> {
+        let mut state = self.lock(format!("rename_windows {} {to}", owner.session_id))?;
+        for role in [WindowRole::Agent, WindowRole::Shell] {
+            match state.place(owner, role) {
+                Located::At(pane) => {
+                    let window = state
+                        .windows
+                        .iter_mut()
+                        .find(|w| w.pane == pane)
+                        .expect("a placed window is a held one");
+                    window.name = window_name_for(role, to);
+                }
+                Located::Absent => {}
+                Located::Unknown => bail!("several windows are named after '{}'", owner.name),
+            }
+        }
+        Ok(())
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {

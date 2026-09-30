@@ -328,7 +328,7 @@ fn reaping_still_kills_the_row_its_own_window() {
 
 /// The pane id is not always there to be strict about. A row persisted before
 /// local spawns recorded one, a pane renumbered by a tmux server restart, and
-/// every session on psmux (where `spawn_window` records no id at all) all reach
+/// every session on psmux (where the spawn records no id at all) all reach
 /// the reap with an id that resolves to nothing. Strictness must not turn those
 /// into a permanent no-op: while no live session answers to the name, the sole
 /// `tb-<name>` window can only be this row's, and leaving it up means the
@@ -735,9 +735,12 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     db.set_backend_id(session.session_id, "")
         .expect("clear the pane id");
 
-    let located =
-        thurbox::backend::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
-    let outcome = located.map(|l| l.pane());
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let outcome = thurbox::backend::SessionBackend::discover(&backend).map(|listing| {
+        thurbox::backend::identity::WindowIndex::from_listing(listing)
+            .live_agent_window(&session.session_id.to_string(), "stamped")
+            .pane()
+    });
 
     assert_eq!(
         outcome.expect("list windows"),
@@ -948,8 +951,11 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     assert!(!tmux(&["has-session"]).status.success());
 
     let id = thurbox::session::SessionId::default();
-    let _ = thurbox::backend::tmux::kill_window(&id.to_string(), "ghost");
-    let _ = thurbox::backend::tmux::kill_shell_window(&id.to_string(), "ghost");
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let _ = thurbox::backend::SessionBackend::locate(
+        &backend,
+        thurbox::backend::Owner::new(&id.to_string(), "ghost"),
+    );
     let _ =
         thurbox::session_ops::reap_soft_deleted(&db, &thurbox::backend::wiring::configured().0, id);
 

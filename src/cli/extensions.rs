@@ -104,22 +104,24 @@ pub enum Action {
 pub fn run(
     action: Action,
     db: &Database,
-    backends: &crate::backend::BackendRegistry,
+    backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, String> {
     match action {
         Action::Install {
             target,
             home,
             force,
-        } => install_extension(db, backends, target, home, force),
-        Action::Uninstall { name, purge } => uninstall_extension(db, backends, name, purge),
+        } => install_extension(db, backends.get(), target, home, force),
+        Action::Uninstall { name, purge } => uninstall_extension(db, backends.get(), name, purge),
         Action::List => list_extensions(db),
         Action::Available { query } => Ok(available_output(query.as_deref())),
-        Action::Update { name, all, force } => update_extensions(db, backends, name, all, force),
-        Action::Reinstall { name, purge } => reinstall_extension(db, backends, name, purge),
-        Action::Activate { name } => activate_extension(db, backends, name),
+        Action::Update { name, all, force } => {
+            update_extensions(db, backends.get(), name, all, force)
+        }
+        Action::Reinstall { name, purge } => reinstall_extension(db, backends.get(), name, purge),
+        Action::Activate { name } => activate_extension(db, backends.get(), name),
         Action::Deactivate { name, force, purge } => {
-            deactivate_extension(db, backends, name, force, purge)
+            deactivate_extension(db, backends.get(), name, force, purge)
         }
         Action::Status { name } => status_extension(db, name),
     }

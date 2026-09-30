@@ -145,7 +145,7 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
             no_enter: true,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("send --no-enter");
     assert_eq!(out["sent"], true);
@@ -165,7 +165,7 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
             key: "enter".into(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("key enter");
     assert_eq!(out["sent"], true);
@@ -204,7 +204,7 @@ fn text_arrives_literally_whatever_it_starts_with() {
             no_enter: true,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("send --no-enter");
     assert_eq!(out["submitted"], false);
@@ -236,7 +236,7 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
             no_enter: true,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("send --no-enter");
     screen_when(&session, |s| s.contains("DISCARD_ME"));
@@ -250,7 +250,7 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
             key: "CTRL+U".into(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("key ctrl-u");
     assert_eq!(
@@ -291,7 +291,7 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
             key: "Escpe".into(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap_err();
     assert!(err.contains("Unknown key"), "got {err}");

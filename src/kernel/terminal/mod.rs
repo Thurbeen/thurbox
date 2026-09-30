@@ -2539,6 +2539,33 @@ mod tests {
     struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
 
     impl crate::backend::SessionBackend for FakeLivenessBackend {
+        fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+            anyhow::bail!("{}: a stub opens no windows", self.name())
+        }
+        fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
+            Ok(crate::backend::Placed {
+                agent: crate::backend::Located::Absent,
+                shell: crate::backend::Located::Absent,
+            })
+        }
+        fn rename_windows(&self, _: crate::backend::Owner<'_>, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn stamp_window(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::backend::WindowRole,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn window_panes(&self, _: &str) -> anyhow::Result<Vec<(String, bool)>> {
+            Ok(Vec::new())
+        }
+        fn set_pane_retention(&self, _: &str, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn shutdown(&self) {}
         fn name(&self) -> &str {
             "fake"
         }
@@ -2678,6 +2705,33 @@ mod tests {
     struct RefusingLocal;
 
     impl crate::backend::SessionBackend for RefusingLocal {
+        fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+            anyhow::bail!("{}: a stub opens no windows", self.name())
+        }
+        fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
+            Ok(crate::backend::Placed {
+                agent: crate::backend::Located::Absent,
+                shell: crate::backend::Located::Absent,
+            })
+        }
+        fn rename_windows(&self, _: crate::backend::Owner<'_>, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn stamp_window(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::backend::WindowRole,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn window_panes(&self, _: &str) -> anyhow::Result<Vec<(String, bool)>> {
+            Ok(Vec::new())
+        }
+        fn set_pane_retention(&self, _: &str, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn shutdown(&self) {}
         fn name(&self) -> &str {
             "local-tmux"
         }

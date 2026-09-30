@@ -33,6 +33,7 @@ fn have_tmux() -> bool {
 fn the_recording_backend_keeps_the_contract() {
     let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
     backend_contract::suite(&*fake);
+    backend_contract::lifecycle(&*fake);
 }
 
 #[test]
@@ -41,10 +42,21 @@ fn the_tmux_backend_keeps_the_contract() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let _server = TmuxServer::pin(SOCKET);
+    let server = TmuxServer::pin(SOCKET);
     let backend = TmuxBackend::new();
     backend_contract::suite(&backend);
     backend.shutdown();
+
+    // Headless, on a backend nothing attached to: a teardown or a restart
+    // from `thurbox-cli` opens no control client on the server it acts on.
+    let headless = TmuxBackend::new();
+    backend_contract::lifecycle(&headless);
+    let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
+    assert_eq!(
+        String::from_utf8_lossy(&clients.stdout).trim(),
+        "",
+        "the headless lifecycle attached a client"
+    );
 }
 
 /// An unreachable machine answers nothing, and a fake that answered "empty"

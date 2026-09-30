@@ -21,7 +21,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use clap::Parser;
-use thurbox::backend::{BackendRegistry, WindowRole};
+use thurbox::backend::WindowRole;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
@@ -142,7 +142,7 @@ impl Instance {
 
 /// `thurbox-cli <args>`, run in-process against `db` and `backends` — the seam
 /// the binary itself uses, with no switch a test could flip in it.
-fn cli(db: &Database, backends: &BackendRegistry, args: &[&str]) -> Result<(), String> {
+fn cli(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) -> Result<(), String> {
     let parsed =
         thurbox::cli::Cli::try_parse_from(["thurbox-cli", "--json"].iter().chain(args).copied())
             .map_err(|e| format!("parse {args:?}: {e}"))?;
@@ -233,7 +233,7 @@ fn agent_window(probe: &RecordingBackend, id: SessionId, after: &str) -> recordi
 }
 
 fn the_registry() -> (
-    BackendRegistry,
+    thurbox::cli::Backends<'static>,
     Arc<RecordingBackend>,
     Arc<RecordingBackend>,
 ) {
@@ -244,7 +244,7 @@ fn the_registry() -> (
     let remote_route = Route::remote(Via::Ssh, "probehost", Some(Multiplexer::Rmux));
     let remote = RecordingBackend::new(&remote_route);
     backends.register(remote_route, remote.clone());
-    (backends, local, remote)
+    (thurbox::cli::Backends::ready(backends), local, remote)
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
     // window has closed
     cli(&db, &backends, &["session", "delete", &uuid]).expect("soft delete");
     backdate_delete(&db, id);
-    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, &backends);
+    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get());
     assert_eq!(
         reaped,
         vec![uuid.clone()],
@@ -401,7 +401,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
         "the teardown the host missed is owed"
     );
     far.set_reachable(true);
-    let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &backends);
+    let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, backends.get());
     assert_eq!(finished, vec![far_id.to_string()]);
     assert!(
         far.windows_of(&far_id.to_string()).is_empty(),
@@ -451,7 +451,7 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
     }
     let instance = Instance::new();
     let db = Database::open_in_memory().expect("db");
-    let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let backends = thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0);
     let repo = instance.repo().display().to_string();
 
     // create
@@ -535,7 +535,7 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
             "{key}: reap was taken"
         );
         backdate_delete(&db, id);
-        let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, &backends);
+        let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get());
         assert!(reaped.is_empty(), "{key}: the sweep reaped {reaped:?}");
         assert!(row_state(&db, id).deleted);
         instance.assert_tmux_untouched(&format!("{key}: restore and reap"));
@@ -560,7 +560,7 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
         .unwrap()
         .iter()
         .any(|r| r.id == far));
-    let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &backends);
+    let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, backends.get());
     assert!(
         finished.is_empty(),
         "an undrivable teardown was marked done"

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use thurbox::backend::identity::{Located, WindowIndex};
-use thurbox::backend::{SessionBackend, WindowRole};
+use thurbox::backend::{Owner, Placed, SessionBackend, WindowRole, WindowSpec};
 
 /// Three rows, as their stamps. Uuid-shaped, as a real row's are.
 const OWNER_A: &str = "00000000-0000-4000-8000-00000000000a";
@@ -94,4 +94,89 @@ pub fn suite(backend: &dyn SessionBackend) {
     );
 
     backend.kill(&b).expect("kill the namesake");
+}
+
+/// The headless half of the contract: what `session_ops` drives a session's
+/// lifecycle with, through a backend nothing has attached to — so, for a
+/// multiplexer, without opening a connection that would bring a server into
+/// being where a teardown found none.
+pub fn lifecycle(backend: &dyn SessionBackend) {
+    let env = HashMap::new();
+    let args = ["300".to_string()];
+    let owner = Owner::new(OWNER_A, "headless");
+    let spec = |owner| WindowSpec {
+        owner,
+        role: WindowRole::Agent,
+        command: "sleep",
+        args: &args,
+        cwd: None,
+        env: &env,
+    };
+
+    // Created stamped for its owner, and named by thurbox's convention.
+    let pane = backend.create_window(&spec(owner)).expect("create_window");
+    let listed = backend.discover().expect("discover");
+    let window = listed
+        .iter()
+        .find(|w| w.backend_id == pane)
+        .unwrap_or_else(|| panic!("the created window {pane} is not listed"));
+    assert_eq!(window.name, "tb-headless");
+    assert_eq!(window.session, OWNER_A);
+    assert_eq!(window.role, WindowRole::Agent);
+    assert_eq!(
+        backend.locate(owner).expect("locate"),
+        Placed {
+            agent: Located::At(pane.clone()),
+            shell: Located::Absent,
+        }
+    );
+    assert!(
+        backend.pane_pid(&pane).expect("pane_pid").is_some(),
+        "a running pane has a pid"
+    );
+
+    // Another row is never handed this one's window, namesake or not.
+    let stranger = Owner::new(OWNER_B, "headless");
+    assert_eq!(
+        backend.locate(stranger).expect("locate a stranger").agent,
+        Located::Absent
+    );
+
+    // A rename follows the owner's window and keeps its stamp.
+    backend
+        .rename_windows(owner, "moved")
+        .expect("rename_windows");
+    let renamed = Owner::new(OWNER_A, "moved");
+    assert_eq!(
+        backend.locate(renamed).expect("locate").agent,
+        Located::At(pane.clone())
+    );
+    assert!(backend
+        .discover()
+        .expect("discover")
+        .iter()
+        .any(|w| w.backend_id == pane && w.name == "tb-moved" && w.session == OWNER_A));
+
+    // A second window for the same owner and role keeps one of the two, and
+    // the owner resolves to it: one session, one window per role (ADR-25).
+    let again = backend.create_window(&spec(renamed)).expect("create again");
+    assert_eq!(
+        backend.locate(renamed).expect("locate").agent,
+        Located::At(again.clone()),
+        "the newer window keeps the identity"
+    );
+
+    // Killing is idempotent without an attachment too.
+    backend.kill(&again).expect("kill");
+    backend.kill(&again).expect("a second kill is not an error");
+    backend
+        .kill(&pane)
+        .expect("kill the older window, if it is still there");
+    assert_eq!(
+        backend.locate(renamed).expect("locate"),
+        Placed {
+            agent: Located::Absent,
+            shell: Located::Absent,
+        }
+    );
 }

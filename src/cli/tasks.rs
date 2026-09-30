@@ -108,7 +108,7 @@ pub enum Action {
 pub fn run(
     action: Action,
     db: &Database,
-    backends: &crate::backend::BackendRegistry,
+    backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
@@ -211,7 +211,7 @@ pub fn run(
         },
         Action::Run { id } => {
             let task = load(db, id)?;
-            let json = run_task(db, backends, &task)?;
+            let json = run_task(db, backends.get(), &task)?;
             let human = render_task_run(&json);
             Ok(CommandOutput::new(json, human))
         }
@@ -582,7 +582,7 @@ mod tests {
                 external_url: None,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("title"), "got {err}");
@@ -605,7 +605,7 @@ mod tests {
                 external_url: None,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         let id = created["id"].as_i64().unwrap();
@@ -620,7 +620,7 @@ mod tests {
                 external_url: None,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("title"), "got {err}");
@@ -682,7 +682,7 @@ mod tests {
                 Some("https://linear.app/x/issue/ENG-7"),
             ),
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(out["source"], "linear");
@@ -705,7 +705,7 @@ mod tests {
         let out = run(
             create_action("plain", None, None, None),
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(out["source"], SOURCE_LOCAL);
@@ -719,7 +719,7 @@ mod tests {
         let out = run(
             create_action("plain", Some("   "), None, None),
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(out["source"], SOURCE_LOCAL);
@@ -731,7 +731,7 @@ mod tests {
         let id = run(
             create_action("t", Some("github"), Some("1"), None),
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap()["id"]
             .as_i64()
@@ -748,7 +748,7 @@ mod tests {
                     external_url: None,
                 },
                 &db,
-                &crate::backend::registry::inert(),
+                &crate::cli::Backends::ready(crate::backend::registry::inert()),
             )
             .unwrap()
         };
@@ -768,7 +768,7 @@ mod tests {
                 Some("https://example.com/issues/42"),
             ),
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         let id = created["id"].as_i64().unwrap();
@@ -784,7 +784,7 @@ mod tests {
                 external_url: Some("https://example.com/issues/42#closed".into()),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(edited["status"], "done");
@@ -806,7 +806,7 @@ mod tests {
                 external_url: Some(String::new()),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert!(cleared["external_url"].is_null());

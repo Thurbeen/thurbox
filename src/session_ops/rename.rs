@@ -34,7 +34,7 @@ pub struct RenameReport {
 /// the name the row still has, so the other order would lose it.
 pub fn rename_session_headless(
     db: &Database,
-    _backends: &crate::backend::BackendRegistry,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     name: &str,
 ) -> Result<RenameReport, String> {
@@ -97,17 +97,17 @@ pub fn rename_session_headless(
         });
     }
 
-    let served = super::mux_host(&session.backend_type)
+    let backend = super::windows::backend_for(backends, &session.backend_type)
         .map_err(|e| format!("cannot rename '{}': {e}", session.name))?;
     let id = session_id.to_string();
-    let written =
-        crate::backend::tmux::rename_session_windows(served.as_ref(), &id, &session.name, name)
-            .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
-            .and_then(|()| match db.rename_session(session_id, name) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(format!("Session not found: {session_id}")),
-                Err(e) => Err(format!("rename_session: {e}")),
-            });
+    let written = backend
+        .rename_windows(crate::backend::Owner::new(&id, &session.name), name)
+        .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
+        .and_then(|()| match db.rename_session(session_id, name) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("Session not found: {session_id}")),
+            Err(e) => Err(format!("rename_session: {e}")),
+        });
     if let Err(error) = written {
         // Some window may now carry a name the row does not — the agent's, when
         // the shell's rename failed after it, or both, when the row could not be
@@ -115,8 +115,7 @@ pub fn rename_session_headless(
         // like this it reads as gone, and a relaunch would start a second agent
         // beside it. Nothing renamed is found under the new name, so putting
         // back is harmless when the first rename failed outright.
-        if let Err(e) =
-            crate::backend::tmux::rename_session_windows(served.as_ref(), &id, name, &session.name)
+        if let Err(e) = backend.rename_windows(crate::backend::Owner::new(&id, name), &session.name)
         {
             tracing::warn!(
                 "could not put back the windows of '{}': {e:#}",

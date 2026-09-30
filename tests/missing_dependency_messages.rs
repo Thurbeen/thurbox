@@ -30,13 +30,19 @@ fn without_a_multiplexer<T>(f: impl FnOnce() -> T) -> T {
 #[test]
 fn a_spawn_with_no_multiplexer_installed_names_it_the_search_and_the_fix() {
     let message = without_a_multiplexer(|| {
-        let err = thurbox::backend::tmux::spawn_window(
-            "00000000-0000-0000-0000-000000000000",
-            "test01",
-            "some-agent",
-            &[],
-            None,
-            &HashMap::new(),
+        let err = thurbox::backend::SessionBackend::create_window(
+            &thurbox::backend::tmux::TmuxBackend::new(),
+            &thurbox::backend::WindowSpec {
+                owner: thurbox::backend::Owner::new(
+                    "00000000-0000-0000-0000-000000000000",
+                    "test01",
+                ),
+                role: thurbox::backend::WindowRole::Agent,
+                command: "some-agent",
+                args: &[],
+                cwd: None,
+                env: &HashMap::new(),
+            },
         )
         .expect_err("no multiplexer is installed, so this cannot succeed");
         format!("{err:#}")

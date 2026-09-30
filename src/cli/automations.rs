@@ -121,7 +121,7 @@ pub enum Action {
 pub fn run(
     action: Action,
     db: &Database,
-    backends: &crate::backend::BackendRegistry,
+    backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
@@ -173,7 +173,7 @@ pub fn run(
             Ok(CommandOutput::new(json, render_run_history(id, &runs)))
         }
         Action::Tick => {
-            let json = tick(db, backends)?;
+            let json = tick(db, backends.get())?;
             let human = render_tick(&json);
             Ok(CommandOutput::new(json, human))
         }
@@ -488,7 +488,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     // never delay a scheduled firing. Skipped when the built-in hooks
     // extension is opted out (nothing sets the pane option then).
     if crate::session_ops::hooks_enabled(db) {
-        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db);
+        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db, backends);
         if polled > 0 {
             tracing::info!("remote status poll: {polled} hook state(s) updated");
         }

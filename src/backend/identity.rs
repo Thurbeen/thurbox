@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+pub use crate::backend::contract::Located;
 use crate::backend::contract::{BackendLiveness, DiscoveredSession, WindowRole};
 
 /// Window-name prefix for a thurbox agent window. Combined with the
@@ -80,8 +81,9 @@ pub(crate) fn program_window_name(owner: &str, pane: &str) -> String {
     )
 }
 
-/// The window name a session's `role` window carries.
-pub(in crate::backend) fn window_name_for(role: WindowRole, session_name: &str) -> String {
+/// The window name a session's `role` window carries — thurbox's naming
+/// convention, which every backend names a session's windows by.
+pub fn window_name_for(role: WindowRole, session_name: &str) -> String {
     match role {
         WindowRole::Shell => shell_window_name(session_name),
         _ => agent_window_name(session_name),
@@ -101,38 +103,6 @@ impl WindowRole {
         } else {
             None
         }
-    }
-}
-
-/// Where a listing puts a session's window.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Located {
-    /// The window is this pane.
-    At(String),
-    /// The listing covers the server and nothing on it is this session's.
-    Absent,
-    /// The listing cannot say: more than one window answers to the name and at
-    /// least one of them carries no stamp.
-    ///
-    /// Never collapse this into [`Located::Absent`]. Reading ambiguity as
-    /// absence is what relaunches a session that is already running, so two
-    /// colliding windows become three.
-    Unknown,
-}
-
-impl Located {
-    /// The pane, when there is one to act on.
-    pub fn pane(self) -> Option<String> {
-        match self {
-            Self::At(pane) => Some(pane),
-            _ => None,
-        }
-    }
-
-    /// Whether the listing positively says there is no such window. The only
-    /// answer a relaunch may act on.
-    pub fn is_absent(&self) -> bool {
-        matches!(self, Self::Absent)
     }
 }
 

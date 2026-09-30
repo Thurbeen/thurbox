@@ -250,13 +250,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &[
-            "agent",
-            "agent::host_config",
-            "backend::contract",
-            "backend::registry",
-            "kernel",
-        ],
+        allowed_path_only: &["agent", "agent::host_config", "backend::registry", "kernel"],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
@@ -664,9 +658,10 @@ fn transitional_table_names_only_live_crossings() {
     for entry in TRANSITIONAL {
         assert!(
             !entry.items.is_empty() && !entry.why.is_empty(),
-            "TRANSITIONAL entry {} → {} names no items or no reason",
+            "TRANSITIONAL entry {} → {} ({:?}'s) names no items or no reason",
             entry.from,
-            entry.to
+            entry.to,
+            entry.remover
         );
         for item in entry.items {
             assert!(

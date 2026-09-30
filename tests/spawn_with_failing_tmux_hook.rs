@@ -85,13 +85,16 @@ fn window_names() -> Vec<String> {
 /// A long-lived program: one that exits before tmux finishes setting the window
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
-    thurbox::backend::tmux::spawn_window(
-        SESSION_ID,
-        name,
-        "sh",
-        &["-c".to_string(), "sleep 300".to_string()],
-        Some(cwd),
-        &HashMap::new(),
+    thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(SESSION_ID, name),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "sleep 300".to_string()],
+            cwd: Some(cwd),
+            env: &HashMap::new(),
+        },
     )
 }
 

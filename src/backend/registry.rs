@@ -84,8 +84,11 @@ impl BackendRegistry {
 }
 
 /// A registry for the crate's own unit tests, which may name neither the
-/// factory nor an adapter: this machine's route served by a backend with no
-/// windows on it and nothing to connect to.
+/// factory nor an adapter: this machine's route served by an in-memory backend
+/// that starts with no windows and runs nothing. It keeps the windows it is
+/// asked to open, by owner, so a pipeline that creates a session and tears it
+/// down again finds what it made; the faithful fake, held to the tmux
+/// adapter's contract, is the integration tests' `RecordingBackend`.
 #[cfg(test)]
 pub(crate) fn inert() -> BackendRegistry {
     inert_serving(&[])
@@ -109,20 +112,92 @@ pub(crate) mod tests {
     use anyhow::Result;
 
     use super::*;
-    use crate::backend::{AdoptedSession, DiscoveredSession, SpawnedSession};
+    use crate::backend::{AdoptedSession, DiscoveredSession, SpawnedSession, WindowRole};
     use crate::session::{Multiplexer, Via};
 
     struct StubBackend {
         backend_name: String,
+        shutdowns: std::sync::atomic::AtomicUsize,
+        /// `(pane, owner id, owner name, role)` for every window opened.
+        windows: std::sync::Mutex<Vec<(String, String, String, WindowRole)>>,
     }
 
-    pub(crate) fn stub(route: &Route) -> Arc<dyn SessionBackend> {
+    fn typed_stub(route: &Route) -> Arc<StubBackend> {
         Arc::new(StubBackend {
             backend_name: route.format(),
+            shutdowns: std::sync::atomic::AtomicUsize::new(0),
+            windows: std::sync::Mutex::new(Vec::new()),
         })
     }
 
+    impl StubBackend {
+        fn place(
+            &self,
+            owner: &crate::backend::Owner<'_>,
+            role: WindowRole,
+        ) -> crate::backend::Located {
+            self.windows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(_, id, _, r)| id == owner.session_id && *r == role)
+                .map_or(crate::backend::Located::Absent, |(pane, ..)| {
+                    crate::backend::Located::At(pane.clone())
+                })
+        }
+    }
+
+    pub(crate) fn stub(route: &Route) -> Arc<dyn SessionBackend> {
+        typed_stub(route)
+    }
+
     impl SessionBackend for StubBackend {
+        fn create_window(&self, spec: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+            let mut windows = self.windows.lock().unwrap();
+            let pane = format!("%{}", windows.len());
+            windows.push((
+                pane.clone(),
+                spec.owner.session_id.to_string(),
+                spec.owner.name.to_string(),
+                spec.role,
+            ));
+            Ok(pane)
+        }
+        fn locate(
+            &self,
+            owner: crate::backend::Owner<'_>,
+        ) -> anyhow::Result<crate::backend::Placed> {
+            Ok(crate::backend::Placed {
+                agent: self.place(&owner, WindowRole::Agent),
+                shell: self.place(&owner, WindowRole::Shell),
+            })
+        }
+        fn rename_windows(&self, owner: crate::backend::Owner<'_>, to: &str) -> anyhow::Result<()> {
+            for window in self.windows.lock().unwrap().iter_mut() {
+                if window.1 == owner.session_id {
+                    window.2 = to.to_string();
+                }
+            }
+            Ok(())
+        }
+        fn stamp_window(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::backend::WindowRole,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn window_panes(&self, _: &str) -> anyhow::Result<Vec<(String, bool)>> {
+            Ok(Vec::new())
+        }
+        fn set_pane_retention(&self, _: &str, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn shutdown(&self) {
+            self.shutdowns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         fn name(&self) -> &str {
             &self.backend_name
         }
@@ -151,7 +226,19 @@ pub(crate) mod tests {
             anyhow::bail!("{}: nothing to adopt", self.backend_name)
         }
         fn discover(&self) -> Result<Vec<DiscoveredSession>> {
-            Ok(vec![])
+            Ok(self
+                .windows
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(pane, id, name, role)| DiscoveredSession {
+                    backend_id: pane.clone(),
+                    name: name.clone(),
+                    is_alive: true,
+                    session: id.clone(),
+                    role: *role,
+                })
+                .collect())
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
             Ok(())
@@ -159,7 +246,8 @@ pub(crate) mod tests {
         fn is_dead(&self, _: &str) -> Result<bool> {
             Ok(false)
         }
-        fn kill(&self, _: &str) -> Result<()> {
+        fn kill(&self, pane: &str) -> Result<()> {
+            self.windows.lock().unwrap().retain(|(p, ..)| p != pane);
             Ok(())
         }
         fn detach(&self, _: &str) -> Result<()> {
@@ -235,6 +323,29 @@ pub(crate) mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Quit's one call reaches every backend the registry holds, the default
+    /// and each host's alike.
+    #[test]
+    fn shutdown_all_retires_every_backend_once() {
+        let default = local(Multiplexer::Tmux);
+        let here = typed_stub(&default);
+        let mut registry = BackendRegistry::new(default, here.clone());
+        let remote = Route::remote(Via::Ssh, "box", Some(Multiplexer::Tmux));
+        let there = typed_stub(&remote);
+        registry.register(remote, there.clone());
+
+        registry.shutdown_all();
+
+        for backend in [here, there] {
+            assert_eq!(
+                backend.shutdowns.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "{}",
+                backend.backend_name
+            );
         }
     }
 

@@ -88,13 +88,17 @@ fn main() {
         tracing::warn!("{notice}");
     }
 
-    // The one registry this process drives backends through, built at its
-    // composition root and handed down. Registration only: nothing connects
-    // until a command acts on a session.
-    let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    // The one registry this process drives backends through, built here at its
+    // composition root — on the first command that acts on a session, and
+    // never for the ones that do not. Registration only: nothing connects
+    // until a backend is asked something.
+    let build = || thurbox::backend::wiring::configured().0;
+    let backends = cli::Backends::lazy(&build);
     let outcome = cli::run(cli, &db, &backends);
     // Before any exit below, which runs no destructor.
-    backends.shutdown_all();
+    if let Some(registry) = backends.built() {
+        registry.shutdown_all();
+    }
     match outcome {
         Ok(cli::Outcome::Ok) => {}
         // The report is already on stdout and is the answer; only the verdict

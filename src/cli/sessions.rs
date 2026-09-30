@@ -549,7 +549,7 @@ pub enum MetaAction {
 pub fn run(
     action: Action,
     db: &Database,
-    backends: &crate::backend::BackendRegistry,
+    backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, CommandError> {
     match action {
         Action::List {
@@ -582,7 +582,7 @@ pub fn run(
             reports_as,
         } => run_create(
             db,
-            backends,
+            backends.get(),
             CreateArgs {
                 name,
                 repo_path,
@@ -602,14 +602,14 @@ pub fn run(
                 reports_as,
             },
         ),
-        Action::Delete { uuid, force } => delete_session(db, backends, &uuid, force),
+        Action::Delete { uuid, force } => delete_session(db, backends.get(), &uuid, force),
         Action::Restore {
             session,
             best_effort,
-        } => restore_deleted(db, backends, &session, best_effort),
-        Action::Reap { session } => run_reap(db, backends, session),
-        Action::Restart { uuid, if_missing } => run_restart(db, backends, uuid, if_missing),
-        Action::Rename { session, name } => run_rename(db, backends, session, name),
+        } => restore_deleted(db, backends.get(), &session, best_effort),
+        Action::Reap { session } => run_reap(db, backends.get(), session),
+        Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
+        Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
         Action::Send {
             uuid,
             text,
@@ -619,10 +619,10 @@ pub fn run(
         Action::Capture { uuid, lines, ansi } => capture_pane(db, &uuid, lines, ansi),
         Action::Focus { uuid } => run_focus(db, uuid),
         Action::Sync { host, adopt } => run_sync(db, host, adopt),
-        Action::Register { json_row } => run_register(db, json_row),
-        Action::Stop { session } => run_stop(db, backends, session),
-        Action::Start { session } => run_start(db, backends, session),
-        Action::Fork { session, name } => run_fork(db, backends, session, name),
+        Action::Register { json_row } => run_register(db, backends.get(), json_row),
+        Action::Stop { session } => run_stop(db, backends.get(), session),
+        Action::Start { session } => run_start(db, backends.get(), session),
+        Action::Fork { session, name } => run_fork(db, backends.get(), session, name),
         Action::Exec {
             session,
             exit_passthrough,
@@ -1112,13 +1112,17 @@ fn run_sync(
     Ok(CommandOutput::new(json, human))
 }
 
-fn run_register(db: &Database, json_row: String) -> Result<CommandOutput, CommandError> {
+fn run_register(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    json_row: String,
+) -> Result<CommandOutput, CommandError> {
     let value: Value = serde_json::from_str(&json_row).map_err(|e| format!("--json-row: {e}"))?;
     let row = crate::session_ops::mirror::session_from_json(
         &value,
         &crate::session::Route::local(None).format(),
     )?;
-    register_running_session(db, row)
+    register_running_session(db, backends, row)
 }
 
 fn run_stop(
@@ -2407,6 +2411,7 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
 /// launches — and neither the id nor the name may already be a session here.
 fn register_running_session(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     row: crate::session_ops::mirror::HostRow,
 ) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
@@ -2430,25 +2435,15 @@ fn register_running_session(
     // The row is being adopted onto this machine, so no window can be stamped
     // for its id yet; passing the real id (rather than "") still lets the
     // by-name fallback require the sole match to be unstamped, refusing to
-    // steal a window already stamped for a different, live session.
-    let pane = crate::backend::tmux::agent_window(None, &session.id.to_string(), &session.name)
-        .map_err(|e| format!("could not list windows: {e:#}"))?
-        .pane()
-        .ok_or_else(|| {
-            format!(
-                "no live window for '{}' on this machine's tmux server that is \
-                 unambiguously its own; register records a running session, it \
-                 does not launch one",
-                session.name
-            )
-        })?;
-    // Adopted, so stamp it: the row now owns that window by id rather than by
-    // a name a later namesake could take.
-    crate::backend::tmux::stamp_local_window(
-        &pane,
+    // steal a window already stamped for a different, live session. Claimed,
+    // it is stamped: the row then owns that window by id rather than by a name
+    // a later namesake could take.
+    let pane = crate::session_ops::windows::claim_running_window(
+        backends,
+        &session.backend_type,
         &session.id.to_string(),
-        crate::backend::WindowRole::Agent,
-    );
+        &session.name,
+    )?;
     session.backend_id = pane;
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)
         .map_err(|e| format!("upsert_session: {e}"))?;
@@ -2504,7 +2499,7 @@ mod tests {
                 verify: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert!(v.is_array(), "got {v}");
@@ -2525,7 +2520,7 @@ mod tests {
                 session: Some(id.to_string()),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(out["state"], "blocked");
@@ -2547,7 +2542,7 @@ mod tests {
                 session: None,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("not inside a thurbox session"), "got {err}");
@@ -2673,7 +2668,7 @@ mod tests {
                 clear: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
 
@@ -2694,7 +2689,7 @@ mod tests {
                 clear: true,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(SessionFacts::load(&db).declared_agent(&session), None);
@@ -2714,7 +2709,7 @@ mod tests {
                 clear: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("clyde"), "got {err}");
@@ -2741,7 +2736,7 @@ mod tests {
                 },
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
 
@@ -2753,7 +2748,7 @@ mod tests {
                 },
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         // Set by name, read back by id: one session, either spelling.
@@ -2766,7 +2761,7 @@ mod tests {
                 },
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(listed["fm.task_id"].as_str(), Some("T-1043"));
@@ -2779,7 +2774,7 @@ mod tests {
                 },
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(removed["removed"].as_bool(), Some(true));
@@ -2792,7 +2787,7 @@ mod tests {
                 },
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(again["removed"].as_bool(), Some(false));
@@ -2828,7 +2823,7 @@ mod tests {
                 command: print_cwd,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(out["exit_code"].as_i64(), Some(0));
@@ -2854,7 +2849,7 @@ mod tests {
                 command: exit_3.clone(),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(failed["exit_code"].as_i64(), Some(3));
@@ -2867,7 +2862,7 @@ mod tests {
                 command: exit_3,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(passthrough["exit_code"].as_i64(), Some(3));
@@ -2937,7 +2932,7 @@ mod tests {
                 verify: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -2989,7 +2984,7 @@ mod tests {
                 verify: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -3008,7 +3003,7 @@ mod tests {
                 verify: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -3025,7 +3020,7 @@ mod tests {
                 verify: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -3043,7 +3038,7 @@ mod tests {
                 no_verify: true,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -3082,7 +3077,7 @@ mod tests {
                         no_enter,
                     },
                     &db,
-                    &crate::backend::registry::inert(),
+                    &crate::cli::Backends::ready(crate::backend::registry::inert()),
                 )
                 .unwrap_err();
                 assert!(err.contains("text"), "got {err}");
@@ -3114,7 +3109,12 @@ mod tests {
                 key: "enter".into(),
             },
         ] {
-            let err = run(action, &db, &crate::backend::registry::inert()).unwrap_err();
+            let err = run(
+                action,
+                &db,
+                &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            )
+            .unwrap_err();
             assert!(err.contains("ssh:devbox"), "got {err}");
             // The obstacle is the missing host entry, not the verb: with one,
             // the same call is delegated to that host's own `thurbox-cli`.
@@ -3137,7 +3137,7 @@ mod tests {
                 key: "escpe".into(),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("Unknown key 'escpe'"), "got {err}");
@@ -3158,7 +3158,7 @@ mod tests {
                 key: "nonsense".into(),
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -3206,7 +3206,7 @@ mod tests {
                 force: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(v["deleted"], true);
@@ -3222,7 +3222,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3244,7 +3244,7 @@ mod tests {
                 force: true,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
 
@@ -3254,7 +3254,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains("--best-effort"), "{err}");
@@ -3267,7 +3267,7 @@ mod tests {
                 best_effort: true,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3298,7 +3298,7 @@ mod tests {
                 force: true,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
 
@@ -3308,7 +3308,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3338,7 +3338,7 @@ mod tests {
                 force: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
 
@@ -3348,7 +3348,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
-            &crate::backend::registry::inert(),
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap_err();
         assert!(err.contains(&gone.display().to_string()), "{err}");

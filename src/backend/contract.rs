@@ -176,6 +176,93 @@ impl WindowRole {
     }
 }
 
+/// Where a listing puts a session's window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// The window is this pane.
+    At(String),
+    /// The listing covers the server and nothing on it is this session's.
+    Absent,
+    /// The listing cannot say: more than one window answers to the name and at
+    /// least one of them carries no stamp.
+    ///
+    /// Never collapse this into [`Located::Absent`]. Reading ambiguity as
+    /// absence is what relaunches a session that is already running, so two
+    /// colliding windows become three.
+    Unknown,
+}
+
+impl Located {
+    /// The pane, when there is one to act on.
+    pub fn pane(self) -> Option<String> {
+        match self {
+            Self::At(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    /// Whether the listing positively says there is no such window. The only
+    /// answer a relaunch may act on.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, Self::Absent)
+    }
+}
+
+/// A row's two windows, as one listing places them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub agent: Located,
+    pub shell: Located,
+}
+
+/// The row a window belongs to, as a caller knows it.
+#[derive(Clone, Copy, Debug)]
+pub struct Owner<'a> {
+    /// The row's id — what a backend stamps a window with, and what resolves
+    /// it. Empty only for a caller with no row.
+    pub session_id: &'a str,
+    /// The row's name, which a window is named after. Not unique: a window is
+    /// found by its name only where nothing stamped says otherwise.
+    pub name: &'a str,
+    /// The panes the row last recorded for its agent and its shell, or empty.
+    /// Hints, never proof — a server that restarted reissues pane ids — which
+    /// a backend that cannot stamp its windows may fall back on when its
+    /// listing cannot tell namesakes apart.
+    pub agent_pane: &'a str,
+    pub shell_pane: &'a str,
+}
+
+impl<'a> Owner<'a> {
+    /// A row known by id and name, with no panes remembered.
+    pub fn new(session_id: &'a str, name: &'a str) -> Self {
+        Self {
+            session_id,
+            name,
+            agent_pane: "",
+            shell_pane: "",
+        }
+    }
+
+    /// The same row, remembering these panes.
+    pub fn remembering(self, agent_pane: &'a str, shell_pane: &'a str) -> Self {
+        Self {
+            agent_pane: agent_pane.trim(),
+            shell_pane: shell_pane.trim(),
+            ..self
+        }
+    }
+}
+
+/// A window to open for its owner.
+pub struct WindowSpec<'a> {
+    pub owner: Owner<'a>,
+    pub role: WindowRole,
+    pub command: &'a str,
+    pub args: &'a [String],
+    pub cwd: Option<&'a Path>,
+    pub env: &'a HashMap<String, String>,
+}
+
 /// Metadata returned when discovering existing sessions from the backend.
 #[derive(Clone)]
 pub struct DiscoveredSession {
@@ -329,19 +416,43 @@ pub trait SessionBackend: Send + Sync {
         Vec::new()
     }
 
-    /// Discover existing sessions managed by this backend.
+    /// Every thurbox window the backend holds, as it answers for them.
+    ///
+    /// `Ok` with an empty list only when the backend itself says it holds
+    /// nothing; a question that went unanswered — an unreachable host, a
+    /// server that could not be asked — is an `Err`. The difference is what
+    /// every teardown rests on: an empty answer means there is nothing to
+    /// kill.
     fn discover(&self) -> Result<Vec<DiscoveredSession>>;
+
+    /// Open `spec.owner`'s `spec.role` window, detached, stamped with its owner
+    /// as it is created, and return its pane — what [`Self::adopt`] later
+    /// attaches to. The headless half of a session's lifecycle: create,
+    /// restart and restore open a window through here and nothing attaches to
+    /// it until an interface does. An empty pane id is the answer of a
+    /// backend that cannot report one; the window is then found by its owner.
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String>;
+
+    /// Where `owner`'s two windows are, from one listing the backend
+    /// answered — [`crate::backend::identity::WindowIndex`]'s rule (ADR-25),
+    /// plus whatever the backend alone can do about an ambiguous answer. `Err`
+    /// when it could not answer, which a caller must never read as absence.
+    fn locate(&self, owner: Owner<'_>) -> Result<Placed>;
+
+    /// Follow a row's rename with the windows named after it, found under the
+    /// name it had (`owner.name`). A window left under the old name is lost to
+    /// a backend that finds windows by name, so ambiguity is an error rather
+    /// than a skip.
+    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()>;
 
     /// Stamp a window with the identity every reconciler resolves it by: which
     /// session row owns it, and in what role (see
     /// [`crate::backend::tmux::WINDOW_SESSION_OPTION`]).
     ///
-    /// Defaults to doing nothing, for a backend with no place to keep it —
-    /// such a backend's windows read as unstamped, which
-    /// [`crate::backend::identity::WindowIndex`] resolves by name as before.
-    fn stamp_window(&self, _backend_id: &str, _session_id: &str, _role: WindowRole) -> Result<()> {
-        Ok(())
-    }
+    /// A backend with no place to keep one returns `Ok` and its windows read
+    /// as unstamped, which [`crate::backend::identity::WindowIndex`] resolves
+    /// by name — a decision each backend makes, not a default it inherits.
+    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()>;
 
     /// The pane of every window carrying this **exact** name, and whether that
     /// pane is dead.
@@ -359,11 +470,7 @@ pub trait SessionBackend: Send + Sync {
     /// caller there is ([`crate::kernel::terminal::Terminals::start_program`])
     /// needs the whole picture to keep that true.
     ///
-    /// Default: nothing found, so a backend without a window concept simply always
-    /// spawns fresh.
-    fn window_panes(&self, _window_name: &str) -> Result<Vec<(String, bool)>> {
-        Ok(Vec::new())
-    }
+    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>>;
 
     /// Say whether the window holding `backend_id` keeps its pane's corpse.
     ///
@@ -374,11 +481,8 @@ pub trait SessionBackend: Send + Sync {
     /// state the first restart after an upgrade would otherwise inherit.
     ///
     /// Asked only where the answer is already known from the caller's own
-    /// naming, so this is one round trip and no lookup. Default: nothing to say,
-    /// for a backend with no window options at all.
-    fn set_pane_retention(&self, _backend_id: &str, _keep: bool) -> Result<()> {
-        Ok(())
-    }
+    /// naming, so this is one round trip and no lookup.
+    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()>;
 
     /// Match a pane to the rect it is painted into.
     ///
@@ -398,7 +502,9 @@ pub trait SessionBackend: Send + Sync {
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
 
-    /// Kill/destroy a session (for Ctrl+X close).
+    /// Kill a pane and the window it is the whole of — attached or not, so a
+    /// teardown needs no interface. Idempotent: a pane already gone is what
+    /// the kill wanted.
     fn kill(&self, backend_id: &str) -> Result<()>;
 
     /// Detach from a session without killing it (for Ctrl+Q quit).
@@ -410,7 +516,8 @@ pub trait SessionBackend: Send + Sync {
     /// a pane runs on a host.
     fn default_shell(&self) -> String;
 
-    /// Return the PID of the process running in a backend pane.
+    /// Return the PID of the process running in a backend pane, attached or
+    /// not.
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;
 
     /// Every live pane's `pane_id → pid` in **one** backend round trip.
@@ -454,7 +561,8 @@ pub trait SessionBackend: Send + Sync {
     /// its control-mode connection: child process + reader thread).
     ///
     /// Distinct from [`Self::detach`], which retires one *session*'s pane. This
-    /// retires the *connection*, and is called once per backend at quit.
+    /// retires the *connection*, and is called once per backend at quit
+    /// ([`BackendRegistry::shutdown_all`](crate::backend::BackendRegistry::shutdown_all)).
     ///
     /// Exists as an explicit method rather than relying on `Drop` so quit can
     /// run every backend's teardown **concurrently**: the registry holds each
@@ -464,7 +572,5 @@ pub trait SessionBackend: Send + Sync {
     /// which matters because the backend count grows with every configured SSH
     /// host and auto-discovered WSL distro. Must be idempotent: a later `Drop`
     /// still runs and has to be a no-op.
-    ///
-    /// Default: nothing to tear down.
-    fn shutdown(&self) {}
+    fn shutdown(&self);
 }

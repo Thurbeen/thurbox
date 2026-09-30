@@ -99,13 +99,19 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     // applies its options on the way, exactly as a restart does. A long-lived
     // program: one that exits before tmux finishes setting the window up turns a
     // real failure into a skip.
-    let spawned = thurbox::backend::tmux::spawn_window(
-        "11111111-1111-4111-8111-111111111111",
-        "remain-on-exit",
-        "sh",
-        &["-c".to_string(), "sleep 300".to_string()],
-        Some(dir.path()),
-        &HashMap::new(),
+    let spawned = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(
+                "11111111-1111-4111-8111-111111111111",
+                "remain-on-exit",
+            ),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "sleep 300".to_string()],
+            cwd: Some(dir.path()),
+            env: &HashMap::new(),
+        },
     );
     let agent_pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
@@ -240,13 +246,19 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::backend::tmux::spawn_window(
-        "22222222-2222-4222-8222-222222222222",
-        "dies-at-once",
-        "sh",
-        &["-c".to_string(), "exit 7".to_string()],
-        Some(dir.path()),
-        &HashMap::new(),
+    let spawned = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(
+                "22222222-2222-4222-8222-222222222222",
+                "dies-at-once",
+            ),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "exit 7".to_string()],
+            cwd: Some(dir.path()),
+            env: &HashMap::new(),
+        },
     );
     let pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,
@@ -295,25 +307,37 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
 
     // The older namesake, from the other session that shares the name. Spawned
     // through the same path, so it is a real one rather than a hand-made window.
-    let first = thurbox::backend::tmux::spawn_window(
-        "33333333-3333-4333-8333-333333333333",
-        "same-name",
-        "sh",
-        &["-c".to_string(), "sleep 300".to_string()],
-        Some(dir.path()),
-        &HashMap::new(),
+    let first = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(
+                "33333333-3333-4333-8333-333333333333",
+                "same-name",
+            ),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "sleep 300".to_string()],
+            cwd: Some(dir.path()),
+            env: &HashMap::new(),
+        },
     );
     if !matches!(&first, Ok(pane) if !pane.is_empty()) {
         panic!("the first window could not be spawned: {first:?}");
     }
 
-    let second = thurbox::backend::tmux::spawn_window(
-        "44444444-4444-4444-8444-444444444444",
-        "same-name",
-        "sh",
-        &["-c".to_string(), "exit 7".to_string()],
-        Some(dir.path()),
-        &HashMap::new(),
+    let second = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(
+                "44444444-4444-4444-8444-444444444444",
+                "same-name",
+            ),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "exit 7".to_string()],
+            cwd: Some(dir.path()),
+            env: &HashMap::new(),
+        },
     );
     let pane = match second {
         Ok(pane) if !pane.is_empty() => pane,
@@ -371,13 +395,19 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::backend::tmux::spawn_window(
-        "55555555-5555-4555-8555-555555555555",
-        "hand-sized",
-        "sh",
-        &["-c".to_string(), "sleep 300".to_string()],
-        Some(dir.path()),
-        &HashMap::new(),
+    let spawned = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(
+                "55555555-5555-4555-8555-555555555555",
+                "hand-sized",
+            ),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "sleep 300".to_string()],
+            cwd: Some(dir.path()),
+            env: &HashMap::new(),
+        },
     );
     let pane = match spawned {
         Ok(pane) if !pane.is_empty() => pane,

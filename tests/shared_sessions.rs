@@ -66,7 +66,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             verify: false,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap();
     let rows = out.as_array().unwrap();
@@ -85,7 +85,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             verify: false,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap();
     let only = &active.as_array().unwrap()[0];
@@ -130,7 +130,7 @@ fn register_records_only_a_window_that_is_running() {
             json_row: body.to_string(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap_err();
     assert!(err.contains("no live window"), "{err}");
@@ -141,7 +141,7 @@ fn register_records_only_a_window_that_is_running() {
             json_row: "{not json".into(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap_err();
     assert!(err.contains("--json-row"), "{err}");
@@ -158,7 +158,7 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_id.to_string(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap_err();
     assert!(err.contains("already registered"), "{err}");
@@ -173,7 +173,7 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_name.to_string(),
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap_err();
     assert!(err.contains("already exists"), "{err}");
@@ -190,7 +190,7 @@ fn sync_with_no_shareable_host_configured_is_an_empty_report() {
             adopt: false,
         },
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap();
     assert_eq!(out.as_array().map(Vec::len), Some(0));
@@ -347,7 +347,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
             verify: false,
         },
         db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .unwrap()
     .json

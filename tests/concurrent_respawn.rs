@@ -70,13 +70,16 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
                 // Released together, so the `session_exists()` checks overlap
                 // instead of being serialised by thread startup.
                 barrier.wait();
-                thurbox::backend::tmux::spawn_window(
-                    &id,
-                    &name,
-                    "sh",
-                    &["-c".to_string(), "while :; do sleep 1; done".to_string()],
-                    None,
-                    &HashMap::new(),
+                thurbox::backend::SessionBackend::create_window(
+                    &thurbox::backend::tmux::TmuxBackend::new(),
+                    &thurbox::backend::WindowSpec {
+                        owner: thurbox::backend::Owner::new(&id, &name),
+                        role: thurbox::backend::WindowRole::Agent,
+                        command: "sh",
+                        args: &["-c".to_string(), "while :; do sleep 1; done".to_string()],
+                        cwd: None,
+                        env: &HashMap::new(),
+                    },
                 )
                 .map_err(|e| format!("{name}: {e:#}"))
             })
