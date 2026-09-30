@@ -2,7 +2,7 @@
 //!
 //! Focus is an index into the host's focusable plugins, but the rules are about
 //! *visibility*: a slot the arrangement did not place is not a cycle stop, and a
-//! switch slot's hidden occupants are not either. `pending_focus` is the one
+//! switch slot's alternates are not either — they are reached by their own key. `pending_focus` is the one
 //! subtlety — a pane that opens its own slot asks for focus a frame before the
 //! slot exists, so the request is held for exactly one layout and re-asked
 //! there.
@@ -47,20 +47,33 @@ impl App {
         }
     }
 
+    /// Step focus one column along — see `kernel::focus::next_in_cycle` for why a
+    /// switch slot is one stop however many panes share it.
     pub(crate) fn cycle_focus(&mut self, step: isize) {
         let focusable = self.host.focusable();
-        let count = focusable.len().max(1) as isize;
-        // Walk at most one full lap: if nothing is visible (a pathological
-        // arrangement), leave focus where it was rather than spinning.
-        for hop in 1..=count {
-            let next = (self.focus as isize + step * hop).rem_euclid(count) as usize;
-            if focusable
-                .get(next)
-                .is_some_and(|index| self.can_focus_plugin(*index))
-            {
-                self.focus = next;
-                return;
-            }
+        let ring: Vec<_> = focusable
+            .iter()
+            .map(|&index| {
+                let plugin = &self.host.plugins[index];
+                let switch_slot = (!plugin.floats
+                    && matches!(self.host.slot_mode(&plugin.slot), SlotMode::Switch))
+                .then_some(plugin.slot.as_str());
+                let default_in_slot = switch_slot.is_some_and(|slot| {
+                    self.host
+                        .in_slot(slot)
+                        .iter()
+                        .find(|member| focusable.contains(member))
+                        == Some(&index)
+                });
+                thurbox::kernel::focus::CycleEntry {
+                    placement: self.placement(index),
+                    switch_slot,
+                    default_in_slot,
+                }
+            })
+            .collect();
+        if let Some(next) = thurbox::kernel::focus::next_in_cycle(&ring, self.focus, step) {
+            self.focus = next;
         }
     }
 

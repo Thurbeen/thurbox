@@ -92,6 +92,47 @@ pub fn defer_until_placed(placement: Placement) -> bool {
     !can_focus(placement)
 }
 
+/// One entry of the focus ring, as the `Ctrl+H`/`Ctrl+L` cycle sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleEntry<'a> {
+    pub placement: Placement,
+    /// The `switch` slot it occupies; `None` for any other slot, and for a float.
+    pub switch_slot: Option<&'a str>,
+    /// It is the first focusable occupant of that switch slot — the one the slot
+    /// shows when nothing else has been chosen. Ignored without `switch_slot`.
+    pub default_in_slot: bool,
+}
+
+/// Where the cycle lands from `from`, stepping by `step`, or `None` to stay.
+///
+/// The cycle walks *columns*, not panes. [`can_focus`] lets focus rest on a
+/// switch alternate because focusing one is what draws it — right for its own
+/// key or pill, and wrong for a walk across the screen: stepping onto the
+/// alternate swapped the agent's terminal for a pane nobody asked to see. So a
+/// switch slot is one stop, its default occupant, and its alternates are reached
+/// only by asking for them.
+///
+/// From an alternate the walk leaves the slot, so the default beside it is
+/// passed over — unless nothing else is a stop at all, where it is the only way
+/// out that stays in the cycle.
+pub fn next_in_cycle(ring: &[CycleEntry], from: usize, step: isize) -> Option<usize> {
+    let count = ring.len() as isize;
+    let own_slot = ring.get(from).and_then(|entry| entry.switch_slot);
+    let stop = |next: usize, leaving: bool| {
+        let entry = ring[next];
+        can_focus(entry.placement)
+            && match entry.switch_slot {
+                None => true,
+                Some(slot) => entry.default_in_slot && !(leaving && own_slot == Some(slot)),
+            }
+    };
+    [true, false].into_iter().find_map(|leaving| {
+        (1..=count)
+            .map(|hop| (from as isize + step * hop).rem_euclid(count) as usize)
+            .find(|next| stop(*next, leaving))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +227,129 @@ mod tests {
     fn an_ordinary_occupant_is_drawn_whenever_its_slot_is() {
         assert!(is_drawn(placement(true, None)));
         assert!(can_focus(placement(true, None)));
+    }
+
+    fn column() -> CycleEntry<'static> {
+        CycleEntry {
+            placement: placement(true, None),
+            switch_slot: None,
+            default_in_slot: false,
+        }
+    }
+
+    fn in_centre(default: bool) -> CycleEntry<'static> {
+        CycleEntry {
+            placement: placement(true, Some(default)),
+            switch_slot: Some("center"),
+            default_in_slot: default,
+        }
+    }
+
+    #[test]
+    fn the_cycle_stops_once_on_a_switch_slot_at_its_default_occupant() {
+        // sessions, agent, and a pane that replaces the agent.
+        let ring = [column(), in_centre(true), in_centre(false)];
+        assert_eq!(next_in_cycle(&ring, 0, 1), Some(1));
+        assert_eq!(
+            next_in_cycle(&ring, 1, 1),
+            Some(0),
+            "stepped onto the alternate"
+        );
+        assert_eq!(
+            next_in_cycle(&ring, 0, -1),
+            Some(1),
+            "backwards reached the alternate"
+        );
+    }
+
+    #[test]
+    fn an_alternate_leaves_its_slot_in_either_direction() {
+        let ring = [column(), in_centre(true), in_centre(false)];
+        assert_eq!(
+            next_in_cycle(&ring, 2, -1),
+            Some(0),
+            "Ctrl+H only swapped back"
+        );
+        assert_eq!(next_in_cycle(&ring, 2, 1), Some(0));
+    }
+
+    #[test]
+    fn an_alternate_with_nothing_else_to_go_to_falls_back_to_its_default() {
+        let ring = [in_centre(true), in_centre(false)];
+        assert_eq!(next_in_cycle(&ring, 1, 1), Some(0));
+        assert_eq!(next_in_cycle(&ring, 1, -1), Some(0));
+    }
+
+    #[test]
+    fn a_switch_slot_with_one_occupant_is_still_a_stop() {
+        let ring = [column(), in_centre(true)];
+        assert_eq!(next_in_cycle(&ring, 0, 1), Some(1));
+        assert_eq!(next_in_cycle(&ring, 1, 1), Some(0));
+    }
+
+    #[test]
+    fn floats_and_unplaced_slots_keep_their_rule() {
+        let floating = CycleEntry {
+            placement: float(false),
+            switch_slot: None,
+            default_in_slot: false,
+        };
+        let closed = CycleEntry {
+            placement: placement(false, None),
+            ..column()
+        };
+        let ring = [column(), closed, floating];
+        assert_eq!(next_in_cycle(&ring, 0, 1), Some(2));
+        assert_eq!(next_in_cycle(&ring, 2, 1), Some(0));
+    }
+
+    #[test]
+    fn a_ring_with_no_stop_leaves_focus_where_it_is() {
+        let closed = CycleEntry {
+            placement: placement(false, None),
+            ..column()
+        };
+        assert_eq!(next_in_cycle(&[closed, closed], 0, 1), None);
+        assert_eq!(next_in_cycle(&[], 0, 1), None);
+    }
+
+    #[test]
+    fn every_walk_across_any_ring_lands_on_a_stop_and_never_on_an_alternate() {
+        // Exhaustive over small rings of the four kinds of entry: whatever the
+        // mix, a step never lands on an alternate unless it started on one and
+        // nothing else exists, and a stop is found whenever one exists.
+        let kinds = [
+            column(),
+            in_centre(true),
+            in_centre(false),
+            CycleEntry {
+                placement: placement(false, None),
+                ..column()
+            },
+        ];
+        for len in 1..=4usize {
+            for code in 0..kinds.len().pow(len as u32) {
+                let ring: Vec<_> = (0..len)
+                    .map(|i| kinds[code / kinds.len().pow(i as u32) % kinds.len()])
+                    .collect();
+                for from in 0..len {
+                    for step in [-1, 1] {
+                        let landed = next_in_cycle(&ring, from, step);
+                        let any_stop = ring.iter().any(|e| {
+                            can_focus(e.placement) && (e.switch_slot.is_none() || e.default_in_slot)
+                        });
+                        assert_eq!(landed.is_some(), any_stop, "{ring:?} from {from}");
+                        if let Some(at) = landed {
+                            let entry = ring[at];
+                            assert!(can_focus(entry.placement), "{ring:?} from {from}");
+                            assert!(
+                                entry.switch_slot.is_none() || entry.default_in_slot,
+                                "landed on an alternate: {ring:?} from {from}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

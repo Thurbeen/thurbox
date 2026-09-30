@@ -2821,7 +2821,10 @@ the long list rather than scrolling a flat one:
 > **Reshaped.** The kernel owns one focus ring over whatever panes are loaded, and
 > the trap it has to keep apart is `is_drawn` vs `can_focus`: a `switch` slot draws
 > one occupant, so focusing an alternate is *what brings it forward*, and gating
-> focus on "is it drawn?" makes an alternate unreachable. See `docs/V2-KERNEL.md`.
+> focus on "is it drawn?" makes an alternate unreachable. The `Ctrl+H`/`Ctrl+L`
+> cycle is the other side of that: it stops once per switch slot, on its default
+> occupant, so walking the columns never swaps the terminal for an alternate; one is
+> opened by its own key or pill. See `docs/V2-KERNEL.md`.
 
 Panels use a tri-state focus system (`Focused`, `Active`,
 `Inactive`), mapped in `ui/lib/chrome.lua`. The kernel publishes one `focused`

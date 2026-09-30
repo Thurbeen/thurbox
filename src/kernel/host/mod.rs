@@ -2220,8 +2220,10 @@ impl LuaHost {
     /// be focused. Somebody who installs it, follows its README and launches sees an
     /// unchanged screen and reasonably concludes the install failed.
     ///
-    /// The kernel already offers four ways to reach it — the action band, the focus
-    /// ring, `F1`, and a `focus:<plugin>` click role — but none of them is automatic.
+    /// The kernel already offers three ways to reach it — the action band, `F1`, and
+    /// a `focus:<plugin>` click role — but none of them is automatic. The focus
+    /// cycle is not one: it stops once per switch slot, on the default occupant
+    /// (`kernel::focus::next_in_cycle`).
     /// A **pill** is: it is declared data the band enumerates without invoking
     /// anything. So the answer is not new machinery, it is telling the author, and
     /// this is the predicate both the check and the install report consult so they
@@ -2247,8 +2249,8 @@ impl LuaHost {
         Some(format!(
             "shares the {:?} slot and is not the one shown by default, and declares no \
              pill — so nothing on screen offers it. Declare one \
-             (`pills = {{ {{ action = \"…\", label = \"…\" }} }}`) or it can only be \
-             reached by cycling focus.",
+             (`pills = {{ {{ action = \"…\", label = \"…\" }} }}`) or only a key of its \
+             own reaches it — Ctrl+H/Ctrl+L never stop on it.",
             plugin.slot
         ))
     }

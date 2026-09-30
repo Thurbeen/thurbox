@@ -185,7 +185,8 @@ hole, iterate its indices (`for i = 1, n`) or do not leave one.
 **A pane in a `switch` slot needs one key that goes both ways.** `command("focus",
 { text = "<your pane>", toggle = true })` focuses it, and focuses whatever you came
 from when it already has focus. Without `toggle` the pane is a one-way door: the key
-gets you in and only the focus cycle gets you out. Do not solve that by focusing a
+gets you in and only the focus cycle gets you out — and the cycle never gets you in,
+since it passes over a slot's alternates. Do not solve that by focusing a
 named sibling — the only name available is whatever shares the slot in the *default*
 arrangement, which is the user's to change.
 
@@ -566,8 +567,13 @@ for nothing. **Adding a pane means adding its slot to `layout.lua`**, which is a
 file you edit rather than a layout compiled into the binary.
 
 Several plugins may name the same slot. `center` is a **switch** slot — one
-occupant is visible at a time and focusing one brings it forward, so the focus
-ring visits every occupant and moving onto one selects it. A slot the arrangement
+occupant is visible at a time and focusing one brings it forward. The `ctrl+h` /
+`ctrl+l` cycle walks columns, not panes: it stops **once** per switch slot, on its
+default occupant (the first focusable one — the agent pane in `center`), and from an
+alternate it steps off the slot rather than back to its sibling. An alternate is
+reached only by asking for it — its own key, a pill, or a `focus:<plugin>` click
+role — so a pane that replaces the centre needs one of those or nothing reaches it
+(`plugin check` warns about a pill-less one). A slot the arrangement
 did not place this frame simply does not draw, and focus skips its plugins, so a
 closed column can never hold focus.
 
