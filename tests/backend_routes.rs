@@ -162,7 +162,7 @@ fn session(id: SessionId, name: &str, backend_type: &str) -> SharedSession {
 }
 
 fn names(set: &[&str]) -> BTreeSet<String> {
-    set.iter().map(|s| s.to_string()).collect()
+    set.iter().copied().map(str::to_string).collect()
 }
 
 /// A host whose preference moved to rmux after its rows were written, driven
@@ -371,4 +371,78 @@ fn a_legacy_tmux_row_holds_its_name_on_the_local_server() {
         let windows = thurbox::session_ops::names::window_namesakes(&db, "build", key).unwrap();
         assert_eq!(windows.len(), 1, "{key:?}");
     }
+}
+
+/// A row whose window cannot be taken down keeps its checkout too: removing a
+/// worktree from under an agent that is still running there is the one
+/// teardown worse than none. Both stay owed.
+#[test]
+fn an_undrivable_rows_checkout_outlives_its_window() {
+    let env = Env::new(HOST_ON_TMUX);
+    let id = SessionId::default();
+    let mut row = session(id, "r", "ssh:box:rmux");
+    row.worktrees = vec![thurbox::sync::SharedWorktree {
+        repo_path: PathBuf::from("/srv/repo"),
+        worktree_path: PathBuf::from("/srv/worktrees/r"),
+        branch: "r".into(),
+        created_by_thurbox: true,
+    }];
+    env.db().upsert_session(&row).expect("seed a row");
+
+    env.cli(&["session", "delete", &id.to_string(), "--force"]);
+    assert_eq!(
+        env.ssh_calls(),
+        Vec::<String>::new(),
+        "the host was asked to change something for a row nothing here drives"
+    );
+}
+
+/// `stop` on a row nothing here drives refuses, rather than recording a park
+/// while the window it could not kill keeps running.
+#[test]
+fn a_row_on_an_unimplemented_multiplexer_is_not_marked_stopped() {
+    let env = Env::new(HOST_ON_TMUX);
+    let id = env.row("r", "ssh:box:rmux");
+
+    let out = env.cli(&["session", "stop", &id.to_string()]);
+    assert!(!out.status.success(), "stop claimed success");
+    assert_eq!(
+        env.db().session_stopped_at(id).expect("read the mark"),
+        None,
+        "the row reads as parked while its window runs"
+    );
+}
+
+/// A creation that names its multiplexer launches with it, whatever the
+/// host's entry prefers: the row says `ssh:box:tmux`, so its window has to be
+/// on tmux, not on the preference.
+#[test]
+fn a_created_session_is_launched_with_the_multiplexer_its_route_names() {
+    let env = Env::new(HOST_NOW_ON_RMUX);
+    let repo = env.path("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+
+    env.cli(&[
+        "session",
+        "create",
+        "--name",
+        "made",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--host",
+        "box",
+        "--multiplexer",
+        "tmux",
+    ]);
+    assert!(
+        !env.driven().is_empty(),
+        "the create never asked the host's multiplexer: {:?}",
+        env.ssh_calls()
+    );
+    assert_eq!(
+        env.driven(),
+        names(&["tmux"]),
+        "create ran {:?}",
+        env.ssh_calls()
+    );
 }

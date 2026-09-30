@@ -162,23 +162,33 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
+    // Asked before the mark: a row whose multiplexer nothing here drives would
+    // read as parked while the window that could not be killed keeps running.
+    // A host `hosts.toml` no longer describes is different — see below.
+    let served = if remote && super::resolve_host(&session.backend_type).is_some() {
+        super::mux_host(&session.backend_type)
+            .map_err(|e| format!("cannot stop '{}': {e}", session.name))?
+    } else {
+        None
+    };
+
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let remote = crate::session::Route::is_remote_key(&session.backend_type);
     let killed = if remote {
-        match super::mux_host(&session.backend_type) {
-            Ok(Some(host)) => crate::backend::tmux::kill_remote_windows(
+        match served {
+            Some(host) => crate::backend::tmux::kill_remote_windows(
                 &host,
                 &session.id.to_string(),
                 &session.name,
                 session_panes(&session),
             )
             .unwrap_or(false),
-            // An unreachable host is not a reason to refuse: the mark is what
-            // makes the stop stick, and the pane is reclaimed by the next
-            // teardown that can reach it.
-            _ => false,
+            // An unreachable or unconfigured host is not a reason to refuse:
+            // the mark is what makes the stop stick, and the pane is reclaimed
+            // by the next teardown that can reach it.
+            None => false,
         }
     } else {
         let killed =

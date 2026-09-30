@@ -2183,8 +2183,9 @@ mod tests {
         // The same pane starts delivering real hook events — through the exact
         // entry point production code uses, with nothing else run in between.
         store.apply_hook_states(
+            // Named by the route that serves the row, as a backend reports.
             vec![(
-                "local-tmux".to_string(),
+                crate::session_ops::server_key("local-tmux"),
                 "%7".to_string(),
                 "working".to_string(),
             )],
@@ -2209,8 +2210,9 @@ mod tests {
         let (mut store, row) = store_with_a_detected_agent();
 
         store.apply_hook_states(
+            // Named by the route that serves the row, as a backend reports.
             vec![(
-                "local-tmux".to_string(),
+                crate::session_ops::server_key("local-tmux"),
                 "%7".to_string(),
                 "working".to_string(),
             )],

@@ -803,9 +803,18 @@ pub(crate) fn mux_host_in(
             mux.name()
         ));
     }
+    Ok(Some(served_by(host, mux)))
+}
+
+/// `host` as the tmux adapter must be told to drive `mux` there: the entry
+/// with its `multiplexer` set to that binary.
+pub(crate) fn served_by(
+    host: &crate::session::HostDef,
+    mux: crate::session::Multiplexer,
+) -> crate::session::HostDef {
     let mut served = host.clone();
     served.multiplexer = Some(mux.name().to_string());
-    Ok(Some(served))
+    served
 }
 
 /// Inject the standard thurbox env hints into a session config so a

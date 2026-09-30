@@ -379,8 +379,13 @@ pub fn spawn_session_headless_with_progress(
     // one over the SSH backend's control mode, the local one from
     // `new-window -P` — which is the pane the interface attaches to.
     let stamp = session_id.to_string();
+    // The window goes on the multiplexer the row will name, which the host's
+    // entry need not prefer; everything else about the host is as configured.
+    let served = host
+        .as_ref()
+        .map(|h| super::served_by(h, choice.multiplexer));
     let backend_id = launch_window(
-        host.as_ref(),
+        served.as_ref(),
         &stamp,
         &req.name,
         &command,
@@ -418,7 +423,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(host.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(served.as_ref(), &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 

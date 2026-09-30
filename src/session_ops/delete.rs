@@ -290,18 +290,26 @@ pub fn teardown_runtime_resources(
         match remote_host_in(&registry, &session.backend_type) {
             Some(host) => {
                 // The window with the multiplexer the row was written for; a
-                // row on one nothing here implements keeps its window, owed.
+                // row on one nothing here implements keeps its window, owed —
+                // and its checkouts with it, since the agent in that window may
+                // still be running in them.
                 match super::mux_host_in(&registry, &session.backend_type) {
-                    Ok(Some(served)) => kill_remote_window(&served, session, report),
-                    Ok(None) => {}
+                    Ok(served) => {
+                        if let Some(served) = served {
+                            kill_remote_window(&served, session, report);
+                        }
+                        for wt in &session.worktrees {
+                            remove_worktree_into(Some(host), wt, report);
+                        }
+                    }
                     Err(e) => {
-                        let msg = format!("left the window of '{}' in place: {e}", session.name);
+                        let msg = format!(
+                            "left the window and worktrees of '{}' in place: {e}",
+                            session.name
+                        );
                         tracing::warn!("{msg}");
                         report.remote_teardown_error = Some(msg);
                     }
-                }
-                for wt in &session.worktrees {
-                    remove_worktree_into(Some(host), wt, report);
                 }
             }
             None => {
