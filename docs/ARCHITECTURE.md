@@ -2125,8 +2125,9 @@ which qualifies both; per-backend state in the kernel is keyed the same way,
 and a backend is named by the route it serves. Which multiplexer is available
 is decided by registration, never by the OS. A route naming a multiplexer no
 adapter implements is refused by name: such a row is neither created, attached,
-torn down, polled nor restarted through the tmux command grammar. `local-tmux`
-stays ambiguous on native Windows, where it reads as psmux; a tmux adapter there
+torn down, polled, stopped nor restarted through the tmux command grammar,
+and a teardown that cannot take its window leaves its worktrees too.
+`local-tmux` stays ambiguous on native Windows, where it reads as psmux; a tmux adapter there
 would need a spelling of its own. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
 Until host platform is its own dimension, the tmux adapter still reads a host's
