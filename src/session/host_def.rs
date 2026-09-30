@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Multiplexer, Route};
+use super::{Multiplexer, Platform, Route};
 
 /// The environment variable every WSL2 distro's init sets to that distro's own
 /// name. Present only *inside* a distro — not on Windows, not on a plain Linux
@@ -122,6 +122,12 @@ pub struct HostDef {
     /// Windows SSH host (psmux speaks the same control-mode wire protocol).
     #[serde(default)]
     pub multiplexer: Option<String>,
+    /// The host's operating system: `"posix"` or `"windows"`. Independent of
+    /// [`multiplexer`](Self::multiplexer) and of [`kind`](Self::kind); read
+    /// through [`platform`](Self::platform), which settles an entry that
+    /// leaves it unset.
+    #[serde(default)]
+    pub platform: Option<Platform>,
     /// Whether the host's own thurbox database is the record of the sessions
     /// on it (`true`, the default): a remote thurbox mirrors that database and
     /// delegates create/delete/restart/restore to `thurbox-cli` on the host,
@@ -157,6 +163,7 @@ impl Default for HostDef {
             ssh_opts: Vec::new(),
             worktrees_dir: None,
             multiplexer: None,
+            platform: None,
             share_sessions: true,
             path_prepend: Vec::new(),
         }

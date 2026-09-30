@@ -1204,8 +1204,7 @@ impl TmuxBackend {
         // use its native ConPTY default shell is the safe choice. Decided by the
         // multiplexer, not by the OS thurbox runs on: a Linux thurbox driving a
         // psmux host used to pin `/bin/sh` there.
-        #[cfg(not(windows))]
-        if !psmux {
+        if crate::session::Platform::local() == crate::session::Platform::Posix && !psmux {
             set(&[scope, "default-command", &self.config_shell()], true);
         }
 
@@ -1392,7 +1391,6 @@ impl TmuxBackend {
     /// `~/.local/bin`) is applied at the *window command* instead — see
     /// [`build_shell_command`](Self::build_shell_command) /
     /// [`login_wrap_for_remote`](Self::login_wrap_for_remote).
-    #[cfg(not(windows))]
     fn config_shell(&self) -> String {
         if self.transport.is_remote() {
             "/bin/sh".to_string()
@@ -1972,7 +1970,10 @@ impl SessionBackend for TmuxBackend {
     fn needs_liveness_poll(&self) -> bool {
         self.host
             .as_ref()
-            .map_or(cfg!(windows), |host| host.is_windows())
+            .map_or(
+                crate::session::Platform::local() == crate::session::Platform::Windows,
+                |host| host.is_windows(),
+            )
     }
     fn name(&self) -> &str {
         &self.name
@@ -2536,14 +2537,14 @@ impl SessionBackend for TmuxBackend {
     /// (rc files, prompt, aliases, `PATH`).
     fn default_shell(&self) -> String {
         if !self.transport.is_remote() {
-            #[cfg(windows)]
-            {
-                return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-            }
-            #[cfg(not(windows))]
-            {
-                return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            }
+            return match crate::session::Platform::local() {
+                crate::session::Platform::Windows => {
+                    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+                }
+                crate::session::Platform::Posix => {
+                    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+                }
+            };
         }
         if self.transport.uses_psmux() {
             "powershell".to_string()
@@ -4981,6 +4982,77 @@ mod tests {
             local.default_shell(),
             std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
         );
+    }
+
+    /// The `default-command` a backend pins on its server, if any.
+    fn pinned_default_command(backend: &TmuxBackend) -> Option<String> {
+        backend.session_config().into_iter().find_map(|option| {
+            let at = option.args.iter().position(|a| a == "default-command")?;
+            option.args.get(at + 1).cloned()
+        })
+    }
+
+    fn windows_host(mux: &str) -> crate::session::HostDef {
+        crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some(mux.into()),
+            platform: Some(crate::session::Platform::Windows),
+            ..Default::default()
+        }
+    }
+
+    /// A WSL distro is Linux whatever machine drives it, so its server gets
+    /// `/bin/sh` as `default-command` from a Windows thurbox as from a Linux
+    /// one. Simulated: the build OS is replaced by `Platform::local`'s test
+    /// override, which is the only way a Linux run reaches the Windows branch.
+    #[test]
+    fn a_windows_thurbox_pins_posix_default_command_on_a_wsl_host() {
+        use crate::session::{platform::simulate_local, HostDef, Platform};
+        for local in Platform::ALL {
+            let pinned = simulate_local(local, || {
+                pinned_default_command(&TmuxBackend::from_host(&HostDef::wsl("Ubuntu")))
+            });
+            assert_eq!(pinned.as_deref(), Some("/bin/sh"), "thurbox on {local:?}");
+        }
+    }
+
+    /// A Windows host is Windows whichever multiplexer serves it: PowerShell
+    /// for its shell panes, its own native `default-command`, no `/bin/sh -lc`
+    /// wrap — the platform is the host's, never inferred from `psmux`.
+    #[test]
+    fn a_windows_host_on_a_non_psmux_multiplexer_keeps_native_shell_semantics() {
+        use crate::session::{platform::simulate_local, Multiplexer, Platform};
+        for local in Platform::ALL {
+            simulate_local(local, || {
+                let backend = TmuxBackend::for_route(&windows_host("tmux"), Multiplexer::Tmux);
+                assert!(!backend.transport.uses_psmux());
+                assert_eq!(backend.default_shell(), "powershell", "from {local:?}");
+                assert_eq!(pinned_default_command(&backend), None, "from {local:?}");
+                assert_eq!(backend.login_wrap_for_remote("agent"), "agent");
+            });
+        }
+    }
+
+    /// Whether a backend polls for dead panes is what its multiplexer can
+    /// report — tmux announces `%window-close`, psmux does not — not the OS
+    /// thurbox was built for, nor the host's.
+    #[test]
+    fn liveness_polling_follows_close_events_not_the_build_os() {
+        use crate::session::{platform::simulate_local, HostDef, Platform};
+        let local_reports_close = DEFAULT_MUX == "tmux";
+        for local in Platform::ALL {
+            simulate_local(local, || {
+                assert_eq!(
+                    TmuxBackend::local().needs_liveness_poll(),
+                    !local_reports_close,
+                    "local {DEFAULT_MUX} on simulated {local:?}"
+                );
+                assert!(!TmuxBackend::from_host(&windows_host("tmux")).needs_liveness_poll());
+                assert!(TmuxBackend::from_host(&windows_host("psmux")).needs_liveness_poll());
+                assert!(!TmuxBackend::from_host(&HostDef::wsl("Ubuntu")).needs_liveness_poll());
+            });
+        }
     }
 
     #[test]

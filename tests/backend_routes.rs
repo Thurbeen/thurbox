@@ -650,3 +650,73 @@ fn reaping_a_local_row_on_another_multiplexer_kills_no_local_window() {
         assert!(!out.status.success(), "{backend}: the reap claimed success");
     }
 }
+
+/// A Windows host whose entry names its platform, on a multiplexer that is not
+/// psmux, and never delegated to (`share_sessions = false`).
+const WINDOWS_HOST_ON_TMUX: &str = "[[hosts]]\n\
+     name = \"box\"\n\
+     destination = \"e2e@box.invalid\"\n\
+     platform = \"windows\"\n\
+     multiplexer = \"tmux\"\n\
+     share_sessions = false\n";
+
+/// A host's platform is its own, not its multiplexer's: a Windows host on tmux
+/// is asked for `%USERPROFILE%` in PowerShell, never for a `$HOME` its shell
+/// would echo back literally. The
+/// stand-in `ssh` records what the host would have been sent.
+#[test]
+fn a_windows_host_on_a_non_psmux_multiplexer_is_asked_natively() {
+    let env = Env::new(WINDOWS_HOST_ON_TMUX);
+    let repo = env.path("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+
+    env.cli(&[
+        "session",
+        "create",
+        "--name",
+        "made",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--host",
+        "box",
+    ]);
+    let calls = env.ssh_calls();
+    assert!(!calls.is_empty(), "the create never reached the host");
+    assert!(
+        calls.iter().any(|call| call.contains("$env:USERPROFILE")),
+        "a Windows host's home was not asked of PowerShell: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("$HOME")),
+        "a Windows host was asked for a POSIX $HOME: {calls:?}"
+    );
+}
+
+/// The same entry without a platform is a POSIX host, which is what it always
+/// was: an entry that never named one keeps its old meaning.
+#[test]
+fn a_host_entry_without_a_platform_keeps_its_posix_meaning() {
+    let env = Env::new(HOST_ON_TMUX);
+    let repo = env.path("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+
+    env.cli(&[
+        "session",
+        "create",
+        "--name",
+        "made",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--host",
+        "box",
+    ]);
+    let calls = env.ssh_calls();
+    assert!(
+        calls.iter().any(|call| call.contains("echo $HOME")),
+        "a POSIX host's home was not asked of its shell: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("USERPROFILE")),
+        "a POSIX host was asked for a Windows profile: {calls:?}"
+    );
+}

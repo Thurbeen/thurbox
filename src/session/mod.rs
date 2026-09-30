@@ -7,6 +7,7 @@ pub mod host_def;
 pub mod hyperlink;
 pub mod message;
 pub mod multiplexer;
+pub mod platform;
 pub mod plugin_spec;
 pub mod review;
 pub mod route;
@@ -36,6 +37,7 @@ pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepai
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
+pub use platform::Platform;
 pub use plugin_spec::{
     LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,
 };
