@@ -2579,7 +2579,14 @@ different `CLAUDE_CONFIG_DIR` searches that one too, since the recipient's
 Claude never registers in the sender's.
 
 A **Codex** session is reached through `thurbox.codex_conversation_id`, bound
-by the Codex `SessionStart` hook (`session bind-codex`).
+by the Codex `SessionStart` hook (`session bind-codex`). A later `SessionStart`
+naming a different conversation marks the binding ambiguous, and the session is
+then reached through the mailbox only until a restart's picker binds it again.
+That covers Codex's `/new`, which reports `startup` for the fresh thread: keeping
+the old id would queue the body on a thread Codex still accepts it for (a cold
+thread keeps its queue until resumed), which the agent in the pane never
+reads. Codex runs `SessionStart` at a thread's first turn, so a send between
+`/new` and the first prompt there still reaches the thread the pane left.
 
 No auth line is sent: the token is optional on macOS/Linux, where the socket is
 already mode 0600 to the user; native Windows named pipes are out of scope.

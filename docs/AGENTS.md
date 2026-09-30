@@ -105,9 +105,12 @@ whether resume/fork can target *this* session or only *the last* one.
   `agent_session_id` and resumes or forks that exact UUID. Existing rows with no
   captured UUID open Codex's interactive `resume` picker on restart; selecting a
   conversation binds it through the hook. Forking an unbound row opens Codex's
-  interactive `fork` picker. If a second Codex process inherits the same row
-  identity, a changed startup ID is ignored; an ambiguous in-pane switch makes
-  the next restart use the picker. Only the picker launch can bind its selection.
+  interactive `fork` picker. Any `SessionStart` naming a different
+  conversation — `startup`, `clear` or `resume` — is ambiguous, since a second
+  Codex process inherits the same row identity and the pane's own `/new`
+  reports `startup` too. It makes the next restart use the picker, and
+  `message send` leaves the body in the mailbox rather than queueing it on the
+  thread the pane may have left. Only the picker launch can bind its selection.
   Existing seeded `codex` definitions using `--last`
   are upgraded in memory; other custom definitions are unchanged. A remotely
   provisioned hook reports status through the pane option and has no channel to
