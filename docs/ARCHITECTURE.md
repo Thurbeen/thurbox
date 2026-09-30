@@ -450,7 +450,7 @@ code.
 
 **Choice**: The default `SessionBackend` is `TmuxBackend`
 parameterized over its `Local` transport (`TmuxTransport::Local`)
-and registered under the local route (`local-tmux`; `local-psmux` on native
+and registered under the local route (`local:tmux`; `local:psmux` on native
 Windows), using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
 through tmux control mode (`-C`). (The transport abstraction that
@@ -2127,8 +2127,10 @@ is decided by registration, never by the OS. A route naming a multiplexer no
 adapter implements is refused by name: such a row is neither created, attached,
 torn down, polled, stopped nor restarted through the tmux command grammar,
 and a teardown that cannot take its window leaves its worktrees too.
-`local-tmux` stays ambiguous on native Windows, where it reads as psmux; a tmux adapter there
-would need a spelling of its own. A socket learned from a host's CLI is keyed
+Local routes are qualified like remote ones (`local:<mux>`); the legacy
+`local-tmux` keeps reading as the platform default, psmux on native Windows,
+so an explicit tmux there is `local:tmux` and never mistaken for it. An older
+build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
 Until host platform is its own dimension, the tmux adapter still reads a host's
 platform off its `multiplexer` field, which is why only the calls that drive
