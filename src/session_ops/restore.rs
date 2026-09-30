@@ -395,12 +395,12 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // Strictly its own window: one stamped for a live namesake is not this
     // row's to adopt, and recording it would put two rows on one pane — the
     // next kill-by-id then destroys the other session's agent.
-    if let Ok(located) = crate::agent::tmux::agent_window(None, &stamp, &session.name) {
+    if let Ok(located) = crate::backend::tmux::agent_window(None, &stamp, &session.name) {
         if let Some(pane) = located.pane() {
-            crate::agent::tmux::stamp_local_window(
+            crate::backend::tmux::stamp_local_window(
                 &pane,
                 &stamp,
-                crate::agent::tmux::WindowRole::Agent,
+                crate::backend::WindowRole::Agent,
             );
             db.set_backend_id(session.id, &pane)
                 .map_err(|e| format!("record the live pane: {e}"))?;
@@ -425,7 +425,7 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         recipe.as_ref(),
         &env,
     )?;
-    let pane = crate::agent::tmux::spawn_window(
+    let pane = crate::backend::tmux::spawn_window(
         &stamp,
         &plan.window_name,
         &plan.command,

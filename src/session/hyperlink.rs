@@ -5,7 +5,7 @@
 //! `https://github.com`). The plain-text scan in [`crate::kernel::terminal::links`] therefore
 //! finds nothing on such a row and a `Ctrl+Click` has no target at all — the
 //! URL exists only in the escape sequence, which `vt100` discards. The parser
-//! callbacks record each run here instead (see `crate::agent::osc8`), and a
+//! callbacks record each run here instead (see `crate::backend::osc8`), and a
 //! click resolves against this table.
 //!
 //! A run is keyed by its **label text + start column**, not by screen row: the

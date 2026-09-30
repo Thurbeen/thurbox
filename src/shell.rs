@@ -20,7 +20,7 @@ fn is_safe_shell_char(c: char) -> bool {
 ///
 /// Note: this does **not** strip newlines. Callers feeding a line-delimited
 /// protocol (e.g. tmux control mode) must handle newlines themselves before
-/// quoting — see [`crate::agent::control_mode::shell_escape`].
+/// quoting — see [`crate::backend::tmux_compat::control_mode::shell_escape`].
 pub fn posix_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(is_safe_shell_char) {
         return s.to_string();
@@ -127,7 +127,7 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
 /// so this is the whole rule — unlike [`posix_quote`] there is no safe-token
 /// fast path, because the callers embed the result in larger PowerShell
 /// expressions where a bare token could be re-parsed. One implementation for
-/// what had grown three (`agent::tmux`, `git::remote`, and a near-copy in
+/// what had grown three (`backend::tmux`, `git::remote`, and a near-copy in
 /// `notifications`).
 pub fn powershell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))

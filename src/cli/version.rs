@@ -42,7 +42,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
         return CommandOutput::new(
             json!({
                 "version": current,
-                "tmux_socket": crate::agent::tmux::local_socket_name(),
+                "tmux_socket": crate::backend::tmux::local_socket_name(),
                 "data_dir": crate::paths::database_file()
                     .and_then(|p| p.parent().map(|d| d.display().to_string())),
                 "schema_version": crate::storage::SCHEMA_VERSION,

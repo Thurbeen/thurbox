@@ -65,7 +65,7 @@ type UsageKey = (String, Option<String>);
 type SampleInput = (
     String,
     Option<PathBuf>,
-    Option<(Arc<dyn crate::agent::SessionBackend>, String)>,
+    Option<(Arc<dyn crate::backend::SessionBackend>, String)>,
 );
 
 /// What a sample worker reports back.
@@ -86,7 +86,7 @@ pub struct Subject {
     pub agent_session_id: Option<String>,
     /// Backend plus pane id, for the pid lookup. Absent for a session with no
     /// live pane, which then contributes no per-session numbers.
-    pub pane: Option<(Arc<dyn crate::agent::SessionBackend>, String)>,
+    pub pane: Option<(Arc<dyn crate::backend::SessionBackend>, String)>,
     /// Agent name and host, for the usage scope.
     pub agent: String,
     pub host: Option<String>,
@@ -308,7 +308,10 @@ fn statusline_file(agent_session_id: &str) -> Option<PathBuf> {
 
 /// One backend and its sampled panes, as `(session, pane_id)` pairs — the unit
 /// the batched pid lookup in [`pane_pids`] groups subjects into.
-type BackendPanes = (Arc<dyn crate::agent::SessionBackend>, Vec<(String, String)>);
+type BackendPanes = (
+    Arc<dyn crate::backend::SessionBackend>,
+    Vec<(String, String)>,
+);
 
 /// Take one sample. Runs on a worker thread.
 fn collect(mut collector: Box<sysinfo::System>, subjects: Vec<SampleInput>) -> Sample {
@@ -426,7 +429,7 @@ mod tests {
         batched: bool,
     }
 
-    impl crate::agent::SessionBackend for Panes {
+    impl crate::backend::SessionBackend for Panes {
         fn name(&self) -> &str {
             "panes"
         }
@@ -445,7 +448,7 @@ mod tests {
             _: &HashMap<String, String>,
             _: u16,
             _: u16,
-        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+        ) -> anyhow::Result<crate::backend::SpawnedSession> {
             unimplemented!()
         }
         fn adopt(
@@ -454,10 +457,10 @@ mod tests {
             _: u16,
             _: u16,
             _: Option<Vec<u8>>,
-        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+        ) -> anyhow::Result<crate::backend::AdoptedSession> {
             unimplemented!()
         }
-        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+        fn discover(&self) -> anyhow::Result<Vec<crate::backend::DiscoveredSession>> {
             Ok(Vec::new())
         }
         fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
@@ -493,11 +496,11 @@ mod tests {
         std::fs::write(&bad, "not json").expect("write");
         // This test's own process: a pid sysinfo is certain to find.
         let me = std::process::id();
-        let batched: Arc<dyn crate::agent::SessionBackend> = Arc::new(Panes {
+        let batched: Arc<dyn crate::backend::SessionBackend> = Arc::new(Panes {
             pids: HashMap::from([("%1".to_string(), me)]),
             batched: true,
         });
-        let one_at_a_time: Arc<dyn crate::agent::SessionBackend> = Arc::new(Panes {
+        let one_at_a_time: Arc<dyn crate::backend::SessionBackend> = Arc::new(Panes {
             pids: HashMap::from([("%3".to_string(), me)]),
             batched: false,
         });

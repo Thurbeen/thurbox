@@ -30,7 +30,7 @@ fn without_a_multiplexer<T>(f: impl FnOnce() -> T) -> T {
 #[test]
 fn a_spawn_with_no_multiplexer_installed_names_it_the_search_and_the_fix() {
     let message = without_a_multiplexer(|| {
-        let err = thurbox::agent::tmux::spawn_window(
+        let err = thurbox::backend::tmux::spawn_window(
             "00000000-0000-0000-0000-000000000000",
             "test01",
             "some-agent",
@@ -42,7 +42,7 @@ fn a_spawn_with_no_multiplexer_installed_names_it_the_search_and_the_fix() {
         format!("{err:#}")
     });
 
-    let mux = thurbox::agent::transport::DEFAULT_MUX;
+    let mux = thurbox::backend::tmux_compat::transport::DEFAULT_MUX;
     assert!(
         message.contains(mux),
         "the message never names the missing binary: {message}"

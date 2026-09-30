@@ -40,7 +40,7 @@
 //!
 //! Pure data and decisions: no process is run here, no file is read, and
 //! nothing overwrites the stored state — every rule is read-time. The
-//! callers gather the facts (`agent::tmux::pane_state`, the agent registry, the
+//! callers gather the facts (`backend::tmux::pane_state`, the agent registry, the
 //! hook columns) and ask this module what they mean.
 
 use super::{AgentRegistry, HOOK_STATES};

@@ -1115,7 +1115,7 @@ mod transport_proptests {
 
     use proptest::prelude::*;
 
-    use crate::agent::control_mode::{
+    use crate::backend::tmux_compat::control_mode::{
         decode_octal, format_send_keys, parse_notification, ControlModeReader, Notification,
     };
 
@@ -1534,14 +1534,14 @@ fn a_snapshot_is_read_from_its_three_blocks() {
             vec!["saved".to_string()],
         ]
     };
-    let normal = PaneSnapshot::parse(blocks("0")).expect("a normal screen");
+    let normal = parse_snapshot(blocks("0")).expect("a normal screen");
     assert_eq!((normal.cols, normal.rows, normal.cursor), (80, 24, (5, 3)));
     assert_eq!(normal.normal, vec!["current", "rows"]);
     assert_eq!(normal.alternate, None);
 
     // With the alternate screen up, the capture without `-a` is that screen and
     // the one with it is the normal screen behind.
-    let alternate = PaneSnapshot::parse(blocks("1")).expect("an alternate screen");
+    let alternate = parse_snapshot(blocks("1")).expect("an alternate screen");
     assert_eq!(alternate.normal, vec!["saved"]);
     assert_eq!(
         alternate.alternate,
@@ -1551,19 +1551,19 @@ fn a_snapshot_is_read_from_its_three_blocks() {
 
 #[test]
 fn anything_but_a_snapshot_answer_is_not_read_as_one() {
-    assert_eq!(PaneSnapshot::parse(Vec::new()), None);
+    assert_eq!(parse_snapshot(Vec::new()), None);
     assert_eq!(
-        PaneSnapshot::parse(vec![vec!["80 24".into()], vec![], vec![]]),
+        parse_snapshot(vec![vec!["80 24".into()], vec![], vec![]]),
         None,
         "too few fields"
     );
     assert_eq!(
-        PaneSnapshot::parse(vec![vec!["0 24 0 0 0".into()], vec![], vec![]]),
+        parse_snapshot(vec![vec!["0 24 0 0 0".into()], vec![], vec![]]),
         None,
         "no width"
     );
     assert_eq!(
-        PaneSnapshot::parse(vec![vec!["80 24 0 0 0".into()], vec![]]),
+        parse_snapshot(vec![vec!["80 24 0 0 0".into()], vec![]]),
         None,
         "a block short"
     );

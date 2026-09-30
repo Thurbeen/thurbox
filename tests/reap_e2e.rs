@@ -85,8 +85,8 @@ fn open_shell_window(session_id: &str, name: &str) -> String {
     let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert!(pane.starts_with('%'), "new-window said {pane:?}");
     for (option, value) in [
-        (thurbox::agent::tmux::WINDOW_SESSION_OPTION, session_id),
-        (thurbox::agent::tmux::WINDOW_ROLE_OPTION, "shell"),
+        (thurbox::backend::tmux::WINDOW_SESSION_OPTION, session_id),
+        (thurbox::backend::tmux::WINDOW_ROLE_OPTION, "shell"),
     ] {
         tmux(&["set-option", "-w", "-t", &pane, option, value]);
     }
@@ -643,7 +643,7 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
         .expect("clear the pane id");
 
     let located =
-        thurbox::agent::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
+        thurbox::backend::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
     let outcome = located.map(|l| l.pane());
 
     assert_eq!(
@@ -821,8 +821,8 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     assert!(!tmux(&["has-session"]).status.success());
 
     let id = thurbox::session::SessionId::default();
-    let _ = thurbox::agent::tmux::kill_window(&id.to_string(), "ghost");
-    let _ = thurbox::agent::tmux::kill_shell_window(&id.to_string(), "ghost");
+    let _ = thurbox::backend::tmux::kill_window(&id.to_string(), "ghost");
+    let _ = thurbox::backend::tmux::kill_shell_window(&id.to_string(), "ghost");
     let _ = thurbox::session_ops::reap_soft_deleted(&db, id);
 
     let started = tmux(&["has-session"]).status.success();

@@ -117,7 +117,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   nobody else answers to, still lose their window. Sparing must not be bought by
   making the reap a no-op.
   Force delete, `stop` and `restart` share the reap's ownership gate (ADR-25,
-  `agent::tmux::WindowIndex`) rather than each resolving `tb-<name>` on their
+  `backend::identity::WindowIndex`) rather than each resolving `tb-<name>` on their
   own, so one test walks all three against their own live namesake, plus one
   asserting force delete still kills the row's own window. Two more cover
   the stamp itself: a row with no pane id at all (the psmux shape) still
@@ -206,11 +206,11 @@ makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
 child command, **hold it**, and it does three things no call site has to
 remember:
 
-1. **Pins the socket** (`agent::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
+1. **Pins the socket** (`backend::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
    name to kill.
 2. **Clears `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
    `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
-   thurbox session inherits both. `agent::tmux::socket_for` drops an override
+   thurbox session inherits both. `backend::tmux::socket_for` drops an override
    tagged for another instance's data dir — correctly: a harness that isolated
    its database but not its server would be spawning windows on the operator's
    tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in
@@ -245,7 +245,7 @@ runs a child copy of the test binary that starts a server and panics, then asks
 the **process table** — not tmux, which cannot answer for a socketless server —
 what survived.
 
-`src/agent/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
+`src/backend/tmux_compat/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
 cannot have a socket directory of its own — the lib's unit tests share a process
 and `TMUX_TMPDIR` is process-wide — so it removes the socket file by hand
 instead.

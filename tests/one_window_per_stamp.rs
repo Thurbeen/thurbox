@@ -23,7 +23,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 
-use thurbox::agent::tmux::{self, Located};
+use thurbox::backend::identity::Located;
+use thurbox::backend::tmux;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]

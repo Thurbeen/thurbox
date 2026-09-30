@@ -71,7 +71,7 @@ struct Attached {
     /// row's own `backend_id` — a successful adoption is then worth persisting,
     /// so the legacy row stops depending on its (non-unique) name.
     via_name: bool,
-    session_handle: Result<crate::agent::Session, String>,
+    session_handle: Result<crate::backend::Session, String>,
 }
 
 /// Window names read off one backend, on their way back to the loop.
@@ -87,7 +87,7 @@ struct Discovered {
 /// sanitising collapses others together — so the index keys on the session id
 /// stamped on the window (ADR-25) and keeps every namesake, which is what lets
 /// ambiguity be *reported* rather than resolved by whichever tmux listed last.
-type WindowPanes = crate::agent::tmux::WindowIndex;
+type WindowPanes = crate::backend::identity::WindowIndex;
 
 /// How often a *local* backend's panes may be looked up by window name.
 ///
@@ -252,7 +252,7 @@ pub fn shell_surface(session: &str) -> String {
 
 /// A session we have attached to, and the painted state of each of its panes.
 struct Live {
-    session: crate::agent::Session,
+    session: crate::backend::Session,
     /// The agent's own pane.
     agent: Painted,
     /// The companion shell's, independent of the agent's in every respect —
@@ -294,7 +294,7 @@ impl<'a> Pane<'a> {
 
     /// This pane's parser, or `None` when the shell was asked for and this
     /// session has none.
-    fn parser(&self) -> Option<&'a Arc<std::sync::Mutex<crate::agent::SessionParser>>> {
+    fn parser(&self) -> Option<&'a Arc<std::sync::Mutex<crate::backend::SessionParser>>> {
         match (self.shell, &self.live.session.shell_pane) {
             (true, Some(pane)) => Some(&pane.parser),
             (true, None) => None,
@@ -373,7 +373,7 @@ impl<'a> Pane<'a> {
 
     /// The wired pane behind this surface, or `None` for a shell the session
     /// does not have.
-    fn wired(&self) -> Option<&'a crate::agent::backend::WiredPane> {
+    fn wired(&self) -> Option<&'a crate::backend::pane::WiredPane> {
         if self.shell {
             return self.live.session.shell_pane.as_deref();
         }
@@ -384,11 +384,11 @@ impl<'a> Pane<'a> {
     /// has nothing to hold, which is the same as holding it.
     fn is_resident(&self) -> bool {
         self.wired()
-            .map_or(true, crate::agent::backend::WiredPane::is_resident)
+            .map_or(true, crate::backend::pane::WiredPane::is_resident)
     }
 
     /// How much output this pane's parser has taken — see
-    /// [`crate::agent::backend::WiredPane::output_seq`].
+    /// [`crate::backend::pane::WiredPane::output_seq`].
     fn output_seq(&self) -> Option<u64> {
         Some(self.wired()?.output_seq())
     }
@@ -403,7 +403,7 @@ type CachedRows = (u64, std::rc::Rc<Vec<String>>);
 
 /// Owns every live terminal, keyed by session id.
 pub struct Terminals {
-    backends: crate::agent::BackendRegistry,
+    backends: crate::backend::BackendRegistry,
     /// Extracted screen rows per surface, keyed on the output stamp they were
     /// read at.
     ///
@@ -556,9 +556,9 @@ impl Terminals {
     /// Build the backend registry the same way the v1 binary does: the local
     /// multiplexer plus every configured or discovered host. How that set is
     /// assembled — and why nothing is readied here — is the registry's own
-    /// knowledge (`BackendRegistry::from_configured_hosts`), not the kernel's.
+    /// knowledge (`backend::wiring::configured`), not the kernel's.
     pub fn new() -> Self {
-        let (backends, hosts, _warnings) = crate::agent::BackendRegistry::from_configured_hosts();
+        let (backends, hosts, _warnings) = crate::backend::wiring::configured();
 
         Self {
             backends,
@@ -696,7 +696,7 @@ impl Terminals {
 
     /// Drop the grid of every session pane that has been off screen for longer
     /// than `hidden_terminal_secs` — or was never shown — where its backend can
-    /// give it back ([`crate::agent::backend::WiredPane::evict`]).
+    /// give it back ([`crate::backend::pane::WiredPane::evict`]).
     ///
     /// Off screen means not painted in the last frame *and* not painted for a
     /// while: frames are drawn on demand, so a session on screen and quiet can
@@ -800,7 +800,7 @@ impl Terminals {
                     self.surveys.get(&row.backend).is_some_and(|now| now > seen)
                 });
                 let confirmed_missing = surveyed_after_attach
-                    && self.liveness(row) == crate::agent::backend::BackendLiveness::Missing;
+                    && self.liveness(row) == crate::backend::BackendLiveness::Missing;
                 (live.session.has_exited() || moved || confirmed_missing).then(|| {
                     (
                         row.id.clone(),
@@ -840,9 +840,9 @@ impl Terminals {
 
     /// Hand one session's attach to a worker.
     ///
-    /// Everything the worker needs is cloned across: the backend and the agent
-    /// provider are both behind an `Arc`, and the resulting `Session` owns its
-    /// own reader/writer threads, so nothing here is borrowed from the loop.
+    /// Everything the worker needs is cloned across: the backend is behind an
+    /// `Arc`, and the resulting `Session` owns its own reader/writer threads,
+    /// so nothing here is borrowed from the loop.
     fn start_attach(
         &mut self,
         row: &super::snapshot::SessionRow,
@@ -859,20 +859,25 @@ impl Terminals {
             );
             return;
         };
-        // Only consulted when relaunching, but adopt wants one.
-        let Some(def) = self
+        // A row whose agent has no definition is not attached. Nothing here
+        // launches the agent (that is `session_ops`), so the definition itself
+        // is not needed — only that there is one, as there always had to be.
+        if self
             .agents
             .get(&row.agent)
             .or_else(|| self.agents.default_agent())
-            .cloned()
-        else {
+            .is_none()
+        {
             self.fail(
                 &row.id,
                 Some(backend_id),
                 format!("no agent definition for {}", row.agent),
             );
             return;
-        };
+        }
+        // The host a remote session's list row names, resolved here rather
+        // than inside the backend contract, which reads no global config.
+        let remote_host = super::snapshot::remote_host_of(&row.backend);
 
         let already_ready = self.backend_is_ready(&row.backend);
         let tx = self.attached.0.clone();
@@ -897,37 +902,38 @@ impl Terminals {
             // parser with it is what makes an adopted pane show the conversation
             // that is already there rather than a blank screen until the agent
             // next prints. A failure to read it is not a failure to attach.
-            let result = session_handle.and_then(|()| {
-                let provider: Arc<dyn crate::agent::AgentProvider> =
-                    Arc::new(crate::agent::GenericProvider::new(def));
-                // Nothing is looking at it yet, so where the grid can be had
-                // back later it is not built now — nor its history captured,
-                // which was a round trip per pane on every start.
-                if lazy && backend.supports_snapshots() {
-                    return crate::agent::Session::adopt_dormant(
+            let result = session_handle
+                .and_then(|()| {
+                    // Nothing is looking at it yet, so where the grid can be had
+                    // back later it is not built now — nor its history captured,
+                    // which was a round trip per pane on every start.
+                    if lazy && backend.supports_snapshots() {
+                        return crate::backend::Session::adopt_dormant(
+                            name,
+                            rows,
+                            cols,
+                            &pane,
+                            &backend,
+                            HashMap::new(),
+                        )
+                        .map_err(|e| e.to_string());
+                    }
+                    let seed = backend.capture_history(&pane).ok();
+                    crate::backend::Session::adopt(
                         name,
                         rows,
                         cols,
                         &pane,
                         &backend,
-                        &provider,
                         HashMap::new(),
+                        seed,
                     )
-                    .map_err(|e| e.to_string());
-                }
-                let seed = backend.capture_history(&pane).ok();
-                crate::agent::Session::adopt(
-                    name,
-                    rows,
-                    cols,
-                    &pane,
-                    &backend,
-                    &provider,
-                    HashMap::new(),
-                    seed,
-                )
-                .map_err(|e| e.to_string())
-            });
+                    .map_err(|e| e.to_string())
+                })
+                .map(|mut adopted| {
+                    adopted.info.remote_host = remote_host;
+                    adopted
+                });
             // Adopted by name, so the window carries no stamp — this is the one
             // moment its owner is known for certain (the name resolved to
             // exactly one window). Stamping it here is what stops the row
@@ -935,7 +941,7 @@ impl Terminals {
             // persisted for the same reason, by `drain_adopted_panes`.
             if via_name && result.is_ok() {
                 if let Err(e) =
-                    backend.stamp_window(&pane, &session, crate::agent::tmux::WindowRole::Agent)
+                    backend.stamp_window(&pane, &session, crate::backend::WindowRole::Agent)
                 {
                     tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
                 }
@@ -1269,7 +1275,7 @@ impl Terminals {
         surface: &str,
     ) -> Option<(
         &Painted,
-        &Arc<std::sync::Mutex<crate::agent::SessionParser>>,
+        &Arc<std::sync::Mutex<crate::backend::SessionParser>>,
     )> {
         let pane = self.pane(surface)?;
         Some((pane.painted(), pane.parser()?))
@@ -1343,7 +1349,7 @@ impl Terminals {
                                 .snapshot(&pane_id)
                                 .map_err(|e| tracing::debug!(pane = %pane_id, "could not read the pane back: {e:#}"))
                                 .ok()
-                                .map(|snapshot| crate::agent::backend::parser_from_snapshot(&snapshot))
+                                .map(|snapshot| crate::backend::pane::parser_from_snapshot(&snapshot))
                         });
                         restore
                     });
@@ -1764,17 +1770,14 @@ impl Terminals {
             .collect()
     }
 
-    fn liveness(
-        &self,
-        row: &super::snapshot::SessionRow,
-    ) -> crate::agent::backend::BackendLiveness {
+    fn liveness(&self, row: &super::snapshot::SessionRow) -> crate::backend::BackendLiveness {
         if self.unreachable.contains(&row.backend) {
-            return crate::agent::backend::BackendLiveness::Unreachable;
+            return crate::backend::BackendLiveness::Unreachable;
         }
         self.discovered
             .get(&row.backend)
             .map(|windows| windows.agent_liveness(&row.id, &row.name))
-            .unwrap_or(crate::agent::backend::BackendLiveness::Unknown)
+            .unwrap_or(crate::backend::BackendLiveness::Unknown)
     }
 
     /// Drain every backend's queued remote hook reports.
@@ -1808,7 +1811,7 @@ impl Terminals {
     pub fn backend_handle(
         &self,
         session: &str,
-    ) -> Option<(Arc<dyn crate::agent::SessionBackend>, String)> {
+    ) -> Option<(Arc<dyn crate::backend::SessionBackend>, String)> {
         self.live
             .get(session)
             .map(|live| live.session.backend_handle())
@@ -1817,7 +1820,7 @@ impl Terminals {
     /// When the pane behind a surface name last produced output, as epoch
     /// milliseconds — moved as well when its grid is rebuilt, since that
     /// changes the cells without the pane printing
-    /// ([`crate::agent::backend::WiredPane::content_stamp`]). `None` when
+    /// ([`crate::backend::pane::WiredPane::content_stamp`]). `None` when
     /// nothing is attached there. Compare it; do not read it as a time.
     ///
     /// This is the redraw signal for a *surface*: its cells live outside the
@@ -1838,7 +1841,7 @@ impl Terminals {
         self.pane(surface)?.content_stamp()
     }
 
-    /// The [`output_seq`](crate::agent::backend::WiredPane::output_seq) of the
+    /// The [`output_seq`](crate::backend::pane::WiredPane::output_seq) of the
     /// pane behind a surface name, `<id>#shell` and program surfaces included.
     /// `None` when nothing is attached there.
     ///
@@ -1852,7 +1855,7 @@ impl Terminals {
     }
 
     /// The cell behind [`Self::output_seq`] for a surface, which is how a
-    /// wake-up is armed for that pane alone (`agent::output_wake`).
+    /// wake-up is armed for that pane alone (`backend::output_wake`).
     pub fn output_seq_cell(&self, surface: &str) -> Option<&std::sync::atomic::AtomicU64> {
         if let Some(key) = self.program_key(surface) {
             return self
@@ -2039,7 +2042,7 @@ fn discovery_interval(backend: &str) -> std::time::Duration {
 /// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
 /// stay readable beside the two fallible host calls this makes.
 fn discover_windows(
-    backend: &std::sync::Arc<dyn crate::agent::SessionBackend>,
+    backend: &std::sync::Arc<dyn crate::backend::SessionBackend>,
     name: String,
     already_ready: bool,
 ) -> Discovered {
@@ -2509,7 +2512,7 @@ mod tests {
 
     struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
 
-    impl crate::agent::SessionBackend for FakeLivenessBackend {
+    impl crate::backend::SessionBackend for FakeLivenessBackend {
         fn name(&self) -> &str {
             "fake"
         }
@@ -2528,7 +2531,7 @@ mod tests {
             _: &HashMap<String, String>,
             _: u16,
             _: u16,
-        ) -> anyhow::Result<crate::agent::backend::SpawnedSession> {
+        ) -> anyhow::Result<crate::backend::SpawnedSession> {
             unreachable!()
         }
         fn adopt(
@@ -2537,19 +2540,19 @@ mod tests {
             _: u16,
             _: u16,
             _: Option<Vec<u8>>,
-        ) -> anyhow::Result<crate::agent::backend::AdoptedSession> {
+        ) -> anyhow::Result<crate::backend::AdoptedSession> {
             unreachable!()
         }
-        fn discover(&self) -> anyhow::Result<Vec<crate::agent::backend::DiscoveredSession>> {
+        fn discover(&self) -> anyhow::Result<Vec<crate::backend::DiscoveredSession>> {
             match self.0.load(std::sync::atomic::Ordering::Relaxed) {
                 0 => Ok(Vec::new()),
                 1 => anyhow::bail!("host unreachable"),
-                _ => Ok(vec![crate::agent::backend::DiscoveredSession {
+                _ => Ok(vec![crate::backend::DiscoveredSession {
                     backend_id: "%1".into(),
                     name: "tb-demo".into(),
                     is_alive: false,
                     session: "a".into(),
-                    role: crate::agent::tmux::WindowRole::Agent,
+                    role: crate::backend::WindowRole::Agent,
                 }]),
             }
         }
@@ -2574,7 +2577,7 @@ mod tests {
     fn fake_backend_only_relaunches_confirmed_missing_once() {
         use std::sync::atomic::Ordering;
         let fake = std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
-        let backend: std::sync::Arc<dyn crate::agent::SessionBackend> = fake.clone();
+        let backend: std::sync::Arc<dyn crate::backend::SessionBackend> = fake.clone();
         let mut terminals = Terminals::new();
         terminals.backends.register(backend.clone());
         terminals.waiting_since.insert("a".into(), 0);
@@ -2598,14 +2601,14 @@ mod tests {
                 1 => {
                     assert_eq!(
                         terminals.liveness(&rows.sessions[0]),
-                        crate::agent::backend::BackendLiveness::Unreachable
+                        crate::backend::BackendLiveness::Unreachable
                     );
                     assert!(missing.is_empty());
                 }
                 _ => {
                     assert_eq!(
                         terminals.liveness(&rows.sessions[0]),
-                        crate::agent::backend::BackendLiveness::Exited
+                        crate::backend::BackendLiveness::Exited
                     );
                     assert!(missing.is_empty());
                 }
@@ -2653,15 +2656,13 @@ mod tests {
     fn surveyed(terminals: &mut Terminals, backend: &str, windows: &[(&str, &[&str])]) {
         terminals.surveys.insert(backend.to_string(), 1);
         let listing = windows.iter().flat_map(|(window, panes)| {
-            panes
-                .iter()
-                .map(|pane| crate::agent::backend::DiscoveredSession {
-                    backend_id: (*pane).to_string(),
-                    name: (*window).to_string(),
-                    is_alive: true,
-                    session: String::new(),
-                    role: crate::agent::tmux::WindowRole::Agent,
-                })
+            panes.iter().map(|pane| crate::backend::DiscoveredSession {
+                backend_id: (*pane).to_string(),
+                name: (*window).to_string(),
+                is_alive: true,
+                session: String::new(),
+                role: crate::backend::WindowRole::Agent,
+            })
         });
         terminals
             .discovered
@@ -2770,12 +2771,12 @@ mod tests {
         terminals.surveys.insert("local-tmux".to_string(), 1);
         terminals.discovered.insert(
             "local-tmux".to_string(),
-            WindowPanes::from_listing([crate::agent::backend::DiscoveredSession {
+            WindowPanes::from_listing([crate::backend::DiscoveredSession {
                 backend_id: "%1".into(),
                 name: "tb-demo".into(),
                 is_alive: true,
                 session: "b".into(),
-                role: crate::agent::tmux::WindowRole::Agent,
+                role: crate::backend::WindowRole::Agent,
             }]),
         );
 

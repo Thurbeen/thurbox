@@ -200,7 +200,7 @@ impl App {
             .echo
             .front()
             .and_then(|echo| self.terminals.output_seq_cell(&echo.surface));
-        thurbox::agent::output_wake::arm(seq);
+        thurbox::backend::output_wake::arm(seq);
     }
 
     /// Owe the next frame to an echo that has arrived, or stop waiting for one
@@ -256,7 +256,7 @@ impl App {
     }
 
     /// Sleep up to `left` for a terminal event or armed agent output
-    /// (`agent::output_wake`), returning the event if it was one.
+    /// (`backend::output_wake`), returning the event if it was one.
     #[cfg(unix)]
     fn sleep_until_input_or_output(
         &self,
@@ -266,7 +266,7 @@ impl App {
         // any other descriptor would be polling the wrong thing.
         // SAFETY: `isatty` only inspects a descriptor number.
         let tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
-        let Some(wake) = thurbox::agent::output_wake::read_fd().filter(|_| tty) else {
+        let Some(wake) = thurbox::backend::output_wake::read_fd().filter(|_| tty) else {
             return next_event(left.min(ECHO_POLL));
         };
         // An event crossterm has already read and queued would not make stdin
@@ -291,7 +291,7 @@ impl App {
         // SAFETY: `fds` is a valid array of two pollfds for the duration of the
         // call.
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
-        thurbox::agent::output_wake::drain();
+        thurbox::backend::output_wake::drain();
         next_event(Duration::ZERO)
     }
 

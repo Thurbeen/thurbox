@@ -396,7 +396,7 @@ impl History {
     ///
     /// `None` when the lock is poisoned.
     pub fn read_locked(
-        parser: &Mutex<crate::agent::SessionParser>,
+        parser: &Mutex<crate::backend::SessionParser>,
         cached: Option<&History>,
         stats: &mut ReadStats,
     ) -> Option<Self> {
@@ -885,7 +885,7 @@ fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<
             1,
             1,
             0,
-            crate::agent::TermSignals::default(),
+            crate::backend::TermSignals::default(),
         ))),
         stamp: 0,
         restore: None,
@@ -903,7 +903,7 @@ fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<
 pub struct Source {
     pub session: String,
     pub shell: bool,
-    pub parser: Arc<Mutex<crate::agent::SessionParser>>,
+    pub parser: Arc<Mutex<crate::backend::SessionParser>>,
     /// When the pane last printed, in epoch milliseconds — both the cache key
     /// for its history and the recency a hit is ranked by.
     pub stamp: u64,
@@ -916,7 +916,7 @@ pub struct Source {
 /// Builds a parser holding a pane as its multiplexer has it — a round trip,
 /// so it is only ever called on the search worker. `None` when the pane could
 /// not be read.
-pub type Restore = Arc<dyn Fn() -> Option<crate::agent::SessionParser> + Send + Sync>;
+pub type Restore = Arc<dyn Fn() -> Option<crate::backend::SessionParser> + Send + Sync>;
 
 /// What a plugin asked for: the query text and, optionally, which sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1547,7 +1547,7 @@ mod tests {
                 10,
                 40,
                 1000,
-                crate::agent::TermSignals::default(),
+                crate::backend::TermSignals::default(),
             ))),
             stamp,
             restore: None,
@@ -1668,7 +1668,7 @@ mod tests {
                 10,
                 40,
                 1000,
-                crate::agent::TermSignals::default(),
+                crate::backend::TermSignals::default(),
             );
             parser.process(b"needle\r\n");
             Some(parser)
@@ -1699,7 +1699,7 @@ mod tests {
                 rows,
                 cols,
                 scrollback,
-                crate::agent::TermSignals::default(),
+                crate::backend::TermSignals::default(),
             ))),
             stamp: 1,
             restore: None,
@@ -1780,7 +1780,7 @@ mod tests {
                 20,
                 60,
                 1_000,
-                crate::agent::TermSignals::default(),
+                crate::backend::TermSignals::default(),
             ))),
             stamp: 1,
             restore: None,

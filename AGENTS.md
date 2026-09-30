@@ -249,34 +249,58 @@ because the squash throws them away.
 ## Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-module         may reference                           [fully-qualified path only]
-session        nothing — pure data, the dependency sink
-agent          session, paths, shell (NEVER git)
-git            session, paths, shell
-storage        session, sync, paths
-sync           session, storage, workspace
-usage          session, shell                          [paths]
-session_ops    session, storage, git, sync, paths,     [agent]
-               workspace, shell
-kernel         session, storage, sync, paths,          [agent, usage]
-               session_ops, git, notifications,
-               clipboard, shell
-cli            session, storage, session_ops, sync,    [agent, kernel]
-               paths, notifications
-notifications  session, paths, shell                   [storage]
-clipboard      session, paths
-workspace      paths
-paths, shell   nothing — leaf utilities
-coordinator    agent, clipboard, kernel, paths,        (main's body: the loop,
-               session, session_ops, shell, storage     the workers, the chrome)
+node                 may reference                     [fully-qualified path only]
+session              nothing — pure data, the dependency sink
+agent                session, paths, shell (NEVER git, NEVER backend)
+agent::host_config   session, paths, agent
+backend              backend::{contract,pane,registry} (re-exports only)
+backend::contract    nothing — the trait and the values crossing it
+backend::identity    backend::contract
+backend::pane        session, backend::{contract,identity,osc8,output_wake}
+backend::osc8        session
+backend::output_wake nothing
+backend::registry    session, backend::contract        (a container, no factory)
+backend::wiring      session, agent::host_config,      (the factory: the only
+                     backend::{contract,registry,tmux}  node naming an adapter)
+backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+  ::control_mode     session, shell, backend::contract,
+                     backend::tmux_compat::transport
+  ::transport        shell, agent
+backend::tmux        session, paths, shell, agent,     (the tmux adapter)
+                     backend::{contract,identity},
+                     backend::tmux_compat::{control_mode,transport}
+git                  session, paths, shell
+storage              session, sync, paths
+sync                 session
+usage                session, shell                    [paths]
+session_ops          session, storage, git, sync,      [agent, agent::host_config,
+                     paths, workspace, shell            backend::{contract,identity}]
+kernel               session, storage, sync, paths,    [agent, agent::host_config,
+                     session_ops, git, notifications,   backend::{contract,identity,
+                     shell                              pane,registry}, usage]
+cli                  session, storage, session_ops,    [agent, agent::host_config,
+                     sync, paths, notifications         backend::contract, kernel]
+notifications        session, paths, shell             [storage]
+clipboard            session, paths
+workspace            paths
+paths, shell         nothing — leaf utilities
+coordinator          agent, backend::output_wake,      (main's body: the loop,
+                     clipboard, kernel, paths,          the workers, the chrome)
+                     session, session_ops, shell,
+                     storage
 ```
 
-Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
-entry naming what it may reference in *any* form, so a new module fails the test
-until its place is declared, and one loop asserts every entry, so no rule can be
-declared and left unchecked. `docs/CONSTITUTION.md` §2 lists the same graph. The
-full rule, the module responsibilities and the event loop are in the
-`thurbox-kernel` skill.
+Enforcement is an **allowlist** over **resolved** edges: every module under
+`src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so
+a new module fails the test until its place is declared, and one loop asserts
+every entry, so no rule can be declared and left unchecked. A node is a top-level
+module or a governed submodule (every file module of `backend` is one), and a
+reference counts where it resolves — through `super::`, brace groups, re-exports
+and `type` aliases. Both the actual and the declared graph must be acyclic, an
+unused grant fails, and the crossings still scheduled for removal are listed,
+item by item, in the test's `TRANSITIONAL` table, which must equal what the
+source does. `docs/CONSTITUTION.md` §2 lists the same graph. The full rule, the
+module responsibilities and the event loop are in the `thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 

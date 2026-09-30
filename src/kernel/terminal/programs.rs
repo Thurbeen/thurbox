@@ -177,7 +177,7 @@ pub fn plan_keys(plugin: &str, name: &str, running: bool, program: &str) -> Keys
 
 /// One plugin's program pane, and the rect it was last painted into.
 pub(super) struct ProgramSlot {
-    pub(super) pane: crate::agent::backend::ProgramPane,
+    pub(super) pane: crate::backend::pane::ProgramPane,
     /// Where it was last painted and the size it was last told about — the same
     /// per-surface record a session's two panes each hold, and for the same
     /// reason: geometry belongs to one surface.
@@ -239,7 +239,7 @@ impl Terminals {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }
 
-        let window = crate::agent::tmux::program_window_name(
+        let window = crate::backend::identity::program_window_name(
             &crate::kernel::bundled::digest(&key.plugin),
             &key.name,
         );
@@ -252,14 +252,14 @@ impl Terminals {
         let existing = self.find_program_window(&backend, &window);
         let adopted = existing.is_some();
         let pane = match existing {
-            Some(backend_id) => crate::agent::backend::ProgramPane::adopt(
+            Some(backend_id) => crate::backend::pane::ProgramPane::adopt(
                 Arc::clone(&backend),
                 &backend_id,
                 program,
                 rows,
                 cols,
             ),
-            None => crate::agent::backend::ProgramPane::spawn(
+            None => crate::backend::pane::ProgramPane::spawn(
                 Arc::clone(&backend),
                 &window,
                 program,
@@ -320,7 +320,7 @@ impl Terminals {
     /// frame.
     fn find_program_window(
         &self,
-        backend: &Arc<dyn crate::agent::SessionBackend>,
+        backend: &Arc<dyn crate::backend::SessionBackend>,
         window: &str,
     ) -> Option<String> {
         // `window_panes`, not `discover`: a program window has no session id to

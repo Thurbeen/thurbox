@@ -51,26 +51,45 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
-module         may reference                           [fully-qualified path only]
-session        nothing — pure data, the dependency sink
-agent          session, paths, shell (NEVER git)
-git            session, paths, shell
-storage        session, sync, paths
-sync           session, storage, workspace
-usage          session, shell                          [paths]
-session_ops    session, storage, git, sync, paths,     [agent]
-               workspace, shell
-kernel         session, storage, sync, paths,          [agent, usage]
-               session_ops, git, notifications,
-               clipboard, shell
-cli            session, storage, session_ops, sync,    [agent, kernel]
-               paths, notifications
-notifications  session, paths, shell                   [storage]
-clipboard      session, paths
-workspace      paths
-paths, shell   nothing — leaf utilities
-coordinator    agent, clipboard, kernel, paths,        (main's body: the loop,
-               session, session_ops, shell, storage     the workers, the chrome)
+node                 may reference                     [fully-qualified path only]
+session              nothing — pure data, the dependency sink
+agent                session, paths, shell (NEVER git, NEVER backend)
+agent::host_config   session, paths, agent
+backend              backend::{contract,pane,registry} (re-exports only)
+backend::contract    nothing — the trait and the values crossing it
+backend::identity    backend::contract
+backend::pane        session, backend::{contract,identity,osc8,output_wake}
+backend::osc8        session
+backend::output_wake nothing
+backend::registry    session, backend::contract        (a container, no factory)
+backend::wiring      session, agent::host_config,      (the factory: the only
+                     backend::{contract,registry,tmux}  node naming an adapter)
+backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+  ::control_mode     session, shell, backend::contract,
+                     backend::tmux_compat::transport
+  ::transport        shell, agent
+backend::tmux        session, paths, shell, agent,     (the tmux adapter)
+                     backend::{contract,identity},
+                     backend::tmux_compat::{control_mode,transport}
+git                  session, paths, shell
+storage              session, sync, paths
+sync                 session
+usage                session, shell                    [paths]
+session_ops          session, storage, git, sync,      [agent, agent::host_config,
+                     paths, workspace, shell            backend::{contract,identity}]
+kernel               session, storage, sync, paths,    [agent, agent::host_config,
+                     session_ops, git, notifications,   backend::{contract,identity,
+                     shell                              pane,registry}, usage]
+cli                  session, storage, session_ops,    [agent, agent::host_config,
+                     sync, paths, notifications         backend::contract, kernel]
+notifications        session, paths, shell             [storage]
+clipboard            session, paths
+workspace            paths
+paths, shell         nothing — leaf utilities
+coordinator          agent, backend::output_wake,      (main's body: the loop,
+                     clipboard, kernel, paths,          the workers, the chrome)
+                     session, session_ops, shell,
+                     storage
 ```
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
@@ -80,11 +99,31 @@ modules have for the library), so a new module fails the test until its place is
 declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 `coordinator/` has an entry of its own listing the layers it wires, because
 "wires everything" was never the same claim as "may reach anything". `kernel` reaches
-`agent`/`usage` by fully-qualified path only — never `use` — so every crossing into
-the side-effect layer is visible at its call site, the rule `session_ops` and `cli`
-already follow. A function-local `use crate::agent::…` (or `as` alias) breaks it
-too. One test, `every_module_rule_holds`, loops over every entry — a rule used to
-be able to exist with no test calling it, which is how `kernel` drifted.
+`agent`, `backend::*` and `usage` by fully-qualified path only — never `use` — so
+every crossing into the side-effect layer is visible at its call site, the rule
+`session_ops` and `cli` already follow. A function-local `use crate::agent::…` (or
+`as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every
+entry — a rule used to be able to exist with no test calling it, which is how
+`kernel` drifted.
+
+A rule names a **node**: a top-level module, or a submodule governed on its own —
+every file module of `backend`, at any depth, is one (`SUBMODULE_GOVERNED`), and so is
+`agent::host_config`. A grant covers exactly its node, never the node's children,
+and a reference is judged where it **resolves** (`tests/architecture/resolver.rs`):
+`super::`, `self::`, nested brace groups, `as`, an imported name, a `pub use`
+re-export and a `type` alias are all followed, so no spelling carries a crossing
+past a rule. On top of the allowlist: the production graph and the declared graph
+must both be acyclic (`the_production_graph_is_acyclic`,
+`the_declared_graph_is_acyclic`), every grant must be used by production code
+(`every_allowance_is_used`), only `coordinator` may be granted the factory
+`backend::wiring` and only the factory an adapter
+(`only_the_composition_roots_name_the_factory`), and the crossings still to be
+removed are the `TRANSITIONAL` table — each item tagged with the task that
+removes it (F5a lifecycle, F5b pane I/O, F6 platform, F7 status and heartbeat),
+checked both ways so a new crossing fails and so does a stale entry. The table
+ends empty. Fixture trees under `tests/fixtures/architecture/` pin that the
+resolver sees the old three-node backend cycle, PR #1272's mux/registry cycles,
+alias and re-export laundering, and test-only edges.
 
 ### Module Responsibilities
 

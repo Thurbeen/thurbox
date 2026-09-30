@@ -32,7 +32,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use thurbox::agent::{SessionParser, TermSignals};
+use thurbox::backend::{SessionParser, TermSignals};
 use thurbox::kernel::search::{run, CacheMap, History, ReadStats, Request, Source};
 
 fn env(name: &str, fallback: usize) -> usize {

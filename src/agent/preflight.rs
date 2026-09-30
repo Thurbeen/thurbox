@@ -14,18 +14,18 @@
 //!   ([`crate::kernel::snapshot`] publishes it; probed on a TTL, never per
 //!   frame);
 //! - the spawn error, so a failure names the binary, the directories searched
-//!   and the fix ([`crate::agent::tmux`]);
+//!   and the fix ([`crate::backend::tmux`]);
 //! - `thurbox-cli doctor`, so it can be asked directly.
 //!
 //! It never blocks anything. A `Missing` answer is a warning on the choice
 //! being made, not a refusal: an agent `command` can be a shell function, an
 //! alias or something installed a second later, and treating "not on `PATH`"
 //! as fatal would turn an improvement into a new way to fail — the same rule
-//! `crate::agent::tmux::resolve_local_program` is written under.
+//! `crate::backend::tmux::resolve_local_program` is written under.
 
 use std::path::Path;
 
-use crate::agent::transport::{TmuxTransport, DEFAULT_MUX};
+use crate::session::Multiplexer;
 
 /// How many search directories a one-line message names before it summarizes
 /// the rest. A `PATH` of thirty entries is ordinary; a message that prints all
@@ -65,7 +65,7 @@ impl Presence {
 /// Windows: the same walk, but a bare name is also tried with each extension in
 /// `PATHEXT`, because that is how the loader finds `psmux.exe` given `psmux`.
 /// The *spawn* path deliberately has no such munging (see
-/// `crate::agent::tmux::resolve_local_program`) — this is detection, and a
+/// `crate::backend::tmux::resolve_local_program`) — this is detection, and a
 /// detector that called psmux missing on every Windows machine would be worse
 /// than no detector at all.
 ///
@@ -151,7 +151,7 @@ impl Dependency<'_> {
     /// The binary this is about.
     pub fn binary(&self) -> &str {
         match self {
-            Dependency::LocalMultiplexer => DEFAULT_MUX,
+            Dependency::LocalMultiplexer => local_multiplexer(),
             Dependency::Launcher(bin) => bin,
             Dependency::Agent { command, .. } => command,
         }
@@ -165,7 +165,7 @@ impl Dependency<'_> {
     fn role(&self) -> String {
         match self {
             Dependency::LocalMultiplexer => {
-                format!("{DEFAULT_MUX} (thurbox's multiplexer)")
+                format!("{} (thurbox's multiplexer)", local_multiplexer())
             }
             Dependency::Launcher(bin) => format!("{bin} (how thurbox reaches a host)"),
             Dependency::Agent { name, command } if name == command => {
@@ -280,19 +280,20 @@ fn searched(binary: &str) -> String {
 /// Every other io error keeps `context` and its own text: a permission error or
 /// a broken pipe is not something an install fixes, and dressing one as a
 /// missing binary sends the reader somewhere there is nothing to find.
+///
+/// `remote_launcher` is what reaches a remote host from here (`ssh`,
+/// `wsl.exe`), or `None` when the multiplexer was launched locally.
 pub fn launch_failure(
-    transport: &TmuxTransport,
+    remote_launcher: Option<&str>,
     context: &'static str,
     err: std::io::Error,
 ) -> anyhow::Error {
     if err.kind() != std::io::ErrorKind::NotFound {
         return anyhow::Error::new(err).context(context);
     }
-    let launcher = transport.launcher();
-    let dependency = if transport.is_remote() {
-        Dependency::Launcher(launcher)
-    } else {
-        Dependency::LocalMultiplexer
+    let dependency = match remote_launcher {
+        Some(launcher) => Dependency::Launcher(launcher),
+        None => Dependency::LocalMultiplexer,
     };
     anyhow::Error::new(MissingDependency(dependency.missing_message()))
 }
@@ -326,7 +327,7 @@ pub fn is_missing_dependency(err: &anyhow::Error) -> bool {
 
 /// The multiplexer a local session would run in on this platform.
 pub fn local_multiplexer() -> &'static str {
-    DEFAULT_MUX
+    Multiplexer::platform_default().name()
 }
 
 #[cfg(test)]

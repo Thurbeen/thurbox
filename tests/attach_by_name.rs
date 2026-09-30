@@ -45,7 +45,7 @@ fn tmux(args: &[&str]) -> std::process::Output {
 }
 
 /// The tmux session name the local backend groups its windows under. Mirrors
-/// `agent::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
+/// `backend::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
 /// because a test build carries the same `dev_build` marker a dev binary does.
 const SESSION: &str = "thurbox-dev";
 

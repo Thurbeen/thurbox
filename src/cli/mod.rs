@@ -7,7 +7,7 @@
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
 //! `storage::Database`, `session_ops`, or the tmux helpers in
-//! `agent::tmux`, and prints the result. No TUI, no event loop.
+//! `backend::tmux`, and prints the result. No TUI, no event loop.
 //!
 //! It is also an **AXI** (`axi/1.0-2026-07`, <https://axi.md>) — an interface
 //! shaped for an agent rather than for a person at a keyboard. Four of that

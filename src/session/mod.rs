@@ -97,7 +97,7 @@ pub const HOOK_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
 /// (native-Windows SSH) host — both halves of it: shipping hook configs with
 /// their commands rewritten to the psmux pane-option form
 /// (`session_ops::spawn::remote_config_root`), and arming the 1 s pane-option
-/// poller on the host's control-mode connection (`agent::tmux`). **Gate,
+/// poller on the host's control-mode connection (`backend::tmux`). **Gate,
 /// currently closed**: the path rests on behaviors not yet proven against
 /// psmux 3.3.6 — in-pane `set-option -p` without `-t` (no `$TMUX_PANE`
 /// guarantee), `#{@user_option}` expansion for the poller, and claude

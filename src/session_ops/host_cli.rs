@@ -168,7 +168,7 @@ fn is_fresh(verdict: &Verdict) -> bool {
 fn remember_socket(host: &HostDef, verdict: &Usable) {
     if let Usable::Yes(cli) = verdict {
         if let Some(socket) = &cli.tmux_socket {
-            crate::agent::tmux::learn_host_socket(host, socket);
+            crate::backend::tmux::learn_host_socket(host, socket);
         }
     }
 }
@@ -224,7 +224,7 @@ pub fn advertise_running_cli() {
         else {
             return;
         };
-        advertise_cli_in(&dir, &crate::agent::tmux::resolve_cli_binary());
+        advertise_cli_in(&dir, &crate::backend::tmux::resolve_cli_binary());
     }
 }
 
@@ -1058,7 +1058,7 @@ fn install(host: &HostDef) -> Result<String, String> {
                  (this machine is {ours}); install thurbox on the host"
             ));
         }
-        let local = crate::agent::tmux::resolve_cli_binary();
+        let local = crate::backend::tmux::resolve_cli_binary();
         let bytes = std::fs::read(&local)
             .map_err(|e| format!("read {} to ship it: {e}", local.display()))?;
         ship(host, &bytes, &dest)?;
@@ -1588,7 +1588,7 @@ mod tests {
             .unwrap()
             .join(HOST_BIN_DIR)
             .join("thurbox-cli");
-        let target = crate::agent::tmux::resolve_cli_binary();
+        let target = crate::backend::tmux::resolve_cli_binary();
         if target.is_absolute() && target.exists() {
             assert_eq!(std::fs::read_link(&link).unwrap(), target);
             // A stale link is replaced, a true one left alone.

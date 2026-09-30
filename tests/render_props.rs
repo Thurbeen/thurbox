@@ -9,7 +9,7 @@
 //! reader thread poisons the parser mutex for the life of the process.
 //!
 //! `tests/kernel_limits.rs` owns the instruction and memory ceilings;
-//! `agent::control_mode`'s own proptests own byte transparency. This file is
+//! `backend::tmux_compat::control_mode`'s own proptests own byte transparency. This file is
 //! the geometry and the input: sizes, positions, glyph widths and keys.
 
 use proptest::prelude::*;
