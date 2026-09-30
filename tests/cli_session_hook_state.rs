@@ -91,6 +91,17 @@ fn tmux(args: &[&str]) -> std::process::Output {
         .expect("run tmux")
 }
 
+/// Stamp a window as `session_id`'s agent, the way thurbox does when it
+/// creates one.
+fn stamp(target: &str, session_id: &str) {
+    for (option, value) in [
+        (thurbox::backend::tmux::WINDOW_SESSION_OPTION, session_id),
+        (thurbox::backend::tmux::WINDOW_ROLE_OPTION, "agent"),
+    ] {
+        tmux(&["set-option", "-w", "-t", target, option, value]);
+    }
+}
+
 /// Point every thurbox path at a scratch dir and write the agent registry the
 /// test wants there, so nothing reads or seeds the real `~/.config`.
 fn isolated_config(dir: &Path) -> thurbox::paths::TestPathGuard {
@@ -128,6 +139,7 @@ fn get(db: &Database, id: SessionId, verify: bool) -> thurbox::cli::output::Comm
             no_verify: !verify,
         },
         db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session get")
 }
@@ -219,6 +231,7 @@ fn doctor(db: &Database, id: SessionId) -> thurbox::cli::output::CommandOutput {
             uuid: Some(id.to_string()),
         },
         db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("doctor runs")
 }
@@ -578,6 +591,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             no_enter: true,
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("type without submitting");
     assert_eq!(get(&db, row.id, false)["state"], "idle");
@@ -588,6 +602,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             key: "enter".into(),
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("submit drafted prompt");
     assert_eq!(get(&db, row.id, false)["state"], "unreported");
@@ -600,6 +615,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             no_enter: false,
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("submit prompt");
     let out = get_when_pane_settles(&db, row.id, "agent");
@@ -616,6 +632,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             verify: false,
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session list");
     let found = listed
@@ -685,11 +702,7 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &format!("tb-{name}"),
         &fake.to_string_lossy(),
     ]);
-    thurbox::backend::tmux::stamp_local_window(
-        &format!("{SESSION}:tb-{name}"),
-        &row.id.to_string(),
-        thurbox::backend::WindowRole::Agent,
-    );
+    stamp(&format!("{SESSION}:tb-{name}"), &row.id.to_string());
     assert!(thurbox::backend::tmux::window_exists(
         &row.id.to_string(),
         &name
@@ -699,7 +712,12 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &name
     ));
 
-    let out = run_automation(AutomationCommand::Tick, &db).expect("automation tick");
+    let out = run_automation(
+        AutomationCommand::Tick,
+        &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+    )
+    .expect("automation tick");
     assert_eq!(out["fired"][0]["status"], "success", "{out}");
     assert_eq!(get(&db, row.id, false)["state"], "unreported");
 }
@@ -825,6 +843,7 @@ fn a_parked_session_says_so_on_get_and_on_list() {
             session: row.id.to_string(),
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session stop");
 
@@ -848,6 +867,7 @@ fn a_parked_session_says_so_on_get_and_on_list() {
             verify: false,
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session list");
     let rows = listed.json.as_array().expect("rows");
@@ -876,6 +896,7 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
             session: row.id.to_string(),
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session stop");
 
@@ -895,7 +916,12 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
             ansi: false,
         },
     ] {
-        let err = run(action, &db).expect_err("a parked session has no pane");
+        let err = run(
+            action,
+            &db,
+            &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        )
+        .expect_err("a parked session has no pane");
         assert!(err.contains("stopped"), "got {err}");
         assert!(
             err.contains("session start"),
@@ -936,6 +962,7 @@ fn a_parked_sessions_doctor_report_is_clean_not_a_warning() {
             session: row.id.to_string(),
         },
         &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
     )
     .expect("session stop");
 

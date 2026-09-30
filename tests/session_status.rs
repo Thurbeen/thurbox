@@ -63,7 +63,10 @@ fn store_with_working_session() -> (tempfile::TempDir, SnapshotStore, String) {
     let database = Database::open(&path).expect("db");
     database.upsert_session(&row).expect("upsert");
     database.set_hook_state(row.id, "working").expect("signal");
-    let mut store = SnapshotStore::with_database(Database::open(&path).expect("db"));
+    let mut store = SnapshotStore::with_database(
+        Database::open(&path).expect("db"),
+        &thurbox::backend::wiring::configured().0,
+    );
     store.refresh();
     (home, store, row.id.to_string())
 }
@@ -288,7 +291,10 @@ fn an_agent_a_driver_started_is_seen_and_named_by_the_interface() {
         &claude.to_string_lossy(),
     ]);
 
-    let mut store = SnapshotStore::with_database(Database::open(&path).expect("db"));
+    let mut store = SnapshotStore::with_database(
+        Database::open(&path).expect("db"),
+        &thurbox::backend::wiring::configured().0,
+    );
     let id = row.id.to_string();
 
     // Something is running here — and that is the whole claim. `working` would

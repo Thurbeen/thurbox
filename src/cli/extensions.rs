@@ -101,20 +101,28 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    backends: &super::Backends<'_>,
+) -> Result<CommandOutput, String> {
     match action {
         Action::Install {
             target,
             home,
             force,
-        } => install_extension(db, target, home, force),
-        Action::Uninstall { name, purge } => uninstall_extension(db, name, purge),
+        } => install_extension(db, backends.get(), target, home, force),
+        Action::Uninstall { name, purge } => uninstall_extension(db, backends.get(), name, purge),
         Action::List => list_extensions(db),
         Action::Available { query } => Ok(available_output(query.as_deref())),
-        Action::Update { name, all, force } => update_extensions(db, name, all, force),
-        Action::Reinstall { name, purge } => reinstall_extension(db, name, purge),
-        Action::Activate { name } => activate_extension(db, name),
-        Action::Deactivate { name, force, purge } => deactivate_extension(db, name, force, purge),
+        Action::Update { name, all, force } => {
+            update_extensions(db, backends.get(), name, all, force)
+        }
+        Action::Reinstall { name, purge } => reinstall_extension(db, backends.get(), name, purge),
+        Action::Activate { name } => activate_extension(db, backends.get(), name),
+        Action::Deactivate { name, force, purge } => {
+            deactivate_extension(db, backends.get(), name, force, purge)
+        }
         Action::Status { name } => status_extension(db, name),
     }
 }
@@ -122,11 +130,13 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
 /// Handle `extension install`.
 fn install_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     target: String,
     home: Option<String>,
     force: bool,
 ) -> Result<CommandOutput, String> {
-    let report = crate::session_ops::install_extension(db, &target, home.as_deref(), force)?;
+    let report =
+        crate::session_ops::install_extension(db, backends, &target, home.as_deref(), force)?;
     // Re-installing a built-in extension clears any prior opt-out.
     if let Some(builtin) = crate::session_ops::builtin_extension(&report.name) {
         let _ = db.set_builtin_extension_optout(builtin.name, false);
@@ -137,8 +147,13 @@ fn install_extension(
 }
 
 /// Handle `extension uninstall`.
-fn uninstall_extension(db: &Database, name: String, purge: bool) -> Result<CommandOutput, String> {
-    let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
+fn uninstall_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: String,
+    purge: bool,
+) -> Result<CommandOutput, String> {
+    let report = crate::session_ops::uninstall_extension(db, backends, &name, purge)?;
     // Uninstalling an auto-activated built-in is an explicit opt-out, so startup
     // self-heal won't reinstall it.
     if let Some(builtin) = crate::session_ops::builtin_extension(&name) {
@@ -170,6 +185,7 @@ fn list_extensions(db: &Database) -> Result<CommandOutput, String> {
 /// Handle `extension update` for a single named extension or all of them.
 fn update_extensions(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: Option<String>,
     all: bool,
     force: bool,
@@ -179,19 +195,23 @@ fn update_extensions(
         // updates one and *no* name updates them all (no flag required).
         Some(_) if all => Err("pass either a name or --all, not both".to_string()),
         Some(name) => {
-            let report = crate::session_ops::update_extension(db, &name, force)?;
+            let report = crate::session_ops::update_extension(db, backends, &name, force)?;
             // Arm the heartbeat so the refreshed automations keep firing headlessly.
             arm_heartbeat();
             Ok(CommandOutput::from_summary(update_report_to_json(&report)))
         }
-        None => Ok(update_all_extensions(db, force)),
+        None => Ok(update_all_extensions(db, backends, force)),
     }
 }
 
 /// `extension update` with no name: refresh every installed extension and
 /// aggregate the per-extension reports.
-fn update_all_extensions(db: &Database, force: bool) -> CommandOutput {
-    let results = crate::session_ops::update_all_extensions(db, force);
+fn update_all_extensions(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    force: bool,
+) -> CommandOutput {
+    let results = crate::session_ops::update_all_extensions(db, backends, force);
     arm_heartbeat();
     let total = results.len();
     let mut changed = 0;
@@ -220,8 +240,13 @@ fn update_all_extensions(db: &Database, force: bool) -> CommandOutput {
 }
 
 /// Handle `extension reinstall`.
-fn reinstall_extension(db: &Database, name: String, purge: bool) -> Result<CommandOutput, String> {
-    let report = crate::session_ops::reinstall_extension(db, &name, purge)?;
+fn reinstall_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: String,
+    purge: bool,
+) -> Result<CommandOutput, String> {
+    let report = crate::session_ops::reinstall_extension(db, backends, &name, purge)?;
     arm_heartbeat();
     let version = report.install.version.as_deref().unwrap_or("?");
     Ok(CommandOutput::from_summary(json!({
@@ -257,13 +282,17 @@ fn with_blocked(mut summary: String, blocked: &[String]) -> String {
 }
 
 /// Handle `extension activate`.
-fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, String> {
+fn activate_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: String,
+) -> Result<CommandOutput, String> {
     // A built-in extension is installed from embedded assets, not a discovery
     // manifest — clear the opt-out and (re)apply the wiring directly.
     if let Some(builtin) = crate::session_ops::builtin_extension(&name) {
         db.set_builtin_extension_optout(builtin.name, false)
             .map_err(|e| format!("clear opt-out: {e}"))?;
-        let msgs = builtin.ensure(db);
+        let msgs = builtin.ensure(db, backends);
         arm_heartbeat();
         return Ok(CommandOutput::from_summary(json!({
             "ok": true,
@@ -273,7 +302,7 @@ fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, Stri
         })));
     }
     let def = load_manifest(&name)?;
-    let report = crate::session_ops::activate_extension(db, &def)?;
+    let report = crate::session_ops::activate_extension(db, backends, &def)?;
     // A `Send` automation only fires while something ticks it. Arm the
     // heartbeat keeper so the extension works headlessly (TUI closed),
     // matching how `automation create` arms it.
@@ -302,6 +331,7 @@ fn activate_extension(db: &Database, name: String) -> Result<CommandOutput, Stri
 /// Handle `extension deactivate`.
 fn deactivate_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: String,
     force: bool,
     purge: bool,
@@ -312,7 +342,7 @@ fn deactivate_extension(
     if let Some(builtin) = crate::session_ops::builtin_extension(&name) {
         db.set_builtin_extension_optout(builtin.name, true)
             .map_err(|e| format!("set opt-out: {e}"))?;
-        let report = crate::session_ops::uninstall_extension(db, &name, purge)?;
+        let report = crate::session_ops::uninstall_extension(db, backends, &name, purge)?;
         return Ok(CommandOutput::from_summary(json!({
             "ok": true,
             "summary": format!("Deactivated '{}' ({} removed)", builtin.name, builtin.blurb),
@@ -326,7 +356,7 @@ fn deactivate_extension(
     // Tear down whatever the manifest declares. If the manifest is gone
     // we can't know the resources, but still clear the active-set entry.
     let report = match crate::agent::extension_config::load_manifest(&name) {
-        Some(def) => crate::session_ops::deactivate_extension(db, &def, force)?,
+        Some(def) => crate::session_ops::deactivate_extension(db, backends, &def, force)?,
         None => {
             let was_active = db
                 .remove_active_extension(&name)
@@ -369,7 +399,7 @@ fn status_extension(db: &Database, name: Option<String>) -> Result<CommandOutput
                 render_extension_detail(&health),
             ))
         }
-        None => run(Action::List, db),
+        None => list_extensions(db),
     }
 }
 

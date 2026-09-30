@@ -16,8 +16,8 @@ pub mod tmux_compat;
 pub mod wiring;
 
 pub use contract::{
-    AdoptedSession, BackendLiveness, DiscoveredSession, PaneSize, SessionBackend, SpawnedSession,
-    WindowRole,
+    AdoptedSession, BackendLiveness, DiscoveredSession, Located, Owner, PaneSize, Placed,
+    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 pub use pane::{Session, SessionParser, TermSignals};
 pub use registry::BackendRegistry;

@@ -268,7 +268,9 @@ fn painted(
                 frame,
                 Rect::new(0, 0, width, rows),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::new(),
+                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
+                    thurbox::backend::wiring::configured().0,
+                )),
                 &mut hits,
             );
         })
@@ -1977,7 +1979,9 @@ fn the_empty_session_list_names_the_chord_that_creates_one() {
                 frame,
                 Rect::new(0, 0, 30, 10),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::new(),
+                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
+                    thurbox::backend::wiring::configured().0,
+                )),
                 &mut Vec::new(),
             );
         })
@@ -2626,7 +2630,9 @@ fn sessions_screen(host: &LuaHost, world: &World, width: u16, height: u16) -> St
                 frame,
                 Rect::new(0, 0, width, height),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::new(),
+                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
+                    thurbox::backend::wiring::configured().0,
+                )),
                 &mut Vec::new(),
             );
         })

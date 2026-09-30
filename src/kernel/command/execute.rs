@@ -16,6 +16,7 @@ use crate::storage::Database;
 /// list, not a reason to move the user's selection onto it.
 pub(super) fn execute(
     command: &Command,
+    backends: &crate::backend::BackendRegistry,
     id: u64,
     progress: &Sender<Progress>,
 ) -> Result<(), String> {
@@ -40,6 +41,7 @@ pub(super) fn execute(
     } = command
     {
         return create(
+            backends,
             name,
             repo,
             branch,
@@ -72,10 +74,10 @@ pub(super) fn execute(
     if matches!(command, Command::Reap) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
-        crate::session_ops::reap_overdue_soft_deletes(&db);
+        crate::session_ops::reap_overdue_soft_deletes(&db, backends);
         // The same sweep's other half: force deletes whose teardown never
         // reached the host they were owed on.
-        crate::session_ops::retry_owed_remote_teardowns(&db);
+        crate::session_ops::retry_owed_remote_teardowns(&db, backends);
         return Ok(());
     }
 
@@ -101,7 +103,7 @@ pub(super) fn execute(
                 delete,
             } => task(&db, *id, title, status, *delete),
             Command::DispatchTask { task, session } => {
-                dispatch_task(&db, *task, session.as_deref())
+                dispatch_task(&db, backends, *task, session.as_deref())
             }
             Command::Automation {
                 id,
@@ -129,28 +131,35 @@ pub(super) fn execute(
     // A fork mints a session too; like a creation, the new row simply appears
     // in the list rather than pulling the selection onto itself.
     if let Command::Fork { name, .. } = command {
-        return fork(&db, id, name);
+        return fork(&db, backends, id, name);
     }
 
     match command {
         Command::Delete { force, .. } => {
-            crate::session_ops::delete_session_headless(&db, id, *force).map(|_| ())
+            crate::session_ops::delete_session_headless(&db, backends, id, *force).map(|_| ())
         }
         // Restoring is the row, its worktrees and its agent — clearing the flag
         // alone gives back a session that can never attach (parity-gap #11).
         Command::Restore { best_effort, .. } => {
-            crate::session_ops::restore_session_headless(&db, id, *best_effort).map(|report| {
-                if let Some(error) = report.respawn_error {
-                    // Restored, but without its agent: worth saying, not worth
-                    // undoing — `restart` will try again.
-                    tracing::warn!("restored {} but could not launch it: {error}", report.name);
-                }
-            })
+            crate::session_ops::restore_session_headless(&db, backends, id, *best_effort).map(
+                |report| {
+                    if let Some(error) = report.respawn_error {
+                        // Restored, but without its agent: worth saying, not worth
+                        // undoing — `restart` will try again.
+                        tracing::warn!("restored {} but could not launch it: {error}", report.name);
+                    }
+                },
+            )
         }
         // A failed post-restart hook is already in the log; the restart stands.
         Command::Restart { if_missing, .. } => {
-            crate::session_ops::restart::restart_session_headless_with(&db, id, *if_missing)
-                .map(|_| ())
+            crate::session_ops::restart::restart_session_headless_with(
+                &db,
+                backends,
+                id,
+                *if_missing,
+            )
+            .map(|_| ())
         }
         Command::Send { text, .. } => {
             let session = db
@@ -180,7 +189,7 @@ pub(super) fn execute(
 
         Command::Sync { .. } => sync(&db, id),
         Command::Rename { name, .. } => {
-            crate::session_ops::rename::rename_session_headless(&db, id, name).map(|_| ())
+            crate::session_ops::rename::rename_session_headless(&db, backends, id, name).map(|_| ())
         }
         // Unreachable: guarded above, and kept exhaustive so adding a command
         // is a compile error here rather than a silent no-op.
@@ -250,6 +259,7 @@ fn session_name(
 /// one cleanup path for a failure rather than two.
 #[allow(clippy::too_many_arguments)]
 fn create(
+    backends: &crate::backend::BackendRegistry,
     name: &str,
     repo: &str,
     branch: &Option<String>,
@@ -328,8 +338,13 @@ fn create(
             phase: phase.as_str().to_string(),
         });
     };
-    crate::session_ops::spawn::spawn_session_headless_with_progress(&db, request, Some(&report))
-        .map(|_| ())
+    crate::session_ops::spawn::spawn_session_headless_with_progress(
+        &db,
+        backends,
+        request,
+        Some(&report),
+    )
+    .map(|_| ())
 }
 
 /// Remember, forget or import a repository path.
@@ -488,8 +503,13 @@ fn bookmark_add(
 /// The work is [`crate::session_ops::fork_session_headless`], so the interface
 /// and `thurbox-cli session fork` produce the same session rather than two
 /// implementations that drift.
-fn fork(db: &Database, id: SessionId, name: &str) -> Result<(), String> {
-    crate::session_ops::fork_session_headless(db, id, name).map(|_| ())
+fn fork(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    id: SessionId,
+    name: &str,
+) -> Result<(), String> {
+    crate::session_ops::fork_session_headless(db, backends, id, name).map(|_| ())
 }
 
 /// Refuses rather than asking the user to be careful: a sync that discards
@@ -612,7 +632,12 @@ fn task(
 /// The prompt is `Task::agent_prompt()` — the same one `thurbox-cli task run`
 /// builds — so an agent gets identical context however it was handed the work,
 /// and there is one place to change what it is told.
-fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(), String> {
+fn dispatch_task(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    task_id: i64,
+    session: Option<&str>,
+) -> Result<(), String> {
     use crate::session::task::TaskStatus;
 
     let task = db
@@ -644,7 +669,7 @@ fn dispatch_task(db: &Database, task_id: i64, session: Option<&str>) -> Result<(
                 task_id: Some(task_id),
                 ..Default::default()
             };
-            let spawned = crate::session_ops::spawn::spawn_session_headless(db, request)?;
+            let spawned = crate::session_ops::spawn::spawn_session_headless(db, backends, request)?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
             crate::backend::tmux::send_prompt_after_delay(

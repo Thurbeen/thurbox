@@ -226,6 +226,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::host_config",
             "backend::contract",
             "backend::identity",
+            "backend::registry",
         ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
@@ -249,7 +250,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "agent::host_config", "backend::contract", "kernel"],
+        allowed_path_only: &["agent", "agent::host_config", "backend::registry", "kernel"],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
@@ -322,6 +323,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "agent",
             "backend::output_wake",
+            "backend::wiring",
             "clipboard",
             "kernel",
             "paths",
@@ -375,6 +377,8 @@ const SUBMODULE_GOVERNED: &[&str] = &["backend"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Remover {
     /// Lifecycle through the contract, one registry injected at the roots.
+    /// Removed its crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
     F5a,
     /// Pane I/O through `locate` and the contract's pane verbs.
     F5b,
@@ -407,55 +411,6 @@ struct Transitional {
 }
 
 const TRANSITIONAL: &[Transitional] = &[
-    // Registry construction outside the composition roots: one registry, built
-    // at `coordinator::boot` and `bin/thurbox-cli`, injected everywhere else.
-    Transitional {
-        from: "kernel",
-        to: "backend::wiring",
-        items: &["configured"],
-        remover: Remover::F5a,
-        why: "Terminals::new and the create-flow snapshot build their own registry",
-    },
-    Transitional {
-        from: "session_ops",
-        to: "backend::wiring",
-        items: &["configured", "implements"],
-        remover: Remover::F5a,
-        why: "spawn builds a registry to ask whether it supports a route, then drops it; \
-              lifecycle asks the factory whether a row's multiplexer has an adapter",
-    },
-    // Lifecycle — spawn, restart, restore, stop, delete, reap, owed teardown,
-    // rename, register — through the tmux adapter's free functions.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux",
-        items: &[
-            "SessionPanes",
-            "agent_window",
-            "agent_window_alive",
-            "kill_remote_windows",
-            "kill_shell_window",
-            "kill_window",
-            "kill_window_at",
-            "known_host_socket",
-            "local_window_index",
-            "remote_window_index",
-            "rename_session_windows",
-            "spawn_window",
-            "spawn_window_remote",
-            "stamp_local_window",
-            "window_pane_pid",
-        ],
-        remover: Remover::F5a,
-        why: "every lifecycle verb calls the tmux adapter instead of the row's backend",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux",
-        items: &["agent_window", "stamp_local_window"],
-        remover: Remover::F5a,
-        why: "`session register` locates and stamps a local tmux window directly",
-    },
     // Pane I/O addressed by (id, name) on the local tmux server.
     Transitional {
         from: "session_ops",
@@ -707,9 +662,10 @@ fn transitional_table_names_only_live_crossings() {
     for entry in TRANSITIONAL {
         assert!(
             !entry.items.is_empty() && !entry.why.is_empty(),
-            "TRANSITIONAL entry {} → {} names no items or no reason",
+            "TRANSITIONAL entry {} → {} ({:?}'s) names no items or no reason",
             entry.from,
-            entry.to
+            entry.to,
+            entry.remover
         );
         for item in entry.items {
             assert!(
@@ -738,9 +694,8 @@ const ADAPTERS: &[&str] = &["backend::tmux"];
 /// the exempt crate roots (`main`, `bin/`) — and only the factory may name an
 /// adapter. A consumer that builds its own registry sees a different set of
 /// backends from the one the process was wired with, and one that names an
-/// adapter has stopped using the contract. Either kind of crossing that exists
-/// today is transitional, and a factory call outside the roots is F5a's to
-/// remove.
+/// adapter has stopped using the contract. No factory crossing is
+/// transitional: the registry is built at the roots and injected.
 #[test]
 fn only_the_composition_roots_name_the_factory() {
     for rules in MODULE_RULES {
@@ -762,11 +717,10 @@ fn only_the_composition_roots_name_the_factory() {
             }
         }
     }
-    for entry in TRANSITIONAL.iter().filter(|t| t.to == FACTORY) {
-        assert_eq!(
-            entry.remover,
-            Remover::F5a,
-            "{} → {FACTORY} is removed by injecting the registry (F5a)",
+    for entry in TRANSITIONAL {
+        assert_ne!(
+            entry.to, FACTORY,
+            "{} → {FACTORY} is not transitional: inject the registry the root built",
             entry.from
         );
     }
@@ -1293,7 +1247,7 @@ fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
         from: "kernel",
         to: "agent::tmux",
         items: &["Index", "gone"],
-        remover: Remover::F5a,
+        remover: Remover::F5b,
         why: "fixture",
     }];
     let (unlisted, stale) = reconcile(&violations(&tree, &rules), &table);

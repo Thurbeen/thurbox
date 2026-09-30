@@ -388,7 +388,9 @@ fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> O
                 frame,
                 ratatui::layout::Rect::new(0, 0, width, rows),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::new(),
+                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
+                    thurbox::backend::wiring::configured().0,
+                )),
                 &mut Vec::new(),
             );
         })

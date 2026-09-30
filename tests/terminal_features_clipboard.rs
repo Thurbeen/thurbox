@@ -68,13 +68,16 @@ fn clipboard_entries(features: &[String]) -> usize {
 
 fn spawn(n: usize, dir: &std::path::Path) {
     let id = format!("11111111-1111-4111-8111-{n:012}");
-    let spawned = thurbox::backend::tmux::spawn_window(
-        &id,
-        &format!("features-{n}"),
-        "sh",
-        &["-c".to_string(), "sleep 300".to_string()],
-        Some(dir),
-        &HashMap::new(),
+    let spawned = thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(&id, &format!("features-{n}")),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "sleep 300".to_string()],
+            cwd: Some(dir),
+            env: &HashMap::new(),
+        },
     );
     match spawned {
         Ok(pane) if !pane.is_empty() => {}

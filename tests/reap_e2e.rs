@@ -165,6 +165,7 @@ fn spawn(
 ) -> Option<thurbox::session_ops::SpawnResult> {
     let result = thurbox::session_ops::spawn_session_headless(
         db,
+        &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::SpawnRequest {
             name: name.into(),
             repo_path: repo.to_path_buf(),
@@ -217,8 +218,13 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     };
 
     // 2. Soft-deleted: the row is kept for undo, the window is left alone.
-    let report = thurbox::session_ops::delete_session_headless(&db, stale.session_id, false)
-        .expect("delete");
+    let report = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
     assert!(
         !report.killed_window,
         "a soft delete must leave the window for the undo window"
@@ -242,7 +248,12 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     );
 
     // 5. The undo window closes and the reaper collects the stale row.
-    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+    )
+    .expect("reap");
 
     // The reap has nothing of its own left to kill, so it must not have reached
     // for the name — the replacement is the only `tb-fleet` there is.
@@ -289,11 +300,22 @@ fn reaping_still_kills_the_row_its_own_window() {
         "the spawn should be running"
     );
 
-    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+        false,
+    )
+    .expect("delete");
 
     // The undo window closes with the pane still there: this row owns it, so it
     // is exactly what the reap should collect.
-    let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+    )
+    .expect("reap");
     let still_there = pane_alive(&session.backend_id);
 
     assert!(reaped, "a soft-deleted row with a live pane must be reaped");
@@ -306,7 +328,7 @@ fn reaping_still_kills_the_row_its_own_window() {
 
 /// The pane id is not always there to be strict about. A row persisted before
 /// local spawns recorded one, a pane renumbered by a tmux server restart, and
-/// every session on psmux (where `spawn_window` records no id at all) all reach
+/// every session on psmux (where the spawn records no id at all) all reach
 /// the reap with an id that resolves to nothing. Strictness must not turn those
 /// into a permanent no-op: while no live session answers to the name, the sole
 /// `tb-<name>` window can only be this row's, and leaving it up means the
@@ -333,9 +355,20 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
             .expect("clear the pane id"),
         "the spawned row should be there to update"
     );
-    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+        false,
+    )
+    .expect("delete");
 
-    let reaped = thurbox::session_ops::reap_soft_deleted(&db, session.session_id).expect("reap");
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+    )
+    .expect("reap");
     let still_there = pane_alive(&session.backend_id);
     let windows_after = windows();
 
@@ -375,7 +408,13 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
     let Some(stale) = spawn(&db, repo.path(), "fleet") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
     let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
 
     let Some(live) = spawn(&db, repo.path(), "fleet") else {
@@ -396,7 +435,12 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
     db.soft_delete_session(stale.session_id)
         .expect("soft-delete again");
 
-    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+    )
+    .expect("reap");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
 
@@ -430,7 +474,13 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
     let Some(stale) = spawn(&db, repo.path(), "fleet") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
     let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
 
     // The undoable one: soft-deleted, its agent and window still up, so no
@@ -438,20 +488,34 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
     let Some(undoable) = spawn(&db, repo.path(), "fleet") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, undoable.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        undoable.session_id,
+        false,
+    )
+    .expect("delete");
     assert!(
         pane_alive(&undoable.backend_id),
         "a soft delete must leave the window for the undo window"
     );
 
-    let stale_reaped =
-        thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap stale");
+    let stale_reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+    )
+    .expect("reap stale");
     let survived = pane_alive(&undoable.backend_id);
 
     // And the strictness is not a leak: the undoable row's own reap, when its
     // turn comes, takes its window down.
-    let own_reaped =
-        thurbox::session_ops::reap_soft_deleted(&db, undoable.session_id).expect("reap own");
+    let own_reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        undoable.session_id,
+    )
+    .expect("reap own");
     let released = !pane_alive(&undoable.backend_id);
     let windows_after = windows();
 
@@ -494,7 +558,13 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
     let Some(stale) = spawn(&db, repo.path(), "fleet 1") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
     // Its agent exits, so the row's pane id resolves to nothing and only the
     // name is left to go on.
     let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
@@ -513,7 +583,12 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
         "the replacement should be running"
     );
 
-    let reaped = thurbox::session_ops::reap_soft_deleted(&db, stale.session_id).expect("reap");
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+    )
+    .expect("reap");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
 
@@ -564,13 +639,26 @@ fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
         cases.push((stale, live));
     }
 
-    let forced = thurbox::session_ops::delete_session_headless(&db, cases[0].0.session_id, true);
+    let forced = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        cases[0].0.session_id,
+        true,
+    );
     let after_delete = pane_alive(&cases[0].1.backend_id);
 
-    let stopped = thurbox::session_ops::restart::stop_session_headless(&db, cases[1].0.session_id);
+    let stopped = thurbox::session_ops::restart::stop_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        cases[1].0.session_id,
+    );
     let after_stop = pane_alive(&cases[1].1.backend_id);
 
-    let restarted = thurbox::session_ops::restart_session_headless(&db, cases[2].0.session_id);
+    let restarted = thurbox::session_ops::restart_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        cases[2].0.session_id,
+    );
     let after_restart = pane_alive(&cases[2].1.backend_id);
 
     let windows_after = windows();
@@ -607,8 +695,13 @@ fn force_delete_still_kills_the_rows_own_window() {
     let Some(session) = spawn(&db, repo.path(), "solo") else {
         return;
     };
-    let report = thurbox::session_ops::delete_session_headless(&db, session.session_id, true)
-        .expect("force delete");
+    let report = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+        true,
+    )
+    .expect("force delete");
     let still_there = pane_alive(&session.backend_id);
 
     assert!(report.killed_window, "the force delete reported no kill");
@@ -642,9 +735,12 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     db.set_backend_id(session.session_id, "")
         .expect("clear the pane id");
 
-    let located =
-        thurbox::backend::tmux::agent_window(None, &session.session_id.to_string(), "stamped");
-    let outcome = located.map(|l| l.pane());
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let outcome = thurbox::backend::SessionBackend::discover(&backend).map(|listing| {
+        thurbox::backend::identity::WindowIndex::from_listing(listing)
+            .live_agent_window(&session.session_id.to_string(), "stamped")
+            .pane()
+    });
 
     assert_eq!(
         outcome.expect("list windows"),
@@ -682,7 +778,13 @@ fn restoring_a_session_never_joins_a_live_namesake_on_its_name() {
     let Some(stale) = spawn(&db, repo.path(), "fleet") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, stale.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
     // Its agent exits, so the row has no window of its own to come back to.
     let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
 
@@ -692,7 +794,12 @@ fn restoring_a_session_never_joins_a_live_namesake_on_its_name() {
 
     // `--best-effort` too: that flag says the caller accepts a lossy recovery,
     // and a name two rows would answer to is not about loss.
-    let restored = thurbox::session_ops::restore_session_headless(&db, stale.session_id, true);
+    let restored = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        true,
+    );
     let back = db.get_session_by_id(stale.session_id).expect("query");
     let survived = pane_alive(&live.backend_id);
     let windows_after = windows();
@@ -741,11 +848,28 @@ fn force_delete_and_reap_both_collect_the_companion_shell() {
     };
     let reaped_shell = open_shell_window(&reaped.session_id.to_string(), "reaped");
 
-    thurbox::session_ops::delete_session_headless(&db, forced.session_id, true).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        forced.session_id,
+        true,
+    )
+    .expect("delete");
     let forced_shell_alive = pane_alive(&forced_shell);
 
-    thurbox::session_ops::delete_session_headless(&db, reaped.session_id, false).expect("delete");
-    thurbox::session_ops::reap_soft_deleted(&db, reaped.session_id).expect("reap");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        reaped.session_id,
+        false,
+    )
+    .expect("delete");
+    thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        reaped.session_id,
+    )
+    .expect("reap");
     let reaped_shell_alive = pane_alive(&reaped_shell);
     let windows_after = windows();
 
@@ -787,7 +911,13 @@ fn a_teardown_spares_a_live_namesakes_companion_shell() {
     };
     let live_shell = open_shell_window(&live.session_id.to_string(), "fleet");
 
-    thurbox::session_ops::delete_session_headless(&db, stale.session_id, true).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        true,
+    )
+    .expect("delete");
     let survived = pane_alive(&live_shell);
     let windows_after = windows();
 
@@ -821,9 +951,13 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     assert!(!tmux(&["has-session"]).status.success());
 
     let id = thurbox::session::SessionId::default();
-    let _ = thurbox::backend::tmux::kill_window(&id.to_string(), "ghost");
-    let _ = thurbox::backend::tmux::kill_shell_window(&id.to_string(), "ghost");
-    let _ = thurbox::session_ops::reap_soft_deleted(&db, id);
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let _ = thurbox::backend::SessionBackend::locate(
+        &backend,
+        thurbox::backend::Owner::new(&id.to_string(), "ghost"),
+    );
+    let _ =
+        thurbox::session_ops::reap_soft_deleted(&db, &thurbox::backend::wiring::configured().0, id);
 
     let started = tmux(&["has-session"]).status.success();
     assert!(!started, "a teardown started a tmux server on the socket");
@@ -850,11 +984,21 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
     let Some(session) = spawn(&db, repo.path(), "unwatched") else {
         return;
     };
-    thurbox::session_ops::delete_session_headless(&db, session.session_id, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        session.session_id,
+        false,
+    )
+    .expect("delete");
 
     // Inside the undo window: the sweep leaves it, and the agent runs on.
     assert!(
-        thurbox::session_ops::reap_overdue_soft_deletes(&db).is_empty(),
+        thurbox::session_ops::reap_overdue_soft_deletes(
+            &db,
+            &thurbox::backend::wiring::configured().0
+        )
+        .is_empty(),
         "a delete still inside its undo window is not overdue"
     );
     let untouched = pane_alive(&session.backend_id);
@@ -866,11 +1010,17 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
             [session.session_id.to_string()],
         )
         .expect("backdate the delete");
-    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db);
+    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+    );
     let collected = !pane_alive(&session.backend_id);
     // Idempotent: the row owns nothing on the next pass, so it is not reported
     // again on every tick for as long as it stays deleted.
-    let second = thurbox::session_ops::reap_overdue_soft_deletes(&db);
+    let second = thurbox::session_ops::reap_overdue_soft_deletes(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+    );
 
     assert!(untouched, "the agent runs on until the undo window closes");
     assert_eq!(

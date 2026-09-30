@@ -322,7 +322,9 @@ async fn a_session_nobody_has_looked_at_holds_no_screen() {
         tmux_text(&pane).contains("early prompt>")
     });
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -394,7 +396,9 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     terminals.keep_hidden_for(Some(Duration::ZERO));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
@@ -463,7 +467,9 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
         tmux_text(&pane).contains("before prompt>")
     });
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
 
@@ -520,7 +526,9 @@ async fn a_search_finds_history_in_a_session_nobody_is_looking_at() {
         tmux_text(&pane).contains("filler prompt>")
     });
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -571,7 +579,9 @@ async fn a_session_off_screen_still_reports_its_title_and_its_output() {
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains("ready"));
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -617,7 +627,9 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
             == "reviewing the diff"
     });
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     assert!(grid_size(&terminals) <= (2, 2), "attached without a grid");
@@ -674,7 +686,9 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
         go = go.display()
     ));
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     wait_for("the grid", || {

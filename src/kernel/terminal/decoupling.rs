@@ -110,6 +110,28 @@ impl Recorder {
 }
 
 impl crate::backend::SessionBackend for Recorder {
+    fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+        anyhow::bail!("{}: a stub opens no windows", self.name())
+    }
+    fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
+        Ok(crate::backend::Placed {
+            agent: crate::backend::Located::Absent,
+            shell: crate::backend::Located::Absent,
+        })
+    }
+    fn rename_windows(&self, _: crate::backend::Owner<'_>, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn stamp_window(&self, _: &str, _: &str, _: crate::backend::WindowRole) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn window_panes(&self, _: &str) -> anyhow::Result<Vec<(String, bool)>> {
+        Ok(Vec::new())
+    }
+    fn set_pane_retention(&self, _: &str, _: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn shutdown(&self) {}
     fn name(&self) -> &str {
         "local-tmux"
     }
@@ -192,7 +214,7 @@ struct Harness {
     terminals: Terminals,
     backend: Arc<Recorder>,
     id: String,
-    /// `Terminals::new()` reads the host registry and the agent registry, and
+    /// `Terminals::with_registry` reads the host registry and the agent registry, and
     /// seeds the latter when it is missing — so it is pointed at a directory of
     /// its own rather than at whoever is running the suite.
     _paths: crate::paths::TestPathGuard,
@@ -222,7 +244,8 @@ impl Harness {
             .ensure_shell_pane(rows, cols, None)
             .expect("open the companion shell");
 
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let id = "probe-0000".to_string();
         terminals.live.insert(
             id.clone(),
@@ -791,7 +814,8 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
         HashMap::new(),
     )
     .expect("adopt");
-    let mut terminals = Terminals::new();
+    let mut terminals =
+        Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
     let id = "probe-0000".to_string();
     terminals.live.insert(
         id.clone(),

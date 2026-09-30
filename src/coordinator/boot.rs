@@ -137,6 +137,13 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let (config, config_warnings) = thurbox::kernel::config::Config::load();
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
 
+    // The one registry this process drives every backend through, built here
+    // and handed to each consumer: attach, the command workers and the startup
+    // self-heal all see the same set of backends. Registration only — nothing
+    // is connected until a session on a backend is attached or acted on.
+    let (backends, _hosts, _host_warnings) = thurbox::backend::wiring::configured();
+    let backends = std::sync::Arc::new(backends);
+
     // Extensions, before the interface takes the terminal.
     //
     // Two things, both idempotent and both best-effort: re-create any
@@ -151,8 +158,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     startup_notices.extend(config_warnings);
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {
-        startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db));
-        startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(&db));
+        startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db, &backends));
+        startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(
+            &db, &backends,
+        ));
         // The one-time repair schema v47 marked as owed: rows a loopback WSL
         // host recorded as remote. Here because it needs both the host
         // registry and the database, and the migration that marked it has only
@@ -212,7 +221,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    let snapshots = SnapshotStore::open();
+    let snapshots = SnapshotStore::open(&backends);
     startup.db_open_ms = phase.elapsed().as_millis() as u64;
 
     let phase = Instant::now();
@@ -225,8 +234,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         watcher: Watcher::new(&ui_dir)?,
         ui_dir,
         snapshots,
-        terminals: Terminals::new(),
-        commands: CommandBus::new(),
+        terminals: Terminals::with_registry(std::sync::Arc::clone(&backends)),
+        commands: CommandBus::new(std::sync::Arc::clone(&backends)),
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
         metrics: Metrics::new(),
@@ -373,6 +382,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let result = app.run(terminal);
     restore_terminal();
+    // Each backend's connection comes down at once rather than one after
+    // another as the registry's last owner drops it.
+    drop(app);
+    backends.shutdown_all();
     result
 }
 

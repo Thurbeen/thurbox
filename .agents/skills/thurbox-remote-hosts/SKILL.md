@@ -94,7 +94,7 @@ keystrokes from the primitives psmux does support (`send_keys_commands`), folds
 env + command into **one token** of PowerShell (`psmux_window_powershell`),
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`control_mode::PsmuxPaste`), and neither writes nor reads
-the ADR-25 window stamp there (`stamp_window` / `stamp_local_window` /
+the ADR-25 window stamp there (`stamp_window` / `create_window` /
 `stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
 `#{@...}` then answers with for **every** window, which made one session's id
 every window's identity. psmux also **answers the argv `attach-session` with
@@ -143,8 +143,9 @@ session), never on the loop, ADR-P12).
   `docs/CONFIG.md` → *Multiplexer choice and existing sessions*), and
   resolved by one resolver, `HostRegistry::host_of` / `qualify`: the host
   comes back as configured, never with a platform read off the route.
-  `session_ops::mux_host` is the one that tells the tmux adapter a row's
-  multiplexer, refusing one no adapter implements; `session_ops::server_key`
+  `session_ops::windows::backend_for` finds the backend a row's route names in
+  the injected registry, refusing a route none serves (ADR-29);
+  `session_ops::server_key`
   compares two rows' servers whatever spelling each carries. A host name may
   not contain `:` (refused at load). **Loading**: `agent::host_config::load_all{,_with_warnings}`
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
@@ -349,15 +350,15 @@ session), never on the loop, ADR-P12).
   per-pane user options at all, and the transport that replaces the mailbox is
   deferred).
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
-  teardown is **backend-aware** — `teardown_runtime_resources` resolves the
-  session's `HostDef` from its `backend_type` and, for a remote session, kills
-  its windows via `kill_remote_windows(host, session_id, name, SessionPanes)` and
-  removes each worktree via `git::remove_worktree_on(Some(host), …)` (local
-  sessions keep the `kill_window`/`remove_worktree` + Windows pane-reap path).
+  teardown is **backend-aware** — `teardown_runtime_resources` kills the
+  session's windows through the backend its route names
+  (`session_ops::windows::kill_owned`: `locate` then `kill`) and, for a remote
+  session, removes each worktree via `git::remove_worktree_on(Some(host), …)`
+  (local sessions keep the local `remove_worktree` + Windows pane-reap path).
   Every kill is resolved from the window's own `@thurbox_session` stamp, not the
   row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
-  when it restarts, so a remembered `%N` there can be a live namesake's pane; the
-  `SessionPanes` argument is the psmux fallback only. An unreachable host or a
+  when it restarts, so a remembered `%N` there can be a live namesake's pane;
+  the panes an `Owner` remembers are the psmux fallback only. An unreachable host or a
   missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
   row is still soft-/force-deleted — a host that is down is often *why* someone
@@ -409,11 +410,11 @@ session), never on the loop, ADR-P12).
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,
   so a force delete taken while a host was briefly down found nothing to kill
-  and recorded *no error at all*. `TmuxBackend::discover_answered` (used by
-  `kill_remote_windows`, `remote_window_index` and `agent_window`) answers
-  empty only on the multiplexer's own refusal, and drops the `has-session`
-  round trip while it is there. `agent_window` backs `agent_window_alive`,
-  which `restart --if-missing` uses to decide whether to relaunch after a
+  and recorded *no error at all*. `TmuxBackend::discover_answered` (what
+  `discover` runs with no control mode open, and what `locate` and
+  `rename_windows` list with) answers empty only on the multiplexer's own
+  refusal, and drops the `has-session` round trip while it is there. It is
+  what `restart --if-missing` asks to decide whether to relaunch after a
   reboot — an unreachable host now aborts the relaunch instead of reading as
   "no window", which used to start a second agent beside the one still running
   once the host answered again (`restart_if_missing_probe`).
@@ -460,7 +461,7 @@ session), never on the loop, ADR-P12).
 - **A remote teardown never starts a server.** `ensure_ready` creates the
   multiplexer server *and* the thurbox session as a side effect, so a one-shot
   `thurbox-cli` tearing a session down used to leave an empty server on the
-  host. `kill_remote_windows` / `remote_window_index` / `agent_window` read one
+  host. With no control mode open, `locate` / `discover` / `kill` read one
   `list-windows` (`discover_answered`, above) and kill with a one-shot
   `kill-pane`. And they only act on a socket the host has vouched for:
   `known_host_socket` takes `hosts.toml`'s `socket`, else what the host's own

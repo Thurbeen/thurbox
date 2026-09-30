@@ -1789,7 +1789,7 @@ mod tests {
     #[test]
     fn dispatch_returns_immediately_and_reports_the_command_in_flight() {
         // The property that matters: accepting a command does not wait for it.
-        let bus = CommandBus::new();
+        let bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         let started = std::time::Instant::now();
         // A bogus id fails fast in the worker, which is fine — what is asserted
         // here is that *dispatch* did not block on any of it.
@@ -1807,7 +1807,7 @@ mod tests {
 
     #[test]
     fn a_failure_surfaces_through_the_inflight_list_not_the_call() {
-        let mut bus = CommandBus::new();
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -1840,7 +1840,7 @@ mod tests {
         // The progress line is derived from this, and it outranks the message
         // band. A failure lingers longer than a message is retained, so counting
         // it as progress hid the error for exactly as long as the error existed.
-        let mut bus = CommandBus::new();
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         let id = bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -1860,7 +1860,7 @@ mod tests {
         // The failure is FIRST in the list, so a `first()` would stop there and
         // report nothing in flight while a creation was genuinely running — the
         // band would go quiet mid-spawn.
-        let mut bus = CommandBus::new();
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         let failed = bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -1910,7 +1910,7 @@ mod tests {
     fn work_in_flight_is_reported_as_running() {
         // The other half of the contract: an ordinary in-flight command must
         // still drive the progress line.
-        let bus = CommandBus::new();
+        let bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         assert!(bus.first_running().is_none(), "nothing dispatched yet");
         let id = bus.dispatch(Command::Restore {
             session: "s1".into(),
@@ -1927,7 +1927,7 @@ mod tests {
         // runs. Recorded like a command someone pressed, it reserves the message
         // band and gives it back on that cadence — the whole frame reflowing
         // twice every five seconds, captioned "reap".
-        let bus = CommandBus::new();
+        let bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         bus.dispatch(Command::Reap);
         assert!(
             bus.inflight().is_empty(),
@@ -1940,7 +1940,7 @@ mod tests {
 
     #[test]
     fn a_session_with_work_in_flight_reads_as_busy() {
-        let bus = CommandBus::new();
+        let bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         assert!(!bus.is_busy("s1"));
         bus.dispatch(Command::Restore {
             session: "s1".into(),
@@ -2000,7 +2000,7 @@ mod tests {
         //
         // Anything that needs to know a command finished must therefore have
         // recorded it when it was DISPATCHED.
-        let mut bus = CommandBus::new();
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
             toggle: false,
@@ -2022,7 +2022,7 @@ mod tests {
 
     #[test]
     fn a_command_that_fails_lingers_so_a_pane_can_draw_it() {
-        let mut bus = CommandBus::new();
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
             toggle: false,

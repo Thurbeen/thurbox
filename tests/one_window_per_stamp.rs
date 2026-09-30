@@ -49,13 +49,16 @@ fn have_tmux() -> bool {
 
 /// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
-    tmux::spawn_window(
-        session_id,
-        name,
-        "sh",
-        &["-c".to_string(), "while :; do sleep 1; done".to_string()],
-        None,
-        &HashMap::new(),
+    thurbox::backend::SessionBackend::create_window(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(session_id, name),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sh",
+            args: &["-c".to_string(), "while :; do sleep 1; done".to_string()],
+            cwd: None,
+            env: &HashMap::new(),
+        },
     )
     .unwrap_or_else(|e| panic!("spawn {name}: {e:#}"))
 }
@@ -99,6 +102,27 @@ fn plant_stamp(server: &TmuxServer, pane: &str) {
     }
 }
 
+/// Every thurbox window on the private server, indexed.
+fn local_index() -> thurbox::backend::identity::WindowIndex {
+    thurbox::backend::identity::WindowIndex::from_listing(
+        thurbox::backend::SessionBackend::discover(&tmux::TmuxBackend::new())
+            .expect("list windows"),
+    )
+}
+
+/// Kill the session's agent window, found as every teardown finds it.
+fn kill_agent(session: &str, name: &str) -> anyhow::Result<()> {
+    use thurbox::backend::SessionBackend;
+    let backend = tmux::TmuxBackend::new();
+    if let Located::At(pane) = backend
+        .locate(thurbox::backend::Owner::new(session, name))?
+        .agent
+    {
+        backend.kill(&pane)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
     if !have_tmux() {
@@ -114,7 +138,7 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
     // the restart is still creating.
     let second = spawn(SESSION, NAME);
 
-    let index = tmux::local_window_index().expect("list windows");
+    let index = local_index();
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(second.clone()),
@@ -145,9 +169,9 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
     // The agent that is running when the restart arrives.
     spawn(SESSION, NAME);
 
-    // `respawn_local` is kill → spawn, and this is the moment between them.
-    tmux::kill_window(SESSION, NAME).expect("the restart's kill");
-    let index = tmux::local_window_index().expect("list windows");
+    // A restart's respawn is kill → spawn, and this is the moment between them.
+    kill_agent(SESSION, NAME).expect("the restart's kill");
+    let index = local_index();
     assert!(
         index.live_agent_window(SESSION, NAME).is_absent(),
         "the premise: a repairer asks whether the window is gone and is told yes"
@@ -165,7 +189,7 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
          server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = local_index();
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(restarted),
@@ -197,7 +221,7 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                let _ = tmux::kill_window(SESSION, NAME);
+                let _ = kill_agent(SESSION, NAME);
                 spawn(SESSION, NAME)
             })
         })
@@ -215,7 +239,7 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
          and the server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = local_index();
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::At(survivors[0].clone()),
@@ -262,7 +286,7 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
          server holds:\n{}",
         listing(&server)
     );
-    let index = tmux::local_window_index().expect("list windows");
+    let index = local_index();
     assert!(
         matches!(index.agent_window(SESSION, NAME), Located::At(_)),
         "and the session resolves on its own from then on; server holds:\n{}",
@@ -286,7 +310,7 @@ fn the_listing_itself_still_refuses_a_pair() {
     let impostor = spawn(OTHER, "other");
     plant_stamp(&server, &impostor);
 
-    let index = tmux::local_window_index().expect("list windows");
+    let index = local_index();
     assert_eq!(
         index.agent_window(SESSION, NAME),
         Located::Unknown,

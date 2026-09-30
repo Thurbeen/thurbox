@@ -117,7 +117,7 @@ fn a_snapshot_read_never_touches_the_database() {
     // structural — reads come from the snapshot, and refresh is the only thing
     // that queries.
     let db = Database::open_in_memory().expect("db");
-    let store = SnapshotStore::with_database(db);
+    let store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
 
     let started = std::time::Instant::now();
     for _ in 0..10_000 {
@@ -135,7 +135,9 @@ fn dispatching_a_command_never_blocks_the_caller() {
     // ADR-P12 re-derived: v1 moved the whole new-session flow off the UI thread
     // deliberately. Here it falls out of the bus — there is no blocking form to
     // accidentally use.
-    let bus = CommandBus::new();
+    let bus = CommandBus::new(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let started = std::time::Instant::now();
 
     for _ in 0..20 {

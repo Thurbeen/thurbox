@@ -227,6 +227,7 @@ mod tests {
                 verify: false,
             },
             db,
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .unwrap();
         out.json

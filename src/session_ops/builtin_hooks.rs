@@ -745,7 +745,9 @@ mod tests {
         db.set_builtin_extension_optout(HOOKS_EXTENSION_NAME, true)
             .unwrap();
         // With opt-out set, ensure is a no-op (no install attempted).
-        assert!(HOOKS.ensure(&db).is_empty());
+        assert!(HOOKS
+            .ensure(&db, &crate::backend::registry::inert())
+            .is_empty());
     }
     /// How a payload has to be read to find out what it signals.
     #[derive(Clone, Copy)]

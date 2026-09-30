@@ -57,7 +57,8 @@ fn store_with_remote_session() -> (tempfile::TempDir, SnapshotStore, SessionId) 
     let home = tempfile::tempdir().expect("tempdir");
     let row = session("ssh:devbox");
     database(&home).upsert_session(&row).expect("upsert");
-    let store = SnapshotStore::with_database(database(&home));
+    let store =
+        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
     (home, store, row.id)
 }
 
@@ -150,7 +151,8 @@ fn an_event_for_a_pane_nobody_claims_yet_is_kept_until_it_appears() {
     let mut row = session("ssh:devbox");
     row.backend_id = String::new();
     database(&home).upsert_session(&row).expect("upsert");
-    let mut store = SnapshotStore::with_database(database(&home));
+    let mut store =
+        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
 
     let early = Instant::now();
     let applied = store.apply_hook_states(
@@ -181,7 +183,8 @@ fn a_parked_event_is_eventually_given_up_on() {
     let mut row = session("ssh:devbox");
     row.backend_id = String::new();
     database(&home).upsert_session(&row).expect("upsert");
-    let mut store = SnapshotStore::with_database(database(&home));
+    let mut store =
+        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
 
     let early = Instant::now();
     store.apply_hook_states(

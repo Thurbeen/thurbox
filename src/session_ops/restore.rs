@@ -170,6 +170,7 @@ fn declaring_extension(db: &Database, name: &str) -> Option<String> {
 
 pub fn restore_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     id: SessionId,
     best_effort: bool,
 ) -> Result<RestoreReport, String> {
@@ -210,6 +211,17 @@ pub fn restore_session_headless(
             deleted.name, deleted.backend_type
         ));
     }
+    // What relaunches the agent, asked before anything is held, fired or
+    // written: a restore marks the row active before it respawns, and a row
+    // brought back with nothing that can put its window back is a session
+    // that reads as running and never will be.
+    let backend = match delegated.is_some() {
+        true => None,
+        false => Some(
+            super::windows::backend_for(backends, &deleted.backend_type)
+                .map_err(|e| format!("cannot restore '{}': {e}", deleted.name))?,
+        ),
+    };
 
     // Not part of `restore_refusal`, and so not waived by `--best-effort`: that
     // flag says "I accept a lossy recovery", and this is not about loss.
@@ -300,7 +312,7 @@ pub fn restore_session_headless(
     let wanted = deleted.worktrees.len();
     let recovered = recreate_worktrees(&deleted.worktrees);
 
-    let respawn_error = respawn(db, deleted.id).err();
+    let respawn_error = backend.and_then(|backend| respawn(db, backend.as_ref(), deleted.id).err());
 
     // A restore whose agent did not come up is still a restore — the report
     // says so, and the hooks fire either way.
@@ -379,7 +391,11 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
 /// The window is gone (the delete killed it), so this spawns rather than
 /// restarts — but through the same plan a restart builds, so a restored session
 /// resumes its conversation exactly as a restarted one does.
-fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
+fn respawn(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    id: SessionId,
+) -> Result<(), String> {
     let session = db
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
@@ -395,13 +411,15 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
     // Strictly its own window: one stamped for a live namesake is not this
     // row's to adopt, and recording it would put two rows on one pane — the
     // next kill-by-id then destroys the other session's agent.
-    if let Ok(located) = crate::backend::tmux::agent_window(None, &stamp, &session.name) {
+    let owner = crate::backend::Owner::new(&stamp, &session.name);
+    if let Ok(located) = super::windows::live_agent(backend, owner) {
         if let Some(pane) = located.pane() {
-            crate::backend::tmux::stamp_local_window(
-                &pane,
-                &stamp,
-                crate::backend::WindowRole::Agent,
-            );
+            if let Err(e) = backend.stamp_window(&pane, &stamp, crate::backend::WindowRole::Agent) {
+                tracing::debug!(
+                    "could not stamp the window restored for '{}': {e:#}",
+                    session.name
+                );
+            }
             db.set_backend_id(session.id, &pane)
                 .map_err(|e| format!("record the live pane: {e}"))?;
             return Ok(());
@@ -425,15 +443,16 @@ fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
         recipe.as_ref(),
         &env,
     )?;
-    let pane = crate::backend::tmux::spawn_window(
-        &stamp,
-        &plan.window_name,
-        &plan.command,
-        &plan.args,
-        plan.cwd.as_deref(),
-        &plan.env,
-    )
-    .map_err(|e| format!("re-spawn: {e}"))?;
+    let pane = backend
+        .create_window(&crate::backend::WindowSpec {
+            owner: crate::backend::Owner::new(&stamp, &plan.window_name),
+            role: crate::backend::WindowRole::Agent,
+            command: &plan.command,
+            args: &plan.args,
+            cwd: plan.cwd.as_deref(),
+            env: &plan.env,
+        })
+        .map_err(|e| format!("re-spawn: {e:#}"))?;
     // The row still carries the pane the delete killed; the fresh one is what
     // every later read must target (empty on psmux — the name fallback stands).
     db.set_backend_id(session.id, &pane)
@@ -448,7 +467,13 @@ mod tests {
     #[test]
     fn restoring_something_that_was_never_deleted_says_so() {
         let db = Database::open_in_memory().expect("db");
-        let error = restore_session_headless(&db, SessionId::default(), false).unwrap_err();
+        let error = restore_session_headless(
+            &db,
+            &crate::backend::registry::inert(),
+            SessionId::default(),
+            false,
+        )
+        .unwrap_err();
         assert!(error.contains("not found"), "{error}");
     }
 
@@ -607,7 +632,7 @@ mod tests {
         let held = super::super::names::hold(&db, "build", LOCAL)
             .expect("hold")
             .expect("nothing holds it yet");
-        let err = restore_session_headless(&db, id, true)
+        let err = restore_session_headless(&db, &crate::backend::registry::inert(), id, true)
             .expect_err("a creation holds the name; the restore must say so");
         assert!(err.contains("being created right now"), "{err}");
 

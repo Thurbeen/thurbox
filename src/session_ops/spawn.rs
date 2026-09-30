@@ -178,8 +178,12 @@ impl SpawnPhase {
 /// Told which stage the pipeline has reached. Called on the spawning thread.
 pub type ProgressFn<'a> = &'a (dyn Fn(SpawnPhase) + Send + Sync);
 
-pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
-    spawn_session_headless_with_progress(db, req, None)
+pub fn spawn_session_headless(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    req: SpawnRequest,
+) -> Result<SpawnResult, String> {
+    spawn_session_headless_with_progress(db, backends, req, None)
 }
 
 /// [`spawn_session_headless`], reporting each stage as it is reached.
@@ -188,6 +192,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
 /// automation runner — is untouched and keeps its signature.
 pub fn spawn_session_headless_with_progress(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SpawnResult, String> {
@@ -200,7 +205,7 @@ pub fn spawn_session_headless_with_progress(
     validate_request(db, &req)?;
 
     // Resolve host and multiplexer before any worktree or pane is made.
-    let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
+    let choice = resolve_backend(backends, req.host.as_deref(), req.multiplexer.as_deref())?;
     let backend_type = choice.backend_type();
     let host = choice.host.clone();
 
@@ -374,16 +379,20 @@ pub fn spawn_session_headless_with_progress(
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which
     // is what every later lookup resolves: a window *name* is not unique (two
-    // sessions can share one) and a pane id is reissued when the tmux server
-    // restarts. Both paths also learn the real pane id up front — the remote
-    // one over the SSH backend's control mode, the local one from
-    // `new-window -P` — which is the pane the interface attaches to.
+    // sessions can share one) and a pane id is reissued when a server
+    // restarts. The backend also reports the real pane id up front, which is
+    // the pane the interface attaches to.
     let stamp = session_id.to_string();
-    // The window goes on the multiplexer the row will name, which the host's
-    // entry need not prefer; everything else about the host is as configured.
-    let served = host.as_ref().map(|h| h.served_by(choice.multiplexer));
+    // The backend the row will name: its route's, which the host's entry need
+    // not prefer — `resolve_backend` checked it is served.
+    let backend = backends.get(&choice.route).ok_or_else(|| {
+        format!(
+            "{} is unavailable here: no registered backend serves it",
+            choice.route
+        )
+    })?;
     let backend_id = launch_window(
-        served.as_ref(),
+        backend.as_ref(),
         &stamp,
         &req.name,
         &command,
@@ -421,7 +430,7 @@ pub fn spawn_session_headless_with_progress(
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(served.as_ref(), &stamp, &req.name, &backend_id);
+        discard_orphaned_window(backend.as_ref(), &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}"));
     }
 
@@ -509,10 +518,9 @@ fn missing_agent_warning(
     )
 }
 
-/// Open the session's window, on its host or here, and return the new pane's
-/// id.
+/// Open the session's window on its backend and return the new pane's id.
 fn launch_window(
-    host: Option<&HostDef>,
+    backend: &dyn crate::backend::SessionBackend,
     stamp: &str,
     name: &str,
     command: &str,
@@ -520,50 +528,41 @@ fn launch_window(
     cwd: &std::path::Path,
     env: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    match host {
-        Some(h) => {
-            crate::backend::tmux::spawn_window_remote(h, stamp, name, command, args, Some(cwd), env)
-                .map_err(
-                    |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                        // `ssh`/`wsl.exe` missing on *this* machine: already a sentence
-                        // naming it, the search and the fix.
-                        true => format!("{e}"),
-                        false => format!("Failed to spawn remote tmux window: {e:#}"),
-                    },
-                )
-        }
-        None => crate::backend::tmux::spawn_window(stamp, name, command, args, Some(cwd), env)
-            .map_err(
-                |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                    // Already a sentence naming the binary, the search and the fix;
-                    // a prefix in front of it only pushes the fix off the row.
-                    true => format!("{e}"),
-                    false => format!("Failed to spawn tmux window: {e:#}"),
-                },
-            ),
-    }
+    backend
+        .create_window(&crate::backend::WindowSpec {
+            owner: crate::backend::Owner::new(stamp, name),
+            role: crate::backend::WindowRole::Agent,
+            command,
+            args,
+            cwd: Some(cwd),
+            env,
+        })
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                // Already a sentence naming the binary (or the `ssh`/`wsl.exe`
+                // missing on *this* machine), the search and the fix; a prefix
+                // in front of it only pushes the fix off the row.
+                true => format!("{e}"),
+                false => format!("Failed to spawn a window on {}: {e:#}", backend.name()),
+            },
+        )
 }
 
 /// Tear down the window a spawn opened but could not persist as a row — only
 /// when it is provably that spawn's own.
-fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, backend_id: &str) {
+fn discard_orphaned_window(
+    backend: &dyn crate::backend::SessionBackend,
+    stamp: &str,
+    name: &str,
+    backend_id: &str,
+) {
     // Ownership-gated, for the same reason the reap is: this tears down a
     // window that never became a row, so it must kill only the one it just
-    // spawned. `kill_window`'s resolution would reach the `tb-<name>`
-    // window when the pane id is unusable — and it is unusable exactly
-    // where it matters, since psmux records none — which on a name two
-    // sessions share destroys a live one. Leaking the window we already
-    // leaked is the cheap failure; killing someone else's is not.
-    let cleanup = match host {
-        Some(h) => crate::backend::tmux::kill_remote_windows(
-            h,
-            stamp,
-            name,
-            crate::backend::tmux::SessionPanes::agent(backend_id),
-        ),
-        None => crate::backend::tmux::kill_window(stamp, name).map(|()| true),
-    };
-    match cleanup {
+    // spawned — resolved by the stamp it was created with, with the pane it
+    // reported as the only hint. Leaking the window we already leaked is the
+    // cheap failure; killing someone else's is not.
+    let owner = crate::backend::Owner::new(stamp, name).remembering(backend_id, "");
+    match super::windows::kill_owned(backend, owner) {
         Ok(true) => {}
         // Nothing this spawn can prove is its own. The window leaks rather
         // than taking a live session's down with it.
@@ -574,7 +573,7 @@ fn discard_orphaned_window(host: Option<&HostDef>, stamp: &str, name: &str, back
             backend_id
         ),
         Err(kill_err) => tracing::error!(
-            "failed to tear down orphaned window for '{}': {kill_err}",
+            "failed to tear down orphaned window for '{}': {kill_err:#}",
             name
         ),
     }
@@ -1469,13 +1468,15 @@ fn dir_label(path: &std::path::Path) -> String {
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
 pub(crate) fn backend_type_for_choice(
+    backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<String, String> {
-    resolve_backend(host, multiplexer).map(|choice| choice.backend_type())
+    resolve_backend(backends, host, multiplexer).map(|choice| choice.backend_type())
 }
 
 fn resolve_backend(
+    backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<crate::session::BackendChoice, String> {
@@ -1483,7 +1484,6 @@ fn resolve_backend(
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::backend::wiring::configured();
     if !backends.supports(&choice.route) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",
@@ -1567,7 +1567,8 @@ mod tests {
     #[test]
     fn empty_name_is_rejected() {
         let db = empty_db();
-        let err = spawn_session_headless(&db, req("")).unwrap_err();
+        let err =
+            spawn_session_headless(&db, &crate::backend::registry::inert(), req("")).unwrap_err();
         assert!(err.to_lowercase().contains("name"), "got {err}");
     }
 
@@ -1576,7 +1577,7 @@ mod tests {
         let db = empty_db();
         for bad in [".hidden", "foo/bar", "foo..bar", "foo\\bar"] {
             assert!(
-                spawn_session_headless(&db, req(bad)).is_err(),
+                spawn_session_headless(&db, &crate::backend::registry::inert(), req(bad)).is_err(),
                 "should reject {bad}"
             );
         }
@@ -1587,7 +1588,7 @@ mod tests {
         let db = empty_db();
         let mut r = req("worker");
         r.parent_session_id = Some(SessionId::default());
-        let err = spawn_session_headless(&db, r).unwrap_err();
+        let err = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap_err();
         assert!(err.contains("Parent session not found"), "got {err}");
     }
 
@@ -1600,7 +1601,7 @@ mod tests {
         let mut r = req("cmd-sess");
         r.command = Some("bash".into());
         r.resume_session_id = Some("some-external-id".into());
-        let err = spawn_session_headless(&db, r).unwrap_err();
+        let err = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap_err();
         assert!(
             err.contains("--resume") && err.contains("--command"),
             "got {err}"

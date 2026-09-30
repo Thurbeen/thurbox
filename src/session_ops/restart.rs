@@ -135,13 +135,13 @@ pub(crate) fn build_restart_plan(
     })
 }
 
-/// The pane ids a row remembers for its two windows — the psmux tiebreaker a
-/// remote teardown falls back on when nothing there is stamped.
-fn session_panes(session: &SharedSession) -> crate::backend::tmux::SessionPanes<'_> {
-    crate::backend::tmux::SessionPanes {
-        agent: &session.backend_id,
-        shell: session.shell_backend_id.as_deref().unwrap_or_default(),
-    }
+/// The row as its backend is asked about it, remembering the panes it
+/// recorded — the tiebreaker a backend that cannot stamp falls back on.
+fn owner_of<'a>(session: &'a SharedSession, id: &'a str) -> crate::backend::Owner<'a> {
+    crate::backend::Owner::new(id, &session.name).remembering(
+        &session.backend_id,
+        session.shell_backend_id.as_deref().unwrap_or_default(),
+    )
 }
 
 /// Park a session: kill its pane, keep everything else.
@@ -156,20 +156,26 @@ fn session_panes(session: &SharedSession) -> crate::backend::tmux::SessionPanes<
 /// that has no pane (the interface's respawn of surveyed rows, a peer's
 /// `restart --if-missing`, extension self-heal), and the window between killing
 /// and recording is exactly when one of them would put it back.
-pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<bool, String> {
+pub fn stop_session_headless(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session_id: SessionId,
+) -> Result<bool, String> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
     let remote = crate::session::Route::is_remote_key(&session.backend_type);
-    // Asked before the mark: a row whose multiplexer nothing here drives — on
+    // Asked before the mark: a row whose route no backend here serves — on
     // its host or on this machine — would read as parked while the window that
     // could not be killed keeps running. A host `hosts.toml` no longer
     // describes is different — see below.
-    let served = if !remote || super::resolve_host(&session.backend_type).is_some() {
-        super::mux_host(&session.backend_type)
-            .map_err(|e| format!("cannot stop '{}': {e}", session.name))?
+    let backend = if !remote || super::resolve_host(&session.backend_type).is_some() {
+        Some(
+            super::windows::backend_for(backends, &session.backend_type)
+                .map_err(|e| format!("cannot stop '{}': {e}", session.name))?,
+        )
     } else {
         None
     };
@@ -177,29 +183,17 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let killed = if remote {
-        match served {
-            Some(host) => crate::backend::tmux::kill_remote_windows(
-                &host,
-                &session.id.to_string(),
-                &session.name,
-                session_panes(&session),
-            )
-            .unwrap_or(false),
-            // An unreachable or unconfigured host is not a reason to refuse:
-            // the mark is what makes the stop stick, and the pane is reclaimed
-            // by the next teardown that can reach it.
-            None => false,
-        }
-    } else {
-        let killed =
-            crate::backend::tmux::kill_window(&session.id.to_string(), &session.name).is_ok();
-        if let Err(e) =
-            crate::backend::tmux::kill_shell_window(&session.id.to_string(), &session.name)
-        {
-            tracing::debug!("no shell window to kill for '{}': {e:#}", session.name);
-        }
-        killed
+    let id = session.id.to_string();
+    let killed = match backend {
+        // An unreachable or unconfigured host is not a reason to refuse: the
+        // mark is what makes the stop stick, and the pane is reclaimed by the
+        // next teardown that can reach it.
+        Some(backend) => super::windows::kill_owned(backend.as_ref(), owner_of(&session, &id))
+            .unwrap_or_else(|e| {
+                tracing::debug!("could not kill the windows of '{}': {e:#}", session.name);
+                false
+            }),
+        None => false,
     };
 
     Ok(killed)
@@ -213,11 +207,26 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
 /// cannot resurrect one. `start` is the one caller allowed to say otherwise.
 pub fn start_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
+    // Refused before the mark comes off: a stop cleared for a session nothing
+    // here can relaunch reads as a session that should be running.
+    let session = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("Failed to load session: {e}"))?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    if super::resolve_host(&session.backend_type)
+        .flatten()
+        .and_then(|host| super::host_cli::delegated(&host))
+        .is_none()
+    {
+        super::windows::backend_for(backends, &session.backend_type)
+            .map_err(|e| format!("cannot start '{}': {e}", session.name))?;
+    }
     db.set_session_stopped(session_id, false)
         .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
-    restart_for(db, session_id, Relaunch::Unparking)
+    restart_for(db, backends, session_id, Relaunch::Unparking)
 }
 
 /// Refuse a restart of a row that has been deleted since it was loaded.
@@ -280,7 +289,7 @@ impl Recorded {
 /// storage error it carries — a peer holding the write lock, a full disk — is
 /// about the write, not about the row, and the agent that was just launched is
 /// a live process with a conversation in it. Left alone, the window is found
-/// again on its own: `spawn_window` stamps it with this session's id, so the
+/// again on its own: `create_window` stamps it with this session's id, so the
 /// interface resolves it by stamp when the row's stale pane id is contradicted
 /// by a listing (`Terminals::sync` → `pane_by_name`) and writes the id back
 /// (`drain_adopted_panes`). Killing the agent to tidy up after a transient
@@ -312,9 +321,10 @@ pub struct RestartReport {
 /// restarts).
 pub fn restart_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
-    restart_session_headless_with(db, session_id, false)
+    restart_session_headless_with(db, backends, session_id, false)
 }
 
 /// [`restart_session_headless`], or — with `if_missing` — a **relaunch**: the
@@ -324,11 +334,13 @@ pub fn restart_session_headless(
 /// session produce one launch: the second finds the window the first made.
 pub fn restart_session_headless_with(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     if_missing: bool,
 ) -> Result<RestartReport, String> {
     restart_for(
         db,
+        backends,
         session_id,
         match if_missing {
             true => Relaunch::IfMissing,
@@ -379,6 +391,7 @@ impl Relaunch {
 /// Every restart, with [`Relaunch`] saying which caller's rules apply.
 fn restart_for(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     why: Relaunch,
 ) -> Result<RestartReport, String> {
@@ -431,13 +444,12 @@ fn restart_for(
         return Ok(RestartReport::default());
     }
 
-    // The multiplexer the row was written for, on the host it names: what the
-    // windows are killed, listed and spawned with. Refused here, before any of
-    // that, when nothing implements it.
-    let served = super::mux_host(&session.backend_type)
+    // The backend the row's route names: what the windows are killed, listed
+    // and spawned with. Refused here, before any of that, when none serves it.
+    let backend = super::windows::backend_for(backends, &session.backend_type)
         .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
 
-    if why.only_if_missing() && !relaunch_is_owed(db, &session, served.as_ref())? {
+    if why.only_if_missing() && !relaunch_is_owed(db, backend.as_ref(), &session)? {
         return Ok(RestartReport::default());
     }
 
@@ -471,10 +483,7 @@ fn restart_for(
 
     refuse_if_deleted(db, &session)?;
 
-    match served.as_ref() {
-        None => respawn_local(db, &session, &plan)?,
-        Some(served) => respawn_remote(db, &session, served, &plan)?,
-    }
+    respawn(db, backend.as_ref(), &session, &plan)?;
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it
     // doesn't show a leftover Blocked/Working/Done until the agent re-reports
@@ -582,8 +591,8 @@ fn hold_restart(db: &Database, session_id: SessionId) -> Option<HeldRestart<'_>>
 /// for the restart instead of for this question.
 fn relaunch_is_owed(
     db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
     session: &SharedSession,
-    host: Option<&crate::session::HostDef>,
 ) -> Result<bool, String> {
     // "Relaunch what is missing" is what a peer asks after a reboot, and a
     // parked session is missing on purpose. Only `session start` clears the
@@ -603,9 +612,9 @@ fn relaunch_is_owed(
     // Only a listing that positively says the window is *gone* relaunches.
     // An ambiguous name — several windows, none stamped — reads as running
     // here on purpose: launching another agent is the expensive mistake.
-    let alive =
-        crate::backend::tmux::agent_window_alive(host, &session.id.to_string(), &session.name)
-            .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+    let id = session.id.to_string();
+    let alive = super::windows::agent_running(backend, owner_of(session, &id))
+        .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
     if alive {
         tracing::debug!("'{}' is running; nothing to relaunch", session.name);
         return Ok(false);
@@ -613,136 +622,77 @@ fn relaunch_is_owed(
     Ok(true)
 }
 
-/// Replace a local session's window with the plan's, and point the row at the
-/// new pane.
-fn respawn_local(db: &Database, session: &SharedSession, plan: &RestartPlan) -> Result<(), String> {
-    // A window that is already gone is not an error — the same rule the
-    // remote branch follows. It is also what makes this the *respawn*
-    // path: a session whose tmux server died is restarted by asking for
-    // exactly this, and refusing because there was nothing to kill would
-    // make the one case that needs it the one case that fails.
-    // Killed by the window's own stamp: the window *name* is not
-    // unique, and killing by name with a duplicate around tears down an
-    // arbitrary one of them.
-    if let Err(e) = crate::backend::tmux::kill_window(&session.id.to_string(), &plan.window_name) {
-        tracing::debug!("no window to kill for '{}': {e:#}", plan.window_name);
-    }
-    // The companion shell goes with it: it was opened beside the agent
-    // this restart replaces, and the interface reopens one on demand.
-    if let Err(e) =
-        crate::backend::tmux::kill_shell_window(&session.id.to_string(), &plan.window_name)
-    {
-        tracing::debug!("no shell window to kill for '{}': {e:#}", plan.window_name);
-    }
-    let pane = crate::backend::tmux::spawn_window(
-        &session.id.to_string(),
-        &plan.window_name,
-        &plan.command,
-        &plan.args,
-        plan.cwd.as_deref(),
-        &plan.env,
-    )
-    .map_err(
-        |e| match crate::agent::preflight::is_missing_dependency(&e) {
-            // Already a sentence naming the binary, the search and the fix;
-            // a prefix in front of it only pushes the fix off the row.
+/// Replace a session's window with the plan's on its backend, and point the
+/// row at the new pane.
+fn respawn(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    session: &SharedSession,
+    plan: &RestartPlan,
+) -> Result<(), String> {
+    let id = session.id.to_string();
+    // By the windows' own stamps, agent and companion shell together: the
+    // window *name* is not unique, and killing by name with a duplicate around
+    // tears down an arbitrary one of them. The shell goes because it was opened
+    // beside the agent this restart replaces; the interface reopens one on
+    // demand. A window that is already gone is not an error — it is what makes
+    // this the *respawn* path too: a session whose server died is restarted by
+    // asking for exactly this.
+    //
+    // A backend that cannot say what is there is a refusal, before anything is
+    // spawned: launching beside windows nobody could see — or on a socket the
+    // host has not vouched for — puts a second agent on the conversation.
+    if let Err(e) = super::windows::kill_owned(backend, owner_of(session, &id)) {
+        return Err(match crate::agent::preflight::is_missing_dependency(&e) {
+            // Already a sentence naming the binary, the search and the fix.
             true => format!("{e}"),
-            false => format!("Failed to re-spawn tmux window: {e:#}"),
-        },
-    )?;
+            false => format!(
+                "cannot restart '{}': could not take down its windows on {}: {e:#}",
+                session.name,
+                backend.name()
+            ),
+        });
+    }
+    let pane = backend
+        .create_window(&crate::backend::WindowSpec {
+            owner: crate::backend::Owner::new(&id, &plan.window_name),
+            role: crate::backend::WindowRole::Agent,
+            command: &plan.command,
+            args: &plan.args,
+            cwd: plan.cwd.as_deref(),
+            env: &plan.env,
+        })
+        .map_err(
+            |e| match crate::agent::preflight::is_missing_dependency(&e) {
+                // Already a sentence naming the binary, the search and the fix;
+                // a prefix in front of it only pushes the fix off the row.
+                true => format!("{e}"),
+                false => format!("Failed to re-spawn a window on {}: {e:#}", backend.name()),
+            },
+        )?;
 
-    // The new pane is a different one, and the id is how every later
-    // read finds it — leaving the old one persisted would point the
-    // interface at a pane that no longer exists. (Empty on psmux, where
-    // the spawn can't report an id; the interface then resolves by
-    // window name as before.)
+    // The new pane is a different one, and the id is how every later read
+    // finds it — leaving the old one persisted would point the interface at a
+    // pane that no longer exists. (Empty where the backend can't report an id;
+    // the interface then resolves by window name as before.)
     match record_pane(db, session, &pane) {
         Recorded::Stored => {}
         Recorded::RowGone => {
-            // The row lost the race (deleted between the load above and
-            // here), so nothing will ever attach to this window — a
-            // force-deleted row is never reaped. Kill what was just
-            // spawned rather than leave it running forever.
-            if let Err(kill_err) =
-                crate::backend::tmux::kill_window(&session.id.to_string(), &plan.window_name)
-            {
+            // The row lost the race (deleted between the load above and here),
+            // so nothing will ever attach to this window — a force-deleted row
+            // is never reaped. Kill what was just spawned rather than leave it
+            // running forever.
+            let spawned = crate::backend::Owner::new(&id, &plan.window_name).remembering(&pane, "");
+            if let Err(kill_err) = super::windows::kill_owned(backend, spawned) {
                 tracing::warn!(
-                    "could not kill orphaned restart window for '{}': {kill_err:#}",
-                    session.name
+                    "could not kill orphaned restart window for '{}' on {}: {kill_err:#}",
+                    session.name,
+                    backend.name()
                 );
             }
             return Err(Recorded::deleted_mid_restart(&session.name));
         }
         // The agent is running; only the row lags. Reported, not killed.
-        Recorded::WriteFailed(e) => return Err(e),
-    }
-    Ok(())
-}
-
-/// Replace a remote session's window on its host with the plan's, and point
-/// the row at the new pane.
-fn respawn_remote(
-    db: &Database,
-    session: &SharedSession,
-    host: &crate::session::HostDef,
-    plan: &RestartPlan,
-) -> Result<(), String> {
-    // Before anything is killed or spawned: acting on a socket the host
-    // has not vouched for would tear down nothing and then put a second
-    // agent on a server of our own guessing.
-    crate::backend::tmux::known_host_socket(host)
-        .map_err(|e| format!("cannot restart '{}': {e:#}", session.name))?;
-    // By the window's own stamp, exactly as the local branch: the
-    // host's tmux server is shared with whatever else runs there, so a
-    // name is not ours to claim. A window that is already gone is not
-    // an error — the restart is what the caller wanted, and it can
-    // still happen.
-    if let Err(e) = crate::backend::tmux::kill_remote_windows(
-        host,
-        &session.id.to_string(),
-        &session.name,
-        session_panes(session),
-    ) {
-        tracing::warn!(
-            "could not kill the remote windows of '{}': {e:#}",
-            session.name
-        );
-    }
-    let pane = crate::backend::tmux::spawn_window_remote(
-        host,
-        &session.id.to_string(),
-        &plan.window_name,
-        &plan.command,
-        &plan.args,
-        plan.cwd.as_deref(),
-        &plan.env,
-    )
-    .map_err(|e| format!("Failed to re-spawn window on '{}': {e:#}", host.name))?;
-
-    // The new pane is a different one, and the id is how every later
-    // read finds it — leaving the old one persisted would point the
-    // interface at a pane that no longer exists.
-    match record_pane(db, session, &pane) {
-        Recorded::Stored => {}
-        Recorded::RowGone => {
-            // Same race as the local branch: a force-deleted row is never
-            // reaped, so the window this just spawned on the host has to
-            // be killed here or it runs forever.
-            if let Err(kill_err) = crate::backend::tmux::kill_remote_windows(
-                host,
-                &session.id.to_string(),
-                &plan.window_name,
-                crate::backend::tmux::SessionPanes::agent(&pane),
-            ) {
-                tracing::warn!(
-                    "could not kill orphaned restart window for '{}' on '{}': {kill_err:#}",
-                    session.name,
-                    host.name
-                );
-            }
-            return Err(Recorded::deleted_mid_restart(&session.name));
-        }
-        // The agent is running on the host; only the row lags.
         Recorded::WriteFailed(e) => return Err(e),
     }
     Ok(())
@@ -796,7 +746,7 @@ mod tests {
         // window somebody is in the middle of replacing. Answered before tmux
         // is asked anything, so this needs no server.
         assert_eq!(
-            restart_session_headless_with(&db, row.id, true),
+            restart_session_headless_with(&db, &crate::backend::registry::inert(), row.id, true),
             Ok(RestartReport::default()),
             "a relaunch of a row being restarted is not owed"
         );

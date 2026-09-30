@@ -145,7 +145,8 @@ fn local_namesakes(db: &Database) -> Vec<thurbox::sync::SharedSession> {
 
 /// Heal once, skipping the test when the environment cannot spawn at all.
 fn heal(db: &Database, def: &ExtensionDef) -> Option<thurbox::session_ops::EnsureReport> {
-    match thurbox::session_ops::ensure_extension(db, def) {
+    match thurbox::session_ops::ensure_extension(db, &thurbox::backend::wiring::configured().0, def)
+    {
         Ok(report) => Some(report),
         Err(e) => {
             assert!(e.contains("tmux"), "ensure_extension failed: {e}");
@@ -181,7 +182,13 @@ fn a_heal_inside_the_undo_window_leaves_one_session_of_the_name() {
     let original = local_namesakes(&db)[0].id;
 
     // The operator deletes it. Softly: the undo is still on offer.
-    thurbox::session_ops::delete_session_headless(&db, original, false).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        false,
+    )
+    .expect("delete");
 
     // The tick lands inside the undo window.
     let Some(second) = heal(&db, &def) else {
@@ -189,7 +196,12 @@ fn a_heal_inside_the_undo_window_leaves_one_session_of_the_name() {
     };
 
     // The undo.
-    let restored = thurbox::session_ops::restore_session_headless(&db, original, true);
+    let restored = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    );
 
     let named = local_namesakes(&db);
 
@@ -236,10 +248,21 @@ fn a_restore_does_not_un_delete_a_name_something_else_now_answers_to() {
     let original = local_namesakes(&db)[0].id;
     // Force-deleted so the name is free at once: this test is about the restore,
     // not about waiting out the undo window.
-    thurbox::session_ops::delete_session_headless(&db, original, true).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    )
+    .expect("delete");
     let Some(_) = heal(&db, &def) else { return };
 
-    let restored = thurbox::session_ops::restore_session_headless(&db, original, true);
+    let restored = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    );
     let named = local_namesakes(&db);
 
     let err = restored.expect_err("the name is taken; the restore must say so");
@@ -282,7 +305,11 @@ fn two_heals_racing_leave_one_session_of_the_name() {
             let db = Database::open(&db_path).expect("db");
             let def = probe_def(&repo);
             barrier.wait();
-            thurbox::session_ops::ensure_extension(&db, &def)
+            thurbox::session_ops::ensure_extension(
+                &db,
+                &thurbox::backend::wiring::configured().0,
+                &def,
+            )
         }));
     }
     let reports: Vec<_> = healers
@@ -390,7 +417,13 @@ fn heal_still_recreates_a_force_deleted_session() {
 
     let Some(_) = heal(&db, &def) else { return };
     let original = local_namesakes(&db)[0].id;
-    thurbox::session_ops::delete_session_headless(&db, original, true).expect("force delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    )
+    .expect("force delete");
 
     let Some(report) = heal(&db, &def) else {
         return;
@@ -430,14 +463,25 @@ fn a_restore_is_refused_by_a_namesake_it_only_shares_a_window_name_with() {
         .expect("find")
         .remove(0)
         .id;
-    thurbox::session_ops::delete_session_headless(&db, dotted, true).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        dotted,
+        true,
+    )
+    .expect("delete");
 
     // The name the operator types next differs, and the window does not.
     def.sessions[0].name = "deploy prod".into();
     let Some(_) = heal(&db, &def) else { return };
 
-    let err = thurbox::session_ops::restore_session_headless(&db, dotted, true)
-        .expect_err("the window name is taken; the restore must say so");
+    let err = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        dotted,
+        true,
+    )
+    .expect_err("the window name is taken; the restore must say so");
     assert!(err.contains("deploy.prod"), "names the deleted one: {err}");
     assert!(err.contains("deploy prod"), "names the live one: {err}");
 }
@@ -460,7 +504,11 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
     let def = probe_def(repo.path());
     publish_manifest(&def);
 
-    let report = match thurbox::session_ops::activate_extension(&db, &def) {
+    let report = match thurbox::session_ops::activate_extension(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        &def,
+    ) {
         Ok(report) => report,
         Err(e) => {
             assert!(e.contains("tmux"), "activate failed: {e}");
@@ -470,11 +518,22 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
     };
     assert_eq!(report.sessions_created, [DECLARED]);
     let original = local_namesakes(&db)[0].id;
-    thurbox::session_ops::delete_session_headless(&db, original, true).expect("delete");
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    )
+    .expect("delete");
     let Some(_) = heal(&db, &def) else { return };
 
-    let err = thurbox::session_ops::restore_session_headless(&db, original, true)
-        .expect_err("the name is taken; the restore must say so");
+    let err = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        original,
+        true,
+    )
+    .expect_err("the name is taken; the restore must say so");
     assert!(
         err.contains("extension deactivate probe"),
         "the advice has to terminate, and renaming does not: {err}"

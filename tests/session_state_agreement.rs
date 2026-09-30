@@ -124,7 +124,8 @@ fn states(env: &Env, id: SessionId) -> [String; 4] {
     let watch = env.cli(&["--json", "watch", "--initial", "--for-secs", "1"]);
 
     let _guard = thurbox::paths::TestPathGuard::new(env.base());
-    let mut store = SnapshotStore::with_database(env.db());
+    let mut store =
+        SnapshotStore::with_database(env.db(), &thurbox::backend::wiring::configured().0);
     store.refresh();
     let tui = store
         .current()

@@ -21,6 +21,7 @@ pub mod restore;
 #[cfg(test)]
 mod shared_tests;
 pub mod spawn;
+pub mod windows;
 pub mod wsl_loopback;
 
 pub use builtin::{builtin_extension, ensure_builtin_extensions, Builtin};
@@ -484,6 +485,7 @@ pub fn session_process_env(
 /// Shared by the interface's fork command and `thurbox-cli session fork`.
 pub fn fork_session_headless(
     db: &crate::storage::Database,
+    backends: &crate::backend::BackendRegistry,
     id: crate::session::SessionId,
     name: &str,
 ) -> Result<spawn::SpawnResult, String> {
@@ -571,7 +573,7 @@ pub fn fork_session_headless(
         inherit_worktrees: source.worktrees.clone(),
         ..Default::default()
     };
-    spawn::spawn_session_headless(db, request)
+    spawn::spawn_session_headless(db, backends, request)
 }
 
 /// The [`LaunchRecipe`](crate::session::LaunchRecipe) a spawn request carries,
@@ -697,7 +699,8 @@ pub(crate) fn build_agent_invocation(
 /// The host comes back exactly as configured, whatever multiplexer the row
 /// names: this is the answer for everything that runs *on* the host — git, the
 /// host's CLI, provisioning, hooks — and none of that may read the host's
-/// platform off a route. What drives the row's multiplexer asks [`mux_host`].
+/// platform off a route. What drives the row's windows is the backend its
+/// route names (`windows::backend_for`).
 pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef>> {
     // The cached registry: this runs on the UI thread per diff request, and a
     // fresh load walks $PATH for WSL discovery every time.
@@ -735,58 +738,6 @@ pub fn same_machine(a: &str, b: &str) -> bool {
         (Ok(a), Ok(b)) => a.same_machine(&b),
         _ => a == b,
     }
-}
-
-/// [`resolve_host`] for the calls that drive a row's multiplexer: the host,
-/// told which multiplexer the row's route names, or why none can be driven.
-///
-/// `Ok(None)` is this machine. `Err` refuses — a key naming no route, a host
-/// `hosts.toml` no longer describes, a multiplexer no adapter here implements,
-/// or, locally, any but the platform default this machine runs. An unqualified
-/// row keeps the multiplexer it was written for
-/// ([`crate::session::Route::multiplexer`]), so a host whose preference moved
-/// to rmux still has its old tmux rows torn down with tmux; and an rmux row is
-/// refused rather than run through the tmux command grammar.
-///
-/// The copy's `multiplexer` is set to the row's because that field is how the
-/// tmux adapter is told which binary to run; its platform is pinned first
-/// ([`crate::session::HostDef::served_by`]), so the host's OS is the same
-/// whichever multiplexer a row names.
-pub fn mux_host(backend_type: &str) -> Result<Option<crate::session::HostDef>, String> {
-    let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    mux_host_in(registry, backend_type)
-}
-
-/// [`mux_host`] against a registry the caller read.
-pub(crate) fn mux_host_in(
-    registry: &crate::session::HostRegistry,
-    backend_type: &str,
-) -> Result<Option<crate::session::HostDef>, String> {
-    let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
-    let local = crate::session::Multiplexer::platform_default();
-    let Some(name) = route.host() else {
-        // This machine runs its platform default and nothing else.
-        let mux = route.multiplexer(local, None);
-        if mux != local {
-            return Err(format!(
-                "this machine runs {}, not {}, so nothing here drives '{backend_type}'",
-                local.name(),
-                mux.name()
-            ));
-        }
-        return Ok(None);
-    };
-    let host = registry
-        .host_of(&route)
-        .ok_or_else(|| format!("host '{name}' is not in hosts.toml"))?;
-    let mux = route.multiplexer(local, host.multiplexer());
-    if !crate::backend::wiring::implements(mux) {
-        return Err(format!(
-            "no backend here implements {} on host '{name}', so nothing drives '{backend_type}'",
-            mux.name()
-        ));
-    }
-    Ok(Some(host.served_by(mux)))
 }
 
 /// Inject the standard thurbox env hints into a session config so a
@@ -862,50 +813,6 @@ pub(crate) fn inject_thurbox_env(
 mod tests {
     use super::*;
     use crate::session::SessionId;
-
-    /// This machine is served by its platform default and nothing else, so a
-    /// local row naming another multiplexer is refused rather than driven
-    /// through the local tmux (or psmux) server.
-    #[test]
-    fn a_local_row_is_driven_only_by_this_machines_multiplexer() {
-        let hosts = crate::session::HostRegistry::default();
-        let local = crate::session::Multiplexer::platform_default();
-        for key in ["", "tmux", "local-tmux", &format!("local:{}", local.name())] {
-            assert_eq!(mux_host_in(&hosts, key), Ok(None), "{key:?}");
-        }
-        for mux in crate::session::Multiplexer::ALL {
-            if mux == local {
-                continue;
-            }
-            // An explicit local tmux on Windows is refused too, where the
-            // legacy `local-tmux` is psmux.
-            let key = format!("local:{}", mux.name());
-            let refused = mux_host_in(&hosts, &key).expect_err(&key);
-            assert!(refused.contains(mux.name()), "{refused}");
-        }
-    }
-
-    /// Telling the adapter which multiplexer a row names must not change what
-    /// OS its host runs: a legacy entry is Windows *because* it says psmux, so
-    /// the copy driving its `:tmux` row keeps that platform rather than
-    /// re-reading one off the multiplexer it was just handed.
-    #[test]
-    fn the_host_told_a_rows_multiplexer_keeps_its_platform() {
-        let hosts = crate::session::HostRegistry {
-            config_version: None,
-            hosts: vec![crate::session::HostDef {
-                name: "win".into(),
-                destination: "me@win".into(),
-                multiplexer: Some("psmux".into()),
-                ..Default::default()
-            }],
-        };
-        let served = mux_host_in(&hosts, "ssh:win:tmux")
-            .expect("tmux is implemented")
-            .expect("a host");
-        assert_eq!(served.mux(), "tmux");
-        assert!(served.is_windows());
-    }
 
     #[cfg(unix)]
     #[test]

@@ -478,7 +478,8 @@ mod tests {
     /// first nor the last `#` is reliably the right one. A lookup cannot be wrong.
     #[test]
     fn a_program_surface_resolves_by_lookup_not_by_splitting() {
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         // Nothing is running, so nothing resolves — including a well-formed id.
         let key = ProgramKey::new("plugins/90_watch.lua", "watch");
         assert!(terminals.program_key(&key.surface_id()).is_none());
@@ -531,7 +532,8 @@ mod tests {
     /// what keeps the user from being trapped in a pane showing a dead terminal.
     #[test]
     fn an_absent_program_pane_accepts_nothing_and_reports_nothing() {
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let key = ProgramKey::new("plugins/90_watch.lua", "watch");
         assert_eq!(terminals.program_count("plugins/90_watch.lua"), 0);
         assert!(terminals.send_to_program(&key, b"x".to_vec()).is_err());

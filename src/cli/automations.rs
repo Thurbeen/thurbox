@@ -118,7 +118,11 @@ pub enum Action {
     Tick,
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    backends: &super::Backends<'_>,
+) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
             name,
@@ -169,7 +173,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             Ok(CommandOutput::new(json, render_run_history(id, &runs)))
         }
         Action::Tick => {
-            let json = tick(db)?;
+            let json = tick(db, backends.get())?;
             let human = render_tick(&json);
             Ok(CommandOutput::new(json, human))
         }
@@ -428,17 +432,17 @@ fn render_tick(v: &Value) -> String {
 
 /// Fire every due automation headlessly: claim (atomic CAS, so this is safe to
 /// run alongside the TUI and other tickers), perform the action, record the run.
-fn tick(db: &Database) -> Result<Value, String> {
+fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Value, String> {
     // Self-heal active extensions before firing: this runs from the tmux
     // heartbeat keeper every 60s, so an extension's deleted session/automation is
     // recreated even with the TUI closed. Best-effort — heal messages are
     // reported but never abort the due-automation pass below.
-    let healed = crate::session_ops::heal_active_extensions(db);
+    let healed = crate::session_ops::heal_active_extensions(db, backends);
     for m in &healed {
         tracing::info!("{m}");
     }
     // Keep the auto-activated built-in extensions wired up headlessly too.
-    for m in &crate::session_ops::ensure_builtin_extensions(db) {
+    for m in &crate::session_ops::ensure_builtin_extensions(db, backends) {
         tracing::info!("{m}");
     }
     // Best-effort retention sweep of the inter-session mailbox (read messages
@@ -468,7 +472,7 @@ fn tick(db: &Database) -> Result<Value, String> {
             skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
             continue;
         }
-        let (status, detail, related) = fire_headless(db, &auto);
+        let (status, detail, related) = fire_headless(db, backends, &auto);
         let _ = db.record_automation_run(auto.id, status, &detail, related);
         fired.push(json!({
             "id": auto.id,
@@ -484,7 +488,7 @@ fn tick(db: &Database) -> Result<Value, String> {
     // never delay a scheduled firing. Skipped when the built-in hooks
     // extension is opted out (nothing sets the pane option then).
     if crate::session_ops::hooks_enabled(db) {
-        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db);
+        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db, backends);
         if polled > 0 {
             tracing::info!("remote status poll: {polled} hook state(s) updated");
         }
@@ -507,13 +511,13 @@ fn tick(db: &Database) -> Result<Value, String> {
     };
     // A soft delete asked for headlessly — from a peer, or from this CLI —
     // has no interface here to reap it once the undo window has closed.
-    let reaped = crate::session_ops::reap_overdue_soft_deletes(db);
+    let reaped = crate::session_ops::reap_overdue_soft_deletes(db, backends);
     // And a force delete whose teardown never reached its host: this is the
     // pass that finishes it, so an agent orphaned by a machine that was down
     // for a minute is collected rather than left running there for good.
     // After the mirror above, which is what may just have taken the delete to
     // a host that came back on its own.
-    let teardowns = crate::session_ops::retry_owed_remote_teardowns(db);
+    let teardowns = crate::session_ops::retry_owed_remote_teardowns(db, backends);
     Ok(json!({
         "fired": fired,
         "skipped": skipped,
@@ -569,6 +573,7 @@ fn poll_local_pane_states(db: &Database) -> usize {
 /// a future remote backend would branch here.
 fn fire_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     auto: &Automation,
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     // tmux helpers are reached via fully-qualified paths (no `use crate::agent`)
@@ -584,6 +589,7 @@ fn fire_headless(
             extra_repos,
         } => fire_spawn(
             db,
+            backends,
             auto,
             repo_path,
             worktree_branch,
@@ -650,6 +656,7 @@ fn fire_send(
 #[allow(clippy::too_many_arguments)]
 fn fire_spawn(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     auto: &Automation,
     repo_path: &std::path::Path,
     worktree_branch: &Option<String>,
@@ -710,7 +717,7 @@ fn fire_spawn(
         extra_repos: extra_repos.to_vec(),
         ..Default::default()
     };
-    match action::spawn_and_deliver(db, &name, req, &auto.prompt) {
+    match action::spawn_and_deliver(db, backends, &name, req, &auto.prompt) {
         Ok(session_id) => (
             AutomationRunStatus::Success,
             format!("spawned {name}"),
@@ -826,7 +833,7 @@ mod tests {
         ] {
             db.set_builtin_extension_optout(name, true).unwrap();
         }
-        let v = tick(&db).unwrap();
+        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));
         // The mirror pass and the overdue reap report too, empty here: no

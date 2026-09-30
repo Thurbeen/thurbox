@@ -351,13 +351,56 @@ pub enum Outcome {
     Failed { message: String, code: Option<i32> },
 }
 
+/// The backend registry an invocation drives sessions through: built by the
+/// process's composition root, once, and only when a command first needs it.
+///
+/// Most invocations never touch a backend — every agent hook runs `thurbox-cli
+/// session signal` — while building the registry reads `hosts.toml` and, on
+/// Windows and inside WSL, runs `wsl.exe` to discover distros. So the root
+/// hands down how to build it, and the commands that act on a session ask.
+pub struct Backends<'a> {
+    registry: std::cell::OnceCell<crate::backend::BackendRegistry>,
+    build: &'a dyn Fn() -> crate::backend::BackendRegistry,
+}
+
+impl<'a> Backends<'a> {
+    /// A registry `build` makes the first time one is asked for.
+    pub fn lazy(build: &'a dyn Fn() -> crate::backend::BackendRegistry) -> Self {
+        Self {
+            registry: std::cell::OnceCell::new(),
+            build,
+        }
+    }
+
+    /// A registry already built — a test's, with its own backends registered.
+    pub fn ready(registry: crate::backend::BackendRegistry) -> Backends<'static> {
+        fn built() -> crate::backend::BackendRegistry {
+            unreachable!("a ready registry is never built again")
+        }
+        Backends {
+            registry: std::cell::OnceCell::from(registry),
+            build: &built,
+        }
+    }
+
+    /// The registry, built on the first ask.
+    pub fn get(&self) -> &crate::backend::BackendRegistry {
+        self.registry.get_or_init(self.build)
+    }
+
+    /// The registry if anything asked for it — what the root shuts down.
+    pub fn built(&self) -> Option<&crate::backend::BackendRegistry> {
+        self.registry.get()
+    }
+}
+
 /// Run a parsed CLI invocation against `db`, rendering the result in the
 /// resolved [`Format`] (human in a terminal, TOON down a pipe, or whatever
 /// `--json`/`--pretty`/`--toon`/`--text` forced).
 ///
 /// `Err` means nothing was printed. A command that rendered normally and still
 /// wants a non-zero exit comes back as [`Outcome::Failed`].
-pub fn run(cli: Cli, db: &Database) -> Result<Outcome, CommandError> {
+pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, CommandError> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
@@ -378,7 +421,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<Outcome, CommandError> {
     let mut output: CommandOutput = match cli.command {
         // No subcommand: live state, not a usage dump (AXI principle 8).
         None => home::run(db)?,
-        Some(command) => dispatch(command, db)?,
+        Some(command) => dispatch(command, db, backends)?,
     };
     if cli.full {
         output.agent.max_text = None;
@@ -419,16 +462,20 @@ fn parse_fields(spec: &str) -> Vec<String> {
 }
 
 /// Route one subcommand to the module that owns it.
-fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandError> {
+fn dispatch(
+    command: Command,
+    db: &Database,
+    backends: &Backends<'_>,
+) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action, db)?,
         Command::Agent { action } => agents::run(action, db)?,
-        Command::Session { action } => sessions::run(action, db)?,
-        Command::Automation { action } => automations::run(action, db)?,
-        Command::Task { action } => tasks::run(action, db)?,
+        Command::Session { action } => sessions::run(action, db, backends)?,
+        Command::Automation { action } => automations::run(action, db, backends)?,
+        Command::Task { action } => tasks::run(action, db, backends)?,
         Command::Message { action } => messages::run(action, db)?,
         Command::Config { action } => config::run(action, db)?,
-        Command::Extension { action } => extensions::run(action, db)?,
+        Command::Extension { action } => extensions::run(action, db, backends)?,
         Command::Version(args) => version::run(args),
         Command::Update(args) => update::run(args),
         Command::Notify(args) => notify::run(args),

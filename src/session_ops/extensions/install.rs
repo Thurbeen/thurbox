@@ -63,6 +63,7 @@ pub struct InstallReport {
 /// sessions/automations.
 pub fn install_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     target: &str,
     home_override: Option<&str>,
     force: bool,
@@ -183,7 +184,7 @@ pub fn install_extension(
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
     crate::agent::extension_config::write_manifest(&resolved)?;
-    report.ensure = activate_extension(db, &resolved)?;
+    report.ensure = activate_extension(db, backends, &resolved)?;
 
     Ok(report)
 }
@@ -571,7 +572,12 @@ pub struct UpdateReport {
 /// User-edited `substitute` files and `if_absent` seed files are preserved
 /// (same rules as install; pass `force` to overwrite them). Errors if the
 /// extension isn't installed or its manifest recorded no source.
-pub fn update_extension(db: &Database, name: &str, force: bool) -> Result<UpdateReport, String> {
+pub fn update_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: &str,
+    force: bool,
+) -> Result<UpdateReport, String> {
     let installed = crate::agent::extension_config::load_manifest(name)
         .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
     let source = installed.source.clone().ok_or_else(|| {
@@ -582,7 +588,7 @@ pub fn update_extension(db: &Database, name: &str, force: bool) -> Result<Update
     })?;
     // Keep it in its existing home, regardless of what the new manifest defaults to.
     let home = installed.home.clone();
-    let install = install_extension(db, &source, home.as_deref(), force)?;
+    let install = install_extension(db, backends, &source, home.as_deref(), force)?;
     let changed = install.previous_version != install.version;
     Ok(UpdateReport {
         name: name.to_string(),
@@ -596,13 +602,14 @@ pub fn update_extension(db: &Database, name: &str, force: bool) -> Result<Update
 /// from the discovery dir, in sorted order.
 pub fn update_all_extensions(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     force: bool,
 ) -> Vec<(String, Result<UpdateReport, String>)> {
     crate::agent::extension_config::list_manifests()
         .into_iter()
         .map(|def| {
             let name = def.name.clone();
-            let result = update_extension(db, &name, force);
+            let result = update_extension(db, backends, &name, force);
             (name, result)
         })
         .collect()
@@ -631,6 +638,7 @@ pub struct ReinstallReport {
 /// install by hand instead).
 pub fn reinstall_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: &str,
     purge_home: bool,
 ) -> Result<ReinstallReport, String> {
@@ -646,8 +654,8 @@ pub fn reinstall_extension(
     // Keep the extension in its existing home unless the caller purges it.
     let home = installed.home.clone();
 
-    let uninstall = uninstall_extension(db, name, purge_home)?;
-    let install = install_extension(db, &source, home.as_deref(), true)?;
+    let uninstall = uninstall_extension(db, backends, name, purge_home)?;
+    let install = install_extension(db, backends, &source, home.as_deref(), true)?;
     Ok(ReinstallReport {
         name: name.to_string(),
         uninstall,
@@ -679,6 +687,7 @@ pub struct UninstallReport {
 /// any user data under it). The inverse of [`install_extension`].
 pub fn uninstall_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: &str,
     purge_home: bool,
 ) -> Result<UninstallReport, String> {
@@ -691,7 +700,7 @@ pub fn uninstall_extension(
     };
 
     // Tear down runtime resources + clear the active set (force kills tmux/worktrees).
-    report.deactivate = deactivate_extension(db, &def, true)?;
+    report.deactivate = deactivate_extension(db, backends, &def, true)?;
 
     // Remove the agents this extension registered.
     let agent_names: Vec<String> = def.agents.iter().map(|a| a.name.clone()).collect();

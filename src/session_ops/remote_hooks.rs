@@ -437,6 +437,32 @@ fn remote_status_updates(
         .collect()
 }
 
+/// `server`'s host as the status poll must reach it: its entry as the
+/// adapter for the row's multiplexer is told ([`crate::session::HostDef::served_by`],
+/// platform pinned) — when a backend here serves that route, and otherwise
+/// why the poll skips it.
+fn polled_host(
+    hosts: &crate::session::HostRegistry,
+    backends: &crate::backend::BackendRegistry,
+    server: &str,
+) -> Result<crate::session::HostDef, String> {
+    let route = crate::session::Route::parse(server).map_err(|e| e.to_string())?;
+    let host = hosts.host_of(&route).ok_or_else(|| {
+        format!(
+            "host '{}' is not in hosts.toml",
+            route.host().unwrap_or_default()
+        )
+    })?;
+    let served = hosts.qualify(&route);
+    if !backends.supports(&served) {
+        return Err(format!("no backend here serves {served}"));
+    }
+    let mux = served
+        .mux
+        .ok_or_else(|| format!("{served} names no multiplexer"))?;
+    Ok(host.served_by(mux))
+}
+
 /// Headless counterpart of the TUI's live status channels: poll each remote
 /// host that has **live sessions in the DB** and write changed pane states
 /// into the same hook columns `session signal` uses. Returns the number of
@@ -456,7 +482,10 @@ fn remote_status_updates(
 /// contacted, and psmux hosts stay excluded behind
 /// [`crate::session::psmux_hook_rewrite_supported`] (nothing sets the pane
 /// option there yet).
-pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
+pub(crate) fn poll_remote_hook_states(
+    db: &crate::storage::Database,
+    backends: &crate::backend::BackendRegistry,
+) -> usize {
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
@@ -479,10 +508,9 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
     let mut written = 0;
     for (server, group) in by_backend {
         // Polled with the multiplexer the rows were written for; one nothing
-        // here drives is skipped rather than asked with another binary.
-        let host = match super::mux_host_in(&hosts, &server) {
-            Ok(Some(host)) => host,
-            Ok(None) => continue,
+        // here serves is skipped rather than asked with another binary.
+        let host = match polled_host(&hosts, backends, &server) {
+            Ok(host) => host,
             Err(e) => {
                 tracing::debug!("remote status poll skipped for {server}: {e}");
                 continue;
@@ -764,5 +792,29 @@ mod tests {
         assert!(provision_agent_hooks_on_host(&host, "codex", false).is_none());
         // claude/aider are arg-handled → no-op.
         assert!(provision_agent_hooks_on_host(&host, "claude", true).is_none());
+    }
+
+    /// Telling the adapter which multiplexer a row names must not change what
+    /// OS its host runs: a legacy entry is Windows *because* it says psmux, so
+    /// the copy polling its `:tmux` row keeps that platform rather than
+    /// re-reading one off the multiplexer it was just handed.
+    #[test]
+    fn the_polled_host_keeps_its_platform() {
+        let hosts = crate::session::HostRegistry {
+            config_version: None,
+            hosts: vec![crate::session::HostDef {
+                name: "win".into(),
+                destination: "me@win".into(),
+                multiplexer: Some("psmux".into()),
+                ..Default::default()
+            }],
+        };
+        let route = crate::session::Route::parse("ssh:win:tmux").unwrap();
+        let backends = crate::backend::registry::inert_serving(&[route]);
+        let polled = polled_host(&hosts, &backends, "ssh:win:tmux").expect("served");
+        assert_eq!(polled.mux(), "tmux");
+        assert!(polled.is_windows());
+        // Unregistered: skipped, never polled with another binary.
+        assert!(polled_host(&hosts, &backends, "ssh:win:rmux").is_err());
     }
 }
