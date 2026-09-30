@@ -15,6 +15,8 @@
 //! refused by every verb, with the row left as it was and no window opened
 //! anywhere — never quietly driven on the local tmux server.
 
+#![cfg(unix)]
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;

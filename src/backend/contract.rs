@@ -502,7 +502,7 @@ pub trait SessionBackend: Send + Sync {
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
 
-    /// Kill a pane and the window it is the whole of — attached or not, so a
+    /// Kill a pane and the window it is in — attached or not, so a
     /// teardown needs no interface. Idempotent: a pane already gone is what
     /// the kill wanted.
     fn kill(&self, backend_id: &str) -> Result<()>;

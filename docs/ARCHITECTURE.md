@@ -2242,7 +2242,9 @@ builds its own each tick. A host is served for the multiplexer its unqualified
 rows mean (ADR-28), so a row written for tmux on a host whose entry later says
 psmux is refused rather than driven — the two name different machines. Where
 the interface holds a connection to a backend, a lifecycle kill goes through
-it (`kill-pane`, reconnecting once on a dead link) rather than one-shot.
+it (reconnecting once on a dead link) rather than one-shot; either way it
+kills the pane's whole window, so a window somebody split leaves nothing
+running.
 Pane I/O, hook status and the heartbeat still reach
 the tmux adapter directly; `tests/architecture_rules.rs` lists what is left in
 `TRANSITIONAL`.

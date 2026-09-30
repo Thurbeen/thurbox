@@ -106,6 +106,7 @@ fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
 /// An attached backend whose server stops answering reports that, rather than
 /// an empty server: a sweep reading "nothing there" clears its backoff and
 /// asks again every pass, and a relaunch reading it launches a second agent.
+#[cfg(unix)]
 #[test]
 fn an_attached_tmux_backend_does_not_read_an_unanswered_listing_as_empty() {
     use std::os::unix::fs::PermissionsExt;
@@ -132,6 +133,7 @@ fn an_attached_tmux_backend_does_not_read_an_unanswered_listing_as_empty() {
     );
 }
 
+#[cfg(unix)]
 fn uid() -> String {
     String::from_utf8(
         std::process::Command::new("id")
@@ -143,4 +145,46 @@ fn uid() -> String {
     .expect("utf8")
     .trim()
     .to_string()
+}
+
+/// A kill takes the window the pane is in, not only the pane: a session
+/// window someone split must not keep running a process in its other pane
+/// after a stop, restart or force delete — attached or not.
+#[test]
+fn killing_a_split_window_takes_the_whole_window() {
+    use thurbox::backend::{Owner, WindowSpec};
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("thurbox-backend-contract-split");
+    let env = std::collections::HashMap::new();
+    let args = ["300".to_string()];
+    for attached in [false, true] {
+        let backend = TmuxBackend::new();
+        let name = format!("split-{attached}");
+        let pane = backend
+            .create_window(&WindowSpec {
+                owner: Owner::new("00000000-0000-4000-8000-0000000000aa", &name),
+                role: WindowRole::Agent,
+                command: "sleep",
+                args: &args,
+                cwd: None,
+                env: &env,
+            })
+            .expect("create_window");
+        let split = server.tmux(&["split-window", "-d", "-t", &pane, "sleep", "300"]);
+        assert!(split.status.success(), "split-window failed");
+        if attached {
+            backend.ensure_ready().expect("attach");
+        }
+        backend.kill(&pane).expect("kill");
+        let windows = server.tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+        let windows = String::from_utf8_lossy(&windows.stdout);
+        assert!(
+            !windows.lines().any(|w| w == format!("tb-{name}")),
+            "attached={attached}: the split window survived its kill: {windows}"
+        );
+        backend.shutdown();
+    }
 }

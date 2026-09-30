@@ -1164,19 +1164,20 @@ impl TmuxBackend {
         ))
     }
 
-    /// Kill a pane with a one-shot command rather than through control mode.
+    /// Kill the window a pane is in with a one-shot command rather than
+    /// through control mode.
     ///
-    /// The teardown path's kill. [`SessionBackend::kill`] goes through control
-    /// mode, which a caller must open with
+    /// The teardown path's kill on a host. Opening control mode needs
     /// [`ensure_ready`](SessionBackend::ensure_ready) — and that *creates* the
     /// server and the thurbox session when they are absent, so tearing a
-    /// session down on a host would leave an empty server behind. A pane that
-    /// is already gone is not an error: the teardown got what it wanted.
-    fn kill_pane_oneshot(&self, pane: &str) -> Result<()> {
-        match self.run_tmux(&["kill-pane", "-t", pane]) {
-            Ok(_) => Ok(()),
-            Err(e) if format!("{e:#}").contains("find pane") => Ok(()),
-            Err(e) => Err(e),
+    /// session down on a host would leave an empty server behind. The window
+    /// rather than the pane, so a window somebody split does not keep a
+    /// process running in its other pane. One already gone is not an error:
+    /// the teardown got what it wanted.
+    fn kill_window_oneshot(&self, pane: &str) -> Result<()> {
+        match self.run_tmux(&["kill-window", "-t", pane]) {
+            Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
+            _ => Ok(()),
         }
     }
 
@@ -2605,13 +2606,14 @@ impl SessionBackend for TmuxBackend {
             // to leave empty servers on other people's machines.
             self.known_socket()?;
             return match self.transport.is_remote() {
-                true => self.kill_pane_oneshot(backend_id),
+                true => self.kill_window_oneshot(backend_id),
                 false => kill_window_at(backend_id),
             };
         }
         let _ = self.unregister_pane(backend_id);
-        match self.ctrl_command(&format!("kill-pane -t {backend_id}")) {
-            Err(e) if !format!("{e:#}").contains("find pane") => Err(e),
+        // The window, not only the pane — see `kill_window_oneshot`.
+        match self.ctrl_command(&format!("kill-window -t {backend_id}")) {
+            Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
             _ => Ok(()),
         }
     }
@@ -4133,6 +4135,14 @@ fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
     )
 }
 
+/// Whether a kill's failure says its target is already gone — named by its
+/// pane or by its name — which is what the kill wanted.
+fn already_gone(error: &str) -> bool {
+    error.contains("can't find window")
+        || error.contains("window not found")
+        || error.contains("can't find pane")
+}
+
 /// Run `kill-window` on this machine's server against an already-resolved
 /// target, tolerating a window that is already gone.
 fn kill_window_at(target: &str) -> Result<()> {
@@ -4141,12 +4151,7 @@ fn kill_window_at(target: &str) -> Result<()> {
         .context("Failed to run tmux kill-window")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // It's fine if the window is already gone — named by its pane or by
-        // its name.
-        if stderr.contains("can't find window")
-            || stderr.contains("window not found")
-            || stderr.contains("can't find pane")
-        {
+        if already_gone(&stderr) {
             return Ok(());
         }
         bail!(
