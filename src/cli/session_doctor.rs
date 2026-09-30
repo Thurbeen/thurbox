@@ -203,7 +203,7 @@ fn diagnose(
 ) -> Report {
     let agent = &hook.agent;
     let mut findings = Vec::new();
-    let remote = crate::session::is_remote_backend(&session.backend_type);
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
 
     findings.push(if hooks_active {
         Finding {

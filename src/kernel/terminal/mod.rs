@@ -628,11 +628,11 @@ impl Terminals {
         // nothing extra: one listing per backend, throttled by that backend's
         // own interval (`DISCOVERY_INTERVAL` locally, `REMOTE_DISCOVERY_INTERVAL`
         // over ssh).
-        let unresolved: Vec<(&str, &str)> = snapshot
+        let unresolved: Vec<(&str, String)> = snapshot
             .sessions
             .iter()
             .filter(|row| !self.live.contains_key(&row.id) && !self.attaching.contains_key(&row.id))
-            .map(|row| (row.id.as_str(), row.backend.as_str()))
+            .map(|row| (row.id.as_str(), self.key(&row.backend)))
             .collect();
 
         // Stamp each row with where its backend's survey count stood when it first
@@ -643,7 +643,7 @@ impl Terminals {
         self.waiting_since
             .retain(|id, _| still_waiting.contains(id.as_str()));
         for (id, backend) in &unresolved {
-            let seen_at = self.surveys.get(*backend).copied().unwrap_or(0);
+            let seen_at = self.surveys.get(backend).copied().unwrap_or(0);
             self.waiting_since
                 .entry((*id).to_string())
                 .or_insert(seen_at);
@@ -651,14 +651,13 @@ impl Terminals {
 
         let mut waiting: Vec<String> = unresolved
             .iter()
-            .map(|(_, backend)| (*backend).to_string())
+            .map(|(_, backend)| backend.clone())
             .collect();
         waiting.extend(snapshot.sessions.iter().filter_map(|row| {
             self.live.get(&row.id)?;
-            self.backends
-                .get(&row.backend)
+            self.backend_for(&row.backend)
                 .filter(|backend| backend.needs_liveness_poll())
-                .map(|_| row.backend.clone())
+                .map(|_| self.key(&row.backend))
         }));
         waiting.sort_unstable();
         waiting.dedup();
@@ -743,7 +742,8 @@ impl Terminals {
             // The first attach on a backend is also what opens its control-mode
             // connection, so the others wait for it rather than racing to open
             // the same one several times over.
-            if !self.backend_is_ready(&row.backend) && self.opening(&row.backend) {
+            let backend = self.key(&row.backend);
+            if !self.backend_is_ready(&backend) && self.opening(&backend) {
                 continue;
             }
             self.start_attach(row, backend_id, via_name, rows, cols);
@@ -784,7 +784,7 @@ impl Terminals {
             .iter()
             .filter_map(|row| {
                 let live = self.live.get(&row.id)?;
-                let remote = crate::session::is_remote_backend(&row.backend);
+                let remote = crate::session::Route::is_remote_key(&row.backend);
                 let moved = row.backend_id.as_deref().is_some_and(|id| {
                     !id.is_empty()
                         && id != live.session.backend_id()
@@ -797,7 +797,9 @@ impl Terminals {
                         && (remote || self.pane_placed(row, id))
                 });
                 let surveyed_after_attach = self.live_since.get(&row.id).is_some_and(|seen| {
-                    self.surveys.get(&row.backend).is_some_and(|now| now > seen)
+                    self.surveys
+                        .get(&self.key(&row.backend))
+                        .is_some_and(|now| now > seen)
                 });
                 let confirmed_missing = surveyed_after_attach
                     && self.liveness(row) == crate::backend::BackendLiveness::Missing;
@@ -828,6 +830,25 @@ impl Terminals {
         }
     }
 
+    /// The key a row's per-backend state is kept under: the route it is
+    /// served by, qualified — so a legacy `ssh:box` row and a new
+    /// `ssh:box:tmux` one share one survey, one connection and one backoff,
+    /// and the key is the serving backend's own name.
+    fn key(&self, backend: &str) -> String {
+        match crate::session::Route::parse(backend) {
+            Ok(route) => self.hosts.qualify(&route).format(),
+            Err(_) => backend.to_string(),
+        }
+    }
+
+    /// The backend serving a row's route (or a [`Self::key`]), if one is
+    /// registered for it. Never another: an unqualified route is settled the
+    /// way it was written, and one nothing serves has no backend.
+    fn backend_for(&self, backend: &str) -> Option<Arc<dyn crate::backend::SessionBackend>> {
+        let route = crate::session::Route::parse(backend).ok()?;
+        self.backends.get(&self.hosts.qualify(&route)).cloned()
+    }
+
     /// Whether a backend's control-mode connection is already open.
     fn backend_is_ready(&self, backend: &str) -> bool {
         self.ready.borrow().contains(backend)
@@ -851,11 +872,11 @@ impl Terminals {
         rows: u16,
         cols: u16,
     ) {
-        let Some(backend) = self.backends.get(&row.backend).cloned() else {
+        let Some(backend) = self.backend_for(&row.backend) else {
             self.fail(
                 &row.id,
                 Some(backend_id),
-                format!("no backend named {}", row.backend),
+                format!("no backend serves {}", row.backend),
             );
             return;
         };
@@ -879,11 +900,11 @@ impl Terminals {
         // than inside the backend contract, which reads no global config.
         let remote_host = super::snapshot::remote_host_of(&row.backend);
 
-        let already_ready = self.backend_is_ready(&row.backend);
+        let backend_name = self.key(&row.backend);
+        let already_ready = self.backend_is_ready(&backend_name);
         let tx = self.attached.0.clone();
         let session = row.id.clone();
         let name = row.name.clone();
-        let backend_name = row.backend.clone();
         let pane = backend_id.clone();
         self.attaching.insert(session.clone(), backend_name.clone());
         let runtime = self.runtime.clone();
@@ -1090,7 +1111,7 @@ impl Terminals {
             if !due_now(&self.discovery_due, name, now) {
                 continue;
             }
-            let Some(backend) = self.backends.get(name).cloned() else {
+            let Some(backend) = self.backend_for(name) else {
                 continue;
             };
             let already_ready = self.backend_is_ready(name);
@@ -1191,7 +1212,11 @@ impl Terminals {
     /// for it. An unsurveyed backend — every remote one, which is never asked —
     /// therefore answers nothing.
     fn surveyed_since(&self, row: &super::snapshot::SessionRow) -> bool {
-        let surveys = self.surveys.get(&row.backend).copied().unwrap_or(0);
+        let surveys = self
+            .surveys
+            .get(&self.key(&row.backend))
+            .copied()
+            .unwrap_or(0);
         let seen_at = self.waiting_since.get(&row.id).copied().unwrap_or(surveys);
         surveys > seen_at
     }
@@ -1204,7 +1229,7 @@ impl Terminals {
     /// listing is.
     fn pane_placed(&self, row: &super::snapshot::SessionRow, pane: &str) -> bool {
         self.discovered
-            .get(&row.backend)
+            .get(&self.key(&row.backend))
             .is_some_and(|windows| windows.places_agent(&row.id, &row.name, pane))
     }
 
@@ -1217,7 +1242,7 @@ impl Terminals {
     /// attached.
     fn pane_by_name(&self, row: &super::snapshot::SessionRow) -> Option<String> {
         self.discovered
-            .get(&row.backend)?
+            .get(&self.key(&row.backend))?
             .agent_window(&row.id, &row.name)
             .pane()
     }
@@ -1771,11 +1796,12 @@ impl Terminals {
     }
 
     fn liveness(&self, row: &super::snapshot::SessionRow) -> crate::backend::BackendLiveness {
-        if self.unreachable.contains(&row.backend) {
+        let backend = self.key(&row.backend);
+        if self.unreachable.contains(&backend) {
             return crate::backend::BackendLiveness::Unreachable;
         }
         self.discovered
-            .get(&row.backend)
+            .get(&backend)
             .map(|windows| windows.agent_liveness(&row.id, &row.name))
             .unwrap_or(crate::backend::BackendLiveness::Unknown)
     }
@@ -1783,13 +1809,16 @@ impl Terminals {
     /// Drain every backend's queued remote hook reports.
     ///
     /// The events are `(backend, pane id, state)` — pane ids collide across
-    /// hosts, so the backend is part of the identity, not decoration. Only the
-    /// tmux backend produces any; the rest return nothing.
+    /// hosts, so the backend is part of the identity, not decoration. The
+    /// backend is named by the qualified route it serves, which is what a
+    /// row's `backend_type` settles to whichever spelling it was stored under
+    /// (`session_ops::server_key`). Only the tmux backend produces any; the
+    /// rest return nothing.
     pub fn drain_hook_events(&self) -> Vec<(String, String, String)> {
         self.backends
             .all_backends()
-            .flat_map(|backend| {
-                let name = backend.name().to_string();
+            .flat_map(|(route, backend)| {
+                let name = route.format();
                 backend
                     .take_hook_state_events()
                     .into_iter()
@@ -2030,7 +2059,7 @@ fn due_now(
 /// How long to leave `backend` alone between window listings — the local
 /// cadence, or the remote one for a backend whose listing travels over ssh.
 fn discovery_interval(backend: &str) -> std::time::Duration {
-    if crate::session::is_remote_backend(backend) {
+    if crate::session::Route::is_remote_key(backend) {
         REMOTE_DISCOVERY_INTERVAL
     } else {
         DISCOVERY_INTERVAL
@@ -2579,14 +2608,19 @@ mod tests {
         let fake = std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
         let backend: std::sync::Arc<dyn crate::backend::SessionBackend> = fake.clone();
         let mut terminals = Terminals::new();
-        terminals.backends.register(backend.clone());
+        let route = crate::session::Route::remote(
+            crate::session::Via::Ssh,
+            "fake",
+            Some(crate::session::Multiplexer::Tmux),
+        );
+        terminals.backends.register(route.clone(), backend.clone());
         terminals.waiting_since.insert("a".into(), 0);
-        let rows = snapshot(vec![row("a", "fake", Some("%1"))]);
+        let rows = snapshot(vec![row("a", &route.format(), Some("%1"))]);
         let mut notified = std::collections::HashSet::new();
 
         for mode in [0, 0, 1, 2] {
             fake.0.store(mode, Ordering::Relaxed);
-            let observed = discover_windows(&backend, "fake".into(), true);
+            let observed = discover_windows(&backend, route.format(), true);
             terminals.discovered_rx.0.send(observed).unwrap();
             terminals.collect_discovered();
             let missing = terminals.missing_agents(&rows);
@@ -2696,14 +2730,18 @@ mod tests {
     #[test]
     fn a_legacy_tmux_row_attaches_through_the_local_backend() {
         let mut terminals = Terminals::new();
-        terminals
-            .backends
-            .register(std::sync::Arc::new(RefusingLocal));
+        terminals.backends.register(
+            crate::session::Route::local(Some(crate::session::Multiplexer::platform_default())),
+            std::sync::Arc::new(RefusingLocal),
+        );
         terminals.sync(&snapshot(vec![row("a", "tmux", Some("%1"))]), 24, 80);
         assert_eq!(terminals.failure("a"), None);
+        // Surveyed on the local backend, the one a `local-tmux` row shares: the
+        // attach waits on that survey, as every first attach on a backend does.
+        assert_eq!(terminals.key("tmux"), terminals.key("local-tmux"));
         assert!(
-            terminals.attaching.contains_key("a"),
-            "no attach was started"
+            terminals.discovering.contains(&terminals.key("tmux")),
+            "the local backend was not asked"
         );
     }
 
@@ -2726,6 +2764,7 @@ mod tests {
     /// the one these tests are about (a stamped window is unambiguous by
     /// construction).
     fn surveyed(terminals: &mut Terminals, backend: &str, windows: &[(&str, &[&str])]) {
+        let backend = &terminals.key(backend);
         terminals.surveys.insert(backend.to_string(), 1);
         let listing = windows.iter().flat_map(|(window, panes)| {
             panes.iter().map(|pane| crate::backend::DiscoveredSession {
@@ -2840,9 +2879,10 @@ mod tests {
         let mut terminals = Terminals::new();
         let row = row("a", "local-tmux", None);
         terminals.waiting_since.insert("a".to_string(), 0);
-        terminals.surveys.insert("local-tmux".to_string(), 1);
+        let local = terminals.key("local-tmux");
+        terminals.surveys.insert(local.clone(), 1);
         terminals.discovered.insert(
-            "local-tmux".to_string(),
+            local,
             WindowPanes::from_listing([crate::backend::DiscoveredSession {
                 backend_id: "%1".into(),
                 name: "tb-demo".into(),

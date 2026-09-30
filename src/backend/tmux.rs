@@ -146,7 +146,11 @@ pub fn local_socket_name() -> String {
 }
 
 /// Socket names learned from a host's own `thurbox-cli` (`version --json`'s
-/// `tmux_socket`), keyed by backend name. A host entry with no explicit
+/// `tmux_socket`), keyed by the host's machine (`ssh:<name>`), not by route:
+/// the name is the host thurbox's *instance* address (ADR-12), derived from
+/// its data directory, and every multiplexer that instance drives there runs
+/// under it. So a socket learned while driving tmux on a host is the one its
+/// psmux or rmux sessions use too. A host entry with no explicit
 /// `socket` uses *this* build's socket name by default, which is wrong exactly
 /// when the flavours differ — a dev laptop against a release host would attach
 /// to an empty `thurbox-dev` server while the host's sessions sit on `thurbox`.
@@ -946,13 +950,17 @@ impl TmuxBackend {
         Self::local()
     }
 
-    /// Build the local tmux backend, named `local-tmux`.
+    /// Build the local backend on this platform's own multiplexer, named by
+    /// the route it serves (`local-tmux`, or `local-psmux` on Windows).
     pub fn local() -> Self {
         Self {
             transport: TmuxTransport::Local,
             socket: local_socket(),
             session: TMUX_SESSION.to_string(),
-            name: "local-tmux".to_string(),
+            name: crate::session::Route::local(Some(
+                crate::session::Multiplexer::platform_default(),
+            ))
+            .format(),
             control: Mutex::new(None),
             sizer: sizer_name(),
             host: None,
@@ -977,10 +985,24 @@ impl TmuxBackend {
         }
     }
 
-    /// Build an off-local tmux backend for `host` — `tmux` over SSH for an SSH
-    /// host, or `tmux` inside a WSL distro via `wsl.exe`. The backend is named
-    /// `ssh:<host.name>` / `wsl:<host.name>` and uses the same socket/session
-    /// names as the local backend unless the host overrides them.
+    /// The backend serving `mux` on `host`, named by that route
+    /// (`ssh:<name>:<mux>`). The binary is `mux`, whatever the host's entry
+    /// prefers — a row written for tmux is served by tmux on a host that has
+    /// since moved to something else — while the host itself is kept as
+    /// configured.
+    pub fn for_route(host: &crate::session::HostDef, mux: crate::session::Multiplexer) -> Self {
+        let mut served = host.clone();
+        served.multiplexer = Some(mux.name().to_string());
+        let mut backend = Self::from_host(&served);
+        backend.host = Some(host.clone());
+        backend
+    }
+
+    /// Build an off-local tmux backend for `host` — its multiplexer binary
+    /// over SSH for an SSH host, or inside a WSL distro via `wsl.exe`. Named by
+    /// the route it drives (`ssh:<host.name>:<mux>` / `wsl:…`) and using the
+    /// same socket/session names as the local backend unless the host
+    /// overrides them.
     pub fn from_host(host: &crate::session::HostDef) -> Self {
         let socket = host_socket(host);
         let session = host
@@ -999,7 +1021,11 @@ impl TmuxBackend {
                 mux: host.mux(),
             }
         };
-        let mut backend = Self::with_transport(transport, socket, session, host.backend_name());
+        let mux = host
+            .multiplexer()
+            .unwrap_or(crate::session::Multiplexer::Tmux);
+        let name = crate::session::Route::to_host(host, Some(mux)).format();
+        let mut backend = Self::with_transport(transport, socket, session, name);
         backend.host = Some(host.clone());
         backend
     }
@@ -1008,7 +1034,10 @@ impl TmuxBackend {
     /// own CLI has since reported a different one (see [`learn_host_socket`]).
     /// Resolved per call so a backend registered at startup follows the host.
     fn socket(&self) -> String {
-        learned_host_socket(&self.name).unwrap_or_else(|| self.socket.clone())
+        self.host
+            .as_ref()
+            .and_then(|host| learned_host_socket(&host.backend_name()))
+            .unwrap_or_else(|| self.socket.clone())
     }
 
     /// Run a tmux command and return its stdout (used before control mode is available).
@@ -4676,18 +4705,61 @@ mod tests {
             ..Default::default()
         };
         let backend = TmuxBackend::from_host(&host);
-        assert_eq!(backend.name(), "ssh:devbox");
+        assert_eq!(backend.name(), "ssh:devbox:tmux");
         assert!(backend.transport.is_remote());
         // Falls back to the default socket/session when the host omits them.
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
     }
 
+    /// A route's multiplexer is the binary, whatever the host now prefers,
+    /// and the host itself stays as configured — its platform is not read off
+    /// the route.
+    #[test]
+    fn a_backend_for_a_route_runs_that_routes_binary() {
+        let host = crate::session::HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            multiplexer: Some("rmux".into()),
+            ..Default::default()
+        };
+        let backend = TmuxBackend::for_route(&host, crate::session::Multiplexer::Tmux);
+        assert_eq!(backend.name(), "ssh:devbox:tmux");
+        assert_eq!(backend.transport.mux(), "tmux");
+        assert_eq!(backend.host.as_ref(), Some(&host));
+    }
+
+    /// A socket a host's thurbox reported is that instance's address, so every
+    /// multiplexer on the host reaches it — one learned while driving tmux is
+    /// the one its psmux backend uses too.
+    #[test]
+    fn a_learned_socket_is_the_hosts_whichever_multiplexer_learned_it() {
+        let host = crate::session::HostDef {
+            name: "learned-socket-host".into(),
+            destination: "me@learned".into(),
+            ..Default::default()
+        };
+        learn_host_socket(&host, "thurbox-elsewhere");
+        for mux in [
+            crate::session::Multiplexer::Tmux,
+            crate::session::Multiplexer::Psmux,
+        ] {
+            assert_eq!(
+                TmuxBackend::for_route(&host, mux).socket(),
+                "thurbox-elsewhere"
+            );
+        }
+        let mut served = host.clone();
+        served.multiplexer = Some("psmux".into());
+        assert_eq!(host_socket(&served), "thurbox-elsewhere");
+        assert_eq!(known_host_socket(&served).unwrap(), "thurbox-elsewhere");
+    }
+
     #[test]
     fn from_host_builds_named_wsl_backend() {
         let host = crate::session::HostDef::wsl("Ubuntu");
         let backend = TmuxBackend::from_host(&host);
-        assert_eq!(backend.name(), "wsl:Ubuntu");
+        assert_eq!(backend.name(), "wsl:Ubuntu:tmux");
         assert!(backend.transport.is_remote());
         assert!(matches!(
             backend.transport,

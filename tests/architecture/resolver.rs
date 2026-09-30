@@ -79,17 +79,6 @@ pub struct Reference {
     pub test: bool,
 }
 
-impl Reference {
-    pub fn site(&self, root: &Path) -> String {
-        let file = self.file.strip_prefix(root).unwrap_or(&self.file);
-        format!(
-            "{}:{}",
-            file.display().to_string().replace('\\', "/"),
-            self.line
-        )
-    }
-}
-
 struct SourceFile {
     path: PathBuf,
     stripped: String,

@@ -158,9 +158,10 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     // How the multiplexer is launched: locally, over ssh, or in a WSL distro.
+    // `session` for the one local-multiplexer default (`Multiplexer`).
     ModuleRules {
         name: "backend::tmux_compat::transport",
-        allowed: &["shell", "agent"],
+        allowed: &["session", "shell", "agent"],
         allowed_path_only: &[],
     },
     // The tmux adapter. Reaches the contract, the identity rule and the
@@ -414,9 +415,10 @@ const TRANSITIONAL: &[Transitional] = &[
     Transitional {
         from: "session_ops",
         to: "backend::wiring",
-        items: &["configured"],
+        items: &["configured", "implements"],
         remover: Remover::F5a,
-        why: "spawn builds a registry to ask supports_choice, then drops it",
+        why: "spawn builds a registry to ask whether it supports a route, then drops it; \
+              lifecycle asks the factory whether a row's multiplexer has an adapter",
     },
     // Lifecycle — spawn, restart, restore, stop, delete, reap, owed teardown,
     // rename, register — through the tmux adapter's free functions.
@@ -662,14 +664,17 @@ fn multiplexer_variant(reference: &Reference) -> Option<&str> {
     .then(|| path[MULTIPLEXER.len()].as_str())
 }
 
-/// Every reference to a specific multiplexer from a node that may not name
-/// one, as an edge to `session` whose item is the variant
+/// Every reference to a specific multiplexer from production code in a node
+/// that may not name one, as an edge to `session` whose item is the variant
 /// (`Multiplexer::Psmux`) — so [`TRANSITIONAL`] can list one exactly, the way
 /// it lists any other crossing.
+///
+/// Test code is left out: a test names a multiplexer to pin what happens for
+/// it, which is the opposite of deciding behaviour by one.
 fn variant_violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
     tree.references(&node_names(rules))
         .into_iter()
-        .filter(|r| !may_name_a_multiplexer(&r.from))
+        .filter(|r| !r.test && !may_name_a_multiplexer(&r.from))
         .filter_map(|r| {
             let variant = multiplexer_variant(&r)?;
             Some(Edge {
@@ -1092,8 +1097,8 @@ fn aliases_and_reexports_launder_nothing() {
 /// A specific multiplexer is named only where a multiplexer is decided. The
 /// variant is caught however it is reached — by path, through the parent's
 /// re-export, through an imported name, as a `use` leaf — while the type
-/// itself and its associated items (`Multiplexer::ALL`) stay free to use, and
-/// the factory may name what it builds.
+/// itself and its associated items (`Multiplexer::ALL`) stay free to use, the
+/// factory may name what it builds, and a test may name the one it pins.
 #[test]
 fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
     let tree = fixture("mux_variants");

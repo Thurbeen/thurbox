@@ -92,7 +92,7 @@ pub fn restore_refusal(
              (uncommitted and untracked changes are gone)"
         ));
     }
-    if crate::session::is_remote_backend(backend_type) {
+    if crate::session::Route::is_remote_key(backend_type) {
         return None;
     }
     let gone = worktrees
@@ -204,7 +204,7 @@ pub fn restore_session_headless(
     let delegated = remote
         .as_ref()
         .and_then(|host| super::host_cli::delegated(host).map(|cli| (host.clone(), cli)));
-    if crate::session::is_remote_backend(&deleted.backend_type) && delegated.is_none() {
+    if crate::session::Route::is_remote_key(&deleted.backend_type) && delegated.is_none() {
         return Err(format!(
             "'{}' runs on remote backend '{}'; restoring it is local-only for now",
             deleted.name, deleted.backend_type
@@ -230,7 +230,7 @@ pub fn restore_session_headless(
     // `_hold` outlives the restore rather than the check: a creation that has
     // claimed the name has not written its row yet, so the lookup below cannot
     // see it, and holding the name is what stops one starting underneath.
-    let _hold = if crate::session::is_remote_backend(&deleted.backend_type) {
+    let _hold = if crate::session::Route::is_remote_key(&deleted.backend_type) {
         None
     } else {
         Some(refuse_a_taken_name(db, &deleted)?)

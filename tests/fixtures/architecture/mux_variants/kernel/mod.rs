@@ -8,3 +8,7 @@ fn imported() -> Multiplexer {
     Multiplexer::Herdr
 }
 use crate::session::Multiplexer::Tmux;
+#[cfg(test)]
+mod tests {
+    fn pins_rmux() -> crate::session::Multiplexer { crate::session::Multiplexer::Rmux }
+}

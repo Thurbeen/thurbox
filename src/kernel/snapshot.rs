@@ -970,7 +970,7 @@ impl SnapshotStore {
             .filter(|row| {
                 row.hook_state.is_none()
                     && !row.stopped
-                    && !crate::session::is_remote_backend(&row.backend)
+                    && !crate::session::Route::is_remote_key(&row.backend)
             })
             .map(|row| {
                 // The agent *binary*, not the agent name: `antigravity` runs
@@ -1151,8 +1151,11 @@ impl SnapshotStore {
             if !crate::session::HOOK_STATES.contains(&event.state.as_str()) {
                 continue;
             }
+            // A backend reports under the qualified route it serves; the row
+            // may be stored under any spelling of it.
             let Some(row) = self.current.sessions.iter_mut().find(|row| {
-                row.backend == event.backend && row.backend_id.as_deref() == Some(&event.pane)
+                row.backend_id.as_deref() == Some(&event.pane)
+                    && crate::session_ops::server_key(&row.backend) == event.backend
             }) else {
                 // Pane ids collide across hosts, so an event is only ever matched
                 // by backend *and* pane — and until that pair exists there is
@@ -1671,7 +1674,7 @@ fn assess(
     }
     // A remote pane lives on its own host's multiplexer, which is not a thing
     // this process can ask `ps` about — `unavailable`, never `unknown`.
-    if crate::session::is_remote_backend(backend) {
+    if crate::session::Route::is_remote_key(backend) {
         return assessment.pane_unavailable();
     }
     // An observation is published only for a row nothing has reported for.
@@ -1716,12 +1719,10 @@ fn read_mux() -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
     let presence = crate::agent::preflight::look_up(binary);
     let (backends, _, _) = crate::backend::wiring::configured();
-    let available = ["tmux", "psmux", "rmux", "herdr"]
+    let available = crate::session::Multiplexer::ALL
         .into_iter()
-        .filter_map(|name| {
-            let choice = crate::session::BackendChoice::resolve(None, Some(name), None).ok()?;
-            backends.supports_choice(&choice).then(|| name.to_string())
-        })
+        .filter(|mux| backends.supports(&crate::session::Route::local(Some(*mux))))
+        .map(|mux| mux.name().to_string())
         .collect();
     MuxRow {
         binary: binary.to_string(),
@@ -1748,29 +1749,28 @@ fn read_hosts() -> Vec<HostRow> {
             detail: host.picker_detail(),
             backend: host.backend_name(),
             multiplexer: host.multiplexer.clone(),
-            available_multiplexers: ["tmux", "psmux", "rmux", "herdr"]
+            available_multiplexers: crate::session::Multiplexer::ALL
                 .into_iter()
-                .filter_map(|name| {
-                    let choice = crate::session::BackendChoice::resolve(
-                        Some(host.clone()),
-                        Some(name),
-                        None,
-                    )
-                    .ok()?;
-                    backends.supports_choice(&choice).then(|| name.to_string())
-                })
+                .filter(|mux| backends.supports(&crate::session::Route::to_host(host, Some(*mux))))
+                .map(|mux| mux.name().to_string())
                 .collect(),
         })
         .collect()
 }
 
-/// A remote session's host name, using the registry to resolve suffixes.
+/// A remote session's host name — `ssh:devbox:rmux` → `devbox` — whether or
+/// not `hosts.toml` still describes it.
+///
+/// A session's machine is published to the interface bare while the host
+/// picker carries the prefixed backend name, and the two have to answer as one
+/// vocabulary: the session list groups rows by the former and
+/// creations-in-flight by the latter, so a second spelling put a creation under
+/// a machine that did not exist.
 pub(super) fn remote_host_of(backend: &str) -> Option<String> {
-    let (hosts, _) = crate::agent::host_config::cached_registry();
-    hosts
-        .get_by_backend(backend)
-        .map(|host| host.name.clone())
-        .or_else(|| crate::session::host_name_of(backend).map(str::to_string))
+    crate::session::Route::parse(backend)
+        .ok()?
+        .host()
+        .map(str::to_string)
 }
 
 /// Best-effort repo label: the worktree's repo directory name, else the cwd's.
@@ -2409,7 +2409,7 @@ mod tests {
         let mut store = SnapshotStore::with_database(database);
         assert_eq!(
             store.apply_hook_states(
-                vec![("ssh:fixture".into(), "%7".into(), "idle".into())],
+                vec![("ssh:fixture:tmux".into(), "%7".into(), "idle".into())],
                 Instant::now(),
             ),
             1

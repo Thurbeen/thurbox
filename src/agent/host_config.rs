@@ -57,6 +57,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #   name           (string, required)
 #       Short, unique identifier. Registers the backend as "ssh:<name>" /
 #       "wsl:<name>" and is the value `--host` expects. Example: "devbox".
+#       May not contain ':' — that separates it from the multiplexer in a
+#       session's route — and an entry that does is ignored with a warning.
 #
 #   kind           (string, optional, default: "ssh")
 #       Transport: "ssh" (a remote machine) or "wsl" (a local WSL distro).
@@ -213,13 +215,23 @@ fn load_or_seed_result() -> Result<(HostRegistry, Vec<String>), String> {
 
     let contents =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read hosts.toml: {e}"))?;
-    super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(&contents, "hosts.toml")
-        .map_err(|e| {
+    parse_hosts(&contents).map_err(|e| format!("{e}; no remote hosts"))
+}
+
+/// `hosts.toml`'s contents as the registry thurbox serves, and every warning
+/// owed about them: unknown keys, and any entry refused outright. `Err` is a
+/// file that does not parse.
+pub fn parse_hosts(contents: &str) -> Result<(HostRegistry, Vec<String>), String> {
+    let (mut registry, mut warnings) =
+        super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(contents, "hosts.toml")
+            .map_err(|e| {
             format!(
-                "hosts.toml: {}; no remote hosts",
+                "hosts.toml: {}",
                 super::agent_config::compact_toml_error(&e.to_string())
             )
-        })
+        })?;
+    warnings.extend(registry.refuse_unroutable_names());
+    Ok((registry, warnings))
 }
 
 /// Load configured hosts (`hosts.toml`) and append auto-discovered local WSL
@@ -298,7 +310,7 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, Vec<String>) {
     // The base case, owed before any entry is read: the backend name
     // auto-discovery offered for the current distro until it was filtered.
     if let Some(distro) = crate::session::current_wsl_distro() {
-        candidates.push(format!("{}{distro}", crate::session::WSL_BACKEND_PREFIX));
+        candidates.push(format!("{}{distro}", crate::session::WSL_PREFIX));
     }
 
     let mut settled = Vec::with_capacity(reg.hosts.len());
@@ -379,8 +391,8 @@ pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
 /// subprocess on the startup path, and no outcome that depends on whether this
 /// machine has a working one.
 fn any_candidate_a_sibling_could_claim(candidates: &[String]) -> bool {
-    let ours = crate::session::current_wsl_distro()
-        .map(|d| format!("{}{d}", crate::session::WSL_BACKEND_PREFIX));
+    let ours =
+        crate::session::current_wsl_distro().map(|d| format!("{}{d}", crate::session::WSL_PREFIX));
     candidates
         .iter()
         .any(|c| !ours.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(c)))

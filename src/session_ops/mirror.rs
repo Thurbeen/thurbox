@@ -206,11 +206,13 @@ pub fn session_to_json_assessed(
 }
 
 /// Read one session out of [`session_to_json`]'s shape, placing it on
-/// `backend_type` — the observer's name for the host, never the host's own
-/// (`local-tmux` there). Fields a host older than this one does not print are
-/// simply empty; the id and the name are required.
+/// `backend_type` — the observer's name for the host's machine, never the
+/// host's own (`local-tmux` there). The multiplexer the listing recorded
+/// travels with the row (`placed`). Fields a host older than this one does
+/// not print are simply empty; the id and the name are required.
 pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, String> {
     let string = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    let backend_type = placed(backend_type, string("backend_type").as_deref());
     let id: SessionId = string("id")
         .ok_or("session without an id")?
         .parse()
@@ -254,7 +256,7 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
             name,
             agent: string("agent").unwrap_or_else(|| crate::session::DEFAULT_AGENT_NAME.into()),
             backend_id: string("backend_id").unwrap_or_default(),
-            backend_type: backend_type.to_string(),
+            backend_type,
             agent_session_id: string("agent_session_id"),
             cwd: string("cwd").map(PathBuf::from),
             additional_dirs,
@@ -288,6 +290,21 @@ pub fn parse_active(value: &Value, backend_type: &str) -> Vec<HostRow> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A listed row's route here: the machine `place` names, served by the
+/// multiplexer the listing recorded for the session — which is the same
+/// server whichever side names it. `ssh:devbox` and a listed `local-rmux` make
+/// `ssh:devbox:rmux`; a listed row written before routes named a multiplexer
+/// stays unqualified, and keeps its legacy reading.
+fn placed(place: &str, listed: Option<&str>) -> String {
+    let Ok(mut route) = crate::session::Route::parse(place) else {
+        return place.to_string();
+    };
+    route.mux = listed
+        .and_then(|listed| crate::session::Route::parse(listed).ok())
+        .and_then(|listed| listed.mux);
+    route.format()
 }
 
 /// Every session in a `session list --deleted --json` answer.
@@ -325,7 +342,7 @@ pub fn apply(
         .list_active_sessions()
         .unwrap_or_default()
         .into_iter()
-        .filter(|s| s.backend_type == backend_type)
+        .filter(|s| super::same_machine(&s.backend_type, backend_type))
         .map(|s| (s.id, s))
         .collect();
     // Tombstones with the instant each was taken, and the host's own
@@ -337,7 +354,7 @@ pub fn apply(
         .list_deleted_sessions()
         .unwrap_or_default()
         .into_iter()
-        .filter(|s| s.backend_type == backend_type)
+        .filter(|s| super::same_machine(&s.backend_type, backend_type))
         .map(|s| (s.id, (s.deleted_at, s.force_deleted, s.host_updated_at)))
         .collect();
     let hook_rows = db.load_hook_states().unwrap_or_default();
@@ -558,7 +575,9 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
         } else {
             host.backend_id.clone()
         },
-        backend_type: local.backend_type.clone(),
+        // The host's: the machine is this one's name for it either way, and the
+        // multiplexer is what the host now records.
+        backend_type: host.backend_type.clone(),
         agent_session_id: host.agent_session_id.clone(),
         cwd: host.cwd.clone(),
         additional_dirs: host.additional_dirs.clone(),
@@ -639,7 +658,7 @@ pub fn reconcile_with(
                 .iter()
                 .map(|s| (s.id, s.backend_type.as_str()))
                 .chain(deleted.iter().map(|s| (s.id, s.backend_type.as_str())))
-                .filter(|(_, on)| *on != backend)
+                .filter(|(_, on)| !super::same_machine(on, backend))
                 .map(|(id, _)| id)
                 .collect()
         }
@@ -676,6 +695,11 @@ pub fn reconcile_with(
 fn as_transitive(row: &mut HostRow) {
     row.transitive = true;
     row.session.backend_id.clear();
+    // Its multiplexer is the further host's, served by nothing on this one's.
+    if let Ok(mut route) = crate::session::Route::parse(&row.session.backend_type) {
+        route.mux = None;
+        row.session.backend_type = route.format();
+    }
     for worktree in &mut row.session.worktrees {
         worktree.created_by_thurbox = false;
     }
@@ -686,7 +710,7 @@ fn as_transitive(row: &mut HostRow) {
 fn transitive_ids(listing: &Value) -> impl Iterator<Item = SessionId> + '_ {
     listing.as_array().into_iter().flatten().filter_map(|row| {
         let on = row.get("backend_type")?.as_str()?;
-        crate::session::is_remote_backend(on)
+        crate::session::Route::is_remote_key(on)
             .then(|| row.get("id")?.as_str()?.parse().ok())
             .flatten()
     })
@@ -710,7 +734,7 @@ fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>)
                 .map(|s| (s.id, s.backend_type)),
         );
     let mut forgotten: Vec<SessionId> = held
-        .filter(|(id, on)| on == backend && foreign.contains(id))
+        .filter(|(id, on)| super::same_machine(on, backend) && foreign.contains(id))
         .filter_map(|(id, _)| match db.forget_session(id) {
             Ok(()) => Some(id),
             Err(e) => {

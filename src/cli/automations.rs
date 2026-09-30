@@ -544,10 +544,9 @@ fn poll_local_pane_states(db: &Database) -> usize {
         if !crate::session::HOOK_STATES.contains(&state.as_str()) {
             continue;
         }
-        let Some(session) = sessions
-            .iter()
-            .find(|s| !crate::session::is_remote_backend(&s.backend_type) && s.backend_id == pane)
-        else {
+        let Some(session) = sessions.iter().find(|s| {
+            !crate::session::Route::is_remote_key(&s.backend_type) && s.backend_id == pane
+        }) else {
             continue;
         };
         if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
@@ -671,8 +670,11 @@ fn fire_spawn(
                 )
             }
         };
+        // On this machine's own server, whichever spelling its rows carry:
+        // `window_exists` asks that server and no other.
+        let local_server = crate::session_ops::server_key("");
         let mut local = sessions.into_iter().filter(|s| {
-            s.backend_type == "local-tmux"
+            crate::session_ops::server_key(&s.backend_type) == local_server
                 && crate::backend::tmux::window_exists(&s.id.to_string(), &name)
         });
         if let Some(session) = local.next() {

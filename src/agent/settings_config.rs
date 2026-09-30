@@ -22,7 +22,9 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 config_version = 1
 
 # Multiplexer for new local sessions. Explicit per-create choice wins.
-# multiplexer = "tmux"           # tmux | rmux | herdr (psmux on Windows)
+# Names: tmux, psmux, rmux, herdr. Only one with an adapter can create a
+# session — today tmux, and psmux on Windows.
+# multiplexer = "tmux"
 
 # Scrollback lines kept per session terminal.
 # scrollback_lines = 1000

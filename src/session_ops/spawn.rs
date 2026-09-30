@@ -10,9 +10,6 @@ use crate::sync::{SharedSession, SharedWorktree};
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
 
-/// Backend identifier for the local-tmux backend (the local `TmuxBackend`'s name).
-pub const LOCAL_TMUX_BACKEND_TYPE: &str = crate::session::LOCAL_BACKEND_TYPE;
-
 /// Request to create a new headless session.
 ///
 /// `Default` so call sites state only what they mean: six of the twelve fields
@@ -204,7 +201,7 @@ pub fn spawn_session_headless_with_progress(
 
     // Resolve host and multiplexer before any worktree or pane is made.
     let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
-    let backend_type = choice.backend_type.clone();
+    let backend_type = choice.backend_type();
     let host = choice.host.clone();
 
     // A shareable host creates its own sessions: its CLI does the worktree,
@@ -335,7 +332,7 @@ pub fn spawn_session_headless_with_progress(
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(launch_cwd.clone()),
         agent: agent_name.clone(),
-        backend: (backend_type != LOCAL_TMUX_BACKEND_TYPE).then(|| backend_type.clone()),
+        backend: choice.route.is_remote().then(|| backend_type.clone()),
         // What makes a fork a fork: the agent is told to resume the parent's
         // conversation into a new one.
         fork_session_id: req.fork_session_id.clone(),
@@ -606,12 +603,10 @@ fn delegated_mux_option(
         ]);
     }
     // An older compatible CLI predates both this flag and multiplexer
-    // settings. It can only honour its platform default.
-    let platform_default = if host.is_windows() {
-        crate::session::Multiplexer::Psmux
-    } else {
-        crate::session::Multiplexer::Tmux
-    };
+    // settings. It can only honour its platform default, which is what an
+    // unqualified route to the host means.
+    let platform_default = crate::session::Route::to_host(host, None)
+        .multiplexer(crate::session::Multiplexer::platform_default(), Some(host));
     if choice.multiplexer == platform_default {
         Ok(Vec::new())
     } else {
@@ -639,7 +634,7 @@ fn spawn_delegated(
     choice: &crate::session::BackendChoice,
     report: &dyn Fn(SpawnPhase),
 ) -> Result<SpawnResult, String> {
-    let backend = &choice.backend_type;
+    let backend = choice.backend_type();
     let mux_option = delegated_mux_option(choice, host, cli)?;
     // The host validates the parent against its own database; a parent that
     // lives anywhere else is refused here, before any round trip, with a
@@ -649,7 +644,7 @@ fn spawn_delegated(
             .get_session_by_id(parent_id)
             .map_err(|e| format!("get parent session: {e}"))?
             .ok_or_else(|| format!("parent session not found: {parent_id}"))?;
-        if parent.backend_type != backend.as_str() {
+        if !super::same_machine(&parent.backend_type, &backend) {
             return Err(format!(
                 "parent session '{}' runs on {}, not on host '{}'; a session's parent must be on the same host",
                 parent.name, parent.backend_type, host.name
@@ -1461,8 +1456,8 @@ fn dir_label(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
-/// The backend a creation on `host` will land on — `local-tmux`, or
-/// `ssh:<host>`/`wsl:<distro>`.
+/// The backend a creation on `host` will land on — `local-<mux>`, or
+/// `ssh:<host>:<mux>`/`wsl:<distro>:<mux>`.
 ///
 /// Exposed for `--on-existing`, which has to compare a proposed creation
 /// against the rows already on *that* backend: a database mirroring a shareable
@@ -1472,7 +1467,7 @@ pub(crate) fn backend_type_for_choice(
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<String, String> {
-    resolve_backend(host, multiplexer).map(|choice| choice.backend_type)
+    resolve_backend(host, multiplexer).map(|choice| choice.backend_type())
 }
 
 fn resolve_backend(
@@ -1484,7 +1479,7 @@ fn resolve_backend(
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
     let (backends, _, _) = crate::backend::wiring::configured();
-    if !backends.supports_choice(&choice) {
+    if !backends.supports(&choice.route) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",
             choice.multiplexer.name()
@@ -1505,7 +1500,7 @@ fn resolve_backend(
 /// new-session flow tried to create on a host.
 fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
-        return Ok((LOCAL_TMUX_BACKEND_TYPE.to_string(), None));
+        return Ok((crate::session::Route::local(None).format(), None));
     };
     let registry = crate::agent::host_config::load_all();
     match registry.resolve(name) {
@@ -1866,11 +1861,11 @@ mod tests {
     #[test]
     fn resolve_host_none_is_local() {
         let (backend_type, host) = resolve_host(None).unwrap();
-        assert_eq!(backend_type, LOCAL_TMUX_BACKEND_TYPE);
+        assert_eq!(backend_type, "local-tmux");
         assert!(host.is_none());
         // Empty string is treated the same as None.
         let (backend_type, host) = resolve_host(Some("")).unwrap();
-        assert_eq!(backend_type, LOCAL_TMUX_BACKEND_TYPE);
+        assert_eq!(backend_type, "local-tmux");
         assert!(host.is_none());
     }
 

@@ -165,9 +165,10 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let killed = if crate::session::is_remote_backend(&session.backend_type) {
-        match super::resolve_host(&session.backend_type).flatten() {
-            Some(host) => crate::backend::tmux::kill_remote_windows(
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
+    let killed = if remote {
+        match super::mux_host(&session.backend_type) {
+            Ok(Some(host)) => crate::backend::tmux::kill_remote_windows(
                 &host,
                 &session.id.to_string(),
                 &session.name,
@@ -419,7 +420,13 @@ fn restart_for(
         return Ok(RestartReport::default());
     }
 
-    if why.only_if_missing() && !relaunch_is_owed(db, &session, host.as_ref())? {
+    // The multiplexer the row was written for, on the host it names: what the
+    // windows are killed, listed and spawned with. Refused here, before any of
+    // that, when nothing implements it.
+    let served = super::mux_host(&session.backend_type)
+        .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
+
+    if why.only_if_missing() && !relaunch_is_owed(db, &session, served.as_ref())? {
         return Ok(RestartReport::default());
     }
 
@@ -453,9 +460,9 @@ fn restart_for(
 
     refuse_if_deleted(db, &session)?;
 
-    match host.as_ref() {
+    match served.as_ref() {
         None => respawn_local(db, &session, &plan)?,
-        Some(host) => respawn_remote(db, &session, host, &plan)?,
+        Some(served) => respawn_remote(db, &session, served, &plan)?,
     }
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it

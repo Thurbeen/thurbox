@@ -16,60 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The backend name a local session is registered under — this machine's own
-/// tmux server, no launch prefix. Re-exported as
-/// `session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE`, which is the spelling most
-/// call sites use; it lives here so `storage` (which may reference `session`
-/// and not `session_ops`) can name the value the loopback repair writes.
-pub const LOCAL_BACKEND_TYPE: &str = "local-tmux";
-
-/// The backend-name prefix for SSH hosts. A host named `devbox` is registered
-/// (and persisted in `backend_type`) as `ssh:devbox`.
-pub const SSH_BACKEND_PREFIX: &str = "ssh:";
-
-/// The backend-name prefix for WSL distros. A distro named `Ubuntu` is
-/// registered (and persisted in `backend_type`) as `wsl:Ubuntu`.
-pub const WSL_BACKEND_PREFIX: &str = "wsl:";
-
-/// Whether a backend name refers to a remote SSH host (`ssh:<name>`).
-pub fn is_ssh_backend(backend_name: &str) -> bool {
-    backend_name.starts_with(SSH_BACKEND_PREFIX)
-}
-
-/// Whether a backend name refers to a WSL distro (`wsl:<distro>`).
-pub fn is_wsl_backend(backend_name: &str) -> bool {
-    backend_name.starts_with(WSL_BACKEND_PREFIX)
-}
-
-/// Whether a backend name refers to any off-local host (SSH or WSL) — i.e. one
-/// that needs a launch prefix and runs git/worktrees somewhere other than the
-/// local filesystem. Local backends (`""`, `tmux`, `local-tmux`) are not.
-pub fn is_remote_backend(backend_name: &str) -> bool {
-    is_ssh_backend(backend_name) || is_wsl_backend(backend_name)
-}
-
-/// The text after a remote backend prefix — `ssh:devbox` → `devbox` — or
-/// `None` for a local backend. A mux suffix is ambiguous without a
-/// [`HostRegistry`], so this leaves it intact.
-///
-/// A session's machine is published to
-/// the interface bare while the host picker carries the prefixed backend name,
-/// and the two have to answer as one vocabulary: the session list groups rows
-/// by the former and creations-in-flight by the latter, so a second spelling
-/// put a creation under a machine that did not exist.
-pub fn host_name_of(backend_name: &str) -> Option<&str> {
-    // Keep the whole bare name: without a registry, `ssh:box:rmux` may be a
-    // legacy host literally named `box:rmux` or a mux-qualified `box`.
-    backend_name
-        .strip_prefix(SSH_BACKEND_PREFIX)
-        .or_else(|| backend_name.strip_prefix(WSL_BACKEND_PREFIX))
-        // A bare `ssh:` names no machine. Nothing builds one today — the
-        // picker appends a name and an empty `--host` is dropped at parse —
-        // but `Some("")` is a machine whose name is the empty string, and the
-        // session list would group by it and head the group with a separator
-        // and nothing else.
-        .filter(|bare| !bare.is_empty())
-}
+use super::{Multiplexer, Route};
 
 /// The environment variable every WSL2 distro's init sets to that distro's own
 /// name. Present only *inside* a distro — not on Windows, not on a plain Linux
@@ -294,14 +241,11 @@ impl HostDef {
         self.is_wsl() && !self.is_wsl_loopback() && is_current_wsl_distro(&self.name)
     }
 
-    /// The backend name this host registers under: `ssh:<name>` or
-    /// `wsl:<name>`.
+    /// The key this host's machine goes by, multiplexer unsaid: `ssh:<name>`
+    /// or `wsl:<name>` — what the host picker carries and what a row written
+    /// before routes named their multiplexer says.
     pub fn backend_name(&self) -> String {
-        let prefix = match self.kind {
-            HostKind::Ssh => SSH_BACKEND_PREFIX,
-            HostKind::Wsl => WSL_BACKEND_PREFIX,
-        };
-        format!("{prefix}{}", self.name)
+        Route::to_host(self, None).format()
     }
 
     /// A short detail string for the host picker (the SSH destination, or
@@ -311,6 +255,14 @@ impl HostDef {
             HostKind::Ssh => self.destination.clone(),
             HostKind::Wsl => "WSL".to_string(),
         }
+    }
+
+    /// The multiplexer this host's entry prefers, when it names one thurbox
+    /// knows.
+    pub fn multiplexer(&self) -> Option<Multiplexer> {
+        self.multiplexer
+            .as_deref()
+            .and_then(|name| Multiplexer::parse(name).ok())
     }
 
     /// The host's multiplexer binary (`tmux` unless overridden).
@@ -357,50 +309,31 @@ impl HostRegistry {
         self.hosts.iter().find(|h| h.name == name)
     }
 
-    /// Look up a host by its `ssh:<name>` or `wsl:<name>` backend name.
+    /// The host a route runs on — `None` for a local route, or one naming a
+    /// host this registry does not describe. The one resolver from a persisted
+    /// `backend_type` to its host: the host comes back exactly as configured,
+    /// whatever multiplexer the route names, so nothing downstream reads a
+    /// platform off a route.
     ///
-    /// The prefix selects *a* backend spelling but is **not** checked against
-    /// the host's own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named
-    /// `ubuntu` even if it is a WSL distro. That is deliberate — a name is
-    /// unique across kinds (`host_config::load_all` dedupes by it), and the only
-    /// way the two disagree is a persisted `backend_type` written before the
-    /// host's kind was changed, where resolving to the host that now carries
-    /// that name is what lets the session re-adopt instead of going
-    /// unreachable.
-    pub fn get_by_backend(&self, backend_name: &str) -> Option<&HostDef> {
-        let bare = host_name_of(backend_name)?;
-        self.get(bare).or_else(|| {
-            [":tmux", ":psmux", ":rmux", ":herdr"]
-                .into_iter()
-                .find_map(|suffix| bare.strip_suffix(suffix).and_then(|name| self.get(name)))
-        })
+    /// The route's `ssh:`/`wsl:` prefix is **not** checked against the host's
+    /// own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named `ubuntu`
+    /// even if it is a WSL distro. That is deliberate — a name is unique across
+    /// kinds (`host_config::load_all` dedupes by it), and the only way the two
+    /// disagree is a persisted `backend_type` written before the host's kind
+    /// was changed, where resolving to the host that now carries that name is
+    /// what lets the session re-adopt instead of going unreachable.
+    pub fn host_of(&self, route: &Route) -> Option<&HostDef> {
+        self.get(route.host()?)
     }
 
-    /// Read an existing row by its recorded choice, not a host preference that
-    /// may have changed since the row was created. Unsuffixed keys keep the
-    /// historical tmux/psmux meaning.
-    pub fn resolved_by_backend(&self, backend_name: &str) -> Option<HostDef> {
-        let bare = host_name_of(backend_name)?;
-        let mut host = self.get_by_backend(backend_name)?.clone();
-        let selected = self
-            .get(bare)
-            .is_none()
-            .then(|| {
-                ["tmux", "psmux", "rmux", "herdr"]
-                    .into_iter()
-                    .find(|mux| bare.ends_with(&format!(":{mux}")))
-            })
-            .flatten();
-        if let Some(mux) = selected {
-            host.multiplexer = Some(mux.to_string());
-        } else if matches!(host.mux().as_str(), "rmux" | "herdr") {
-            host.multiplexer = Some("tmux".into());
-        }
-        Some(host)
+    /// `route` with its multiplexer settled against this machine and the host
+    /// it names — [`Route::qualify`] with the inputs a running thurbox has.
+    pub fn qualify(&self, route: &Route) -> Route {
+        route.qualify(Multiplexer::platform_default(), self.host_of(route))
     }
 
-    /// Look up a host by **either** spelling: the `ssh:`/`wsl:` backend name or
-    /// the bare name.
+    /// Look up a host by **either** spelling: a route (`ssh:devbox`,
+    /// `ssh:devbox:tmux`) or the bare name.
     ///
     /// The two spellings both circulate as "the host" and which one a caller
     /// holds depends on where it came from — a session row and the interface's
@@ -409,7 +342,32 @@ impl HostRegistry {
     /// the new-session flow handed `spawn` a backend name and every remote
     /// creation failed with "Unknown host 'ssh:devbox'".
     pub fn resolve(&self, key: &str) -> Option<&HostDef> {
-        self.get_by_backend(key).or_else(|| self.get(key))
+        match Route::parse(key) {
+            Ok(route) if route.is_remote() => self.host_of(&route),
+            _ => self.get(key),
+        }
+    }
+
+    /// Drop every entry whose name holds a `:`, returning a warning for each.
+    ///
+    /// A route is `ssh:<name>[:<multiplexer>]`, so `box:rmux` as a name would
+    /// be the host `box` on rmux as far as every row is concerned. Refused at
+    /// load rather than disambiguated at each read: a parse that guessed
+    /// would be the silent kind of wrong.
+    pub fn refuse_unroutable_names(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        self.hosts.retain(|host| {
+            let routable = !host.name.contains(':');
+            if !routable {
+                warnings.push(format!(
+                    "hosts.toml: host '{}' is ignored: a host name may not contain ':', \
+                     which separates it from the multiplexer in a session's route",
+                    host.name
+                ));
+            }
+            routable
+        });
+        warnings
     }
 
     /// All host names in declaration order.
@@ -544,7 +502,8 @@ mod tests {
                 .into_iter()
                 .chain(["ssh:box".to_string()]);
             for key in keys {
-                let resolved = hosts.resolved_by_backend(&key).expect("box resolves");
+                let route = Route::parse(&key).expect("a route");
+                let resolved = hosts.host_of(&route).expect("box resolves");
                 assert_eq!(
                     resolved.is_windows(),
                     host.is_windows(),
@@ -631,18 +590,6 @@ mod tests {
     }
 
     #[test]
-    fn backend_predicates_classify_prefixes() {
-        assert!(is_ssh_backend("ssh:devbox"));
-        assert!(!is_ssh_backend("wsl:Ubuntu"));
-        assert!(is_wsl_backend("wsl:Ubuntu"));
-        assert!(!is_wsl_backend("ssh:devbox"));
-        assert!(is_remote_backend("ssh:devbox"));
-        assert!(is_remote_backend("wsl:Ubuntu"));
-        assert!(!is_remote_backend("local-tmux"));
-        assert!(!is_remote_backend(""));
-    }
-
-    #[test]
     fn registry_lookup_by_name_and_backend() {
         let reg = HostRegistry {
             config_version: None,
@@ -656,14 +603,19 @@ mod tests {
             ],
         };
         assert_eq!(reg.get("devbox").unwrap().destination, "me@devbox");
-        assert_eq!(reg.get_by_backend("ssh:devbox").unwrap().name, "devbox");
-        assert_eq!(reg.get_by_backend("wsl:Ubuntu").unwrap().name, "Ubuntu");
-        assert!(reg.get_by_backend("devbox").is_none());
-        assert!(reg.get_by_backend("local-tmux").is_none());
+        let host_of = |key: &str| {
+            reg.host_of(&Route::parse(key).expect("a route"))
+                .map(|h| h.name.as_str())
+        };
+        assert_eq!(host_of("ssh:devbox"), Some("devbox"));
+        assert_eq!(host_of("ssh:devbox:psmux"), Some("devbox"));
+        assert_eq!(host_of("wsl:Ubuntu"), Some("Ubuntu"));
+        assert_eq!(host_of("local-tmux"), None);
+        assert_eq!(host_of("ssh:nope"), None);
     }
 
     #[test]
-    fn recorded_remote_mux_survives_a_changed_host_preference() {
+    fn a_recorded_multiplexer_survives_a_changed_host_preference() {
         let registry = HostRegistry {
             config_version: None,
             hosts: vec![HostDef {
@@ -672,34 +624,26 @@ mod tests {
                 ..Default::default()
             }],
         };
-        assert_eq!(
-            registry.resolved_by_backend("ssh:example").unwrap().mux(),
-            "tmux"
-        );
-        assert_eq!(
-            registry
-                .resolved_by_backend("ssh:example:rmux")
-                .unwrap()
-                .mux(),
-            "rmux"
-        );
-        assert_eq!(host_name_of("ssh:example:rmux"), Some("example:rmux"));
+        let qualified = |key: &str| registry.qualify(&Route::parse(key).unwrap()).mux;
+        assert_eq!(qualified("ssh:example"), Some(Multiplexer::Tmux));
+        assert_eq!(qualified("ssh:example:rmux"), Some(Multiplexer::Rmux));
+        assert_eq!(qualified("ssh:example:psmux"), Some(Multiplexer::Psmux));
+        // The host comes back as configured, whichever route found it.
+        let host = registry
+            .host_of(&Route::parse("ssh:example:psmux").unwrap())
+            .unwrap();
+        assert_eq!(host.multiplexer(), Some(Multiplexer::Rmux));
     }
 
     #[test]
-    fn legacy_host_name_ending_in_mux_is_not_truncated() {
-        let registry = HostRegistry {
-            config_version: None,
-            hosts: vec![HostDef {
-                name: "example:rmux".into(),
-                ..Default::default()
-            }],
-        };
-        let host = registry
-            .resolved_by_backend("ssh:example:rmux")
-            .expect("legacy host remains resolvable");
-        assert_eq!(host.name, "example:rmux");
-        assert_eq!(host.mux(), "tmux");
+    fn a_host_name_holding_a_colon_is_refused_at_load() {
+        let mut registry: HostRegistry =
+            toml::from_str("[[hosts]]\nname = \"example:rmux\"\n\n[[hosts]]\nname = \"example\"\n")
+                .unwrap();
+        let warnings = registry.refuse_unroutable_names();
+        assert_eq!(registry.names(), ["example"]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("'example:rmux'"), "{}", warnings[0]);
     }
 
     #[test]
@@ -829,11 +773,5 @@ worktrees_dir = "/home/me/wt"
             assert_eq!(current_wsl_distro(), None);
             assert!(!HostDef::wsl("Ubuntu").is_wsl_loopback());
         });
-    }
-
-    #[test]
-    fn local_backend_type_is_the_one_spawn_publishes() {
-        assert_eq!(LOCAL_BACKEND_TYPE, "local-tmux");
-        assert!(!is_remote_backend(LOCAL_BACKEND_TYPE));
     }
 }

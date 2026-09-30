@@ -177,11 +177,7 @@ fn host_findings() -> Vec<Finding> {
         .hosts
         .iter()
         .map(|host| {
-            let launcher = if host.backend_name().starts_with("wsl:") {
-                "wsl.exe"
-            } else {
-                "ssh"
-            };
+            let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
             let present = crate::agent::preflight::look_up(launcher)
                 == crate::agent::preflight::Presence::Present;
             Finding {

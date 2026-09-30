@@ -3,7 +3,7 @@
 //! Schema v47 marks the repair as owed on whichever binary opens the database
 //! first, and a headless-driven install (an automation, the heartbeat keeper,
 //! an agent's status hook) need never launch the interface. Until the repair
-//! runs, a session local to the distro reads as remote — `is_remote_backend`
+//! runs, a session local to the distro reads as remote — `Route::is_remote_key`
 //! is true of `wsl:<us>` — so a reap sweep refuses to kill its windows and
 //! leaks the agent process.
 //!
