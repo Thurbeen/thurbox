@@ -467,3 +467,186 @@ fn a_local_row_on_another_multiplexer_is_not_marked_stopped() {
         None
     );
 }
+
+/// The `GIT_*` location variables git exports to hook processes (the list
+/// `git::GIT_LOCATION_ENV` scrubs, which is crate-private): a suite run from
+/// this repository's own pre-commit hook would otherwise aim every git here at
+/// the real repository.
+const GIT_LOCATION_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+fn have(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+        || Command::new(program)
+            .arg("-V")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(dir);
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    assert!(
+        cmd.output().expect("run git").status.success(),
+        "git {args:?}"
+    );
+}
+
+/// The tmux session the local backend groups its windows under in a test
+/// build (`backend::tmux::TMUX_SESSION`, private; `thurbox-dev` because a test
+/// build carries the dev marker).
+const LOCAL_SESSION: &str = "thurbox-dev";
+
+impl Env {
+    /// A repository with one commit and a live thurbox-made worktree of it on
+    /// branch `name`, holding uncommitted work.
+    fn checkout(&self, name: &str) -> thurbox::sync::SharedWorktree {
+        let repo = self.path("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "routes-e2e"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "# probe\n").expect("write");
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "init"]);
+        let worktree = self.path(&format!("worktrees/{name}"));
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                name,
+                worktree.to_str().expect("utf-8"),
+            ],
+        );
+        std::fs::write(worktree.join("unsaved.txt"), "work in progress").expect("work");
+        thurbox::sync::SharedWorktree {
+            repo_path: repo,
+            worktree_path: worktree,
+            branch: name.into(),
+            created_by_thurbox: true,
+        }
+    }
+
+    /// A window on this machine's own server called `tb-<name>` with no owner
+    /// stamp — what every psmux window is, and every tmux one made before
+    /// stamping — belonging to some other session of that name.
+    fn unstamped_namesake(&self, name: &str) {
+        let window = format!("tb-{name}");
+        let out = self.server.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            LOCAL_SESSION,
+            "-n",
+            &window,
+            "sleep",
+            "600",
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn local_windows(&self) -> Vec<String> {
+        let out = self
+            .server
+            .tmux(&["list-windows", "-t", LOCAL_SESSION, "-F", "#{window_name}"]);
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+/// A local row naming a multiplexer this machine does not run lives on a
+/// server nothing here drives, so a force-delete fails closed: it neither
+/// removes the checkout its agent may still be working in, nor kills the
+/// same-named window of another session on the local server, nor marks the
+/// row force-deleted as though its teardown had happened.
+#[test]
+fn force_deleting_a_local_row_on_another_multiplexer_fails_closed() {
+    if !have("git") || !have("tmux") {
+        eprintln!("skipping: needs git and tmux");
+        return;
+    }
+    for backend in ["local:rmux", "local-rmux"] {
+        let env = Env::new("");
+        let checkout = env.checkout("r");
+        env.unstamped_namesake("r");
+        let id = SessionId::default();
+        let mut row = session(id, "r", backend);
+        row.backend_id = String::new();
+        row.cwd = Some(checkout.worktree_path.clone());
+        row.worktrees = vec![checkout.clone()];
+        env.db().upsert_session(&row).expect("seed a row");
+
+        let out = env.cli(&["session", "delete", &id.to_string(), "--force"]);
+
+        assert!(
+            checkout.worktree_path.join("unsaved.txt").exists(),
+            "{backend}: force-delete removed a checkout nothing here drives"
+        );
+        assert!(
+            env.local_windows().contains(&"tb-r".to_string()),
+            "{backend}: force-delete killed a local namesake's window"
+        );
+        assert!(
+            !out.status.success(),
+            "{backend}: force-delete claimed success"
+        );
+        assert!(
+            env.db().get_session_by_id(id).expect("read").is_some(),
+            "{backend}: the row was deleted though nothing was torn down"
+        );
+    }
+}
+
+/// The same for the reap of a soft-deleted one: its windows are on a server
+/// nothing here drives, so the local window a name resolves to is somebody
+/// else's, and the reap kills nothing.
+#[test]
+fn reaping_a_local_row_on_another_multiplexer_kills_no_local_window() {
+    if !have("tmux") {
+        eprintln!("skipping: needs tmux");
+        return;
+    }
+    for backend in ["local:rmux", "local-rmux"] {
+        let env = Env::new("");
+        env.unstamped_namesake("r");
+        let id = SessionId::default();
+        let mut row = session(id, "r", backend);
+        row.backend_id = String::new();
+        env.db().upsert_session(&row).expect("seed a row");
+        env.db().soft_delete_session(id).expect("soft delete");
+
+        let out = env.cli(&["session", "reap", &id.to_string()]);
+
+        assert!(
+            env.local_windows().contains(&"tb-r".to_string()),
+            "{backend}: the reap killed a local namesake's window"
+        );
+        assert!(!out.status.success(), "{backend}: the reap claimed success");
+    }
+}
