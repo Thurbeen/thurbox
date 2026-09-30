@@ -585,8 +585,9 @@ enum HookCli {
     /// follows is what the `PATH` **this command** is running on resolves: a
     /// different question, and the finding says which one it answered.
     NoPane(Option<String>),
-    /// There may be a pane, and its `PATH` could not be read — the backend did
-    /// not answer, or could not say which window is the session's. Unknown,
+    /// There may be a pane, and its `PATH` could not be read — the backend
+    /// answered and could not say which window is the session's, or could not
+    /// be asked for the `PATH` of the one it placed. Unknown,
     /// never "no pane": no pane is what licenses answering from this command's
     /// own `PATH`.
     PaneUnreadable(String),
@@ -617,7 +618,19 @@ fn hook_cli(
     let (backend, pane) = match crate::session_ops::windows::agent_pane(backends, session) {
         Ok(Some(found)) => found,
         Ok(None) => return no_pane(),
-        Err(why) => return HookCli::PaneUnreadable(why),
+        Err(why) => {
+            // A backend that is not there at all — its multiplexer is not
+            // installed, or its route is not served — holds no pane here. One
+            // that answered and could not say which window is the session's
+            // may well hold it.
+            let available =
+                crate::session_ops::windows::backend_for(backends, &session.backend_type)
+                    .is_ok_and(|backend| backend.check_available().is_ok());
+            return match available {
+                true => HookCli::PaneUnreadable(why),
+                false => no_pane(),
+            };
+        }
     };
     match backend.pane_path(&pane) {
         Ok(Some(path)) => match resolve_cli_on(std::ffi::OsStr::new(&path)) {

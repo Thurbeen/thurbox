@@ -945,8 +945,8 @@ fn a_task_run_refuses_to_pick_between_two_running_sessions() {
     }
 }
 
-/// A pane `session doctor` could not read is unverified, never "no pane" — no
-/// pane is what lets it answer from its own `PATH` instead.
+/// A pane `session doctor` could not tell apart from a namesake is unverified,
+/// never "no pane" — no pane is what lets it answer from its own `PATH`.
 #[test]
 fn the_doctor_reports_a_pane_it_could_not_read_as_unverified() {
     if !have_tmux() {
@@ -957,9 +957,10 @@ fn the_doctor_reports_a_pane_it_could_not_read_as_unverified() {
     let db = instance.db();
     let reg = registries();
     let id = SessionId::default();
-    let pane = reg.probe.open("tb-doc", &id.to_string(), WindowRole::Agent);
+    // Two windows answer to its name and neither carries a stamp.
+    let pane = reg.probe.open("tb-doc", "", WindowRole::Agent);
+    reg.probe.open("tb-doc", "", WindowRole::Agent);
     seed_row(&db, id, "doc", "local:rmux", &pane, &instance.repo());
-    reg.probe.set_reachable(false);
     let doc = cli_doc(&db, &reg.cli, &["session", "doctor", &id.to_string()]);
     let check = find_check(&doc, "cli").unwrap_or_else(|| panic!("no cli check: {doc}"));
     assert_eq!(check["level"], "warn", "{check}");
