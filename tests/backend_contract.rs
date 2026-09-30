@@ -34,6 +34,7 @@ fn the_recording_backend_keeps_the_contract() {
     let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
     backend_contract::suite(&*fake);
     backend_contract::lifecycle(&*fake);
+    backend_contract::shutdown_is_final(&*fake);
 }
 
 #[test]
@@ -56,6 +57,14 @@ fn the_tmux_backend_keeps_the_contract() {
         String::from_utf8_lossy(&clients.stdout).trim(),
         "",
         "the headless lifecycle attached a client"
+    );
+    let quitting = TmuxBackend::new();
+    backend_contract::shutdown_is_final(&quitting);
+    let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
+    assert_eq!(
+        String::from_utf8_lossy(&clients.stdout).trim(),
+        "",
+        "a shut-down backend left a client attached"
     );
 }
 
@@ -187,4 +196,136 @@ fn killing_a_split_window_takes_the_whole_window() {
         );
         backend.shutdown();
     }
+}
+
+/// A psmux host stamps nothing, so where two windows share a session's name a
+/// teardown can go only by the pane the row remembers — and it must find that
+/// pane's *window*, whichever of its panes is selected, and never a window of
+/// another name the id was reissued to after a restart.
+///
+/// The host is a stand-in: `ssh` runs its remote command here and `psmux`
+/// is this machine's tmux, so the adapter's psmux path runs for real against
+/// a private server.
+#[cfg(unix)]
+#[test]
+fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::backend::{Located, Owner};
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("thurbox-backend-contract-psmux");
+    let bin = tempfile::tempdir().expect("tempdir");
+    let script = |name: &str, body: &str| {
+        let path = bin.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    };
+    const DEST: &str = "e2e@psmux.invalid";
+    script(
+        "ssh",
+        &format!("while [ \"$1\" != '{DEST}' ]; do shift; done; shift; exec sh -c \"$*\""),
+    );
+    script("psmux", "exec tmux \"$@\"");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![bin.path().to_path_buf()];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+
+    let pane = |args: &[&str]| {
+        let out = server.tmux(args);
+        assert!(out.status.success(), "tmux {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let own = pane(&[
+        "new-session",
+        "-d",
+        "-s",
+        "probe",
+        "-n",
+        "tb-x",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "300",
+    ]);
+    let namesake = pane(&[
+        "new-window",
+        "-d",
+        "-t",
+        "probe",
+        "-n",
+        "tb-x",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "300",
+    ]);
+    let other = pane(&[
+        "new-window",
+        "-d",
+        "-t",
+        "probe",
+        "-n",
+        "tb-other",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "300",
+    ]);
+    // Split, and the new pane selected: the listing now reports it, not the
+    // pane the row remembers.
+    pane(&[
+        "split-window",
+        "-t",
+        &own,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "300",
+    ]);
+
+    let host = thurbox::session::HostDef {
+        name: "psmuxhost".into(),
+        destination: DEST.into(),
+        multiplexer: Some("psmux".into()),
+        share_sessions: false,
+        socket: Some(server.socket().to_string()),
+        session: Some("probe".into()),
+        ..Default::default()
+    };
+    let backend = TmuxBackend::for_route(&host, Multiplexer::Psmux);
+    let row = "00000000-0000-4000-8000-0000000000bb";
+
+    // An id reissued to a window of another name is not this row's.
+    let reissued = backend
+        .locate(Owner::new(row, "x").remembering(&other, ""))
+        .expect("locate");
+    assert_eq!(reissued.agent, Located::Unknown, "claimed another window");
+
+    // The remembered pane, split away from, is still this row's window.
+    let placed = backend
+        .locate(Owner::new(row, "x").remembering(&own, ""))
+        .expect("locate");
+    assert_eq!(placed.agent, Located::At(own.clone()));
+    backend.kill(&own).expect("kill");
+    let panes = pane(&["list-panes", "-s", "-t", "probe", "-F", "#{pane_id}"]);
+    let panes: Vec<&str> = panes.lines().collect();
+    assert!(
+        !panes.contains(&own.as_str()),
+        "the row's window survived: {panes:?}"
+    );
+    assert!(
+        panes.contains(&namesake.as_str()),
+        "the namesake was killed"
+    );
+    assert!(
+        panes.contains(&other.as_str()),
+        "the other window was killed"
+    );
 }

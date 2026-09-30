@@ -49,6 +49,8 @@ struct State {
     next: u32,
     windows: Vec<Window>,
     unreachable: bool,
+    /// Shut down: nothing is readied again.
+    closed: bool,
     /// Every call that reached the backend, in order, as `verb detail`.
     calls: Vec<String>,
 }
@@ -234,7 +236,11 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
-        self.lock("ensure_ready".into()).map(drop)
+        let state = self.lock("ensure_ready".into())?;
+        if state.closed {
+            bail!("{} is shut down", self.name);
+        }
+        Ok(())
     }
 
     fn spawn(
@@ -430,6 +436,8 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn shutdown(&self) {
-        self.state.lock().unwrap().calls.push("shutdown".into());
+        let mut state = self.state.lock().unwrap();
+        state.calls.push("shutdown".into());
+        state.closed = true;
     }
 }

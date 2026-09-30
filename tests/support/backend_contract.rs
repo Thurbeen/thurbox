@@ -180,3 +180,15 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
         }
     );
 }
+
+/// Shutdown is final: a worker still holding the registry when the process
+/// quits must not open a connection `shutdown_all` just closed.
+pub fn shutdown_is_final(backend: &dyn SessionBackend) {
+    backend.ensure_ready().expect("the backend readies");
+    backend.shutdown();
+    assert!(
+        backend.ensure_ready().is_err(),
+        "a backend readied itself again after shutdown"
+    );
+    backend.shutdown();
+}

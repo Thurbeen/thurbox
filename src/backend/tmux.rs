@@ -863,6 +863,10 @@ pub struct TmuxBackend {
     /// (`local-tmux` or `ssh:<host>`).
     name: String,
     control: Mutex<Option<ControlMode>>,
+    /// Set by [`SessionBackend::shutdown`]: from then on no connection is
+    /// opened, so a worker still holding the registry as the process quits
+    /// cannot bring back the one quit just closed.
+    closed: std::sync::atomic::AtomicBool,
     /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
     sizer: String,
     /// The host an off-local backend was built from, for the agent `PATH`
@@ -919,6 +923,7 @@ impl TmuxBackend {
             ))
             .format(),
             control: Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
             sizer: sizer_name(),
             host: None,
             platform: crate::session::Platform::local(),
@@ -945,6 +950,7 @@ impl TmuxBackend {
             session: session.into(),
             name: name.into(),
             control: Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
             sizer: sizer_name(),
             host: None,
             platform,
@@ -1077,10 +1083,24 @@ impl TmuxBackend {
             session: self.session.clone(),
             name: self.name.clone(),
             control: Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(self.is_closed()),
             sizer: sizer_name(),
             host: self.host.clone(),
             platform: self.platform,
         }
+    }
+
+    /// Whether [`SessionBackend::shutdown`] has run.
+    fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Refuse to open a connection once shut down.
+    fn refuse_if_closed(&self) -> Result<()> {
+        if self.is_closed() {
+            bail!("{} is shut down", self.name);
+        }
+        Ok(())
     }
 
     /// Whether this backend holds a control-mode connection, which is what
@@ -1140,25 +1160,37 @@ impl TmuxBackend {
     /// (issue #1207). The refusal itself is untouched — the choice is made by
     /// *retiring* a window, which is a write, and never by reading one of two
     /// as the answer.
-    fn settle(
-        &self,
-        listing: &[DiscoveredSession],
-        owner: Owner<'_>,
-        role: WindowRole,
-    ) -> Result<Located> {
+    fn settle(&self, owner: Owner<'_>, role: WindowRole) -> Result<Located> {
         let remembered = match role {
             WindowRole::Shell => owner.shell_pane,
             _ => owner.agent_pane,
         };
         if self.transport.uses_psmux() {
             let name = window_name_for(role, owner.name);
-            return Ok(match self.transport.is_remote() {
-                true if remembered_window(listing, remembered, &name) => {
-                    Located::At(remembered.to_string())
-                }
-                true => Located::Unknown,
-                false => Located::At(window_target(&window_name_for(role, owner.name))),
-            });
+            if !self.transport.is_remote() {
+                return Ok(Located::At(window_target(&name)));
+            }
+            if remembered.is_empty() {
+                return Ok(Located::Unknown);
+            }
+            // The remembered pane's own window, asked for by pane: a window
+            // lists its *selected* pane, which after a split need not be the
+            // one the row remembers. A server that restarted reissues ids, so
+            // one now in a window of another name is not this row's.
+            let panes = self.tmux_output(&[
+                "list-panes",
+                "-s",
+                "-t",
+                &self.session,
+                "-F",
+                "#{pane_id}|#{window_name}",
+            ])?;
+            return Ok(
+                match window_of_pane(&panes, remembered) == Some(name.as_str()) {
+                    true => Located::At(remembered.to_string()),
+                    false => Located::Unknown,
+                },
+            );
         }
         if self.transport.is_remote() || retire_duplicate_windows(owner.session_id, role).is_none()
         {
@@ -1696,6 +1728,7 @@ impl TmuxBackend {
 
     /// Drop the dead control mode connection and start a fresh one.
     fn reconnect_control(&self) -> Result<()> {
+        self.refuse_if_closed()?;
         let mut guard = self
             .control
             .lock()
@@ -2116,6 +2149,7 @@ impl SessionBackend for TmuxBackend {
     }
 
     fn ensure_ready(&self) -> Result<()> {
+        self.refuse_if_closed()?;
         self.ensure_session_configured()?;
 
         // Start control mode if not already running.
@@ -2433,10 +2467,9 @@ impl SessionBackend for TmuxBackend {
         // that reads the same as "no such window" — see `mux_answered_absent`.
         // One listing serves both roles: an ssh round trip per role would
         // double the cost of every remote teardown.
-        let listing = self.discover_answered()?;
-        let index = WindowIndex::from_listing(listing.iter().cloned());
+        let index = WindowIndex::from_listing(self.discover_answered()?);
         let place = |role| match index.locate(owner.session_id, owner.name, role, false) {
-            Located::Unknown => self.settle(&listing, owner, role),
+            Located::Unknown => self.settle(owner, role),
             found => Ok(found),
         };
         Ok(Placed {
@@ -2673,6 +2706,8 @@ impl SessionBackend for TmuxBackend {
         // `lock()` rather than `try_lock()`: a contended lock means another
         // thread is mid-command on this connection, and skipping the teardown
         // would leak the child + reader thread for the process lifetime.
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
         drop(self.control.lock().ok().and_then(|mut c| c.take()));
     }
 
@@ -4144,15 +4179,14 @@ fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
     )
 }
 
-/// Whether the pane a row remembers is, in `listing`, a window of the name the
-/// row's window has — the least a remembered id must show before a kill takes
-/// its whole window. A server that restarted reissues pane ids, so an id that
-/// now sits in another session's window, split or not, is not this row's.
-fn remembered_window(listing: &[DiscoveredSession], pane: &str, window_name: &str) -> bool {
-    !pane.is_empty()
-        && listing
-            .iter()
-            .any(|w| w.backend_id == pane && w.name == window_name)
+/// The name of the window `pane` is in, from a `list-panes -F
+/// '#{pane_id}|#{window_name}'` answer.
+fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
+    listing
+        .lines()
+        .filter_map(|line| line.split_once('|'))
+        .find(|(id, _)| *id == pane)
+        .map(|(_, window)| window)
 }
 
 /// Whether a kill's failure says its target is already gone — named by its
@@ -5296,25 +5330,14 @@ mod tests {
         assert_eq!(known_host_socket(&pinned).unwrap(), "thurbox");
     }
 
-    /// A remembered pane is trusted only where the listing shows it in a
-    /// window of the row's own name.
+    /// A pane is placed in its own window, whichever pane of it is selected.
     #[test]
-    fn a_remembered_pane_counts_only_in_a_window_of_the_rows_name() {
-        let window = |pane: &str, name: &str| DiscoveredSession {
-            backend_id: pane.into(),
-            name: name.into(),
-            is_alive: true,
-            session: String::new(),
-            role: WindowRole::Agent,
-        };
-        let listing = [window("%3", "tb-mine"), window("%4", "tb-theirs")];
-        assert!(remembered_window(&listing, "%3", "tb-mine"));
-        assert!(
-            !remembered_window(&listing, "%4", "tb-mine"),
-            "reissued to another window"
-        );
-        assert!(!remembered_window(&listing, "%9", "tb-mine"), "gone");
-        assert!(!remembered_window(&listing, "", "tb-mine"));
+    fn a_pane_is_placed_in_the_window_it_is_in() {
+        let listing = "%3|tb-mine\n%5|tb-mine\n%4|tb-theirs\n";
+        assert_eq!(window_of_pane(listing, "%5"), Some("tb-mine"));
+        assert_eq!(window_of_pane(listing, "%4"), Some("tb-theirs"));
+        assert_eq!(window_of_pane(listing, "%9"), None);
+        assert_eq!(window_of_pane(listing, ""), None);
     }
 
     /// The same refusal through the contract: a teardown, a restart's listing
