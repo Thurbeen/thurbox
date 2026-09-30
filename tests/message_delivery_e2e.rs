@@ -50,17 +50,17 @@ fn codex_row(agent_session_id: &str) -> SharedSession {
     }
 }
 
-/// A `codex` on `PATH` that records the thread of each `queue --thread <id>`
-/// it is asked for and accepts it, as the real one does for any thread with a
-/// rollout.
-fn fake_codex(bin: &Path, log: &Path) -> std::ffi::OsString {
+/// A `codex` on `PATH` that appends the thread of each `queue --thread <id>`
+/// it is asked for to `$FAKE_CODEX_LOG` and accepts it, as the real one does
+/// for any thread with a rollout.
+fn fake_codex(bin: &Path) -> std::ffi::OsString {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::create_dir_all(bin).expect("mkdir bin");
     let fake = bin.join("codex");
     std::fs::write(
         &fake,
-        format!("#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\n", log.display()),
+        "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$FAKE_CODEX_LOG\"\n",
     )
     .expect("write fake codex");
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -93,11 +93,12 @@ fn codex_session_start(row: &SharedSession, conversation: &str, source: &str) {
     assert!(hook.wait().unwrap().success(), "bind-codex failed");
 }
 
-fn send(to: &SharedSession, body: &str, path: &std::ffi::OsStr) -> Value {
+fn send(to: &SharedSession, body: &str, path: &std::ffi::OsStr, log: &Path) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args(["message", "send", "--to", &to.name, "--kind", "note"])
         .args(["--body", body, "--json"])
         .env("PATH", path)
+        .env("FAKE_CODEX_LOG", log)
         .env_remove("THURBOX_SESSION")
         .output()
         .expect("run message send");
@@ -119,7 +120,7 @@ fn a_send_after_codex_new_does_not_queue_on_the_abandoned_thread() {
     let home = tempfile::tempdir().expect("tempdir");
     let db = isolate(home.path());
     let log = home.path().join("codex-queue.log");
-    let path = fake_codex(&home.path().join("bin"), &log);
+    let path = fake_codex(&home.path().join("bin"));
 
     let row = codex_row("5f0c5a3e-6d7b-4c2a-9a55-1b2c3d4e5f60");
     db.upsert_session(&row).expect("insert row");
@@ -132,12 +133,12 @@ fn a_send_after_codex_new_does_not_queue_on_the_abandoned_thread() {
         Some(first)
     );
 
-    let before = send(&row, "before /new", &path);
+    let before = send(&row, "before /new", &path, &log);
     assert_eq!(before["delivered_via"], "codex-queue", "{before}");
 
     let second = "22222222-2222-4222-8222-222222222222";
     codex_session_start(&row, second, "startup");
-    let after = send(&row, "after /new", &path);
+    let after = send(&row, "after /new", &path, &log);
 
     let queued = std::fs::read_to_string(&log).unwrap_or_default();
     assert_eq!(
