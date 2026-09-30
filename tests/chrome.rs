@@ -682,7 +682,9 @@ fn a_housekeeping_sweep_neither_captions_the_band_nor_reflows_the_frame() {
     let registry = Registry::default();
     let quiet = rect_of(&slots(&host, &world(0), 160, 40), "sessions").expect("a session column");
 
-    let bus = CommandBus::new();
+    let bus = CommandBus::new(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     bus.dispatch(Command::Reap);
     assert!(
         !bus.inflight().iter().any(|item| item.kind == "reap"),

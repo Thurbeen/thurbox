@@ -73,7 +73,7 @@ fn ensure_reuses_existing_session_and_creates_automation() {
     let db = Database::open_in_memory().unwrap();
     insert_session(&db, "flow");
 
-    let report = ensure_extension(&db, &flow_def()).unwrap();
+    let report = ensure_extension(&db, &crate::backend::registry::inert(), &flow_def()).unwrap();
     assert!(report.sessions_created.is_empty(), "session was reused");
     assert_eq!(report.automations_created, ["flow-tick"]);
 
@@ -89,8 +89,8 @@ fn ensure_is_idempotent() {
     insert_session(&db, "flow");
     let def = flow_def();
 
-    ensure_extension(&db, &def).unwrap();
-    let second = ensure_extension(&db, &def).unwrap();
+    ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
+    let second = ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     assert!(!second.created_anything(), "second pass creates nothing");
     assert_eq!(db.list_automations().unwrap().len(), 1);
 }
@@ -102,7 +102,7 @@ fn ensure_relinks_stale_send_target_after_session_recreated() {
     let def = flow_def();
 
     // First pass binds the automation to the original session id.
-    ensure_extension(&db, &def).unwrap();
+    ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     let auto = &db.list_automations().unwrap()[0];
     assert_eq!(auto.action, AutomationAction::Send { session_id: old_id });
 
@@ -114,7 +114,7 @@ fn ensure_relinks_stale_send_target_after_session_recreated() {
 
     // Self-heal re-links the existing automation to the live id rather than
     // leaving it pointing at the dead one.
-    let report = ensure_extension(&db, &def).unwrap();
+    let report = ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     assert!(report.automations_created.is_empty(), "no new automation");
     assert_eq!(report.automations_relinked, ["flow-tick"]);
     assert!(report.created_anything(), "a relink counts as repair");
@@ -123,7 +123,7 @@ fn ensure_relinks_stale_send_target_after_session_recreated() {
     assert_eq!(auto.action, AutomationAction::Send { session_id: new_id });
 
     // A subsequent pass is a no-op now that the link is correct.
-    let again = ensure_extension(&db, &def).unwrap();
+    let again = ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     assert!(!again.created_anything(), "relink is idempotent");
 }
 
@@ -133,7 +133,7 @@ fn unknown_session_ref_errors() {
     insert_session(&db, "flow");
     let mut def = flow_def();
     def.automations[0].session_ref = Some("ghost".into());
-    let err = ensure_extension(&db, &def).unwrap_err();
+    let err = ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap_err();
     assert!(err.contains("ghost"), "got: {err}");
 }
 
@@ -141,7 +141,7 @@ fn unknown_session_ref_errors() {
 fn activate_records_active_set() {
     let db = Database::open_in_memory().unwrap();
     insert_session(&db, "flow");
-    activate_extension(&db, &flow_def()).unwrap();
+    activate_extension(&db, &crate::backend::registry::inert(), &flow_def()).unwrap();
     assert_eq!(db.get_active_extensions().unwrap(), ["flow"]);
 }
 
@@ -150,9 +150,10 @@ fn deactivate_tears_down_and_clears_active_set() {
     let db = Database::open_in_memory().unwrap();
     insert_session(&db, "flow");
     let def = flow_def();
-    activate_extension(&db, &def).unwrap();
+    activate_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
 
-    let report = deactivate_extension(&db, &def, false).unwrap();
+    let report =
+        deactivate_extension(&db, &crate::backend::registry::inert(), &def, false).unwrap();
     assert!(report.was_active);
     assert_eq!(report.automations_deleted, ["flow-tick"]);
     assert_eq!(report.sessions_deleted, ["flow"]);
@@ -168,7 +169,8 @@ fn deactivate_is_idempotent() {
     let db = Database::open_in_memory().unwrap();
     let def = flow_def();
     // Nothing exists / not active — deactivate is a clean no-op.
-    let report = deactivate_extension(&db, &def, false).unwrap();
+    let report =
+        deactivate_extension(&db, &crate::backend::registry::inert(), &def, false).unwrap();
     assert!(!report.was_active);
     assert!(report.automations_deleted.is_empty());
     assert!(report.sessions_deleted.is_empty());
@@ -238,7 +240,14 @@ prompt = "tick"
     std::fs::write(src.path().join("settings.tmpl"), "perm {home}/x").unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     assert!(home.join("FLOW.md").exists());
     assert!(home.join("scripts/do.sh").exists());
@@ -277,7 +286,14 @@ prompt = "tick"
 
     // Re-install is idempotent: repos.md kept (if_absent), no new agents.
     std::fs::write(home.join("repos.md"), "user edited").unwrap();
-    let again = install_extension(&db, &target, None, false).unwrap();
+    let again = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(again.files_skipped.contains(&"repos.md".to_string()));
     assert_eq!(
         std::fs::read_to_string(home.join("repos.md")).unwrap(),
@@ -331,7 +347,14 @@ requires_dir = '{plugin_dir}'
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // The built-in claude agent's args gained the --settings flag, resolved.
     assert_eq!(report.agents_patched, ["claude"]);
@@ -352,7 +375,7 @@ requires_dir = '{plugin_dir}'
         .any(|p| p == &plugin_dest.to_string_lossy()));
 
     // Uninstall reverses both: the patch is removed and the plugin deleted.
-    let un = uninstall_extension(&db, "hooks", false).unwrap();
+    let un = uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
     assert_eq!(un.agents_unpatched, ["claude"]);
     assert!(!plugin_dest.exists(), "managed plugin removed on uninstall");
     let reg = crate::agent::agent_config::load_or_seed();
@@ -406,7 +429,14 @@ requires_dir = '{agent_dir}'
         .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_applied, [settings.to_string_lossy()]);
 
     let merged: serde_json::Value =
@@ -424,12 +454,19 @@ requires_dir = '{agent_dir}'
     assert!(merged["hooks"]["AfterAgent"].is_array());
 
     // A re-install is a no-op write (skipped, not re-applied).
-    let again = install_extension(&db, &target, None, false).unwrap();
+    let again = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(again.config_merges_applied.is_empty());
     assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
 
     // Uninstall prunes exactly our entries; the user's config is restored.
-    let un = uninstall_extension(&db, "hooks", false).unwrap();
+    let un = uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
     assert_eq!(un.config_merges_reverted, [settings.to_string_lossy()]);
     let restored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -471,7 +508,14 @@ requires_dir = '{missing}'
     std::fs::write(src.path().join("gemini-hooks.json"), "{}").unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_skipped, [settings.to_string_lossy()]);
     assert!(report.config_merges_applied.is_empty());
     assert!(
@@ -532,14 +576,21 @@ format = "toml"
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_applied, [config.to_string_lossy()]);
     let merged = std::fs::read_to_string(&config).unwrap();
     assert!(merged.contains("--state idle"), "ours merged in: {merged}");
     assert!(merged.contains("--state done"), "theirs still there");
 
     // Uninstall takes exactly ours back out and restores their file verbatim.
-    let un = uninstall_extension(&db, "hooks", false).unwrap();
+    let un = uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
     assert_eq!(un.config_merges_reverted, [config.to_string_lossy()]);
     let restored = std::fs::read_to_string(&config).unwrap();
     assert_eq!(
@@ -594,7 +645,14 @@ format = "toml"
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // A later version of the payload renames the event and retimes it.
     std::fs::write(
@@ -602,7 +660,14 @@ format = "toml"
         payload("SessionEnd", "idle", 30),
     )
     .unwrap();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_applied, [config.to_string_lossy()]);
 
     let updated = std::fs::read_to_string(&config).unwrap();
@@ -617,7 +682,14 @@ format = "toml"
     assert!(updated.contains("model = \"kimi-code/k3\""));
 
     // Re-installing the same payload writes nothing (no churn on every tick).
-    let again = install_extension(&db, &target, None, false).unwrap();
+    let again = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(again.config_merges_applied.is_empty());
     assert_eq!(again.config_merges_skipped, [config.to_string_lossy()]);
 }
@@ -678,7 +750,14 @@ requires_dir = '{agent_dir}'
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // A later version fixes the command.
     std::fs::write(
@@ -686,7 +765,14 @@ requires_dir = '{agent_dir}'
         payload("thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'"),
     )
     .unwrap();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_applied, [settings.to_string_lossy()]);
 
     let updated = std::fs::read_to_string(&settings).unwrap();
@@ -708,7 +794,14 @@ requires_dir = '{agent_dir}'
     );
 
     // Re-installing the same payload writes nothing (no churn on every tick).
-    let again = install_extension(&db, &target, None, false).unwrap();
+    let again = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(again.config_merges_applied.is_empty());
     assert_eq!(again.config_merges_skipped, [settings.to_string_lossy()]);
 }
@@ -782,7 +875,14 @@ requires_dir = '{agent_dir}'
     let target = src.path().to_string_lossy().to_string();
     // Establish our stamp first — after this the file is one thurbox has
     // written, which is the state every install but the very first one sees.
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // Now they add a hook of their own, under the event we own.
     let mut doc: serde_json::Value =
@@ -797,7 +897,14 @@ requires_dir = '{agent_dir}'
     // Twice: the second install is the heartbeat tick that would delete their
     // hook a second time if ownership were decided by the command's content.
     for pass in 1..=2 {
-        install_extension(&db, &target, None, false).unwrap();
+        install_extension(
+            &db,
+            &crate::backend::registry::inert(),
+            &target,
+            None,
+            false,
+        )
+        .unwrap();
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         let pre = doc["hooks"]["PreToolUse"].as_array().unwrap();
@@ -822,7 +929,7 @@ requires_dir = '{agent_dir}'
 
     // Uninstall is the explicit, one-shot action and stays broad, so nothing of
     // ours is orphaned — and it still takes theirs, which is unchanged.
-    uninstall_extension(&db, "hooks", false).unwrap();
+    uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     assert!(doc.get("hooks").is_none(), "ours came back out: {doc}");
@@ -874,11 +981,25 @@ requires_dir = '{agent_dir}'
     )
     .unwrap();
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // The next release learns the event is really called `Stop`.
     std::fs::write(src.path().join("codex-hooks.json"), payload("Stop", "done")).unwrap();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     let updated = std::fs::read_to_string(&settings).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&updated).expect("still valid JSON");
@@ -937,7 +1058,14 @@ requires_dir = '{agent_dir}'
     .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     let updated = std::fs::read_to_string(&settings).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&updated).expect("still valid JSON");
@@ -952,7 +1080,14 @@ requires_dir = '{agent_dir}'
     );
 
     // And the sweep settles: nothing left to find, so no churn on every tick.
-    let again = install_extension(&db, &target, None, false).unwrap();
+    let again = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(again.config_merges_applied.is_empty());
 }
 
@@ -992,7 +1127,14 @@ requires_dir = '{agent_dir}'
 
     let target = src.path().to_string_lossy().to_string();
     // Install succeeds despite the broken target; the merge is soft-skipped...
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.config_merges_skipped, [settings.to_string_lossy()]);
     assert!(report.config_merges_applied.is_empty());
     // ...and the user's (broken) file is left exactly as-is, not overwritten.
@@ -1070,7 +1212,14 @@ requires_dir = '{agent_dir}'
         // The install still succeeds (it runs every startup + tick) but the
         // merge is refused rather than applied.
         let target = src.path().to_string_lossy().to_string();
-        let report = install_extension(&db, &target, None, false).unwrap();
+        let report = install_extension(
+            &db,
+            &crate::backend::registry::inert(),
+            &target,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(
             report.config_merges_skipped,
             [config.to_string_lossy()],
@@ -1131,12 +1280,19 @@ requires_dir = '{agent_dir}'
         .unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     // The user corrupts the file after install.
     std::fs::write(&settings, "}{ broken").unwrap();
 
     // Uninstall succeeds, reverts nothing, leaves the broken file untouched.
-    let un = uninstall_extension(&db, "hooks", false).unwrap();
+    let un = uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
     assert!(un.config_merges_reverted.is_empty());
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "}{ broken");
 }
@@ -1174,7 +1330,14 @@ requires_dir = '{req}'
     )
     .unwrap();
 
-    let report = install_extension(&db, &src.path().to_string_lossy(), None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &src.path().to_string_lossy(),
+        None,
+        false,
+    )
+    .unwrap();
     assert!(!dest.exists(), "skipped because requires_dir is absent");
     assert!(report
         .external_files_skipped
@@ -1210,7 +1373,14 @@ fn install_rejects_path_traversal_in_manifest() {
     std::fs::write(src.path().join("../../pwned"), "x").ok();
 
     let target = src.path().to_string_lossy().to_string();
-    let err = install_extension(&db, &target, None, false).unwrap_err();
+    let err = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap_err();
     assert!(err.contains("must not contain '..'"), "got: {err}");
 }
 
@@ -1240,12 +1410,26 @@ fn install_skips_user_modified_substitute_file() {
     let target = src.path().to_string_lossy().to_string();
 
     // First install writes it.
-    let r1 = install_extension(&db, &target, None, false).unwrap();
+    let r1 = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(r1.files_written.contains(&"settings.json".to_string()));
 
     // User edits it (drops the marker) → reinstall must not clobber it.
     std::fs::write(home.join("settings.json"), "MY CUSTOM PERMS").unwrap();
-    let r2 = install_extension(&db, &target, None, false).unwrap();
+    let r2 = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(r2.files_skipped.contains(&"settings.json".to_string()));
     assert_eq!(
         std::fs::read_to_string(home.join("settings.json")).unwrap(),
@@ -1253,7 +1437,8 @@ fn install_skips_user_modified_substitute_file() {
     );
 
     // --force overrides and rewrites from the template.
-    let r3 = install_extension(&db, &target, None, true).unwrap();
+    let r3 =
+        install_extension(&db, &crate::backend::registry::inert(), &target, None, true).unwrap();
     assert!(r3.files_written.contains(&"settings.json".to_string()));
 }
 
@@ -1273,7 +1458,14 @@ fn install_defaults_home_under_extensions_dir() {
     std::fs::write(src.path().join("NOTES.md"), "hello\n").unwrap();
 
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
 
     // The Override path strategy maps the config dir under the test base, so
     // the default home is `<base>/extensions/demo` (sibling of demo.toml).
@@ -1304,13 +1496,26 @@ fn install_home_override_and_manifest_home_beat_default() {
     .unwrap();
     std::fs::write(src.path().join("NOTES.md"), "hi\n").unwrap();
     let target = src.path().to_string_lossy().to_string();
-    let report = install_extension(&db, &target, None, false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(report.home, pinned.to_string_lossy());
 
     // (b) `--home` beats both the manifest home and the default.
     let override_home = temp.path().join("override");
-    let report =
-        install_extension(&db, &target, Some(&override_home.to_string_lossy()), false).unwrap();
+    let report = install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        Some(&override_home.to_string_lossy()),
+        false,
+    )
+    .unwrap();
     assert_eq!(report.home, override_home.to_string_lossy());
 }
 
@@ -1359,7 +1564,14 @@ prompt = "tick"
     std::fs::write(src.path().join("FLOW.md"), "spec").unwrap();
     let target = src.path().to_string_lossy().to_string();
 
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(home.join("FLOW.md").exists());
     assert!(crate::agent::agent_config::load_or_seed()
         .get("flow")
@@ -1367,7 +1579,8 @@ prompt = "tick"
     assert_eq!(db.get_active_extensions().unwrap(), ["flow"]);
 
     // Uninstall without --purge keeps the home dir but removes everything else.
-    let report = uninstall_extension(&db, "flow", false).unwrap();
+    let report =
+        uninstall_extension(&db, &crate::backend::registry::inert(), "flow", false).unwrap();
     assert_eq!(report.agents_removed, ["flow"]);
     assert!(report.manifest_removed);
     assert!(report.home_removed.is_none());
@@ -1379,8 +1592,16 @@ prompt = "tick"
     assert!(home.join("FLOW.md").exists(), "home kept without --purge");
 
     // Reinstall, then uninstall --purge removes the home dir too.
-    install_extension(&db, &target, None, false).unwrap();
-    let report = uninstall_extension(&db, "flow", true).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
+    let report =
+        uninstall_extension(&db, &crate::backend::registry::inert(), "flow", true).unwrap();
     assert_eq!(
         report.home_removed.as_deref(),
         Some(home.to_string_lossy().as_ref())
@@ -1407,7 +1628,14 @@ fn update_refetches_from_recorded_source_and_reports_version_move() {
     std::fs::write(src.path().join("FLOW.md"), "v1 spec").unwrap();
     let target = src.path().to_string_lossy().to_string();
 
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     let stored = crate::agent::extension_config::load_manifest("flow").unwrap();
     assert_eq!(stored.version.as_deref(), Some("1.0.0"));
     assert_eq!(stored.source.as_deref(), Some(target.as_str()));
@@ -1416,7 +1644,7 @@ fn update_refetches_from_recorded_source_and_reports_version_move() {
     std::fs::write(src.path().join("extension.toml"), manifest("2.0.0")).unwrap();
     std::fs::write(src.path().join("FLOW.md"), "v2 spec").unwrap();
 
-    let report = update_extension(&db, "flow", false).unwrap();
+    let report = update_extension(&db, &crate::backend::registry::inert(), "flow", false).unwrap();
     assert!(report.changed, "version moved 1.0.0 -> 2.0.0");
     assert_eq!(report.install.previous_version.as_deref(), Some("1.0.0"));
     assert_eq!(report.install.version.as_deref(), Some("2.0.0"));
@@ -1433,7 +1661,7 @@ fn update_refetches_from_recorded_source_and_reports_version_move() {
     );
 
     // A no-op update (same source, unchanged) reports changed = false.
-    let again = update_extension(&db, "flow", false).unwrap();
+    let again = update_extension(&db, &crate::backend::registry::inert(), "flow", false).unwrap();
     assert!(!again.changed);
 }
 
@@ -1456,7 +1684,14 @@ fn install_then_bump_source(
     std::fs::write(src.path().join("extension.toml"), manifest("1.0.0")).unwrap();
     std::fs::write(src.path().join("FLOW.md"), "v1 spec").unwrap();
     let target = src.path().to_string_lossy().to_string();
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     // Author publishes a new version at the same recorded source.
     std::fs::write(src.path().join("extension.toml"), manifest("2.0.0")).unwrap();
     std::fs::write(src.path().join("FLOW.md"), "v2 spec").unwrap();
@@ -1474,7 +1709,15 @@ fn heal_auto_updates_stale_extension_when_enabled() {
     // installed it) makes the extension stale; auto_update = true refreshes it.
     let def = crate::agent::extension_config::load_manifest("flow").unwrap();
     let mut messages = Vec::new();
-    let updated = heal_version_drift(&db, &def, "flow", "9.9.9", true, &mut messages);
+    let updated = heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        "9.9.9",
+        true,
+        &mut messages,
+    );
 
     assert!(
         updated,
@@ -1508,7 +1751,15 @@ fn heal_nudges_stale_extension_when_auto_update_off() {
 
     let def = crate::agent::extension_config::load_manifest("flow").unwrap();
     let mut messages = Vec::new();
-    let updated = heal_version_drift(&db, &def, "flow", "9.9.9", false, &mut messages);
+    let updated = heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        "9.9.9",
+        false,
+        &mut messages,
+    );
 
     assert!(
         !updated,
@@ -1546,7 +1797,15 @@ fn heal_does_not_auto_update_a_current_extension() {
     let def = crate::agent::extension_config::load_manifest("flow").unwrap();
     let installed_with = def.installed_with.clone().unwrap();
     let mut messages = Vec::new();
-    let updated = heal_version_drift(&db, &def, "flow", &installed_with, true, &mut messages);
+    let updated = heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        &installed_with,
+        true,
+        &mut messages,
+    );
 
     assert!(!updated);
     assert!(messages.is_empty(), "got: {messages:?}");
@@ -1570,7 +1829,15 @@ fn heal_warns_without_auto_updating_when_binary_too_old() {
     let mut def = flow_def();
     def.min_thurbox_version = Some("5.0.0".into());
     let mut messages = Vec::new();
-    let updated = heal_version_drift(&db, &def, "flow", "1.0.0", true, &mut messages);
+    let updated = heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        "1.0.0",
+        true,
+        &mut messages,
+    );
 
     assert!(!updated, "compat warning is not an auto-update");
     assert_eq!(messages.len(), 1, "got: {messages:?}");
@@ -1592,7 +1859,15 @@ fn heal_falls_back_to_nudge_when_auto_update_fetch_fails() {
 
     let def = crate::agent::extension_config::load_manifest("flow").unwrap();
     let mut messages = Vec::new();
-    let updated = heal_version_drift(&db, &def, "flow", "9.9.9", true, &mut messages);
+    let updated = heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        "9.9.9",
+        true,
+        &mut messages,
+    );
 
     assert!(
         !updated,
@@ -1625,7 +1900,8 @@ fn update_errors_when_no_recorded_source() {
         ..Default::default()
     })
     .unwrap();
-    let err = update_extension(&db, "legacy", false).unwrap_err();
+    let err =
+        update_extension(&db, &crate::backend::registry::inert(), "legacy", false).unwrap_err();
     assert!(err.contains("no recorded install source"), "got: {err}");
 }
 
@@ -1656,11 +1932,19 @@ fn reinstall_tears_down_then_installs_fresh() {
     std::fs::write(src.path().join("seed.md"), "pristine seed").unwrap();
     let target = src.path().to_string_lossy().to_string();
 
-    install_extension(&db, &target, None, false).unwrap();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
     // User edits the if_absent seed — update without --force would keep it.
     std::fs::write(home.join("seed.md"), "user edit").unwrap();
 
-    let report = reinstall_extension(&db, "flow", false).unwrap();
+    let report =
+        reinstall_extension(&db, &crate::backend::registry::inert(), "flow", false).unwrap();
     assert_eq!(report.name, "flow");
     assert!(report.uninstall.manifest_removed);
     assert_eq!(report.install.version.as_deref(), Some("1.0.0"));
@@ -1683,7 +1967,8 @@ fn reinstall_errors_when_no_recorded_source() {
         ..Default::default()
     })
     .unwrap();
-    let err = reinstall_extension(&db, "legacy", false).unwrap_err();
+    let err =
+        reinstall_extension(&db, &crate::backend::registry::inert(), "legacy", false).unwrap_err();
     assert!(err.contains("no recorded install source"), "got: {err}");
 }
 
@@ -1705,7 +1990,7 @@ fn health_reports_presence_and_active_flag() {
     assert!(!before.is_healthy());
 
     insert_session(&db, "flow");
-    activate_extension(&db, &def).unwrap();
+    activate_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     let after = extension_health(&db, &def).unwrap();
     assert!(after.active);
     assert!(after.is_healthy());

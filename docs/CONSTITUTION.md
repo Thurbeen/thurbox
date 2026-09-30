@@ -45,7 +45,7 @@ sync                 → session
 usage                → session, shell           [path-only: paths]
 session_ops          → session, storage, git, sync, paths, workspace, shell
                        [path-only: agent, agent::host_config,
-                        backend::{contract, identity}]
+                        backend::{contract, identity, registry}]
 kernel               → session, storage, sync, paths, session_ops, git,
                        notifications, shell
                        [path-only: agent, agent::host_config,
@@ -53,14 +53,14 @@ kernel               → session, storage, sync, paths, session_ops, git,
 cli                  → session, storage, session_ops, sync, paths,
                        notifications
                        [path-only: agent, agent::host_config,
-                        backend::contract, kernel]
+                        backend::{contract, registry}, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 shell                → session                 (a host entry → its launcher)
-coordinator          → agent, backend::output_wake, clipboard, kernel, paths,
-                       session, session_ops, shell, storage
+coordinator          → agent, backend::{output_wake, wiring}, clipboard,
+                       kernel, paths, session, session_ops, shell, storage
 ```
 
 `agent` holds coding-agent definitions and their config and never touches

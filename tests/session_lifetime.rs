@@ -69,7 +69,9 @@ fn nothing_is_relaunched_before_the_windows_have_been_looked_at() {
     // The distinction the whole respawn rests on: "we have not looked yet" and
     // "we looked and it is gone" are the same silence. Relaunching on the first
     // would start a second agent beside a perfectly good one.
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
     assert!(
         terminals.missing_agents(&rows).is_empty(),
@@ -81,7 +83,9 @@ fn nothing_is_relaunched_before_the_windows_have_been_looked_at() {
 fn a_session_that_names_a_pane_is_not_treated_as_missing_its_agent() {
     // It is failing to attach to a pane it has, which is a different problem
     // with a different fix — relaunching would abandon a live agent.
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", Some("%7"))]);
     assert!(terminals.missing_agents(&rows).is_empty());
 }
@@ -109,7 +113,9 @@ async fn a_session_whose_window_is_gone_is_reported_as_missing_its_agent() {
         .output()
         .await;
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
 
     // Sync until the survey has happened — discovery is a worker, so the answer
@@ -170,7 +176,9 @@ async fn a_session_whose_window_exists_is_not_relaunched() {
         .output()
         .await;
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
     for _ in 0..40 {
         terminals.sync(&rows, 24, 80);
@@ -228,7 +236,9 @@ async fn a_session_created_after_the_last_survey_is_not_relaunched() {
     // First, get a survey on the board — this is the "run that started with a
     // session" precondition, and it is what made the bug fire on every later
     // creation rather than the first.
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let alpha = snapshot(vec![row("aaa", "alpha", "local-tmux", None)]);
     for _ in 0..40 {
         terminals.sync(&alpha, 24, 80);
@@ -301,7 +311,9 @@ fn nothing_is_producing_output_before_anything_is_attached() {
     // The loop compares this every iteration to decide whether an agent printed.
     // It has to be cheap and it has to be stable while nothing is happening, or
     // the screen repaints forever.
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     assert_eq!(terminals.output_generation(), 0);
     assert_eq!(
         terminals.output_generation(),
@@ -314,7 +326,9 @@ fn nothing_is_producing_output_before_anything_is_attached() {
 fn a_session_with_no_shell_recorded_is_not_asked_about() {
     // The re-adoption runs every iteration, so the common case — no shell — must
     // cost nothing and must not invent one.
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     assert_eq!(terminals.shell_pane_id("aaa"), None);
     assert!(!terminals.has_shell("aaa"));
 }
@@ -409,7 +423,9 @@ async fn letting_go_of_a_pane_makes_the_next_sync_attach_afresh() {
         .await;
     window(socket, "tb-demo").await;
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
     for _ in 0..60 {
         terminals.sync(&rows, 24, 80);
@@ -509,7 +525,9 @@ fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
         .args(["new-session", "-d", "-s", "thurbox-dev", "-n", "bash", "sh"])
         .output();
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let running = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
     let mut stopped_row = row("aaa", "demo", "local-tmux", None);
     stopped_row.stopped = true;

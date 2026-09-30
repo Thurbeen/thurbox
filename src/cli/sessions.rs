@@ -546,7 +546,11 @@ pub enum MetaAction {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Result<CommandOutput, CommandError> {
     match action {
         Action::List {
             deleted: true,
@@ -578,6 +582,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             reports_as,
         } => run_create(
             db,
+            backends,
             CreateArgs {
                 name,
                 repo_path,
@@ -597,14 +602,14 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
                 reports_as,
             },
         ),
-        Action::Delete { uuid, force } => delete_session(db, &uuid, force),
+        Action::Delete { uuid, force } => delete_session(db, backends, &uuid, force),
         Action::Restore {
             session,
             best_effort,
-        } => restore_deleted(db, &session, best_effort),
-        Action::Reap { session } => run_reap(db, session),
-        Action::Restart { uuid, if_missing } => run_restart(db, uuid, if_missing),
-        Action::Rename { session, name } => run_rename(db, session, name),
+        } => restore_deleted(db, backends, &session, best_effort),
+        Action::Reap { session } => run_reap(db, backends, session),
+        Action::Restart { uuid, if_missing } => run_restart(db, backends, uuid, if_missing),
+        Action::Rename { session, name } => run_rename(db, backends, session, name),
         Action::Send {
             uuid,
             text,
@@ -615,9 +620,9 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
         Action::Focus { uuid } => run_focus(db, uuid),
         Action::Sync { host, adopt } => run_sync(db, host, adopt),
         Action::Register { json_row } => run_register(db, json_row),
-        Action::Stop { session } => run_stop(db, session),
-        Action::Start { session } => run_start(db, session),
-        Action::Fork { session, name } => run_fork(db, session, name),
+        Action::Stop { session } => run_stop(db, backends, session),
+        Action::Start { session } => run_start(db, backends, session),
+        Action::Fork { session, name } => run_fork(db, backends, session, name),
         Action::Exec {
             session,
             exit_passthrough,
@@ -773,7 +778,11 @@ struct CreateArgs {
     reports_as: Option<String>,
 }
 
-fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandError> {
+fn run_create(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    args: CreateArgs,
+) -> Result<CommandOutput, CommandError> {
     let CreateArgs {
         name,
         repo_path,
@@ -810,10 +819,18 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
     // decision about *this* backend, since a mirrored host's rows share
     // the namespace.
     let backend = crate::session_ops::spawn::backend_type_for_choice(
+        backends,
         host.as_deref(),
         multiplexer.as_deref(),
     )?;
-    let existing = resolve_existing(db, &name, on_existing, &backend, reports_as.as_deref())?;
+    let existing = resolve_existing(
+        db,
+        backends,
+        &name,
+        on_existing,
+        &backend,
+        reports_as.as_deref(),
+    )?;
     if let Existing::Answered(output) = existing {
         return Ok(*output);
     }
@@ -833,12 +850,12 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
         resume_session_id: resume,
         ..Default::default()
     };
-    let res = match crate::session_ops::spawn_session_headless(db, req) {
+    let res = match crate::session_ops::spawn_session_headless(db, backends, req) {
         Ok(res) => res,
         // `replace` tore the old session down first, so a spawn that
         // fails here would otherwise leave the caller with neither
         // session. Put back what can be put back before reporting.
-        Err(e) => return Err(rollback_replace(db, &existing, e).into()),
+        Err(e) => return Err(rollback_replace(db, backends, &existing, e).into()),
     };
     if let Some(declared) = &reports_as {
         if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
@@ -914,9 +931,13 @@ fn run_create(db: &Database, args: CreateArgs) -> Result<CommandOutput, CommandE
     ))
 }
 
-fn run_reap(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+fn run_reap(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: String,
+) -> Result<CommandOutput, CommandError> {
     let row = super::session_ref::resolve_deleted(db, &session)?;
-    let reaped = crate::session_ops::reap_soft_deleted(db, row.id)?;
+    let reaped = crate::session_ops::reap_soft_deleted(db, backends, row.id)?;
     let human = if reaped {
         format!("Reaped session '{}' ({})", row.name, row.id)
     } else {
@@ -937,12 +958,14 @@ fn run_reap(db: &Database, session: String) -> Result<CommandOutput, CommandErro
 
 fn run_restart(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     uuid: String,
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    let report =
-        crate::session_ops::restart::restart_session_headless_with(db, session.id, if_missing)?;
+    let report = crate::session_ops::restart::restart_session_headless_with(
+        db, backends, session.id, if_missing,
+    )?;
     let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
@@ -956,9 +979,14 @@ fn run_restart(
     ))
 }
 
-fn run_rename(db: &Database, session: String, name: String) -> Result<CommandOutput, CommandError> {
+fn run_rename(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: String,
+    name: String,
+) -> Result<CommandOutput, CommandError> {
     let row = resolve(db, &session)?;
-    let report = crate::session_ops::rename::rename_session_headless(db, row.id, &name)?;
+    let report = crate::session_ops::rename::rename_session_headless(db, backends, row.id, &name)?;
     let human = if report.renamed {
         format!("Renamed '{}' to '{name}' ({})", report.previous, row.id)
     } else {
@@ -1093,9 +1121,13 @@ fn run_register(db: &Database, json_row: String) -> Result<CommandOutput, Comman
     register_running_session(db, row)
 }
 
-fn run_stop(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+fn run_stop(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: String,
+) -> Result<CommandOutput, CommandError> {
     let target = resolve(db, &session)?;
-    let killed = crate::session_ops::restart::stop_session_headless(db, target.id)?;
+    let killed = crate::session_ops::restart::stop_session_headless(db, backends, target.id)?;
     Ok(CommandOutput::new(
         json!({
             "id": target.id.to_string(),
@@ -1114,9 +1146,13 @@ fn run_stop(db: &Database, session: String) -> Result<CommandOutput, CommandErro
     ]))
 }
 
-fn run_start(db: &Database, session: String) -> Result<CommandOutput, CommandError> {
+fn run_start(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: String,
+) -> Result<CommandOutput, CommandError> {
     let target = resolve(db, &session)?;
-    let report = crate::session_ops::restart::start_session_headless(db, target.id)?;
+    let report = crate::session_ops::restart::start_session_headless(db, backends, target.id)?;
     let mut human = format!("Started '{}' ({})", target.name, target.id);
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
@@ -1132,12 +1168,14 @@ fn run_start(db: &Database, session: String) -> Result<CommandOutput, CommandErr
 
 fn run_fork(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session: String,
     name: Option<String>,
 ) -> Result<CommandOutput, CommandError> {
     let source = resolve(db, &session)?;
     let res = crate::session_ops::fork_session_headless(
         db,
+        backends,
         source.id,
         name.as_deref().unwrap_or_default(),
     )?;
@@ -1358,9 +1396,14 @@ fn capture_pane(
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
-fn delete_session(db: &Database, uuid: &str, force: bool) -> Result<CommandOutput, CommandError> {
+fn delete_session(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    uuid: &str,
+    force: bool,
+) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
-    let report = crate::session_ops::delete_session_headless(db, session.id, force)?;
+    let report = crate::session_ops::delete_session_headless(db, backends, session.id, force)?;
     let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
     if let Some(note) = &report.host_unknown {
         human.push_str(&format!("\n  {note}"));
@@ -1441,6 +1484,7 @@ fn force_delete_detail(
 /// objects to is refused without `--best-effort`.
 fn restore_deleted(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     reference: &str,
     best_effort: bool,
 ) -> Result<CommandOutput, CommandError> {
@@ -1461,7 +1505,7 @@ fn restore_deleted(
             return Err(format!("{reason} — pass --best-effort to restore anyway").into());
         }
     }
-    let report = crate::session_ops::restore_session_headless(db, id, best_effort)?;
+    let report = crate::session_ops::restore_session_headless(db, backends, id, best_effort)?;
     let mut human = match report.best_effort {
         true => format!(
             "Restored session '{}' ({id}) — best-effort: uncommitted work was not recovered",
@@ -1940,6 +1984,7 @@ enum Existing {
 /// the freshly spawned session.
 fn resolve_existing(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: &str,
     mode: OnExisting,
     backend: &str,
@@ -1972,7 +2017,7 @@ fn resolve_existing(
             ))))
         }
         (OnExisting::Replace, 1) => {
-            crate::session_ops::delete::delete_session_headless(db, found[0].id, true)?;
+            crate::session_ops::delete::delete_session_headless(db, backends, found[0].id, true)?;
             Ok(Existing::Replaced(found[0].id))
         }
         (OnExisting::Adopt | OnExisting::Replace, n) => Err(CommandError::with_code(
@@ -2005,11 +2050,16 @@ fn resolve_existing(
 /// brings back the row, the branch and the agent; uncommitted work went with
 /// the force delete and does not come back, and the message says so rather than
 /// implying the replace was free.
-fn rollback_replace(db: &Database, existing: &Existing, spawn_error: String) -> String {
+fn rollback_replace(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    existing: &Existing,
+    spawn_error: String,
+) -> String {
     let Existing::Replaced(id) = existing else {
         return spawn_error;
     };
-    match crate::session_ops::restore_session_headless(db, *id, true) {
+    match crate::session_ops::restore_session_headless(db, backends, *id, true) {
         Ok(report) => format!(
             "{spawn_error} — the replacement could not be spawned, so '{}' ({id}) was restored \
              best-effort: committed branch state is back, uncommitted work went with the \
@@ -2454,6 +2504,7 @@ mod tests {
                 verify: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert!(v.is_array(), "got {v}");
@@ -2474,6 +2525,7 @@ mod tests {
                 session: Some(id.to_string()),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(out["state"], "blocked");
@@ -2495,6 +2547,7 @@ mod tests {
                 session: None,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("not inside a thurbox session"), "got {err}");
@@ -2535,7 +2588,14 @@ mod tests {
         for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
             assert!(
                 matches!(
-                    resolve_existing(&db, "build", mode, "local-tmux", None),
+                    resolve_existing(
+                        &db,
+                        &crate::backend::registry::inert(),
+                        "build",
+                        mode,
+                        "local-tmux",
+                        None
+                    ),
                     Ok(Existing::None)
                 ),
                 "{mode:?} must not act on a row belonging to another host"
@@ -2545,7 +2605,15 @@ mod tests {
         assert!(db.get_session_by_id(remote.id).unwrap().is_some());
 
         // A create *for that host* does see it, on the same terms.
-        assert!(resolve_existing(&db, "build", OnExisting::Fail, "ssh:devbox", None).is_err());
+        assert!(resolve_existing(
+            &db,
+            &crate::backend::registry::inert(),
+            "build",
+            OnExisting::Fail,
+            "ssh:devbox",
+            None
+        )
+        .is_err());
     }
 
     /// Ambiguity here is the same failure the reference resolver reports, so it
@@ -2556,7 +2624,15 @@ mod tests {
         let db = db();
         db.upsert_session(&make_test_session("twin")).unwrap();
         db.upsert_session(&make_test_session("twin")).unwrap();
-        let err = resolve_existing(&db, "twin", OnExisting::Adopt, "local-tmux", None).unwrap_err();
+        let err = resolve_existing(
+            &db,
+            &crate::backend::registry::inert(),
+            "twin",
+            OnExisting::Adopt,
+            "local-tmux",
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err.exit_code, super::super::EXIT_AMBIGUOUS);
         assert!(err.contains("matches 2"), "got {err}");
     }
@@ -2597,6 +2673,7 @@ mod tests {
                 clear: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
 
@@ -2617,6 +2694,7 @@ mod tests {
                 clear: true,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(SessionFacts::load(&db).declared_agent(&session), None);
@@ -2636,6 +2714,7 @@ mod tests {
                 clear: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("clyde"), "got {err}");
@@ -2662,6 +2741,7 @@ mod tests {
                 },
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
 
@@ -2673,6 +2753,7 @@ mod tests {
                 },
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         // Set by name, read back by id: one session, either spelling.
@@ -2685,6 +2766,7 @@ mod tests {
                 },
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(listed["fm.task_id"].as_str(), Some("T-1043"));
@@ -2697,6 +2779,7 @@ mod tests {
                 },
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(removed["removed"].as_bool(), Some(true));
@@ -2709,6 +2792,7 @@ mod tests {
                 },
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(again["removed"].as_bool(), Some(false));
@@ -2744,6 +2828,7 @@ mod tests {
                 command: print_cwd,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(out["exit_code"].as_i64(), Some(0));
@@ -2769,6 +2854,7 @@ mod tests {
                 command: exit_3.clone(),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(failed["exit_code"].as_i64(), Some(3));
@@ -2781,6 +2867,7 @@ mod tests {
                 command: exit_3,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(passthrough["exit_code"].as_i64(), Some(3));
@@ -2850,6 +2937,7 @@ mod tests {
                 verify: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -2901,6 +2989,7 @@ mod tests {
                 verify: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -2919,6 +3008,7 @@ mod tests {
                 verify: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -2935,6 +3025,7 @@ mod tests {
                 verify: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -2952,6 +3043,7 @@ mod tests {
                 no_verify: true,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -2990,6 +3082,7 @@ mod tests {
                         no_enter,
                     },
                     &db,
+                    &crate::backend::registry::inert(),
                 )
                 .unwrap_err();
                 assert!(err.contains("text"), "got {err}");
@@ -3021,7 +3114,7 @@ mod tests {
                 key: "enter".into(),
             },
         ] {
-            let err = run(action, &db).unwrap_err();
+            let err = run(action, &db, &crate::backend::registry::inert()).unwrap_err();
             assert!(err.contains("ssh:devbox"), "got {err}");
             // The obstacle is the missing host entry, not the verb: with one,
             // the same call is delegated to that host's own `thurbox-cli`.
@@ -3044,6 +3137,7 @@ mod tests {
                 key: "escpe".into(),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("Unknown key 'escpe'"), "got {err}");
@@ -3064,6 +3158,7 @@ mod tests {
                 key: "nonsense".into(),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -3111,6 +3206,7 @@ mod tests {
                 force: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(v["deleted"], true);
@@ -3126,6 +3222,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3147,6 +3244,7 @@ mod tests {
                 force: true,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
 
@@ -3156,6 +3254,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("--best-effort"), "{err}");
@@ -3168,6 +3267,7 @@ mod tests {
                 best_effort: true,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3198,6 +3298,7 @@ mod tests {
                 force: true,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
 
@@ -3207,6 +3308,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -3236,6 +3338,7 @@ mod tests {
                 force: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
 
@@ -3245,6 +3348,7 @@ mod tests {
                 best_effort: false,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains(&gone.display().to_string()), "{err}");

@@ -226,6 +226,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::host_config",
             "backend::contract",
             "backend::identity",
+            "backend::registry",
         ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
@@ -249,7 +250,13 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "agent::host_config", "backend::contract", "kernel"],
+        allowed_path_only: &[
+            "agent",
+            "agent::host_config",
+            "backend::contract",
+            "backend::registry",
+            "kernel",
+        ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
@@ -322,6 +329,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "agent",
             "backend::output_wake",
+            "backend::wiring",
             "clipboard",
             "kernel",
             "paths",
@@ -407,22 +415,12 @@ struct Transitional {
 }
 
 const TRANSITIONAL: &[Transitional] = &[
-    // Registry construction outside the composition roots: one registry, built
-    // at `coordinator::boot` and `bin/thurbox-cli`, injected everywhere else.
-    Transitional {
-        from: "kernel",
-        to: "backend::wiring",
-        items: &["configured"],
-        remover: Remover::F5a,
-        why: "Terminals::new and the create-flow snapshot build their own registry",
-    },
     Transitional {
         from: "session_ops",
         to: "backend::wiring",
-        items: &["configured", "implements"],
+        items: &["implements"],
         remover: Remover::F5a,
-        why: "spawn builds a registry to ask whether it supports a route, then drops it; \
-              lifecycle asks the factory whether a row's multiplexer has an adapter",
+        why: "lifecycle asks the factory whether a row's multiplexer has an adapter",
     },
     // Lifecycle — spawn, restart, restore, stop, delete, reap, owed teardown,
     // rename, register — through the tmux adapter's free functions.

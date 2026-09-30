@@ -166,7 +166,9 @@ fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
 #[test]
 fn an_unstarted_program_surface_is_reported_as_such() {
     use thurbox::kernel::paint::{ProgramPaint, SurfaceProvider};
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
 
     let mut term =
@@ -229,7 +231,9 @@ fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
 /// the key.
 #[test]
 fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
     assert!(
         terminals.send_to_program(&key, b"q".to_vec()).is_err(),
@@ -277,7 +281,9 @@ fn keys_that_are_not_utf8_reach_the_command_intact() {
 
 #[test]
 fn a_program_surface_is_never_resolved_to_a_session() {
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     // A well-formed program id resolves to nothing while nothing is running, and a
     // session id never resolves to a program at all.
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
@@ -298,7 +304,9 @@ fn a_program_surface_is_never_resolved_to_a_session() {
 /// the user cannot delete, restart or explain.
 #[test]
 fn a_program_pane_is_absent_from_every_session_enumeration() {
-    let terminals = Terminals::new();
+    let terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
 
     // Not attached, not failed, has no shell, and contributes no output generation.

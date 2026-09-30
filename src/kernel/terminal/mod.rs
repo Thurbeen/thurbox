@@ -403,7 +403,10 @@ type CachedRows = (u64, std::rc::Rc<Vec<String>>);
 
 /// Owns every live terminal, keyed by session id.
 pub struct Terminals {
-    backends: crate::backend::BackendRegistry,
+    /// The process's one registry, built at its composition root and shared
+    /// with the command bus: attach and every lifecycle command drive the same
+    /// backends.
+    backends: std::sync::Arc<crate::backend::BackendRegistry>,
     /// Extracted screen rows per surface, keyed on the output stamp they were
     /// read at.
     ///
@@ -553,12 +556,12 @@ impl Terminals {
         self.agents = agents;
     }
 
-    /// Build the backend registry the same way the v1 binary does: the local
-    /// multiplexer plus every configured or discovered host. How that set is
-    /// assembled — and why nothing is readied here — is the registry's own
-    /// knowledge (`backend::wiring::configured`), not the kernel's.
-    pub fn new() -> Self {
-        let (backends, hosts, _warnings) = crate::backend::wiring::configured();
+    /// Terminals over the process's registry. How that set is assembled — and
+    /// why nothing is readied when it is — is the composition root's, not the
+    /// kernel's; the hosts are the same cached read of `hosts.toml` it was
+    /// built from.
+    pub fn with_registry(backends: std::sync::Arc<crate::backend::BackendRegistry>) -> Self {
+        let hosts = crate::agent::host_config::cached_registry().0.clone();
 
         Self {
             backends,
@@ -2137,12 +2140,6 @@ pub struct AgentMeta {
     pub notification: Option<String>,
 }
 
-impl Default for Terminals {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Terminals {
     /// This provider painting a cursor on `input` alone: the same grids, and
     /// the block only on the surface the keys go to.
@@ -2610,13 +2607,16 @@ mod tests {
         use std::sync::atomic::Ordering;
         let fake = std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
         let backend: std::sync::Arc<dyn crate::backend::SessionBackend> = fake.clone();
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let route = crate::session::Route::remote(
             crate::session::Via::Ssh,
             "fake",
             Some(crate::session::Multiplexer::Tmux),
         );
-        terminals.backends.register(route.clone(), backend.clone());
+        std::sync::Arc::get_mut(&mut terminals.backends)
+            .expect("unshared registry")
+            .register(route.clone(), backend.clone());
         terminals.waiting_since.insert("a".into(), 0);
         let rows = snapshot(vec![row("a", &route.format(), Some("%1"))]);
         let mut notified = std::collections::HashSet::new();
@@ -2663,7 +2663,8 @@ mod tests {
 
     #[test]
     fn a_session_with_no_pane_is_recorded_rather_than_retried() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals.sync(&snapshot(vec![row("a", "local-tmux", None)]), 24, 80);
         assert!(!terminals.is_attached("a"));
         assert_eq!(terminals.failure("a"), Some("session has no pane yet"));
@@ -2735,11 +2736,14 @@ mod tests {
     /// than failing to find a backend of that name.
     #[test]
     fn a_legacy_tmux_row_attaches_through_the_local_backend() {
-        let mut terminals = Terminals::new();
-        terminals.backends.register(
-            crate::session::Route::local(Some(crate::session::Multiplexer::platform_default())),
-            std::sync::Arc::new(RefusingLocal),
-        );
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
+        std::sync::Arc::get_mut(&mut terminals.backends)
+            .expect("unshared registry")
+            .register(
+                crate::session::Route::local(Some(crate::session::Multiplexer::platform_default())),
+                std::sync::Arc::new(RefusingLocal),
+            );
         terminals.sync(&snapshot(vec![row("a", "tmux", Some("%1"))]), 24, 80);
         assert_eq!(terminals.failure("a"), None);
         // Surveyed on the local backend, the one a `local-tmux` row shares: the
@@ -2753,7 +2757,8 @@ mod tests {
 
     #[test]
     fn an_unknown_backend_is_reported_not_panicked() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals.sync(&snapshot(vec![row("a", "ssh:nowhere", Some("%1"))]), 24, 80);
         assert!(!terminals.is_attached("a"));
         let message = terminals.failure("a").unwrap_or_default().to_string();
@@ -2793,7 +2798,8 @@ mod tests {
     /// missing its agent so it can be relaunched.
     #[test]
     fn a_pane_id_a_restarted_server_invalidated_is_dropped_rather_than_retried() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let snapshot = snapshot(vec![row("a", "local-tmux", Some("%822"))]);
         // The row was already waiting when the survey ran, so the survey speaks
         // for it — and it found no window of this session's.
@@ -2819,7 +2825,8 @@ mod tests {
     /// would aim this session's keystrokes at somebody else's agent.
     #[test]
     fn a_pane_id_reissued_to_another_window_is_stale() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let row = row("a", "local-tmux", Some("%1"));
         terminals.waiting_since.insert("a".to_string(), 0);
         surveyed(&mut terminals, "local-tmux", &[("tb-other", &["%1"])]);
@@ -2829,7 +2836,8 @@ mod tests {
 
     #[test]
     fn a_pane_id_the_survey_confirms_is_kept() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let row = row("a", "local-tmux", Some("%1"));
         terminals.waiting_since.insert("a".to_string(), 0);
         surveyed(&mut terminals, "local-tmux", &[("tb-demo", &["%1"])]);
@@ -2847,7 +2855,8 @@ mod tests {
     /// answers nothing at all.
     #[test]
     fn an_unsurveyed_backend_contradicts_nothing() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let row = row("a", "ssh:devbox", Some("%1"));
         assert!(!terminals.pane_is_stale(&row, "%1"));
 
@@ -2862,7 +2871,8 @@ mod tests {
     /// *third* agent appears beside the two that already collide.
     #[test]
     fn ambiguous_namesakes_are_never_relaunched() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let row = row("a", "local-tmux", None);
         terminals.waiting_since.insert("a".to_string(), 0);
         surveyed(&mut terminals, "local-tmux", &[("tb-demo", &["%1", "%2"])]);
@@ -2882,7 +2892,8 @@ mod tests {
     /// alone to relaunch over — it is somebody else's live agent.
     #[test]
     fn a_namesakes_stamped_window_is_neither_attached_to_nor_relaunched_over() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let row = row("a", "local-tmux", None);
         terminals.waiting_since.insert("a".to_string(), 0);
         let local = terminals.key("local-tmux");
@@ -2909,7 +2920,8 @@ mod tests {
 
     #[test]
     fn a_vanished_session_is_dropped() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals.sync(&snapshot(vec![row("a", "local-tmux", None)]), 24, 80);
         assert!(terminals.failed.contains_key("a"));
 
@@ -2920,19 +2932,22 @@ mod tests {
 
     #[test]
     fn sending_to_an_unattached_session_reports_failure() {
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         assert!(!terminals.send("nope", vec![b'x']));
     }
 
     #[test]
     fn an_unattached_session_has_no_output_age() {
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         assert_eq!(terminals.millis_since_output("nope"), None);
     }
 
     #[test]
     fn a_single_repository_session_opens_its_shell_in_that_repository() {
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let mut row = row("s1", "local-tmux", Some("%1"));
         row.cwd = Some(PathBuf::from("/src/alpha"));
         row.member_dirs = vec![PathBuf::from("/src/alpha")];
@@ -2946,7 +2961,8 @@ mod tests {
     fn a_multi_repository_session_opens_its_shell_in_the_workspace() {
         // Where the agent itself is running — not whichever member is primary,
         // which is what the recorded cwd names.
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let mut row = row("s1", "local-tmux", Some("%1"));
         row.cwd = Some(PathBuf::from("/src/alpha"));
         row.member_dirs = vec![PathBuf::from("/src/alpha"), PathBuf::from("/src/beta")];
@@ -2964,7 +2980,8 @@ mod tests {
     fn a_workspace_that_cannot_be_named_falls_back_to_the_recorded_directory() {
         // No agent session id means no workspace path, and a shell in the
         // primary repository still beats one wherever tmux happened to be.
-        let terminals = Terminals::new();
+        let terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let mut row = row("s1", "local-tmux", Some("%1"));
         row.cwd = Some(PathBuf::from("/src/alpha"));
         row.member_dirs = vec![PathBuf::from("/src/alpha"), PathBuf::from("/src/beta")];
@@ -2994,7 +3011,8 @@ mod tests {
     /// the moment the last one gives up.
     #[test]
     fn a_survey_that_learned_nothing_backs_off_to_the_attach_retry() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals
             .discovered_rx
             .0
@@ -3015,7 +3033,8 @@ mod tests {
 
     #[test]
     fn a_survey_that_found_windows_keeps_the_ordinary_cadence() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals
             .discovered_rx
             .0
@@ -3043,7 +3062,8 @@ mod tests {
     /// as the attach retry `forget` already clears.
     #[test]
     fn a_restart_surveys_afresh_rather_than_waiting_out_a_backoff() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals.discovery_due.insert(
             "local-tmux".to_string(),
             std::time::Instant::now() + ATTACH_RETRY_INTERVAL,
@@ -3063,7 +3083,8 @@ mod tests {
 
     #[test]
     fn a_mirror_pass_that_could_not_run_backs_its_host_off() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals
             .mirror_rx
             .0
@@ -3083,7 +3104,8 @@ mod tests {
 
     #[test]
     fn a_mirror_pass_that_ran_keeps_the_ordinary_cadence() {
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         terminals
             .mirror_rx
             .0

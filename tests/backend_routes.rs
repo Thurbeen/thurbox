@@ -298,6 +298,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
             verify: false,
         },
         db,
+        &thurbox::backend::wiring::configured().0,
     )
     .expect("session list")
     .json

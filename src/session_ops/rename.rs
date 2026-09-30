@@ -34,6 +34,7 @@ pub struct RenameReport {
 /// the name the row still has, so the other order would lose it.
 pub fn rename_session_headless(
     db: &Database,
+    _backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     name: &str,
 ) -> Result<RenameReport, String> {

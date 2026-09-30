@@ -154,12 +154,13 @@ pub(crate) enum SpawnDeliverError {
 /// boots (after [`BOOT_DELAY_SECS`]). Returns the new session id on success.
 pub(crate) fn spawn_and_deliver(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: &str,
     req: SpawnRequest,
     prompt: &str,
 ) -> Result<SessionId, SpawnDeliverError> {
-    let spawned =
-        crate::session_ops::spawn_session_headless(db, req).map_err(SpawnDeliverError::Spawn)?;
+    let spawned = crate::session_ops::spawn_session_headless(db, backends, req)
+        .map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;
     crate::backend::tmux::send_prompt_after_delay(
         &session_id.to_string(),

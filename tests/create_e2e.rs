@@ -111,7 +111,9 @@ fn opening_an_existing_worktree_reuses_it_and_names_the_session_after_it() {
     let registered_before = registered_worktrees(repo.path());
 
     // Exactly what the flow issues for an existing worktree: no name, no base.
-    let mut bus = CommandBus::new();
+    let mut bus = CommandBus::new(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     bus.dispatch(Command::Create {
         name: String::new(),
         repo: repo.path().display().to_string(),
@@ -195,6 +197,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
 
     let result = thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "e2e-probe".into(),
             repo_path: repo.path().to_path_buf(),
@@ -266,7 +269,10 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
     );
 
     // And the snapshot the kernel publishes sees it.
-    let store = thurbox::kernel::snapshot::SnapshotStore::with_database(db);
+    let store = thurbox::kernel::snapshot::SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured().0,
+    );
     let published = store
         .current()
         .sessions
@@ -314,7 +320,11 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
         ..Default::default()
     };
 
-    let first = match thurbox::session_ops::spawn::spawn_session_headless(&db, request()) {
+    let first = match thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        request(),
+    ) {
         Ok(spawned) => spawned,
         Err(e) => {
             if e.contains("tmux") {
@@ -324,8 +334,12 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
             panic!("first creation failed: {e}");
         }
     };
-    let second = thurbox::session_ops::spawn::spawn_session_headless(&db, request())
-        .expect("second creation");
+    let second = thurbox::session_ops::spawn::spawn_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        request(),
+    )
+    .expect("second creation");
 
     assert!(first.backend_id.starts_with('%'), "{:?}", first.backend_id);
     assert!(
@@ -384,6 +398,7 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
     let external_conversation_id = "external-conv-1234";
     let result = thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "arrived".into(),
             repo_path: repo.path().to_path_buf(),
@@ -480,10 +495,12 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     )
     .expect("initial registry");
     let db = on_disk_db();
-    let mut snapshot = SnapshotStore::with_database(on_disk_db());
+    let mut snapshot =
+        SnapshotStore::with_database(on_disk_db(), &thurbox::backend::wiring::configured().0);
     assert!(snapshot.poll_registry().is_none());
     let first = spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         SpawnRequest {
             name: "existing".into(),
             repo_path: repo.path().to_path_buf(),
@@ -519,6 +536,7 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     let _ = thurbox::agent::agent_config::load_or_seed();
     let before_poll = spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         SpawnRequest {
             name: "before-poll".into(),
             repo_path: repo.path().to_path_buf(),
@@ -546,6 +564,7 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     let selected = snapshot.current().agents[0].name.clone();
     let second = spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         SpawnRequest {
             name: "new".into(),
             repo_path: repo.path().to_path_buf(),
@@ -634,6 +653,7 @@ fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned()
     std::fs::remove_file(&marker).expect("clear launch marker");
     let third = spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         SpawnRequest {
             name: "after-invalid-edit".into(),
             repo_path: repo.path().to_path_buf(),
@@ -757,6 +777,7 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     .unwrap();
     thurbox::session_ops::extensions::install_extension(
         &db,
+        &thurbox::backend::wiring::configured().0,
         source.to_str().unwrap(),
         Some(home.path().to_str().unwrap()),
         false,
@@ -806,7 +827,12 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         req.env.insert("FAKE_CONV_ID".into(), conversation.into());
         req.env
             .insert("FAKE_HOOK_DRIVER".into(), driver.display().to_string());
-        thurbox::session_ops::spawn::spawn_session_headless(&db, req).unwrap()
+        thurbox::session_ops::spawn::spawn_session_headless(
+            &db,
+            &thurbox::backend::wiring::configured().0,
+            req,
+        )
+        .unwrap()
     };
     let first = create("first", first_conv);
     let second = create("second", second_conv);
@@ -925,10 +951,20 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
             .unwrap();
         assert!(killed.success());
     }
-    thurbox::session_ops::restart::restart_session_headless_with(&db, first.session_id, true)
-        .unwrap();
-    thurbox::session_ops::restart::restart_session_headless_with(&db, second.session_id, true)
-        .unwrap();
+    thurbox::session_ops::restart::restart_session_headless_with(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        first.session_id,
+        true,
+    )
+    .unwrap();
+    thurbox::session_ops::restart::restart_session_headless_with(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        second.session_id,
+        true,
+    )
+    .unwrap();
     let launches = wait_for(4);
     assert!(
         launches
@@ -971,8 +1007,13 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         .status()
         .unwrap()
         .success());
-    thurbox::session_ops::restart::restart_session_headless_with(&db, first.session_id, true)
-        .unwrap();
+    thurbox::session_ops::restart::restart_session_headless_with(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        first.session_id,
+        true,
+    )
+    .unwrap();
     let launches = wait_for(5);
     assert!(
         launches
@@ -1001,8 +1042,13 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
 
     db.unset_session_meta(second.session_id, "thurbox.codex_conversation_id")
         .unwrap();
-    let fork = thurbox::session_ops::fork_session_headless(&db, second.session_id, "second-fork")
-        .expect("an unmapped Codex fork opens the picker");
+    let fork = thurbox::session_ops::fork_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        second.session_id,
+        "second-fork",
+    )
+    .expect("an unmapped Codex fork opens the picker");
     let launches = wait_for(6);
     assert!(
         launches
@@ -1038,6 +1084,7 @@ fn create_hooks_fire_once_each_with_the_facts_and_can_reach_the_database() {
 
     let spawned = match thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         shell_request(repo.path(), Some("feat/hooked")),
     ) {
         Ok(spawned) => spawned,
@@ -1102,6 +1149,7 @@ fn a_pre_create_veto_leaves_nothing_behind() {
     };
     let err = thurbox::session_ops::spawn::spawn_session_headless_with_progress(
         &db,
+        &thurbox::backend::wiring::configured().0,
         shell_request(repo.path(), Some("feat/vetoed")),
         Some(&recorder),
     )
@@ -1112,7 +1160,10 @@ fn a_pre_create_veto_leaves_nothing_behind() {
     assert_eq!(*phases.lock().unwrap(), ["resolving", "hooks"]);
 
     // Nothing happened: no row, no worktree, no window, no post hook.
-    let store = thurbox::kernel::snapshot::SnapshotStore::with_database(db);
+    let store = thurbox::kernel::snapshot::SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured().0,
+    );
     assert!(store.current().sessions.is_empty());
     let worktrees = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
@@ -1154,7 +1205,9 @@ fn a_vetoed_creation_reports_through_the_command_bus() {
         "[[hooks]]\nevent = \"session.pre_create\"\ncommand = 'echo \"not on my watch\" >&2; exit 7'\n",
     );
 
-    let mut bus = CommandBus::new();
+    let mut bus = CommandBus::new(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     bus.dispatch(Command::Create {
         name: "vetoed".into(),
         repo: repo.path().display().to_string(),
@@ -1202,6 +1255,7 @@ fn a_post_create_failure_leaves_the_session_running() {
 
     let spawned = match thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         shell_request(repo.path(), None),
     ) {
         Ok(spawned) => spawned,
@@ -1260,6 +1314,7 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
 
     let spawned = match thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         shell_request(repo.path(), None),
     ) {
         Ok(spawned) => spawned,
@@ -1280,7 +1335,12 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
             .collect()
     };
 
-    let restart = thurbox::session_ops::restart_session_headless(&db, id).expect("restart");
+    let restart = thurbox::session_ops::restart_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+    )
+    .expect("restart");
     assert!(
         restart.hook_failures.is_empty(),
         "{:?}",
@@ -1291,16 +1351,33 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
         ["session.pre_restart", "session.post_restart"]
     );
 
-    let soft = thurbox::session_ops::delete_session_headless(&db, id, false).expect("soft delete");
+    let soft = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+        false,
+    )
+    .expect("soft delete");
     assert!(soft.hook_failures.is_empty());
-    let restore = thurbox::session_ops::restore_session_headless(&db, id, false).expect("restore");
+    let restore = thurbox::session_ops::restore_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+        false,
+    )
+    .expect("restore");
     assert!(
         restore.hook_failures.is_empty(),
         "{:?}",
         restore.hook_failures
     );
-    let forced =
-        thurbox::session_ops::delete_session_headless(&db, id, true).expect("force delete");
+    let forced = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+        true,
+    )
+    .expect("force delete");
     assert!(forced.hook_failures.is_empty());
     assert_eq!(
         events(&log),
@@ -1326,6 +1403,7 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
     );
     let kept = match thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         shell_request(repo.path(), None),
     ) {
         Ok(spawned) => spawned,
@@ -1333,8 +1411,13 @@ fn delete_restart_and_restore_fire_their_pairs_once_and_pre_delete_can_refuse() 
             panic!("second creation failed: {e}");
         }
     };
-    let err = thurbox::session_ops::delete_session_headless(&db, kept.session_id, true)
-        .expect_err("the veto refuses the delete");
+    let err = thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        kept.session_id,
+        true,
+    )
+    .expect_err("the veto refuses the delete");
     assert!(err.contains("build still running"), "{err}");
     let row = db
         .get_session_by_id(kept.session_id)
@@ -1367,6 +1450,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
     // No agents.toml is written: the point is that this session names no agent.
     let result = thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "recipe-probe".into(),
             repo_path: repo.path().to_path_buf(),
@@ -1420,7 +1504,12 @@ fn a_command_session_survives_restart_and_can_be_parked() {
     // A registry agent stores none, so restart keeps resolving it by name and
     // an `agents.toml` edit still takes effect.
     assert!(
-        thurbox::session_ops::restart::restart_session_headless(&db, id).is_ok(),
+        thurbox::session_ops::restart::restart_session_headless(
+            &db,
+            &thurbox::backend::wiring::configured().0,
+            id
+        )
+        .is_ok(),
         "a command session restarts from its recipe"
     );
     assert_eq!(
@@ -1430,7 +1519,12 @@ fn a_command_session_survives_restart_and_can_be_parked() {
     );
 
     // Park it: the pane goes, the row stays.
-    thurbox::session_ops::restart::stop_session_headless(&db, id).expect("stop");
+    thurbox::session_ops::restart::stop_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+    )
+    .expect("stop");
     assert!(
         db.session_stopped_at(id).expect("query").is_some(),
         "the stop is recorded, not merely performed"
@@ -1442,15 +1536,25 @@ fn a_command_session_survives_restart_and_can_be_parked() {
 
     // And nothing puts it back on its own: a peer asking for "relaunch what is
     // missing" must not undo a deliberate stop.
-    thurbox::session_ops::restart::restart_session_headless_with(&db, id, true)
-        .expect("relaunch is a no-op here");
+    thurbox::session_ops::restart::restart_session_headless_with(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+        true,
+    )
+    .expect("relaunch is a no-op here");
     assert!(
         db.session_stopped_at(id).expect("query").is_some(),
         "`restart --if-missing` left the stop alone"
     );
 
     // `start` is the one caller that may, and the identity survives it.
-    thurbox::session_ops::restart::start_session_headless(&db, id).expect("start");
+    thurbox::session_ops::restart::start_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        id,
+    )
+    .expect("start");
     assert!(
         db.session_stopped_at(id).expect("query").is_none(),
         "starting clears the mark"
@@ -1496,6 +1600,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
 
     let result = thurbox::session_ops::spawn::spawn_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "env-probe".into(),
             repo_path: repo.path().to_path_buf(),
@@ -1547,6 +1652,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
 
     let fork = match thurbox::session_ops::fork_session_headless(
         &db,
+        &thurbox::backend::wiring::configured().0,
         spawned.session_id,
         "env-probe-fork",
     ) {

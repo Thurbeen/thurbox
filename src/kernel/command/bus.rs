@@ -93,10 +93,13 @@ pub struct CommandBus {
     next_id: AtomicU64,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
+    /// The process's one registry, which every command's worker drives the
+    /// session's backend through.
+    backends: Arc<crate::backend::BackendRegistry>,
 }
 
 impl CommandBus {
-    pub fn new() -> Self {
+    pub fn new(backends: Arc<crate::backend::BackendRegistry>) -> Self {
         let (finished_tx, finished_rx) = channel();
         let (progress_tx, progress_rx) = channel();
         Self {
@@ -107,6 +110,7 @@ impl CommandBus {
             progress_rx,
             next_id: AtomicU64::new(1),
             failed_at: Vec::new(),
+            backends,
         }
     }
 
@@ -132,6 +136,7 @@ impl CommandBus {
         let inflight = self.inflight.clone();
         let finished = self.finished_tx.clone();
         let progress = self.progress_tx.clone();
+        let backends = Arc::clone(&self.backends);
         // One thread per command: a slow operation on an unreachable host must
         // not queue behind, or in front of, anything else.
         std::thread::spawn(move || {
@@ -140,7 +145,7 @@ impl CommandBus {
                     entry.started();
                 }
             }
-            let error = execute(&command, id, &progress).err();
+            let error = execute(&command, &backends, id, &progress).err();
             let _ = finished.send(Done { id, error });
         });
         id
@@ -154,8 +159,9 @@ impl CommandBus {
     /// [`Command::is_housekeeping`]. Its failures go to the log.
     fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
         let progress = self.progress_tx.clone();
+        let backends = Arc::clone(&self.backends);
         std::thread::spawn(move || {
-            if let Err(e) = execute(&command, id, &progress) {
+            if let Err(e) = execute(&command, &backends, id, &progress) {
                 tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
             }
         });
@@ -289,11 +295,5 @@ impl CommandBus {
                     .any(|entry| entry.session == session && entry.phase != Phase::Failed)
             })
             .unwrap_or(false)
-    }
-}
-
-impl Default for CommandBus {
-    fn default() -> Self {
-        Self::new()
     }
 }

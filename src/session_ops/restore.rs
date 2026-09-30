@@ -170,6 +170,7 @@ fn declaring_extension(db: &Database, name: &str) -> Option<String> {
 
 pub fn restore_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     id: SessionId,
     best_effort: bool,
 ) -> Result<RestoreReport, String> {
@@ -300,7 +301,7 @@ pub fn restore_session_headless(
     let wanted = deleted.worktrees.len();
     let recovered = recreate_worktrees(&deleted.worktrees);
 
-    let respawn_error = respawn(db, deleted.id).err();
+    let respawn_error = respawn(db, backends, deleted.id).err();
 
     // A restore whose agent did not come up is still a restore — the report
     // says so, and the hooks fire either way.
@@ -379,7 +380,11 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
 /// The window is gone (the delete killed it), so this spawns rather than
 /// restarts — but through the same plan a restart builds, so a restored session
 /// resumes its conversation exactly as a restarted one does.
-fn respawn(db: &Database, id: SessionId) -> Result<(), String> {
+fn respawn(
+    db: &Database,
+    _backends: &crate::backend::BackendRegistry,
+    id: SessionId,
+) -> Result<(), String> {
     let session = db
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
@@ -448,7 +453,13 @@ mod tests {
     #[test]
     fn restoring_something_that_was_never_deleted_says_so() {
         let db = Database::open_in_memory().expect("db");
-        let error = restore_session_headless(&db, SessionId::default(), false).unwrap_err();
+        let error = restore_session_headless(
+            &db,
+            &crate::backend::registry::inert(),
+            SessionId::default(),
+            false,
+        )
+        .unwrap_err();
         assert!(error.contains("not found"), "{error}");
     }
 
@@ -607,7 +618,7 @@ mod tests {
         let held = super::super::names::hold(&db, "build", LOCAL)
             .expect("hold")
             .expect("nothing holds it yet");
-        let err = restore_session_headless(&db, id, true)
+        let err = restore_session_headless(&db, &crate::backend::registry::inert(), id, true)
             .expect_err("a creation holds the name; the restore must say so");
         assert!(err.contains("being created right now"), "{err}");
 

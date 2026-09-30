@@ -484,6 +484,7 @@ pub fn session_process_env(
 /// Shared by the interface's fork command and `thurbox-cli session fork`.
 pub fn fork_session_headless(
     db: &crate::storage::Database,
+    backends: &crate::backend::BackendRegistry,
     id: crate::session::SessionId,
     name: &str,
 ) -> Result<spawn::SpawnResult, String> {
@@ -571,7 +572,7 @@ pub fn fork_session_headless(
         inherit_worktrees: source.worktrees.clone(),
         ..Default::default()
     };
-    spawn::spawn_session_headless(db, request)
+    spawn::spawn_session_headless(db, backends, request)
 }
 
 /// The [`LaunchRecipe`](crate::session::LaunchRecipe) a spawn request carries,

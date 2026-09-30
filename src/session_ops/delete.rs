@@ -61,6 +61,7 @@ pub struct ForceDeleteReport {
 /// row whose worktrees are already gone.
 pub fn delete_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     force: bool,
 ) -> Result<ForceDeleteReport, String> {
@@ -115,7 +116,7 @@ pub fn delete_session_headless(
                         "'{}' does not know this session ({e}); deleted from here",
                         host.name
                     ));
-                    return finish_locally(db, &session, force, report, &hook_ctx);
+                    return finish_locally(db, backends, &session, force, report, &hook_ctx);
                 }
                 // The question never arrived — the launcher would not start,
                 // or ssh failed on its own account — so nothing there acted on
@@ -148,7 +149,7 @@ pub fn delete_session_headless(
                         "'{}' did not answer the delete ({e}); deleted from here",
                         host.name
                     ));
-                    return finish_locally(db, &session, force, report, &hook_ctx);
+                    return finish_locally(db, backends, &session, force, report, &hook_ctx);
                 }
                 // The host itself refused — a locked database, a worktree it
                 // could not release. It is up, it heard the question, and the
@@ -181,7 +182,7 @@ pub fn delete_session_headless(
         }
     }
 
-    finish_locally(db, &session, force, report, &hook_ctx)
+    finish_locally(db, backends, &session, force, report, &hook_ctx)
 }
 
 /// The delete taken from here: mark the row, tear down what `force` asks for,
@@ -189,13 +190,14 @@ pub fn delete_session_headless(
 /// host could not take (see [`is_unknown_session`]).
 fn finish_locally(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
     force: bool,
     report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
 ) -> Result<ForceDeleteReport, String> {
     finish_locally_with(db, session, force, report, hook_ctx, |session, report| {
-        teardown_runtime_resources(session, report);
+        teardown_runtime_resources(backends, session, report);
     })
 }
 
@@ -296,6 +298,7 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
 /// The symlink workspace is always local (a spawn-time process-cwd detail under
 /// the local data dir), so it is torn down regardless of backend.
 pub fn teardown_runtime_resources(
+    _backends: &crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
@@ -394,7 +397,10 @@ fn owes_remote_teardown(session: &crate::sync::SharedSession, report: &ForceDele
 /// One attempt per host per pass: the first row whose host does not answer
 /// takes that host's remaining rows out of the pass, so a machine that is still
 /// down costs one connect timeout rather than one per orphan.
-pub fn retry_owed_remote_teardowns(db: &Database) -> Vec<String> {
+pub fn retry_owed_remote_teardowns(
+    db: &Database,
+    _backends: &crate::backend::BackendRegistry,
+) -> Vec<String> {
     let Ok(rows) = db.list_owed_teardowns() else {
         return Vec::new();
     };
@@ -563,7 +569,10 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// than worked around: without an "already reaped" marker on the row,
 /// ownership is the only idempotence proxy the sweep has, and releasing
 /// artifacts on every tick forever is the worse trade.
-pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
+pub fn reap_overdue_soft_deletes(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Vec<String> {
     let Ok(rows) = db.list_deleted_sessions() else {
         return Vec::new();
     };
@@ -585,7 +594,7 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
         if !claim_reap(db, row.id, now) {
             continue;
         }
-        match reap_soft_deleted(db, row.id) {
+        match reap_soft_deleted(db, backends, row.id) {
             Ok(true) => {
                 reap_succeeded(db, row.id);
                 reaped.push(row.id.to_string());
@@ -755,7 +764,11 @@ fn reap_succeeded(db: &Database, id: SessionId) {
 /// `Err` is the remote reap that did not reach its host. Its windows are still
 /// standing there, so the row is overdue again on the next sweep, and the
 /// caller that runs on a timer backs it off on this answer.
-pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
+pub fn reap_soft_deleted(
+    db: &Database,
+    _backends: &crate::backend::BackendRegistry,
+    id: SessionId,
+) -> Result<bool, String> {
     let Some(row) = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
@@ -1210,7 +1223,8 @@ mod tests {
         // Send automation targeting the session — should survive a soft delete.
         let auto = send_automation(&db, id, "noop");
 
-        let report = delete_session_headless(&db, id, false).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, false).unwrap();
         assert!(!report.killed_window);
         assert!(report.removed_worktrees.is_empty());
         assert_eq!(report.disabled_automations, 0);
@@ -1227,7 +1241,8 @@ mod tests {
         let a = send_automation(&db, id, "a");
         let b = send_automation(&db, id, "b");
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         assert_eq!(report.disabled_automations, 2);
         assert!(!db.get_automation(a).unwrap().unwrap().enabled);
         assert!(!db.get_automation(b).unwrap().unwrap().enabled);
@@ -1243,7 +1258,7 @@ mod tests {
 
         let soft = insert_session(&db, "soft-meta");
         db.set_session_meta(soft, "fm.lease", "abc").unwrap();
-        delete_session_headless(&db, soft, false).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), soft, false).unwrap();
         assert_eq!(
             db.get_session_meta(soft, "fm.lease").unwrap(),
             Some("abc".to_string()),
@@ -1252,7 +1267,7 @@ mod tests {
 
         let hard = insert_session(&db, "hard-meta");
         db.set_session_meta(hard, "fm.lease", "xyz").unwrap();
-        delete_session_headless(&db, hard, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), hard, true).unwrap();
         assert!(
             db.get_session_meta(hard, "fm.lease").unwrap().is_none(),
             "a force delete is unrestorable, so its metadata must not outlive it"
@@ -1264,7 +1279,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let soft = insert_session(&db, "soft");
-        delete_session_headless(&db, soft, false).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), soft, false).unwrap();
         assert!(
             !db.get_deleted_session_by_id(soft)
                 .unwrap()
@@ -1274,7 +1289,7 @@ mod tests {
         );
 
         let hard = insert_session(&db, "hard");
-        delete_session_headless(&db, hard, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), hard, true).unwrap();
         assert!(
             db.get_deleted_session_by_id(hard)
                 .unwrap()
@@ -1297,7 +1312,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         // No matching host in (the empty test) hosts.toml → recorded, not killed.
         assert!(!report.killed_window);
@@ -1342,7 +1358,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         crate::session_ops::host_cli::fake::clear();
 
         assert!(!report.killed_window);
@@ -1366,7 +1383,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         assert!(report.remote_teardown_error.is_some());
         assert!(
@@ -1393,7 +1411,8 @@ mod tests {
         // must not inherit it, or the sweep would chase windows long gone.
         db.set_teardown_owed(id, true).unwrap();
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         assert!(!report.remote_teardown_owed);
         assert!(
@@ -1413,7 +1432,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
 
-        delete_session_headless(&db, id, false).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), id, false).unwrap();
         // Even marked by hand, a restorable row is not this sweep's to take.
         db.set_teardown_owed(id, true).unwrap();
 
@@ -1422,7 +1441,7 @@ mod tests {
             "a session that can still come back keeps its agent until it cannot"
         );
         assert!(
-            retry_owed_remote_teardowns(&db).is_empty(),
+            retry_owed_remote_teardowns(&db, &crate::backend::registry::inert()).is_empty(),
             "and the sweep finishes nothing on it"
         );
     }
@@ -1435,7 +1454,7 @@ mod tests {
     fn restoring_a_row_clears_the_teardown_it_owed() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
-        delete_session_headless(&db, id, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         assert!(
             db.get_deleted_session_by_id(id)
                 .unwrap()
@@ -1482,12 +1501,12 @@ mod tests {
     fn an_owed_teardown_whose_host_is_not_configured_stays_on_the_books() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
-        delete_session_headless(&db, id, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         // (cfg(test) sandboxes the config dir, so hosts.toml is empty and
         // nothing dials.) There is no machine to aim at — and no reason to
         // forget the job either.
-        assert!(retry_owed_remote_teardowns(&db).is_empty());
+        assert!(retry_owed_remote_teardowns(&db, &crate::backend::registry::inert()).is_empty());
         assert!(
             db.get_deleted_session_by_id(id)
                 .unwrap()
@@ -1516,7 +1535,8 @@ mod tests {
             ))
         }));
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         crate::session_ops::host_cli::fake::clear();
 
         assert!(
@@ -1565,7 +1585,8 @@ mod tests {
             ))
         }));
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         crate::session_ops::host_cli::fake::clear();
 
         assert!(
@@ -1601,7 +1622,8 @@ mod tests {
             ))
         }));
 
-        let err = delete_session_headless(&db, id, true).unwrap_err();
+        let err =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap_err();
         crate::session_ops::host_cli::fake::clear();
 
         assert!(err.contains("database is locked"), "got {err}");
@@ -1624,7 +1646,7 @@ mod tests {
         crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
             "no cli".into(),
         ));
-        delete_session_headless(&db, id, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         // By the time the sweep runs the host is answering again, and owns the
         // row: the delete is forced there, which takes its windows with it.
@@ -1635,7 +1657,7 @@ mod tests {
             Ok(serde_json::json!({ "deleted": true }))
         }));
 
-        let finished = retry_owed_remote_teardowns(&db);
+        let finished = retry_owed_remote_teardowns(&db, &crate::backend::registry::inert());
 
         let calls = crate::session_ops::host_cli::fake::calls();
         crate::session_ops::host_cli::fake::clear();
@@ -1667,7 +1689,7 @@ mod tests {
         crate::session_ops::host_cli::fake::force_usable(crate::session_ops::host_cli::Usable::No(
             "no cli".into(),
         ));
-        delete_session_headless(&db, id, true).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
         crate::session_ops::host_cli::fake::force_usable(
             crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
@@ -1678,7 +1700,7 @@ mod tests {
             ))
         }));
 
-        let finished = retry_owed_remote_teardowns(&db);
+        let finished = retry_owed_remote_teardowns(&db, &crate::backend::registry::inert());
         crate::session_ops::host_cli::fake::clear();
 
         assert!(finished.is_empty());
@@ -1702,7 +1724,7 @@ mod tests {
         ));
         for name in ["one", "two", "three"] {
             let id = insert_session_on(&db, name, "ssh:devbox", "%3");
-            delete_session_headless(&db, id, true).unwrap();
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         }
         assert_eq!(db.list_owed_teardowns().unwrap().len(), 3);
 
@@ -1715,7 +1737,7 @@ mod tests {
             ))
         }));
 
-        assert!(retry_owed_remote_teardowns(&db).is_empty());
+        assert!(retry_owed_remote_teardowns(&db, &crate::backend::registry::inert()).is_empty());
         let calls = crate::session_ops::host_cli::fake::calls();
         crate::session_ops::host_cli::fake::clear();
         assert_eq!(calls.len(), 1, "one attempt, not one per row: {calls:?}");
@@ -1742,7 +1764,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session(&db, "local");
 
-        let report = delete_session_headless(&db, id, true).unwrap();
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
         assert!(report.remote_teardown_error.is_none());
     }
 
@@ -1777,7 +1800,7 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&session, &mut report);
+        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
 
         assert!(
             report.removed_worktrees.is_empty() && report.worktree_errors.is_empty(),
@@ -1818,7 +1841,7 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&session, &mut report);
+        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
 
         assert!(report.kept_worktrees.is_empty());
         assert_eq!(report.worktree_errors.len(), 1, "removal was attempted");
@@ -1855,7 +1878,7 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&session, &mut report);
+        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
 
         assert!(
             report.remote_teardown_error.is_some(),
@@ -1899,7 +1922,7 @@ mod tests {
         db.soft_delete_session(remote.id).unwrap();
         // Inside the undo window, and on another machine: neither is touched
         // (and no tmux is consulted for either).
-        assert!(reap_overdue_soft_deletes(&db).is_empty());
+        assert!(reap_overdue_soft_deletes(&db, &crate::backend::registry::inert()).is_empty());
     }
 
     /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
@@ -1943,7 +1966,7 @@ mod tests {
         db.upsert_session(&live).unwrap();
 
         assert!(
-            reap_overdue_soft_deletes(&db).is_empty(),
+            reap_overdue_soft_deletes(&db, &crate::backend::registry::inert()).is_empty(),
             "an overdue row whose pane and name a live namesake claims owns \
              nothing to release"
         );
@@ -2000,14 +2023,20 @@ mod tests {
         let id = insert_session_on(&db, "stranded", "ssh:no-such-host-for-the-reap-test", "%1");
         db.soft_delete_session(id).unwrap();
 
-        let err = reap_soft_deleted(&db, id).unwrap_err();
+        let err = reap_soft_deleted(&db, &crate::backend::registry::inert(), id).unwrap_err();
         assert!(err.contains("hosts.toml"), "got {err}");
     }
 
     #[test]
     fn missing_session_errors() {
         let db = Database::open_in_memory().unwrap();
-        let err = delete_session_headless(&db, SessionId::default(), false).unwrap_err();
+        let err = delete_session_headless(
+            &db,
+            &crate::backend::registry::inert(),
+            SessionId::default(),
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
     }
 }

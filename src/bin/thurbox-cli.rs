@@ -88,7 +88,14 @@ fn main() {
         tracing::warn!("{notice}");
     }
 
-    match cli::run(cli, &db) {
+    // The one registry this process drives backends through, built at its
+    // composition root and handed down. Registration only: nothing connects
+    // until a command acts on a session.
+    let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let outcome = cli::run(cli, &db, &backends);
+    // Before any exit below, which runs no destructor.
+    backends.shutdown_all();
+    match outcome {
         Ok(cli::Outcome::Ok) => {}
         // The report is already on stdout and is the answer; only the verdict
         // is left to carry, and it carries as an exit code.

@@ -91,7 +91,11 @@ impl ExtensionHealth {
 /// matches its session's current id is re-linked (a recreated session would
 /// otherwise orphan it). Safe to call repeatedly (this is the self-heal
 /// primitive).
-pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureReport, String> {
+pub fn ensure_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    def: &ExtensionDef,
+) -> Result<EnsureReport, String> {
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
 
@@ -109,7 +113,7 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
         .collect();
 
     for sess in &def.sessions {
-        if let Some(id) = ensure_session(db, sess, &mut report)? {
+        if let Some(id) = ensure_session(db, backends, sess, &mut report)? {
             session_ids.insert(sess.name.clone(), id);
         }
     }
@@ -173,6 +177,7 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
 /// machine's server is the backend all of these questions are about.
 fn ensure_session(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     sess: &ExtensionSession,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
@@ -189,7 +194,7 @@ fn ensure_session(
         ));
         return Ok(None);
     };
-    create_under_claim(db, sess, backend, report)
+    create_under_claim(db, backends, sess, backend, report)
 }
 
 /// The id of the live session already answering to `name` on `backend`, if one
@@ -226,6 +231,7 @@ fn live_session_named(
 /// overtake — which is the whole defect, only a few milliseconds narrower.
 fn create_under_claim(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     sess: &ExtensionSession,
     backend: &str,
     report: &mut EnsureReport,
@@ -246,6 +252,7 @@ fn create_under_claim(
     }
     let result = crate::session_ops::spawn_session_headless(
         db,
+        backends,
         crate::session_ops::SpawnRequest {
             name: sess.name.clone(),
             repo_path: sess.repo_path.clone(),
@@ -317,8 +324,12 @@ fn ensure_automation(
 /// Note: this does NOT arm the tmux automation heartbeat — the CLI layer does
 /// that (it owns the `backend::tmux` dependency). A `Send` automation only fires
 /// while something ticks it (TUI tick loop, or the heartbeat keeper window).
-pub fn activate_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureReport, String> {
-    let report = ensure_extension(db, def)?;
+pub fn activate_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    def: &ExtensionDef,
+) -> Result<EnsureReport, String> {
+    let report = ensure_extension(db, backends, def)?;
     db.add_active_extension(&def.name)
         .map_err(|e| format!("add_active_extension: {e}"))?;
     Ok(report)
@@ -330,6 +341,7 @@ pub fn activate_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRep
 /// Idempotent — missing resources are simply skipped.
 pub fn deactivate_extension(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
     force: bool,
 ) -> Result<DeactivateReport, String> {
@@ -358,7 +370,7 @@ pub fn deactivate_extension(
         .collect();
     for sess in &def.sessions {
         if let Some(&id) = session_ids.get(&sess.name) {
-            crate::session_ops::delete_session_headless(db, id, force)?;
+            crate::session_ops::delete_session_headless(db, backends, id, force)?;
             report.sessions_deleted.push(sess.name.clone());
         }
     }
@@ -378,11 +390,14 @@ pub fn deactivate_extension(
 ///
 /// The active set is read from SQLite `metadata`; `activate_extension` /
 /// `deactivate_extension` (i.e. `thurbox-cli extension …`) manage membership.
-pub fn heal_active_extensions(db: &Database) -> Vec<String> {
+pub fn heal_active_extensions(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Vec<String> {
     let active = db.get_active_extensions().unwrap_or_default();
     let mut messages = Vec::new();
     for name in active {
-        heal_one_extension(db, &name, &mut messages);
+        heal_one_extension(db, backends, &name, &mut messages);
     }
     messages
 }
@@ -390,7 +405,12 @@ pub fn heal_active_extensions(db: &Database) -> Vec<String> {
 /// Self-heal a single active extension: surface a missing-manifest error, a
 /// compat/staleness nudge, and re-ensure its declared resources, appending any
 /// user-facing messages to `messages`.
-fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
+fn heal_one_extension(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: &str,
+    messages: &mut Vec<String>,
+) {
     // Fully-qualified agent reference (no `use`) per the session_ops →
     // agent path-only architecture rule.
     let Some(def) = crate::agent::extension_config::load_manifest(name) else {
@@ -406,10 +426,10 @@ fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
     // the now-stale `def`).
     let current = crate::agent::extension_config::binary_version();
     let auto_update = crate::session::settings::global().features.auto_update;
-    if heal_version_drift(db, &def, name, current, auto_update, messages) {
+    if heal_version_drift(db, backends, &def, name, current, auto_update, messages) {
         return;
     }
-    match ensure_extension(db, &def) {
+    match ensure_extension(db, backends, &def) {
         Ok(report) => {
             if report.created_anything() {
                 messages.push(heal_recreated_message(&report, name));
@@ -441,6 +461,7 @@ fn heal_one_extension(db: &Database, name: &str, messages: &mut Vec<String>) {
 /// - otherwise → nothing. Dev builds never go stale, so they fall here.
 pub(super) fn heal_version_drift(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
     name: &str,
     current: &str,
@@ -455,7 +476,7 @@ pub(super) fn heal_version_drift(
         return false;
     }
     if auto_update {
-        match update_extension(db, name, false) {
+        match update_extension(db, backends, name, false) {
             Ok(report) => {
                 if report.changed {
                     messages.push(format!(

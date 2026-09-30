@@ -69,10 +69,41 @@ impl BackendRegistry {
     pub fn all_backends(&self) -> impl Iterator<Item = (&Route, &Arc<dyn SessionBackend>)> {
         self.backends.iter()
     }
+
+    /// Retire every backend's long-lived resources, all at once: each
+    /// [`SessionBackend::shutdown`] runs on its own thread, so quitting costs
+    /// the slowest connection rather than their sum. Called once, by the
+    /// process that built the registry, as it exits.
+    pub fn shutdown_all(&self) {
+        std::thread::scope(|scope| {
+            for backend in self.backends.values() {
+                scope.spawn(move || backend.shutdown());
+            }
+        });
+    }
+}
+
+/// A registry for the crate's own unit tests, which may name neither the
+/// factory nor an adapter: this machine's route served by a backend with no
+/// windows on it and nothing to connect to.
+#[cfg(test)]
+pub(crate) fn inert() -> BackendRegistry {
+    inert_serving(&[])
+}
+
+/// [`inert`], also serving each of `routes` with a backend of its own.
+#[cfg(test)]
+pub(crate) fn inert_serving(routes: &[Route]) -> BackendRegistry {
+    let local = Route::local(Some(crate::session::Multiplexer::platform_default()));
+    let mut registry = BackendRegistry::new(local.clone(), tests::stub(&local));
+    for route in routes {
+        registry.register(route.clone(), tests::stub(route));
+    }
+    registry
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use anyhow::Result;
@@ -85,7 +116,7 @@ mod tests {
         backend_name: String,
     }
 
-    fn stub(route: &Route) -> Arc<dyn SessionBackend> {
+    pub(crate) fn stub(route: &Route) -> Arc<dyn SessionBackend> {
         Arc::new(StubBackend {
             backend_name: route.format(),
         })
@@ -114,10 +145,10 @@ mod tests {
             _: u16,
             _: u16,
         ) -> Result<SpawnedSession> {
-            unimplemented!()
+            anyhow::bail!("{}: nothing to spawn on", self.backend_name)
         }
         fn adopt(&self, _: &str, _: u16, _: u16, _: Option<Vec<u8>>) -> Result<AdoptedSession> {
-            unimplemented!()
+            anyhow::bail!("{}: nothing to adopt", self.backend_name)
         }
         fn discover(&self) -> Result<Vec<DiscoveredSession>> {
             Ok(vec![])

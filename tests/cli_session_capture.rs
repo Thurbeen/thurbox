@@ -110,6 +110,7 @@ fn capture_when_ready(
                 ansi,
             },
             db,
+            &thurbox::backend::wiring::configured().0,
         )
         .expect("capture should succeed for a live local pane");
         if out["output"].as_str().unwrap_or_default().contains(MARKER)
@@ -245,6 +246,7 @@ fn capture_of_a_remote_session_goes_to_its_host_or_says_why_it_cannot() {
             ansi: false,
         },
         &db,
+        &thurbox::backend::wiring::configured().0,
     )
     .expect_err("no hosts.toml entry means there is nowhere to delegate to");
     assert!(err.contains("ssh:devbox"), "got {err}");
@@ -268,6 +270,7 @@ fn capture_still_rejects_an_unusable_uuid() {
                     ansi: false,
                 },
                 &db,
+                &thurbox::backend::wiring::configured().0,
             )
             .is_err(),
             "{uuid} should not capture"

@@ -357,7 +357,11 @@ pub enum Outcome {
 ///
 /// `Err` means nothing was printed. A command that rendered normally and still
 /// wants a non-zero exit comes back as [`Outcome::Failed`].
-pub fn run(cli: Cli, db: &Database) -> Result<Outcome, CommandError> {
+pub fn run(
+    cli: Cli,
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Result<Outcome, CommandError> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
@@ -378,7 +382,7 @@ pub fn run(cli: Cli, db: &Database) -> Result<Outcome, CommandError> {
     let mut output: CommandOutput = match cli.command {
         // No subcommand: live state, not a usage dump (AXI principle 8).
         None => home::run(db)?,
-        Some(command) => dispatch(command, db)?,
+        Some(command) => dispatch(command, db, backends)?,
     };
     if cli.full {
         output.agent.max_text = None;
@@ -419,16 +423,20 @@ fn parse_fields(spec: &str) -> Vec<String> {
 }
 
 /// Route one subcommand to the module that owns it.
-fn dispatch(command: Command, db: &Database) -> Result<CommandOutput, CommandError> {
+fn dispatch(
+    command: Command,
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action, db)?,
         Command::Agent { action } => agents::run(action, db)?,
-        Command::Session { action } => sessions::run(action, db)?,
-        Command::Automation { action } => automations::run(action, db)?,
-        Command::Task { action } => tasks::run(action, db)?,
+        Command::Session { action } => sessions::run(action, db, backends)?,
+        Command::Automation { action } => automations::run(action, db, backends)?,
+        Command::Task { action } => tasks::run(action, db, backends)?,
         Command::Message { action } => messages::run(action, db)?,
         Command::Config { action } => config::run(action, db)?,
-        Command::Extension { action } => extensions::run(action, db)?,
+        Command::Extension { action } => extensions::run(action, db, backends)?,
         Command::Version(args) => version::run(args),
         Command::Update(args) => update::run(args),
         Command::Notify(args) => notify::run(args),

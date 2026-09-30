@@ -178,8 +178,12 @@ impl SpawnPhase {
 /// Told which stage the pipeline has reached. Called on the spawning thread.
 pub type ProgressFn<'a> = &'a (dyn Fn(SpawnPhase) + Send + Sync);
 
-pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnResult, String> {
-    spawn_session_headless_with_progress(db, req, None)
+pub fn spawn_session_headless(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    req: SpawnRequest,
+) -> Result<SpawnResult, String> {
+    spawn_session_headless_with_progress(db, backends, req, None)
 }
 
 /// [`spawn_session_headless`], reporting each stage as it is reached.
@@ -188,6 +192,7 @@ pub fn spawn_session_headless(db: &Database, req: SpawnRequest) -> Result<SpawnR
 /// automation runner — is untouched and keeps its signature.
 pub fn spawn_session_headless_with_progress(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SpawnResult, String> {
@@ -200,7 +205,7 @@ pub fn spawn_session_headless_with_progress(
     validate_request(db, &req)?;
 
     // Resolve host and multiplexer before any worktree or pane is made.
-    let choice = resolve_backend(req.host.as_deref(), req.multiplexer.as_deref())?;
+    let choice = resolve_backend(backends, req.host.as_deref(), req.multiplexer.as_deref())?;
     let backend_type = choice.backend_type();
     let host = choice.host.clone();
 
@@ -1469,13 +1474,15 @@ fn dir_label(path: &std::path::Path) -> String {
 /// host (ADR-24) holds that host's rows beside its own, and matching a name
 /// across all of them let a local create replace a session on another machine.
 pub(crate) fn backend_type_for_choice(
+    backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<String, String> {
-    resolve_backend(host, multiplexer).map(|choice| choice.backend_type())
+    resolve_backend(backends, host, multiplexer).map(|choice| choice.backend_type())
 }
 
 fn resolve_backend(
+    backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<crate::session::BackendChoice, String> {
@@ -1483,7 +1490,6 @@ fn resolve_backend(
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
-    let (backends, _, _) = crate::backend::wiring::configured();
     if !backends.supports(&choice.route) {
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",
@@ -1567,7 +1573,8 @@ mod tests {
     #[test]
     fn empty_name_is_rejected() {
         let db = empty_db();
-        let err = spawn_session_headless(&db, req("")).unwrap_err();
+        let err =
+            spawn_session_headless(&db, &crate::backend::registry::inert(), req("")).unwrap_err();
         assert!(err.to_lowercase().contains("name"), "got {err}");
     }
 
@@ -1576,7 +1583,7 @@ mod tests {
         let db = empty_db();
         for bad in [".hidden", "foo/bar", "foo..bar", "foo\\bar"] {
             assert!(
-                spawn_session_headless(&db, req(bad)).is_err(),
+                spawn_session_headless(&db, &crate::backend::registry::inert(), req(bad)).is_err(),
                 "should reject {bad}"
             );
         }
@@ -1587,7 +1594,7 @@ mod tests {
         let db = empty_db();
         let mut r = req("worker");
         r.parent_session_id = Some(SessionId::default());
-        let err = spawn_session_headless(&db, r).unwrap_err();
+        let err = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap_err();
         assert!(err.contains("Parent session not found"), "got {err}");
     }
 
@@ -1600,7 +1607,7 @@ mod tests {
         let mut r = req("cmd-sess");
         r.command = Some("bash".into());
         r.resume_session_id = Some("some-external-id".into());
-        let err = spawn_session_headless(&db, r).unwrap_err();
+        let err = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap_err();
         assert!(
             err.contains("--resume") && err.contains("--command"),
             "got {err}"

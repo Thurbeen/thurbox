@@ -156,7 +156,11 @@ fn session_panes(session: &SharedSession) -> crate::backend::tmux::SessionPanes<
 /// that has no pane (the interface's respawn of surveyed rows, a peer's
 /// `restart --if-missing`, extension self-heal), and the window between killing
 /// and recording is exactly when one of them would put it back.
-pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<bool, String> {
+pub fn stop_session_headless(
+    db: &Database,
+    _backends: &crate::backend::BackendRegistry,
+    session_id: SessionId,
+) -> Result<bool, String> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
@@ -213,11 +217,12 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
 /// cannot resurrect one. `start` is the one caller allowed to say otherwise.
 pub fn start_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
     db.set_session_stopped(session_id, false)
         .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
-    restart_for(db, session_id, Relaunch::Unparking)
+    restart_for(db, backends, session_id, Relaunch::Unparking)
 }
 
 /// Refuse a restart of a row that has been deleted since it was loaded.
@@ -312,9 +317,10 @@ pub struct RestartReport {
 /// restarts).
 pub fn restart_session_headless(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
 ) -> Result<RestartReport, String> {
-    restart_session_headless_with(db, session_id, false)
+    restart_session_headless_with(db, backends, session_id, false)
 }
 
 /// [`restart_session_headless`], or — with `if_missing` — a **relaunch**: the
@@ -324,11 +330,13 @@ pub fn restart_session_headless(
 /// session produce one launch: the second finds the window the first made.
 pub fn restart_session_headless_with(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     if_missing: bool,
 ) -> Result<RestartReport, String> {
     restart_for(
         db,
+        backends,
         session_id,
         match if_missing {
             true => Relaunch::IfMissing,
@@ -379,6 +387,7 @@ impl Relaunch {
 /// Every restart, with [`Relaunch`] saying which caller's rules apply.
 fn restart_for(
     db: &Database,
+    _backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     why: Relaunch,
 ) -> Result<RestartReport, String> {
@@ -796,7 +805,7 @@ mod tests {
         // window somebody is in the middle of replacing. Answered before tmux
         // is asked anything, so this needs no server.
         assert_eq!(
-            restart_session_headless_with(&db, row.id, true),
+            restart_session_headless_with(&db, &crate::backend::registry::inert(), row.id, true),
             Ok(RestartReport::default()),
             "a relaunch of a row being restarted is not owed"
         );

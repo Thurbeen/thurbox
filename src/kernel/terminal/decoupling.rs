@@ -192,7 +192,7 @@ struct Harness {
     terminals: Terminals,
     backend: Arc<Recorder>,
     id: String,
-    /// `Terminals::new()` reads the host registry and the agent registry, and
+    /// `Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()))` reads the host registry and the agent registry, and
     /// seeds the latter when it is missing — so it is pointed at a directory of
     /// its own rather than at whoever is running the suite.
     _paths: crate::paths::TestPathGuard,
@@ -222,7 +222,8 @@ impl Harness {
             .ensure_shell_pane(rows, cols, None)
             .expect("open the companion shell");
 
-        let mut terminals = Terminals::new();
+        let mut terminals =
+            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
         let id = "probe-0000".to_string();
         terminals.live.insert(
             id.clone(),
@@ -791,7 +792,8 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
         HashMap::new(),
     )
     .expect("adopt");
-    let mut terminals = Terminals::new();
+    let mut terminals =
+        Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
     let id = "probe-0000".to_string();
     terminals.live.insert(
         id.clone(),

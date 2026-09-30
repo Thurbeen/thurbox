@@ -106,7 +106,9 @@ async fn a_session_with_no_pane_id_is_found_by_its_window_name() {
         "sh -c 'while :; do sleep 1; done'",
     ]);
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("demo")]);
     // Attaching runs on a worker, so it lands on a later sync rather than this
     // one — which is the point: the loop keeps painting while a host is being
@@ -148,7 +150,9 @@ async fn a_window_that_appears_later_is_still_picked_up() {
 
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let rows = snapshot(vec![row("demo")]);
     terminals.sync(&rows, 24, 80);
     assert!(
@@ -187,7 +191,9 @@ fn a_remote_row_is_not_resolved_by_name() {
     // A remote spawn records its real pane id, so a remote row without one cannot
     // be fixed by discovery — and readying a remote backend to try would put an
     // ssh connect on the render thread.
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let mut remote = row("demo");
     remote.backend = "ssh:nowhere".into();
     let started = std::time::Instant::now();
@@ -247,7 +253,9 @@ async fn two_sessions_sharing_a_name_both_attach_by_their_pane_ids() {
     second.backend_id = Some(second_pane);
     let rows = snapshot(vec![first, second]);
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut both = false;
     while std::time::Instant::now() < deadline && !both {
@@ -288,7 +296,9 @@ async fn two_windows_of_the_same_name_are_refused_rather_than_guessed() {
         ]);
     }
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     terminals.sync(&snapshot(vec![row("demo")]), 24, 80);
     let attached = terminals.is_attached("11111111-1111-1111-1111-111111111111");
     assert!(!attached, "an ambiguous window name must not be guessed at");
@@ -325,7 +335,9 @@ async fn a_stale_pane_id_gives_way_to_the_window_that_is_really_there() {
         "sh -c 'while :; do sleep 1; done'",
     ]);
 
-    let mut terminals = Terminals::new();
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
     let mut stale = row("demo");
     stale.backend_id = Some("%999".into());
     let rows = snapshot(vec![stale]);

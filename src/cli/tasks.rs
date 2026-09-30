@@ -105,7 +105,11 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Result<CommandOutput, String> {
     match action {
         Action::Create {
             title,
@@ -207,7 +211,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
         },
         Action::Run { id } => {
             let task = load(db, id)?;
-            let json = run_task(db, &task)?;
+            let json = run_task(db, backends, &task)?;
             let human = render_task_run(&json);
             Ok(CommandOutput::new(json, human))
         }
@@ -326,7 +330,11 @@ fn status_glyph(status: TaskStatus) -> String {
 /// tmux/spawn helpers are reached via fully-qualified paths (no `use
 /// crate::agent`) to keep the cli module free of an `agent` import — see
 /// tests/architecture_rules.rs::cli_module_isolation.
-fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
+fn run_task(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    task: &Task,
+) -> Result<Value, String> {
     // Seed the agent with full task context (id + title + description + how to
     // read more / mark done), not just the bare title — shared with the TUI
     // dispatch path via `Task::agent_prompt`.
@@ -383,7 +391,7 @@ fn run_task(db: &Database, task: &Task) -> Result<Value, String> {
                 extra_repos: extra_repos.clone(),
                 ..Default::default()
             };
-            action::spawn_and_deliver(db, &name, req, &prompt).map_err(|e| match e {
+            action::spawn_and_deliver(db, backends, &name, req, &prompt).map_err(|e| match e {
                 SpawnDeliverError::Spawn(msg) | SpawnDeliverError::Deliver { message: msg, .. } => {
                     msg
                 }
@@ -574,6 +582,7 @@ mod tests {
                 external_url: None,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("title"), "got {err}");
@@ -596,6 +605,7 @@ mod tests {
                 external_url: None,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         let id = created["id"].as_i64().unwrap();
@@ -610,6 +620,7 @@ mod tests {
                 external_url: None,
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap_err();
         assert!(err.contains("title"), "got {err}");
@@ -671,6 +682,7 @@ mod tests {
                 Some("https://linear.app/x/issue/ENG-7"),
             ),
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(out["source"], "linear");
@@ -690,7 +702,12 @@ mod tests {
     #[test]
     fn create_without_source_defaults_to_local() {
         let db = Database::open_in_memory().unwrap();
-        let out = run(create_action("plain", None, None, None), &db).unwrap();
+        let out = run(
+            create_action("plain", None, None, None),
+            &db,
+            &crate::backend::registry::inert(),
+        )
+        .unwrap();
         assert_eq!(out["source"], SOURCE_LOCAL);
         assert!(out["external_id"].is_null());
         assert!(out["external_url"].is_null());
@@ -699,14 +716,24 @@ mod tests {
     #[test]
     fn create_blank_source_falls_back_to_local() {
         let db = Database::open_in_memory().unwrap();
-        let out = run(create_action("plain", Some("   "), None, None), &db).unwrap();
+        let out = run(
+            create_action("plain", Some("   "), None, None),
+            &db,
+            &crate::backend::registry::inert(),
+        )
+        .unwrap();
         assert_eq!(out["source"], SOURCE_LOCAL);
     }
 
     #[test]
     fn edit_can_change_source_but_ignores_blank() {
         let db = Database::open_in_memory().unwrap();
-        let id = run(create_action("t", Some("github"), Some("1"), None), &db).unwrap()["id"]
+        let id = run(
+            create_action("t", Some("github"), Some("1"), None),
+            &db,
+            &crate::backend::registry::inert(),
+        )
+        .unwrap()["id"]
             .as_i64()
             .unwrap();
         let edit = |source: Option<&str>| {
@@ -721,6 +748,7 @@ mod tests {
                     external_url: None,
                 },
                 &db,
+                &crate::backend::registry::inert(),
             )
             .unwrap()
         };
@@ -740,6 +768,7 @@ mod tests {
                 Some("https://example.com/issues/42"),
             ),
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         let id = created["id"].as_i64().unwrap();
@@ -755,6 +784,7 @@ mod tests {
                 external_url: Some("https://example.com/issues/42#closed".into()),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert_eq!(edited["status"], "done");
@@ -776,6 +806,7 @@ mod tests {
                 external_url: Some(String::new()),
             },
             &db,
+            &crate::backend::registry::inert(),
         )
         .unwrap();
         assert!(cleared["external_url"].is_null());

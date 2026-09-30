@@ -707,6 +707,9 @@ pub struct SnapshotStore {
     registry_contents: Option<Result<String, String>>,
     registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
+    /// The routes the process's registry serves, read once from it: which
+    /// multiplexers the create flow may offer, here and on each host.
+    served: std::collections::HashSet<crate::session::Route>,
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
     mux: MuxRow,
@@ -758,7 +761,7 @@ impl SnapshotStore {
     /// A database that will not open is not fatal: the kernel still runs and
     /// every read returns an empty snapshot carrying the error, which a plugin
     /// can render. Losing the UI because the DB is busy would be worse.
-    pub fn open() -> Self {
+    pub fn open(backends: &crate::backend::BackendRegistry) -> Self {
         let (database, error) = match crate::paths::database_file() {
             Some(path) => match Database::open(&path) {
                 Ok(db) => (Some(db), None),
@@ -771,6 +774,7 @@ impl SnapshotStore {
         };
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
+        let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
             database,
             git: GitStats::new(git_poll_interval()),
@@ -780,8 +784,9 @@ impl SnapshotStore {
             registry,
             registry_contents: None,
             registry_polled_at: None,
-            hosts: read_hosts(),
-            mux: read_mux(),
+            hosts: read_hosts(&served),
+            mux: read_mux(&served),
+            served,
             preflight_at: Instant::now(),
             current: Snapshot {
                 error,
@@ -800,9 +805,10 @@ impl SnapshotStore {
 
     /// Build a store over an already-open database (tests, and any caller that
     /// owns its own connection).
-    pub fn with_database(database: Database) -> Self {
+    pub fn with_database(database: Database, backends: &crate::backend::BackendRegistry) -> Self {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
+        let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
             database: Some(database),
             git: GitStats::new(git_poll_interval()),
@@ -812,8 +818,9 @@ impl SnapshotStore {
             registry,
             registry_contents: None,
             registry_polled_at: None,
-            hosts: read_hosts(),
-            mux: read_mux(),
+            hosts: read_hosts(&served),
+            mux: read_mux(&served),
+            served,
             preflight_at: Instant::now(),
             current: Snapshot::default(),
             last_refresh: None,
@@ -1390,7 +1397,7 @@ impl SnapshotStore {
             return false;
         }
         self.preflight_at = Instant::now();
-        let mux = read_mux();
+        let mux = read_mux(&self.served);
         let mut moved = mux != self.mux;
         self.mux = mux;
         for row in &mut self.agents {
@@ -1715,13 +1722,12 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 }
 
 /// Whether the local multiplexer is installed, and what to do when it is not.
-fn read_mux() -> MuxRow {
+fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow {
     let binary = crate::agent::preflight::local_multiplexer();
     let presence = crate::agent::preflight::look_up(binary);
-    let (backends, _, _) = crate::backend::wiring::configured();
     let available = crate::session::Multiplexer::ALL
         .into_iter()
-        .filter(|mux| backends.supports(&crate::session::Route::local(Some(*mux))))
+        .filter(|mux| served.contains(&crate::session::Route::local(Some(*mux))))
         .map(|mux| mux.name().to_string())
         .collect();
     MuxRow {
@@ -1738,9 +1744,8 @@ fn read_mux() -> MuxRow {
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips
 /// asking.
-fn read_hosts() -> Vec<HostRow> {
+fn read_hosts(served: &std::collections::HashSet<crate::session::Route>) -> Vec<HostRow> {
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    let (backends, _, _) = crate::backend::wiring::configured();
     registry
         .hosts
         .iter()
@@ -1751,7 +1756,7 @@ fn read_hosts() -> Vec<HostRow> {
             multiplexer: host.multiplexer.clone(),
             available_multiplexers: crate::session::Multiplexer::ALL
                 .into_iter()
-                .filter(|mux| backends.supports(&host.route(Some(*mux))))
+                .filter(|mux| served.contains(&host.route(Some(*mux))))
                 .map(|mux| mux.name().to_string())
                 .collect(),
         })
@@ -2031,7 +2036,8 @@ mod tests {
 
         crate::paths::with_path(dir.path(), || {
             let database = Database::open_in_memory().expect("in-memory database opens");
-            let mut store = SnapshotStore::with_database(database);
+            let mut store =
+                SnapshotStore::with_database(database, &crate::backend::registry::inert());
             assert_eq!(
                 store.current().mux.presence,
                 crate::agent::preflight::Presence::Present,
@@ -2058,7 +2064,7 @@ mod tests {
     #[test]
     fn an_in_memory_database_yields_an_empty_but_stamped_snapshot() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database);
+        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         let snapshot = store.current();
         assert!(snapshot.sessions.is_empty());
         assert!(snapshot.taken_at_ms > 0, "snapshot must carry its instant");
@@ -2068,7 +2074,7 @@ mod tests {
     #[test]
     fn a_read_is_immediate_and_repeatable() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database);
+        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         // The property that matters: reading never consults the database.
         for _ in 0..1000 {
             assert!(store.current().sessions.is_empty());
@@ -2156,7 +2162,7 @@ mod tests {
             tombstone_at: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database);
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
@@ -2256,7 +2262,7 @@ mod tests {
         };
         database.upsert_session(&row).expect("upsert");
         database.set_hook_state(row.id, "blocked").expect("signal");
-        let mut store = SnapshotStore::with_database(database);
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         store.refresh();
         let id = row.id.to_string();
         assert_eq!(status_of(&store, &id), SessionState::Blocked);
@@ -2327,7 +2333,7 @@ mod tests {
         };
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "idle").expect("idle");
-        let mut store = SnapshotStore::with_database(database);
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         let id = row.id.to_string();
         assert_eq!(status_of(&store, &id), SessionState::Idle);
 
@@ -2408,7 +2414,7 @@ mod tests {
                 rusqlite::params![future, row.id.to_string()],
             )
             .expect("seed later stamp");
-        let mut store = SnapshotStore::with_database(database);
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
         assert_eq!(
             store.apply_hook_states(
                 vec![("ssh:fixture:tmux".into(), "%7".into(), "idle".into())],
@@ -2456,7 +2462,7 @@ mod tests {
             tombstone_at: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database);
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
 
         store.panes.known.insert(
             row.id.to_string(),

@@ -98,7 +98,7 @@ impl Builtin {
     /// re-applies the payload and re-stamps the manifest, so an upgrade
     /// refreshes the wiring. Returns human-readable status lines (empty when
     /// there is nothing to report, including when it is opted out).
-    pub fn ensure(&self, db: &Database) -> Vec<String> {
+    pub fn ensure(&self, db: &Database, backends: &crate::backend::BackendRegistry) -> Vec<String> {
         if db.builtin_extension_opted_out(self.name).unwrap_or(false) {
             return Vec::new();
         }
@@ -119,11 +119,11 @@ impl Builtin {
         // `--settings`.
         if let Some(existing) = crate::agent::extension_config::load_manifest(self.name) {
             if existing.home.as_deref() != Some(home.as_str()) {
-                let _ = super::uninstall_extension(db, self.name, false);
+                let _ = super::uninstall_extension(db, backends, self.name, false);
             }
         }
 
-        match install_extension(db, &dir.to_string_lossy(), Some(&home), false) {
+        match install_extension(db, backends, &dir.to_string_lossy(), Some(&home), false) {
             Ok(report) => (self.notices)(&report),
             Err(e) => vec![format!("{} extension: {e}", self.name)],
         }
@@ -132,8 +132,14 @@ impl Builtin {
 
 /// Ensure every built-in extension. Called at TUI startup and at the top of the
 /// headless `automation tick`, so a built-in stays wired with the TUI closed.
-pub fn ensure_builtin_extensions(db: &Database) -> Vec<String> {
-    BUILTINS.iter().flat_map(|b| b.ensure(db)).collect()
+pub fn ensure_builtin_extensions(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+) -> Vec<String> {
+    BUILTINS
+        .iter()
+        .flat_map(|b| b.ensure(db, backends))
+        .collect()
 }
 
 #[cfg(test)]
