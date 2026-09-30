@@ -847,7 +847,7 @@ before touching that path.
   beats dropped). Base64 because a raw newline in a psmux command argument is
   cut by the server's line-oriented read, truncating the payload *and*
   executing its tail as a command (psmux #560) — the same reason the headless
-  prompt path (`paste_prompt_args`, feeding `send_prompt_now`/
+  prompt path (`paste_prompt_args`, feeding the adapter's `send_text` and
   `deferred_prompt_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
 - **There are no per-window options.** `set-option -w -t <pane> @k v` stores one
@@ -2245,6 +2245,49 @@ the interface holds a connection to a backend, a lifecycle kill goes through
 it (reconnecting once on a dead link) rather than one-shot; either way it
 kills the pane's whole window, so a window somebody split leaves nothing
 running.
-Pane I/O, hook status and the heartbeat still reach
-the tmux adapter directly; `tests/architecture_rules.rs` lists what is left in
+Pane I/O followed in ADR-30. Hook status and the heartbeat still reach the tmux
+adapter directly; `tests/architecture_rules.rs` lists what is left in
 `TRANSITIONAL`.
+
+## ADR-30: Pane I/O is located by the row, then addressed by pane
+
+**Choice**: every verb that types into, presses a key in, or reads a session's
+pane — the kernel's `Send` and `dispatch_task`, `session send`/`key`/`capture`,
+the `send` and `spawn` automations, `task run`, `session list --verify`/`get`,
+`watch --verify`, `session doctor`'s `PATH` read and the interface's pane
+probe — asks the injected registry for the backend the row's route names,
+locates the row's agent window there (`session_ops::windows::agent_pane`:
+`locate(Owner)`, stamp first, a lone unstamped namesake second), and then
+calls a pane-keyed verb on the contract: `send_text`, `send_text_after`,
+`send_key`, `capture`, `pane_state`, `pane_path`. A key crosses the contract as
+`backend::Key`, thurbox's own closed set of spellings; the adapter says it in
+its grammar (`session key` still reports that spelling as `tmux_key`).
+Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24).
+
+**Why**: the pane helpers were free functions of the tmux adapter that
+resolved `(id, name)` on *this machine's* server whatever the row's route. A
+row on a host was therefore typed into a local window of the same name that
+no one had stamped — its prompt read as another session's input — and a row
+on any other route was driven on local tmux or failed with "no window of its
+own here" while the interface had its pane wired. A spawn automation that
+found a lone `tb-auto-<id>` window typed into it by name even when no row
+owned it.
+
+**Rejected alternatives**:
+
+- **`(id, name)`-keyed copies of the pane verbs on the trait**: a second
+  addressing vocabulary beside the pane one every attached caller already
+  holds. Locating is one step, done once, by the row.
+- **Falling back to a name when the listing is ambiguous**: an `Unknown`
+  placement is an error for every pane verb. The tmux adapter's own settling
+  (retiring a duplicated stamp, psmux's unstamped windows reached by name,
+  ADR-25) happens inside `locate`, where it is that backend's to decide.
+- **Default methods**: the six verbs are required; a stub refuses them.
+
+**Consequences**: a pane verb on a route nothing serves is refused by name
+(`no backend here serves …`). A deferred prompt is scheduled on the pane's own
+server, in the shell that server runs its commands with, so a spawn on a
+host gets its prompt there. `pane_state` reads the foreground process's argv
+with a local `ps` only for a local pane, and an answer that names another pane
+than the one asked about — `display-message` answers for the current pane
+against a target it cannot resolve — is no answer.

@@ -34,6 +34,7 @@ fn the_recording_backend_keeps_the_contract() {
     let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
     backend_contract::suite(&*fake);
     backend_contract::lifecycle(&*fake);
+    backend_contract::pane_io(&*fake);
     backend_contract::shutdown_is_final(&*fake);
 }
 
@@ -52,6 +53,7 @@ fn the_tmux_backend_keeps_the_contract() {
     // from `thurbox-cli` opens no control client on the server it acts on.
     let headless = TmuxBackend::new();
     backend_contract::lifecycle(&headless);
+    backend_contract::pane_io(&headless);
     let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
     assert_eq!(
         String::from_utf8_lossy(&clients.stdout).trim(),

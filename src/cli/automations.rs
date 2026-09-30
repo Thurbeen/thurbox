@@ -567,20 +567,17 @@ fn poll_local_pane_states(db: &Database) -> usize {
 
 /// Execute one automation's action without a TUI, returning the run outcome.
 ///
-/// `send` types into the still-alive tmux window; `spawn` creates a session
-/// headlessly (the TUI adopts it by name on next startup) and delivers the
-/// prompt via a deferred tmux timer once the agent boots. Local-tmux scoped —
-/// a future remote backend would branch here.
+/// `send` types into the target's window; `spawn` creates a session headlessly
+/// (the TUI adopts it on next startup) and delivers the prompt through a timer
+/// on its backend once the agent boots. Both act through the backend the row's
+/// route names.
 fn fire_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     auto: &Automation,
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
-    // tmux helpers are reached via fully-qualified paths (no `use crate::agent`)
-    // to keep the cli module free of an `agent` import — see
-    // tests/architecture_rules.rs::cli_module_isolation.
     match &auto.action {
-        AutomationAction::Send { session_id } => fire_send(db, auto, *session_id),
+        AutomationAction::Send { session_id } => fire_send(db, backends, auto, *session_id),
         AutomationAction::Spawn {
             repo_path,
             worktree_branch,
@@ -609,9 +606,10 @@ fn fire_exec(command: &str) -> (AutomationRunStatus, String, Option<SessionId>) 
 }
 
 /// Execute a `send` automation: type the prompt into the target session's
-/// still-alive tmux window.
+/// window, on the backend its route names.
 fn fire_send(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     auto: &Automation,
     session_id: SessionId,
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
@@ -634,20 +632,24 @@ fn fire_send(
             )
         }
     };
-    if !crate::backend::tmux::window_exists(&target.id.to_string(), &target.name) {
-        return (
-            AutomationRunStatus::Skipped,
-            "target session not running".into(),
-            None,
-        );
+    match crate::session_ops::windows::agent_pane(backends, &target) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                AutomationRunStatus::Skipped,
+                "target session not running".into(),
+                None,
+            )
+        }
+        Err(e) => return (AutomationRunStatus::Error, e, None),
     }
-    match crate::session_ops::send_text_with_status(db, &target, &auto.prompt, true) {
+    match crate::session_ops::send_text_with_status(db, backends, &target, &auto.prompt, true) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
             Some(session_id),
         ),
-        Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
+        Err(e) => (AutomationRunStatus::Error, format!("{e:#}"), None),
     }
 }
 
@@ -665,48 +667,57 @@ fn fire_spawn(
     extra_repos: &[crate::session::ExtraRepo],
 ) -> (AutomationRunStatus, String, Option<SessionId>) {
     let name = format!("auto-{}", auto.id);
-    // Reuse an existing session window (later fires / restored sessions).
-    if crate::backend::tmux::window_exists("", &name) {
-        let sessions = match db.find_sessions_by_name(&name) {
-            Ok(sessions) => sessions,
-            Err(e) => {
-                return (
-                    AutomationRunStatus::Error,
-                    format!("find_sessions_by_name: {e}"),
-                    None,
-                )
-            }
-        };
-        // On this machine's own server, whichever spelling its rows carry:
-        // `window_exists` asks that server and no other.
-        let local_server = crate::session_ops::server_key("");
-        let mut local = sessions.into_iter().filter(|s| {
-            crate::session_ops::server_key(&s.backend_type) == local_server
-                && crate::backend::tmux::window_exists(&s.id.to_string(), &name)
-        });
-        if let Some(session) = local.next() {
-            if local.next().is_none() {
-                return match crate::session_ops::send_text_with_status(
-                    db,
-                    &session,
-                    &auto.prompt,
-                    true,
-                ) {
-                    Ok(()) => (
-                        AutomationRunStatus::Success,
-                        format!("reused {name}"),
-                        Some(session.id),
-                    ),
-                    Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
-                };
+    // Reuse the session an earlier fire made, found by its row and on the
+    // backend its route names — never a window by its name alone: one no row
+    // owns, or several that answer to it, is somebody else's to type into.
+    let sessions = match db.find_sessions_by_name(&name) {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            return (
+                AutomationRunStatus::Error,
+                format!("find_sessions_by_name: {e}"),
+                None,
+            )
+        }
+    };
+    let mut running = Vec::new();
+    for session in sessions {
+        match crate::session_ops::windows::agent_pane(backends, &session) {
+            Ok(Some(_)) => running.push(session),
+            Ok(None) => {}
+            // Not knowing whether it runs must not launch a second one.
+            Err(e) => return (AutomationRunStatus::Error, e, None),
+        }
+    }
+    match running.as_slice() {
+        [] => {}
+        [session] => {
+            return match crate::session_ops::send_text_with_status(
+                db,
+                backends,
+                session,
+                &auto.prompt,
+                true,
+            ) {
+                Ok(()) => (
+                    AutomationRunStatus::Success,
+                    format!("reused {name}"),
+                    Some(session.id),
+                ),
+                Err(e) => (AutomationRunStatus::Error, format!("{e:#}"), None),
             }
         }
-        // A legacy window can outlive its row; multiple unstamped namesakes
-        // cannot be assigned a row safely. Deliver without changing status.
-        return match crate::backend::tmux::send_prompt_now("", &name, &auto.prompt) {
-            Ok(()) => (AutomationRunStatus::Success, format!("reused {name}"), None),
-            Err(e) => (AutomationRunStatus::Error, e.to_string(), None),
-        };
+        _ => {
+            return (
+                AutomationRunStatus::Error,
+                format!(
+                    "{} running sessions are named {name}, so there is no telling which one \
+                     this automation made",
+                    running.len()
+                ),
+                None,
+            )
+        }
     }
     let req = SpawnRequest {
         name: name.clone(),

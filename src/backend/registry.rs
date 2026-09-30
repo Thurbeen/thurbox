@@ -15,7 +15,9 @@ use crate::session::Route;
 /// A registry of session backends keyed by the qualified route each serves.
 ///
 /// The registry always has a default backend: this machine's own
-/// multiplexer.
+/// multiplexer. A clone shares the same backends — the handles, not new
+/// connections.
+#[derive(Clone)]
 pub struct BackendRegistry {
     backends: HashMap<Route, Arc<dyn SessionBackend>>,
     default_route: Route,
@@ -152,6 +154,24 @@ pub(crate) mod tests {
     }
 
     impl SessionBackend for StubBackend {
+        fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn send_text_after(&self, _: &str, _: &str, _: std::time::Duration) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn send_key(&self, _: &str, _: &crate::backend::Key) -> anyhow::Result<String> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn capture(&self, _: &str, _: u32, _: bool) -> anyhow::Result<String> {
+            anyhow::bail!("this stub has no panes to read")
+        }
+        fn pane_state(&self, _: &str) -> anyhow::Result<crate::backend::PaneState> {
+            anyhow::bail!("this stub has no panes to read")
+        }
+        fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("this stub has no panes to read")
+        }
         fn create_window(&self, spec: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
             let mut windows = self.windows.lock().unwrap();
             let pane = format!("%{}", windows.len());

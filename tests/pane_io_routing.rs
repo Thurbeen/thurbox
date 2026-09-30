@@ -115,6 +115,14 @@ impl Instance {
         settings.features.automations = false;
         settings.multiplexer = multiplexer.map(str::to_string);
         thurbox::session::settings::init(settings);
+        // What a headless create reads its default multiplexer from.
+        if let Some(mux) = multiplexer {
+            std::fs::write(
+                config.join("settings.toml"),
+                format!("multiplexer = \"{mux}\"\n\n[features]\nautomations = false\n"),
+            )
+            .expect("settings.toml");
+        }
 
         let repo = repo();
         Self { root, server, repo }
@@ -247,7 +255,11 @@ fn registries() -> Registries {
 }
 
 /// `thurbox-cli --json <args>` in-process, returning the document it printed.
-fn cli(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) -> Result<Value, String> {
+fn cli(
+    db: &Database,
+    backends: &thurbox::cli::Backends<'_>,
+    args: &[&str],
+) -> Result<Value, String> {
     let parsed =
         thurbox::cli::Cli::try_parse_from(["thurbox-cli", "--json"].iter().chain(args).copied())
             .map_err(|e| format!("parse {args:?}: {e}"))?;
@@ -354,8 +366,12 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     seed_row(&db, id, "probe", "local:rmux", &pane, &repo);
 
     // CLI send, unsubmitted and submitted, and a key.
-    cli(&db, backends, &["session", "send", &uuid, "typed only", "--no-enter"])
-        .expect("send --no-enter");
+    cli(
+        &db,
+        backends,
+        &["session", "send", &uuid, "typed only", "--no-enter"],
+    )
+    .expect("send --no-enter");
     assert_screen_shows(probe, &pane, "typed only", "session send --no-enter");
     cli(&db, backends, &["session", "key", &uuid, "enter"]).expect("key");
     assert!(probe.called("send_key"), "session key: {:?}", probe.calls());
@@ -389,7 +405,14 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     let task = cli(
         &db,
         backends,
-        &["task", "create", "--title", "kernel dispatch", "--session", &uuid],
+        &[
+            "task",
+            "create",
+            "--title",
+            "kernel dispatch",
+            "--session",
+            &uuid,
+        ],
     )
     .expect("task create");
     let task_id = task["id"].as_i64().expect("task id");
@@ -405,7 +428,14 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     let task = cli(
         &db,
         backends,
-        &["task", "create", "--title", "cli task run", "--session", &uuid],
+        &[
+            "task",
+            "create",
+            "--title",
+            "cli task run",
+            "--session",
+            &uuid,
+        ],
     )
     .expect("task create");
     cli(
@@ -434,7 +464,12 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
         .expect("the task's session");
     assert_eq!(fresh.backend_type, "local:rmux");
     let fresh_pane = agent_pane(probe, &fresh.id.to_string());
-    assert_screen_shows(probe, &fresh_pane, "a fresh one", "dispatch to a new session");
+    assert_screen_shows(
+        probe,
+        &fresh_pane,
+        "a fresh one",
+        "dispatch to a new session",
+    );
     instance.assert_tmux_untouched("the kernel's send and dispatch");
 
     // A send automation, and a spawn automation fired twice: the first
@@ -443,8 +478,16 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
         &db,
         backends,
         &[
-            "automation", "create", "--name", "send", "--trigger", "hourly", "--session",
-            &uuid, "--prompt", "automation send",
+            "automation",
+            "create",
+            "--name",
+            "send",
+            "--trigger",
+            "hourly",
+            "--session",
+            &uuid,
+            "--prompt",
+            "automation send",
         ],
     )
     .expect("create a send automation");
@@ -456,8 +499,16 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
         &db,
         backends,
         &[
-            "automation", "create", "--name", "spawn", "--trigger", "hourly", "--repo", &repo,
-            "--prompt", "automation spawn",
+            "automation",
+            "create",
+            "--name",
+            "spawn",
+            "--trigger",
+            "hourly",
+            "--repo",
+            &repo,
+            "--prompt",
+            "automation spawn",
         ],
     )
     .expect("create a spawn automation");
@@ -472,7 +523,10 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     let spawned_pane = agent_pane(probe, &spawned.id.to_string());
     assert_screen_shows(probe, &spawned_pane, "automation spawn", "fire_spawn");
     let run = fire(&db, backends, spawn_id);
-    assert_eq!(run_status(&run), ("success".into(), format!("reused auto-{spawn_id}")));
+    assert_eq!(
+        run_status(&run),
+        ("success".into(), format!("reused auto-{spawn_id}"))
+    );
     assert_eq!(
         agent_pane(probe, &spawned.id.to_string()),
         spawned_pane,
@@ -494,8 +548,14 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     .expect("watch --verify");
     assert!(probe.called("pane_state"), "watch --verify");
     probe.forget_calls();
-    cli(&db, backends, &["session", "doctor", &uuid]).expect("doctor");
-    assert!(probe.called("pane_path"), "session doctor: {:?}", probe.calls());
+    // Its verdict is about a probe nothing wired hooks into; what matters is
+    // where it read the pane's `PATH` from.
+    let _ = cli(&db, backends, &["session", "doctor", &uuid]);
+    assert!(
+        probe.called("pane_path"),
+        "session doctor: {:?}",
+        probe.calls()
+    );
 
     probe.forget_calls();
     let mut store =
@@ -512,7 +572,16 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     cli(
         &db,
         backends,
-        &["message", "send", "--to", &uuid, "--body", "mailbox body"],
+        &[
+            "message",
+            "send",
+            "--to",
+            &uuid,
+            "--kind",
+            "note",
+            "--body",
+            "mailbox body",
+        ],
     )
     .expect("message send");
     assert!(
@@ -569,8 +638,16 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
         &db,
         backends,
         &[
-            "automation", "create", "--name", "far", "--trigger", "hourly", "--session", &uuid,
-            "--prompt", "automation for the host",
+            "automation",
+            "create",
+            "--name",
+            "far",
+            "--trigger",
+            "hourly",
+            "--session",
+            &uuid,
+            "--prompt",
+            "automation for the host",
         ],
     )
     .expect("create a send automation");
@@ -581,7 +658,14 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
     let task = cli(
         &db,
         backends,
-        &["task", "create", "--title", "task for the host", "--session", &uuid],
+        &[
+            "task",
+            "create",
+            "--title",
+            "task for the host",
+            "--session",
+            &uuid,
+        ],
     )
     .expect("task create");
     cli(
@@ -595,7 +679,12 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
     // The CLI's pane verbs delegate to the host's own CLI, which the stand-in
     // cannot reach: an honest refusal, and still nothing local.
     assert!(
-        cli(&db, backends, &["session", "send", &uuid, "cli for the host"]).is_err(),
+        cli(
+            &db,
+            backends,
+            &["session", "send", &uuid, "cli for the host"]
+        )
+        .is_err(),
         "a send the host's CLI never answered reported success"
     );
 
@@ -633,8 +722,7 @@ fn a_pane_verb_on_an_unserved_route_is_refused_by_name() {
     )
     .expect_err("a send to an unserved route");
     assert!(refused.contains("no backend here serves"), "{refused}");
-    let refused =
-        cli(&db, &reg.cli, &["session", "send", &uuid, "nowhere"]).expect_err("cli send");
+    let refused = cli(&db, &reg.cli, &["session", "send", &uuid, "nowhere"]).expect_err("cli send");
     assert!(refused.contains("no backend here serves"), "{refused}");
     instance.assert_tmux_untouched("the refusals");
 }
@@ -656,8 +744,16 @@ fn a_spawn_automation_never_types_into_a_window_no_row_owns() {
         &db,
         &reg.cli,
         &[
-            "automation", "create", "--name", "spawn", "--trigger", "hourly", "--repo",
-            &instance.repo(), "--prompt", "not for a stranger",
+            "automation",
+            "create",
+            "--name",
+            "spawn",
+            "--trigger",
+            "hourly",
+            "--repo",
+            &instance.repo(),
+            "--prompt",
+            "not for a stranger",
         ],
     )
     .expect("create a spawn automation");

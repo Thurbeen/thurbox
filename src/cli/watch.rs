@@ -78,7 +78,14 @@ pub struct WatchArgs {
 
 /// Stream session changes until the deadline (or forever) — one event per line,
 /// flushed as it is written so a reader blocked on the pipe wakes on it.
-pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), CommandError> {
+pub fn run(
+    db: &Database,
+    backends: &super::Backends<'_>,
+    args: WatchArgs,
+    format: Format,
+) -> Result<(), CommandError> {
+    // Only `--verify` reads a pane, so only it builds the registry.
+    let backends = args.verify.then(|| backends.get());
     let filter = args
         .session
         .as_deref()
@@ -121,12 +128,10 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), Command
             let row = states.get(&session.id).cloned().unwrap_or_default();
             let hook = assess(
                 &registry,
-                session.id,
                 facts,
                 &row,
                 facts.stopped,
-                args.verify,
-                &session.backend_type,
+                backends.map(|b| (b, &session)),
             );
             let line = present(seq, session.id, facts, &hook);
             if !out.write(&line) {
@@ -145,7 +150,7 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), Command
         &registry,
         filter,
         &mut seq,
-        &args,
+        backends,
         &mut stopped_state,
         &mut out,
     ) {
@@ -171,7 +176,7 @@ pub fn run(db: &Database, args: WatchArgs, format: Format) -> Result<(), Command
             &registry,
             filter,
             &mut seq,
-            &args,
+            backends,
             &mut stopped_state,
             &mut out,
         ) {
@@ -207,7 +212,7 @@ fn drain(
     registry: &crate::session::AgentRegistry,
     filter: Option<SessionId>,
     seq: &mut i64,
-    args: &WatchArgs,
+    backends: Option<&crate::backend::BackendRegistry>,
     stopped_state: &mut HashMap<SessionId, bool>,
     out: &mut Stream,
 ) -> bool {
@@ -238,7 +243,7 @@ fn drain(
                     .unwrap_or(false),
             };
             stopped_state.insert(event.session_id, stopped);
-            if !out.write(&line(db, registry, &facts, event, stopped, args.verify)) {
+            if !out.write(&line(db, registry, &facts, event, stopped, backends)) {
                 return false;
             }
         }
@@ -267,7 +272,7 @@ fn line(
     facts: &HashMap<SessionId, SessionFacts>,
     event: &SessionEventRow,
     stopped: bool,
-    verify: bool,
+    backends: Option<&crate::backend::BackendRegistry>,
 ) -> Value {
     let unknown = SessionFacts {
         name: String::new(),
@@ -279,15 +284,11 @@ fn line(
     let facts = facts.get(&event.session_id).unwrap_or(&unknown);
     // Only the pane probe needs the backend, and only a live row has a pane to
     // probe — so the lookup is paid for exactly where it is used.
-    let probe = verify && event.event != "gone";
-    let backend_type = probe
-        .then(|| db.get_session_by_id(event.session_id).ok().flatten())
-        .flatten()
-        .map(|s| s.backend_type)
-        .unwrap_or_default();
+    let row = backends
+        .filter(|_| event.event != "gone")
+        .and_then(|_| db.get_session_by_id(event.session_id).ok().flatten());
     let hook = assess(
         registry,
-        event.session_id,
         facts,
         &HookRow {
             state: event.to_state.clone(),
@@ -295,8 +296,7 @@ fn line(
             seen_at: facts.seen_at,
         },
         stopped,
-        probe,
-        &backend_type,
+        backends.zip(row.as_ref()),
     );
     let mut line = base(event.session_id, facts, &hook);
     line["seq"] = json!(event.seq);
@@ -357,12 +357,13 @@ fn base(id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
 /// this stream uses are the words every other surface uses.
 fn assess(
     registry: &crate::session::AgentRegistry,
-    id: SessionId,
     facts: &SessionFacts,
     columns: &HookRow,
     stopped: bool,
-    verify: bool,
-    backend_type: &str,
+    probe: Option<(
+        &crate::backend::BackendRegistry,
+        &crate::sync::SharedSession,
+    )>,
 ) -> Assessment {
     let hook = Assessment::from_hooks(
         registry,
@@ -375,10 +376,10 @@ fn assess(
     if stopped {
         return hook.parked();
     }
-    if !verify {
+    let Some((backends, session)) = probe else {
         return hook;
-    }
-    if crate::session::Route::is_remote_key(backend_type) {
+    };
+    if crate::session::Route::is_remote_key(&session.backend_type) {
         return hook.pane_unavailable();
     }
     // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the
@@ -387,7 +388,11 @@ fn assess(
         .get(&facts.agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| facts.agent.clone());
-    let pane = crate::backend::tmux::pane_state(&id.to_string(), &facts.name);
+    let pane = crate::session_ops::windows::agent_pane(backends, session)
+        .ok()
+        .flatten()
+        .and_then(|(backend, pane)| backend.pane_state(&pane).ok())
+        .unwrap_or_default();
     hook.with_pane(
         &command,
         registry,

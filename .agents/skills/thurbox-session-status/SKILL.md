@@ -126,7 +126,8 @@ own, which is the point.
   here — a turn may run for an hour, so a guessed bound would report live work
   as finished; the age is published and the policy is the consumer's. The
   decisive check is the pane: `session get` resolves the foreground process
-  (`backend::tmux::pane_state`, one `display-message` plus one `ps`) and reports
+  (`SessionBackend::pane_state` on the row's backend — on tmux, one
+  `display-message` plus one `ps`) and reports
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
   `hook_state` with the inference. `session list` skips the probe unless
   `--verify`; a remote session is never probed and answers `unavailable`.
@@ -224,7 +225,7 @@ own, which is the point.
   (verified against tmux 3.5a). `session doctor`'s `cli` finding used to answer
   from the *doctor's* `PATH`, which is why it read `ok` throughout; it now reads
   the pane's own, out of the `env PATH=…` prefix tmux keeps verbatim in
-  `#{pane_start_command}` (`backend::tmux::agent_pane_path`). Not
+  `#{pane_start_command}` (`SessionBackend::pane_path`). Not
   `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
   restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
   would answer for a `doctor` run from the TUI and refuse the same question

@@ -430,6 +430,24 @@ mod tests {
     }
 
     impl crate::backend::SessionBackend for Panes {
+        fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn send_text_after(&self, _: &str, _: &str, _: std::time::Duration) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn send_key(&self, _: &str, _: &crate::backend::Key) -> anyhow::Result<String> {
+            anyhow::bail!("this stub has no panes to type into")
+        }
+        fn capture(&self, _: &str, _: u32, _: bool) -> anyhow::Result<String> {
+            anyhow::bail!("this stub has no panes to read")
+        }
+        fn pane_state(&self, _: &str) -> anyhow::Result<crate::backend::PaneState> {
+            anyhow::bail!("this stub has no panes to read")
+        }
+        fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("this stub has no panes to read")
+        }
         fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
             anyhow::bail!("{}: a stub opens no windows", self.name())
         }

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use thurbox::backend::identity::{Located, WindowIndex};
-use thurbox::backend::{Owner, Placed, SessionBackend, WindowRole, WindowSpec};
+use thurbox::backend::{Key, Owner, Placed, SessionBackend, WindowRole, WindowSpec};
 
 /// Three rows, as their stamps. Uuid-shaped, as a real row's are.
 const OWNER_A: &str = "00000000-0000-4000-8000-00000000000a";
@@ -178,6 +178,75 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
             agent: Located::Absent,
             shell: Located::Absent,
         }
+    );
+}
+
+/// Pane I/O: what reaches a pane through the verbs every caller shares —
+/// located by its owner, then addressed by pane.
+pub fn pane_io(backend: &dyn SessionBackend) {
+    let env = HashMap::new();
+    let owner = Owner::new(OWNER_C, "io");
+    let open = |command: &'static str, args: &[String]| {
+        backend
+            .create_window(&WindowSpec {
+                owner,
+                role: WindowRole::Agent,
+                command,
+                args,
+                cwd: None,
+                env: &env,
+            })
+            .expect("create_window")
+    };
+    let pane = open("cat", &[]);
+    assert_eq!(
+        backend.locate(owner).expect("locate").agent,
+        Located::At(pane.clone())
+    );
+
+    // Text lands literally; submitted, it is one line; unsubmitted, it waits.
+    backend
+        .send_text(&pane, "-first line", true)
+        .expect("send_text");
+    backend
+        .send_text(&pane, "second", false)
+        .expect("send_text unsubmitted");
+    let key = Key::parse("enter").expect("enter");
+    assert!(
+        !backend.send_key(&pane, &key).expect("send_key").is_empty(),
+        "a key is reported as the backend spelled it"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut screen = String::new();
+    while std::time::Instant::now() < deadline {
+        screen = backend.capture(&pane, 50, false).expect("capture");
+        if screen.contains("-first line") && screen.contains("second") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        screen.contains("-first line") && screen.contains("second"),
+        "capture reads back what was typed: {screen:?}"
+    );
+
+    let state = backend.pane_state(&pane).expect("pane_state");
+    assert_eq!(state.dead, Some(false), "a running pane is not dead");
+    assert!(
+        backend.pane_path(&pane).is_ok(),
+        "a present pane's PATH is answered, known or not"
+    );
+
+    // A pane gone is not somebody else's to answer for.
+    backend.kill(&pane).expect("kill");
+    assert_eq!(
+        backend.pane_state(&pane).unwrap_or_default(),
+        thurbox::backend::PaneState::default(),
+        "a gone pane's state is no answer"
+    );
+    assert!(
+        backend.send_text(&pane, "nowhere", true).is_err(),
+        "a send to a gone pane reported success"
     );
 }
 

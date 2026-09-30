@@ -162,11 +162,12 @@ pub(crate) fn spawn_and_deliver(
     let spawned = crate::session_ops::spawn_session_headless(db, backends, req)
         .map_err(SpawnDeliverError::Spawn)?;
     let session_id = spawned.session_id;
-    crate::backend::tmux::send_prompt_after_delay(
-        &session_id.to_string(),
-        name,
+    crate::session_ops::send_text_when_booted(
+        db,
+        backends,
+        session_id,
         prompt,
-        BOOT_DELAY_SECS,
+        std::time::Duration::from_secs(BOOT_DELAY_SECS),
     )
     .map_err(|e| SpawnDeliverError::Deliver {
         session_id,

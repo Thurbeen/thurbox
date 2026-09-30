@@ -1,7 +1,8 @@
 //! A session's windows, through the backend its route names.
 //!
 //! Every lifecycle verb — create, restart, stop, restore, delete, reap, owed
-//! teardown, rename — asks the injected registry for the one backend that
+//! teardown, rename — and every pane verb — send, key, capture, a pane's state
+//! — asks the injected registry for the one backend that
 //! serves a row and acts through the contract. Nothing here names an adapter,
 //! so a backend that registers for a route is driven exactly as tmux is, and a
 //! route nothing is registered for is refused rather than driven somewhere
@@ -30,6 +31,60 @@ pub(crate) fn backend_for<'r>(
     backends.get(&served).ok_or_else(|| {
         format!("no backend here serves {served}, so nothing drives '{backend_type}'")
     })
+}
+
+/// The backend `session`'s route names, and the pane its agent is in there —
+/// `Ok(None)` when that backend positively holds no window of the row's.
+///
+/// One vocabulary for every pane verb: locate by the row, then act on the pane.
+/// A listing that cannot say which of several namesakes is the row's is an
+/// error, never a name to send to: text typed into a namesake is text another
+/// session's agent reads as its own.
+pub fn agent_pane<'r>(
+    backends: &'r crate::backend::BackendRegistry,
+    session: &crate::sync::SharedSession,
+) -> Result<
+    Option<(
+        &'r std::sync::Arc<dyn crate::backend::SessionBackend>,
+        String,
+    )>,
+    String,
+> {
+    let backend = backend_for(backends, &session.backend_type)?;
+    let id = session.id.to_string();
+    let owner = crate::backend::Owner::new(&id, &session.name).remembering(
+        &session.backend_id,
+        session.shell_backend_id.as_deref().unwrap_or(""),
+    );
+    let placed = backend
+        .locate(owner)
+        .map_err(|e| format!("could not list the windows on {}: {e:#}", backend.name()))?;
+    match placed.agent {
+        crate::backend::Located::At(pane) => Ok(Some((backend, pane))),
+        crate::backend::Located::Absent => Ok(None),
+        crate::backend::Located::Unknown => Err(format!(
+            "several windows on {} answer to '{}' and none is stamped as this session's, \
+             so there is no telling which one is its own",
+            backend.name(),
+            session.name
+        )),
+    }
+}
+
+/// [`agent_pane`], where a session with no window is an error: what every
+/// verb that must reach the agent wants.
+pub fn require_agent_pane<'r>(
+    backends: &'r crate::backend::BackendRegistry,
+    session: &crate::sync::SharedSession,
+) -> Result<
+    (
+        &'r std::sync::Arc<dyn crate::backend::SessionBackend>,
+        String,
+    ),
+    String,
+> {
+    agent_pane(backends, session)?
+        .ok_or_else(|| format!("session '{}' has no window of its own here", session.name))
 }
 
 /// Kill the windows `owner` has on `backend` — its agent and its companion

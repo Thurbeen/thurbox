@@ -59,7 +59,11 @@ impl Level {
 /// those are facts to know, not breakage to fix, and a permanent non-zero exit
 /// for `aider`'s one-state coverage — or for a driver reporting its own state
 /// exactly as documented — would be noise rather than signal.
-pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, CommandError> {
+pub fn run(
+    db: &Database,
+    backends: &super::Backends<'_>,
+    uuid: Option<&str>,
+) -> Result<CommandOutput, CommandError> {
     let sessions = match uuid {
         Some(uuid) => vec![super::sessions::resolve(db, uuid)?],
         None => db
@@ -75,13 +79,14 @@ pub fn run(db: &Database, uuid: Option<&str>) -> Result<CommandOutput, CommandEr
 
     let mut reports = Vec::new();
     for session in &sessions {
-        let hook = facts.assess(&registry, session, true);
+        let hook = facts.assess(&registry, session, Some(backends.get()));
         reports.push(diagnose(
             session,
             facts.hooks_expected(session),
             &hook,
             hooks_active,
             cli_on_path.as_deref(),
+            Some(backends.get()),
         ));
     }
 
@@ -200,6 +205,7 @@ fn diagnose(
     hook: &Assessment,
     hooks_active: bool,
     cli_on_path: Option<&str>,
+    backends: Option<&crate::backend::BackendRegistry>,
 ) -> Report {
     let agent = &hook.agent;
     let mut findings = Vec::new();
@@ -303,7 +309,7 @@ fn diagnose(
         findings.push(finding);
     }
 
-    findings.push(match hook_cli(session, remote, cli_on_path) {
+    findings.push(match hook_cli(backends, session, remote, cli_on_path) {
         // A remote session's hooks are rewritten to `tmux set-option -p
         // @thurbox_state` and never invoke `thurbox-cli` at all; on a shared
         // host they run the *host's* CLI. Either way this machine's PATH says
@@ -579,22 +585,32 @@ enum HookCli {
 /// `PATH`, so a `doctor` that consulted its own was answering a different
 /// question — and answered `ok` for a shared-sessions host where no pane could
 /// find the binary and no session had ever reported a state.
-fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) -> HookCli {
+fn hook_cli(
+    backends: Option<&crate::backend::BackendRegistry>,
+    session: &SharedSession,
+    remote: bool,
+    cli_on_path: Option<&str>,
+) -> HookCli {
     if remote {
         return HookCli::Remote;
     }
-    // Spelled out at every mention rather than imported: `cli` may reach
-    // `agent` by fully-qualified path only (tests/architecture_rules.rs), and
-    // that holds for a `use` inside a function too.
-    match crate::backend::tmux::agent_pane_path(&session.id.to_string(), &session.name) {
-        crate::backend::tmux::PanePath::Known(path) => {
-            match resolve_cli_on(std::ffi::OsStr::new(&path)) {
-                Some(found) => HookCli::OnPanePath(found),
-                None => HookCli::NotOnPanePath,
-            }
-        }
-        crate::backend::tmux::PanePath::Unknown => HookCli::PaneUnverifiable,
-        crate::backend::tmux::PanePath::Absent => HookCli::NoPane(cli_on_path.map(str::to_owned)),
+    let no_pane = || HookCli::NoPane(cli_on_path.map(str::to_owned));
+    // Located on the backend the row's route names, then read by pane: this
+    // machine's server holds no window of a row routed elsewhere.
+    let Some((backend, pane)) = backends.and_then(|b| {
+        crate::session_ops::windows::agent_pane(b, session)
+            .ok()
+            .flatten()
+    }) else {
+        return no_pane();
+    };
+    match backend.pane_path(&pane) {
+        Ok(Some(path)) => match resolve_cli_on(std::ffi::OsStr::new(&path)) {
+            Some(found) => HookCli::OnPanePath(found),
+            None => HookCli::NotOnPanePath,
+        },
+        Ok(None) => HookCli::PaneUnverifiable,
+        Err(_) => no_pane(),
     }
 }
 
@@ -667,7 +683,7 @@ mod tests {
         hooks_active: bool,
         cli_on_path: Option<&str>,
     ) -> Report {
-        diagnose(row, true, hook, hooks_active, cli_on_path)
+        diagnose(row, true, hook, hooks_active, cli_on_path, None)
     }
 
     fn level_of(report: &Report, key: &str) -> Level {
@@ -803,6 +819,7 @@ mod tests {
             &hook,
             true,
             Some("/bin/x"),
+            None,
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         assert_ne!(report.verdict, Level::Fail);
@@ -828,6 +845,7 @@ mod tests {
             &hook,
             true,
             Some("/bin/x"),
+            None,
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         assert!(hook.blocked_is_heuristic());
@@ -871,7 +889,14 @@ mod tests {
         // state arriving — it is still worth saying, because a driver calling
         // `session signal` from the pane needs it.
         let hook = Assessment::from_hooks(&registry(), "bash", None, None, None, 0);
-        let report = diagnose(&row("s", "bash", "local-tmux"), false, &hook, true, None);
+        let report = diagnose(
+            &row("s", "bash", "local-tmux"),
+            false,
+            &hook,
+            true,
+            None,
+            None,
+        );
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
 
@@ -918,6 +943,7 @@ mod tests {
             &hook,
             true,
             Some("/x"),
+            None,
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         let detail = &report

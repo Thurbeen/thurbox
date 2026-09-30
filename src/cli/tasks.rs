@@ -327,9 +327,6 @@ fn status_glyph(status: TaskStatus) -> String {
 
 /// Execute a task's action without a TUI, returning a JSON outcome.
 ///
-/// tmux/spawn helpers are reached via fully-qualified paths (no `use
-/// crate::agent`) to keep the cli module free of an `agent` import — see
-/// tests/architecture_rules.rs::cli_module_isolation.
 fn run_task(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -348,11 +345,11 @@ fn run_task(
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if !crate::backend::tmux::window_exists(&target.id.to_string(), &target.name) {
+            if crate::session_ops::windows::agent_pane(backends, &target)?.is_none() {
                 return Err("target session not running".into());
             }
-            crate::session_ops::send_text_with_status(db, &target, &prompt, true)
-                .map_err(|e| format!("send_prompt_now: {e}"))?;
+            crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
+                .map_err(|e| format!("send: {e:#}"))?;
             mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
         }
@@ -371,13 +368,16 @@ fn run_task(
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
+                .filter(|s| task.matches_spawn_session(&s.name))
                 .find(|s| {
-                    task.matches_spawn_session(&s.name)
-                        && crate::backend::tmux::window_exists(&s.id.to_string(), &s.name)
+                    matches!(
+                        crate::session_ops::windows::agent_pane(backends, s),
+                        Ok(Some(_))
+                    )
                 });
             if let Some(session) = existing {
-                crate::session_ops::send_text_with_status(db, &session, &prompt, true)
-                    .map_err(|e| format!("send_prompt_now: {e}"))?;
+                crate::session_ops::send_text_with_status(db, backends, &session, &prompt, true)
+                    .map_err(|e| format!("send: {e:#}"))?;
                 mark_in_progress(db, task)?;
                 return Ok(json!({ "reused": session.name, "id": task.id }));
             }

@@ -703,14 +703,15 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &fake.to_string_lossy(),
     ]);
     stamp(&format!("{SESSION}:tb-{name}"), &row.id.to_string());
-    assert!(thurbox::backend::tmux::window_exists(
-        &row.id.to_string(),
-        &name
-    ));
-    assert!(!thurbox::backend::tmux::window_exists(
-        &namesake.id.to_string(),
-        &name
-    ));
+    let local = thurbox::backend::tmux::TmuxBackend::new();
+    let placed = |id: &str| {
+        thurbox::backend::SessionBackend::locate(&local, thurbox::backend::Owner::new(id, &name))
+            .expect("locate")
+            .agent
+            .pane()
+    };
+    assert!(placed(&row.id.to_string()).is_some());
+    assert!(placed(&namesake.id.to_string()).is_none());
 
     let out = run_automation(
         AutomationCommand::Tick,

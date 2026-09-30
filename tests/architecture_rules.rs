@@ -250,7 +250,13 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "agent::host_config", "backend::registry", "kernel"],
+        allowed_path_only: &[
+            "agent",
+            "agent::host_config",
+            "backend::contract",
+            "backend::registry",
+            "kernel",
+        ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +

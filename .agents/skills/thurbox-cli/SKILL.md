@@ -457,7 +457,8 @@ the instant it is typed. **`session key <uuid> <name>`** is the other half: one
 named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
-resolved through the closed table in `backend::tmux::NAMED_KEYS`. The table is
+resolved through the closed set in `backend::Key` (each adapter spells it in its
+own grammar, reported as `tmux_key`). The table is
 closed on purpose: tmux does **not** validate a key name — an unrecognized one
 is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out

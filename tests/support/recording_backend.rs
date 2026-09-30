@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Result};
 use thurbox::backend::identity::{window_name_for, WindowIndex};
 use thurbox::backend::{
-    AdoptedSession, DiscoveredSession, Located, Owner, Placed, SessionBackend, SpawnedSession,
-    WindowRole, WindowSpec,
+    AdoptedSession, DiscoveredSession, Key, Located, Owner, PaneState, Placed, SessionBackend,
+    SpawnedSession, WindowRole, WindowSpec,
 };
 use thurbox::session::Route;
 
@@ -42,6 +42,8 @@ pub struct Window {
     pub command: String,
     /// Where it was asked to run it.
     pub cwd: Option<String>,
+    /// The `PATH` it was opened with, as a real spawn prefixes it.
+    pub path: Option<String>,
     /// What reached the pane, in order: typed text, `\n` for each Enter, and
     /// `<name>` for any other key. What a capture reads back.
     pub screen: String,
@@ -140,6 +142,7 @@ impl RecordingBackend {
             command: String::new(),
             cwd: None,
             screen: String::new(),
+            path: None,
         });
         pane
     }
@@ -178,6 +181,18 @@ impl State {
         let pane = format!("%{}", self.next);
         self.next += 1;
         pane
+    }
+
+    /// The live window `pane` names, for input: an exited one accepts none.
+    fn input(&mut self, pane: &str) -> Result<&mut Window> {
+        let window = match self.windows.iter_mut().find(|w| w.pane == pane) {
+            Some(w) => w,
+            None => bail!("can't find pane: {pane}"),
+        };
+        if !window.alive {
+            bail!("its pane {pane} has exited and accepts no input");
+        }
+        Ok(window)
     }
 
     fn find(&self, pane: &str) -> Result<&Window> {
@@ -222,8 +237,8 @@ fn role_of(name: &str) -> WindowRole {
     }
 }
 
-/// A pane's output: the fake never prints, and its stream ends at once. Pane
-/// I/O through the fake is not modelled yet; lifecycle never reads a stream.
+/// A pane's output: the fake never prints, and its stream ends at once. What
+/// reaches a pane headlessly is kept on its [`Window::screen`] instead.
 struct Silent;
 
 impl Read for Silent {
@@ -232,7 +247,8 @@ impl Read for Silent {
     }
 }
 
-/// Keystrokes go nowhere; pane I/O is not what this fake is for yet.
+/// Keystrokes written to an attached stream go nowhere: the verbs are what
+/// the fake models.
 struct Discard;
 
 impl Write for Discard {
@@ -285,6 +301,7 @@ impl SessionBackend for RecordingBackend {
                 .join(" "),
             cwd: cwd.map(|p| p.display().to_string()),
             screen: String::new(),
+            path: None,
         });
         Ok(SpawnedSession {
             backend_id: pane,
@@ -328,6 +345,7 @@ impl SessionBackend for RecordingBackend {
                 .join(" "),
             cwd: spec.cwd.map(|p| p.display().to_string()),
             screen: String::new(),
+            path: spec.env.get("PATH").cloned(),
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);
         Ok(pane)
@@ -406,6 +424,64 @@ impl SessionBackend for RecordingBackend {
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
         let state = self.lock(format!("set_pane_retention {backend_id} {keep}"))?;
         state.find(backend_id).map(drop)
+    }
+
+    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
+        let mut state = self.lock(format!("send_text {pane} {text}"))?;
+        let window = state.input(pane)?;
+        window.screen.push_str(text);
+        if submit {
+            window.screen.push('\n');
+        }
+        Ok(())
+    }
+
+    fn send_text_after(&self, pane: &str, text: &str, delay: std::time::Duration) -> Result<()> {
+        // The fake's time passes at once: what a real timer would type later
+        // is on the screen when this returns.
+        let mut state = self.lock(format!(
+            "send_text_after {pane} {}s {text}",
+            delay.as_secs()
+        ))?;
+        let window = state.input(pane)?;
+        window.screen.push_str(text);
+        window.screen.push('\n');
+        Ok(())
+    }
+
+    fn send_key(&self, pane: &str, key: &Key) -> Result<String> {
+        let mut state = self.lock(format!("send_key {pane} {}", key.name()))?;
+        let window = state.input(pane)?;
+        match key.name() {
+            "enter" => window.screen.push('\n'),
+            other => window.screen.push_str(&format!("<{other}>")),
+        }
+        Ok(key.name().to_string())
+    }
+
+    fn capture(&self, pane: &str, lines: u32, _ansi: bool) -> Result<String> {
+        let state = self.lock(format!("capture {pane}"))?;
+        let screen = &state.find(pane)?.screen;
+        let all: Vec<&str> = screen.lines().collect();
+        let keep = all.len().saturating_sub(lines as usize);
+        Ok(all[keep..].join("\n"))
+    }
+
+    fn pane_state(&self, pane: &str) -> Result<PaneState> {
+        let state = self.lock(format!("pane_state {pane}"))?;
+        let window = state.find(pane)?;
+        Ok(PaneState {
+            foreground_process: window.command.split_whitespace().next().map(str::to_string),
+            foreground_command: (!window.command.is_empty()).then(|| window.command.clone()),
+            foreground_cwd: window.cwd.clone(),
+            dead: Some(!window.alive),
+            ..PaneState::default()
+        })
+    }
+
+    fn pane_path(&self, pane: &str) -> Result<Option<String>> {
+        let state = self.lock(format!("pane_path {pane}"))?;
+        Ok(state.find(pane)?.path.clone())
     }
 
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {

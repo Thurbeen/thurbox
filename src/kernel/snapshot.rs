@@ -611,6 +611,7 @@ impl PaneProbe {
     /// answer is still fresh.
     fn request(
         &mut self,
+        backend: std::sync::Arc<dyn crate::backend::SessionBackend>,
         session: &str,
         name: &str,
         agent_command: String,
@@ -631,7 +632,14 @@ impl PaneProbe {
         let (session, name) = (session.to_string(), name.to_string());
         let registry = std::sync::Arc::clone(registry);
         std::thread::spawn(move || {
-            let pane = crate::backend::tmux::pane_state(&session, &name);
+            // Located by the row, then asked about by pane: an answer that
+            // is not this row's pane is no answer.
+            let pane = backend
+                .locate(crate::backend::Owner::new(&session, &name))
+                .ok()
+                .and_then(|placed| placed.agent.pane())
+                .and_then(|pane| backend.pane_state(&pane).ok())
+                .unwrap_or_default();
             // Classified on the worker rather than at the fold, so the argv the
             // verdict was read from — a driver's brief runs to kilobytes — never
             // crosses the channel or lands in the snapshot.
@@ -710,6 +718,9 @@ pub struct SnapshotStore {
     /// The routes the process's registry serves, read once from it: which
     /// multiplexers the create flow may offer, here and on each host.
     served: std::collections::HashSet<crate::session::Route>,
+    /// The process's backends, which the pane probe asks about a row's pane
+    /// through: the registry's own handles, cloned once at open.
+    backends: crate::backend::BackendRegistry,
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
     mux: MuxRow,
@@ -787,6 +798,7 @@ impl SnapshotStore {
             hosts: read_hosts(&served),
             mux: read_mux(&served),
             served,
+            backends: backends.clone(),
             preflight_at: Instant::now(),
             current: Snapshot {
                 error,
@@ -821,6 +833,7 @@ impl SnapshotStore {
             hosts: read_hosts(&served),
             mux: read_mux(&served),
             served,
+            backends: backends.clone(),
             preflight_at: Instant::now(),
             current: Snapshot::default(),
             last_refresh: None,
@@ -970,7 +983,8 @@ impl SnapshotStore {
     fn poll_pane_probes(&mut self) -> bool {
         let moved = self.panes.drain();
 
-        let wanted: Vec<(String, String, String)> = self
+        let backends = &self.backends;
+        let wanted: Vec<(String, String, String, _)> = self
             .current
             .sessions
             .iter()
@@ -979,7 +993,11 @@ impl SnapshotStore {
                     && !row.stopped
                     && !crate::session::Route::is_remote_key(&row.backend)
             })
-            .map(|row| {
+            .filter_map(|row| {
+                // A route nothing here serves has no pane to ask about.
+                let backend = crate::session_ops::windows::backend_for(backends, &row.backend)
+                    .ok()?
+                    .clone();
                 // The agent *binary*, not the agent name: `antigravity` runs
                 // `agy`, and a pane's foreground process is spelled the way it
                 // was invoked.
@@ -989,16 +1007,17 @@ impl SnapshotStore {
                     .get(agent)
                     .map(|def| def.command.clone())
                     .unwrap_or_else(|| agent.to_string());
-                (row.id.clone(), row.name.clone(), command)
+                Some((row.id.clone(), row.name.clone(), command, backend))
             })
             .collect();
 
         let probed: std::collections::HashSet<&str> =
-            wanted.iter().map(|(id, _, _)| id.as_str()).collect();
+            wanted.iter().map(|(id, _, _, _)| id.as_str()).collect();
         self.panes.retain(&probed);
 
-        for (id, name, command) in wanted {
-            self.panes.request(&id, &name, command, &self.registry);
+        for (id, name, command, backend) in wanted {
+            self.panes
+                .request(backend, &id, &name, command, &self.registry);
         }
         moved
     }
