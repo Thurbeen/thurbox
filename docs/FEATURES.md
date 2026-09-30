@@ -66,6 +66,16 @@ first when there is work to lose, and a rebound chord shows up in the menu. Sort
 the panel toggle and undo are left out because none of them is about the session
 that was pressed.
 
+**Why can other plugins add to a row's menu?** A plugin that owns a
+per-session action would otherwise reach it only through `Ctrl+P` or a chord of
+its own. It leaves its entries in `store["sessions.menu_extra"]` under its own
+name, and they follow the pane's own entries after a rule. An entry whose
+action nothing declares is dropped, the same rule that keeps Sort and Undo out
+when they would do nothing. Its owner reads the pressed row from
+`store["menu.chosen"].target`, so it acts on the row that was clicked even if
+the cursor moved. The contract is *Adding entries to the sessions menu* in
+`docs/PLUGINS.md`.
+
 **Why opened at the pointer, and closed by a click elsewhere?** That is what a
 context menu is. The kernel supplies only the mechanism — the pressed cell on
 `hit`, `float.at`, and `on_outside` for the float holding the pointer — so the
