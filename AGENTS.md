@@ -283,7 +283,8 @@ cli                  session, storage, session_ops,    [agent, agent::host_confi
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
-paths, shell         nothing — leaf utilities
+paths                nothing — leaf utility
+shell                session (HostLauncher::for_host)
 coordinator          agent, backend::output_wake,      (main's body: the loop,
                      clipboard, kernel, paths,          the workers, the chrome)
                      session, session_ops, shell,

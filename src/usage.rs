@@ -75,7 +75,7 @@ fn at_host(host: Option<&HostDef>) -> String {
 ///   mirrors `git::host_shell_c`: ssh space-joins its trailing args into one
 ///   string the remote login shell re-splits (so the script is POSIX-quoted),
 ///   while `wsl.exe --exec` passes argv verbatim (so it must NOT be quoted).
-/// - A psmux host is native Windows with no `sh`. `type <rel-path>` works
+/// - A native Windows host has no `sh`. `type <rel-path>` works
 ///   under both default OpenSSH shells (a cmd builtin; a PowerShell alias for
 ///   `Get-Content`) and resolves relative to `%USERPROFILE%`, the OpenSSH
 ///   default cwd — no env expansion needed, so no quoting hazards.
@@ -84,29 +84,13 @@ fn remote_read_command(
     posix_script: &str,
     windows_args: &[&str],
 ) -> std::process::Command {
-    let launcher = launcher_for(host);
+    let launcher = HostLauncher::for_host(host);
     if host.is_windows() {
         let mut c = launcher.command();
         c.args(windows_args);
         c
     } else {
         launcher.shell_c(posix_script)
-    }
-}
-
-/// `usage` may not import `git`, so it carries its own copy of the one-line
-/// [`HostDef`] → [`HostLauncher`] conversion (`session` is a pure-data leaf,
-/// so the conversion cannot live on the type). The quoting itself is shared.
-fn launcher_for(host: &HostDef) -> HostLauncher<'_> {
-    if host.is_wsl() {
-        HostLauncher::Wsl {
-            distro: host.distro_name(),
-        }
-    } else {
-        HostLauncher::Ssh {
-            destination: &host.destination,
-            ssh_opts: &host.ssh_opts,
-        }
     }
 }
 
@@ -332,7 +316,7 @@ fn codex_server_command(host: Option<&HostDef>) -> std::process::Command {
         // Plain tokens work for a POSIX *and* a Windows (psmux) SSH host: the
         // remote shell resolves `codex`/`codex.exe` from PATH either way.
         Some(h) => {
-            let mut c = launcher_for(h).command();
+            let mut c = HostLauncher::for_host(h).command();
             c.arg("codex").args(CODEX_SERVER_ARGS);
             c
         }

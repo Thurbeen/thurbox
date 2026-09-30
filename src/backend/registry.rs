@@ -95,6 +95,9 @@ mod tests {
         fn name(&self) -> &str {
             &self.backend_name
         }
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
+        }
         fn check_available(&self) -> Result<()> {
             Ok(())
         }

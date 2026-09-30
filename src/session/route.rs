@@ -31,7 +31,7 @@
 
 use std::fmt;
 
-use super::{HostDef, Multiplexer};
+use super::Multiplexer;
 
 /// The prefix of a key whose machine is reached over ssh.
 pub const SSH_PREFIX: &str = "ssh:";
@@ -114,12 +114,6 @@ impl Route {
         }
     }
 
-    /// The route `host` is reached by, served by `mux`.
-    pub fn to_host(host: &HostDef, mux: Option<Multiplexer>) -> Self {
-        let via = if host.is_wsl() { Via::Wsl } else { Via::Ssh };
-        Self::remote(via, host.name.clone(), mux)
-    }
-
     pub fn parse(key: &str) -> Result<Self, RouteError> {
         for via in [Via::Ssh, Via::Wsl] {
             let Some(rest) = key.strip_prefix(via.prefix()) else {
@@ -195,19 +189,23 @@ impl Route {
 
     /// The multiplexer this route is served by: its own when it names one,
     /// else what an unqualified key has always meant — this machine's platform
-    /// default (`local_default`), or a host's configured multiplexer when that
-    /// is psmux and tmux otherwise.
+    /// default (`local_default`), or the host's configured multiplexer
+    /// (`host_preference`) when that is psmux and tmux otherwise.
     ///
     /// That last rule is the historical one and it matters: a legacy `ssh:box`
     /// row was created on tmux (or psmux), so a host whose preference later
     /// became rmux does not turn that row into an rmux session.
-    pub fn multiplexer(&self, local_default: Multiplexer, host: Option<&HostDef>) -> Multiplexer {
+    pub fn multiplexer(
+        &self,
+        local_default: Multiplexer,
+        host_preference: Option<Multiplexer>,
+    ) -> Multiplexer {
         if let Some(mux) = self.mux {
             return mux;
         }
         match self.place {
             Place::Local => local_default,
-            Place::Remote { .. } => match host.and_then(HostDef::multiplexer) {
+            Place::Remote { .. } => match host_preference {
                 Some(Multiplexer::Psmux) => Multiplexer::Psmux,
                 _ => Multiplexer::Tmux,
             },
@@ -215,8 +213,12 @@ impl Route {
     }
 
     /// This route with its multiplexer settled by [`Self::multiplexer`].
-    pub fn qualify(&self, local_default: Multiplexer, host: Option<&HostDef>) -> Self {
-        self.with_mux(self.multiplexer(local_default, host))
+    pub fn qualify(
+        &self,
+        local_default: Multiplexer,
+        host_preference: Option<Multiplexer>,
+    ) -> Self {
+        self.with_mux(self.multiplexer(local_default, host_preference))
     }
 
     /// The key this route is written as. An unqualified local route is
@@ -243,14 +245,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    fn host(name: &str, multiplexer: Option<&str>) -> HostDef {
-        HostDef {
-            name: name.into(),
-            multiplexer: multiplexer.map(str::to_string),
-            ..Default::default()
-        }
-    }
 
     #[test]
     fn every_legacy_local_spelling_is_the_unqualified_local_route() {
@@ -344,7 +338,8 @@ mod tests {
         for (preference, expected) in cases {
             for local in Multiplexer::ALL {
                 assert_eq!(
-                    unqualified.multiplexer(local, Some(&host("box", preference))),
+                    unqualified
+                        .multiplexer(local, preference.map(|p| Multiplexer::parse(p).unwrap())),
                     expected,
                     "host preference {preference:?}, local default {local:?}"
                 );
@@ -367,13 +362,12 @@ mod tests {
     fn a_qualified_route_ignores_every_default() {
         for mux in Multiplexer::ALL {
             for local in Multiplexer::ALL {
-                for preference in [None, Some("tmux"), Some("psmux"), Some("rmux")] {
-                    let h = host("box", preference);
+                for preference in std::iter::once(None).chain(Multiplexer::ALL.map(Some)) {
                     assert_eq!(
-                        Route::remote(Via::Ssh, "box", Some(mux)).multiplexer(local, Some(&h)),
+                        Route::remote(Via::Ssh, "box", Some(mux)).multiplexer(local, preference),
                         mux
                     );
-                    assert_eq!(Route::local(Some(mux)).multiplexer(local, Some(&h)), mux);
+                    assert_eq!(Route::local(Some(mux)).multiplexer(local, preference), mux);
                 }
             }
         }

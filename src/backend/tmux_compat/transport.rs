@@ -5,12 +5,14 @@
 //! The *only* thing that differs is how the `tmux` process is launched: a bare
 //! `Command::new("tmux")` locally, or `ssh <dest> tmux …` remotely.
 //!
-//! [`TmuxTransport`] captures exactly that difference and nothing else. It builds
-//! [`Command`]s; it never touches I/O, threading, or the protocol.
+//! [`TmuxTransport`] is two independent halves: the **launcher** that reaches
+//! the host ([`HostLauncher`], shared with every other remote command) and the
+//! **multiplexer** binary run there. It builds [`Command`]s; it never touches
+//! I/O, threading, or the protocol, and it knows nothing of the host's OS.
 
 use std::process::Command;
 
-use crate::shell::{posix_quote, ssh_command, wsl_command};
+use crate::shell::{posix_quote, HostLauncher};
 
 /// The local multiplexer binary: the platform default's name — `psmux` on
 /// Windows (a native, drop-in tmux replacement with an identical control-mode
@@ -20,29 +22,19 @@ use crate::shell::{posix_quote, ssh_command, wsl_command};
 /// disagree.
 pub const DEFAULT_MUX: &str = crate::session::Multiplexer::platform_default().name();
 
-/// How to launch the multiplexer for a backend: directly, wrapped in `ssh`, or
-/// inside a local WSL distro via `wsl.exe`.
+/// How to launch the multiplexer for a backend: which launcher reaches its
+/// machine (none, for this one) and which multiplexer binary runs there.
 #[derive(Debug, Clone)]
-pub enum TmuxTransport {
-    /// Run the multiplexer ([`DEFAULT_MUX`]) on the local machine.
-    Local,
-    /// Run the multiplexer on a remote host over SSH. `destination` is an ssh
-    /// target (resolved via the user's `~/.ssh/config`); `ssh_opts` are extra
-    /// flags (e.g. `-o ControlMaster=auto`) inserted before the destination;
-    /// `mux` is the remote multiplexer binary (defaults to `tmux`, but a host in
-    /// `hosts.toml` can set `multiplexer = "psmux"` for a Windows target).
-    Ssh {
-        destination: String,
-        ssh_opts: Vec<String>,
-        mux: String,
-    },
-    /// Run the multiplexer inside a local WSL distro via `wsl.exe -d <distro>`.
-    /// This is the SSH variant minus the network: `wsl.exe` forwards the
-    /// whitespace-free tokens used here to the in-distro shell like `ssh` does
-    /// (see [`crate::shell::wsl_command`] for the exact forwarding model), so
-    /// the same control-mode protocol and POSIX quoting apply. `mux` is the
-    /// in-distro multiplexer binary (`tmux`).
-    Wsl { distro: String, mux: String },
+pub struct TmuxTransport {
+    /// `None` runs the multiplexer on this machine; otherwise `ssh …` or
+    /// `wsl.exe …` reaches the host it runs on. `wsl.exe` forwards the
+    /// whitespace-free tokens used here to the in-distro shell like `ssh`
+    /// does (see [`crate::shell::wsl_command`]), so the same control-mode
+    /// protocol and POSIX quoting apply to both.
+    launcher: Option<HostLauncher>,
+    /// The multiplexer binary: [`DEFAULT_MUX`] locally, the route's
+    /// multiplexer on a host.
+    mux: String,
 }
 
 /// Environment variables a tmux/psmux server reads to resolve a *nested*
@@ -72,64 +64,60 @@ pub(crate) fn strip_mux_nesting_env(cmd: &mut Command) {
 }
 
 impl TmuxTransport {
-    /// Build a [`Command`] running `<mux> -L <socket> <args…>`, wrapped in `ssh`
-    /// for the remote variant.
+    /// This machine's own multiplexer, run directly.
+    pub fn local() -> Self {
+        Self {
+            launcher: None,
+            mux: DEFAULT_MUX.to_string(),
+        }
+    }
+
+    /// `mux` on the host `launcher` reaches.
+    pub fn remote(launcher: HostLauncher, mux: impl Into<String>) -> Self {
+        Self {
+            launcher: Some(launcher),
+            mux: mux.into(),
+        }
+    }
+
+    /// Build a [`Command`] running `<mux> -L <socket> <args…>`, behind the
+    /// launcher for a remote host.
     ///
-    /// For the SSH variant the remote command tokens are re-split by the remote
-    /// login shell, so each token is shell-escaped to survive intact. Simple
-    /// tokens (the binary name, `-L`, the socket name) pass through unquoted.
+    /// Through a launcher the command tokens are re-split by the host's login
+    /// shell, so each token is shell-escaped to survive intact. Simple tokens
+    /// (the binary name, `-L`, the socket name) pass through unquoted. `-L` is
+    /// the multiplexer's flag and is added here, never by the launcher.
     ///
     /// Nesting env vars are stripped (see `strip_mux_nesting_env`) so the
     /// command targets thurbox's own server even when thurbox runs inside a pane.
     pub fn tmux_command(&self, socket: &str, args: &[&str]) -> Command {
-        let mut cmd = match self {
-            TmuxTransport::Local => {
-                let mut cmd = Command::new(DEFAULT_MUX);
+        let mut cmd = match &self.launcher {
+            None => {
+                let mut cmd = Command::new(&self.mux);
                 cmd.arg("-L").arg(socket).args(args);
                 cmd
             }
-            TmuxTransport::Ssh {
-                destination,
-                ssh_opts,
-                mux,
-            } => Self::prefixed(ssh_command(destination, ssh_opts), mux, socket, args),
-            TmuxTransport::Wsl { distro, mux } => {
-                Self::prefixed(wsl_command(distro), mux, socket, args)
+            Some(launcher) => {
+                let mut cmd = launcher.command();
+                for token in [self.mux.as_str(), "-L", socket].iter().chain(args) {
+                    cmd.arg(posix_quote(token));
+                }
+                cmd
             }
         };
         strip_mux_nesting_env(&mut cmd);
         cmd
     }
 
-    /// Append `<mux> -L <socket> <args…>` to a launcher command (`ssh …` or
-    /// `wsl.exe …`), POSIX-quoting each token so the host's login shell
-    /// re-splits them intact. Shared by the SSH and WSL arms, which differ only
-    /// in the launcher prefix.
-    fn prefixed(mut cmd: Command, mux: &str, socket: &str, args: &[&str]) -> Command {
-        cmd.arg(posix_quote(mux));
-        cmd.arg(posix_quote("-L"));
-        cmd.arg(posix_quote(socket));
-        for a in args {
-            cmd.arg(posix_quote(a));
-        }
-        cmd
-    }
-
-    /// Whether this transport reaches the multiplexer through a launch prefix
+    /// Whether this transport reaches the multiplexer through a launcher
     /// (SSH or WSL) rather than running it directly on the local machine.
     pub fn is_remote(&self) -> bool {
-        matches!(self, TmuxTransport::Ssh { .. } | TmuxTransport::Wsl { .. })
+        self.launcher.is_some()
     }
 
-    /// The multiplexer binary this transport launches: [`DEFAULT_MUX`] locally,
-    /// or the per-host `multiplexer` for an SSH host / WSL distro (`tmux` for a
-    /// distro, so [`uses_psmux`](Self::uses_psmux) is `false` and the in-distro
-    /// tmux keeps the `-H` hex keystroke path).
+    /// The multiplexer binary this transport runs, wherever it runs it.
     pub fn mux(&self) -> &str {
-        match self {
-            TmuxTransport::Local => DEFAULT_MUX,
-            TmuxTransport::Ssh { mux, .. } | TmuxTransport::Wsl { mux, .. } => mux,
-        }
+        &self.mux
     }
 
     /// The program this transport actually executes on **this** machine.
@@ -140,10 +128,9 @@ impl TmuxTransport {
     /// to name the binary that is missing rather than the one it was on the
     /// way to.
     pub fn launcher(&self) -> &str {
-        match self {
-            TmuxTransport::Local => DEFAULT_MUX,
-            TmuxTransport::Ssh { .. } => "ssh",
-            TmuxTransport::Wsl { .. } => "wsl.exe",
+        match &self.launcher {
+            Some(launcher) => launcher.program(),
+            None => &self.mux,
         }
     }
 
@@ -166,20 +153,41 @@ impl TmuxTransport {
     /// deliberately not included: `wsl.exe` has no such convention, and
     /// claiming it does would be the guess this exists to avoid.
     pub fn is_ssh(&self) -> bool {
-        matches!(self, TmuxTransport::Ssh { .. })
+        matches!(self.launcher, Some(HostLauncher::Ssh { .. }))
     }
 
-    /// Whether the multiplexer is psmux (the native-Windows tmux clone). psmux
-    /// lacks tmux's `send-keys -H` hex flag, so the keystroke-encoding path
-    /// branches on this — see [`crate::backend::tmux_compat::control_mode::send_keys_commands`].
+    /// Whether the multiplexer is psmux (the native-Windows tmux clone), whose
+    /// protocol divergences — no `send-keys -H`, no per-window options, no
+    /// `%window-close` — branch on this. A question about the multiplexer,
+    /// never about the host's OS: see
+    /// [`crate::backend::tmux_compat::control_mode::send_keys_commands`].
     pub fn uses_psmux(&self) -> bool {
-        self.mux() == "psmux"
+        self.mux == "psmux"
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ssh(destination: &str, ssh_opts: Vec<String>, mux: &str) -> TmuxTransport {
+        TmuxTransport::remote(
+            HostLauncher::Ssh {
+                destination: destination.into(),
+                ssh_opts,
+            },
+            mux,
+        )
+    }
+
+    fn wsl(distro: &str) -> TmuxTransport {
+        TmuxTransport::remote(
+            HostLauncher::Wsl {
+                distro: distro.into(),
+            },
+            "tmux",
+        )
+    }
 
     fn program_and_args(cmd: &Command) -> (String, Vec<String>) {
         let prog = cmd.get_program().to_string_lossy().into_owned();
@@ -192,7 +200,7 @@ mod tests {
 
     #[test]
     fn local_builds_bare_mux() {
-        let t = TmuxTransport::Local;
+        let t = TmuxTransport::local();
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, DEFAULT_MUX);
@@ -201,11 +209,11 @@ mod tests {
 
     #[test]
     fn ssh_wraps_mux_with_opts_and_destination() {
-        let t = TmuxTransport::Ssh {
-            destination: "me@devbox".into(),
-            ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
-            mux: "tmux".into(),
-        };
+        let t = ssh(
+            "me@devbox",
+            vec!["-o".into(), "ControlMaster=auto".into()],
+            "tmux",
+        );
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
@@ -236,11 +244,7 @@ mod tests {
 
     #[test]
     fn ssh_honors_custom_multiplexer() {
-        let t = TmuxTransport::Ssh {
-            destination: "me@winbox".into(),
-            ssh_opts: vec![],
-            mux: "psmux".into(),
-        };
+        let t = ssh("me@winbox", vec![], "psmux");
         let cmd = t.tmux_command("thurbox", &["has-session"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "ssh");
@@ -258,10 +262,7 @@ mod tests {
 
     #[test]
     fn wsl_wraps_mux_with_distro() {
-        let t = TmuxTransport::Wsl {
-            distro: "Ubuntu".into(),
-            mux: "tmux".into(),
-        };
+        let t = wsl("Ubuntu");
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
         assert_eq!(prog, "wsl.exe");
@@ -282,7 +283,7 @@ mod tests {
 
     #[test]
     fn tmux_command_strips_nesting_env() {
-        let cmd = TmuxTransport::Local.tmux_command("thurbox", &["has-session"]);
+        let cmd = TmuxTransport::local().tmux_command("thurbox", &["has-session"]);
         // Removed vars surface in get_envs() as (key, None).
         let removed: Vec<String> = cmd
             .get_envs()
@@ -299,42 +300,20 @@ mod tests {
 
     #[test]
     fn uses_psmux_reflects_mux_binary() {
-        assert_eq!(TmuxTransport::Local.uses_psmux(), cfg!(windows));
-        assert!(TmuxTransport::Ssh {
-            destination: "h".into(),
-            ssh_opts: vec![],
-            mux: "psmux".into(),
-        }
-        .uses_psmux());
-        assert!(!TmuxTransport::Ssh {
-            destination: "h".into(),
-            ssh_opts: vec![],
-            mux: "tmux".into(),
-        }
-        .uses_psmux());
+        assert_eq!(TmuxTransport::local().uses_psmux(), cfg!(windows));
+        assert!(ssh("h", vec![], "psmux").uses_psmux());
+        assert!(!ssh("h", vec![], "tmux").uses_psmux());
         // A WSL distro runs Linux `tmux`, which supports the `-H` hex flag, so
         // it must NOT take the psmux keystroke-encoding path.
-        let wsl = TmuxTransport::Wsl {
-            distro: "Ubuntu".into(),
-            mux: "tmux".into(),
-        };
+        let wsl = wsl("Ubuntu");
         assert_eq!(wsl.mux(), "tmux");
         assert!(!wsl.uses_psmux());
     }
 
     #[test]
     fn is_remote_reflects_variant() {
-        assert!(!TmuxTransport::Local.is_remote());
-        assert!(TmuxTransport::Ssh {
-            destination: "h".into(),
-            ssh_opts: vec![],
-            mux: "tmux".into(),
-        }
-        .is_remote());
-        assert!(TmuxTransport::Wsl {
-            distro: "Ubuntu".into(),
-            mux: "tmux".into(),
-        }
-        .is_remote());
+        assert!(!TmuxTransport::local().is_remote());
+        assert!(ssh("h", vec![], "tmux").is_remote());
+        assert!(wsl("Ubuntu").is_remote());
     }
 }

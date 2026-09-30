@@ -2545,6 +2545,9 @@ mod tests {
         fn name(&self) -> &str {
             "fake"
         }
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
+        }
         fn check_available(&self) -> anyhow::Result<()> {
             Ok(())
         }
@@ -2676,6 +2679,9 @@ mod tests {
     impl crate::backend::SessionBackend for RefusingLocal {
         fn name(&self) -> &str {
             "local-tmux"
+        }
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
         }
         fn check_available(&self) -> anyhow::Result<()> {
             Ok(())

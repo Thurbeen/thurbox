@@ -64,7 +64,7 @@ impl BackendChoice {
         local_default: Option<&str>,
     ) -> Result<Self, String> {
         let unqualified = match &host {
-            Some(host) => Route::to_host(host, None),
+            Some(host) => host.route(None),
             None => Route::local(None),
         };
         let configured = match &host {
@@ -74,7 +74,10 @@ impl BackendChoice {
         let multiplexer = match explicit.or(configured).unwrap_or("default") {
             // What an unqualified route means here — the one rule
             // `Route::multiplexer` holds for rows written before routes did.
-            "default" => unqualified.multiplexer(Multiplexer::platform_default(), host.as_ref()),
+            "default" => unqualified.multiplexer(
+                Multiplexer::platform_default(),
+                host.as_ref().and_then(HostDef::multiplexer),
+            ),
             name => Multiplexer::parse(name)?,
         };
         Ok(Self {

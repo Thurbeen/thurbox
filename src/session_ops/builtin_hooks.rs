@@ -106,9 +106,11 @@ pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
     rewrite_hook_signals_for_target(contents, &RemoteSignalTarget::Tmux)
 }
 
-/// The signal target for `host`, derived from its multiplexer: a psmux host
-/// gets the socket-explicit `psmux` form, everything else (tmux over SSH, tmux
-/// inside a WSL distro) the plain `tmux` form.
+/// The signal target for `host`: a native Windows host gets the
+/// socket-explicit `psmux` form — psmux is the one multiplexer thurbox drives
+/// on Windows, and this whole path stays behind `psmux_hook_rewrite_supported`
+/// until it is proven there — everything else (tmux over SSH, tmux inside a
+/// WSL distro) the plain `tmux` form.
 ///
 /// The socket name is user-authored (`hosts.toml`) but gets spliced into
 /// JSON/JS/TOML hook text by a byte-level replace and tokenized by psmux

@@ -449,7 +449,7 @@ code.
 ## ADR-12: Local tmux as default backend
 
 **Choice**: The default `SessionBackend` is `TmuxBackend`
-parameterized over its `Local` transport (`TmuxTransport::Local`)
+parameterized over its `Local` transport (`TmuxTransport::local()`)
 and registered under the local route (`local:tmux`; `local:psmux` on native
 Windows), using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
@@ -624,19 +624,23 @@ restored — it is an event, not state.
 **Choice**: Run agent sessions on a remote host (over SSH) or in a
 local WSL distro (via `wsl.exe`) by launching the same tmux
 control-mode protocol behind a launch prefix. The local tmux backend is
-generalized into `TmuxBackend { transport, socket, session, name }`
-where `transport: TmuxTransport` is `Local` (a bare
-`Command::new("tmux")`), `Ssh { destination, ssh_opts, mux }`
-(`ssh <dest> <mux> …`), or `Wsl { distro, mux }`
-(`wsl.exe -d <distro> <mux> …`). `mux` is the host multiplexer binary
-(`tmux` by default, or `psmux` for a Windows SSH host; a WSL distro
-runs `tmux`). The transport's *only* job is to build the `Command`;
-everything downstream — the control-mode reader/writer threads, pane
-registration, `send-keys`/`%output` — is byte-for-byte identical
-(`control_mode.rs` was already transport-agnostic). The SSH and WSL
-arms share `TmuxTransport::prefixed`, since both join + shell-interpret
-the trailing POSIX-quoted tokens identically; only the launcher prefix
-differs.
+generalized into `TmuxBackend { transport, socket, session, name,
+platform }` where `transport: TmuxTransport` is two independent halves:
+an optional **launcher** (`shell::HostLauncher` — `Ssh { destination,
+ssh_opts }` for `ssh <dest> …`, `Wsl { distro }` for `wsl.exe -d
+<distro> …`, none to run on this machine) and the **multiplexer**
+binary run there (`tmux` by default, `psmux` for a Windows host, the
+route's multiplexer for a row that names one). The launcher is the same
+one every other remote command uses (`git`, probes, usage reads), built
+by the one conversion `HostLauncher::for_host`; it adds no `-L` — that
+is the multiplexer's flag, added by `TmuxTransport::tmux_command`. The
+transport's *only* job is to build the `Command`; everything downstream
+— the control-mode reader/writer threads, pane registration,
+`send-keys`/`%output` — is byte-for-byte identical (`control_mode.rs`
+was already transport-agnostic). SSH and WSL both join and
+shell-interpret the trailing POSIX-quoted tokens identically; only the
+launcher differs. `platform` is the OS of the machine the multiplexer
+runs on — see "The host's platform is its own dimension" below.
 
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
@@ -916,13 +920,55 @@ ask, does the binary's `-V` answer — before it starts one that every spawn
 would then refuse. Attaching to existing panes is not gated, so an
 old server's sessions stay reachable until then.
 
+### The host's platform is its own dimension
+
+A session's place (this machine, an ssh host, a WSL distro), the host's OS, the
+launcher that reaches it and the multiplexer that serves it are four
+independent choices. The route (ADR-28) carries only place and multiplexer;
+the OS is the host's, `HostDef::platform` (`session::Platform`: `Posix` or
+`Windows`), and this machine's is `Platform::local` — the one place the build
+OS is read as a platform.
+
+- **Explicit, with the old reading as the default.** `hosts.toml`'s
+  `platform = "posix" | "windows"` declares it. An entry that names none reads
+  the way it always did: `multiplexer = "psmux"` was the declaration that a
+  host is Windows before a platform could be written down, so it still is, and
+  anything else is POSIX. A WSL distro is POSIX whatever its entry says.
+  Telling the adapter which multiplexer a row names (`HostDef::served_by`)
+  pins the platform before it swaps the multiplexer, so a legacy Windows
+  entry driven for a `:tmux` row stays Windows.
+- **Each decision reads the dimension it is about.** The shell a pane gets
+  (`default_shell`), whether the server's `default-command` is pinned to a
+  POSIX shell (`config_shell`), and the `/bin/sh -lc` login wrap all follow
+  the platform of the machine the server runs on — never the OS thurbox was
+  built for (a Windows thurbox driving a WSL distro used to leave that tmux on
+  the login shell, because the pin sat behind `cfg(not(windows))`) and never
+  the multiplexer's name (a Windows host on another multiplexer used to get
+  `/bin/sh`). Whether the loop polls a backend for dead panes
+  (`needs_liveness_poll`) is what its multiplexer can report: tmux announces
+  `%window-close`, psmux does not, and any other multiplexer is polled until
+  an adapter says otherwise. The contract's `default_shell` has no default, so
+  no backend inherits this build's shell.
+- **Nothing is reserved to an OS.** Every multiplexer name — including the
+  prospective rmux and herdr — can be the route of a session on either
+  platform, locally or on a host; whether one is usable is the registry's
+  answer (`wiring::implements`), which does not depend on the OS. Neither
+  adapter exists yet.
+- **Enforced**: `tests/architecture_rules.rs`
+  (`the_route_and_the_contract_know_no_launcher_adapter_or_build_os`) keeps
+  `session::route` and `backend::contract` free of the launchers, host
+  entries, the tmux adapter and its grammar, and of any `cfg(windows)`.
+- **What is simulated.** The Windows-build branches are covered on Linux by
+  `Platform::local`'s test override (`platform::simulate_local`); code still
+  behind `cfg(windows)` — the local psmux spawn path, which moves with
+  psmux into an adapter of its own — is not simulated, and no test here ran against a live
+  Windows host.
+
 ### A Windows host speaks PowerShell, not `sh`
 
 psmux is the *multiplexer*; the divergence above is about its wire protocol.
-Independent of it, `multiplexer = "psmux"` also declares that the **host is
-native Windows** (`HostDef::is_windows` — the multiplexer is the proxy for the
-platform, since a WSL distro runs `tmux` inside Linux), and a Windows host has
-no POSIX shell at all. Every remote probe was `sh -c <script>`, which there
+Independent of it, a **native Windows** host (`HostDef::is_windows`, which reads
+the platform above) has no POSIX shell at all. Every remote probe was `sh -c <script>`, which there
 fails with PowerShell's `CommandNotFoundException` — so the repo picker could
 not list a directory, classify a committed path, or import a folder of repos on
 a Windows host.
@@ -2134,6 +2180,7 @@ Local routes are qualified like remote ones (`local:<mux>`); the legacy
 so an explicit tmux there is `local:tmux` and never mistaken for it. An older
 build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
-Until host platform is its own dimension, the tmux adapter still reads a host's
-platform off its `multiplexer` field, which is why only the calls that drive
-the multiplexer get a host told the row's multiplexer (`session_ops::mux_host`).
+Only the calls that drive the multiplexer get a host told the row's
+multiplexer (`session_ops::mux_host`, through `HostDef::served_by`, which pins
+the host's platform first — ADR-13, "The host's platform is its own
+dimension").

@@ -381,9 +381,7 @@ pub fn spawn_session_headless_with_progress(
     let stamp = session_id.to_string();
     // The window goes on the multiplexer the row will name, which the host's
     // entry need not prefer; everything else about the host is as configured.
-    let served = host
-        .as_ref()
-        .map(|h| super::served_by(h, choice.multiplexer));
+    let served = host.as_ref().map(|h| h.served_by(choice.multiplexer));
     let backend_id = launch_window(
         served.as_ref(),
         &stamp,
@@ -610,8 +608,10 @@ fn delegated_mux_option(
     // An older compatible CLI predates both this flag and multiplexer
     // settings. It can only honour its platform default, which is what an
     // unqualified route to the host means.
-    let platform_default = crate::session::Route::to_host(host, None)
-        .multiplexer(crate::session::Multiplexer::platform_default(), Some(host));
+    let platform_default = host.route(None).multiplexer(
+        crate::session::Multiplexer::platform_default(),
+        host.multiplexer(),
+    );
     if choice.multiplexer == platform_default {
         Ok(Vec::new())
     } else {
@@ -1143,7 +1143,7 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
             let contents = std::fs::read_to_string(local_path).ok()?;
             let contents =
                 super::builtin_hooks::rewrite_hook_signals_for_target(&contents, &target);
-            // A psmux host is native Windows — no `sh`/`cat` for the POSIX
+            // A native Windows host has no `sh`/`cat` for the POSIX
             // stream copy, so the payload goes via the PowerShell variant.
             let copied = if host.is_windows() {
                 crate::git::copy_bytes_to_remote_windows(host, contents.as_bytes(), &remote_path)

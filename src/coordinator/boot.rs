@@ -175,7 +175,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // install on PATH (ADR-24).
     thurbox::session_ops::host_cli::advertise_running_cli();
     if thurbox::session::settings::global().features.automations {
-        let cli = thurbox::backend::tmux::resolve_cli_binary();
+        let cli = thurbox::paths::resolve_cli_binary();
         if let Err(e) = thurbox::backend::tmux::ensure_automation_heartbeat(&cli) {
             tracing::warn!("could not arm the automation heartbeat: {e}");
         }

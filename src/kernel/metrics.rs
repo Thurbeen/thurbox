@@ -433,6 +433,9 @@ mod tests {
         fn name(&self) -> &str {
             "panes"
         }
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
+        }
         fn check_available(&self) -> anyhow::Result<()> {
             Ok(())
         }

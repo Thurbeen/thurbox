@@ -759,3 +759,10 @@ fn no_unit_test_temp_dir_outlives_the_test_process() {
         HELPERS.len()
     );
 }
+
+#[test]
+fn resolve_cli_binary_uses_platform_exe_suffix() {
+    let p = resolve_cli_binary();
+    let name = p.file_name().unwrap().to_string_lossy();
+    assert_eq!(name, format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
+}

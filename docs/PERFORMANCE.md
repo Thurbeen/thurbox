@@ -1717,7 +1717,7 @@ is unmeasured".
   window to a question asked a few times an hour.
 
 **Consequences**: pinned by two scenarios in `tests/tui_e2e.rs` driving the real
-binary against a real `TmuxTransport::Ssh`, with a stand-in `ssh` whose control
+binary against a real ssh `TmuxTransport`, with a stand-in `ssh` whose control
 connection runs through a pair of `cat` pumps that the test stops (`SIGSTOP`) —
 a link up and carrying nothing. One presses a chord and requires the palette —
 drawn from the kernel's own registry, owing the host nothing — inside

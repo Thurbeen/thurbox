@@ -1751,7 +1751,7 @@ fn read_hosts() -> Vec<HostRow> {
             multiplexer: host.multiplexer.clone(),
             available_multiplexers: crate::session::Multiplexer::ALL
                 .into_iter()
-                .filter(|mux| backends.supports(&crate::session::Route::to_host(host, Some(*mux))))
+                .filter(|mux| backends.supports(&host.route(Some(*mux))))
                 .map(|mux| mux.name().to_string())
                 .collect(),
         })

@@ -54,7 +54,7 @@ fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
     let mut backends =
         BackendRegistry::new(Route::local(Some(Multiplexer::platform_default())), local);
     for host in &hosts.hosts {
-        let route = hosts.qualify(&Route::to_host(host, None));
+        let route = hosts.qualify(&host.route(None));
         let Some(mux) = route.mux.filter(|mux| implements(*mux)) else {
             continue;
         };

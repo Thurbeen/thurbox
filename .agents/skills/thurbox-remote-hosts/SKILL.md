@@ -54,6 +54,7 @@ session = "thurbox"           # optional (default "thurbox") — host tmux sessi
 worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
                               # optional — abs worktrees dir on the host
 multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows SSH host
+platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
 
 # A WSL distro (only needed to OVERRIDE auto-discovery, e.g. a custom worktrees_dir):
 [[hosts]]
@@ -66,10 +67,12 @@ Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
 How it works: `TmuxBackend` is transport-neutral
-(`backend::tmux_compat::transport::TmuxTransport`). The local backend launches
-`<mux> -L thurbox …`; an SSH backend launches `ssh <dest> <mux> -L thurbox …`;
-a **WSL backend launches `wsl.exe -d <distro> tmux -L thurbox …`**
-(`TmuxTransport::Wsl`). `wsl.exe` forwards whitespace-free tokens to the
+(`backend::tmux_compat::transport::TmuxTransport`, an optional
+`shell::HostLauncher` plus the multiplexer binary — the launcher never adds
+`-L`). The local backend launches `<mux> -L thurbox …`; an SSH backend launches
+`ssh <dest> <mux> -L thurbox …`; a **WSL backend launches `wsl.exe -d <distro>
+tmux -L thurbox …`** (`HostLauncher::Wsl`). Every remote command builds its
+launcher with the one conversion `HostLauncher::for_host`. `wsl.exe` forwards whitespace-free tokens to the
 in-distro shell like `ssh` does, so the same POSIX quoting
 (`shell::posix_quote`) and the byte-identical control-mode protocol
 (`control_mode.rs`) apply — only the one-time process launch differs. (An arg
@@ -104,9 +107,15 @@ workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
 
-`multiplexer = "psmux"` also declares the **host is native Windows**
-(`HostDef::is_windows` — the multiplexer is the proxy for the platform, since a
-WSL distro runs `tmux` inside Linux), and a Windows host has no POSIX shell. So
+A host's **platform** is its own field (`HostDef::platform`, `session::Platform`,
+ADR-13 "The host's platform is its own dimension"): `platform = "windows"`
+declares a native Windows host on any multiplexer, and an entry that sets none
+keeps the old reading (`multiplexer = "psmux"` ⇒ Windows, else POSIX; a WSL
+distro is always POSIX). `default_shell`, the `default-command` pin and the
+`/bin/sh -lc` login wrap follow the platform, never `cfg(windows)` or the
+multiplexer's name; `needs_liveness_poll` follows whether the multiplexer
+reports `%window-close` (tmux yes, psmux no). Tests simulate the Windows build
+with `session::platform::simulate_local`. A Windows host has no POSIX shell. So
 each remote probe ships **two scripts emitting one line protocol** —
 `git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
 (`host_powershell_c`; UTF-16LE base64, because ssh space-joins its args for a

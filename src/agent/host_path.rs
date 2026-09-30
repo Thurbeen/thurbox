@@ -250,18 +250,11 @@ pub fn seed(host: &HostDef, env: Option<HostEnv>) {
 }
 
 fn probe(host: &HostDef) -> Option<HostEnv> {
-    let launcher = if host.is_wsl() {
-        HostLauncher::Wsl {
-            distro: host.distro_name(),
-        }
-    } else {
-        HostLauncher::Ssh {
-            destination: &host.destination,
-            ssh_opts: &host.ssh_opts,
-        }
-    };
-    let env = run_bounded(launcher.shell_c(&probe_script()), PROBE_TIMEOUT)
-        .and_then(|out| parse_probe(&out));
+    let env = run_bounded(
+        HostLauncher::for_host(host).shell_c(&probe_script()),
+        PROBE_TIMEOUT,
+    )
+    .and_then(|out| parse_probe(&out));
     match &env {
         None => warn!(
             "host '{}': could not read the host's PATH; agents there keep the default PATH \

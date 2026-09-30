@@ -299,9 +299,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
+    // `session` for the one conversion from a host entry to its launcher
+    // (`HostLauncher::for_host`), which every remote command shares.
     ModuleRules {
         name: "shell",
-        allowed: &[],
+        allowed: &["session"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -376,7 +378,9 @@ enum Remover {
     F5a,
     /// Pane I/O through `locate` and the contract's pane verbs.
     F5b,
-    /// Host platform and launcher separated from the multiplexer.
+    /// Host platform and launcher separated from the multiplexer. Removed
+    /// its crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
     F6,
     /// psmux extracted into its own adapter. It owns no crossing today; the
     /// variant is here so an entry can name it once one exists.
@@ -484,29 +488,6 @@ const TRANSITIONAL: &[Transitional] = &[
         items: &["pane_state", "send_prompt_after_delay"],
         remover: Remover::F5b,
         why: "dispatch_task and the snapshot's pane state go around the contract",
-    },
-    // Not multiplexer code at all: where this build's thurbox-cli lives, which
-    // host CLI shipping decides once platform is its own dimension.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "host_cli finds the local thurbox-cli through the tmux adapter",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "the heartbeat's CLI path is resolved in the tmux adapter",
-    },
-    Transitional {
-        from: "coordinator",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "the heartbeat's CLI path is resolved in the tmux adapter",
     },
     // Status delivery, the heartbeat, and the instance socket (ADR-12) they
     // are addressed by — backend-owned once status is.
@@ -789,6 +770,75 @@ fn only_the_composition_roots_name_the_factory() {
             entry.from
         );
     }
+}
+
+/// The files that say where a session runs and what a backend is, for every
+/// host and every multiplexer alike: the route grammar and the contract.
+const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
+
+/// What a neutral file may not reach: how one kind of host is launched
+/// (`shell`'s ssh/wsl launchers, a host's own `hosts.toml` entry and the
+/// loader of it) or how one multiplexer is driven (the tmux adapter and its
+/// command grammar).
+const HOST_OR_MUX_SPECIFIC: &[&str] = &[
+    "shell",
+    "session::host_def",
+    "agent::host_config",
+    "backend::tmux",
+    "backend::tmux_compat",
+];
+
+/// The route and the contract are the same for every host OS, launcher and
+/// multiplexer (ADR-13): they reach no launcher and no adapter, and decide
+/// nothing by the OS this build was compiled for — a Windows thurbox drives a
+/// Linux host, and a Linux one a Windows host. A platform is a host's, read
+/// from its configuration; a behaviour is a backend's, read from what it can
+/// do.
+#[test]
+fn the_route_and_the_contract_know_no_launcher_adapter_or_build_os() {
+    let tree = src_tree();
+    let root = src_root();
+    let mut found = Vec::new();
+    for reference in tree.references(&node_names(MODULE_RULES)) {
+        let Some(file) = NEUTRAL_FILES
+            .iter()
+            .find(|f| reference.file.ends_with(Path::new(f)))
+        else {
+            continue;
+        };
+        if reference.test {
+            continue;
+        }
+        let path = reference.path.join("::");
+        if let Some(banned) = HOST_OR_MUX_SPECIFIC
+            .iter()
+            .find(|b| path == **b || path.starts_with(&format!("{b}::")))
+        {
+            found.push(format!(
+                "{file}:{} reaches {path} ({banned})",
+                reference.line
+            ));
+        }
+    }
+    for file in NEUTRAL_FILES {
+        let source = fs::read_to_string(root.join(file)).expect("read a neutral file");
+        let stripped = strip_comments_and_strings(&source);
+        let production = stripped.split("#[cfg(test)]").next().unwrap_or_default();
+        for (n, line) in production.lines().enumerate() {
+            if line.contains("cfg(windows)")
+                || line.contains("cfg!(windows)")
+                || line.contains("cfg(not(windows))")
+                || line.contains("cfg(unix)")
+            {
+                found.push(format!("{file}:{} decides by build OS", n + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a neutral file depends on one host or multiplexer:\n  {}",
+        found.join("\n  ")
+    );
 }
 
 /// Production edges between distinct nodes, one representative site each.

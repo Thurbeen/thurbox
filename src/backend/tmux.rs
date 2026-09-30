@@ -225,7 +225,7 @@ fn local_mux_command(args: &[&str]) -> Command {
 /// [`TmuxTransport::launch_failure`] for why a `NotFound` is answered
 /// with a sentence rather than with `os error 2`.
 fn local_launch_failure(context: &'static str, err: std::io::Error) -> anyhow::Error {
-    TmuxTransport::Local.launch_failure(context, err)
+    TmuxTransport::local().launch_failure(context, err)
 }
 
 /// The `list-windows` format `discover` reads: pane, name, liveness, and the
@@ -916,6 +916,11 @@ pub struct TmuxBackend {
     /// The host an off-local backend was built from, for the agent `PATH`
     /// its windows get ([`crate::agent::host_path`]). `None` locally.
     host: Option<crate::session::HostDef>,
+    /// The OS of the machine the multiplexer runs on — this one's, or the
+    /// host's ([`HostDef::platform`](crate::session::HostDef::platform)). What
+    /// decides the shells a pane and the server get, independently of the
+    /// multiplexer and of the OS thurbox was built for.
+    platform: crate::session::Platform,
 }
 
 /// `(rows, cols)` within what `resize-window` accepts, so a resize an `if-shell`
@@ -954,7 +959,7 @@ impl TmuxBackend {
     /// the route it serves (`local-tmux`, or `local-psmux` on Windows).
     pub fn local() -> Self {
         Self {
-            transport: TmuxTransport::Local,
+            transport: TmuxTransport::local(),
             socket: local_socket(),
             session: TMUX_SESSION.to_string(),
             name: crate::session::Route::local(Some(
@@ -964,16 +969,24 @@ impl TmuxBackend {
             control: Mutex::new(None),
             sizer: sizer_name(),
             host: None,
+            platform: crate::session::Platform::local(),
         }
     }
 
     /// Build a tmux backend over an explicit transport (used by the SSH backend).
+    /// A remote one is taken for a POSIX host until [`Self::from_host`] says
+    /// which host it is.
     pub fn with_transport(
         transport: TmuxTransport,
         socket: impl Into<String>,
         session: impl Into<String>,
         name: impl Into<String>,
     ) -> Self {
+        let platform = if transport.is_remote() {
+            crate::session::Platform::Posix
+        } else {
+            crate::session::Platform::local()
+        };
         Self {
             transport,
             socket: socket.into(),
@@ -982,6 +995,7 @@ impl TmuxBackend {
             control: Mutex::new(None),
             sizer: sizer_name(),
             host: None,
+            platform,
         }
     }
 
@@ -991,9 +1005,7 @@ impl TmuxBackend {
     /// since moved to something else — while the host itself is kept as
     /// configured.
     pub fn for_route(host: &crate::session::HostDef, mux: crate::session::Multiplexer) -> Self {
-        let mut served = host.clone();
-        served.multiplexer = Some(mux.name().to_string());
-        let mut backend = Self::from_host(&served);
+        let mut backend = Self::from_host(&host.served_by(mux));
         backend.host = Some(host.clone());
         backend
     }
@@ -1009,24 +1021,15 @@ impl TmuxBackend {
             .session
             .clone()
             .unwrap_or_else(|| TMUX_SESSION.to_string());
-        let transport = if host.is_wsl() {
-            TmuxTransport::Wsl {
-                distro: host.distro_name(),
-                mux: host.mux(),
-            }
-        } else {
-            TmuxTransport::Ssh {
-                destination: host.destination.clone(),
-                ssh_opts: host.ssh_opts.clone(),
-                mux: host.mux(),
-            }
-        };
+        let transport =
+            TmuxTransport::remote(crate::shell::HostLauncher::for_host(host), host.mux());
         let mux = host
             .multiplexer()
             .unwrap_or(crate::session::Multiplexer::Tmux);
-        let name = crate::session::Route::to_host(host, Some(mux)).format();
+        let name = host.route(Some(mux)).format();
         let mut backend = Self::with_transport(transport, socket, session, name);
         backend.host = Some(host.clone());
+        backend.platform = host.platform();
         backend
     }
 
@@ -1198,14 +1201,14 @@ impl TmuxBackend {
         // For a remote backend the local `$SHELL` path may not exist on the
         // remote host, so fall back to a POSIX shell there.
         //
-        // On psmux we deliberately do NOT pin `default-command`: `$SHELL` and
-        // `/bin/sh` don't exist on Windows, and forcing a Windows shell here
-        // would have to match psmux's own command-execution model. Letting psmux
-        // use its native ConPTY default shell is the safe choice. Decided by the
-        // multiplexer, not by the OS thurbox runs on: a Linux thurbox driving a
-        // psmux host used to pin `/bin/sh` there.
-        #[cfg(not(windows))]
-        if !psmux {
+        // On a Windows machine we deliberately do NOT pin `default-command`:
+        // `$SHELL` and `/bin/sh` don't exist there, and forcing a Windows shell
+        // would have to match the multiplexer's own command-execution model, so
+        // its native default shell is the safe choice. Decided by the platform
+        // of the machine the server runs on — not by the OS thurbox was built
+        // for (a Windows thurbox driving a WSL distro left its tmux on the
+        // login shell) and not by the multiplexer's name.
+        if self.platform == crate::session::Platform::Posix {
             set(&[scope, "default-command", &self.config_shell()], true);
         }
 
@@ -1352,15 +1355,16 @@ impl TmuxBackend {
                     self.session
                 );
             }
-            // Cheap defensiveness on Windows: poll until the freshly-created
+            // Cheap defensiveness on psmux: poll until the freshly-created
             // session answers `has-session` before applying options. (The
             // `no server running on 'thurbox__thurbox'` failure that originally
             // motivated this was actually psmux session *nesting*, now fixed at
             // the root by `strip_mux_nesting_env`; this poll is a harmless belt
             // against any genuinely-async `new-session -d` and a no-op when the
             // first probe succeeds — which it does on the normal path.)
-            #[cfg(windows)]
-            self.wait_for_session_ready();
+            if self.transport.uses_psmux() {
+                self.wait_for_session_ready();
+            }
         }
         self.apply_session_config()
     }
@@ -1369,7 +1373,6 @@ impl TmuxBackend {
     /// Defensive belt against an async `new-session -d`; normally a no-op (the
     /// first probe succeeds). See
     /// [`ensure_session_configured`](Self::ensure_session_configured).
-    #[cfg(windows)]
     fn wait_for_session_ready(&self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
@@ -1382,8 +1385,8 @@ impl TmuxBackend {
 
     /// The shell tmux should use for `default-command`. Local uses the user's
     /// `$SHELL`; a remote backend uses a POSIX shell guaranteed to exist on the
-    /// remote host. Not used on Windows (psmux keeps its native default shell —
-    /// see [`apply_session_config`](Self::apply_session_config)).
+    /// remote host. Not used on a Windows machine (its multiplexer keeps its
+    /// native default shell — see [`session_config`](Self::session_config)).
     ///
     /// The value must be a single, space-free token: it round-trips through the
     /// remote transport's per-argument shell-quoting (`ssh`/`wsl.exe`), where a
@@ -1392,7 +1395,6 @@ impl TmuxBackend {
     /// `~/.local/bin`) is applied at the *window command* instead — see
     /// [`build_shell_command`](Self::build_shell_command) /
     /// [`login_wrap_for_remote`](Self::login_wrap_for_remote).
-    #[cfg(not(windows))]
     fn config_shell(&self) -> String {
         if self.transport.is_remote() {
             "/bin/sh".to_string()
@@ -1435,8 +1437,8 @@ impl TmuxBackend {
     /// non-login shell skips those files, so the agent binary isn't found, the
     /// window command exits 1, and the pane dies instantly — the remote session
     /// appears to "not launch". `exec` replaces the wrapper so no extra process
-    /// lingers. A **psmux** remote (a Windows SSH host) passes through: it has
-    /// no `/bin/sh` to wrap with (psmux windows are built by
+    /// lingers. A **Windows** host passes through, whatever multiplexer serves
+    /// it: it has no `/bin/sh` to wrap with (psmux windows are built by
     /// [`psmux_window_command`] instead).
     ///
     /// Local backends pass through too, but **not** because they inherit the
@@ -1455,7 +1457,7 @@ impl TmuxBackend {
     /// through the remote transport's per-arg shell-quoting, where a `-l` flag's
     /// space would be re-split into a stray `set-option` argument.
     fn login_wrap_for_remote(&self, shell_cmd: &str) -> String {
-        if self.transport.is_remote() && !self.transport.uses_psmux() {
+        if self.transport.is_remote() && self.platform == crate::session::Platform::Posix {
             let path = self
                 .host
                 .as_ref()
@@ -1495,13 +1497,66 @@ impl TmuxBackend {
     /// `$SHELL` with `command -v` (whose own `2>/dev/null` is harmless) and only
     /// then `exec` it with all three std streams still on the PTY.
     ///
-    /// psmux (Windows) hosts keep [`default_shell`]'s `powershell` (no
-    /// `/bin/sh`); local backends use the platform default directly.
+    /// Windows hosts keep [`default_shell`]'s `powershell` (no `/bin/sh`),
+    /// whichever multiplexer serves them; local backends use the platform
+    /// default directly.
     fn remote_shell_pane_command(&self) -> String {
         let inner = control_mode::shell_escape(
             "command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l",
         );
         format!("/bin/sh -lc {inner}")
+    }
+
+    /// The command a new window runs, as the `new-window` line carries it:
+    /// psmux's one PowerShell token, a POSIX host's login-shell bootstrap for
+    /// a companion shell pane, or the program itself (login-wrapped on a
+    /// POSIX host). Split out of [`SessionBackend::spawn`] so which of the
+    /// three a window gets is testable without a server.
+    fn window_command(
+        &self,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> String {
+        let psmux = self.transport.uses_psmux();
+        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
+        // interactive login shell — the SSH-login environment — instead of the
+        // bare `/bin/sh` the generic login-wrap would produce (see
+        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
+        // keep the standard path, and so does a Windows host on any
+        // multiplexer: it has no `/bin/sh` to bootstrap from.
+        let is_remote_shell_pane = self.transport.is_remote()
+            && self.platform == crate::session::Platform::Posix
+            && !psmux
+            && window_name.starts_with(SHELL_WINDOW_PREFIX);
+        if psmux {
+            Self::psmux_window_command(command, args, env)
+        } else if is_remote_shell_pane {
+            self.remote_shell_pane_command()
+        } else {
+            let program = self.program_for_window(command);
+            let shell_cmd = Self::build_shell_command(&program, args);
+            // A remote pane's `PATH` is the host's, restored by the login
+            // wrap; a local one is inherited from this process, which need not
+            // have the CLI its hooks call on it (see `path_prefix_args`).
+            let shell_cmd = match self.transport.is_remote() {
+                true => shell_cmd,
+                // A shell reads this whole string, so the prefix has to be
+                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
+                // mangled one (see `path_prefix_args`).
+                false => shell_prefix_tokens()
+                    .map(|tokens| {
+                        tokens
+                            .into_iter()
+                            .chain(std::iter::once(shell_cmd.clone()))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or(shell_cmd),
+            };
+            self.login_wrap_for_remote(&shell_cmd)
+        }
     }
 
     /// Build the PowerShell command a psmux window runs: set the env vars, then
@@ -1969,10 +2024,12 @@ impl TmuxBackend {
 }
 
 impl SessionBackend for TmuxBackend {
+    /// tmux reports a deleted window in control mode (`%window-close`), so
+    /// its stream ends with the window; psmux sends no such event, and a
+    /// multiplexer driven here that is not tmux is not assumed to. What the
+    /// multiplexer can report decides it — not the machine's OS, nor thurbox's.
     fn needs_liveness_poll(&self) -> bool {
-        self.host
-            .as_ref()
-            .map_or(cfg!(windows), |host| host.is_windows())
+        self.transport.mux() != crate::session::Multiplexer::Tmux.name()
     }
     fn name(&self) -> &str {
         &self.name
@@ -2041,40 +2098,7 @@ impl SessionBackend for TmuxBackend {
             let version = self.ctrl_command("display-message -p '#{version}'")?;
             check_psmux_version(&version, &self.socket())?;
         }
-        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
-        // interactive login shell — the SSH-login environment — instead of the
-        // bare `/bin/sh` the generic login-wrap would produce (see
-        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
-        // keep the standard path.
-        let is_remote_shell_pane =
-            self.transport.is_remote() && !psmux && window_name.starts_with(SHELL_WINDOW_PREFIX);
-        let shell_cmd = if psmux {
-            Self::psmux_window_command(command, args, env)
-        } else if is_remote_shell_pane {
-            self.remote_shell_pane_command()
-        } else {
-            let program = self.program_for_window(command);
-            let shell_cmd = Self::build_shell_command(&program, args);
-            // A remote pane's `PATH` is the host's, restored by the login
-            // wrap; a local one is inherited from this process, which need not
-            // have the CLI its hooks call on it (see `path_prefix_args`).
-            let shell_cmd = match self.transport.is_remote() {
-                true => shell_cmd,
-                // A shell reads this whole string, so the prefix has to be
-                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
-                // mangled one (see `path_prefix_args`).
-                false => shell_prefix_tokens()
-                    .map(|tokens| {
-                        tokens
-                            .into_iter()
-                            .chain(std::iter::once(shell_cmd.clone()))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or(shell_cmd),
-            };
-            self.login_wrap_for_remote(&shell_cmd)
-        };
+        let shell_cmd = self.window_command(window_name, command, args, env);
 
         // psmux's tokenizer can't read POSIX `'\''` escapes (see
         // `psmux_quote`), so its `-c`/`-n` values get the double-quote framing
@@ -2521,34 +2545,30 @@ impl SessionBackend for TmuxBackend {
             .unwrap_or_default()
     }
 
-    /// The shell-pane command must match the **host's** OS, not the local
-    /// binary's — the trait default reads the local `$SHELL`/`%COMSPEC%`,
-    /// which shipped e.g. `/bin/zsh` to a remote Windows pane
-    /// ("CommandNotFoundException"). Remote hosts get a shell that exists
-    /// there by construction: `powershell` on a psmux (Windows) host — the
-    /// same interpreter psmux wraps every window command in — and `/bin/sh`
-    /// on a Unix/WSL host (the local `$SHELL` may not be installed there).
-    /// Local backends keep the trait default's behavior.
+    /// The shell-pane command must match the OS of the machine the pane runs
+    /// on ([`Self::platform`](TmuxBackend)), not the local binary's — reading
+    /// the local `$SHELL`/`%COMSPEC%` shipped e.g. `/bin/zsh` to a remote
+    /// Windows pane ("CommandNotFoundException"). Remote hosts get a shell
+    /// that exists there by construction: `powershell` on a Windows host,
+    /// whichever multiplexer serves it, and `/bin/sh` on a POSIX/WSL host (the
+    /// local `$SHELL` may not be installed there). This machine gets its own
+    /// `$SHELL`, or `%COMSPEC%` on Windows.
     ///
     /// This is only the *bootstrap* for a remote Unix pane: `spawn` upgrades
     /// it to the user's own interactive login shell via
     /// `remote_shell_pane_command` so the pane matches an `ssh <host>` login
     /// (rc files, prompt, aliases, `PATH`).
     fn default_shell(&self) -> String {
-        if !self.transport.is_remote() {
-            #[cfg(windows)]
-            {
-                return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        use crate::session::Platform;
+        match (self.transport.is_remote(), self.platform) {
+            (false, Platform::Windows) => {
+                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
             }
-            #[cfg(not(windows))]
-            {
-                return std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            (false, Platform::Posix) => {
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
             }
-        }
-        if self.transport.uses_psmux() {
-            "powershell".to_string()
-        } else {
-            "/bin/sh".to_string()
+            (true, Platform::Windows) => "powershell".to_string(),
+            (true, Platform::Posix) => "/bin/sh".to_string(),
         }
     }
 }
@@ -2996,29 +3016,6 @@ fn heartbeat_loop_command(cli_path: &Path) -> String {
     format!(
         "while ($true) {{ & {cli} automation tick *> $null; Start-Sleep {HEARTBEAT_INTERVAL_SECS} }}"
     )
-}
-
-/// Resolve the path to the `thurbox-cli` binary that sits next to the currently
-/// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
-/// `PATH` when resolution fails.
-///
-/// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
-/// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
-/// for `thurbox-cli.exe` too.
-pub fn resolve_cli_binary() -> std::path::PathBuf {
-    let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(exe) = std::env::current_exe() {
-        if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
-            return exe;
-        }
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(&cli_name);
-            if sibling.exists() {
-                return sibling;
-            }
-        }
-    }
-    std::path::PathBuf::from(cli_name)
 }
 
 /// Capture the rendered contents of a session's pane.
@@ -3809,7 +3806,7 @@ fn push_window_program(
 /// rows never gained a `hook_state`, and every session on it read as
 /// statusless on the TUI mirroring them.
 ///
-/// So the CLI's own directory goes in front ([`resolve_cli_binary`] — the
+/// So the CLI's own directory goes in front ([`crate::paths::resolve_cli_binary`] — the
 /// process running knows where its sibling is even when `PATH` does not).
 /// Prepended, never replaced.
 ///
@@ -3855,12 +3852,12 @@ fn shell_prefix_tokens() -> Option<Vec<String>> {
 }
 
 /// This process's `PATH` with the directory holding this build's `thurbox-cli`
-/// in front. `None` when [`resolve_cli_binary`] fell back to a bare name —
+/// in front. `None` when [`crate::paths::resolve_cli_binary`] fell back to a bare name —
 /// there is no directory to add, and pinning a `PATH` with nothing to add to it
 /// would only restate what the pane was going to inherit anyway.
 #[cfg(not(windows))]
 fn path_with_cli_directory() -> Option<std::ffi::OsString> {
-    let cli = resolve_cli_binary();
+    let cli = crate::paths::resolve_cli_binary();
     let dir = cli.parent().filter(|d| !d.as_os_str().is_empty())?;
     path_led_by(dir, &std::env::var_os("PATH").unwrap_or_default())
 }
@@ -4577,13 +4574,6 @@ mod tests {
         assert!(check_psmux_version("psmux (dev build)", "thurbox").is_ok());
     }
 
-    #[test]
-    fn resolve_cli_binary_uses_platform_exe_suffix() {
-        let p = resolve_cli_binary();
-        let name = p.file_name().unwrap().to_string_lossy();
-        assert_eq!(name, format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
-    }
-
     // --- local command resolution ---
 
     /// An executable on a directory only *this process* has on `PATH` — the
@@ -4766,10 +4756,14 @@ mod tests {
         let backend = TmuxBackend::from_host(&host);
         assert_eq!(backend.name(), "wsl:Ubuntu:tmux");
         assert!(backend.transport.is_remote());
-        assert!(matches!(
-            backend.transport,
-            TmuxTransport::Wsl { ref distro, .. } if distro == "Ubuntu"
-        ));
+        assert_eq!(backend.transport.launcher(), "wsl.exe");
+        let argv: Vec<String> = backend
+            .transport
+            .tmux_command("s", &[])
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[..2], ["-d", "Ubuntu"]);
         assert_eq!(backend.socket, TMUX_SOCKET);
         assert_eq!(backend.session, TMUX_SESSION);
     }
@@ -4981,6 +4975,153 @@ mod tests {
             local.default_shell(),
             std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
         );
+    }
+
+    /// The `default-command` a backend pins on its server, if any.
+    fn pinned_default_command(backend: &TmuxBackend) -> Option<String> {
+        backend.session_config().into_iter().find_map(|option| {
+            let at = option.args.iter().position(|a| a == "default-command")?;
+            option.args.get(at + 1).cloned()
+        })
+    }
+
+    fn windows_host(mux: &str) -> crate::session::HostDef {
+        crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some(mux.into()),
+            platform: Some(crate::session::Platform::Windows),
+            ..Default::default()
+        }
+    }
+
+    /// A WSL distro is Linux whatever machine drives it, so its server gets
+    /// `/bin/sh` as `default-command` from a Windows thurbox as from a Linux
+    /// one. Simulated: the build OS is replaced by `Platform::local`'s test
+    /// override, which is the only way a Linux run reaches the Windows branch.
+    #[test]
+    fn a_windows_thurbox_pins_posix_default_command_on_a_wsl_host() {
+        use crate::session::{platform::simulate_local, HostDef, Platform};
+        for local in Platform::ALL {
+            let pinned = simulate_local(local, || {
+                pinned_default_command(&TmuxBackend::from_host(&HostDef::wsl("Ubuntu")))
+            });
+            assert_eq!(pinned.as_deref(), Some("/bin/sh"), "thurbox on {local:?}");
+        }
+    }
+
+    /// A Windows host is Windows whichever multiplexer serves it: PowerShell
+    /// for its shell panes, its own native `default-command`, no `/bin/sh -lc`
+    /// wrap — the platform is the host's, never inferred from `psmux`.
+    #[test]
+    fn a_windows_host_on_a_non_psmux_multiplexer_keeps_native_shell_semantics() {
+        use crate::session::{platform::simulate_local, Multiplexer, Platform};
+        for local in Platform::ALL {
+            simulate_local(local, || {
+                let backend = TmuxBackend::for_route(&windows_host("tmux"), Multiplexer::Tmux);
+                assert!(!backend.transport.uses_psmux());
+                assert_eq!(backend.default_shell(), "powershell", "from {local:?}");
+                assert_eq!(pinned_default_command(&backend), None, "from {local:?}");
+                assert_eq!(backend.login_wrap_for_remote("agent"), "agent");
+            });
+        }
+    }
+
+    /// A companion shell pane on a Windows host opens PowerShell whichever
+    /// multiplexer serves it: the POSIX login-shell bootstrap is `/bin/sh`,
+    /// which such a host does not have. A POSIX host keeps the bootstrap.
+    #[test]
+    fn a_windows_hosts_shell_pane_is_not_bootstrapped_through_sh() {
+        use crate::session::{HostDef, Multiplexer};
+        let window = format!("{SHELL_WINDOW_PREFIX}work");
+        let shell_pane = |backend: &TmuxBackend| {
+            backend.window_command(&window, &backend.default_shell(), &[], &HashMap::new())
+        };
+        let windows = TmuxBackend::for_route(&windows_host("tmux"), Multiplexer::Tmux);
+        assert_eq!(shell_pane(&windows), "powershell");
+        let posix = TmuxBackend::from_host(&HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        });
+        assert_eq!(shell_pane(&posix), posix.remote_shell_pane_command());
+    }
+
+    /// Whether a backend polls for dead panes is what its multiplexer can
+    /// report — tmux announces `%window-close`, psmux does not — not the OS
+    /// thurbox was built for, nor the host's.
+    #[test]
+    fn liveness_polling_follows_close_events_not_the_build_os() {
+        use crate::session::{platform::simulate_local, HostDef, Platform};
+        let local_reports_close = DEFAULT_MUX == "tmux";
+        for local in Platform::ALL {
+            simulate_local(local, || {
+                assert_eq!(
+                    TmuxBackend::local().needs_liveness_poll(),
+                    !local_reports_close,
+                    "local {DEFAULT_MUX} on simulated {local:?}"
+                );
+                assert!(!TmuxBackend::from_host(&windows_host("tmux")).needs_liveness_poll());
+                assert!(TmuxBackend::from_host(&windows_host("psmux")).needs_liveness_poll());
+                assert!(!TmuxBackend::from_host(&HostDef::wsl("Ubuntu")).needs_liveness_poll());
+            });
+        }
+    }
+
+    /// The backend a route builds keeps the host's platform, the host's
+    /// launcher and the route's multiplexer, each unaffected by the others and
+    /// by the OS thurbox is built for. Only the multiplexers this adapter
+    /// speaks are built: naming rmux or herdr is a route identity, not an
+    /// implementation (see `route_host_os_launcher_and_multiplexer_are_independent`).
+    #[test]
+    fn a_backend_keeps_platform_launcher_and_multiplexer_apart() {
+        use crate::session::{platform::simulate_local, HostDef, HostKind, Multiplexer, Platform};
+        for local in Platform::ALL {
+            for kind in [HostKind::Ssh, HostKind::Wsl] {
+                for platform in [Platform::Posix, Platform::Windows] {
+                    for mux in [Multiplexer::Tmux, Multiplexer::Psmux] {
+                        let host = HostDef {
+                            name: "box".into(),
+                            kind,
+                            destination: "me@box".into(),
+                            platform: Some(platform),
+                            ..Default::default()
+                        };
+                        let backend = simulate_local(local, || TmuxBackend::for_route(&host, mux));
+                        let case = format!("{kind:?}/{platform:?}/{mux:?} from {local:?}");
+                        assert_eq!(backend.platform, host.platform(), "{case}");
+                        assert_eq!(backend.transport.mux(), mux.name(), "{case}");
+                        let launcher = match kind {
+                            HostKind::Ssh => "ssh",
+                            HostKind::Wsl => "wsl.exe",
+                        };
+                        assert_eq!(backend.transport.launcher(), launcher, "{case}");
+                        assert_eq!(backend.name(), host.route(Some(mux)).format(), "{case}");
+                        assert_eq!(
+                            backend.needs_liveness_poll(),
+                            mux != Multiplexer::Tmux,
+                            "{case}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A legacy entry is Windows because it names psmux; a backend built to
+    /// serve one of its rows on another multiplexer is still on Windows.
+    #[test]
+    fn a_route_on_another_multiplexer_keeps_the_hosts_platform() {
+        let legacy = crate::session::HostDef {
+            name: "win".into(),
+            destination: "me@win".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        let backend = TmuxBackend::for_route(&legacy, crate::session::Multiplexer::Tmux);
+        assert_eq!(backend.transport.mux(), "tmux");
+        assert_eq!(backend.platform, crate::session::Platform::Windows);
+        assert_eq!(backend.default_shell(), "powershell");
     }
 
     #[test]

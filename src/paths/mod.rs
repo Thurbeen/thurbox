@@ -832,5 +832,28 @@ pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(base.join(rel))
 }
 
+/// Resolve the path to the `thurbox-cli` binary that sits next to the currently
+/// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
+/// `PATH` when resolution fails.
+///
+/// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
+/// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
+/// for `thurbox-cli.exe` too.
+pub fn resolve_cli_binary() -> std::path::PathBuf {
+    let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
+            return exe;
+        }
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join(&cli_name);
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    std::path::PathBuf::from(cli_name)
+}
+
 #[cfg(test)]
 mod tests;
