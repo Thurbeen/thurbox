@@ -163,10 +163,11 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
     let remote = crate::session::Route::is_remote_key(&session.backend_type);
-    // Asked before the mark: a row whose multiplexer nothing here drives would
-    // read as parked while the window that could not be killed keeps running.
-    // A host `hosts.toml` no longer describes is different — see below.
-    let served = if remote && super::resolve_host(&session.backend_type).is_some() {
+    // Asked before the mark: a row whose multiplexer nothing here drives — on
+    // its host or on this machine — would read as parked while the window that
+    // could not be killed keeps running. A host `hosts.toml` no longer
+    // describes is different — see below.
+    let served = if !remote || super::resolve_host(&session.backend_type).is_some() {
         super::mux_host(&session.backend_type)
             .map_err(|e| format!("cannot stop '{}': {e}", session.name))?
     } else {

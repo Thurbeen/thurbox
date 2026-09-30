@@ -446,3 +446,19 @@ fn a_created_session_is_launched_with_the_multiplexer_its_route_names() {
         env.ssh_calls()
     );
 }
+
+/// This machine runs its platform default and nothing else, so a local row
+/// naming another multiplexer is refused by `stop` too, rather than parked
+/// while a window on some other server runs on.
+#[test]
+fn a_local_row_on_another_multiplexer_is_not_marked_stopped() {
+    let env = Env::new("");
+    let id = env.row("r", "local-rmux");
+
+    let out = env.cli(&["session", "stop", &id.to_string()]);
+    assert!(!out.status.success(), "stop claimed success");
+    assert_eq!(
+        env.db().session_stopped_at(id).expect("read the mark"),
+        None
+    );
+}
