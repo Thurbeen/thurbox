@@ -986,8 +986,22 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
             .raw_set(index + 1, item)
             .map_err(|e| e.to_string())?;
     }
+    // The chord-less actions, so a pane offering another plugin's action (the
+    // sessions menu's contributed entries) can tell a palette-only one from
+    // one nothing declares.
+    let commands = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, command) in registry.commands().iter().enumerate() {
+        let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "plugin", command.plugin.clone())?;
+        set(&item, "action", command.action.clone())?;
+        set(&item, "desc", command.description.clone())?;
+        commands
+            .raw_set(index + 1, item)
+            .map_err(|e| e.to_string())?;
+    }
     let reg = lua.create_table().map_err(|e| e.to_string())?;
     set(&reg, "keys", keys)?;
+    set(&reg, "commands", commands)?;
     set(&reg, "settings", settings)?;
     // The section order help renders in, so a plugin choosing a `group` can
     // see where it will land without hardcoding the list.

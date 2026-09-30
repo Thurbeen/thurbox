@@ -325,6 +325,14 @@ palette with no chord. The list of events is `thurbox-cli plugin events`.
 `items = { { label = "…", action = "…" }, "sep", … }`, and the bundled `64_menu`
 float draws it there and runs the chosen entry's action.
 
+**Adding to the sessions menu**: leave
+`store["sessions.menu_extra"] = { [your_name] = { { label = "…", action = "…" }, "sep", … } }`
+at your file's top level or from a handler, and the sessions column appends
+your entries to a row's menu. An
+entry whose action no plugin declares (in `keys` or `commands`) is dropped. Your
+`on_action` reads the pressed row from `store["menu.chosen"].target`. The full
+contract is in `docs/PLUGINS.md` → *The right button*.
+
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`). It exists because not every capability can be
 withheld by absence: `run` is a global, so `if not run then` is the check, but an

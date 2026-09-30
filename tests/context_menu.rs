@@ -95,6 +95,7 @@ fn publish_hovered(
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
+    registry.declare_commands(host.commands());
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
@@ -741,4 +742,127 @@ fn a_creation_in_flight_is_not_something_to_sort() {
         !text.contains("Sort by name"),
         "a placeholder is not a session:\n{text}"
     );
+}
+
+// ── entries another plugin contributes ──────────────────────────────────────
+
+/// A plugin that owns a per-session action and offers it in the sessions
+/// menu. `extra.toggle` is a palette command with no chord, so it is declared
+/// only in `commands`; `extra.ghost` is declared nowhere.
+const CONTRIBUTOR: &str = r#"
+-- Offered at load, which runs again on every reload: rewriting the same list
+-- under the same name is idempotent.
+local extra = store["sessions.menu_extra"] or {}
+extra.extra = {
+  { label = "Auto-continue", action = "extra.toggle" },
+  "sep",
+  { label = "Ghost", action = "extra.ghost" },
+}
+store["sessions.menu_extra"] = extra
+
+return {
+  name = "extra",
+  slot = "float",
+  floats = true,
+  focusable = false,
+  commands = {
+    { action = "extra.toggle", desc = "Toggle for the pressed session" },
+  },
+  render = function()
+    return { type = "text", text = "" }
+  end,
+  on_action = function(action)
+    if action ~= "extra.toggle" then
+      return false
+    end
+    local chosen = store["menu.chosen"]
+    store["menu.chosen"] = nil
+    command("message", { text = "toggled " .. tostring(chosen and chosen.target) })
+    return true
+  end,
+}
+"#;
+
+/// The bundled interface plus `CONTRIBUTOR`, published two sessions.
+fn contributed_host() -> (tempfile::TempDir, LuaHost) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
+    std::fs::write(home.path().join("plugins/90_extra.lua"), CONTRIBUTOR).expect("write");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &two_sessions());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    (home, host)
+}
+
+fn messages(host: &LuaHost) -> Vec<String> {
+    host.drain_commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Message { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_contributed_entry_is_offered_on_a_session_and_an_undeclared_one_is_not() {
+    let (_home, host) = contributed_host();
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(
+        index_of(&host, "sessions"),
+        &right_press_at(7, 4, Some(&beta)),
+    )
+    .expect("context");
+    let text = menu_text(&host).expect("drawn");
+    assert!(text.contains("Auto-continue"), "{text}");
+    assert!(
+        text.contains("Delete + worktree"),
+        "the pane's own stay:\n{text}"
+    );
+    assert!(
+        !text.contains("Ghost"),
+        "extra.ghost is declared nowhere:\n{text}"
+    );
+    let last = text.lines().rev().nth(1).unwrap_or_default();
+    assert!(
+        last.contains("Auto-continue"),
+        "contributions come after the pane's own entries, and the rule the \
+         dropped entry would have needed goes with it:\n{text}"
+    );
+}
+
+#[test]
+fn a_contributed_entry_runs_on_the_session_pressed_not_the_selection() {
+    let (_home, host) = contributed_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
+        .expect("context");
+    let menu = index_of(&host, "menu");
+    for _ in 0..20 {
+        host.on_key(menu, &key("down")).expect("key");
+    }
+    host.on_key(menu, &key("enter")).expect("key");
+    assert_eq!(actions(&host), ["extra.toggle"]);
+    // The cursor moves back to alpha before the action lands.
+    host.on_action(sessions, "sessions.first").expect("action");
+    host.drain_commands();
+    assert!(host
+        .on_action(index_of(&host, "extra"), "extra.toggle")
+        .expect("action"));
+    assert_eq!(messages(&host), [format!("toggled {beta}")]);
+}
+
+#[test]
+fn contributions_are_not_offered_off_the_rows() {
+    let (_home, host) = contributed_host();
+    host.on_context(index_of(&host, "sessions"), &right_press_at(9, 20, None))
+        .expect("context");
+    let text = menu_text(&host).expect("drawn");
+    assert!(!text.contains("Auto-continue"), "{text}");
 }

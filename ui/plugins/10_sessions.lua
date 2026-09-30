@@ -466,6 +466,69 @@ local SESSION_MENU = {
   { label = "Delete + worktree", action = "sessions.force_delete" },
 }
 
+--- Whether some plugin declares `action`, in `keys` or in `commands`. An
+--- undeclared one would reach no `on_action` and close the menu doing nothing,
+--- and an entry that does nothing is worse than no entry.
+local function declared(action)
+  local registry = thurbox.registry
+  for _, list in ipairs({ registry and registry.keys, registry and registry.commands }) do
+    for _, row in ipairs(list or {}) do
+      if row.action == action then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+--- A row's menu: `SESSION_MENU`, then what other plugins left in
+--- `store["sessions.menu_extra"]` -- a table from each contributor's own name
+--- to its list of entries and "sep" rules, so two contributors never overwrite
+--- each other. Contributors are taken in name order, each after a rule; an
+--- entry whose action nothing declares is dropped, and so is a rule it leaves
+--- with nothing to separate. Built when the menu opens, so it follows a plugin
+--- that was added, removed or rebound since.
+local function row_menu()
+  local extra = store["sessions.menu_extra"]
+  if type(extra) ~= "table" then
+    return SESSION_MENU
+  end
+  local owners = {}
+  for owner, entries in pairs(extra) do
+    if type(owner) == "string" and type(entries) == "table" then
+      owners[#owners + 1] = owner
+    end
+  end
+  if #owners == 0 then
+    return SESSION_MENU
+  end
+  table.sort(owners)
+  ---@type (table|string)[]
+  local menu = {}
+  for i, entry in ipairs(SESSION_MENU) do
+    menu[i] = entry
+  end
+  for _, owner in ipairs(owners) do
+    local rule = true
+    for _, entry in ipairs(extra[owner]) do
+      if entry == "sep" then
+        rule = true
+      elseif
+        type(entry) == "table"
+        and type(entry.action) == "string"
+        and declared(entry.action)
+      then
+        if rule then
+          menu[#menu + 1] = "sep"
+          rule = false
+        end
+        menu[#menu + 1] = { label = entry.label, action = entry.action }
+      end
+    end
+  end
+  return menu
+end
+
 --- The menu a right press off the rows opens -- empty space or a repo header,
 --- neither of which is about a session. Built when it opens, because two of its
 --- entries are offered only when they would do something: an entry that does
@@ -833,7 +896,9 @@ return {
   -- A right press on a row selects it, as a left press would, and opens its
   -- menu where the press was. Selecting is what aims the entries: each runs an
   -- action on the selected session. Focus stays put -- the kernel's rule for a
-  -- right press -- and the menu takes every key while it is up anyway. Off the
+  -- right press -- and the menu takes every key while it is up anyway. Entries
+  -- other plugins contribute (`row_menu`) come last, and read the row from
+  -- `store["menu.chosen"].target`, not the selection. Off the
   -- rows (empty space, or a header, which carries no id) the press is about no
   -- session, so it opens the pane's general menu instead and selects nothing.
   on_context = function(hit)
@@ -847,7 +912,7 @@ return {
     end
     store.menu = {
       at = { x = hit.screen_x, y = hit.screen_y },
-      items = SESSION_MENU,
+      items = row_menu(),
       target = hit.id,
     }
     return true
