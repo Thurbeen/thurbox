@@ -33,6 +33,12 @@ pub(crate) fn backend_for<'r>(
     })
 }
 
+/// A backend, and a pane on it.
+pub type BackendPane<'r> = (
+    &'r std::sync::Arc<dyn crate::backend::SessionBackend>,
+    String,
+);
+
 /// The backend `session`'s route names, and the pane its agent is in there —
 /// `Ok(None)` when that backend positively holds no window of the row's.
 ///
@@ -43,13 +49,7 @@ pub(crate) fn backend_for<'r>(
 pub fn agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
-) -> Result<
-    Option<(
-        &'r std::sync::Arc<dyn crate::backend::SessionBackend>,
-        String,
-    )>,
-    String,
-> {
+) -> Result<Option<BackendPane<'r>>, String> {
     let backend = backend_for(backends, &session.backend_type)?;
     let id = session.id.to_string();
     let owner = crate::backend::Owner::new(&id, &session.name).remembering(
