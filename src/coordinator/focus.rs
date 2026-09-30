@@ -2,10 +2,10 @@
 //!
 //! Focus is an index into the host's focusable plugins, but the rules are about
 //! *visibility*: a slot the arrangement did not place is not a cycle stop, and a
-//! switch slot's alternates are not either — they are reached by their own key. `pending_focus` is the one
-//! subtlety — a pane that opens its own slot asks for focus a frame before the
-//! slot exists, so the request is held for exactly one layout and re-asked
-//! there.
+//! switch slot's alternates are not either — they are reached by their own key.
+//! `pending_focus` is the one subtlety — a pane that opens its own slot asks for
+//! focus a frame before the slot exists, so the request is held for exactly one
+//! layout and re-asked there.
 
 use thurbox::kernel::layout::SlotMode;
 
