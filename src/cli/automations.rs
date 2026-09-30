@@ -787,7 +787,7 @@ pub(crate) fn arm_heartbeat() {
     if !crate::session::settings::global().features.automations {
         return;
     }
-    let cli = crate::backend::tmux::resolve_cli_binary();
+    let cli = crate::paths::resolve_cli_binary();
     if let Err(e) = crate::backend::tmux::ensure_automation_heartbeat(&cli) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
     }

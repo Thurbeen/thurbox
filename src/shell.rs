@@ -138,22 +138,45 @@ pub fn powershell_quote(s: &str) -> String {
 ///
 /// One implementation of a construction that had grown four copies —
 /// `git::command::host_launcher`, `git::remote::host_shell_c`,
-/// `usage::remote_read_command` (which admitted the mirroring in a comment)
-/// and the transport's prefix branch — each one more place for the two
-/// quoting rules below to drift apart. `session::HostDef` cannot carry the
-/// conversion itself (`session` is a pure-data leaf), so callers build this
-/// from its fields.
-pub enum HostLauncher<'a> {
+/// `usage::remote_read_command` and the transport's prefix branch — each one
+/// more place for the two quoting rules below to drift apart. It launches, and
+/// nothing else: it names no multiplexer and adds no `-L`, so the tmux
+/// transport and a plain `git` or `sh -c` call build on the same one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostLauncher {
     Ssh {
-        destination: &'a str,
-        ssh_opts: &'a [String],
+        destination: String,
+        ssh_opts: Vec<String>,
     },
     Wsl {
         distro: String,
     },
 }
 
-impl HostLauncher<'_> {
+impl HostLauncher {
+    /// How `host` is reached: its WSL distro, else its ssh destination. The
+    /// one conversion from a host entry to a launcher.
+    pub fn for_host(host: &crate::session::HostDef) -> Self {
+        if host.is_wsl() {
+            Self::Wsl {
+                distro: host.distro_name(),
+            }
+        } else {
+            Self::Ssh {
+                destination: host.destination.clone(),
+                ssh_opts: host.ssh_opts.clone(),
+            }
+        }
+    }
+
+    /// The program this launcher runs on this machine.
+    pub fn program(&self) -> &'static str {
+        match self {
+            Self::Ssh { .. } => "ssh",
+            Self::Wsl { .. } => "wsl.exe",
+        }
+    }
+
     /// The bare launcher, ready for the caller to append the remote command.
     /// Both transports join and shell-interpret whitespace-free trailing
     /// tokens identically, so callers append the same POSIX-quoted words.
@@ -251,6 +274,51 @@ pub fn wsl_command(distro: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How a host is reached is its kind and nothing else: neither its OS nor
+    /// its multiplexer changes the launcher, and the launcher names neither —
+    /// no multiplexer binary and no `-L`, which are the transport's to add.
+    #[test]
+    fn a_launcher_follows_the_hosts_kind_alone() {
+        use crate::session::{HostDef, HostKind, Multiplexer, Platform};
+        for kind in [HostKind::Ssh, HostKind::Wsl] {
+            for platform in [None, Some(Platform::Posix), Some(Platform::Windows)] {
+                for mux in std::iter::once(None).chain(Multiplexer::ALL.map(Some)) {
+                    let host = HostDef {
+                        name: "box".into(),
+                        kind,
+                        destination: "me@box".into(),
+                        ssh_opts: vec!["-p".into(), "2222".into()],
+                        platform,
+                        multiplexer: mux.map(|m| m.name().to_string()),
+                        ..Default::default()
+                    };
+                    let launcher = HostLauncher::for_host(&host);
+                    let expected = match kind {
+                        HostKind::Ssh => HostLauncher::Ssh {
+                            destination: "me@box".into(),
+                            ssh_opts: vec!["-p".into(), "2222".into()],
+                        },
+                        HostKind::Wsl => HostLauncher::Wsl {
+                            distro: "box".into(),
+                        },
+                    };
+                    assert_eq!(launcher, expected);
+                    let argv: Vec<String> = launcher
+                        .command()
+                        .get_args()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect();
+                    for word in ["-L"]
+                        .into_iter()
+                        .chain(Multiplexer::ALL.map(Multiplexer::name))
+                    {
+                        assert!(!argv.iter().any(|a| a == word), "{argv:?} names {word}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn posix_quote_passes_simple_tokens() {

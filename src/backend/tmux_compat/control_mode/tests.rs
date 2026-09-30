@@ -1278,7 +1278,7 @@ impl ThrowawayServer {
     /// fact, not a regression.
     fn start(name: &str) -> Option<Self> {
         let socket = format!("thurbox-cm-{name}-{}", std::process::id());
-        let started = TmuxTransport::Local
+        let started = TmuxTransport::local()
             .tmux_command(
                 &socket,
                 &[
@@ -1303,15 +1303,20 @@ impl ThrowawayServer {
     }
 
     fn control(&self) -> ControlMode {
-        ControlMode::start(&TmuxTransport::Local, &self.socket, Self::SESSION, "tests")
-            .expect("control mode starts")
+        ControlMode::start(
+            &TmuxTransport::local(),
+            &self.socket,
+            Self::SESSION,
+            "tests",
+        )
+        .expect("control mode starts")
     }
 }
 
 #[cfg(unix)]
 impl Drop for ThrowawayServer {
     fn drop(&mut self) {
-        let _ = TmuxTransport::Local
+        let _ = TmuxTransport::local()
             .tmux_command(&self.socket, &["kill-server"])
             .output();
         // tmux does not unlink its socket when the server exits, so a killed
@@ -1405,24 +1410,22 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
 /// because nothing failed, it simply never came back.
 #[test]
 fn only_a_multiplexer_that_answers_the_attach_is_drained() {
-    let psmux = TmuxTransport::Ssh {
-        destination: "me@winbox".into(),
+    let ssh = |destination: &str| crate::shell::HostLauncher::Ssh {
+        destination: destination.into(),
         ssh_opts: Vec::new(),
-        mux: "psmux".into(),
     };
-    let tmux = TmuxTransport::Ssh {
-        destination: "me@devbox".into(),
-        ssh_opts: Vec::new(),
-        mux: "tmux".into(),
-    };
+    let psmux = TmuxTransport::remote(ssh("me@winbox"), "psmux");
+    let tmux = TmuxTransport::remote(ssh("me@devbox"), "tmux");
     assert!(!sends_implicit_attach_response(&psmux));
     assert!(sends_implicit_attach_response(&tmux));
-    assert!(sends_implicit_attach_response(&TmuxTransport::Wsl {
-        distro: "Ubuntu".into(),
-        mux: "tmux".into(),
-    }));
+    assert!(sends_implicit_attach_response(&TmuxTransport::remote(
+        crate::shell::HostLauncher::Wsl {
+            distro: "Ubuntu".into(),
+        },
+        "tmux",
+    )));
     assert_eq!(
-        sends_implicit_attach_response(&TmuxTransport::Local),
+        sends_implicit_attach_response(&TmuxTransport::local()),
         !cfg!(windows),
         "the local multiplexer is psmux on Windows and tmux elsewhere"
     );
@@ -1481,7 +1484,7 @@ fn a_captured_line_that_reads_like_the_protocol_is_only_content() {
         "%end 1789657328 7 1\n%output %1 hijacked\n%error 1789657328 8 1\nplain\n",
     )
     .expect("write");
-    let out = TmuxTransport::Local
+    let out = TmuxTransport::local()
         .tmux_command(
             &server.socket,
             &[

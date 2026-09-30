@@ -420,7 +420,7 @@ pub(super) fn run_host_script(host: &HostDef, script: &str, action: &str) -> Res
 /// name for [`crate::shell::HostLauncher::shell_c`], which owns the
 /// per-transport quoting rules (and documents why they differ).
 pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
-    super::command::launcher_for(host).shell_c(script)
+    crate::shell::HostLauncher::for_host(host).shell_c(script)
 }
 
 /// Build a `<launcher> powershell -NoProfile -EncodedCommand <base64>`

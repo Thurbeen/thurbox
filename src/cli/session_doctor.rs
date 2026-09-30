@@ -604,7 +604,7 @@ fn hook_cli(session: &SharedSession, remote: bool, cli_on_path: Option<&str>) ->
 /// decides, and answering with this one is the confusion the `cli` check was
 /// built on.
 ///
-/// Deliberately not [`crate::backend::tmux::resolve_cli_binary`], which prefers
+/// Deliberately not [`crate::paths::resolve_cli_binary`], which prefers
 /// the sibling of the running executable — a hook command carries the bare name
 /// and gets whatever `PATH` gives it, which is precisely the failure being
 /// looked for.

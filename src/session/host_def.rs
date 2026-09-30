@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Multiplexer, Platform, Route};
+use super::{Multiplexer, Platform, Route, Via};
 
 /// The environment variable every WSL2 distro's init sets to that distro's own
 /// name. Present only *inside* a distro — not on Windows, not on a plain Linux
@@ -252,7 +252,7 @@ impl HostDef {
     /// or `wsl:<name>` — what the host picker carries and what a row written
     /// before routes named their multiplexer says.
     pub fn backend_name(&self) -> String {
-        Route::to_host(self, None).format()
+        self.route(None).format()
     }
 
     /// A short detail string for the host picker (the SSH destination, or
@@ -279,21 +279,50 @@ impl HostDef {
             .unwrap_or_else(|| "tmux".to_string())
     }
 
+    /// The host's operating system — what decides its shell and path
+    /// semantics, whichever multiplexer serves it and however it is reached.
+    ///
+    /// A WSL distro is Linux inside, always. Otherwise the entry's own
+    /// [`platform`](Self::platform) field, and for an entry that names none,
+    /// the meaning such an entry has always had: `multiplexer = "psmux"` was
+    /// the declaration that a host is Windows before a platform could be
+    /// written down, so it still is one, and anything else is POSIX. That is a
+    /// reading of old configuration, not a rule: a Windows host on another
+    /// multiplexer says `platform = "windows"`, and nothing reads a platform
+    /// off a route or a multiplexer's name.
+    pub fn platform(&self) -> Platform {
+        if self.is_wsl() {
+            return Platform::Posix;
+        }
+        self.platform.unwrap_or(match self.multiplexer() {
+            Some(Multiplexer::Psmux) => Platform::Windows,
+            _ => Platform::Posix,
+        })
+    }
+
     /// Whether this host is **native Windows** — no POSIX shell, `\` paths,
-    /// PowerShell rather than `sh`.
-    ///
-    /// The multiplexer is the proxy for the platform: `psmux` is a
-    /// native-Windows tmux clone (ConPTY, no WSL), so choosing it *is* the
-    /// declaration that the host is Windows. There is no separate platform
-    /// field to disagree with, and a WSL distro is Linux inside — it runs
-    /// `tmux` — so it is correctly not Windows here.
-    ///
-    /// The name is spelled out rather than shared with `backend::tmux_compat::transport`'s
-    /// `DEFAULT_MUX` / `TmuxTransport::uses_psmux` (which asks the *protocol*
-    /// question, not the platform one): `session` is the leaf module and may
-    /// reference nothing, so the two must be kept in step by hand.
+    /// PowerShell rather than `sh` ([`platform`](Self::platform)).
     pub fn is_windows(&self) -> bool {
-        self.mux() == "psmux"
+        self.platform() == Platform::Windows
+    }
+
+    /// This entry as the adapter serving `mux` on it is told: `multiplexer`
+    /// set to that binary, and [`platform`](Self::platform) pinned first, so
+    /// a legacy entry that is Windows *because* it names psmux stays Windows
+    /// when one of its rows is driven with another multiplexer.
+    pub fn served_by(&self, mux: Multiplexer) -> Self {
+        Self {
+            platform: Some(self.platform()),
+            multiplexer: Some(mux.name().to_string()),
+            ..self.clone()
+        }
+    }
+
+    /// The route to this host served by `mux` — or unqualified, the way a row
+    /// written before routes named their multiplexer reads.
+    pub fn route(&self, mux: Option<Multiplexer>) -> Route {
+        let via = if self.is_wsl() { Via::Wsl } else { Via::Ssh };
+        Route::remote(via, self.name.clone(), mux)
     }
 }
 
@@ -336,7 +365,10 @@ impl HostRegistry {
     /// `route` with its multiplexer settled against this machine and the host
     /// it names — [`Route::qualify`] with the inputs a running thurbox has.
     pub fn qualify(&self, route: &Route) -> Route {
-        route.qualify(Multiplexer::platform_default(), self.host_of(route))
+        route.qualify(
+            Multiplexer::platform_default(),
+            self.host_of(route).and_then(HostDef::multiplexer),
+        )
     }
 
     /// Look up a host by **either** spelling: a route (`ssh:devbox`,
@@ -518,6 +550,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every multiplexer, including the prospective rmux and herdr, can be
+    /// named against every kind of host on either OS: route, host OS, the way
+    /// the host is reached and the multiplexer are four choices, and making
+    /// one leaves the other three where they were. Naming a multiplexer here
+    /// is a route identity only — whether anything implements it is the
+    /// registry's answer, and it is not asked here.
+    #[test]
+    fn route_host_os_launcher_and_multiplexer_are_independent() {
+        use super::super::{BackendChoice, Platform};
+        for kind in [HostKind::Ssh, HostKind::Wsl] {
+            for platform in [None, Some(Platform::Posix), Some(Platform::Windows)] {
+                for preference in std::iter::once(None).chain(Multiplexer::ALL.map(Some)) {
+                    let host = HostDef {
+                        name: "box".into(),
+                        kind,
+                        destination: "me@box".into(),
+                        platform,
+                        multiplexer: preference.map(|m| m.name().to_string()),
+                        ..Default::default()
+                    };
+                    let os = match (kind, platform, preference) {
+                        (HostKind::Wsl, _, _) => Platform::Posix,
+                        (HostKind::Ssh, Some(os), _) => os,
+                        (HostKind::Ssh, None, Some(Multiplexer::Psmux)) => Platform::Windows,
+                        (HostKind::Ssh, None, _) => Platform::Posix,
+                    };
+                    let hosts = HostRegistry {
+                        config_version: None,
+                        hosts: vec![host.clone()],
+                    };
+                    for chosen in Multiplexer::ALL {
+                        let case = format!("{kind:?}/{platform:?}/{preference:?} on {chosen:?}");
+                        let choice =
+                            BackendChoice::resolve(Some(host.clone()), Some(chosen.name()), None)
+                                .unwrap();
+                        assert_eq!(choice.multiplexer, chosen, "{case}");
+                        assert_eq!(choice.route, host.route(Some(chosen)), "{case}");
+                        let route = Route::parse(&choice.backend_type()).unwrap();
+                        let via = match kind {
+                            HostKind::Ssh => Via::Ssh,
+                            HostKind::Wsl => Via::Wsl,
+                        };
+                        assert_eq!(route.via(), Some(via), "{case}");
+                        assert_eq!(route.host(), Some("box"), "{case}");
+                        assert_eq!(route.mux, Some(chosen), "{case}");
+                        let resolved = hosts.host_of(&route).expect("box resolves");
+                        assert_eq!(resolved.platform(), os, "{case}");
+                        assert_eq!(hosts.qualify(&route), route, "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// This machine can name every multiplexer as well, whichever OS it is
+    /// built for — no multiplexer's route is reserved to one platform.
+    /// Simulated: `Platform::local`'s test override stands in for the build OS.
+    #[test]
+    fn every_multiplexer_is_a_local_route_on_either_os() {
+        use super::super::{platform::simulate_local, BackendChoice, Platform};
+        for os in Platform::ALL {
+            for chosen in Multiplexer::ALL {
+                let choice = simulate_local(os, || {
+                    BackendChoice::resolve(None, Some(chosen.name()), None).unwrap()
+                });
+                assert_eq!(choice.route, Route::local(Some(chosen)), "{os:?}");
+                assert_eq!(
+                    choice.backend_type(),
+                    format!("local:{}", chosen.name()),
+                    "{os:?}"
+                );
+            }
+        }
+    }
+
+    /// An entry written before a platform could be declared keeps the meaning
+    /// it always had — `psmux` was the declaration of a Windows host — and a
+    /// declared platform wins over that reading. A WSL distro is Linux inside
+    /// whatever its entry says.
+    #[test]
+    fn a_legacy_entry_keeps_its_platform_and_a_declared_one_wins() {
+        use super::super::Platform;
+        let legacy: HostRegistry = toml::from_str(
+            "[[hosts]]\nname = \"win\"\ndestination = \"me@win\"\nmultiplexer = \"psmux\"\n\n\
+             [[hosts]]\nname = \"nix\"\ndestination = \"me@nix\"\n",
+        )
+        .unwrap();
+        assert_eq!(legacy.get("win").unwrap().platform(), Platform::Windows);
+        assert_eq!(legacy.get("nix").unwrap().platform(), Platform::Posix);
+
+        let declared: HostRegistry = toml::from_str(
+            "[[hosts]]\nname = \"win\"\ndestination = \"me@win\"\nplatform = \"windows\"\nmultiplexer = \"tmux\"\n\n\
+             [[hosts]]\nname = \"odd\"\ndestination = \"me@odd\"\nplatform = \"posix\"\nmultiplexer = \"psmux\"\n\n\
+             [[hosts]]\nname = \"distro\"\nkind = \"wsl\"\nplatform = \"windows\"\n",
+        )
+        .unwrap();
+        assert_eq!(declared.get("win").unwrap().platform(), Platform::Windows);
+        assert_eq!(declared.get("odd").unwrap().platform(), Platform::Posix);
+        assert_eq!(declared.get("distro").unwrap().platform(), Platform::Posix);
+        assert!(toml::from_str::<HostRegistry>(
+            "[[hosts]]\nname = \"x\"\ndestination = \"d\"\nplatform = \"beos\"\n"
+        )
+        .is_err());
     }
 
     #[test]

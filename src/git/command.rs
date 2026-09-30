@@ -140,23 +140,7 @@ fn capture(mut cmd: Command) -> Option<String> {
 /// Build the launcher [`Command`] for an off-local host — the git-side name
 /// for [`crate::shell::HostLauncher`], which owns the construction.
 pub(super) fn host_launcher(h: &HostDef) -> Command {
-    launcher_for(h).command()
-}
-
-/// git's [`HostDef`] → [`crate::shell::HostLauncher`] conversion (`session` is
-/// a pure-data leaf, so the conversion cannot live on the type; `usage`, which
-/// may not import `git`, carries the same one-liner).
-pub(super) fn launcher_for(h: &HostDef) -> crate::shell::HostLauncher<'_> {
-    if h.is_wsl() {
-        crate::shell::HostLauncher::Wsl {
-            distro: h.distro_name(),
-        }
-    } else {
-        crate::shell::HostLauncher::Ssh {
-            destination: &h.destination,
-            ssh_opts: &h.ssh_opts,
-        }
-    }
+    crate::shell::HostLauncher::for_host(h).command()
 }
 
 /// Build a `git` [`Command`] targeting `cwd`, run locally, over SSH, or inside

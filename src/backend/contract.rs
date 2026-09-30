@@ -404,20 +404,11 @@ pub trait SessionBackend: Send + Sync {
     /// Detach from a session without killing it (for Ctrl+Q quit).
     fn detach(&self, backend_id: &str) -> Result<()>;
 
-    /// Default shell command for companion shell panes.
-    ///
-    /// Unix uses `$SHELL` (falling back to `/bin/sh`); Windows uses `%COMSPEC%`
-    /// (falling back to `cmd.exe`), since `$SHELL`/`/bin/sh` don't exist there.
-    fn default_shell(&self) -> String {
-        #[cfg(windows)]
-        {
-            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
-        }
-        #[cfg(not(windows))]
-        {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-        }
-    }
+    /// Default shell command for companion shell panes: one that exists on
+    /// the machine this backend's panes run on. Each backend answers for its
+    /// own machine — the OS thurbox was built for is not that machine's once
+    /// a pane runs on a host.
+    fn default_shell(&self) -> String;
 
     /// Return the PID of the process running in a backend pane.
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;

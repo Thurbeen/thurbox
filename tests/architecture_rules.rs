@@ -299,9 +299,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
+    // `session` for the one conversion from a host entry to its launcher
+    // (`HostLauncher::for_host`), which every remote command shares.
     ModuleRules {
         name: "shell",
-        allowed: &[],
+        allowed: &["session"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -376,7 +378,9 @@ enum Remover {
     F5a,
     /// Pane I/O through `locate` and the contract's pane verbs.
     F5b,
-    /// Host platform and launcher separated from the multiplexer.
+    /// Host platform and launcher separated from the multiplexer. Removed
+    /// its crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
     F6,
     /// psmux extracted into its own adapter. It owns no crossing today; the
     /// variant is here so an entry can name it once one exists.
@@ -484,29 +488,6 @@ const TRANSITIONAL: &[Transitional] = &[
         items: &["pane_state", "send_prompt_after_delay"],
         remover: Remover::F5b,
         why: "dispatch_task and the snapshot's pane state go around the contract",
-    },
-    // Not multiplexer code at all: where this build's thurbox-cli lives, which
-    // host CLI shipping decides once platform is its own dimension.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "host_cli finds the local thurbox-cli through the tmux adapter",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "the heartbeat's CLI path is resolved in the tmux adapter",
-    },
-    Transitional {
-        from: "coordinator",
-        to: "backend::tmux",
-        items: &["resolve_cli_binary"],
-        remover: Remover::F6,
-        why: "the heartbeat's CLI path is resolved in the tmux adapter",
     },
     // Status delivery, the heartbeat, and the instance socket (ADR-12) they
     // are addressed by — backend-owned once status is.
@@ -842,10 +823,7 @@ fn the_route_and_the_contract_know_no_launcher_adapter_or_build_os() {
     for file in NEUTRAL_FILES {
         let source = fs::read_to_string(root.join(file)).expect("read a neutral file");
         let stripped = strip_comments_and_strings(&source);
-        let production = stripped
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let production = stripped.split("#[cfg(test)]").next().unwrap_or_default();
         for (n, line) in production.lines().enumerate() {
             if line.contains("cfg(windows)")
                 || line.contains("cfg!(windows)")
