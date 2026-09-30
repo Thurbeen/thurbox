@@ -265,7 +265,7 @@ backend::wiring      session, agent::host_config,      (the factory: the only
 backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
   ::control_mode     session, shell, backend::contract,
                      backend::tmux_compat::transport
-  ::transport        shell, agent
+  ::transport        session, shell, agent
 backend::tmux        session, paths, shell, agent,     (the tmux adapter)
                      backend::{contract,identity},
                      backend::tmux_compat::{control_mode,transport}

@@ -129,8 +129,15 @@ session), never on the loop, ADR-P12).
 
 - **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
-  it); backend-name helpers `is_ssh_backend`/`is_wsl_backend`/
-  `is_remote_backend`. **Loading**: `agent::host_config::load_all{,_with_warnings}`
+  it). A row's `backend_type` is read by one parser, `session::Route`
+  (machine × optional multiplexer; grammar and legacy meaning in
+  `docs/CONFIG.md` → *Multiplexer choice and existing sessions*), and
+  resolved by one resolver, `HostRegistry::host_of` / `qualify`: the host
+  comes back as configured, never with a platform read off the route.
+  `session_ops::mux_host` is the one that tells the tmux adapter a row's
+  multiplexer, refusing one no adapter implements; `session_ops::server_key`
+  compares two rows' servers whatever spelling each carries. A host name may
+  not contain `:` (refused at load). **Loading**: `agent::host_config::load_all{,_with_warnings}`
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
   wins), with every entry claiming the current distro settled first
   (`settle_wsl_self_hosts` / `wsl_hosts_from`): a loopback dropped, a
@@ -254,6 +261,8 @@ session), never on the loop, ADR-P12).
   self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
   host CLI's `tmux_socket`, which the backend adopts (`backend::tmux::
   learn_host_socket`) so a dev laptop attaches to a release host's server.
+  Kept per host, not per route: it names the host's thurbox instance, which
+  every multiplexer there runs under.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
   pane-option status channel — is the **legacy path** for a host that cannot
   be delegated to (no artifact, no network, schema mismatch, `share_sessions =

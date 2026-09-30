@@ -340,11 +340,47 @@ When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.
 
-The resolved choice is recorded in each new session's `backend_type`. Existing
-`local-tmux`, `ssh:<host>`, and `wsl:<distro>` rows keep their original
-tmux/psmux routing after a preference changes. An adapter for another
-multiplexer registers its own local and host routing keys; it must read those
-keys on restart, restore, delete, input, capture, and fork.
+The resolved choice is recorded in each new session's `backend_type`, its
+**route**. One parser (`session::Route`) reads every spelling a row has ever
+carried:
+
+| `backend_type` | machine | multiplexer |
+|---|---|---|
+| `""`, `tmux`, `local-tmux` | this one | unqualified |
+| `local-<mux>` | this one | `<mux>` |
+| `ssh:<host>`, `wsl:<distro>` | that host | unqualified |
+| `ssh:<host>:<mux>`, `wsl:<distro>:<mux>` | that host | `<mux>` |
+
+New rows always name their multiplexer (`ssh:devbox:tmux`, `local-psmux`), so
+a later change of preference cannot reinterpret them. Rows written before
+routes did are **unqualified**, are never migrated, and keep the meaning they
+were written with: a local one is the platform default, and a remote one is
+psmux when the host's `multiplexer` is `psmux` and tmux otherwise. So a host
+whose preference moves to `rmux` still has its old rows attached, deleted,
+torn down and polled with tmux.
+
+`local-tmux` is the one ambiguous key. Before routes named a multiplexer it
+was written for the platform default, which is psmux on native Windows, so it
+still reads that way there; an explicit tmux on this machine formats to the
+same key. On POSIX the two agree. On native Windows no tmux adapter is
+registered, so no row can be written that would be misread.
+
+A host name may not contain `:`, which separates it from the multiplexer in a
+route. `hosts.toml` ignores such an entry with a warning, and
+`config validate` fails naming it.
+
+Which multiplexers work is what is **registered**, never the OS: this machine
+serves its platform default, and each host serves what its unqualified rows
+mean. A route naming anything else is refused by name, including rows for a
+multiplexer no adapter implements (`rmux`, `herdr` today), which are neither
+created nor driven with another binary. An adapter for another multiplexer
+registers its own routes; it must read them on restart, restore, delete,
+input, capture, and fork.
+
+A socket learned from a host's own CLI (`version --json`'s `tmux_socket`) is
+kept per **host**, not per route: it is the address of the thurbox instance
+there (ADR-12), which every multiplexer on that host runs under. Why routes
+are read this way, and what it costs, is ADR-28 in `docs/ARCHITECTURE.md`.
 
 Manual deletion of an agent pane or window means the agent should run again.
 Once the backend **confirms absence**, Thurbox relaunches the same session ID,
