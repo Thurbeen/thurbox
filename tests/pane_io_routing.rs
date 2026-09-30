@@ -854,15 +854,43 @@ fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
         "%0",
         "/srv",
     );
+    // A peer's session of the same name on a host this machine does serve:
+    // another machine's automation made it, and it is not this one's to type
+    // into — an automation spawns on this machine.
+    let peer = SessionId::default();
+    let peer_pane = reg.far.open(
+        &format!("tb-auto-{spawn_id}"),
+        &peer.to_string(),
+        WindowRole::Agent,
+    );
+    seed_row(
+        &db,
+        peer,
+        &format!("auto-{spawn_id}"),
+        "ssh:probehost:rmux",
+        &peer_pane,
+        "/srv",
+    );
     let run = fire(&db, &reg.cli, spawn_id);
     assert_eq!(
         run_status(&run),
         ("success".into(), format!("spawned auto-{spawn_id}")),
-        "a row on a host nothing here knows blocked the spawn: {run}"
+        "a row on another machine was reused or blocked the spawn: {run}"
+    );
+    assert_eq!(
+        reg.far.screen(&peer_pane),
+        "",
+        "the peer's session was typed into"
     );
 
-    // A task whose earlier session sits on a host that does not answer,
-    // while a new one could still be created here.
+    // A task whose earlier session sits on a local backend that does not
+    // answer, while a new one could still be created on the default one.
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    backends.register(Route::local(Some(Multiplexer::Rmux)), reg.probe.clone());
+    let silent_route = Route::local(Some(Multiplexer::Herdr));
+    let silent = RecordingBackend::new(&silent_route);
+    backends.register(silent_route, silent.clone());
+    let with_silent = thurbox::cli::Backends::ready(backends);
     let task = cli(
         &db,
         &reg.cli,
@@ -871,7 +899,7 @@ fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
     .expect("task create");
     let task_id = task["id"].as_i64().unwrap();
     let earlier = SessionId::default();
-    let pane = reg.far.open(
+    let pane = silent.open(
         &format!("tb-task-{task_id}"),
         &earlier.to_string(),
         WindowRole::Agent,
@@ -880,14 +908,14 @@ fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
         &db,
         earlier,
         &format!("task-{task_id}"),
-        "ssh:probehost:rmux",
+        "local:herdr",
         &pane,
         "/srv",
     );
-    reg.far.set_reachable(false);
+    silent.set_reachable(false);
     let before = db.list_active_sessions().expect("list").len();
     assert!(
-        cli(&db, &reg.cli, &["task", "run", &task_id.to_string()]).is_err(),
+        cli(&db, &with_silent, &["task", "run", &task_id.to_string()]).is_err(),
         "a task run that could not tell whether its session runs spawned anyway"
     );
     assert_eq!(db.list_active_sessions().expect("list").len(), before);

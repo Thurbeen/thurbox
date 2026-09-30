@@ -682,9 +682,13 @@ fn fire_spawn(
     };
     let mut running = Vec::new();
     for session in sessions {
-        // A row on a route nothing here serves — a host since removed from
-        // hosts.toml — is not a session this process could be reusing.
-        if crate::session_ops::windows::backend_for(backends, &session.backend_type).is_err() {
+        // An automation spawns on this machine, so only a session here can be
+        // one it made: a same-named row on a host is another machine's (a
+        // mirrored peer's automation shares the name). And a row on a route
+        // nothing here serves is not a session this process could be reusing.
+        if crate::session::Route::is_remote_key(&session.backend_type)
+            || crate::session_ops::windows::backend_for(backends, &session.backend_type).is_err()
+        {
             continue;
         }
         match crate::session_ops::windows::agent_pane(backends, &session) {

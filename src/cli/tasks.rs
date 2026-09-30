@@ -371,11 +371,13 @@ fn run_task(
                 .into_iter()
                 .filter(|s| task.matches_spawn_session(&s.name))
             {
-                // A row on a route nothing here serves is not one to reuse;
-                // not knowing whether a served one runs must not launch a
-                // second one.
-                if crate::session_ops::windows::backend_for(backends, &session.backend_type)
-                    .is_err()
+                // A task spawns on this machine, so a same-named row on a host
+                // is another machine's, and a row on a route nothing here
+                // serves is not one to reuse; not knowing whether a served one
+                // runs must not launch a second one.
+                if crate::session::Route::is_remote_key(&session.backend_type)
+                    || crate::session_ops::windows::backend_for(backends, &session.backend_type)
+                        .is_err()
                 {
                     continue;
                 }
