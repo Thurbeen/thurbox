@@ -210,7 +210,7 @@ pub(crate) fn provision_agent_hooks_on_host(
     // through `sh`, and each agent's Windows config dir / hook shell differs.
     if host.is_windows() {
         return Some(format!(
-            "{agent} hooks not provisioned on Windows host '{}'",
+            "{agent} hooks not provisioned on psmux host '{}'",
             host.name
         ));
     }
