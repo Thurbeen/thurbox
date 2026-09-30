@@ -144,8 +144,10 @@ safe to assume:
 | `replace` | tear the old one down (`delete --force`) first |
 | `fail` | refuse, naming the id in the way; exit 1 |
 
-**The match is scoped to the backend the creation lands on** — `local-tmux`, or
-the `ssh:`/`wsl:` backend of its `--host`. The name namespace is not: a mirrored
+**The match is scoped to the server the creation lands on** — this machine's
+multiplexer, or its `--host`'s — whichever spelling each row's `backend_type`
+carries (`session_ops::server_key`: a legacy `ssh:devbox` row and a new
+`ssh:devbox:tmux` one are one server). The name namespace is not: a mirrored
 host's rows sit in the same table, so an unscoped match let a local `replace`
 force-delete a session on another machine, `fail` refuse a local create because
 of a remote namesake, and `adopt` return an id whose pane is elsewhere.

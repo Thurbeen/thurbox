@@ -450,7 +450,8 @@ code.
 
 **Choice**: The default `SessionBackend` is `TmuxBackend`
 parameterized over its `Local` transport (`TmuxTransport::Local`)
-and registered as `local-tmux`, using a dedicated tmux server
+and registered under the local route (`local:tmux`; `local:psmux` on native
+Windows), using a dedicated tmux server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
 through tmux control mode (`-C`). (The transport abstraction that
 also enables remote SSH backends is ADR-13; here the choice is
@@ -2081,3 +2082,58 @@ it asked. That frame shows the old grid in the new rect; the bytes that follow
 are laid out for the new size, which is when the grid needs it. psmux has no
 `if-shell -F`, no format subscriptions and no `%layout-change` to read, so on a
 Windows host the last instance to paint still wins, as before.
+
+## ADR-28: A session's route is one typed value, read one way
+
+**Choice**: `sessions.backend_type` is parsed by exactly one function,
+`session::Route::parse`, into a **machine** (local, `ssh:<host>`,
+`wsl:<distro>`) and an optional **multiplexer**; `Route::format` is its only
+writer. The grammar and each spelling's meaning are in `docs/CONFIG.md` →
+*Multiplexer choice and existing sessions*. A row written before routes named
+their multiplexer is **unqualified**, and `Route::multiplexer` settles it the
+way such rows were always read: the platform default locally, psmux for a host
+configured `psmux` and tmux for any other. New rows are written qualified. One
+resolver finds a row's host, `HostRegistry::host_of`, and returns it exactly as
+configured. The backend registry is keyed by qualified `Route` and looks up
+only the route it is asked for; `backend::wiring` registers this machine's
+platform default and, per host, what that host's unqualified rows mean, when an
+adapter implements it (`wiring::implements`).
+
+**Why**: before, about fifty sites read `backend_type` with prefix predicates,
+`split_once(':')` or string equality, and two host lookups disagreed. The TUI
+attached a legacy `ssh:box` row through tmux while force-delete, the teardown
+retry and the status poll ran `rmux` for the same row once the host's
+preference changed. A lifecycle hook was told the host `box:rmux`. A mirrored
+row lost the multiplexer its host recorded. A row stored as `tmux`, the
+column's old default, had no backend at all. The registry rewrote an rmux or
+herdr host to tmux, and a route's suffix rewrote the host's platform, so one row
+naming `psmux` made a Linux host look like Windows.
+
+**Rejected alternatives**:
+
+- **Migrate the rows to qualified keys.** Irreversible, and a legacy key means
+  something definite already. Reading it is enough.
+- **Resolve an unqualified route against the host's current preference.** That
+  is the bug: the preference can change after the row was written.
+- **Allow `:` in host names and disambiguate against the registry.** The same
+  key would then mean different things depending on which hosts load. The
+  config load refuses such an entry instead.
+
+**Consequences**: two spellings of one server (`ssh:box` and `ssh:box:tmux`,
+or `tmux` and `local-tmux`) are compared through `session_ops::server_key`,
+which qualifies both; per-backend state in the kernel is keyed the same way,
+and a backend is named by the route it serves. Which multiplexer is available
+is decided by registration, never by the OS. A route naming a multiplexer no
+adapter implements is refused by name: such a row is neither created, attached,
+torn down, polled, stopped nor restarted through the tmux command grammar,
+and a teardown that cannot take its window leaves its worktrees too. A local
+row on a multiplexer this machine does not run owes no teardown to come back
+for, so its force-delete and reap refuse outright rather than mark it gone.
+Local routes are qualified like remote ones (`local:<mux>`); the legacy
+`local-tmux` keeps reading as the platform default, psmux on native Windows,
+so an explicit tmux there is `local:tmux` and never mistaken for it. An older
+build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
+per host, because it names that host's thurbox instance, not one multiplexer.
+Until host platform is its own dimension, the tmux adapter still reads a host's
+platform off its `multiplexer` field, which is why only the calls that drive
+the multiplexer get a host told the row's multiplexer (`session_ops::mux_host`).

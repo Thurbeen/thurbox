@@ -12,10 +12,13 @@ use std::process::Command;
 
 use crate::shell::{posix_quote, ssh_command, wsl_command};
 
-/// The local multiplexer binary: `psmux` on Windows (a native, drop-in tmux
-/// replacement with an identical control-mode wire protocol), `tmux` elsewhere.
-/// psmux also installs `tmux`/`pmux` aliases, but `psmux` is the canonical name.
-pub const DEFAULT_MUX: &str = if cfg!(windows) { "psmux" } else { "tmux" };
+/// The local multiplexer binary: the platform default's name — `psmux` on
+/// Windows (a native, drop-in tmux replacement with an identical control-mode
+/// wire protocol), `tmux` elsewhere. psmux also installs `tmux`/`pmux`
+/// aliases, but `psmux` is the canonical name. Derived rather than restated,
+/// so the binary run here and the route a local row is written under cannot
+/// disagree.
+pub const DEFAULT_MUX: &str = crate::session::Multiplexer::platform_default().name();
 
 /// How to launch the multiplexer for a backend: directly, wrapped in `ssh`, or
 /// inside a local WSL distro via `wsl.exe`.

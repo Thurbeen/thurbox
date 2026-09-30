@@ -926,7 +926,7 @@ pub fn with_reachability(
     backend: &str,
     attach_error: Option<&str>,
 ) -> SessionState {
-    if attach_error.is_some() && super::is_remote_backend(backend) {
+    if attach_error.is_some() && super::Route::is_remote_key(backend) {
         return SessionState::Unreachable;
     }
     state

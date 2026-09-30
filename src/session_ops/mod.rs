@@ -571,6 +571,15 @@ pub fn fork_session_headless(
         host: resolve_host(&source.backend_type)
             .flatten()
             .map(|host| host.name),
+        // And on the parent's multiplexer, which a preference changed since need
+        // not name.
+        multiplexer: crate::session::Route::parse(&source.backend_type)
+            .ok()
+            .and_then(|route| {
+                let (hosts, _) = crate::agent::host_config::cached_registry();
+                hosts.qualify(&route).mux
+            })
+            .map(|mux| mux.name().to_string()),
         parent_session_id: Some(source.id),
         // What actually makes it a fork: the agent resumes the parent's
         // conversation into a new one (`fork_args`).
@@ -694,21 +703,118 @@ pub(crate) fn build_agent_invocation(
 }
 
 /// The machine a session runs on: `Some(None)` for local, `Some(Some(host))` for
-/// a remote backend we can resolve, and `None` when the backend names a host
-/// `hosts.toml` no longer describes.
+/// a remote row whose host `hosts.toml` describes, and `None` when the row
+/// names a host `hosts.toml` no longer describes — or no route at all.
 ///
 /// The distinction is the whole point. Anything that drives a session's window
 /// or its worktrees has to do it *where they are*, and doing it locally instead
 /// is not a degraded version of that — it acts on the wrong machine. So an
 /// unresolvable host is a refusal, never a fallback to local.
+///
+/// The host comes back exactly as configured, whatever multiplexer the row
+/// names: this is the answer for everything that runs *on* the host — git, the
+/// host's CLI, provisioning, hooks — and none of that may read the host's
+/// platform off a route. What drives the row's multiplexer asks [`mux_host`].
 pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef>> {
-    if !crate::session::is_remote_backend(backend_type) {
-        return Some(None);
-    }
     // The cached registry: this runs on the UI thread per diff request, and a
     // fresh load walks $PATH for WSL discovery every time.
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    registry.resolved_by_backend(backend_type).map(Some)
+    let route = crate::session::Route::parse(backend_type).ok()?;
+    match route.host() {
+        None => Some(None),
+        Some(_) => registry.host_of(&route).cloned().map(Some),
+    }
+}
+
+/// The multiplexer server a row's windows live on, as a comparison key: its
+/// route, qualified the way the row was written. Two rows share one window
+/// namespace exactly when their keys agree, whichever spelling each was stored
+/// under — `tmux`, `""` and `local-tmux` are one local server, and a legacy
+/// `ssh:box` row and a new `ssh:box:tmux` one are one server on `box`.
+///
+/// A key naming no route is its own key, so it collides only with itself.
+pub fn server_key(backend_type: &str) -> String {
+    match crate::session::Route::parse(backend_type) {
+        Ok(route) => {
+            let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+            hosts.qualify(&route).format()
+        }
+        Err(_) => backend_type.to_string(),
+    }
+}
+
+/// Whether two rows are on one machine, whatever multiplexer serves each.
+pub fn same_machine(a: &str, b: &str) -> bool {
+    match (
+        crate::session::Route::parse(a),
+        crate::session::Route::parse(b),
+    ) {
+        (Ok(a), Ok(b)) => a.same_machine(&b),
+        _ => a == b,
+    }
+}
+
+/// [`resolve_host`] for the calls that drive a row's multiplexer: the host,
+/// told which multiplexer the row's route names, or why none can be driven.
+///
+/// `Ok(None)` is this machine. `Err` refuses — a key naming no route, a host
+/// `hosts.toml` no longer describes, a multiplexer no adapter here implements,
+/// or, locally, any but the platform default this machine runs. An unqualified
+/// row keeps the multiplexer it was written for
+/// ([`crate::session::Route::multiplexer`]), so a host whose preference moved
+/// to rmux still has its old tmux rows torn down with tmux; and an rmux row is
+/// refused rather than run through the tmux command grammar.
+///
+/// The copy's `multiplexer` is set to the row's because that field is how the
+/// tmux adapter is told which binary to run. It still reads a platform off
+/// the same field, which is why everything that is not the multiplexer takes
+/// its host from [`resolve_host`] instead.
+pub fn mux_host(backend_type: &str) -> Result<Option<crate::session::HostDef>, String> {
+    let (registry, _warnings) = crate::agent::host_config::cached_registry();
+    mux_host_in(registry, backend_type)
+}
+
+/// [`mux_host`] against a registry the caller read.
+pub(crate) fn mux_host_in(
+    registry: &crate::session::HostRegistry,
+    backend_type: &str,
+) -> Result<Option<crate::session::HostDef>, String> {
+    let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
+    let local = crate::session::Multiplexer::platform_default();
+    let Some(name) = route.host() else {
+        // This machine runs its platform default and nothing else.
+        let mux = route.multiplexer(local, None);
+        if mux != local {
+            return Err(format!(
+                "this machine runs {}, not {}, so nothing here drives '{backend_type}'",
+                local.name(),
+                mux.name()
+            ));
+        }
+        return Ok(None);
+    };
+    let host = registry
+        .host_of(&route)
+        .ok_or_else(|| format!("host '{name}' is not in hosts.toml"))?;
+    let mux = route.multiplexer(local, Some(host));
+    if !crate::backend::wiring::implements(mux) {
+        return Err(format!(
+            "no backend here implements {} on host '{name}', so nothing drives '{backend_type}'",
+            mux.name()
+        ));
+    }
+    Ok(Some(served_by(host, mux)))
+}
+
+/// `host` as the tmux adapter must be told to drive `mux` there: the entry
+/// with its `multiplexer` set to that binary.
+pub(crate) fn served_by(
+    host: &crate::session::HostDef,
+    mux: crate::session::Multiplexer,
+) -> crate::session::HostDef {
+    let mut served = host.clone();
+    served.multiplexer = Some(mux.name().to_string());
+    served
 }
 
 /// Inject the standard thurbox env hints into a session config so a
@@ -763,7 +869,7 @@ pub(crate) fn inject_thurbox_env(
     if config
         .backend
         .as_deref()
-        .is_some_and(crate::session::is_remote_backend)
+        .is_some_and(crate::session::Route::is_remote_key)
     {
         return;
     }
@@ -784,6 +890,28 @@ pub(crate) fn inject_thurbox_env(
 mod tests {
     use super::*;
     use crate::session::SessionId;
+
+    /// This machine is served by its platform default and nothing else, so a
+    /// local row naming another multiplexer is refused rather than driven
+    /// through the local tmux (or psmux) server.
+    #[test]
+    fn a_local_row_is_driven_only_by_this_machines_multiplexer() {
+        let hosts = crate::session::HostRegistry::default();
+        let local = crate::session::Multiplexer::platform_default();
+        for key in ["", "tmux", "local-tmux", &format!("local:{}", local.name())] {
+            assert_eq!(mux_host_in(&hosts, key), Ok(None), "{key:?}");
+        }
+        for mux in crate::session::Multiplexer::ALL {
+            if mux == local {
+                continue;
+            }
+            // An explicit local tmux on Windows is refused too, where the
+            // legacy `local-tmux` is psmux.
+            let key = format!("local:{}", mux.name());
+            let refused = mux_host_in(&hosts, &key).expect_err(&key);
+            assert!(refused.contains(mux.name()), "{refused}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]

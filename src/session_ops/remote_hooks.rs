@@ -460,11 +460,13 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
+    // By server, not by spelling: a legacy `ssh:box` row and a new
+    // `ssh:box:tmux` one are polled with one listing.
     let mut by_backend: HashMap<String, Vec<&crate::sync::SharedSession>> = HashMap::new();
     for s in &sessions {
-        if crate::session::is_remote_backend(&s.backend_type) {
+        if crate::session::Route::is_remote_key(&s.backend_type) {
             by_backend
-                .entry(s.backend_type.clone())
+                .entry(super::server_key(&s.backend_type))
                 .or_default()
                 .push(s);
         }
@@ -475,14 +477,21 @@ pub(crate) fn poll_remote_hook_states(db: &crate::storage::Database) -> usize {
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let hosts = crate::agent::host_config::load_all();
     let mut written = 0;
-    for (backend_name, group) in by_backend {
-        let Some(host) = hosts.get_by_backend(&backend_name) else {
-            continue;
+    for (server, group) in by_backend {
+        // Polled with the multiplexer the rows were written for; one nothing
+        // here drives is skipped rather than asked with another binary.
+        let host = match super::mux_host_in(&hosts, &server) {
+            Ok(Some(host)) => host,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::debug!("remote status poll skipped for {server}: {e}");
+                continue;
+            }
         };
         if host.is_windows() && !crate::session::psmux_hook_rewrite_supported() {
             continue;
         }
-        let polled = match crate::backend::tmux::list_remote_hook_states(host) {
+        let polled = match crate::backend::tmux::list_remote_hook_states(&host) {
             Ok(polled) => polled,
             Err(e) => {
                 tracing::debug!("remote status poll skipped for host '{}': {e:#}", host.name);

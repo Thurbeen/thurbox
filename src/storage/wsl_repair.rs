@@ -12,7 +12,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::session::{WslRepairPlan, LOCAL_BACKEND_TYPE};
+use crate::session::{Route, WslRepairPlan};
 
 use super::Database;
 
@@ -21,8 +21,8 @@ use super::Database;
 pub(super) const WSL_LOOPBACK_REPAIR_OWED_KEY: &str = "wsl_loopback_repair_owed";
 
 /// The local bookmark `host`: `repo_bookmarks` spells "this machine" as the
-/// empty string, where `sessions.backend_type` spells it
-/// [`LOCAL_BACKEND_TYPE`].
+/// empty string, where `sessions.backend_type` spells it as the unqualified
+/// local route (`local-tmux`).
 const LOCAL_BOOKMARK_HOST: &str = "";
 
 /// What one repair pass changed.
@@ -83,7 +83,9 @@ fn heal_rows(
 ) -> rusqlite::Result<(usize, usize, usize)> {
     let sessions = tx.execute(
         "UPDATE sessions SET backend_type = ?1 WHERE backend_type = ?2 COLLATE NOCASE",
-        params![LOCAL_BACKEND_TYPE, from],
+        // Unqualified, as the row was before the loopback relabelled it: a
+        // local row of that era meant this machine's platform default.
+        params![Route::local(None).format(), from],
     )?;
 
     let rows: Vec<(String, String, i64, bool, Option<String>)> = tx
@@ -210,7 +212,7 @@ impl Database {
 
     /// Apply `plan`: rows recorded under a
     /// [`to_local`](WslRepairPlan::to_local) name become this machine's own
-    /// (`backend_type` = [`LOCAL_BACKEND_TYPE`], bookmark `host` = `''`). One
+    /// (`backend_type` = the unqualified local route, bookmark `host` = `''`). One
     /// transaction, so a database is never left half-repaired.
     pub fn apply_wsl_repair_plan(
         &self,

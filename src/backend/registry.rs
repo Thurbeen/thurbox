@@ -1,82 +1,73 @@
 //! Backend registry for multi-backend session support.
 //!
-//! Allows multiple `SessionBackend` implementations to coexist. Sessions select
-//! their backend at creation time; the registry routes by name. A container
-//! only: what fills it for a running process is [`crate::backend::wiring`].
+//! Allows multiple `SessionBackend` implementations to coexist, each keyed by
+//! the qualified [`Route`] it serves. A container only: what fills it for a
+//! running process is [`crate::backend::wiring`], and settling a row's
+//! unqualified route is `HostRegistry::qualify`'s — this looks up exactly the
+//! route it is asked for and never substitutes another.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::backend::SessionBackend;
+use crate::session::Route;
 
-/// A registry of session backends keyed by name.
+/// A registry of session backends keyed by the qualified route each serves.
 ///
-/// Each backend is registered under its `name()` (e.g., `"local-tmux"`, `"extra-backend"`).
-/// The registry always has a default backend that is used when no explicit backend
-/// name is specified.
+/// The registry always has a default backend: this machine's own
+/// multiplexer.
 pub struct BackendRegistry {
-    backends: HashMap<String, Arc<dyn SessionBackend>>,
-    default_name: String,
+    backends: HashMap<Route, Arc<dyn SessionBackend>>,
+    default_route: Route,
 }
 
 impl BackendRegistry {
-    /// Create a new registry with the given backend as the default.
-    pub fn new(default: Arc<dyn SessionBackend>) -> Self {
-        let name = default.name().to_string();
+    /// A registry whose default is `default`, serving `route`.
+    pub fn new(route: Route, default: Arc<dyn SessionBackend>) -> Self {
         let mut backends = HashMap::new();
-        backends.insert(name.clone(), default);
+        backends.insert(route.clone(), default);
         Self {
             backends,
-            default_name: name,
+            default_route: route,
         }
     }
 
-    /// Register an additional backend. Its `name()` is used as the key.
-    pub fn register(&mut self, backend: Arc<dyn SessionBackend>) {
-        let name = backend.name().to_string();
-        self.backends.insert(name, backend);
+    /// Register a backend for `route`, replacing any serving it already.
+    pub fn register(&mut self, route: Route, backend: Arc<dyn SessionBackend>) {
+        self.backends.insert(route, backend);
     }
 
-    /// Look up a backend by name.
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn SessionBackend>> {
-        self.backends.get(name)
+    /// The backend serving exactly `route`. An unqualified route matches
+    /// nothing: which multiplexer it means is decided before this is asked.
+    pub fn get(&self, route: &Route) -> Option<&Arc<dyn SessionBackend>> {
+        self.backends.get(route)
     }
 
     /// Return the default backend.
     pub fn default_backend(&self) -> &Arc<dyn SessionBackend> {
-        self.backends.get(&self.default_name).unwrap()
+        &self.backends[&self.default_route]
     }
 
-    /// Check whether a backend with the given name is registered.
-    pub fn has(&self, name: &str) -> bool {
-        self.backends.contains_key(name)
+    /// The route the default backend serves.
+    pub fn default_route(&self) -> &Route {
+        &self.default_route
     }
 
-    /// A choice is offered only when an implementation has registered its
-    /// routing key. Installing a binary alone never makes an adapter exist.
-    pub fn supports_choice(&self, choice: &crate::session::BackendChoice) -> bool {
-        if choice.host.is_none()
-            && choice.backend_type == crate::session::LOCAL_BACKEND_TYPE
-            && choice.multiplexer != crate::session::Multiplexer::platform_default()
-        {
-            return false;
-        }
-        self.has(&choice.backend_type)
+    /// Whether a new session may be created on `route`: only when an
+    /// implementation has registered for it. Installing a binary alone never
+    /// makes an adapter exist, and neither does the OS this runs on.
+    pub fn supports(&self, route: &Route) -> bool {
+        self.backends.contains_key(route)
     }
 
-    /// Return the name of the default backend.
-    pub fn default_name(&self) -> &str {
-        &self.default_name
+    /// Every registered route.
+    pub fn routes(&self) -> impl Iterator<Item = &Route> {
+        self.backends.keys()
     }
 
-    /// Iterate over all registered backend names.
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.backends.keys().map(|s| s.as_str())
-    }
-
-    /// Iterate over all registered backends.
-    pub fn all_backends(&self) -> impl Iterator<Item = &Arc<dyn SessionBackend>> {
-        self.backends.values()
+    /// Every registered backend, with the route it serves.
+    pub fn all_backends(&self) -> impl Iterator<Item = (&Route, &Arc<dyn SessionBackend>)> {
+        self.backends.iter()
     }
 }
 
@@ -88,14 +79,21 @@ mod tests {
 
     use super::*;
     use crate::backend::{AdoptedSession, DiscoveredSession, SpawnedSession};
+    use crate::session::{Multiplexer, Via};
 
     struct StubBackend {
-        backend_name: &'static str,
+        backend_name: String,
+    }
+
+    fn stub(route: &Route) -> Arc<dyn SessionBackend> {
+        Arc::new(StubBackend {
+            backend_name: route.format(),
+        })
     }
 
     impl SessionBackend for StubBackend {
         fn name(&self) -> &str {
-            self.backend_name
+            &self.backend_name
         }
         fn check_available(&self) -> Result<()> {
             Ok(())
@@ -109,7 +107,7 @@ mod tests {
             _: &str,
             _: &[String],
             _: Option<&Path>,
-            _: &HashMap<String, String>,
+            _: &std::collections::HashMap<String, String>,
             _: u16,
             _: u16,
         ) -> Result<SpawnedSession> {
@@ -138,92 +136,86 @@ mod tests {
         }
     }
 
-    #[test]
-    fn new_registers_default() {
-        let backend: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let registry = BackendRegistry::new(backend);
-
-        assert!(registry.has("local-tmux"));
-        assert_eq!(registry.default_name(), "local-tmux");
-        assert_eq!(registry.default_backend().name(), "local-tmux");
+    fn local(mux: Multiplexer) -> Route {
+        Route::local(Some(mux))
     }
 
     #[test]
-    fn register_additional_backend() {
-        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let mut registry = BackendRegistry::new(default);
-
-        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "extra-backend",
-        });
-        registry.register(extra);
-
-        assert!(registry.has("extra-backend"));
-        assert_eq!(
-            registry.get("extra-backend").unwrap().name(),
-            "extra-backend"
-        );
-        assert_eq!(registry.default_name(), "local-tmux");
+    fn new_registers_the_default() {
+        let route = local(Multiplexer::Tmux);
+        let registry = BackendRegistry::new(route.clone(), stub(&route));
+        assert!(registry.supports(&route));
+        assert_eq!(registry.default_route(), &route);
+        assert_eq!(registry.default_backend().name(), "local:tmux");
     }
 
     #[test]
-    fn get_nonexistent_returns_none() {
-        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let registry = BackendRegistry::new(default);
+    fn a_route_finds_only_the_backend_registered_for_it() {
+        let default = local(Multiplexer::Tmux);
+        let mut registry = BackendRegistry::new(default.clone(), stub(&default));
+        let remote = Route::remote(Via::Ssh, "box", Some(Multiplexer::Tmux));
+        registry.register(remote.clone(), stub(&remote));
 
-        assert!(registry.get("nonexistent").is_none());
-        assert!(!registry.has("nonexistent"));
+        assert_eq!(registry.get(&remote).unwrap().name(), "ssh:box:tmux");
+        // Another multiplexer on the same machine is another backend, and an
+        // unqualified route is not quietly the default one.
+        for missing in [
+            remote.with_mux(Multiplexer::Rmux),
+            Route::remote(Via::Ssh, "box", None),
+            Route::remote(Via::Wsl, "box", Some(Multiplexer::Tmux)),
+            Route::local(None),
+            local(Multiplexer::Psmux),
+        ] {
+            assert!(registry.get(&missing).is_none(), "{missing}");
+            assert!(!registry.supports(&missing), "{missing}");
+        }
+    }
+
+    /// Every multiplexer is a route on every machine; which of them work is
+    /// what registered, and nothing else. A test registers an implementation
+    /// for rmux and herdr the way an adapter someday would — locally and on a
+    /// host of either kind — and only those routes resolve.
+    #[test]
+    fn availability_is_registration_for_every_mux_on_every_machine() {
+        let places = [
+            Route::local(None),
+            Route::remote(Via::Ssh, "box", None),
+            Route::remote(Via::Wsl, "Ubuntu", None),
+        ];
+        for registered in Multiplexer::ALL {
+            let default = local(Multiplexer::Tmux);
+            let mut registry = BackendRegistry::new(default.clone(), stub(&default));
+            for place in &places {
+                registry.register(
+                    place.with_mux(registered),
+                    stub(&place.with_mux(registered)),
+                );
+            }
+            for place in &places {
+                for mux in Multiplexer::ALL {
+                    let route = place.with_mux(mux);
+                    let served = mux == registered || route == default;
+                    assert_eq!(registry.supports(&route), served, "{route}");
+                    if served {
+                        assert_eq!(registry.get(&route).unwrap().name(), route.format());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn names_returns_all_registered() {
-        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let mut registry = BackendRegistry::new(default);
+    fn routes_and_backends_list_everything_registered() {
+        let default = local(Multiplexer::Tmux);
+        let mut registry = BackendRegistry::new(default.clone(), stub(&default));
+        let extra = Route::remote(Via::Ssh, "box", Some(Multiplexer::Psmux));
+        registry.register(extra.clone(), stub(&extra));
 
-        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "extra-backend",
-        });
-        registry.register(extra);
-
-        let mut names: Vec<&str> = registry.names().collect();
+        let mut routes: Vec<String> = registry.routes().map(Route::format).collect();
+        routes.sort();
+        assert_eq!(routes, ["local:tmux", "ssh:box:psmux"]);
+        let mut names: Vec<&str> = registry.all_backends().map(|(_, b)| b.name()).collect();
         names.sort();
-        assert_eq!(names, vec!["extra-backend", "local-tmux"]);
-    }
-
-    #[test]
-    fn all_backends_returns_all_registered() {
-        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let mut registry = BackendRegistry::new(default);
-
-        let extra: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "extra-backend",
-        });
-        registry.register(extra);
-
-        let mut names: Vec<&str> = registry.all_backends().map(|b| b.name()).collect();
-        names.sort();
-        assert_eq!(names, vec!["extra-backend", "local-tmux"]);
-    }
-
-    #[test]
-    fn all_backends_single_default() {
-        let default: Arc<dyn SessionBackend> = Arc::new(StubBackend {
-            backend_name: "local-tmux",
-        });
-        let registry = BackendRegistry::new(default);
-
-        let backends: Vec<_> = registry.all_backends().collect();
-        assert_eq!(backends.len(), 1);
-        assert_eq!(backends[0].name(), "local-tmux");
+        assert_eq!(names, ["local:tmux", "ssh:box:psmux"]);
     }
 }

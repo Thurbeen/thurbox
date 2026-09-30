@@ -1,10 +1,10 @@
 //! The multiplexer choice is independent of the machine that runs a session.
 
-use super::HostDef;
+use super::{HostDef, Route};
 
 /// A name accepted in settings, hosts, and per-create commands. Implementations
 /// register separately; accepting a name here never claims its binary is usable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Multiplexer {
     Tmux,
     Psmux,
@@ -13,6 +13,11 @@ pub enum Multiplexer {
 }
 
 impl Multiplexer {
+    /// Every name, in the order a choice lists them. The one source of the
+    /// multiplexer vocabulary: parsing, the choices offered and the route
+    /// grammar all read it.
+    pub const ALL: [Self; 4] = [Self::Tmux, Self::Psmux, Self::Rmux, Self::Herdr];
+
     pub const fn name(self) -> &'static str {
         match self {
             Self::Tmux => "tmux",
@@ -23,15 +28,13 @@ impl Multiplexer {
     }
 
     pub fn parse(name: &str) -> Result<Self, String> {
-        match name {
-            "tmux" => Ok(Self::Tmux),
-            "psmux" => Ok(Self::Psmux),
-            "rmux" => Ok(Self::Rmux),
-            "herdr" => Ok(Self::Herdr),
-            _ => Err(format!(
-                "Unknown multiplexer '{name}'. Choose tmux, psmux, rmux, or herdr."
-            )),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|mux| mux.name() == name)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|mux| mux.name()).collect();
+                format!("Unknown multiplexer '{name}'. Choose {}.", names.join(", "))
+            })
     }
 
     pub const fn platform_default() -> Self {
@@ -49,8 +52,9 @@ impl Multiplexer {
 pub struct BackendChoice {
     pub host: Option<HostDef>,
     pub multiplexer: Multiplexer,
-    /// The stable session routing key. Unsuffixed keys retain legacy meaning.
-    pub backend_type: String,
+    /// Where the session will run. Always qualified: a new row names its
+    /// multiplexer, so a later change of preference cannot reinterpret it.
+    pub route: Route,
 }
 
 impl BackendChoice {
@@ -59,32 +63,30 @@ impl BackendChoice {
         explicit: Option<&str>,
         local_default: Option<&str>,
     ) -> Result<Self, String> {
-        let fallback = match &host {
-            Some(host) if host.is_windows() => Multiplexer::Psmux,
-            Some(_) => Multiplexer::Tmux,
-            None => Multiplexer::platform_default(),
+        let unqualified = match &host {
+            Some(host) => Route::to_host(host, None),
+            None => Route::local(None),
         };
         let configured = match &host {
             Some(host) => host.multiplexer.as_deref(),
             None => local_default,
         };
-        let name = explicit.or(configured).unwrap_or("default");
-        let multiplexer = if name == "default" {
-            fallback
-        } else {
-            Multiplexer::parse(name)?
-        };
-        let backend_type = match &host {
-            Some(host) if multiplexer == fallback => host.backend_name(),
-            Some(host) => format!("{}:{}", host.backend_name(), multiplexer.name()),
-            None if multiplexer == fallback => super::LOCAL_BACKEND_TYPE.to_string(),
-            None => format!("local-{}", multiplexer.name()),
+        let multiplexer = match explicit.or(configured).unwrap_or("default") {
+            // What an unqualified route means here — the one rule
+            // `Route::multiplexer` holds for rows written before routes did.
+            "default" => unqualified.multiplexer(Multiplexer::platform_default(), host.as_ref()),
+            name => Multiplexer::parse(name)?,
         };
         Ok(Self {
+            route: unqualified.with_mux(multiplexer),
             host,
             multiplexer,
-            backend_type,
         })
+    }
+
+    /// The key the row is written under.
+    pub fn backend_type(&self) -> String {
+        self.route.format()
     }
 }
 
@@ -100,25 +102,28 @@ mod tests {
             ..Default::default()
         };
         let chosen = BackendChoice::resolve(Some(host), Some("herdr"), None).unwrap();
-        assert_eq!(chosen.backend_type, "ssh:example:herdr");
+        assert_eq!(chosen.backend_type(), "ssh:example:herdr");
         assert_eq!(chosen.multiplexer, Multiplexer::Herdr);
         let local = BackendChoice::resolve(None, Some("herdr"), Some("rmux")).unwrap();
-        assert_eq!(local.backend_type, "local-herdr");
+        assert_eq!(local.backend_type(), "local:herdr");
     }
 
     #[test]
-    fn legacy_keys_keep_their_routing() {
+    fn a_new_row_names_its_multiplexer() {
         let host = HostDef {
             name: "example".into(),
             ..Default::default()
         };
         let chosen = BackendChoice::resolve(Some(host), None, None).unwrap();
-        assert_eq!(chosen.backend_type, "ssh:example");
+        assert_eq!(chosen.backend_type(), "ssh:example:tmux");
+        let local = BackendChoice::resolve(None, None, None).unwrap();
         assert_eq!(
-            BackendChoice::resolve(None, None, None)
-                .unwrap()
-                .backend_type,
-            super::super::LOCAL_BACKEND_TYPE
+            local.route,
+            Route::local(Some(Multiplexer::platform_default()))
+        );
+        assert_eq!(
+            local.backend_type(),
+            format!("local:{}", Multiplexer::platform_default().name())
         );
     }
 
@@ -127,8 +132,19 @@ mod tests {
         let mut host = HostDef::wsl("example");
         host.multiplexer = Some("rmux".into());
         let configured = BackendChoice::resolve(Some(host.clone()), None, None).unwrap();
-        assert_eq!(configured.backend_type, "wsl:example:rmux");
+        assert_eq!(configured.backend_type(), "wsl:example:rmux");
         let overridden = BackendChoice::resolve(Some(host), Some("tmux"), None).unwrap();
-        assert_eq!(overridden.backend_type, "wsl:example");
+        assert_eq!(overridden.backend_type(), "wsl:example:tmux");
+    }
+
+    #[test]
+    fn every_name_parses_back_to_its_multiplexer() {
+        for mux in Multiplexer::ALL {
+            assert_eq!(Multiplexer::parse(mux.name()), Ok(mux));
+        }
+        let refused = Multiplexer::parse("screen").unwrap_err();
+        for mux in Multiplexer::ALL {
+            assert!(refused.contains(mux.name()), "{refused}");
+        }
     }
 }

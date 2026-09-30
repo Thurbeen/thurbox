@@ -71,7 +71,8 @@ pub struct NameClaim {
     expires_at: u64,
 }
 
-/// The live sessions already carrying `name` on `backend`.
+/// The live sessions already carrying `name` on `backend`'s server
+/// ([`super::server_key`]).
 ///
 /// More than one is possible: thurbox enforces no uniqueness on the column, so
 /// this reports what is there rather than assuming what should be.
@@ -80,11 +81,12 @@ pub fn live_namesakes(
     name: &str,
     backend: &str,
 ) -> Result<Vec<SharedSession>, String> {
+    let server = super::server_key(backend);
     Ok(db
         .find_sessions_by_name(name)
         .map_err(|e| format!("find_sessions_by_name: {e}"))?
         .into_iter()
-        .filter(|s| s.backend_type == backend)
+        .filter(|s| super::server_key(&s.backend_type) == server)
         .collect())
 }
 
@@ -104,12 +106,13 @@ pub fn undoable_namesake(
     now: u64,
 ) -> Result<Option<DeletedSessionInfo>, String> {
     let window = super::UNDO_WINDOW.as_millis() as u64;
+    let server = super::server_key(backend);
     Ok(db
         .find_deleted_sessions_by_name(name)
         .map_err(|e| format!("find_deleted_sessions_by_name: {e}"))?
         .into_iter()
         .find(|row| {
-            row.backend_type == backend
+            super::server_key(&row.backend_type) == server
                 // A force delete cannot be undone, so it frees the name.
                 && !row.force_deleted
                 && now.saturating_sub(row.deleted_at) < window
@@ -133,12 +136,13 @@ pub fn window_namesakes(
 ) -> Result<Vec<SharedSession>, String> {
     // Fully-qualified per the session_ops → agent path-only architecture rule.
     let window = crate::backend::identity::sanitize_window_name(name);
+    let server = super::server_key(backend);
     Ok(db
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?
         .into_iter()
         .filter(|s| {
-            s.backend_type == backend
+            super::server_key(&s.backend_type) == server
                 && crate::backend::identity::sanitize_window_name(&s.name) == window
         })
         .collect())
@@ -148,11 +152,13 @@ pub fn window_namesakes(
 fn claim(db: &Database, name: &str, backend: &str) -> Result<Option<NameClaim>, String> {
     let now = current_time_millis();
     let expires_at = now.saturating_add(hold_ttl_ms());
+    // Claimed per server, so two spellings of one server contend for one name.
+    let backend = super::server_key(backend);
     let won = db
-        .claim_session_name(backend, name, expires_at, now)
+        .claim_session_name(&backend, name, expires_at, now)
         .map_err(|e| format!("claim_session_name: {e}"))?;
     Ok(won.then(|| NameClaim {
-        backend: backend.to_string(),
+        backend,
         name: name.to_string(),
         expires_at,
     }))

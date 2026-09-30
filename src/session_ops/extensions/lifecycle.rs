@@ -169,14 +169,14 @@ pub fn ensure_extension(db: &Database, def: &ExtensionDef) -> Result<EnsureRepor
 /// nothing should neither write to the database nor report a contended claim it
 /// never needed.
 ///
-/// A manifest declares no host, so every declared session is local: `local-tmux`
-/// is the backend all of these questions are about.
+/// A manifest declares no host, so every declared session is local: this
+/// machine's server is the backend all of these questions are about.
 fn ensure_session(
     db: &Database,
     sess: &ExtensionSession,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
-    let backend = crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE;
+    let backend = &crate::session::Route::local(None).format();
     if let Some(id) = live_session_named(db, &sess.name, backend)? {
         return Ok(Some(id));
     }

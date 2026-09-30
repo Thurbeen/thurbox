@@ -378,7 +378,7 @@ fn assess(
     if !verify {
         return hook;
     }
-    if crate::session::is_remote_backend(backend_type) {
+    if crate::session::Route::is_remote_key(backend_type) {
         return hook.pane_unavailable();
     }
     // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the

@@ -1088,7 +1088,7 @@ fn run_register(db: &Database, json_row: String) -> Result<CommandOutput, Comman
     let value: Value = serde_json::from_str(&json_row).map_err(|e| format!("--json-row: {e}"))?;
     let row = crate::session_ops::mirror::session_from_json(
         &value,
-        crate::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE,
+        &crate::session::Route::local(None).format(),
     )?;
     register_running_session(db, row)
 }
@@ -1712,7 +1712,7 @@ fn exec_in_session(
         .split_first()
         .ok_or("nothing to run — pass the command after `--`")?;
 
-    let host = if crate::session::is_remote_backend(&session.backend_type) {
+    let host = if crate::session::Route::is_remote_key(&session.backend_type) {
         Some(
             crate::session_ops::resolve_host(&session.backend_type)
                 .flatten()
@@ -2132,7 +2132,7 @@ fn delegate_to_host(
     session: &SharedSession,
     args: &[&str],
 ) -> Result<Option<CommandOutput>, String> {
-    if !crate::session::is_remote_backend(&session.backend_type) {
+    if !crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(None);
     }
     let host = crate::session_ops::resolve_host(&session.backend_type)
@@ -2273,7 +2273,7 @@ impl SessionFacts {
         if !probe {
             return hook;
         }
-        if crate::session::is_remote_backend(&s.backend_type) {
+        if crate::session::Route::is_remote_key(&s.backend_type) {
             return hook.pane_unavailable();
         }
         // The agent *binary*, not the agent name: `antigravity` runs `agy`, and

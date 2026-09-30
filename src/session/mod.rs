@@ -9,6 +9,7 @@ pub mod message;
 pub mod multiplexer;
 pub mod plugin_spec;
 pub mod review;
+pub mod route;
 pub mod settings;
 pub mod task;
 pub mod theme_config;
@@ -31,11 +32,7 @@ pub use hook_status::{
     Coverage, CoverageSource, HookDelivery, SessionState, StateSource, AGENT_HOOK_COVERAGE,
     WORKING_QUIET_MS,
 };
-pub use host_def::{
-    current_wsl_distro, host_name_of, is_remote_backend, is_ssh_backend, is_wsl_backend, HostDef,
-    HostKind, HostRegistry, WslRepairPlan, LOCAL_BACKEND_TYPE, SSH_BACKEND_PREFIX,
-    WSL_BACKEND_PREFIX,
-};
+pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
@@ -46,6 +43,7 @@ pub use review::{
     parse_unified_diff, Classification, CommentAnchor, DiffFile, DiffHunk, DiffLine, DiffLineKind,
     FileStatus, ReviewComment, Side,
 };
+pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 

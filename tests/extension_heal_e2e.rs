@@ -15,8 +15,12 @@ use std::path::Path;
 use std::process::Command;
 
 use thurbox::session::{ExtensionDef, ExtensionSession};
-use thurbox::session_ops::spawn::LOCAL_TMUX_BACKEND_TYPE;
 use thurbox::storage::Database;
+
+/// The backend a declared session lands on: this machine's own multiplexer.
+fn local_backend() -> String {
+    thurbox::session::Route::local(Some(thurbox::session::Multiplexer::platform_default())).format()
+}
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -135,7 +139,7 @@ fn local_namesakes(db: &Database) -> Vec<thurbox::sync::SharedSession> {
     db.find_sessions_by_name(DECLARED)
         .expect("find_sessions_by_name")
         .into_iter()
-        .filter(|s| s.backend_type == LOCAL_TMUX_BACKEND_TYPE)
+        .filter(|s| s.backend_type == local_backend())
         .collect()
 }
 
@@ -193,9 +197,10 @@ fn a_heal_inside_the_undo_window_leaves_one_session_of_the_name() {
     assert_eq!(
         named.len(),
         1,
-        "'{DECLARED}' addresses {} live sessions on {LOCAL_TMUX_BACKEND_TYPE} \
+        "'{DECLARED}' addresses {} live sessions on {} \
          after an undone delete (heal created {:?})",
         named.len(),
+        local_backend(),
         second.sessions_created,
     );
     assert_eq!(
@@ -240,7 +245,7 @@ fn a_restore_does_not_un_delete_a_name_something_else_now_answers_to() {
     let err = restored.expect_err("the name is taken; the restore must say so");
     assert!(err.contains(DECLARED), "names the session: {err}");
     assert!(
-        err.contains(LOCAL_TMUX_BACKEND_TYPE),
+        err.contains(&local_backend()),
         "names the backend the pair would be on: {err}"
     );
     assert_eq!(named.len(), 1, "one live session of the name, not two");
@@ -292,8 +297,9 @@ fn two_heals_racing_leave_one_session_of_the_name() {
         named.len(),
         1,
         "two concurrent heals left {} live sessions called '{DECLARED}' on \
-         {LOCAL_TMUX_BACKEND_TYPE}; reports: {reports:?}",
+         {}; reports: {reports:?}",
         named.len(),
+        local_backend(),
     );
     let created: usize = reports
         .iter()

@@ -172,7 +172,7 @@ impl DiffStore {
         // host-aware. Resolved here rather than on the worker so an unreachable
         // backend is reported as a failed diff instead of a silent local read.
         let host = crate::session_ops::resolve_host(backend).flatten();
-        let unreachable = host.is_none() && crate::session::is_remote_backend(backend);
+        let unreachable = host.is_none() && crate::session::Route::is_remote_key(backend);
 
         let tx = self.tx.clone();
         let session = session.to_string();

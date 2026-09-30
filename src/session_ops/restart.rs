@@ -162,11 +162,23 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
         .map_err(|e| format!("Failed to load session: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
+    // Asked before the mark: a row whose multiplexer nothing here drives — on
+    // its host or on this machine — would read as parked while the window that
+    // could not be killed keeps running. A host `hosts.toml` no longer
+    // describes is different — see below.
+    let served = if !remote || super::resolve_host(&session.backend_type).is_some() {
+        super::mux_host(&session.backend_type)
+            .map_err(|e| format!("cannot stop '{}': {e}", session.name))?
+    } else {
+        None
+    };
+
     db.set_session_stopped(session_id, true)
         .map_err(|e| format!("Failed to mark the session stopped: {e}"))?;
 
-    let killed = if crate::session::is_remote_backend(&session.backend_type) {
-        match super::resolve_host(&session.backend_type).flatten() {
+    let killed = if remote {
+        match served {
             Some(host) => crate::backend::tmux::kill_remote_windows(
                 &host,
                 &session.id.to_string(),
@@ -174,10 +186,10 @@ pub fn stop_session_headless(db: &Database, session_id: SessionId) -> Result<boo
                 session_panes(&session),
             )
             .unwrap_or(false),
-            // An unreachable host is not a reason to refuse: the mark is what
-            // makes the stop stick, and the pane is reclaimed by the next
-            // teardown that can reach it.
-            _ => false,
+            // An unreachable or unconfigured host is not a reason to refuse:
+            // the mark is what makes the stop stick, and the pane is reclaimed
+            // by the next teardown that can reach it.
+            None => false,
         }
     } else {
         let killed =
@@ -419,7 +431,13 @@ fn restart_for(
         return Ok(RestartReport::default());
     }
 
-    if why.only_if_missing() && !relaunch_is_owed(db, &session, host.as_ref())? {
+    // The multiplexer the row was written for, on the host it names: what the
+    // windows are killed, listed and spawned with. Refused here, before any of
+    // that, when nothing implements it.
+    let served = super::mux_host(&session.backend_type)
+        .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
+
+    if why.only_if_missing() && !relaunch_is_owed(db, &session, served.as_ref())? {
         return Ok(RestartReport::default());
     }
 
@@ -453,9 +471,9 @@ fn restart_for(
 
     refuse_if_deleted(db, &session)?;
 
-    match host.as_ref() {
+    match served.as_ref() {
         None => respawn_local(db, &session, &plan)?,
-        Some(host) => respawn_remote(db, &session, host, &plan)?,
+        Some(served) => respawn_remote(db, &session, served, &plan)?,
     }
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it

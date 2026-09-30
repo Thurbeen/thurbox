@@ -50,13 +50,14 @@ pub fn rename_session_headless(
     }
 
     let window = crate::backend::identity::sanitize_window_name(name);
+    let server = super::server_key(&session.backend_type);
     let taken: Vec<String> = db
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?
         .into_iter()
         .filter(|s| {
             s.id != session_id
-                && s.backend_type == session.backend_type
+                && super::server_key(&s.backend_type) == server
                 && crate::backend::identity::sanitize_window_name(&s.name) == window
         })
         .map(|s| s.id.to_string())
@@ -95,9 +96,11 @@ pub fn rename_session_headless(
         });
     }
 
+    let served = super::mux_host(&session.backend_type)
+        .map_err(|e| format!("cannot rename '{}': {e}", session.name))?;
     let id = session_id.to_string();
     let written =
-        crate::backend::tmux::rename_session_windows(host.as_ref(), &id, &session.name, name)
+        crate::backend::tmux::rename_session_windows(served.as_ref(), &id, &session.name, name)
             .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
             .and_then(|()| match db.rename_session(session_id, name) {
                 Ok(true) => Ok(()),
@@ -112,7 +115,7 @@ pub fn rename_session_headless(
         // beside it. Nothing renamed is found under the new name, so putting
         // back is harmless when the first rename failed outright.
         if let Err(e) =
-            crate::backend::tmux::rename_session_windows(host.as_ref(), &id, name, &session.name)
+            crate::backend::tmux::rename_session_windows(served.as_ref(), &id, name, &session.name)
         {
             tracing::warn!(
                 "could not put back the windows of '{}': {e:#}",

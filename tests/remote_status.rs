@@ -22,6 +22,10 @@ use thurbox::sync::SharedSession;
 
 const PANE: &str = "%7";
 
+/// What the backend serving the rows reports as: the qualified route. The
+/// rows themselves are stored as a legacy `ssh:devbox`, which settles to it.
+const SERVED_BY: &str = "ssh:devbox:tmux";
+
 fn session(backend_type: &str) -> SharedSession {
     SharedSession {
         id: SessionId::default(),
@@ -76,7 +80,7 @@ fn a_remote_agents_report_reaches_its_session() {
 
     let applied = store.apply_hook_states(
         vec![(
-            "ssh:devbox".to_string(),
+            SERVED_BY.to_string(),
             PANE.to_string(),
             "working".to_string(),
         )],
@@ -110,7 +114,7 @@ fn a_state_nobody_defines_is_ignored() {
     let (_home, mut store, id) = store_with_remote_session();
     let applied = store.apply_hook_states(
         vec![(
-            "ssh:devbox".to_string(),
+            SERVED_BY.to_string(),
             PANE.to_string(),
             "'; DROP TABLE sessions; --".to_string(),
         )],
@@ -128,7 +132,7 @@ fn re_reporting_the_same_state_writes_nothing() {
     let (_home, mut store, _id) = store_with_remote_session();
     let event = || {
         vec![(
-            "ssh:devbox".to_string(),
+            SERVED_BY.to_string(),
             PANE.to_string(),
             "blocked".to_string(),
         )]
@@ -151,7 +155,7 @@ fn an_event_for_a_pane_nobody_claims_yet_is_kept_until_it_appears() {
     let early = Instant::now();
     let applied = store.apply_hook_states(
         vec![(
-            "ssh:devbox".to_string(),
+            SERVED_BY.to_string(),
             PANE.to_string(),
             "working".to_string(),
         )],
@@ -182,7 +186,7 @@ fn a_parked_event_is_eventually_given_up_on() {
     let early = Instant::now();
     store.apply_hook_states(
         vec![(
-            "ssh:devbox".to_string(),
+            SERVED_BY.to_string(),
             PANE.to_string(),
             "working".to_string(),
         )],

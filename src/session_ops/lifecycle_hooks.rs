@@ -109,15 +109,13 @@ pub(crate) fn current_pane(
         .filter(|pane| !pane.is_empty())
 }
 
-/// The host a backend name denotes (`ssh:devbox` → `devbox`); `None` for local.
+/// The host a backend name denotes (`ssh:devbox`, `ssh:devbox:rmux` →
+/// `devbox`); `None` for local.
 pub(crate) fn host_name(backend_type: &str) -> Option<String> {
-    crate::session::is_remote_backend(backend_type)
-        .then(|| {
-            backend_type
-                .split_once(':')
-                .map(|(_, name)| name.to_string())
-        })
-        .flatten()
+    crate::session::Route::parse(backend_type)
+        .ok()?
+        .host()
+        .map(str::to_string)
 }
 
 pub(crate) fn worktree(w: &crate::sync::SharedWorktree) -> crate::session::HookWorktree {
@@ -471,5 +469,6 @@ mod tests {
         assert_eq!(ctx.additional_dirs.len(), 1);
         assert_eq!(host_name("local-tmux"), None);
         assert_eq!(host_name("wsl:Ubuntu").as_deref(), Some("Ubuntu"));
+        assert_eq!(host_name("ssh:devbox:rmux").as_deref(), Some("devbox"));
     }
 }

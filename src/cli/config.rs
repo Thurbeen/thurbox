@@ -78,6 +78,19 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
     path: Option<std::path::PathBuf>,
     label: &str,
 ) -> (Value, bool) {
+    validate_file(path, |contents| {
+        crate::agent::agent_config::parse_toml_reporting_unknown::<T>(contents, label)
+            .map(|(_, warnings)| warnings)
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Validate one config file with `parse`, whose `Ok` holds the problems a
+/// loadable file still has.
+fn validate_file(
+    path: Option<std::path::PathBuf>,
+    parse: impl Fn(&str) -> Result<Vec<String>, String>,
+) -> (Value, bool) {
     let Some(path) = path else {
         return (
             file_report(None, vec!["could not resolve path".into()], false),
@@ -88,12 +101,7 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
         return (file_report(Some(path), Vec::new(), false), true);
     }
     let problems = match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match crate::agent::agent_config::parse_toml_reporting_unknown::<T>(&contents, label) {
-                Ok((_, warnings)) => warnings,
-                Err(e) => vec![e.to_string()],
-            }
-        }
+        Ok(contents) => parse(&contents).unwrap_or_else(|e| vec![e]),
         Err(e) => vec![format!("read failed: {e}")],
     };
     let ok = problems.is_empty();
@@ -136,10 +144,11 @@ fn validate() -> (Value, Vec<String>) {
         crate::agent::agent_config::agents_config_path(),
         "agents.toml",
     );
-    let (hosts, hosts_ok) = validate_toml::<crate::session::HostRegistry>(
-        crate::agent::host_config::hosts_config_path(),
-        "hosts.toml",
-    );
+    // Through the loader's own parse, so an entry the load refuses — a host
+    // name holding `:` — fails validation rather than vanishing silently.
+    let (hosts, hosts_ok) = validate_file(crate::agent::host_config::hosts_config_path(), |c| {
+        crate::agent::host_config::parse_hosts(c).map(|(_, warnings)| warnings)
+    });
     let (settings, settings_ok) = validate_toml::<crate::session::settings::Settings>(
         crate::agent::settings_config::settings_config_path(),
         "settings.toml",
