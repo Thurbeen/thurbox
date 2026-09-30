@@ -164,12 +164,8 @@ fn create_request(name: &str) -> SpawnRequest {
 #[test]
 fn a_create_on_a_shareable_host_is_the_hosts_and_lands_with_its_id() {
     let rig = rig();
-    let result = super::spawn_session_headless(
-        &rig.db,
-        &rig.backends,
-        create_request("shared"),
-    )
-    .unwrap();
+    let result =
+        super::spawn_session_headless(&rig.db, &rig.backends, create_request("shared")).unwrap();
 
     let calls = fake::calls();
     assert_eq!(calls[0][..2], ["session", "create"]);
@@ -204,8 +200,7 @@ fn a_parent_on_another_host_is_refused_before_any_round_trip() {
     rig.db.upsert_session(&parent).unwrap();
     let mut req = create_request("worker");
     req.parent_session_id = Some(local_parent);
-    let err = super::spawn_session_headless(&rig.db, &rig.backends, req)
-        .unwrap_err();
+    let err = super::spawn_session_headless(&rig.db, &rig.backends, req).unwrap_err();
     assert!(err.contains("same host"), "{err}");
     assert!(fake::calls().is_empty());
 }
@@ -214,12 +209,8 @@ fn a_parent_on_another_host_is_refused_before_any_round_trip() {
 fn the_hosts_refusal_is_the_callers_error_verbatim() {
     let rig = rig();
     rig.host.borrow_mut().refuse_create = Some("Unknown agent 'codex' on devbox".into());
-    let err = super::spawn_session_headless(
-        &rig.db,
-        &rig.backends,
-        create_request("nope"),
-    )
-    .unwrap_err();
+    let err =
+        super::spawn_session_headless(&rig.db, &rig.backends, create_request("nope")).unwrap_err();
     assert_eq!(err, "Unknown agent 'codex' on devbox");
     assert!(rig.db.list_active_sessions().unwrap().is_empty());
 }
@@ -234,12 +225,8 @@ fn a_local_pre_hook_veto_prevents_the_delegation() {
         "[[hooks]]\nevent = \"session.pre_create\"\ncommand = \"exit 3\"\n",
     )
     .unwrap();
-    let err = super::spawn_session_headless(
-        &rig.db,
-        &rig.backends,
-        create_request("vetoed"),
-    )
-    .unwrap_err();
+    let err = super::spawn_session_headless(&rig.db, &rig.backends, create_request("vetoed"))
+        .unwrap_err();
     assert!(err.contains("exit 3"), "{err}");
     assert!(fake::calls().is_empty(), "nothing reached the host");
 }
@@ -269,9 +256,7 @@ fn a_delete_is_performed_by_the_host_and_mirrored_here() {
         .active
         .push(host_session(id, "doomed"));
 
-    let report =
-        super::delete_session_headless(&rig.db, &rig.backends, id, true)
-            .unwrap();
+    let report = super::delete_session_headless(&rig.db, &rig.backends, id, true).unwrap();
     let calls = fake::calls();
     assert_eq!(
         calls[0],
@@ -293,25 +278,13 @@ fn a_restart_asks_the_host_and_a_relaunch_says_if_missing() {
     rig.db.upsert_session(&row).unwrap();
     rig.host.borrow_mut().active.push(host_session(id, "again"));
 
-    super::restart::restart_session_headless_with(
-        &rig.db,
-        &rig.backends,
-        id,
-        false,
-    )
-    .unwrap();
+    super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false).unwrap();
     assert_eq!(
         fake::calls()[0],
         vec!["session", "restart", &id.to_string()]
     );
 
-    super::restart::restart_session_headless_with(
-        &rig.db,
-        &rig.backends,
-        id,
-        true,
-    )
-    .unwrap();
+    super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true).unwrap();
     let calls = fake::calls();
     let relaunch = calls
         .iter()
@@ -340,8 +313,7 @@ fn an_unpark_reaches_the_host_as_a_plain_restart() {
         .push(host_session(id, "parked"));
     rig.db.set_session_stopped(id, true).unwrap();
 
-    super::restart::start_session_headless(&rig.db, &rig.backends, id)
-        .unwrap();
+    super::restart::start_session_headless(&rig.db, &rig.backends, id).unwrap();
 
     let restart = fake::calls()
         .into_iter()
@@ -361,9 +333,7 @@ fn a_restore_is_performed_by_the_host_and_the_row_returns() {
     rig.db.mark_session_force_deleted(id).unwrap();
     rig.host.borrow_mut().deleted.push((id, true));
 
-    let report =
-        super::restore_session_headless(&rig.db, &rig.backends, id, true)
-            .unwrap();
+    let report = super::restore_session_headless(&rig.db, &rig.backends, id, true).unwrap();
     assert_eq!(
         fake::calls()[0],
         vec!["session", "restore", &id.to_string(), "--best-effort"]
@@ -394,9 +364,7 @@ fn a_remote_restore_is_not_refused_by_a_namesake_in_the_local_mirror() {
     rig.db.soft_delete_session(id).unwrap();
     rig.host.borrow_mut().deleted.push((id, false));
 
-    let report =
-        super::restore_session_headless(&rig.db, &rig.backends, id, true)
-            .unwrap();
+    let report = super::restore_session_headless(&rig.db, &rig.backends, id, true).unwrap();
     assert_eq!(report.name, "back");
     assert_eq!(
         fake::calls()[0],
@@ -414,9 +382,7 @@ fn a_restore_on_a_remote_host_that_cannot_be_delegated_to_is_still_refused() {
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
     rig.db.soft_delete_session(id).unwrap();
-    let err =
-        super::restore_session_headless(&rig.db, &rig.backends, id, false)
-            .unwrap_err();
+    let err = super::restore_session_headless(&rig.db, &rig.backends, id, false).unwrap_err();
     assert!(err.contains("local-only"), "{err}");
     assert!(fake::calls().is_empty());
 }
@@ -496,9 +462,7 @@ fn a_delete_the_host_does_not_know_is_taken_here_rather_than_failing() {
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
 
-    let report =
-        super::delete_session_headless(&rig.db, &rig.backends, id, true)
-            .unwrap();
+    let report = super::delete_session_headless(&rig.db, &rig.backends, id, true).unwrap();
 
     assert_eq!(
         fake::calls()[0],
@@ -531,8 +495,7 @@ fn any_other_refusal_from_the_host_still_aborts_the_delete() {
     rig.db.upsert_session(&row).unwrap();
     fake::install_runner(Box::new(|_, _| Err(fake::answered("worktree is locked"))));
 
-    let err = super::delete_session_headless(&rig.db, &rig.backends, id, true)
-        .unwrap_err();
+    let err = super::delete_session_headless(&rig.db, &rig.backends, id, true).unwrap_err();
     assert_eq!(err, "worktree is locked");
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
 }

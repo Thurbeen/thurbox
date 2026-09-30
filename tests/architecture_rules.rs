@@ -382,8 +382,6 @@ const SUBMODULE_GOVERNED: &[&str] = &["backend"];
 /// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Remover {
-    /// Lifecycle through the contract, one registry injected at the roots.
-    F5a,
     /// Pane I/O through `locate` and the contract's pane verbs.
     F5b,
     /// Host platform and launcher separated from the multiplexer. Removed
@@ -415,45 +413,6 @@ struct Transitional {
 }
 
 const TRANSITIONAL: &[Transitional] = &[
-    Transitional {
-        from: "session_ops",
-        to: "backend::wiring",
-        items: &["implements"],
-        remover: Remover::F5a,
-        why: "lifecycle asks the factory whether a row's multiplexer has an adapter",
-    },
-    // Lifecycle — spawn, restart, restore, stop, delete, reap, owed teardown,
-    // rename, register — through the tmux adapter's free functions.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux",
-        items: &[
-            "SessionPanes",
-            "agent_window",
-            "agent_window_alive",
-            "kill_remote_windows",
-            "kill_shell_window",
-            "kill_window",
-            "kill_window_at",
-            "known_host_socket",
-            "local_window_index",
-            "remote_window_index",
-            "rename_session_windows",
-            "spawn_window",
-            "spawn_window_remote",
-            "stamp_local_window",
-            "window_pane_pid",
-        ],
-        remover: Remover::F5a,
-        why: "every lifecycle verb calls the tmux adapter instead of the row's backend",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux",
-        items: &["agent_window", "stamp_local_window"],
-        remover: Remover::F5a,
-        why: "`session register` locates and stamps a local tmux window directly",
-    },
     // Pane I/O addressed by (id, name) on the local tmux server.
     Transitional {
         from: "session_ops",
@@ -736,9 +695,8 @@ const ADAPTERS: &[&str] = &["backend::tmux"];
 /// the exempt crate roots (`main`, `bin/`) — and only the factory may name an
 /// adapter. A consumer that builds its own registry sees a different set of
 /// backends from the one the process was wired with, and one that names an
-/// adapter has stopped using the contract. Either kind of crossing that exists
-/// today is transitional, and a factory call outside the roots is F5a's to
-/// remove.
+/// adapter has stopped using the contract. No factory crossing is
+/// transitional: the registry is built at the roots and injected.
 #[test]
 fn only_the_composition_roots_name_the_factory() {
     for rules in MODULE_RULES {
@@ -760,11 +718,10 @@ fn only_the_composition_roots_name_the_factory() {
             }
         }
     }
-    for entry in TRANSITIONAL.iter().filter(|t| t.to == FACTORY) {
-        assert_eq!(
-            entry.remover,
-            Remover::F5a,
-            "{} → {FACTORY} is removed by injecting the registry (F5a)",
+    for entry in TRANSITIONAL {
+        assert_ne!(
+            entry.to, FACTORY,
+            "{} → {FACTORY} is not transitional: inject the registry the root built",
             entry.from
         );
     }
@@ -1291,7 +1248,7 @@ fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
         from: "kernel",
         to: "agent::tmux",
         items: &["Index", "gone"],
-        remover: Remover::F5a,
+        remover: Remover::F5b,
         why: "fixture",
     }];
     let (unlisted, stale) = reconcile(&violations(&tree, &rules), &table);

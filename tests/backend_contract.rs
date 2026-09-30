@@ -1,0 +1,92 @@
+//! The session-backend contract, run against the tmux adapter and against the
+//! in-memory fake the routing tests register in its place. A fake that passes
+//! only its own tests would prove nothing about routing; one that passes the
+//! adapter's is a stand-in for it.
+
+use thurbox::backend::identity::WindowIndex;
+use thurbox::backend::tmux::TmuxBackend;
+use thurbox::backend::{BackendLiveness, SessionBackend, WindowRole};
+use thurbox::session::{Multiplexer, Route};
+
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
+
+#[path = "support/backend_contract.rs"]
+mod backend_contract;
+
+use recording_backend::RecordingBackend;
+use tmux_server::TmuxServer;
+
+const SOCKET: &str = "thurbox-backend-contract";
+
+fn have_tmux() -> bool {
+    std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn the_recording_backend_keeps_the_contract() {
+    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    backend_contract::suite(&*fake);
+}
+
+#[test]
+fn the_tmux_backend_keeps_the_contract() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let backend = TmuxBackend::new();
+    backend_contract::suite(&backend);
+    backend.shutdown();
+}
+
+/// An unreachable machine answers nothing, and a fake that answered "empty"
+/// instead would make every teardown through it look finished.
+#[test]
+fn an_unreachable_fake_answers_nothing_rather_than_nothing_there() {
+    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let pane = fake.open("tb-far", "row", WindowRole::Agent);
+    fake.set_reachable(false);
+    assert!(fake.discover().is_err(), "a listing that did not happen");
+    assert!(fake.kill(&pane).is_err(), "a kill that did not happen");
+    assert!(fake.ensure_ready().is_err());
+    fake.set_reachable(true);
+    assert_eq!(
+        fake.windows().len(),
+        1,
+        "nothing was killed while unreachable"
+    );
+}
+
+/// Two unstamped windows of one name are ambiguous, and ambiguity never
+/// authorises a relaunch — the fake lists them the way a multiplexer would.
+#[test]
+fn an_ambiguous_fake_listing_never_permits_a_relaunch() {
+    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    fake.open("tb-twin", "", WindowRole::Agent);
+    fake.open("tb-twin", "", WindowRole::Agent);
+    let index = WindowIndex::from_listing(fake.discover().unwrap());
+    let liveness = index.agent_liveness("some-row", "twin");
+    assert_eq!(liveness, BackendLiveness::Unknown);
+    assert!(!liveness.permits_relaunch());
+}
+
+/// One session, one window per role: a second stamp for the same row retires
+/// the older window, as the tmux adapter's sweep does (ADR-25).
+#[test]
+fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
+    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let old = fake.open("tb-x", "", WindowRole::Agent);
+    let new = fake.open("tb-x", "", WindowRole::Agent);
+    fake.stamp_window(&old, "row", WindowRole::Agent).unwrap();
+    fake.stamp_window(&new, "row", WindowRole::Agent).unwrap();
+    let panes: Vec<String> = fake.windows_of("row").into_iter().map(|w| w.pane).collect();
+    assert_eq!(panes, vec![new]);
+}
