@@ -767,12 +767,18 @@ return {
   focusable = false,
   commands = {
     { action = "extra.toggle", desc = "Toggle for the pressed session" },
+    { action = "extra.mislabel", desc = "Contribute an entry whose label is not text" },
   },
   render = function()
     return { type = "text", text = "" }
   end,
   on_action = function(action)
-    if action ~= "extra.toggle" then
+    if action == "extra.mislabel" then
+      local extra = store["sessions.menu_extra"] or {}
+      extra.mislabelled = { { label = { "not text" }, action = "extra.toggle" } }
+      store["sessions.menu_extra"] = extra
+      return true
+    elseif action ~= "extra.toggle" then
       return false
     end
     local chosen = store["menu.chosen"]
@@ -865,4 +871,23 @@ fn contributions_are_not_offered_off_the_rows() {
         .expect("context");
     let text = menu_text(&host).expect("drawn");
     assert!(!text.contains("Auto-continue"), "{text}");
+}
+
+/// One contributor's malformed label must not cost the row menu: the entry
+/// falls back to its action's name, as `64_menu` draws an unlabelled one.
+#[test]
+fn a_contributed_label_that_is_not_text_falls_back_to_its_action() {
+    let (_home, host) = contributed_host();
+    assert!(host
+        .on_action(index_of(&host, "extra"), "extra.mislabel")
+        .expect("mislabel"));
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(
+        index_of(&host, "sessions"),
+        &right_press_at(7, 4, Some(&beta)),
+    )
+    .expect("context");
+    let text = menu_text(&host).expect("the row menu still draws");
+    assert!(text.contains("Open"), "{text}");
+    assert!(text.contains("extra.toggle"), "{text}");
 }

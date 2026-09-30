@@ -486,7 +486,7 @@ end
 --- to its list of entries and "sep" rules, so two contributors never overwrite
 --- each other. Contributors are taken in name order, each after a rule; an
 --- entry whose action nothing declares is dropped, and so is a rule it leaves
---- with nothing to separate. Built when the menu opens, so it follows a plugin
+--- with nothing to separate. A label that is not a string is dropped. Built when the menu opens, so it follows a plugin
 --- that was added, removed or rebound since.
 local function row_menu()
   local extra = store["sessions.menu_extra"]
@@ -522,7 +522,11 @@ local function row_menu()
           menu[#menu + 1] = "sep"
           rule = false
         end
-        menu[#menu + 1] = { label = entry.label, action = entry.action }
+        -- A label that is not text would stop the menu float from drawing at
+        -- all, this pane's own entries included; without one it draws the
+        -- action's name.
+        local label = type(entry.label) == "string" and entry.label or nil
+        menu[#menu + 1] = { label = label, action = entry.action }
       end
     end
   end

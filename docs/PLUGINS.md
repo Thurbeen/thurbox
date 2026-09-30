@@ -924,7 +924,8 @@ withdraw.
 
 An entry is shown only if its action is **declared**, in `keys` or in
 `commands`, so a misspelt or removed action is dropped rather than offered as a
-dead entry. A rule left with nothing to separate is dropped with it. Entries
+dead entry. A rule left with nothing to separate is dropped with it. A `label`
+that is not a string is ignored, and the entry shows its action's name. Entries
 appear on a row's menu only, never on the menu for empty space. The check reads
 `thurbox.registry.keys` and `thurbox.registry.commands`, the palette's
 chord-less rows.
