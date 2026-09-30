@@ -758,8 +758,9 @@ pub fn same_machine(a: &str, b: &str) -> bool {
 /// told which multiplexer the row's route names, or why none can be driven.
 ///
 /// `Ok(None)` is this machine. `Err` refuses — a key naming no route, a host
-/// `hosts.toml` no longer describes, or a multiplexer no adapter here
-/// implements. An unqualified row keeps the multiplexer it was written for
+/// `hosts.toml` no longer describes, a multiplexer no adapter here implements,
+/// or, locally, any but the platform default this machine runs. An unqualified
+/// row keeps the multiplexer it was written for
 /// ([`crate::session::Route::multiplexer`]), so a host whose preference moved
 /// to rmux still has its old tmux rows torn down with tmux; and an rmux row is
 /// refused rather than run through the tmux command grammar.
@@ -779,13 +780,23 @@ pub(crate) fn mux_host_in(
     backend_type: &str,
 ) -> Result<Option<crate::session::HostDef>, String> {
     let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
+    let local = crate::session::Multiplexer::platform_default();
     let Some(name) = route.host() else {
+        // This machine runs its platform default and nothing else.
+        let mux = route.multiplexer(local, None);
+        if mux != local {
+            return Err(format!(
+                "this machine runs {}, not {}, so nothing here drives '{backend_type}'",
+                local.name(),
+                mux.name()
+            ));
+        }
         return Ok(None);
     };
     let host = registry
         .host_of(&route)
         .ok_or_else(|| format!("host '{name}' is not in hosts.toml"))?;
-    let mux = route.multiplexer(crate::session::Multiplexer::platform_default(), Some(host));
+    let mux = route.multiplexer(local, Some(host));
     if !crate::backend::wiring::implements(mux) {
         return Err(format!(
             "no backend here implements {} on host '{name}', so nothing drives '{backend_type}'",
@@ -870,6 +881,30 @@ pub(crate) fn inject_thurbox_env(
 mod tests {
     use super::*;
     use crate::session::SessionId;
+
+    /// This machine is served by its platform default and nothing else, so a
+    /// local row naming another multiplexer is refused rather than driven
+    /// through the local tmux (or psmux) server.
+    #[test]
+    fn a_local_row_is_driven_only_by_this_machines_multiplexer() {
+        let hosts = crate::session::HostRegistry::default();
+        let local = crate::session::Multiplexer::platform_default();
+        for key in ["", "tmux", "local-tmux", &format!("local-{}", local.name())] {
+            assert_eq!(mux_host_in(&hosts, key), Ok(None), "{key:?}");
+        }
+        for mux in crate::session::Multiplexer::ALL {
+            if mux == local {
+                continue;
+            }
+            let key = format!("local-{}", mux.name());
+            // `local-tmux` is the legacy spelling of the platform default.
+            if key == "local-tmux" {
+                continue;
+            }
+            let refused = mux_host_in(&hosts, &key).expect_err(&key);
+            assert!(refused.contains(mux.name()), "{refused}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]
