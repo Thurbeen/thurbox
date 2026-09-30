@@ -1140,14 +1140,22 @@ impl TmuxBackend {
     /// (issue #1207). The refusal itself is untouched — the choice is made by
     /// *retiring* a window, which is a write, and never by reading one of two
     /// as the answer.
-    fn settle(&self, owner: Owner<'_>, role: WindowRole) -> Result<Located> {
+    fn settle(
+        &self,
+        listing: &[DiscoveredSession],
+        owner: Owner<'_>,
+        role: WindowRole,
+    ) -> Result<Located> {
         let remembered = match role {
             WindowRole::Shell => owner.shell_pane,
             _ => owner.agent_pane,
         };
         if self.transport.uses_psmux() {
+            let name = window_name_for(role, owner.name);
             return Ok(match self.transport.is_remote() {
-                true if !remembered.is_empty() => Located::At(remembered.to_string()),
+                true if remembered_window(listing, remembered, &name) => {
+                    Located::At(remembered.to_string())
+                }
                 true => Located::Unknown,
                 false => Located::At(window_target(&window_name_for(role, owner.name))),
             });
@@ -2425,9 +2433,10 @@ impl SessionBackend for TmuxBackend {
         // that reads the same as "no such window" — see `mux_answered_absent`.
         // One listing serves both roles: an ssh round trip per role would
         // double the cost of every remote teardown.
-        let index = WindowIndex::from_listing(self.discover_answered()?);
+        let listing = self.discover_answered()?;
+        let index = WindowIndex::from_listing(listing.iter().cloned());
         let place = |role| match index.locate(owner.session_id, owner.name, role, false) {
-            Located::Unknown => self.settle(owner, role),
+            Located::Unknown => self.settle(&listing, owner, role),
             found => Ok(found),
         };
         Ok(Placed {
@@ -4135,6 +4144,17 @@ fn known_host_socket(host: &crate::session::HostDef) -> Result<String> {
     )
 }
 
+/// Whether the pane a row remembers is, in `listing`, a window of the name the
+/// row's window has — the least a remembered id must show before a kill takes
+/// its whole window. A server that restarted reissues pane ids, so an id that
+/// now sits in another session's window, split or not, is not this row's.
+fn remembered_window(listing: &[DiscoveredSession], pane: &str, window_name: &str) -> bool {
+    !pane.is_empty()
+        && listing
+            .iter()
+            .any(|w| w.backend_id == pane && w.name == window_name)
+}
+
 /// Whether a kill's failure says its target is already gone — named by its
 /// pane or by its name — which is what the kill wanted.
 fn already_gone(error: &str) -> bool {
@@ -5274,6 +5294,27 @@ mod tests {
             ..host
         };
         assert_eq!(known_host_socket(&pinned).unwrap(), "thurbox");
+    }
+
+    /// A remembered pane is trusted only where the listing shows it in a
+    /// window of the row's own name.
+    #[test]
+    fn a_remembered_pane_counts_only_in_a_window_of_the_rows_name() {
+        let window = |pane: &str, name: &str| DiscoveredSession {
+            backend_id: pane.into(),
+            name: name.into(),
+            is_alive: true,
+            session: String::new(),
+            role: WindowRole::Agent,
+        };
+        let listing = [window("%3", "tb-mine"), window("%4", "tb-theirs")];
+        assert!(remembered_window(&listing, "%3", "tb-mine"));
+        assert!(
+            !remembered_window(&listing, "%4", "tb-mine"),
+            "reissued to another window"
+        );
+        assert!(!remembered_window(&listing, "%9", "tb-mine"), "gone");
+        assert!(!remembered_window(&listing, "", "tb-mine"));
     }
 
     /// The same refusal through the contract: a teardown, a restart's listing
