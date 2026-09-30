@@ -42,6 +42,9 @@ pub struct Window {
     pub command: String,
     /// Where it was asked to run it.
     pub cwd: Option<String>,
+    /// What reached the pane, in order: typed text, `\n` for each Enter, and
+    /// `<name>` for any other key. What a capture reads back.
+    pub screen: String,
 }
 
 #[derive(Default)]
@@ -88,6 +91,20 @@ impl RecordingBackend {
         self.state.lock().unwrap().calls.clone()
     }
 
+    /// What reached `pane`, or nothing for a pane it does not hold.
+    pub fn screen(&self, pane: &str) -> String {
+        self.windows()
+            .into_iter()
+            .find(|w| w.pane == pane)
+            .map(|w| w.screen)
+            .unwrap_or_default()
+    }
+
+    /// Start the call log over, so a check reads only what follows.
+    pub fn forget_calls(&self) {
+        self.state.lock().unwrap().calls.clear();
+    }
+
     /// Whether any call named `verb`.
     pub fn called(&self, verb: &str) -> bool {
         self.calls()
@@ -122,6 +139,7 @@ impl RecordingBackend {
             alive: true,
             command: String::new(),
             cwd: None,
+            screen: String::new(),
         });
         pane
     }
@@ -266,6 +284,7 @@ impl SessionBackend for RecordingBackend {
                 .collect::<Vec<_>>()
                 .join(" "),
             cwd: cwd.map(|p| p.display().to_string()),
+            screen: String::new(),
         });
         Ok(SpawnedSession {
             backend_id: pane,
@@ -308,6 +327,7 @@ impl SessionBackend for RecordingBackend {
                 .collect::<Vec<_>>()
                 .join(" "),
             cwd: spec.cwd.map(|p| p.display().to_string()),
+            screen: String::new(),
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);
         Ok(pane)
