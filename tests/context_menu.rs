@@ -81,6 +81,16 @@ fn publish_with(
     snapshot: &Snapshot,
     inflight: &[thurbox::kernel::command::InFlight],
 ) {
+    publish_full(host, snapshot, inflight, None);
+}
+
+/// Publish with the pointer over `hovered`, as the kernel does after a move.
+fn publish_full(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    inflight: &[thurbox::kernel::command::InFlight],
+    hovered: Option<&thurbox::kernel::node::Identity>,
+) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -108,7 +118,7 @@ fn publish_with(
         wants: &Default::default(),
         focus: None,
         selection: None,
-        hovered: None,
+        hovered,
         printing: &Default::default(),
     })
     .expect("publish");
@@ -689,5 +699,66 @@ fn a_creation_in_flight_is_not_something_to_sort() {
     assert!(
         !text.contains("Sort by name"),
         "a placeholder is not a session:\n{text}"
+    );
+}
+
+// ── hover ───────────────────────────────────────────────────────────────────
+
+/// The row node's own style, for the entry drawn as `menu-<i>`.
+fn row_style(host: &LuaHost, i: usize) -> ratatui::style::Style {
+    use thurbox::kernel::node::Node;
+    let rendered = host.render(index_of(host, "menu"), ctx()).expect("render");
+    match node_with_id(&rendered.node, &format!("menu-{i}")) {
+        Some(Node::Text { style, .. }) => *style,
+        other => panic!("menu-{i} is a text row: {other:?}"),
+    }
+}
+
+fn point_at(host: &LuaHost, id: &str) {
+    let identity = thurbox::kernel::node::Identity {
+        id: Some(id.to_string()),
+        role: Some("row".to_string()),
+        ..Default::default()
+    };
+    publish_full(host, &Snapshot::default(), &[], Some(&identity));
+}
+
+/// The entry under the pointer is tinted the way a session row is — the same
+/// band, so pointing reads the same everywhere in the interface.
+#[test]
+fn the_entry_under_the_pointer_is_tinted() {
+    let (_home, host) = menu_host();
+    open(&host);
+    point_at(&host, "menu-2");
+    let hovered = row_style(&host, 2);
+    assert!(
+        hovered.bg.is_some(),
+        "the hovered entry has a band: {hovered:?}"
+    );
+    assert!(
+        row_style(&host, 4).bg.is_none(),
+        "an entry nobody points at has none"
+    );
+}
+
+/// The keyboard bar is the stronger of the two, so it keeps its own look when
+/// the pointer is over it, and pointing elsewhere does not move it.
+#[test]
+fn the_keyboard_bar_wins_over_the_hover_band() {
+    let (_home, host) = menu_host();
+    open(&host);
+    let bar = row_style(&host, 1);
+    point_at(&host, "menu-1");
+    assert_eq!(
+        row_style(&host, 1),
+        bar,
+        "the bar is unchanged under the pointer"
+    );
+    point_at(&host, "menu-2");
+    assert_eq!(row_style(&host, 1), bar, "and stays where the keys put it");
+    assert_ne!(
+        row_style(&host, 2),
+        bar,
+        "a hovered entry is not a second bar"
     );
 }

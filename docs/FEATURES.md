@@ -52,7 +52,8 @@ A right-click on a session row selects it and opens a menu of that session's
 actions where the pointer is: Open, Rename, Fork, Open in editor, Restart, Sync,
 Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
 to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
-a click anywhere else closes it.
+a click anywhere else closes it. The entry under the pointer takes the same hover band as a
+session row; the keyboard's bar stays the stronger of the two.
 
 A right-click off the rows — on the empty space below them, or on a repo header
 — is about no session, so it opens the column's general menu instead: New

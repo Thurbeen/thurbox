@@ -21,6 +21,7 @@
 -- action's owner to read: an action carries no argument, and the thing the menu
 -- was opened on may have moved or gone by the time it lands.
 
+local hover = require("lib.hover")
 local theme = require("lib.theme")
 local ui = require("lib.ui")
 local widgets = require("lib.widgets")
@@ -129,6 +130,10 @@ return {
             fg = theme.role("selection_fg"),
             bold = true,
           }
+        elseif hover.id("menu-" .. i) then
+          -- The session list's hover band: the background alone, so pointing
+          -- reads the same everywhere, and the keyboard bar stays the stronger.
+          style = { fg = theme.text, bg = theme.role("selection_bg") }
         end
         children[#children + 1] = {
           type = "text",
