@@ -1714,7 +1714,8 @@ fn explicit_cli_choice_overrides_an_unavailable_local_preference() {
         .get_session_by_name("overridden")
         .expect("read session")
         .expect("created session");
-    assert_eq!(row.backend_type, "local-tmux");
+    // Written qualified: an explicit tmux, not the legacy platform default.
+    assert_eq!(row.backend_type, "local:tmux");
     assert!(db.get_session_by_name("unavailable").unwrap().is_none());
 }
 

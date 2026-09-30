@@ -4693,9 +4693,9 @@ mod tests {
     fn local_backend_is_named_by_its_local_route_with_local_transport() {
         let backend = TmuxBackend::new();
         let expected = if cfg!(windows) {
-            "local-psmux"
+            "local:psmux"
         } else {
-            "local-tmux"
+            "local:tmux"
         };
         assert_eq!(backend.name(), expected);
         assert!(!backend.transport.is_remote());

@@ -898,18 +898,16 @@ mod tests {
     fn a_local_row_is_driven_only_by_this_machines_multiplexer() {
         let hosts = crate::session::HostRegistry::default();
         let local = crate::session::Multiplexer::platform_default();
-        for key in ["", "tmux", "local-tmux", &format!("local-{}", local.name())] {
+        for key in ["", "tmux", "local-tmux", &format!("local:{}", local.name())] {
             assert_eq!(mux_host_in(&hosts, key), Ok(None), "{key:?}");
         }
         for mux in crate::session::Multiplexer::ALL {
             if mux == local {
                 continue;
             }
-            let key = format!("local-{}", mux.name());
-            // `local-tmux` is the legacy spelling of the platform default.
-            if key == "local-tmux" {
-                continue;
-            }
+            // An explicit local tmux on Windows is refused too, where the
+            // legacy `local-tmux` is psmux.
+            let key = format!("local:{}", mux.name());
             let refused = mux_host_in(&hosts, &key).expect_err(&key);
             assert!(refused.contains(mux.name()), "{refused}");
         }

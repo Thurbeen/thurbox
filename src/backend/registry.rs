@@ -146,7 +146,7 @@ mod tests {
         let registry = BackendRegistry::new(route.clone(), stub(&route));
         assert!(registry.supports(&route));
         assert_eq!(registry.default_route(), &route);
-        assert_eq!(registry.default_backend().name(), "local-tmux");
+        assert_eq!(registry.default_backend().name(), "local:tmux");
     }
 
     #[test]
@@ -213,9 +213,9 @@ mod tests {
 
         let mut routes: Vec<String> = registry.routes().map(Route::format).collect();
         routes.sort();
-        assert_eq!(routes, ["local-tmux", "ssh:box:psmux"]);
+        assert_eq!(routes, ["local:tmux", "ssh:box:psmux"]);
         let mut names: Vec<&str> = registry.all_backends().map(|(_, b)| b.name()).collect();
         names.sort();
-        assert_eq!(names, ["local-tmux", "ssh:box:psmux"]);
+        assert_eq!(names, ["local:tmux", "ssh:box:psmux"]);
     }
 }

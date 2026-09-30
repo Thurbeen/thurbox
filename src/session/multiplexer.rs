@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(chosen.backend_type(), "ssh:example:herdr");
         assert_eq!(chosen.multiplexer, Multiplexer::Herdr);
         let local = BackendChoice::resolve(None, Some("herdr"), Some("rmux")).unwrap();
-        assert_eq!(local.backend_type(), "local-herdr");
+        assert_eq!(local.backend_type(), "local:herdr");
     }
 
     #[test]
@@ -123,7 +123,7 @@ mod tests {
         );
         assert_eq!(
             local.backend_type(),
-            format!("local-{}", Multiplexer::platform_default().name())
+            format!("local:{}", Multiplexer::platform_default().name())
         );
     }
 

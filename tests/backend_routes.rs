@@ -304,8 +304,9 @@ fn listing(db: &Database, deleted: bool) -> Value {
 }
 
 /// A mirrored row keeps the multiplexer the host recorded for it: the host's
-/// `local-rmux` session is `ssh:devbox:rmux` here, while a host row written
-/// before routes carried one stays unqualified and keeps its legacy reading.
+/// `local-rmux` (legacy) or `local:psmux` session is `ssh:devbox:<mux>` here,
+/// while a host row written before routes carried one stays unqualified and
+/// keeps its legacy reading.
 #[test]
 fn a_mirrored_row_keeps_the_multiplexer_its_host_recorded() {
     let host = Database::open_in_memory().unwrap();
@@ -314,6 +315,9 @@ fn a_mirrored_row_keeps_the_multiplexer_its_host_recorded() {
         .unwrap();
     let legacy = SessionId::default();
     host.upsert_session(&session(legacy, "l", "local-tmux"))
+        .unwrap();
+    let current = SessionId::default();
+    host.upsert_session(&session(current, "c", "local:psmux"))
         .unwrap();
 
     let observer = Database::open_in_memory().unwrap();
@@ -333,6 +337,7 @@ fn a_mirrored_row_keeps_the_multiplexer_its_host_recorded() {
             .backend_type
     };
     assert_eq!(on(qualified), "ssh:devbox:rmux");
+    assert_eq!(on(current), "ssh:devbox:psmux");
     assert_eq!(on(legacy), "ssh:devbox");
 
     // And the next pass recognises both as the host's own rather than
@@ -453,7 +458,7 @@ fn a_created_session_is_launched_with_the_multiplexer_its_route_names() {
 #[test]
 fn a_local_row_on_another_multiplexer_is_not_marked_stopped() {
     let env = Env::new("");
-    let id = env.row("r", "local-rmux");
+    let id = env.row("r", "local:rmux");
 
     let out = env.cli(&["session", "stop", &id.to_string()]);
     assert!(!out.status.success(), "stop claimed success");

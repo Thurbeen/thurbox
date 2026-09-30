@@ -12,7 +12,8 @@
 //! | key | place | multiplexer |
 //! |---|---|---|
 //! | `""`, `tmux`, `local-tmux` | local | unqualified |
-//! | `local-<mux>` (any other name) | local | `<mux>` |
+//! | `local-<mux>` (any other name; legacy) | local | `<mux>` |
+//! | `local:<mux>` | local | `<mux>` |
 //! | `ssh:<host>` / `wsl:<host>` | remote | unqualified |
 //! | `ssh:<host>:<mux>` / `wsl:<host>:<mux>` | remote | `<mux>` |
 //!
@@ -21,13 +22,12 @@
 //! it the way those rows were always read. Nothing is migrated. New rows are
 //! written qualified, so a later change of preference cannot reinterpret them.
 //!
-//! One key is ambiguous and stays so: `local-tmux` was written for the
-//! platform's own multiplexer before routes carried one, which on Windows is
-//! psmux. It therefore parses unqualified, and an explicit tmux on this machine
-//! formats to that same key. On a POSIX build the two agree; on Windows no tmux
-//! adapter is registered, so no row is written that could be misread. A tmux
-//! adapter on native Windows would need a spelling of its own, with tests
-//! showing the old rows keep reading as psmux.
+//! Every machine is qualified the same way, `<machine>:<mux>`, and that is
+//! what new rows are written as. The `local-<mux>` spellings are read only:
+//! `local-tmux` was written for the platform's own multiplexer before routes
+//! carried one — which on Windows is psmux — so it parses unqualified and keeps
+//! that meaning, while an explicit local tmux is `local:tmux` and cannot be
+//! mistaken for it.
 
 use std::fmt;
 
@@ -38,7 +38,10 @@ pub const SSH_PREFIX: &str = "ssh:";
 /// The prefix of a key whose machine is a WSL distro.
 pub const WSL_PREFIX: &str = "wsl:";
 /// The prefix of a local key that names its multiplexer.
-const LOCAL_PREFIX: &str = "local-";
+pub const LOCAL_PREFIX: &str = "local:";
+/// The prefix local keys carried before [`LOCAL_PREFIX`]: read, and written
+/// only as the one spelling of an unqualified local route.
+const LEGACY_LOCAL_PREFIX: &str = "local-";
 
 /// How a remote machine is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -76,7 +79,8 @@ pub struct Route {
 pub enum RouteError {
     /// `ssh:` or `wsl:` with no host after it.
     NoHost(String),
-    /// Neither a local spelling nor a remote prefix, or a `local-` suffix no
+    /// Neither a local spelling nor a remote prefix, or a `local:`/`local-`
+    /// suffix no
     /// multiplexer is called.
     Unknown(String),
 }
@@ -141,6 +145,7 @@ impl Route {
             "" | "tmux" | "local-tmux" => Ok(Self::local(None)),
             _ => key
                 .strip_prefix(LOCAL_PREFIX)
+                .or_else(|| key.strip_prefix(LEGACY_LOCAL_PREFIX))
                 .and_then(|name| Multiplexer::parse(name).ok())
                 .map(|mux| Self::local(Some(mux)))
                 .ok_or_else(|| RouteError::Unknown(key.to_string())),
@@ -214,12 +219,12 @@ impl Route {
         self.with_mux(self.multiplexer(local_default, host))
     }
 
-    /// The key this route is written as. A qualified local tmux is
-    /// `local-tmux`, which reads back unqualified — see the module docs.
+    /// The key this route is written as. An unqualified local route is
+    /// written the one way such rows ever were, `local-tmux`.
     pub fn format(&self) -> String {
         let suffix = self.mux.map(Multiplexer::name);
         match (&self.place, suffix) {
-            (Place::Local, None) => format!("{LOCAL_PREFIX}{}", Multiplexer::Tmux.name()),
+            (Place::Local, None) => format!("{LEGACY_LOCAL_PREFIX}{}", Multiplexer::Tmux.name()),
             (Place::Local, Some(name)) => format!("{LOCAL_PREFIX}{name}"),
             (Place::Remote { via, host }, None) => format!("{}{host}", via.prefix()),
             (Place::Remote { via, host }, Some(name)) => format!("{}{host}:{name}", via.prefix()),
@@ -257,14 +262,26 @@ mod tests {
     #[test]
     fn a_local_key_names_its_multiplexer() {
         for mux in Multiplexer::ALL {
+            let key = format!("local:{}", mux.name());
+            assert_eq!(Route::parse(&key), Ok(Route::local(Some(mux))), "{key}");
+            assert_eq!(Route::local(Some(mux)).format(), key);
+        }
+    }
+
+    /// The spellings written before `local:` still read as they were written:
+    /// `local-tmux` is the platform default, any other `local-<mux>` that mux.
+    #[test]
+    fn a_legacy_local_key_keeps_its_meaning() {
+        for mux in Multiplexer::ALL {
             let key = format!("local-{}", mux.name());
             let expected = match mux {
-                // The legacy spelling: see the module docs.
                 Multiplexer::Tmux => Route::local(None),
                 _ => Route::local(Some(mux)),
             };
             assert_eq!(Route::parse(&key), Ok(expected), "{key}");
         }
+        // An explicit local tmux is not the legacy default.
+        assert_ne!(Route::local(Some(Multiplexer::Tmux)).format(), "local-tmux");
     }
 
     #[test]
@@ -291,7 +308,9 @@ mod tests {
     fn keys_that_name_no_route_are_refused_not_guessed() {
         for key in [
             "local-probe",
+            "local:probe",
             "local-",
+            "local:",
             "weird",
             "ssh:",
             "wsl:",
@@ -380,15 +399,10 @@ mod tests {
     }
 
     proptest! {
-        /// Every route reads back as itself, bar the one documented alias.
+        /// Every route reads back as itself.
         #[test]
         fn a_route_round_trips_through_its_key(route in route()) {
-            let back = Route::parse(&route.format()).unwrap();
-            if route == Route::local(Some(Multiplexer::Tmux)) {
-                prop_assert_eq!(back, Route::local(None));
-            } else {
-                prop_assert_eq!(back, route);
-            }
+            prop_assert_eq!(Route::parse(&route.format()).unwrap(), route);
         }
 
         /// Formatting a parsed key gives one canonical spelling, which parses
@@ -399,6 +413,7 @@ mod tests {
                 Just(String::new()),
                 Just("tmux".to_string()),
                 Just("local-tmux".to_string()),
+                mux().prop_map(|mux| format!("local-{}", mux.name())),
                 route().prop_map(|r| r.format()),
             ]
         ) {
