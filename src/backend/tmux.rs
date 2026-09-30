@@ -1497,13 +1497,66 @@ impl TmuxBackend {
     /// `$SHELL` with `command -v` (whose own `2>/dev/null` is harmless) and only
     /// then `exec` it with all three std streams still on the PTY.
     ///
-    /// psmux (Windows) hosts keep [`default_shell`]'s `powershell` (no
-    /// `/bin/sh`); local backends use the platform default directly.
+    /// Windows hosts keep [`default_shell`]'s `powershell` (no `/bin/sh`),
+    /// whichever multiplexer serves them; local backends use the platform
+    /// default directly.
     fn remote_shell_pane_command(&self) -> String {
         let inner = control_mode::shell_escape(
             "command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l",
         );
         format!("/bin/sh -lc {inner}")
+    }
+
+    /// The command a new window runs, as the `new-window` line carries it:
+    /// psmux's one PowerShell token, a POSIX host's login-shell bootstrap for
+    /// a companion shell pane, or the program itself (login-wrapped on a
+    /// POSIX host). Split out of [`SessionBackend::spawn`] so which of the
+    /// three a window gets is testable without a server.
+    fn window_command(
+        &self,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> String {
+        let psmux = self.transport.uses_psmux();
+        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
+        // interactive login shell — the SSH-login environment — instead of the
+        // bare `/bin/sh` the generic login-wrap would produce (see
+        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
+        // keep the standard path, and so does a Windows host on any
+        // multiplexer: it has no `/bin/sh` to bootstrap from.
+        let is_remote_shell_pane = self.transport.is_remote()
+            && self.platform == crate::session::Platform::Posix
+            && !psmux
+            && window_name.starts_with(SHELL_WINDOW_PREFIX);
+        if psmux {
+            Self::psmux_window_command(command, args, env)
+        } else if is_remote_shell_pane {
+            self.remote_shell_pane_command()
+        } else {
+            let program = self.program_for_window(command);
+            let shell_cmd = Self::build_shell_command(&program, args);
+            // A remote pane's `PATH` is the host's, restored by the login
+            // wrap; a local one is inherited from this process, which need not
+            // have the CLI its hooks call on it (see `path_prefix_args`).
+            let shell_cmd = match self.transport.is_remote() {
+                true => shell_cmd,
+                // A shell reads this whole string, so the prefix has to be
+                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
+                // mangled one (see `path_prefix_args`).
+                false => shell_prefix_tokens()
+                    .map(|tokens| {
+                        tokens
+                            .into_iter()
+                            .chain(std::iter::once(shell_cmd.clone()))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or(shell_cmd),
+            };
+            self.login_wrap_for_remote(&shell_cmd)
+        }
     }
 
     /// Build the PowerShell command a psmux window runs: set the env vars, then
@@ -2045,40 +2098,7 @@ impl SessionBackend for TmuxBackend {
             let version = self.ctrl_command("display-message -p '#{version}'")?;
             check_psmux_version(&version, &self.socket())?;
         }
-        // A remote/WSL companion shell pane (`tbs-` window) opens the user's own
-        // interactive login shell — the SSH-login environment — instead of the
-        // bare `/bin/sh` the generic login-wrap would produce (see
-        // `remote_shell_pane_command`). Agent windows (`tb-`) and psmux hosts
-        // keep the standard path.
-        let is_remote_shell_pane =
-            self.transport.is_remote() && !psmux && window_name.starts_with(SHELL_WINDOW_PREFIX);
-        let shell_cmd = if psmux {
-            Self::psmux_window_command(command, args, env)
-        } else if is_remote_shell_pane {
-            self.remote_shell_pane_command()
-        } else {
-            let program = self.program_for_window(command);
-            let shell_cmd = Self::build_shell_command(&program, args);
-            // A remote pane's `PATH` is the host's, restored by the login
-            // wrap; a local one is inherited from this process, which need not
-            // have the CLI its hooks call on it (see `path_prefix_args`).
-            let shell_cmd = match self.transport.is_remote() {
-                true => shell_cmd,
-                // A shell reads this whole string, so the prefix has to be
-                // UTF-8 here; a `PATH` that is not gets no prefix rather than a
-                // mangled one (see `path_prefix_args`).
-                false => shell_prefix_tokens()
-                    .map(|tokens| {
-                        tokens
-                            .into_iter()
-                            .chain(std::iter::once(shell_cmd.clone()))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or(shell_cmd),
-            };
-            self.login_wrap_for_remote(&shell_cmd)
-        };
+        let shell_cmd = self.window_command(window_name, command, args, env);
 
         // psmux's tokenizer can't read POSIX `'\''` escapes (see
         // `psmux_quote`), so its `-c`/`-n` values get the double-quote framing
@@ -5005,6 +5025,26 @@ mod tests {
                 assert_eq!(backend.login_wrap_for_remote("agent"), "agent");
             });
         }
+    }
+
+    /// A companion shell pane on a Windows host opens PowerShell whichever
+    /// multiplexer serves it: the POSIX login-shell bootstrap is `/bin/sh`,
+    /// which such a host does not have. A POSIX host keeps the bootstrap.
+    #[test]
+    fn a_windows_hosts_shell_pane_is_not_bootstrapped_through_sh() {
+        use crate::session::{HostDef, Multiplexer};
+        let window = format!("{SHELL_WINDOW_PREFIX}work");
+        let shell_pane = |backend: &TmuxBackend| {
+            backend.window_command(&window, &backend.default_shell(), &[], &HashMap::new())
+        };
+        let windows = TmuxBackend::for_route(&windows_host("tmux"), Multiplexer::Tmux);
+        assert_eq!(shell_pane(&windows), "powershell");
+        let posix = TmuxBackend::from_host(&HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        });
+        assert_eq!(shell_pane(&posix), posix.remote_shell_pane_command());
     }
 
     /// Whether a backend polls for dead panes is what its multiplexer can
