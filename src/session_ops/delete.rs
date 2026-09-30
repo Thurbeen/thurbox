@@ -69,6 +69,22 @@ pub fn delete_session_headless(
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
+    // A local row naming a multiplexer this machine does not run lives on a
+    // server nothing here drives. Its window cannot be found and its checkout
+    // may still be under a running agent, and a local row owes no teardown to
+    // come back for — so a force-delete refuses before anything is marked,
+    // rather than marking the row torn down while killing whatever local
+    // window its name resolves to. A soft delete touches neither and stays.
+    if force && !crate::session::Route::is_remote_key(&session.backend_type) {
+        super::mux_host(&session.backend_type).map_err(|e| {
+            format!(
+                "cannot force-delete '{}': {e}. Its window and worktrees are left as they \
+                 are; a delete without --force keeps it restorable",
+                session.name
+            )
+        })?;
+    }
+
     // The user's say, before anything is torn down or marked: a refusal here
     // leaves the row exactly as it was.
     let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
@@ -596,6 +612,11 @@ pub fn reap_overdue_soft_deletes(db: &Database) -> Vec<String> {
 /// interface's own loop and writing 3.9 MB of log in a day (issue #1182).
 fn window_index_on(db: &Database, backend_type: &str) -> crate::backend::identity::WindowIndex {
     if !crate::session::Route::is_remote_key(backend_type) {
+        // Nothing on this machine's server belongs to a row on a multiplexer
+        // it does not run; a window of that name there is another session's.
+        if super::mux_host(backend_type).is_err() {
+            return crate::backend::identity::WindowIndex::default();
+        }
         return crate::backend::tmux::local_window_index().unwrap_or_default();
     }
     if !claim_listing(db, backend_type) {
@@ -745,6 +766,15 @@ pub fn reap_soft_deleted(db: &Database, id: SessionId) -> Result<bool, String> {
     };
     if row.force_deleted {
         return Ok(false);
+    }
+
+    // A local row on a multiplexer this machine does not run has no window
+    // here to release: the one its name resolves to on the local server is
+    // somebody else's. Refused before anything is killed or removed, and the
+    // timed caller backs the row off on the answer.
+    if !crate::session::Route::is_remote_key(&row.backend_type) {
+        super::mux_host(&row.backend_type)
+            .map_err(|e| format!("reap of '{}' left it alone: {e}", row.name))?;
     }
 
     // A remote session's windows live on its host, so the reap goes there.

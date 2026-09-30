@@ -2126,7 +2126,9 @@ and a backend is named by the route it serves. Which multiplexer is available
 is decided by registration, never by the OS. A route naming a multiplexer no
 adapter implements is refused by name: such a row is neither created, attached,
 torn down, polled, stopped nor restarted through the tmux command grammar,
-and a teardown that cannot take its window leaves its worktrees too.
+and a teardown that cannot take its window leaves its worktrees too. A local
+row on a multiplexer this machine does not run owes no teardown to come back
+for, so its force-delete and reap refuse outright rather than mark it gone.
 Local routes are qualified like remote ones (`local:<mux>`); the legacy
 `local-tmux` keeps reading as the platform default, psmux on native Windows,
 so an explicit tmux there is `local:tmux` and never mistaken for it. An older

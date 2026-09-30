@@ -375,7 +375,10 @@ Which multiplexers work is what is **registered**, never the OS: this machine
 serves its platform default, and each host serves what its unqualified rows
 mean. A route naming anything else is refused by name, including rows for a
 multiplexer no adapter implements (`rmux`, `herdr` today), which are neither
-created nor driven with another binary. An adapter for another multiplexer
+created nor driven with another binary. A force-delete or reap of a local
+row on a multiplexer this machine does not run refuses rather than removing a
+checkout or killing a local window of the same name; a delete without
+`--force` still works and leaves it restorable. An adapter for another multiplexer
 registers its own routes; it must read them on restart, restore, delete,
 input, capture, and fork.
 
