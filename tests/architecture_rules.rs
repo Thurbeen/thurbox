@@ -33,7 +33,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use resolver::{cycles, strip_comments_and_strings, Edge, Tree};
+use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
 
 /// Per-node dependency allowlist.
 struct ModuleRules {
@@ -636,11 +636,68 @@ fn reconcile(violations: &[Edge], table: &[Transitional]) -> (Vec<Edge>, Vec<Str
     (unlisted, stale)
 }
 
+/// Where `Multiplexer` lives, as a resolved path: its variants are the one
+/// kind of item a node may reach *through* a grant and still not name.
+const MULTIPLEXER: &[&str] = &["session", "multiplexer", "Multiplexer"];
+
+/// The multiplexers a route can name. A name here is not an implementation:
+/// which of them work is what the registry says, at runtime.
+const MULTIPLEXER_VARIANTS: &[&str] = &["Tmux", "Psmux", "Rmux", "Herdr"];
+
+/// The nodes that may decide something by naming *one* multiplexer: the route
+/// grammar and its defaults (`session`), the factory that picks an adapter per
+/// multiplexer, and the adapters, each of which is one. Anywhere else, a
+/// `Multiplexer::Psmux` is a consumer choosing behaviour — or an OS — by
+/// multiplexer, which is what the route and the registry exist to decide.
+fn may_name_a_multiplexer(node: &str) -> bool {
+    node == "session" || node == FACTORY || ADAPTERS.contains(&node)
+}
+
+/// The multiplexer variant a resolved path names, if it names one.
+fn multiplexer_variant(reference: &Reference) -> Option<&str> {
+    let path = &reference.path;
+    (path.len() == MULTIPLEXER.len() + 1
+        && path[..MULTIPLEXER.len()].iter().eq(MULTIPLEXER.iter())
+        && MULTIPLEXER_VARIANTS.contains(&path[MULTIPLEXER.len()].as_str()))
+    .then(|| path[MULTIPLEXER.len()].as_str())
+}
+
+/// Every reference to a specific multiplexer from a node that may not name
+/// one, as an edge to `session` whose item is the variant
+/// (`Multiplexer::Psmux`) — so [`TRANSITIONAL`] can list one exactly, the way
+/// it lists any other crossing.
+fn variant_violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
+    tree.references(&node_names(rules))
+        .into_iter()
+        .filter(|r| !may_name_a_multiplexer(&r.from))
+        .filter_map(|r| {
+            let variant = multiplexer_variant(&r)?;
+            Some(Edge {
+                item: format!("Multiplexer::{variant}"),
+                from: r.from,
+                to: "session".to_string(),
+                file: r.file,
+                line: r.line,
+                in_use: r.in_use,
+                test: r.test,
+            })
+        })
+        .collect()
+}
+
+/// Everything the real tree is checked for: the node rules and the
+/// multiplexer-variant rule.
+fn all_violations(tree: &Tree) -> Vec<Edge> {
+    let mut found = violations(tree, MODULE_RULES);
+    found.extend(variant_violations(tree, MODULE_RULES));
+    found
+}
+
 /// Every rule holds, except for the crossings [`TRANSITIONAL`] names.
 #[test]
 fn every_module_rule_holds() {
     let tree = src_tree();
-    let (unlisted, _) = reconcile(&violations(tree, MODULE_RULES), TRANSITIONAL);
+    let (unlisted, _) = reconcile(&all_violations(tree), TRANSITIONAL);
     let report: String = unlisted
         .iter()
         .map(|edge| format!("  {}\n", describe(tree, MODULE_RULES, edge)))
@@ -677,7 +734,7 @@ fn transitional_table_names_only_live_crossings() {
             );
         }
     }
-    let (_, stale) = reconcile(&violations(tree, MODULE_RULES), TRANSITIONAL);
+    let (_, stale) = reconcile(&all_violations(tree), TRANSITIONAL);
     assert!(
         stale.is_empty(),
         "stale TRANSITIONAL entries:\n{}",
@@ -1025,6 +1082,47 @@ fn aliases_and_reexports_launder_nothing() {
         "kernel → agent::tmux::spawn @ kernel/other.rs:6",
         // A re-export whose path starts at an imported name (`adapter`).
         "kernel → agent::tmux::spawn @ kernel/other.rs:8",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
+}
+
+/// A specific multiplexer is named only where a multiplexer is decided. The
+/// variant is caught however it is reached — by path, through the parent's
+/// re-export, through an imported name, as a `use` leaf — while the type
+/// itself and its associated items (`Multiplexer::ALL`) stay free to use, and
+/// the factory may name what it builds.
+#[test]
+fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
+    let tree = fixture("mux_variants");
+    let rules = [
+        ModuleRules {
+            name: "session",
+            allowed: &[],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: "kernel",
+            allowed: &["session"],
+            allowed_path_only: &[],
+        },
+        ModuleRules {
+            name: FACTORY,
+            allowed: &["session"],
+            allowed_path_only: &[],
+        },
+    ];
+    let found: BTreeSet<String> = variant_violations(&tree, &rules)
+        .iter()
+        .map(|e| format!("{} → {} @ {}", e.from, e.target(), e.site(&tree.root)))
+        .collect();
+    let expected: BTreeSet<String> = [
+        "kernel → session::Multiplexer::Psmux @ kernel/mod.rs:3",
+        "kernel → session::Multiplexer::Rmux @ kernel/mod.rs:5",
+        "kernel → session::Multiplexer::Herdr @ kernel/mod.rs:8",
+        "kernel → session::Multiplexer::Tmux @ kernel/mod.rs:10",
     ]
     .into_iter()
     .map(str::to_string)

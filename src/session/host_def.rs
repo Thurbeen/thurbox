@@ -516,6 +516,44 @@ mod tests {
         }
     }
 
+    /// Which multiplexer a row names says nothing about the OS its host runs:
+    /// with the host's configuration held fixed, resolving the row under every
+    /// multiplexer, qualified or not, leaves the host's platform where the
+    /// configuration put it. Reading the OS off the route would provision a
+    /// Linux box with PowerShell because one row said `psmux`.
+    #[test]
+    fn a_rows_multiplexer_never_decides_its_hosts_platform() {
+        for configured in [
+            None,
+            Some("tmux"),
+            Some("psmux"),
+            Some("rmux"),
+            Some("herdr"),
+        ] {
+            let host = HostDef {
+                name: "box".into(),
+                multiplexer: configured.map(str::to_string),
+                ..Default::default()
+            };
+            let hosts = HostRegistry {
+                config_version: None,
+                hosts: vec![host.clone()],
+            };
+            let keys = ["tmux", "psmux", "rmux", "herdr"]
+                .map(|mux| format!("ssh:box:{mux}"))
+                .into_iter()
+                .chain(["ssh:box".to_string()]);
+            for key in keys {
+                let resolved = hosts.resolved_by_backend(&key).expect("box resolves");
+                assert_eq!(
+                    resolved.is_windows(),
+                    host.is_windows(),
+                    "{key} against a host configured with {configured:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_backend_prefix_is_not_checked_against_the_hosts_kind() {
         // A name is unique across kinds, so the prefix carries no information

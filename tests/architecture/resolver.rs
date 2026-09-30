@@ -62,6 +62,34 @@ impl Edge {
     }
 }
 
+/// One crate path as written in a governed node, resolved in full.
+#[derive(Clone, Debug)]
+pub struct Reference {
+    pub from: String,
+    /// The governed node the path lands in — possibly `from` itself.
+    pub to: String,
+    /// The whole resolved path, past the item: `session::multiplexer::
+    /// Multiplexer::Psmux` for a variant.
+    pub path: ModPath,
+    /// How many of `path`'s segments are the module.
+    pub module_len: usize,
+    pub file: PathBuf,
+    pub line: usize,
+    pub in_use: bool,
+    pub test: bool,
+}
+
+impl Reference {
+    pub fn site(&self, root: &Path) -> String {
+        let file = self.file.strip_prefix(root).unwrap_or(&self.file);
+        format!(
+            "{}:{}",
+            file.display().to_string().replace('\\', "/"),
+            self.line
+        )
+    }
+}
+
 struct SourceFile {
     path: PathBuf,
     stripped: String,
@@ -305,20 +333,16 @@ impl Tree {
         }
     }
 
-    /// Where an absolute path lands: the deepest module it names, and the item
-    /// after it — chased through re-exports and aliases.
-    pub fn resolve(&self, path: &[String]) -> Vec<(ModPath, String)> {
-        self.resolve_depth(path, 0)
-    }
-
-    fn resolve_depth(&self, path: &[String], depth: usize) -> Vec<(ModPath, String)> {
+    /// Where an absolute path lands, chased through re-exports and aliases:
+    /// each target in full, and how many of its segments are the module.
+    fn resolve_depth(&self, path: &[String], depth: usize) -> Vec<(ModPath, usize)> {
         let k = (0..=path.len())
             .rev()
             .find(|&k| self.is_module(&path[..k]))
             .unwrap_or(0);
         let module = path[..k].to_vec();
         let Some(item) = path.get(k) else {
-            return vec![(module, String::new())];
+            return vec![(path.to_vec(), k)];
         };
         if depth < 8 {
             if let Some(targets) = self.reexports.get(&(module.clone(), item.clone())) {
@@ -338,15 +362,17 @@ impl Tree {
                 }
             }
         }
-        vec![(module, item.clone())]
+        vec![(path.to_vec(), k)]
     }
 
     fn is_test_module(&self, module: &[String]) -> bool {
         self.test_modules.iter().any(|t| module.starts_with(t))
     }
 
-    /// Every reference between two distinct governed nodes.
-    pub fn edges(&self, nodes: &[&str]) -> Vec<Edge> {
+    /// Every crate path written in a governed node, resolved in full — to
+    /// another node or to its own. What an item-level rule reads; [`Self::edges`]
+    /// is these, cut to the ones that cross.
+    pub fn references(&self, nodes: &[&str]) -> Vec<Reference> {
         let governed: Vec<ModPath> = nodes.iter().map(|n| segments(n)).collect();
         let node_of = |path: &[String]| -> Option<String> {
             governed
@@ -355,7 +381,7 @@ impl Tree {
                 .max_by_key(|g| g.len())
                 .map(|g| g.join("::"))
         };
-        let mut edges = Vec::new();
+        let mut found = Vec::new();
         for file in &self.files {
             let file_test = self.is_test_module(&file.module);
             let mut refs: Vec<(usize, ModPath, bool)> = Vec::new();
@@ -384,26 +410,15 @@ impl Tree {
                     continue;
                 };
                 let test = file_test || file.in_test_span(offset) || self.is_test_module(&scope);
-                for (module, item) in self.resolve(&abs) {
-                    let Some(to) = node_of(&module) else {
+                for (path, module_len) in self.resolve_depth(&abs, 0) {
+                    let Some(to) = node_of(&path[..module_len]) else {
                         continue;
                     };
-                    if to == from {
-                        continue;
-                    }
-                    // The item named past the node, not past the deepest
-                    // module: `backend::pane::x` from outside a governed
-                    // `backend` is the item `pane`.
-                    let depth = segments(&to).len();
-                    let item = if module.len() > depth {
-                        module[depth].clone()
-                    } else {
-                        item
-                    };
-                    edges.push(Edge {
+                    found.push(Reference {
                         from: from.clone(),
                         to,
-                        item,
+                        path,
+                        module_len,
                         file: file.path.clone(),
                         line: file.stripped[..offset].matches('\n').count() + 1,
                         in_use,
@@ -412,7 +427,35 @@ impl Tree {
                 }
             }
         }
-        edges
+        found
+    }
+
+    /// Every reference between two distinct governed nodes.
+    pub fn edges(&self, nodes: &[&str]) -> Vec<Edge> {
+        self.references(nodes)
+            .into_iter()
+            .filter(|r| r.to != r.from)
+            .map(|r| {
+                // The item named past the node, not past the deepest module:
+                // `backend::pane::x` from outside a governed `backend` is the
+                // item `pane`.
+                let depth = segments(&r.to).len();
+                let item = if r.module_len > depth {
+                    r.path[depth].clone()
+                } else {
+                    r.path.get(r.module_len).cloned().unwrap_or_default()
+                };
+                Edge {
+                    from: r.from,
+                    to: r.to,
+                    item,
+                    file: r.file,
+                    line: r.line,
+                    in_use: r.in_use,
+                    test: r.test,
+                }
+            })
+            .collect()
     }
 
     /// Every module under `parent` that has a file of its own, at any depth,

@@ -2635,6 +2635,78 @@ mod tests {
         assert_eq!(terminals.failed["a"].pane, None);
     }
 
+    /// Stands in for the local backend and refuses to open, so an attach
+    /// started through it goes no further than the attempt.
+    struct RefusingLocal;
+
+    impl crate::backend::SessionBackend for RefusingLocal {
+        fn name(&self) -> &str {
+            "local-tmux"
+        }
+        fn check_available(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn ensure_ready(&self) -> anyhow::Result<()> {
+            anyhow::bail!("not opened in a unit test")
+        }
+        fn spawn(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: Option<&std::path::Path>,
+            _: &HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> anyhow::Result<crate::backend::SpawnedSession> {
+            unreachable!()
+        }
+        fn adopt(
+            &self,
+            _: &str,
+            _: u16,
+            _: u16,
+            _: Option<Vec<u8>>,
+        ) -> anyhow::Result<crate::backend::AdoptedSession> {
+            unreachable!()
+        }
+        fn discover(&self) -> anyhow::Result<Vec<crate::backend::DiscoveredSession>> {
+            Ok(Vec::new())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn kill(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn detach(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pane_pid(&self, _: &str) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+    }
+
+    /// A row stored as `tmux` — the column's old default — is a local session,
+    /// so it attaches through the local backend like a `local-tmux` row rather
+    /// than failing to find a backend of that name.
+    #[test]
+    fn a_legacy_tmux_row_attaches_through_the_local_backend() {
+        let mut terminals = Terminals::new();
+        terminals
+            .backends
+            .register(std::sync::Arc::new(RefusingLocal));
+        terminals.sync(&snapshot(vec![row("a", "tmux", Some("%1"))]), 24, 80);
+        assert_eq!(terminals.failure("a"), None);
+        assert!(
+            terminals.attaching.contains_key("a"),
+            "no attach was started"
+        );
+    }
+
     #[test]
     fn an_unknown_backend_is_reported_not_panicked() {
         let mut terminals = Terminals::new();
