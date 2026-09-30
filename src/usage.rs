@@ -75,7 +75,7 @@ fn at_host(host: Option<&HostDef>) -> String {
 ///   mirrors `git::host_shell_c`: ssh space-joins its trailing args into one
 ///   string the remote login shell re-splits (so the script is POSIX-quoted),
 ///   while `wsl.exe --exec` passes argv verbatim (so it must NOT be quoted).
-/// - A psmux host is native Windows with no `sh`. `type <rel-path>` works
+/// - A native Windows host has no `sh`. `type <rel-path>` works
 ///   under both default OpenSSH shells (a cmd builtin; a PowerShell alias for
 ///   `Get-Content`) and resolves relative to `%USERPROFILE%`, the OpenSSH
 ///   default cwd — no env expansion needed, so no quoting hazards.

@@ -1143,7 +1143,7 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
             let contents = std::fs::read_to_string(local_path).ok()?;
             let contents =
                 super::builtin_hooks::rewrite_hook_signals_for_target(&contents, &target);
-            // A psmux host is native Windows — no `sh`/`cat` for the POSIX
+            // A native Windows host has no `sh`/`cat` for the POSIX
             // stream copy, so the payload goes via the PowerShell variant.
             let copied = if host.is_windows() {
                 crate::git::copy_bytes_to_remote_windows(host, contents.as_bytes(), &remote_path)
