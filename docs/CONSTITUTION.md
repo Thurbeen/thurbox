@@ -53,7 +53,7 @@ kernel               → session, storage, sync, paths, session_ops, git,
 cli                  → session, storage, session_ops, sync, paths,
                        notifications
                        [path-only: agent, agent::host_config,
-                        backend::{contract, registry}, kernel]
+                        backend::registry, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths

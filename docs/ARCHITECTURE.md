@@ -426,7 +426,9 @@ the transport can evolve without touching `App`, `Session`, or any UI
 code.
 
 **Trait methods**: `check_available`, `ensure_ready`, `spawn`,
-`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`.
+`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`, and the headless
+lifecycle verbs `create_window`, `locate`, `rename_windows` and
+`stamp_window` (ADR-29).
 
 **Key design decisions**:
 
@@ -576,7 +578,8 @@ number, so nothing on the wire marks the blocks as belonging together (measured,
 tmux 3.2 and 3.7c) — and an error drops the rest of the list. The waiter that
 sent the list therefore records how many blocks it holds and keeps its queue
 slot until that many have arrived or the first `%error` does, concatenating
-their lines into one answer (issue #1120). `TmuxBackend::spawn_window` relies on
+their lines into one answer (issue #1120). The tmux adapter's headless
+`create_window` relies on
 this to fold `new-window` and its window options into one list without a later
 command being answered by one of the list's own blocks.
 
@@ -825,7 +828,7 @@ before touching that path.
   backslash is literal in psmux's parser, so `C:\` paths survive). Control-mode
   spawns (`psmux_window_command`) frame it in double quotes (psmux's tokenizer
   concatenates adjacent `'…'` segments but passes `'` through `"…"` tokens); the
-  headless local `spawn_window` passes it as a single argv arg. The local socket
+  headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
   data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance
   on Windows, where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
@@ -858,8 +861,8 @@ before touching that path.
   %3|w2|VALUE_FOR_W2
   ```
 
-  So the ADR-25 stamp cannot be written there (`stamp_window` /
-  `stamp_local_window` return early) **and** cannot be read there
+  So the ADR-25 stamp cannot be written there (`stamp_window` and the local
+  `create_window` write none) **and** cannot be read there
   (`stamps_are_per_window` gates `parse_discovered`, which drops both fields).
   Both halves are needed: writing alone poisoned the server — one session's id
   came back as every window's identity, so the session it named saw several
@@ -912,7 +915,7 @@ typed into is the precondition, not anything about the session.
 
 The window command cannot work around it — the handles are corrupt from the
 pane's birth, before any PowerShell of ours runs — so `TmuxBackend::spawn` and
-`spawn_window` refuse to create a pane on psmux older than 3.3.7
+the headless `create_window` refuse to create a pane on psmux older than 3.3.7
 (`check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
 upgrading psmux leaves a server started before it on the old code, and the
 message says to restart it. Only where no session exists yet, so no server to
@@ -1749,15 +1752,15 @@ follow from the host owning the record, none of which the first cut had:
   refused connection, a timeout and a rejected key alike. A force delete taken
   while a host was briefly down therefore found nothing to kill, recorded *no
   error at all*, and reported success — the leak above, with the operator told
-  nothing. `TmuxBackend::discover_answered` (used by `kill_remote_windows`,
-  `remote_window_index`, and `agent_window`) returns an empty listing only when
-  the multiplexer itself refused. It also replaces the `has-session` round
-  trip, since `list-windows` on an absent server gives exactly that refusal.
-  `agent_window` backs `agent_window_alive`, which
-  `restart_session`'s `--if-missing` path uses to decide whether the agent is
-  gone and needs relaunching — an unreachable host now aborts the relaunch
-  instead of reading as "no window", which used to start a second agent beside
-  the one still running once the host answered again.
+  nothing. `TmuxBackend::discover_answered` — what `discover` runs whenever
+  no control-mode connection is open, and what `locate` and `rename_windows`
+  list with — returns an empty listing only when the multiplexer itself
+  refused. It also replaces the `has-session` round trip, since `list-windows`
+  on an absent server gives exactly that refusal. The same listing is what
+  `restart_session`'s `--if-missing` path asks whether the agent is gone and
+  needs relaunching — an unreachable host now aborts the relaunch instead of
+  reading as "no window", which used to start a second agent beside the one
+  still running once the host answered again.
 - **The layer that failed decides, not the words it used.** Both classifications
   above began as substring matches over an error message, and a message is
   written for a person: the first unanticipated wording lands in the wrong
@@ -1894,7 +1897,7 @@ rather than through a column that is usually NULL.
 
 **One session, one window per role is enforced, not merely assumed.** The
 three-valued answer above only works while that holds, and as first written
-nothing kept it: `respawn_local` is kill-then-spawn, and between those two steps
+nothing kept it: a restart's respawn is kill-then-spawn, and between those two steps
 the session is indistinguishable from one whose agent died — which is what every
 repairer relaunches. Both then spawned and stamped, one id landed on two
 windows, and `unknown` is permanent because the windows stay (issue #1207). Two
@@ -1912,9 +1915,10 @@ mechanisms now, and they answer different halves:
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
   `backend::tmux::retire_duplicate_windows` runs after every local stamp
-  (`stamp_local_window`; the headless `spawn_window`, whose stamp rides in
-  `new-window`'s own command list; and `TmuxBackend::stamp_window` for the
-  interface's own spawn and for an adopt) and **the highest window id keeps the identity**.
+  (the headless `create_window`, whose stamp rides in `new-window`'s own
+  command list, and `TmuxBackend::stamp_window` for the interface's own spawn,
+  an adopt, a restore and a `session register`) and **the highest window id
+  keeps the identity**.
   Not "the window I just made": both racers run the sweep, so "mine wins" has
   each retire the other's and can leave the session no window at all, while a
   key tmux issues in order and never reissues makes every sweep reach the same
@@ -2180,7 +2184,60 @@ Local routes are qualified like remote ones (`local:<mux>`); the legacy
 so an explicit tmux there is `local:tmux` and never mistaken for it. An older
 build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
-Only the calls that drive the multiplexer get a host told the row's
-multiplexer (`session_ops::mux_host`, through `HostDef::served_by`, which pins
+Only what drives the multiplexer gets a host told the row's multiplexer: the
+backend `wiring` registers for the route, and the headless status poll's host
+(`remote_hooks::polled_host`), both through `HostDef::served_by`, which pins
 the host's platform first — ADR-13, "The host's platform is its own
-dimension").
+dimension".
+
+---
+
+## ADR-29: One backend registry per process; lifecycle goes through the row's backend
+
+**Choice**: each composition root builds the `BackendRegistry` once through
+`backend::wiring::configured` — `coordinator::boot` for the interface,
+`bin/thurbox-cli`'s `main` for the CLI — and hands it down: to
+`Terminals::with_registry`, to the command bus's workers, to the snapshot
+store's create-flow reads, and as a parameter to `cli::run` and every
+`session_ops` lifecycle entry point. Create, restart, stop, start, restore,
+force delete, the reap sweep, the owed-teardown retry, rename and `session
+register` ask it for the backend the row's route names
+(`session_ops::windows::backend_for`) and act through the trait: `create_window`
+opens a stamped, detached window; `locate` places a row's agent and shell
+windows from one listing; `kill`, `pane_pid` and `stamp_window` work with or
+without an attached connection; `rename_windows` follows a rename. A route no
+backend is registered for is refused by every verb before anything is marked,
+held, fired or written. Quit calls `shutdown_all`.
+
+**Why**: the lifecycle verbs used to build a fresh `TmuxBackend` inside free
+functions of the tmux adapter, so `session_ops` named the adapter and a second
+backend could not own a session without editing it. Four other places rebuilt
+the registry per call, so a consumer could see a different set of backends
+from the one the process was wired with. And a route the registry did not
+serve could still reach the local server: a restore of such a row marked it
+restored and spawned on local tmux, and a `session start` cleared its stop mark
+before refusing.
+
+**Rejected alternatives**:
+
+- **A headless method family beside the trait** (`*_headless`, or `(id,
+  name)`-keyed copies of pane verbs): two vocabularies for one window. The
+  headless verbs take an `Owner` or a pane, like the attached ones.
+- **A cached global registry**: invisible to tests, and hidden state.
+- **A test-only switch in the binary that loads a probe backend**: a
+  production escape hatch. The routing tests run `cli::run` in-process with an
+  in-memory backend registered for `local:rmux` and `ssh:<host>:rmux`, which
+  also passes the contract suite `TmuxBackend` passes
+  (`tests/support/backend_contract.rs`).
+- **Silent defaults for the lifecycle methods**: `stamp_window`,
+  `window_panes`, `set_pane_retention` and `shutdown` used to default to doing
+  nothing, which let a stub compile and misbehave. Each backend now says what
+  it does.
+
+**Consequences**: a future RMUX or Herdr adapter owns a session's lifecycle by
+registering for its route in `wiring`; `session_ops` does not change. The
+interface's registry is built from the `hosts.toml` of its start, so a host
+added later is served once the interface restarts — the headless heartbeat
+builds its own each tick. Pane I/O, hook status and the heartbeat still reach
+the tmux adapter directly; `tests/architecture_rules.rs` lists what is left in
+`TRANSITIONAL`.

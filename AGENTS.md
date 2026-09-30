@@ -280,8 +280,7 @@ kernel               session, storage, sync, paths,    [agent, agent::host_confi
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}, usage]
 cli                  session, storage, session_ops,    [agent, agent::host_config,
-                     sync, paths, notifications         backend::{contract,registry},
-                                                        kernel]
+                     sync, paths, notifications         backend::registry, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
