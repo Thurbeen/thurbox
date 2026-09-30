@@ -57,7 +57,8 @@ cli                  → session, storage, session_ops, sync, paths,
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
-paths, shell         (leaf utilities — no crate-internal references)
+paths                (leaf utility — no crate-internal references)
+shell                → session                 (a host entry → its launcher)
 coordinator          → agent, backend::output_wake, clipboard, kernel, paths,
                        session, session_ops, shell, storage
 ```

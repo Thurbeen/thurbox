@@ -283,6 +283,7 @@ configured hosts, error shown.
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Use `psmux` for a native Windows SSH host |
+| `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 | `path_prepend` | no | `[]` | directories put first on the agent's `PATH` on the host, absolute or `~/`-rooted (`~` = the host's `$HOME`) — for what the host's login shell cannot report |
 
@@ -324,6 +325,22 @@ paths (a WSL distro's worktrees live in its own Linux filesystem, not on
 `/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
+
+### Host platform
+
+A host's **platform** (`posix` or `windows`) is its operating system, and it is
+a choice of its own: not the multiplexer, not the way the host is reached, and
+not the OS thurbox itself runs on. It decides the host's shell and path
+semantics — PowerShell, `%USERPROFILE%` and no `/bin/sh` on Windows; `sh -c`,
+`$HOME` and `/bin/sh` as the server's `default-command` on POSIX — so a Windows
+thurbox driving a WSL distro pins `/bin/sh` there, and a Windows host on a
+multiplexer other than psmux still gets PowerShell.
+
+An entry that does not set `platform` keeps the meaning it always had:
+`multiplexer = "psmux"` is Windows, anything else POSIX. A WSL distro is POSIX
+whatever its entry says. What a multiplexer can do is not the platform's to
+say either: whether thurbox polls a backend for dead panes is whether that
+multiplexer reports a closed window (tmux does, psmux does not).
 
 ### Multiplexer choice and existing sessions
 

@@ -3359,7 +3359,7 @@ impl Drop for Link {
 /// A profile with one `sh` session on a *remote* host, attached and painted.
 ///
 /// The host is this machine reached through `fake_ssh`, so everything below
-/// the launcher is real: the `TmuxTransport::Ssh` arm, the POSIX quoting, the
+/// the launcher is real: the ssh `HostLauncher` behind `TmuxTransport`, the POSIX quoting, the
 /// control-mode protocol, the attach worker. `share_sessions = false` because
 /// the host's database would be this database (the ADR-24 loopback), and the
 /// socket is named outright for the same reason the profile names it — a
