@@ -47,7 +47,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-/// A window running a program that outlives the test's own commands.
 /// Type `text` into the session's own window, located the way every pane verb
 /// locates it: by the row, through the backend.
 fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
@@ -61,6 +60,7 @@ fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
     backend.send_text(&pane, text, false)
 }
 
+/// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
     thurbox::backend::SessionBackend::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),

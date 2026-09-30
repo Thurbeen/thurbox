@@ -364,17 +364,26 @@ fn run_task(
             // Reuse an existing session window (re-trigger / restored session).
             // Match by the `· #<id>` tag rather than the exact name so a
             // since-edited title (and legacy `task-<id>` sessions) are found too.
-            let existing = db
+            let mut existing = None;
+            for session in db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
                 .filter(|s| task.matches_spawn_session(&s.name))
-                .find(|s| {
-                    matches!(
-                        crate::session_ops::windows::agent_pane(backends, s),
-                        Ok(Some(_))
-                    )
-                });
+            {
+                // A row on a route nothing here serves is not one to reuse;
+                // not knowing whether a served one runs must not launch a
+                // second one.
+                if crate::session_ops::windows::backend_for(backends, &session.backend_type)
+                    .is_err()
+                {
+                    continue;
+                }
+                if crate::session_ops::windows::agent_pane(backends, &session)?.is_some() {
+                    existing = Some(session);
+                    break;
+                }
+            }
             if let Some(session) = existing {
                 crate::session_ops::send_text_with_status(db, backends, &session, &prompt, true)
                     .map_err(|e| format!("send: {e:#}"))?;

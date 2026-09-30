@@ -76,13 +76,7 @@ pub fn agent_pane<'r>(
 pub fn require_agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
-) -> Result<
-    (
-        &'r std::sync::Arc<dyn crate::backend::SessionBackend>,
-        String,
-    ),
-    String,
-> {
+) -> Result<BackendPane<'r>, String> {
     agent_pane(backends, session)?
         .ok_or_else(|| format!("session '{}' has no window of its own here", session.name))
 }

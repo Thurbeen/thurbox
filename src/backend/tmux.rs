@@ -204,10 +204,11 @@ const TMUX_SESSION: &str = if cfg!(dev_build) {
 };
 
 /// Build a [`Command`] for the local multiplexer on the thurbox socket:
-/// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The headless one-shot helpers below
-/// (send/capture/spawn/kill/heartbeat) bypass the [`TmuxTransport`] seam — they
-/// are local-only — so this centralizes the binary name (`tmux`, or `psmux` on
-/// Windows) and socket instead of hardcoding `tmux` at each call site.
+/// `<DEFAULT_MUX> -L <TMUX_SOCKET> <args…>`. The local-only one-shots below
+/// (the heartbeat, status, the duplicate-window sweep) bypass the
+/// [`TmuxTransport`] seam, so this centralizes the binary name (`tmux`, or
+/// `psmux` on Windows) and socket instead of hardcoding `tmux` at each call
+/// site.
 fn local_mux_command(args: &[&str]) -> Command {
     let mut cmd = Command::new(DEFAULT_MUX);
     cmd.arg("-L").arg(local_socket()).args(args);
@@ -2923,13 +2924,9 @@ fn parse_pane_dead(output: &str) -> bool {
 
 /// How a failed one-shot multiplexer command reads inside an error.
 ///
-/// `output()` rather than `status()` at every call site above is the point: a
-/// `status()` child inherits this process's stderr, so tmux's own `can't find
-/// window: tb-<name>` lands there directly — a second, unstructured stream
-/// beside the error document the CLI puts on stdout (AXI principle 6, "an
-/// agent reads one stream"). Captured, the same sentence becomes part of the
-/// one answer. tmux says nothing at all for some failures, hence the fallback
-/// to the bare status.
+/// Captured rather than inherited — see [`TmuxBackend::one_shot`] (AXI
+/// principle 6, "an agent reads one stream"). tmux says nothing at all for
+/// some failures, hence the fallback to the bare status.
 fn mux_failure(out: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let detail = stderr.trim();
@@ -4938,6 +4935,20 @@ mod tests {
             let key = Key::parse(&format!("ctrl-{letter}")).unwrap();
             assert_eq!(tmux_key_name(&key), format!("C-{letter}"));
         }
+    }
+
+    #[test]
+    fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
+        let tmux = deferred_prompt_script("tmux", "sock", "%3", "it's\nhere", false);
+        assert!(tmux.starts_with("tmux -L sock send-keys -t "), "{tmux}");
+        assert!(
+            tmux.ends_with("tmux -L sock send-keys -t '%3' Enter"),
+            "{tmux}"
+        );
+        let psmux = deferred_prompt_script("psmux", "sock", "%3", "it's\nhere", true);
+        assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L sock send-paste"));
+        // Base64: the prompt's newline and quote never reach the script.
+        assert!(!psmux.contains("it's"), "{psmux}");
     }
 
     #[test]

@@ -682,6 +682,11 @@ fn fire_spawn(
     };
     let mut running = Vec::new();
     for session in sessions {
+        // A row on a route nothing here serves — a host since removed from
+        // hosts.toml — is not a session this process could be reusing.
+        if crate::session_ops::windows::backend_for(backends, &session.backend_type).is_err() {
+            continue;
+        }
         match crate::session_ops::windows::agent_pane(backends, &session) {
             Ok(Some(_)) => running.push(session),
             Ok(None) => {}

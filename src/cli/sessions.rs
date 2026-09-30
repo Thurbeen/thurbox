@@ -1358,10 +1358,8 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
 /// foreground process and live cwd are additive JSON fields, so a caller that
 /// only ever read `output` sees exactly what it always did.
 ///
-/// Refuses a remote session up front. `capture` has only ever read the *local*
-/// multiplexer, so a `--host` session's pane — which lives on that host's own
-/// tmux server — was already unreachable here; saying so beats the "can't find
-/// window" tmux reports for a window that was never meant to be local.
+/// A session on a host is captured by that host's own CLI (see
+/// [`delegate_to_host`]), like every pane verb.
 fn capture_pane(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -2198,12 +2196,12 @@ pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, C
 
 /// Run a pane command on the machine the session actually lives on.
 ///
-/// `backend::tmux`'s one-shot helpers talk to the *local* multiplexer, so a
-/// session created with `--host` has no pane here. That used to be a refusal,
-/// which made `--host` produce a shape no other verb accepted: creatable, and
-/// then undrivable. thurbox already knows how to run its own CLI on a host —
-/// the mirror pass does it on every tick — so a pane verb is delegated there
-/// instead, and means the same thing on every machine.
+/// A session on a host is driven by that host's own `thurbox-cli`, not through
+/// this machine's connection to the host's server: the host's CLI is the one
+/// that records a verb's effects in the host's own database (ADR-24), and the
+/// one that knows which socket its server really uses. thurbox already knows
+/// how to run its own CLI on a host — the mirror pass does it on every tick —
+/// so a pane verb means the same thing on every machine.
 ///
 /// `Ok(None)` means "this is local, carry on". `Ok(Some(output))` is the host's
 /// own answer, already a document. The refusal survives only where delegation

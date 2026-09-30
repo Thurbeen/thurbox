@@ -783,3 +783,84 @@ fn a_spawn_automation_never_types_into_a_window_no_row_owns() {
         "the prompt was typed into a window no row owns: {screen:?}"
     );
 }
+
+/// A row on a host `hosts.toml` no longer names cannot be the session a spawn
+/// automation is reusing here, so it must not stop the automation from
+/// spawning; a row whose backend cannot say whether it runs must stop a
+/// spawn, never launch a second session beside it.
+#[test]
+fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let repo = instance.repo();
+
+    let spawn = cli(
+        &db,
+        &reg.cli,
+        &[
+            "automation",
+            "create",
+            "--name",
+            "spawn",
+            "--trigger",
+            "hourly",
+            "--repo",
+            &repo,
+            "--prompt",
+            "fresh",
+        ],
+    )
+    .expect("create a spawn automation");
+    let spawn_id = spawn["id"].as_i64().unwrap();
+    let stale = SessionId::default();
+    seed_row(
+        &db,
+        stale,
+        &format!("auto-{spawn_id}"),
+        "ssh:gone:rmux",
+        "%0",
+        "/srv",
+    );
+    let run = fire(&db, &reg.cli, spawn_id);
+    assert_eq!(
+        run_status(&run),
+        ("success".into(), format!("spawned auto-{spawn_id}")),
+        "a row on a host nothing here knows blocked the spawn: {run}"
+    );
+
+    // A task whose earlier session sits on a host that does not answer,
+    // while a new one could still be created here.
+    let task = cli(
+        &db,
+        &reg.cli,
+        &["task", "create", "--title", "unsure", "--repo", &repo],
+    )
+    .expect("task create");
+    let task_id = task["id"].as_i64().unwrap();
+    let earlier = SessionId::default();
+    let pane = reg.far.open(
+        &format!("tb-task-{task_id}"),
+        &earlier.to_string(),
+        WindowRole::Agent,
+    );
+    seed_row(
+        &db,
+        earlier,
+        &format!("task-{task_id}"),
+        "ssh:probehost:rmux",
+        &pane,
+        "/srv",
+    );
+    reg.far.set_reachable(false);
+    let before = db.list_active_sessions().expect("list").len();
+    assert!(
+        cli(&db, &reg.cli, &["task", "run", &task_id.to_string()]).is_err(),
+        "a task run that could not tell whether its session runs spawned anyway"
+    );
+    assert_eq!(db.list_active_sessions().expect("list").len(), before);
+}

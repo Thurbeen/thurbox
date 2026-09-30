@@ -1929,7 +1929,8 @@ mechanisms now, and they answer different halves:
   is kept and stays on screen under `remain-on-exit`, which is how the operator
   sees why it exited.
 
-The same sweep runs from `owned_target` before it gives up on an `unknown`, and
+The same sweep runs from the tmux adapter's `locate` before it gives up on an
+`unknown`, and
 that is what reaches a server **already** carrying a pair — no migration does,
 because those windows exist. `WindowIndex` itself is untouched: `stamped_match`
 still refuses two, because the repair is a *write* and reading one of two as the
@@ -2279,7 +2280,10 @@ owned it.
   addressing vocabulary beside the pane one every attached caller already
   holds. Locating is one step, done once, by the row.
 - **Falling back to a name when the listing is ambiguous**: an `Unknown`
-  placement is an error for every pane verb. The tmux adapter's own settling
+  placement is an error for every verb that writes to a pane, and a spawn
+  that cannot tell whether its earlier session runs refuses rather than
+  launching a second one; a reader (`--verify`, the doctor, the interface's
+  probe) reports the state as unknown. The tmux adapter's own settling
   (retiring a duplicated stamp, psmux's unstamped windows reached by name,
   ADR-25) happens inside `locate`, where it is that backend's to decide.
 - **Default methods**: the six verbs are required; a stub refuses them.

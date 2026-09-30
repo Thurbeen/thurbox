@@ -464,11 +464,11 @@ is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out
 bracketed-paste-wrapped either way (`paste_prompt_args`), which is what makes it
 literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and a
-newline cannot submit the line before it. The one-shot helpers themselves drive
-only this machine's tmux server, so `send`/`key`/`capture` on an `ssh:`/`wsl:`
-backend are delegated to that host's own `thurbox-cli` (`delegate_to_host` in
-`src/cli/sessions.rs`) instead of failing as a tmux status code against a
-window that was never there. The refusal survives only where delegation is
+newline cannot submit the line before it. Locally the verbs go through the
+backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
+`send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
+(`delegate_to_host` in `src/cli/sessions.rs`), which records their effects in
+the host's own database. The refusal survives only where delegation is
 genuinely impossible: a backend with no `hosts.toml` entry, or one whose
 `thurbox-cli` could not be reached.
 
