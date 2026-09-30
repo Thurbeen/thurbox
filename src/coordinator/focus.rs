@@ -58,13 +58,8 @@ impl App {
                 let switch_slot = (!plugin.floats
                     && matches!(self.host.slot_mode(&plugin.slot), SlotMode::Switch))
                 .then_some(plugin.slot.as_str());
-                let default_in_slot = switch_slot.is_some_and(|slot| {
-                    self.host
-                        .in_slot(slot)
-                        .iter()
-                        .find(|member| focusable.contains(member))
-                        == Some(&index)
-                });
+                let default_in_slot =
+                    switch_slot.is_some_and(|slot| self.host.switch_default(slot) == Some(index));
                 thurbox::kernel::focus::CycleEntry {
                     placement: self.placement(index),
                     switch_slot,

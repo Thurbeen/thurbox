@@ -195,3 +195,56 @@ fn the_centre_is_still_a_switch_slot() {
         thurbox::kernel::layout::SlotMode::Switch
     ));
 }
+
+fn host_with(plugins: &[(&str, &str)]) -> (tempfile::TempDir, LuaHost) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = home.path().join("ui");
+    std::fs::create_dir_all(ui.join("plugins")).expect("mkdir");
+    for (file, body) in plugins {
+        std::fs::write(ui.join("plugins").join(file), body).expect("write plugin");
+    }
+    let host = LuaHost::new(ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    (home, host)
+}
+
+fn index_of(host: &LuaHost, name: &str) -> usize {
+    host.plugins
+        .iter()
+        .position(|p| p.name == name)
+        .unwrap_or_else(|| panic!("{name} should have loaded"))
+}
+
+fn centre_pane(name: &str, order: u8, extra: &str) -> String {
+    format!(
+        r#"return {{
+  name = "{name}",
+  slot = "center",
+  order = {order},
+  focusable = true,
+  {extra}
+  render = function() return {{ type = "text", text = "{name}" }} end,
+}}"#
+    )
+}
+
+#[test]
+fn a_switch_slots_cycle_stop_is_its_first_focusable_pane_never_a_float() {
+    // The Ctrl+H/Ctrl+L cycle stops once per switch slot, here. A float named
+    // into the same slot is not an occupant anyone switches to — it draws over
+    // the arrangement — so letting it be the stop took the slot's real pane out
+    // of the cycle.
+    let popup = centre_pane("popup", 5, "floats = true,");
+    let unfocusable =
+        centre_pane("banner", 10, "").replace("focusable = true", "focusable = false");
+    let main = centre_pane("main", 20, r#"slot_mode = "switch","#);
+    let alternate = centre_pane("alternate", 30, "");
+    let (_home, host) = host_with(&[
+        ("05_popup.lua", &popup),
+        ("10_banner.lua", &unfocusable),
+        ("20_main.lua", &main),
+        ("30_alternate.lua", &alternate),
+    ]);
+    assert_eq!(host.switch_default("center"), Some(index_of(&host, "main")));
+    assert_eq!(host.switch_default("nowhere"), None);
+}

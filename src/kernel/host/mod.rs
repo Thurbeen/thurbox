@@ -2255,6 +2255,17 @@ impl LuaHost {
         ))
     }
 
+    /// The one pane of a `switch` slot the focus cycle stops on: its first
+    /// focusable occupant, which is the one it shows by default. A float named
+    /// into the slot is not one — it draws over the arrangement, not in the slot —
+    /// and letting it win took the slot's real pane out of the cycle.
+    pub fn switch_default(&self, slot: &str) -> Option<usize> {
+        self.in_slot(slot).iter().copied().find(|index| {
+            let plugin = &self.plugins[*index];
+            plugin.focusable && !plugin.floats
+        })
+    }
+
     /// Slot mode, declared by any plugin in the slot. Stack unless one says
     /// otherwise, so the common case needs no declaration. Read off the index
     /// built at load — the declaration is static, and answering it through the
