@@ -910,13 +910,17 @@ fn stripping_keeps_every_line() {
 /// so the rule is that the multiplexer is unreachable from the message path at
 /// all, rather than that some gate around it holds.
 ///
-/// Starts at the two files of the path and follows every `crate::cli::<m>` /
-/// `super::<m>` edge to a sibling file, so a helper that later grows a pane
-/// write is caught too. `cli/mod.rs` is not followed: the path reaches it only
-/// for `CommandError`, and it is the dispatcher that names every subcommand.
+/// Starts at the two files of the path and follows every resolved reference
+/// into a sibling `cli` file, so a helper that later grows a pane write is
+/// caught too. A reference is judged by the node it resolves to, so a
+/// multiplexer item re-exported under another name still counts. `cli/mod.rs`
+/// is not followed: the path reaches it only for `CommandError`, and it is the
+/// dispatcher that names every subcommand.
 #[test]
 fn message_delivery_never_reaches_the_multiplexer() {
-    const FORBIDDEN: &[&str] = &["agent", "session_ops", "kernel", "coordinator"];
+    const FORBIDDEN: &[&str] = &["agent", "backend", "session_ops", "kernel", "coordinator"];
+    let tree = src_tree();
+    let references = tree.references(&node_names(MODULE_RULES));
     let cli = src_root().join("cli");
     let mut queue = vec!["messages".to_string(), "delivery".to_string()];
     let mut seen: Vec<String> = Vec::new();
@@ -927,37 +931,30 @@ fn message_delivery_never_reaches_the_multiplexer() {
         }
         seen.push(name.clone());
         let file = cli.join(format!("{name}.rs"));
-        let content = fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
-        let stripped = strip_comments_and_strings(&content);
-        for site in crate_refs(&stripped) {
-            if FORBIDDEN.contains(&site.segment.as_str()) {
-                let line = stripped[..site.offset].matches('\n').count() + 1;
+        for r in references.iter().filter(|r| r.file == file) {
+            let root = r.path.first().map(String::as_str).unwrap_or_default();
+            if FORBIDDEN.contains(&root) {
                 writeln!(
                     report,
-                    "  src/cli/{name}.rs:{line}: crate::{}",
-                    site.segment
+                    "  src/cli/{name}.rs:{}: {}",
+                    r.line,
+                    r.path.join("::")
                 )
                 .unwrap();
             }
+            if let [first, next, ..] = r.path.as_slice() {
+                if first == "cli" && cli.join(format!("{next}.rs")).is_file() {
+                    queue.push(next.clone());
+                }
+            }
         }
+        let content = fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        let stripped = strip_comments_and_strings(&content);
         // Strings and comments are gone, so any hit is an identifier.
         for (at, _) in stripped.match_indices("tmux") {
             let line = stripped[..at].matches('\n').count() + 1;
             writeln!(report, "  src/cli/{name}.rs:{line}: names tmux").unwrap();
-        }
-        let bytes = stripped.as_bytes();
-        for token in ["crate::cli::", "super::"] {
-            for (at, _) in stripped.match_indices(token) {
-                if is_crate_tail(bytes, at) && token == "crate::cli::" {
-                    continue;
-                }
-                for next in refs_after(bytes, at + token.len()) {
-                    if cli.join(format!("{next}.rs")).is_file() {
-                        queue.push(next);
-                    }
-                }
-            }
         }
     }
     assert!(

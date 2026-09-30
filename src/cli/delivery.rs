@@ -138,7 +138,7 @@ pub(crate) fn routes(evidence: &Evidence) -> Result<Vec<Route>, String> {
 /// Collect [`Evidence`] for `recipient` from the database and Claude's session
 /// registry.
 pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
-    if crate::session::is_remote_backend(&recipient.backend_type) {
+    if crate::session::Route::is_remote_key(&recipient.backend_type) {
         return Evidence {
             remote: true,
             ..Evidence::default()
@@ -709,6 +709,38 @@ mod tests {
             ..claude("/s/a.sock")
         };
         assert!(routes(&remote).unwrap_err().contains("remote host"));
+    }
+
+    /// Every recorded spelling of a remote route, legacy and qualified, keeps
+    /// the message in the mailbox; a qualified local one does not.
+    #[test]
+    fn every_remote_route_spelling_gathers_remote_evidence() {
+        let db = Database::open_in_memory().unwrap();
+        let at = |backend_type: &str| SharedSession {
+            id: SessionId::default(),
+            name: "worker".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: backend_type.into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        for route in [
+            "ssh:devbox",
+            "ssh:devbox:tmux",
+            "wsl:Ubuntu",
+            "wsl:Ubuntu:psmux",
+        ] {
+            assert!(gather(&db, &at(route)).remote, "{route}");
+        }
+        assert!(!gather(&db, &at("local:tmux")).remote);
     }
 
     #[test]

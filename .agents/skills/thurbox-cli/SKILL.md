@@ -792,8 +792,8 @@ without double-processing.
   before each attempt; success marks the row read + `delivered_via` (schema
   v48), failure releases it, and a killed sender's lease just lapses.
   Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
-  `delivery_note`. `tests/architecture_rules.rs` keeps tmux unreachable from
-  this path.
+  `delivery_note`. `tests/architecture_rules.rs` keeps the multiplexer (`backend`, `agent`)
+  unreachable from this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is
   **stable for life** — `respawn_stale_session` reuses the original id on
