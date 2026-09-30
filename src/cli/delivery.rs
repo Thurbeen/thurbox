@@ -155,7 +155,10 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
     }
     let id = recipient.id.to_string();
     let mut claude_sockets: Vec<PathBuf> = Vec::new();
-    for socket in dirs.iter().flat_map(|dir| owned_sockets(dir, &id)) {
+    for socket in dirs
+        .iter()
+        .flat_map(|dir| owned_sockets(dir, &id, &recipient.backend_id))
+    {
         if !claude_sockets.contains(&socket) {
             claude_sockets.push(socket);
         }
@@ -186,7 +189,7 @@ fn claude_registry_dir() -> Option<PathBuf> {
 }
 
 /// Inbox sockets of the interactive Claude sessions running *as* thurbox
-/// session `session_id`, newest first.
+/// session `session_id` in its agent pane `pane`, newest first.
 ///
 /// Each running Claude Code writes `<pid>.json` naming its pid, its `kind` and
 /// its `messagingSocketPath`. A socket counts only when all of these hold,
@@ -203,13 +206,18 @@ fn claude_registry_dir() -> Option<PathBuf> {
 ///   which another tmux server reuses; and `$CLAUDE_CODE_MESSAGING_SOCKET` in a
 ///   hook is inherited by every pane of a tmux server started from inside some
 ///   other Claude session.
+/// - **The process runs in the agent pane: its `TMUX_PANE` is `pane`.** The
+///   session's shell pane carries the same `THURBOX_SESSION`, so a `claude`
+///   started there passes every check above, yet is not the agent the message
+///   is for. Checked only when `pane` is a tmux pane id (`%N`).
 /// - **The path is still a socket.** An entry outlives a crashed process.
 ///
 /// A process whose environment cannot be read proves nothing, and its socket
 /// is not used: the message then waits in the mailbox rather than risking the
-/// wrong recipient. The pane id is not consulted at all, and neither is
+/// wrong recipient. The registry's `tmux` field is not consulted at all (the
+/// pane is read off the process, alongside its identity), and neither is
 /// thurbox's `agent_session_id`, which drifts from Claude's after a resume.
-fn owned_sockets(dir: &Path, session_id: &str) -> Vec<PathBuf> {
+fn owned_sockets(dir: &Path, session_id: &str, pane: &str) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -223,7 +231,9 @@ fn owned_sockets(dir: &Path, session_id: &str) -> Vec<PathBuf> {
             let socket = PathBuf::from(v["messagingSocketPath"].as_str()?);
             let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
             let owned = is_socket(&socket)
-                && process_env_var(pid, "THURBOX_SESSION").as_deref() == Some(session_id);
+                && process_env_var(pid, "THURBOX_SESSION").as_deref() == Some(session_id)
+                && (!pane.starts_with('%')
+                    || process_env_var(pid, "TMUX_PANE").as_deref() == Some(pane));
             owned.then(|| (v["startedAt"].as_i64().unwrap_or(0), socket))
         })
         .collect();
@@ -352,7 +362,9 @@ pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     {
         return;
     }
-    if !owned_sockets(&dir, &session.id.to_string()).contains(&PathBuf::from(&socket)) {
+    if !owned_sockets(&dir, &session.id.to_string(), &session.backend_id)
+        .contains(&PathBuf::from(&socket))
+    {
         tracing::debug!(
             "not recording {socket}: it does not belong to '{}'",
             session.name
@@ -951,6 +963,13 @@ mod tests {
     /// Apple platform binary such as `/bin/sleep`, even a copy of one.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn process_as(session: &str) -> std::process::Child {
+        process_in(session, "%7")
+    }
+
+    /// [`process_as`], in tmux pane `pane` (`$TMUX_PANE`, which tmux sets on
+    /// every process a pane starts).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn process_in(session: &str, pane: &str) -> std::process::Child {
         // `spawn` returns once the exec happened, so the environment is final.
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -959,6 +978,7 @@ mod tests {
                 "--ignored",
             ])
             .env("THURBOX_SESSION", session)
+            .env("TMUX_PANE", pane)
             .env(STAND_IN_ENV, "1")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1020,13 +1040,64 @@ mod tests {
         let _e = register(dir.path(), "e", mine.id(), "interactive", 500, false);
         std::fs::write(dir.path().join("junk.json"), "not json").unwrap();
 
-        assert_eq!(owned_sockets(dir.path(), me), vec![newest, oldest]);
+        assert_eq!(owned_sockets(dir.path(), me, "%7"), vec![newest, oldest]);
         for child in [&mut mine, &mut older, &mut theirs] {
             let _ = child.kill();
             let _ = child.wait();
         }
         // The processes are gone, so nothing is proven any more.
-        assert!(owned_sockets(dir.path(), me).is_empty());
+        assert!(owned_sockets(dir.path(), me, "%7").is_empty());
+    }
+
+    /// The session's shell pane carries its `THURBOX_SESSION` too, so a
+    /// `claude` the user starts there has the recipient's identity; it is not
+    /// the agent the session runs, and newest-first would otherwise pick it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_claude_in_the_sessions_shell_pane_is_not_the_recipient() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "worker".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: Some("%9".into()),
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        db.upsert_session(&session).unwrap();
+        // The recipient's hook reported this registry, so `gather` reads it
+        // whatever this process's `CLAUDE_CONFIG_DIR` is.
+        db.set_session_meta(
+            session.id,
+            CLAUDE_REGISTRY_META,
+            &dir.path().to_string_lossy(),
+        )
+        .unwrap();
+        let id = session.id.to_string();
+        let mut agent = process_in(&id, "%7");
+        let mut side = process_in(&id, "%9");
+        let (agents, _a) = register(dir.path(), "agent", agent.id(), "interactive", 100, true);
+        let (sides, _s) = register(dir.path(), "side", side.id(), "interactive", 200, true);
+
+        let found = gather(&db, &session).claude_sockets;
+        for child in [&mut agent, &mut side] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            !found.contains(&sides),
+            "the shell pane's claude: {found:?}"
+        );
+        assert_eq!(found, vec![agents]);
     }
 
     /// One test, because every step points `CLAUDE_CONFIG_DIR` at a fixture.

@@ -782,8 +782,9 @@ without double-processing.
   mailbox-only. A Claude socket is used only when **proven** the recipient's
   (`owned_sockets`): its `~/.claude/sessions/<pid>.json` entry is
   `kind: interactive` and that pid's own environment holds
-  `THURBOX_SESSION=<recipient>` — never by pane id or an inherited
-  `$CLAUDE_CODE_MESSAGING_SOCKET` alone. `session signal` records a proven hook
+  `THURBOX_SESSION=<recipient>` and `TMUX_PANE=<its backend_id>` (the shell
+  pane shares the identity, not the pane) — never by the registry's pane id or
+  an inherited `$CLAUDE_CODE_MESSAGING_SOCKET` alone. `session signal` records a proven hook
   socket (`thurbox.claude_messaging_socket`) and its registry dir
   (`thurbox.claude_registry_dir`, searched too when the sender's
   `CLAUDE_CONFIG_DIR` differs). The send holds a 60 s token-owned lease

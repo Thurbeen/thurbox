@@ -2551,9 +2551,12 @@ process's `pid`, `kind` and `messagingSocketPath`; a socket counts when its
 entry is `kind: "interactive"`, the path is still a socket, **and that
 process's own environment holds `THURBOX_SESSION=<recipient id>`** — the
 identity thurbox injects into every pane it spawns, read with
-`sysctl(KERN_PROCARGS2)` on macOS and `/proc/<pid>/environ` on Linux. Each
-weaker signal is wrong somewhere, and each wrong answer puts the body in
-another conversation:
+`sysctl(KERN_PROCARGS2)` on macOS and `/proc/<pid>/environ` on Linux — **and
+its `TMUX_PANE` is the recipient's agent pane** (`backend_id`). The session's
+shell pane is spawned with the same identity, so a `claude` the user starts
+there is the recipient's by `THURBOX_SESSION` alone; the pane is what says it
+is not the agent the message is for. Each weaker signal is wrong somewhere,
+and each wrong answer puts the body in another conversation:
 
 - the registry's `tmux` field names a pane id (`%N`), which another tmux
   server reuses;
@@ -2564,8 +2567,8 @@ another conversation:
   but is not the session the pane shows — only its `kind` tells them apart.
 
 A process whose environment cannot be read proves nothing, so the message
-waits in the mailbox rather than risk the wrong recipient. Neither the pane id
-nor `agent_session_id` (which drifts from Claude's own after a resume) is
+waits in the mailbox rather than risk the wrong recipient. Neither the
+registry's pane id nor `agent_session_id` (which drifts from Claude's own after a resume) is
 consulted. `session signal`, which every thurbox Claude hook runs, records the
 hook's `$CLAUDE_CODE_MESSAGING_SOCKET` in session meta
 (`thurbox.claude_messaging_socket`) once it passes the same proof; that is
