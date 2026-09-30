@@ -791,6 +791,78 @@ fn only_the_composition_roots_name_the_factory() {
     }
 }
 
+/// The files that say where a session runs and what a backend is, for every
+/// host and every multiplexer alike: the route grammar and the contract.
+const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
+
+/// What a neutral file may not reach: how one kind of host is launched
+/// (`shell`'s ssh/wsl launchers, a host's own `hosts.toml` entry and the
+/// loader of it) or how one multiplexer is driven (the tmux adapter and its
+/// command grammar).
+const HOST_OR_MUX_SPECIFIC: &[&str] = &[
+    "shell",
+    "session::host_def",
+    "agent::host_config",
+    "backend::tmux",
+    "backend::tmux_compat",
+];
+
+/// The route and the contract are the same for every host OS, launcher and
+/// multiplexer (ADR-13): they reach no launcher and no adapter, and decide
+/// nothing by the OS this build was compiled for — a Windows thurbox drives a
+/// Linux host, and a Linux one a Windows host. A platform is a host's, read
+/// from its configuration; a behaviour is a backend's, read from what it can
+/// do.
+#[test]
+fn the_route_and_the_contract_know_no_launcher_adapter_or_build_os() {
+    let tree = src_tree();
+    let root = src_root();
+    let mut found = Vec::new();
+    for reference in tree.references(&node_names(MODULE_RULES)) {
+        let Some(file) = NEUTRAL_FILES
+            .iter()
+            .find(|f| reference.file.ends_with(Path::new(f)))
+        else {
+            continue;
+        };
+        if reference.test {
+            continue;
+        }
+        let path = reference.path.join("::");
+        if let Some(banned) = HOST_OR_MUX_SPECIFIC
+            .iter()
+            .find(|b| path == **b || path.starts_with(&format!("{b}::")))
+        {
+            found.push(format!(
+                "{file}:{} reaches {path} ({banned})",
+                reference.line
+            ));
+        }
+    }
+    for file in NEUTRAL_FILES {
+        let source = fs::read_to_string(root.join(file)).expect("read a neutral file");
+        let stripped = strip_comments_and_strings(&source);
+        let production = stripped
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        for (n, line) in production.lines().enumerate() {
+            if line.contains("cfg(windows)")
+                || line.contains("cfg!(windows)")
+                || line.contains("cfg(not(windows))")
+                || line.contains("cfg(unix)")
+            {
+                found.push(format!("{file}:{} decides by build OS", n + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a neutral file depends on one host or multiplexer:\n  {}",
+        found.join("\n  ")
+    );
+}
+
 /// Production edges between distinct nodes, one representative site each.
 fn production_graph(tree: &Tree, rules: &[ModuleRules]) -> BTreeMap<(String, String), String> {
     let mut graph = BTreeMap::new();
