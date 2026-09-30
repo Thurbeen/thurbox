@@ -102,3 +102,45 @@ fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
     let panes: Vec<String> = fake.windows_of("row").into_iter().map(|w| w.pane).collect();
     assert_eq!(panes, vec![new]);
 }
+
+/// An attached backend whose server stops answering reports that, rather than
+/// an empty server: a sweep reading "nothing there" clears its backoff and
+/// asks again every pass, and a relaunch reading it launches a second agent.
+#[test]
+fn an_attached_tmux_backend_does_not_read_an_unanswered_listing_as_empty() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("thurbox-backend-contract-unanswered");
+    let backend = TmuxBackend::new();
+    backend.ensure_ready().expect("attach");
+    let socket = server
+        .tmpdir()
+        .join(format!("tmux-{}", uid()))
+        .join(server.socket());
+    assert!(socket.exists(), "no socket at {}", socket.display());
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let listing = backend.discover();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    backend.shutdown();
+    assert!(
+        listing.is_err(),
+        "a server nobody could ask was read as holding nothing: {listing:?}",
+        listing = listing.map(|l| l.len())
+    );
+}
+
+fn uid() -> String {
+    String::from_utf8(
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .expect("id -u")
+            .stdout,
+    )
+    .expect("utf8")
+    .trim()
+    .to_string()
+}

@@ -642,15 +642,16 @@ fn respawn(
     // A backend that cannot say what is there is a refusal, before anything is
     // spawned: launching beside windows nobody could see — or on a socket the
     // host has not vouched for — puts a second agent on the conversation.
-    match super::windows::kill_owned(backend, owner_of(session, &id)) {
-        Ok(_) => {}
-        Err(e) => {
-            return Err(format!(
-                "cannot restart '{}': could not list its windows on {}: {e:#}",
+    if let Err(e) = super::windows::kill_owned(backend, owner_of(session, &id)) {
+        return Err(match crate::agent::preflight::is_missing_dependency(&e) {
+            // Already a sentence naming the binary, the search and the fix.
+            true => format!("{e}"),
+            false => format!(
+                "cannot restart '{}': could not take down its windows on {}: {e:#}",
                 session.name,
                 backend.name()
-            ))
-        }
+            ),
+        });
     }
     let pane = backend
         .create_window(&crate::backend::WindowSpec {

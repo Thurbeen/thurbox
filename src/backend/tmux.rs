@@ -2380,11 +2380,19 @@ impl SessionBackend for TmuxBackend {
         // headless caller asking what a server holds must neither bring one
         // into being nor read a host that did not answer as a host holding
         // nothing.
+        //
+        // Neither lists a host whose socket is a guess: a sweep that read one
+        // would clear its backoff and ask it every pass.
         if !self.attached() {
+            self.known_socket()?;
             return self.discover_answered();
         }
+        // A session `has-session` cannot see is classified by the answered
+        // listing, which tells a server that holds nothing from one that did
+        // not answer — read as empty, the second clears a sweep's backoff and
+        // lets a relaunch start a second agent.
         if !self.session_exists() {
-            return Ok(Vec::new());
+            return self.discover_answered();
         }
         // Once control mode is up, route through `ctrl_command` so a dead
         // connection is transparently reconnected + retried (like every other
@@ -5278,6 +5286,7 @@ mod tests {
         let owner =
             Owner::new("00000000-0000-4000-8000-000000000001", "remote").remembering("%3", "");
         let refusals = [
+            backend.discover().map(drop),
             backend.locate(owner).map(drop),
             backend.kill("%3"),
             backend.rename_windows(owner, "moved"),

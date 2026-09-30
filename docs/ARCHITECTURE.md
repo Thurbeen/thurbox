@@ -2238,6 +2238,11 @@ before refusing.
 registering for its route in `wiring`; `session_ops` does not change. The
 interface's registry is built from the `hosts.toml` of its start, so a host
 added later is served once the interface restarts — the headless heartbeat
-builds its own each tick. Pane I/O, hook status and the heartbeat still reach
+builds its own each tick. A host is served for the multiplexer its unqualified
+rows mean (ADR-28), so a row written for tmux on a host whose entry later says
+psmux is refused rather than driven — the two name different machines. Where
+the interface holds a connection to a backend, a lifecycle kill goes through
+it (`kill-pane`, reconnecting once on a dead link) rather than one-shot.
+Pane I/O, hook status and the heartbeat still reach
 the tmux adapter directly; `tests/architecture_rules.rs` lists what is left in
 `TRANSITIONAL`.
