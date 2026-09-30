@@ -44,6 +44,7 @@ pub mod action;
 pub mod agents;
 pub mod automations;
 pub mod config;
+pub(crate) mod delivery;
 pub mod doctor;
 pub mod editor;
 pub mod extensions;

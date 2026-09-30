@@ -41,8 +41,13 @@ pub struct SessionMessage {
     pub kind: String,
     pub body: String,
     pub created_at: u64,
-    /// When the message was claimed/marked read. `None` = unread.
+    /// When the message was claimed/marked read. `None` = unread. A message
+    /// handed to the recipient's agent-native inbox is marked read at that
+    /// moment: the body is already in the agent's conversation.
     pub read_at: Option<u64>,
+    /// The agent-native inbox that carried the body (`"claude-socket"`,
+    /// `"codex-queue"`), or `None` when it only ever sat in the mailbox.
+    pub delivered_via: Option<String>,
 }
 
 impl SessionMessage {
@@ -92,6 +97,7 @@ mod tests {
             body: "?".into(),
             created_at: 0,
             read_at: None,
+            delivered_via: None,
         };
         assert!(m.is_unread());
         m.read_at = Some(123);

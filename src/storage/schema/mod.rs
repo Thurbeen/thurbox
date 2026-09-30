@@ -13,9 +13,9 @@ use migrations::{
     migrate_v39_bookmark_host, migrate_v3_additional_dirs, migrate_v40_bookmark_git_kind,
     migrate_v41_joinable, migrate_v42_worktree_provenance, migrate_v43_session_events,
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
-    migrate_v47_wsl_loopback_repair_owed, migrate_v4_project_mcp_servers,
-    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
-    migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
+    migrate_v4_project_mcp_servers, migrate_v5_session_commands, migrate_v6_worktrees_pk,
+    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -74,8 +74,14 @@ use rusqlite::Connection;
 /// names the bug can have written is decided by the host registry, which
 /// `storage` may not read, so `session_ops::repair_wsl_loopback_rows` performs
 /// the repair once and clears the mark.
+/// v48 adds `delivered_via` to `session_messages`: which agent-native inbox
+/// (`claude-socket` / `codex-queue`) a `message send` handed the body to.
+/// A natively delivered row is also marked read, so a later `inbox --claim`
+/// does not hand the agent the same text a second time. `delivering_at` and
+/// `delivery_lease` are the lease a sender holds while that send is in flight
+/// (when it was taken, and whose it is), which `claim` honours.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 47;
+pub const SCHEMA_VERSION: u32 = 48;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -320,7 +326,10 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             kind            TEXT NOT NULL DEFAULT 'note',
             body            TEXT NOT NULL,
             created_at      INTEGER NOT NULL,
-            read_at         INTEGER
+            read_at         INTEGER,
+            delivered_via   TEXT,
+            delivering_at   INTEGER,
+            delivery_lease  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session_messages_unread
             ON session_messages(to_session_id) WHERE read_at IS NULL;
@@ -435,6 +444,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (45, migrate_v45_host_updated_at, Reapply::WhenMissing),
         (46, migrate_v46_teardown_owed, Reapply::WhenMissing),
         (47, migrate_v47_wsl_loopback_repair_owed, Reapply::Never),
+        (48, migrate_v48_message_delivered_via, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -840,6 +850,44 @@ mod tests {
             .unwrap();
         assert_eq!(owed, 0, "existing rows owe nothing at v46");
 
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_from_v47_adds_message_delivered_via() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Minimal v47 state: the v32 mailbox, without delivered_via.
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '47');
+             CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, to_session_id TEXT NOT NULL,
+                from_session_id TEXT, from_task_id INTEGER,
+                kind TEXT NOT NULL DEFAULT 'note', body TEXT NOT NULL,
+                created_at INTEGER NOT NULL, read_at INTEGER);
+             INSERT INTO session_messages (to_session_id, body, created_at, read_at)
+                VALUES ('a', 'old', 0, 5);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // Nothing before v48 delivered a body natively, or is mid-send.
+        let (via, lease): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT delivered_via, delivering_at FROM session_messages",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((via, lease), (None, None));
         let version: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",

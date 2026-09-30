@@ -1192,6 +1192,13 @@ fn run_signal(
         )
         .into());
     }
+    // A signal from the agent's own hook carries the environment Claude Code
+    // publishes its inbox socket in; it is recorded only once proven to be
+    // the target's own. With an explicit `--session` the environment is the
+    // caller's, so it is not even considered.
+    if session.is_none() {
+        super::delivery::remember_claude_socket(db, &target);
+    }
     // The same state on the pane, for a peer's live subscription:
     // best-effort, and nothing at all outside tmux.
     if let Err(e) = crate::backend::tmux::set_own_pane_state(&state) {

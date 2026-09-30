@@ -3,10 +3,14 @@
 //! A general, agent-neutral mailbox: one session hands another a structured
 //! payload (clarifying questions, a plan, a result, …) instead of the recipient
 //! scraping its rendered terminal. See [`crate::storage::messages`].
+//!
+//! `send` and `reply` also hand the body to the recipient agent's own inbox
+//! (`cli/delivery.rs`); the mailbox row is the durable copy either way.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
+use crate::cli::delivery::{self, DeliveredVia};
 use crate::cli::identity::calling_session;
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
@@ -15,17 +19,17 @@ use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
 use crate::sync::{current_time_millis, SharedSession};
 
-/// Wake token typed into a recipient's pane after `send --wake`, nudging the
-/// monitor agent to drain its inbox (`thurbox-cli message inbox …`) right away
-/// rather than waiting for its next scheduled tick. Idempotent: the agent just
-/// re-reads unread messages.
-const WAKE_TOKEN: &str = "inbox";
-
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Enqueue a message addressed to a session, optionally waking it.
+    /// Enqueue a message addressed to a session and deliver it to the
+    /// recipient agent's own inbox.
+    ///
+    /// Claude Code sessions receive the body on their inbox socket (between
+    /// tool calls, or as a new turn when idle); Codex sessions through
+    /// `codex queue`. Any other agent keeps it in the mailbox for `message
+    /// inbox` — nothing is ever typed into the recipient's pane.
     Send {
         /// Recipient session (UUID or name).
         #[arg(long)]
@@ -44,11 +48,12 @@ pub enum Action {
         /// (`THURBOX_SESSION`) when run inside a session; pass to override.
         #[arg(long)]
         from: Option<String>,
-        /// Don't type a wake nudge into the recipient's pane (enqueue silently).
+        /// Only enqueue: don't deliver into the recipient agent's inbox.
         #[arg(long = "no-wake")]
         no_wake: bool,
     },
-    /// Reply to a message: enqueue back to its original sender and wake them.
+    /// Reply to a message: enqueue back to its original sender and deliver it
+    /// to their agent's inbox, as `send` does.
     /// The replier only needs the message id (no peer UUID/name handling).
     Reply {
         /// The message id being answered (from an `inbox` read).
@@ -62,7 +67,7 @@ pub enum Action {
         /// Sender session (UUID or name); defaults to the caller (`THURBOX_SESSION`).
         #[arg(long)]
         from: Option<String>,
-        /// Don't type a wake nudge into the recipient's pane.
+        /// Only enqueue: don't deliver into the recipient agent's inbox.
         #[arg(long = "no-wake")]
         no_wake: bool,
     },
@@ -146,7 +151,7 @@ fn send_message(
         kind,
         body,
     };
-    enqueue_and_wake(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, no_wake)
 }
 
 /// Handle `message reply`: enqueue back to the original message's sender.
@@ -178,7 +183,7 @@ fn reply_message(
         kind,
         body,
     };
-    enqueue_and_wake(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, no_wake)
 }
 
 /// Resolve the `--from` provenance: an explicit reference, else the calling
@@ -293,10 +298,10 @@ fn first_line(body: &str) -> String {
     }
 }
 
-/// Enqueue a message + best-effort wake nudge, then build the command output.
-/// Shared by `send` and `reply`. `new.to_session_id` must be `recipient.id`
-/// (the recipient is also needed by name for the wake nudge).
-fn enqueue_and_wake(
+/// Enqueue a message, deliver it natively unless `no_wake`, then build the
+/// command output. Shared by `send` and `reply`; `new.to_session_id` must be
+/// `recipient.id`.
+fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: NewMessage,
@@ -306,35 +311,45 @@ fn enqueue_and_wake(
         .enqueue_message(&new)
         .map_err(|e| format!("enqueue_message: {e}"))?;
 
-    let mut woke = false;
-    if !no_wake {
-        // Best-effort nudge: a missing/dead window must not fail the send (the
-        // message is already durably queued for the next drain).
-        match crate::session_ops::send_text_with_status(db, recipient, WAKE_TOKEN, true) {
-            Ok(()) => woke = true,
-            Err(e) => {
-                tracing::debug!("message: wake nudge to {} failed: {e}", recipient.name)
-            }
+    let outcome = if no_wake {
+        delivery::Outcome {
+            via: DeliveredVia::Mailbox,
+            note: Some("--no-wake: enqueued only".into()),
         }
-        // Keep the headless janitor ticking so a missed wake is still drained in
-        // bounded time even when the TUI never started (durability is already
-        // guaranteed by the queue; this guarantees timeliness too). Tied to the
-        // wake path so silent (`--no-wake`) enqueues stay tmux-free.
-        crate::cli::automations::arm_heartbeat();
-    }
+    } else {
+        let message = db
+            .get_message(id)
+            .map_err(|e| format!("get_message: {e}"))?
+            .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
+        let sender = new
+            .from_session_id
+            .and_then(|from| db.get_session_by_id(from).ok().flatten())
+            .map(|s| s.name);
+        let text = delivery::delivery_text(&message, sender.as_deref());
+        let evidence = delivery::gather(db, recipient);
+        delivery::deliver(db, &message, &text, &evidence, &delivery::Native)
+    };
 
-    let human = format!(
-        "Enqueued message #{id} to '{}'{}.",
-        recipient.name,
-        if woke { " (woke it)" } else { "" }
-    );
+    let human = match (&outcome.via, &outcome.note) {
+        (DeliveredVia::Mailbox, Some(why)) => format!(
+            "Enqueued message #{id} to '{}' in the mailbox only; nothing was typed into \
+             its pane. Why: {why}.",
+            recipient.name
+        ),
+        (via, _) => format!(
+            "Enqueued message #{id} to '{}' and delivered it via {}.",
+            recipient.name,
+            via.as_str()
+        ),
+    };
     Ok(CommandOutput::new(
         json!({
             "enqueued": true,
             "message_id": id,
             "to_session_id": recipient.id.to_string(),
             "to_session_name": recipient.name,
-            "woke": woke,
+            "delivered_via": outcome.via.as_str(),
+            "delivery_note": outcome.note,
         }),
         human,
     ))
@@ -369,6 +384,7 @@ fn message_to_json(m: &SessionMessage) -> Value {
         "body": m.body,
         "created_at": m.created_at,
         "read_at": m.read_at,
+        "delivered_via": m.delivered_via,
     })
 }
 
@@ -420,7 +436,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sent["enqueued"], true);
-        assert_eq!(sent["woke"], false);
+        assert_eq!(sent["delivered_via"], "mailbox");
 
         let peek = run(
             Action::Inbox {
