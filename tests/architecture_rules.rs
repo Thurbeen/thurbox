@@ -376,6 +376,10 @@ const SUBMODULE_GOVERNED: &[&str] = &["backend"];
 /// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Remover {
+    /// Lifecycle through the contract, one registry injected at the roots.
+    /// Removed its crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
+    F5a,
     /// Pane I/O through `locate` and the contract's pane verbs.
     F5b,
     /// Host platform and launcher separated from the multiplexer. Removed
