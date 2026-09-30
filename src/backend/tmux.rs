@@ -3038,6 +3038,9 @@ fn deferred_prompt_script(
     psmux: bool,
 ) -> String {
     if psmux {
+        // Only the socket: a quoted program name is a string to PowerShell,
+        // not a command, and a multiplexer's binary name needs no quoting.
+        let socket = ps_single_quote(socket);
         let t = ps_single_quote(target);
         let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
         return format!(
@@ -3046,6 +3049,9 @@ fn deferred_prompt_script(
              {mux} -L {socket} send-keys -t {t} Enter\""
         );
     }
+    // Quoted as the immediate commands pass them — one argument each — since a
+    // host may configure a socket name with a space in it.
+    let (mux, socket) = (shell_escape(mux), shell_escape(socket));
     let escaped_target = shell_escape(target);
     // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
     // submit early; `-l` makes the multiplexer deliver the bytes literally.
@@ -4946,9 +4952,20 @@ mod tests {
             "{tmux}"
         );
         let psmux = deferred_prompt_script("psmux", "sock", "%3", "it's\nhere", true);
-        assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L sock send-paste"));
+        assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L 'sock' send-paste"));
         // Base64: the prompt's newline and quote never reach the script.
         assert!(!psmux.contains("it's"), "{psmux}");
+    }
+
+    #[test]
+    fn a_deferred_prompt_quotes_a_socket_name_the_host_configured() {
+        // A socket the immediate commands pass as one argument must reach the
+        // server's shell as one word too, or the paste runs against no server.
+        let tmux = deferred_prompt_script("tmux", "my sock", "%3", "hi", false);
+        assert_eq!(tmux.matches("-L 'my sock' send-keys").count(), 2, "{tmux}");
+        let psmux = deferred_prompt_script("psmux", "my sock", "%3", "hi", true);
+        assert!(psmux.contains("psmux -L 'my sock' send-paste"), "{psmux}");
+        assert!(psmux.contains("psmux -L 'my sock' send-keys"), "{psmux}");
     }
 
     #[test]

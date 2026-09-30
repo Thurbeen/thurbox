@@ -361,6 +361,15 @@ fn diagnose(
                      a pane's PATH picks it up on restart"
                 .into(),
         },
+        // Unverified for the same reason as above, and saying why.
+        HookCli::PaneUnreadable(why) => Finding {
+            key: "cli",
+            level: Level::Warn,
+            detail: format!(
+                "this pane's PATH could not be read ({why}), so what its hooks resolve is \
+                 unknown"
+            ),
+        },
         // No pane, so there is no pane PATH to be wrong about. What is reported
         // is the PATH this command is running on — a different question with
         // the same shape, and the detail says so.
@@ -576,6 +585,11 @@ enum HookCli {
     /// follows is what the `PATH` **this command** is running on resolves: a
     /// different question, and the finding says which one it answered.
     NoPane(Option<String>),
+    /// There may be a pane, and its `PATH` could not be read — the backend did
+    /// not answer, or could not say which window is the session's. Unknown,
+    /// never "no pane": no pane is what licenses answering from this command's
+    /// own `PATH`.
+    PaneUnreadable(String),
 }
 
 /// Ask the pane first, and fall back to this process only when it cannot
@@ -595,14 +609,15 @@ fn hook_cli(
         return HookCli::Remote;
     }
     let no_pane = || HookCli::NoPane(cli_on_path.map(str::to_owned));
+    let Some(backends) = backends else {
+        return no_pane();
+    };
     // Located on the backend the row's route names, then read by pane: this
     // machine's server holds no window of a row routed elsewhere.
-    let Some((backend, pane)) = backends.and_then(|b| {
-        crate::session_ops::windows::agent_pane(b, session)
-            .ok()
-            .flatten()
-    }) else {
-        return no_pane();
+    let (backend, pane) = match crate::session_ops::windows::agent_pane(backends, session) {
+        Ok(Some(found)) => found,
+        Ok(None) => return no_pane(),
+        Err(why) => return HookCli::PaneUnreadable(why),
     };
     match backend.pane_path(&pane) {
         Ok(Some(path)) => match resolve_cli_on(std::ffi::OsStr::new(&path)) {
@@ -610,7 +625,7 @@ fn hook_cli(
             None => HookCli::NotOnPanePath,
         },
         Ok(None) => HookCli::PaneUnverifiable,
-        Err(_) => no_pane(),
+        Err(why) => HookCli::PaneUnreadable(format!("{why:#}")),
     }
 }
 

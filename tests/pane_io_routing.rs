@@ -294,6 +294,34 @@ fn cli(
     }
 }
 
+/// [`cli`], returning the document whether or not the command failed.
+fn cli_doc(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) -> Value {
+    let parsed =
+        thurbox::cli::Cli::try_parse_from(["thurbox-cli", "--json"].iter().chain(args).copied())
+            .expect("parse");
+    match parsed.command {
+        Some(thurbox::cli::Command::Session { action }) => {
+            thurbox::cli::sessions::run(action, db, backends)
+                .map_err(|e| e.message)
+                .expect("a document")
+                .json
+        }
+        other => panic!("not a command this test drives: {other:?}"),
+    }
+}
+
+/// The check named `check` wherever it sits in a document.
+fn find_check(doc: &Value, check: &str) -> Option<Value> {
+    match doc {
+        Value::Object(map) if map.get("check").and_then(Value::as_str) == Some(check) => {
+            Some(doc.clone())
+        }
+        Value::Object(map) => map.values().find_map(|v| find_check(v, check)),
+        Value::Array(items) => items.iter().find_map(|v| find_check(v, check)),
+        _ => None,
+    }
+}
+
 /// Dispatch `command` on the kernel's bus and wait for it to finish.
 fn kernel(bus: &mut CommandBus, command: KernelCommand) -> Result<(), String> {
     let id = bus.dispatch(command);
@@ -863,4 +891,82 @@ fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
         "a task run that could not tell whether its session runs spawned anyway"
     );
     assert_eq!(db.list_active_sessions().expect("list").len(), before);
+}
+
+/// Two running sessions answer to a task's tag: which one it meant cannot be
+/// told, so neither is typed into.
+#[test]
+fn a_task_run_refuses_to_pick_between_two_running_sessions() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let task = cli(
+        &db,
+        &reg.cli,
+        &[
+            "task",
+            "create",
+            "--title",
+            "twice",
+            "--repo",
+            &instance.repo(),
+        ],
+    )
+    .expect("task create");
+    let task_id = task["id"].as_i64().unwrap();
+    let mut panes = Vec::new();
+    for _ in 0..2 {
+        let id = SessionId::default();
+        let pane = reg.probe.open(
+            &format!("tb-task-{task_id}"),
+            &id.to_string(),
+            WindowRole::Agent,
+        );
+        seed_row(
+            &db,
+            id,
+            &format!("task-{task_id}"),
+            "local:rmux",
+            &pane,
+            "/srv",
+        );
+        panes.push(pane);
+    }
+    assert!(
+        cli(&db, &reg.cli, &["task", "run", &task_id.to_string()]).is_err(),
+        "a task run picked one of two running sessions"
+    );
+    for pane in &panes {
+        assert_eq!(reg.probe.screen(pane), "", "{pane} was typed into");
+    }
+}
+
+/// A pane `session doctor` could not read is unverified, never "no pane" — no
+/// pane is what lets it answer from its own `PATH` instead.
+#[test]
+fn the_doctor_reports_a_pane_it_could_not_read_as_unverified() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let id = SessionId::default();
+    let pane = reg.probe.open("tb-doc", &id.to_string(), WindowRole::Agent);
+    seed_row(&db, id, "doc", "local:rmux", &pane, &instance.repo());
+    reg.probe.set_reachable(false);
+    let doc = cli_doc(&db, &reg.cli, &["session", "doctor", &id.to_string()]);
+    let check = find_check(&doc, "cli").unwrap_or_else(|| panic!("no cli check: {doc}"));
+    assert_eq!(check["level"], "warn", "{check}");
+    assert!(
+        check["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("could not be read")),
+        "{check}"
+    );
 }

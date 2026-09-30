@@ -364,7 +364,7 @@ fn run_task(
             // Reuse an existing session window (re-trigger / restored session).
             // Match by the `· #<id>` tag rather than the exact name so a
             // since-edited title (and legacy `task-<id>` sessions) are found too.
-            let mut existing = None;
+            let mut running = Vec::new();
             for session in db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?
@@ -380,11 +380,17 @@ fn run_task(
                     continue;
                 }
                 if crate::session_ops::windows::agent_pane(backends, &session)?.is_some() {
-                    existing = Some(session);
-                    break;
+                    running.push(session);
                 }
             }
-            if let Some(session) = existing {
+            if running.len() > 1 {
+                return Err(format!(
+                    "{} running sessions carry this task's tag, so there is no telling which \
+                     one it meant",
+                    running.len()
+                ));
+            }
+            if let Some(session) = running.pop() {
                 crate::session_ops::send_text_with_status(db, backends, &session, &prompt, true)
                     .map_err(|e| format!("send: {e:#}"))?;
                 mark_in_progress(db, task)?;
