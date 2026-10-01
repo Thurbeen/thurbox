@@ -158,6 +158,189 @@ mod tests {
         }
     }
 
+    /// The selection matrix (E1, E4): a probe adapter registered for each of
+    /// [`Multiplexer::ALL`] — the RMUX and Herdr ones included, which no
+    /// adapter here implements — on this machine, an ssh host and a WSL
+    /// distro, from a POSIX and a Windows thurbox, and on a POSIX and a Windows
+    /// ssh host. Each route reaches the adapter registered for its own
+    /// multiplexer, whatever the host prefers; the spec it is built from names
+    /// the platform and launcher the placement says, whatever the multiplexer;
+    /// and the launcher carries the probe's own command line with nothing of
+    /// tmux's added to it.
+    mod selection {
+        use std::cell::RefCell;
+
+        use super::*;
+        use crate::session::platform::simulate_local;
+        use crate::session::{HostKind, Platform};
+        use crate::shell::HostLauncher;
+
+        thread_local! {
+            static BUILT: RefCell<Vec<(&'static str, BackendSpec)>> = const { RefCell::new(Vec::new()) };
+        }
+
+        fn probe(adapter: &'static str, spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+            BUILT.with(|built| built.borrow_mut().push((adapter, spec.clone())));
+            crate::backend::registry::tests::stub_named(&format!(
+                "{adapter}@{}",
+                spec.route.format()
+            ))
+        }
+        fn tmux_probe(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+            probe("tmux-probe", spec)
+        }
+        fn psmux_probe(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+            probe("psmux-probe", spec)
+        }
+        fn rmux_probe(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+            probe("rmux-probe", spec)
+        }
+        fn herdr_probe(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+            probe("herdr-probe", spec)
+        }
+
+        const PROBES: &[(Multiplexer, AdapterFactory)] = &[
+            (Multiplexer::Tmux, tmux_probe),
+            (Multiplexer::Psmux, psmux_probe),
+            (Multiplexer::Rmux, rmux_probe),
+            (Multiplexer::Herdr, herdr_probe),
+        ];
+
+        fn probe_name(mux: Multiplexer) -> String {
+            format!("{}-probe", mux.name())
+        }
+
+        /// Every placement a route can name: an ssh host of each platform,
+        /// each preferring every multiplexer in turn, and a WSL distro.
+        fn placements() -> HostRegistry {
+            let mut hosts = Vec::new();
+            for platform in Platform::ALL {
+                for preferred in std::iter::once(None).chain(Multiplexer::ALL.map(Some)) {
+                    hosts.push(HostDef {
+                        name: format!(
+                            "{}-{}",
+                            platform.name(),
+                            preferred.map_or("none", Multiplexer::name)
+                        ),
+                        destination: "user@box".into(),
+                        multiplexer: preferred.map(|m| m.name().to_string()),
+                        platform: Some(platform),
+                        ..Default::default()
+                    });
+                }
+            }
+            hosts.push(HostDef {
+                name: "distro".into(),
+                kind: HostKind::Wsl,
+                ..Default::default()
+            });
+            HostRegistry {
+                config_version: None,
+                hosts,
+            }
+        }
+
+        fn spec_for(route: &Route) -> BackendSpec {
+            BUILT.with(|built| {
+                built
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|(_, spec)| &spec.route == route)
+                    .map(|(_, spec)| spec.clone())
+                    .unwrap_or_else(|| panic!("no adapter was built for {}", route.format()))
+            })
+        }
+
+        #[test]
+        fn every_route_reaches_the_adapter_registered_for_its_multiplexer() {
+            let hosts = placements();
+            for local in Platform::ALL {
+                simulate_local(local, || {
+                    BUILT.with(|built| built.borrow_mut().clear());
+                    let registry = registry_from(PROBES, &hosts);
+                    let mut routes: Vec<(Route, Option<&HostDef>)> = Multiplexer::ALL
+                        .into_iter()
+                        .map(|mux| (Route::local(Some(mux)), None))
+                        .collect();
+                    for host in &hosts.hosts {
+                        for mux in Multiplexer::ALL {
+                            routes.push((host.route(Some(mux)), Some(host)));
+                        }
+                    }
+                    for (route, host) in routes {
+                        let mux = route.mux.expect("qualified");
+                        let at = format!("{} from a {} machine", route.format(), local.name());
+                        assert_eq!(Route::parse(&route.format()).as_ref(), Ok(&route), "{at}");
+                        let backend = registry
+                            .get(&route)
+                            .unwrap_or_else(|| panic!("{at} is not registered"));
+                        assert_eq!(
+                            backend.name(),
+                            format!("{}@{}", probe_name(mux), route.format()),
+                            "{at} reached another multiplexer's adapter"
+                        );
+                        let spec = spec_for(&route);
+                        assert_eq!(spec.host.as_ref(), host, "{at}");
+                        assert_eq!(
+                            spec.platform,
+                            host.map_or(local, HostDef::platform),
+                            "{at}: the platform is the machine's, never the multiplexer's"
+                        );
+                        assert_eq!(
+                            spec.launcher,
+                            host.map(HostLauncher::for_host),
+                            "{at}: the launcher is the placement's"
+                        );
+
+                        // E4: the probe's own grammar, unchanged.
+                        let command = crate::shell::launch(
+                            spec.launcher.as_ref(),
+                            mux.name(),
+                            &["ls", "--all"],
+                        );
+                        let argv: Vec<String> = std::iter::once(command.get_program())
+                            .chain(command.get_args())
+                            .map(|a| a.to_string_lossy().into_owned())
+                            .collect();
+                        assert!(
+                            argv.ends_with(&[mux.name().to_string(), "ls".into(), "--all".into()]),
+                            "{at}: the launcher changed the adapter's command line: {argv:?}"
+                        );
+                        assert!(
+                            !argv.iter().any(|a| a == "-L"),
+                            "{at}: the launcher added tmux's -L: {argv:?}"
+                        );
+                    }
+                    assert_eq!(
+                        registry.default_route(),
+                        &Route::local(Some(Multiplexer::default_for(local))),
+                        "the default is this platform's own multiplexer"
+                    );
+                });
+            }
+        }
+
+        /// The platform picks what an unqualified local route means and which
+        /// adapter is the default; the adapters registered are the same set
+        /// either way.
+        #[test]
+        fn the_platform_never_decides_what_is_registered() {
+            let hosts = placements();
+            let registered = |local| {
+                simulate_local(local, || {
+                    let mut routes: Vec<String> = registry_from(PROBES, &hosts)
+                        .routes()
+                        .map(Route::format)
+                        .collect();
+                    routes.sort();
+                    routes
+                })
+            };
+            assert_eq!(registered(Platform::Posix), registered(Platform::Windows));
+        }
+    }
+
     #[test]
     fn only_implemented_multiplexers_are_served() {
         assert!(implements(Multiplexer::Tmux));
