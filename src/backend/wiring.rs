@@ -76,6 +76,13 @@ pub fn configured() -> (BackendRegistry, HostRegistry, Vec<String>) {
     (for_hosts(hosts), hosts.clone(), warnings.clone())
 }
 
+/// Every adapter for this machine and no host: what a command acting only on
+/// a local row needs, without reading `hosts.toml` or discovering WSL
+/// distros.
+pub fn local_only() -> BackendRegistry {
+    for_hosts(&HostRegistry::default())
+}
+
 /// The registry for `hosts`, from [`ADAPTERS`].
 fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
     registry_from(ADAPTERS, hosts)

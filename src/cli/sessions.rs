@@ -1264,8 +1264,9 @@ fn run_signal(
     // channel a peer attached to that backend reads live, and the one the
     // headless poll reads, so neither later reports the state this replaced.
     // Best-effort: a backend with no status channel has nowhere to put it.
-    let recorded = crate::session_ops::windows::backend_for(backends.get(), &target.backend_type)
-        .map_err(anyhow::Error::msg)
+    // A local row's backend is found among this machine's alone: every agent
+    // hook runs this, and the full registry reads every host to be built.
+    let recorded = signal_backend(backends, &target.backend_type)
         .and_then(|backend| backend.record_hook_state(&target.backend_id, &state));
     if let Err(e) = recorded {
         tracing::debug!("could not record the state in the row's backend: {e:#}");
@@ -1279,6 +1280,25 @@ fn run_signal(
         }),
         format!("Signaled {state} for '{}'.", target.name),
     ))
+}
+
+/// The backend serving `backend_type`, for `session signal`.
+fn signal_backend(
+    backends: &super::Backends<'_>,
+    backend_type: &str,
+) -> anyhow::Result<std::sync::Arc<dyn crate::backend::SessionBackend>> {
+    let route = crate::session::Route::parse(backend_type).map_err(anyhow::Error::msg)?;
+    if route.is_remote() {
+        return crate::session_ops::windows::backend_for(backends.get(), backend_type)
+            .cloned()
+            .map_err(anyhow::Error::msg);
+    }
+    let served = route.qualify(crate::session::Multiplexer::platform_default(), None);
+    backends
+        .local()
+        .get(&served)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no backend here serves {served}"))
 }
 
 fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {

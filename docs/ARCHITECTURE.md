@@ -2375,9 +2375,14 @@ row's route:
   state word appended, in place of `thurbox-cli session signal` where that CLI
   cannot reach this instance's database (a pane on a host). Spawn, restart and
   `agent launch-args` rewrite the shipped hook files and literal args to it;
-  `None` means no channel, and then no hook config is shipped at all.
+  `None` means no channel, and then no hook config is shipped at all. A
+  Windows host ships none either, whatever serves the row: an agent config
+  path there is unproven, and that is the host's OS, not the backend's.
 - `record_hook_state(pane, state)` — what `session signal` does after writing
   the row, on the row's own pane, so a peer attached to that backend sees it.
+  Every agent hook runs `session signal`, so a local row's backend is found in
+  a registry of this machine's backends alone (`wiring::local_only`) — no
+  `hosts.toml`, no WSL distro discovery.
 - `hook_states()` — every pane's state in one round trip, attached or not: what
   `automation tick` polls (`session_ops::remote_hooks::poll_hook_states`) for
   every route with live rows, local ones included.

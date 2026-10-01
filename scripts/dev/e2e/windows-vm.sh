@@ -422,6 +422,12 @@ cmd_test() {
   # measures; the verdict is on the pair, against the gate itself.
   log "probing psmux pane-user-option support (hook-status gate)"
   local gate pane opt inpane measured_a=unknown measured_b=unknown
+  # The gate is the binary's answer, so the binary has to be this checkout's:
+  # an older build would report the gate the source no longer has.
+  if [ -z "${THURBOX_CLI:-}" ]; then
+    ( cd "$REPO_ROOT" && cargo build --quiet --bin thurbox-cli ) \
+      || die "could not build thurbox-cli to read the psmux gate from"
+  fi
   gate="$(psmux_hook_gate)" \
     || die "could not read the psmux status channel from 'thurbox-cli runtime status --json' (build it: cargo build --bin thurbox-cli, or set THURBOX_CLI) — the gate probes have nothing to check against"
   ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true

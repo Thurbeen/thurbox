@@ -2558,14 +2558,15 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     /// Read-only by design — no `ensure_ready`, so a poll never creates the
-    /// server or the session; a server without the session holds no states.
+    /// server or the session. A server that says it has no such session (or
+    /// that is not running) holds no states; a question that never reached
+    /// one — an unreachable host, a missing binary — is an `Err`.
     fn hook_states(&self) -> Result<Vec<(String, String)>> {
         self.refuse_without_hook_status()?;
-        if self
-            .run_tmux(&["has-session", "-t", &self.session])
-            .is_err()
-        {
-            return Ok(Vec::new());
+        match self.run_tmux(&["has-session", "-t", &self.session]) {
+            Ok(_) => {}
+            Err(e) if session_absent(&format!("{e:#}")) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
         }
         let format = format!(
             "#{{pane_id}} #{{{}}}",
@@ -3587,6 +3588,15 @@ fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
 
 /// Whether a kill's failure says its target is already gone — named by its
 /// pane or by its name — which is what the kill wanted.
+/// Whether a failed `has-session` was the server answering that it holds no
+/// such session — or that there is no server — rather than a question that
+/// never reached it (an unreachable host, a refused ssh, a missing binary).
+fn session_absent(error: &str) -> bool {
+    error.contains("can't find session")
+        || error.contains("no server running")
+        || error.contains("error connecting to")
+}
+
 fn already_gone(error: &str) -> bool {
     error.contains("can't find window")
         || error.contains("window not found")
@@ -4484,6 +4494,38 @@ mod tests {
 
     /// The format is a literal because a `const` cannot interpolate another;
     /// this is what keeps it honest.
+    /// A status question that never reached a server is no answer: the poll
+    /// must keep the held states rather than be told there are none.
+    #[test]
+    fn an_unanswered_status_listing_is_an_error() {
+        let backend = TestBackend::with_transport(
+            TmuxTransport::local("thurbox-test-no-such-multiplexer"),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+        );
+        assert!(backend.hook_states().is_err());
+    }
+
+    /// The headless status poll reads an empty listing as "every pane quiet",
+    /// so only the server's own "nothing here" may become one.
+    #[test]
+    fn only_the_server_saying_no_session_is_an_empty_status_answer() {
+        for absent in [
+            "tmux has-session -t thurbox failed: can't find session: thurbox",
+            "tmux has-session -t thurbox failed: no server running on /tmp/tmux-1/thurbox",
+            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
+        ] {
+            assert!(session_absent(absent), "{absent}");
+        }
+        for unanswered in [
+            "tmux has-session -t thurbox failed: ssh: connect to host box port 22: Connection refused",
+            "Failed to run tmux command: No such file or directory (os error 2)",
+        ] {
+            assert!(!session_absent(unanswered), "{unanswered}");
+        }
+    }
+
     #[test]
     fn the_discover_format_reads_both_stamps() {
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_SESSION_OPTION}}}")));

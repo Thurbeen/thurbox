@@ -1256,12 +1256,28 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
     has(&def.args) || has(&def.resume_args) || has(&def.fork_args) || has(&def.new_session_args)
 }
 
+/// Why no thurbox-managed agent config may be shipped to `host`, or `None`
+/// when it may: the row's backend has no status channel (`signal` is `None`),
+/// or the host runs Windows — where an agent handed a forward-slash config
+/// path (claude's `--settings C:/…`) is unproven, whichever multiplexer serves
+/// the row. Asked before any round trip to the host.
+fn hook_config_refusal(host: &HostDef, signal: Option<&str>) -> Option<&'static str> {
+    if signal.is_none() {
+        Some("its backend reports no hook status")
+    } else if host.is_windows() {
+        Some("an agent config path on a Windows host is unproven")
+    } else {
+        None
+    }
+}
+
 /// Where the local thurbox config root lands on `host`, or `None` when no
 /// remote location can hold it (→ strip the args instead):
 /// - nowhere, when the row's backend has no status channel (`signal` is
 ///   `None`): the files would carry hooks with nothing to report through;
-/// - a native-Windows host maps onto `%USERPROFILE%/.config/<root-name>` —
-///   dev/release isolation carries over via the root's final component;
+/// - nowhere on a native-Windows host ([`hook_config_refusal`]); once that is
+///   proven it maps onto `%USERPROFILE%/.config/<root-name>` — dev/release
+///   isolation carries over via the root's final component;
 /// - a **Windows-local** root (`C:\Users\me\AppData\Roaming\thurbox`, a Windows
 ///   TUI driving a POSIX host) has no absolute counterpart to mirror, so it
 ///   maps onto `$HOME/.config/<root-name>` there — same shape as the psmux
@@ -1271,10 +1287,9 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
 ///   case);
 /// - a POSIX root outside the local home is mirrored at the same absolute path.
 fn remote_config_root(host: &HostDef, signal: Option<&str>, config_root: &str) -> Option<String> {
-    if signal.is_none() {
+    if let Some(reason) = hook_config_refusal(host, signal) {
         tracing::warn!(
-            "stripping local agent-config args for host '{}': its backend reports no \
-             hook status",
+            "stripping local agent-config args for host '{}': {reason}",
             host.name
         );
         return None;
@@ -1717,6 +1732,26 @@ mod tests {
         let (out, stripped) = adapt_agent_args_for_remote_with_report(&host, None, args);
         assert!(out.is_empty(), "{out:?}");
         assert_eq!(stripped, [settings.display().to_string()]);
+    }
+
+    /// A native-Windows host is refused whichever multiplexer its row names,
+    /// and before any round trip: claude taking a forward-slash `--settings`
+    /// path there is unproven, and that is the host's OS, not its backend's
+    /// status channel.
+    #[test]
+    fn a_windows_host_ships_no_hook_config_even_with_a_status_channel() {
+        let host = |platform| HostDef {
+            name: "box".into(),
+            destination: "user@box.invalid".into(),
+            multiplexer: Some("tmux".into()),
+            platform: Some(platform),
+            ..Default::default()
+        };
+        let windows = host(crate::session::Platform::Windows);
+        let posix = host(crate::session::Platform::Posix);
+        assert!(hook_config_refusal(&windows, Some(SIGNAL)).is_some());
+        assert!(hook_config_refusal(&posix, None).is_some());
+        assert_eq!(hook_config_refusal(&posix, Some(SIGNAL)), None);
     }
 
     #[test]

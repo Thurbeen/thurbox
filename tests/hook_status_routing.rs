@@ -385,6 +385,51 @@ fn session_signal_reaches_the_rows_own_backend() {
     instance.assert_untouched("session signal");
 }
 
+/// A hook runs `session signal` on every tool call, so for a local row it must
+/// not build the registry that reads `hosts.toml` and, on Windows and inside
+/// WSL, runs `wsl.exe` to discover distros: this machine's backends are
+/// enough to find the row's.
+#[test]
+fn session_signal_on_a_local_row_builds_no_host_registry() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux not installed");
+        return;
+    }
+    let instance = Instance::new(false);
+    let db = instance.db();
+    let routes = Routes::new();
+    let id = seed_row(&db, "local-probe", &local_probe().format(), "%0");
+    let pane = routes
+        .local
+        .open("tb-local-probe", &id.to_string(), WindowRole::Agent);
+
+    let hosts = || -> thurbox::backend::BackendRegistry {
+        panic!("a local signal built the registry of every host")
+    };
+    let here = || routes.registry();
+    let backends = thurbox::cli::Backends::lazy(&hosts).with_local(&here);
+    cli(
+        &db,
+        &backends,
+        &[
+            "session",
+            "signal",
+            "--state",
+            "done",
+            "--session",
+            &id.to_string(),
+        ],
+    )
+    .expect("session signal");
+    let window = routes
+        .local
+        .windows()
+        .into_iter()
+        .find(|w| w.pane == pane)
+        .expect("the row's window");
+    assert_eq!(window.hook.as_deref(), Some("done"));
+}
+
 /// Arming the heartbeat is a request to this machine's backend — the
 /// registry's default — and not a window on whatever tmux server is local.
 #[test]
