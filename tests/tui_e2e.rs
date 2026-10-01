@@ -2438,6 +2438,28 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
 }
 
 #[test]
+fn a_key_right_behind_a_release_does_not_cancel_its_copy() {
+    // A terminal's selection is read off its grid, so the release can copy at
+    // once. Waiting for the next paint instead lost the copy to a key queued in
+    // the same batch: the key drops the selection before that paint runs.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+    let mark = tui.raw_len();
+    tui.drag_then_chord(at, 11, b':');
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
+    assert_eq!(copied, "tb-select-me");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
 fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
     // A pane that is not a terminal has no grid: its text is read off the
     // painted frame. A drag whose every report lands in one input batch has had

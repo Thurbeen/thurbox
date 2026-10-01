@@ -148,10 +148,22 @@ impl App {
                             .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
                     }
                     // `on_mouse` has already dropped a release that never
-                    // moved, so a click reaches here with no selection.
-                    if ends_drag && self.selection.is_some() {
-                        self.copy_after_paint = true;
-                        self.dirty = true;
+                    // moved, so a click reaches here with no selection. A
+                    // terminal's text came off its grid in the refresh above, so
+                    // it is copied now, before a key queued behind the release
+                    // can drop it; any other pane's text exists only once the
+                    // next paint has read it.
+                    if ends_drag {
+                        match self.selection.clone() {
+                            Some(sel) if self.grid_selection_text(&sel).is_some() => {
+                                self.copy_on_select();
+                            }
+                            Some(_) => {
+                                self.copy_after_paint = true;
+                                self.dirty = true;
+                            }
+                            None => {}
+                        }
                     }
                     self.note_input();
                 }

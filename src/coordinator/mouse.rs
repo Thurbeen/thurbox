@@ -702,10 +702,11 @@ impl App {
 
     /// Copy a released drag, when `[clipboard] copy_on_select` is on.
     ///
-    /// Run after the paint that follows the release (`copy_after_paint`), so
-    /// it reads the selection that paint read, the same text `Ctrl+C` would
-    /// copy. A key in between has already dropped the selection, so it copies
-    /// nothing. Silent when there is nothing to copy or `provider = "none"` turned
+    /// Run at the release for a terminal, whose text the grid gives at once,
+    /// and after the next paint for any other pane (`copy_after_paint`), whose
+    /// text only that paint reads. In the second case a key in between has
+    /// already dropped the selection and taken the gesture, so nothing is
+    /// copied. Silent when there is nothing to copy or `provider = "none"` turned
     /// copying off: a drag is not a request for a toast the way a key is.
     /// The selection stays highlighted — it shows what was copied, and a pane
     /// reading `thurbox.selection` still sees it — until the next key, click
