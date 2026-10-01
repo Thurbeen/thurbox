@@ -2566,7 +2566,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         self.refuse_without_hook_status()?;
         match self.run_tmux(&["has-session", "-t", &self.session]) {
             Ok(_) => {}
-            Err(e) if session_absent(&format!("{e:#}")) => return Ok(Vec::new()),
+            Err(e) if mux_answered_absent(&format!("{e:#}")) => return Ok(Vec::new()),
             Err(e) => return Err(e),
         }
         let format = format!(
@@ -2629,8 +2629,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    /// No server, or no session on it, is a heartbeat not running — not an
-    /// unanswered question.
+    /// No server, or no session on it, is a heartbeat not running. Any other
+    /// failed listing is an unanswered question (`listing_is_absence`).
     fn heartbeat_running(&self) -> Result<bool> {
         let out = self
             .transport
@@ -2645,10 +2645,20 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 self.transport
                     .launch_failure("Failed to run tmux command", e)
             })?;
-        Ok(out.status.success()
-            && String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .any(|w| w == HEARTBEAT_WINDOW))
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if listing_is_absence(self.transport.is_ssh(), out.status.code(), stderr.trim()) {
+                return Ok(false);
+            }
+            bail!(
+                "{} list-windows (heartbeat) {}",
+                self.transport.mux(),
+                mux_failure(&out)
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|w| w == HEARTBEAT_WINDOW))
     }
 
     /// Automations stop firing headlessly until something arms it again —
@@ -2658,7 +2668,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return Ok(false);
         }
         let target = format!("{}:{HEARTBEAT_WINDOW}", self.session);
-        Ok(self.run_tmux(&["kill-window", "-t", &target]).is_ok())
+        match self.run_tmux(&["kill-window", "-t", &target]) {
+            Ok(_) => Ok(true),
+            Err(e) if already_gone(&format!("{e:#}")) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// The shell-pane command must match the OS of the machine the pane runs
@@ -3587,15 +3601,6 @@ fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
         .map(|(_, window)| window)
 }
 
-/// Whether a failed `has-session` was the server answering that it holds no
-/// such session — or that there is no server — rather than a question that
-/// never reached it (an unreachable host, a refused ssh, a missing binary).
-fn session_absent(error: &str) -> bool {
-    error.contains("can't find session")
-        || error.contains("no server running")
-        || error.contains("error connecting to")
-}
-
 /// Whether a kill's failure says its target is already gone — named by its
 /// pane or by its name — which is what the kill wanted.
 fn already_gone(error: &str) -> bool {
@@ -4513,7 +4518,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mux = dir.join("mux");
         let script = format!(
-            "#!/bin/sh\ncase \"$*\" in\n  *list-windows*) [ -n '{windows}' ] && {{ echo '{windows}'; exit 0; }} ;;\nesac\necho '{stderr}' >&2\nexit 1\n"
+            "#!/bin/sh\ncase \"$*\" in\n  *list-windows*) [ -n '{windows}' ] && {{ echo '{windows}'; exit 0; }} ;;\nesac\ncat >&2 <<'EOF'\n{stderr}\nEOF\nexit 1\n"
         );
         std::fs::write(&mux, script).unwrap();
         std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -4577,13 +4582,14 @@ mod tests {
             "tmux has-session -t thurbox failed: no server running on /tmp/tmux-1/thurbox",
             "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
         ] {
-            assert!(session_absent(absent), "{absent}");
+            assert!(mux_answered_absent(absent), "{absent}");
         }
         for unanswered in [
             "tmux has-session -t thurbox failed: ssh: connect to host box port 22: Connection refused",
             "Failed to run tmux command: No such file or directory (os error 2)",
+            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (Permission denied)",
         ] {
-            assert!(!session_absent(unanswered), "{unanswered}");
+            assert!(!mux_answered_absent(unanswered), "{unanswered}");
         }
     }
 

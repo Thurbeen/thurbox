@@ -150,14 +150,30 @@ enum ProvisionOutcome {
 /// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
 /// so repeat spawns of the same agent on the same host skip the ssh
 /// round-trips while failures and not-installed skips are re-tried.
+/// `provisioned` holds, per host and agent, the one hook command last shipped:
+/// the file on the host carries one, so a launch on another route of the host
+/// replaces what an earlier one is still remembered as having shipped.
 /// `in_flight` makes the read-merge-write exclusive per key **without**
 /// holding the lock across the ssh round-trips (a slow or down host must not
 /// stall an unrelated host's spawn): a concurrent spawn of the same key waits
 /// for the holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
-    provisioned: HashSet<ProvisionKey>,
+    provisioned: HashMap<(String, String), String>,
     in_flight: HashSet<ProvisionKey>,
+}
+
+impl ProvisionCache {
+    fn has_shipped(&self, (host, agent, signal): &ProvisionKey) -> bool {
+        self.provisioned
+            .get(&(host.clone(), agent.clone()))
+            .is_some_and(|shipped| shipped == signal)
+    }
+
+    fn shipped(&mut self, (host, agent, signal): &ProvisionKey) {
+        self.provisioned
+            .insert((host.clone(), agent.clone()), signal.clone());
+    }
 }
 
 fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
@@ -247,7 +263,7 @@ pub(crate) fn provision_agent_hooks_on_host(
     let _guard = loop {
         {
             let mut cache = cache_lock();
-            if cache.provisioned.contains(&key) {
+            if cache.has_shipped(&key) {
                 return None;
             }
             if cache.in_flight.insert(key.clone()) {
@@ -265,7 +281,7 @@ pub(crate) fn provision_agent_hooks_on_host(
     };
     let outcome = provision_uncached(host, signal, &asset);
     if matches!(outcome, ProvisionOutcome::Provisioned) {
-        cache_lock().provisioned.insert(key);
+        cache_lock().shipped(&key);
     }
     match outcome {
         ProvisionOutcome::Provisioned | ProvisionOutcome::NotInstalled => None,
@@ -789,9 +805,7 @@ mod tests {
             destination: "user@cache-key-host.invalid".into(),
             ..Default::default()
         };
-        cache_lock()
-            .provisioned
-            .insert(provision_key(&host, "codex", SIGNAL));
+        cache_lock().shipped(&provision_key(&host, "codex", SIGNAL));
         assert!(
             provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true).is_none(),
             "the command it shipped is cached"
@@ -815,9 +829,7 @@ mod tests {
             ..Default::default()
         };
         for signal in [SIGNAL, "other-mux signal "] {
-            cache_lock()
-                .provisioned
-                .insert(provision_key(&host, "opencode", signal));
+            cache_lock().shipped(&provision_key(&host, "opencode", signal));
         }
         assert!(
             provision_agent_hooks_on_host(&host, Some(SIGNAL), "opencode", true).is_some(),
