@@ -609,8 +609,9 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
     // looking at a screen that did not change, with no reason to suspect the install.
     if host.undiscoverable(index).is_some() {
         return Some(format!(
-            "it shares the {slot:?} slot, so it is not shown by default — reach it \
-             with ctrl+l, or declare a pill so the action band offers it",
+            "it shares the {slot:?} slot, so it is not shown by default, and ctrl+h/ctrl+l \
+             pass it over — give it a key of its own, or declare a pill so the action \
+             band offers it",
             slot = plugin.slot
         ));
     }

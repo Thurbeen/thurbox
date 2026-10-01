@@ -194,6 +194,13 @@ still a switch slot, so the next pane to share it inherits the fix.)
 reports about itself, `can_focus` for where focus may go. A pane that brings
 itself forward by being focused needs the second one.
 
+There is a third question, and it is not `can_focus` either: *should `Ctrl+H`/
+`Ctrl+L` stop here?* A cycle that stopped wherever focus may rest stepped onto
+every alternate, and stepping onto one draws it — walking the columns swapped the
+agent's terminal for whatever else shared the centre. `next_in_cycle` makes a
+switch slot one stop, its default occupant, and steps an alternate off the slot;
+alternates are opened by their own key or pill, which `can_focus` still lets in.
+
 There is a third fact underneath both, and it is a matter of *timing*: a pane can
 open its own slot. The search strip shows itself and asks for focus in one action,
 and `panels.show` is only read by the arrangement — so at the moment the request

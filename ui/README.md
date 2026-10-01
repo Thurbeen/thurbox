@@ -402,7 +402,8 @@ These are the ones that cost real time.
   plugin and the slot — and `plugin check` fails on the missing second one and
   prints the line to add.
 - **A pane sharing a `switch` slot draws nothing until it is focused.** The quieter
-  sibling of the above: the slot's first occupant is shown and yours waits. Nothing
+  sibling of the above: the slot's first occupant is shown and yours waits, and
+  `ctrl+h`/`ctrl+l` pass it over — the cycle stops once per slot. Nothing
   fails, so declare a `pills = { … }` entry and the action band will offer it —
   `plugin check` warns when you have not. Give that `action` a key as well: the band
   draws a pill only when a chord resolves for it, so a pill over a palette-only

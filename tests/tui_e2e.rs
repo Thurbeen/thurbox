@@ -2717,6 +2717,75 @@ fn the_thick_frame_and_the_terminal_cursor_move_with_focus() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// A second occupant of the centre `switch` slot, reached only by its own key.
+const CENTRE_ALTERNATE: &str = r#"return {
+  name = "stand-in",
+  slot = "center",
+  focusable = true,
+  keys = {
+    { key = "ctrl+g", action = "stand-in.toggle", desc = "open the stand-in", scope = "global" },
+  },
+  render = function()
+    return { type = "text", text = "tb-stand-in-body" }
+  end,
+  on_action = function(action)
+    if action == "stand-in.toggle" then
+      command("focus", { text = "stand-in", toggle = true })
+      return true
+    end
+    return false
+  end,
+}"#;
+
+#[test]
+fn the_focus_cycle_skips_a_centre_alternate_and_its_key_still_opens_it() {
+    // A pane that replaces the centre is an alternate of its switch slot, and
+    // moving focus onto one is what draws it. So a Ctrl+L that stepped onto it
+    // swapped the agent's terminal out from under the user on an ordinary walk
+    // across the columns. The cycle stops once per column — on the slot's
+    // default occupant — and the alternate is opened by its own key.
+    let interface = interface_plus("91_stand_in.lua", CENTRE_ALTERNATE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+
+    tui.send(b"\x08");
+    wait_for_view(&tui, "Sessions");
+    tui.send(b"\x0c");
+    wait_for_view(&tui, "Agent");
+    // Onward from the centre wraps to the list: there is no other column.
+    tui.send(b"\x0c");
+    wait_for_view(&tui, "Sessions");
+    tui.wait_until_quiet();
+    assert!(
+        !tui.frame().contains("tb-stand-in-body"),
+        "Ctrl+L opened the centre alternate:\n{}",
+        tui.frame()
+    );
+
+    // Its own key brings it forward.
+    tui.send(b"\x07");
+    tui.wait_for("tb-stand-in-body");
+
+    // And the cycle leaves it for the next column, not for its sibling …
+    tui.send(b"\x08");
+    wait_for_view(&tui, "Sessions");
+    // … and coming back lands on the default occupant, not the alternate.
+    tui.send(b"\x0c");
+    wait_for_view(&tui, "Agent");
+    tui.wait_until_quiet();
+    let frame = tui.frame();
+    assert!(
+        !frame.contains("tb-stand-in-body") && cursor_block_shown(&frame),
+        "Ctrl+L back into the centre reopened the alternate:\n{frame}"
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 // --- the wheel over a live terminal -----------------------------------------
 
 impl Tui {
