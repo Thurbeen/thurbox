@@ -147,11 +147,11 @@ impl App {
                         self.host
                             .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
                     }
-                    // After the refresh, so the copy reads the finished drag.
                     // `on_mouse` has already dropped a release that never
                     // moved, so a click reaches here with no selection.
                     if ends_drag && self.selection.is_some() {
-                        self.copy_on_select();
+                        self.copy_after_paint = true;
+                        self.dirty = true;
                     }
                     self.note_input();
                 }

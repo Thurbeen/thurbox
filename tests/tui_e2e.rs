@@ -2236,6 +2236,18 @@ fn osc52_payload(out: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A left press at a 0-based cell, `over` moves to the right and the release,
+/// as one run of SGR reports — what `drain_input` reads as a single batch.
+fn drag_gesture((x, y): (u16, u16), over: u16) -> Vec<u8> {
+    let (px, py) = (x + 1, y + 1);
+    let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
+    for cx in px + 1..=px + over {
+        seq.extend_from_slice(format!("\x1b[<32;{cx};{py}M").as_bytes());
+    }
+    seq.extend_from_slice(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+    seq
+}
+
 impl Tui {
     /// Where `needle` is painted, as a 0-based (column, row).
     ///
@@ -2273,13 +2285,8 @@ impl Tui {
     /// (press, `over` moves, release) is followed immediately by the chord
     /// byte, so a handler bound to the chord runs in the same batch as the drag
     /// that made the selection.
-    fn drag_then_chord(&mut self, (x, y): (u16, u16), over: u16, key: u8) {
-        let (px, py) = (x + 1, y + 1);
-        let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
-        for cx in px + 1..=px + over {
-            seq.extend_from_slice(format!("\x1b[<32;{cx};{py}M").as_bytes());
-        }
-        seq.extend_from_slice(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+    fn drag_then_chord(&mut self, at: (u16, u16), over: u16, key: u8) {
+        let mut seq = drag_gesture(at, over);
         seq.push(key);
         self.send(&seq);
     }
@@ -2425,6 +2432,27 @@ fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
     let copied = osc52_payload(&tui.raw_since(mark))
         .unwrap_or_else(|| tui.give_up("an OSC 52 sequence for the wide line"));
     assert_eq!(copied, "tbw漢字-é-end");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
+    // A pane that is not a terminal has no grid: its text is read off the
+    // painted frame. A drag whose every report lands in one input batch has had
+    // no paint by its release, so a copy made there would carry the text of the
+    // last paint (none) instead of the selection now highlighted.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let at = tui.find("── repo");
+    tui.send(&drag_gesture(at, 6));
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
+    assert_eq!(copied, "── repo");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

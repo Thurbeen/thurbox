@@ -38,6 +38,9 @@ impl App {
                 // otherwise. `on_click` re-arms it when this press is itself
                 // forwarded.
                 self.pty_pointer = None;
+                // And it starts a new gesture before the last one's copy was
+                // made: that copy would read whatever this press selects.
+                self.copy_after_paint = false;
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
             // The other press a pane can be taught to answer. Nothing else in
@@ -697,10 +700,12 @@ impl App {
         };
     }
 
-    /// Copy a finished drag as it is released, when `[clipboard]
-    /// copy_on_select` is on.
+    /// Copy a released drag, when `[clipboard] copy_on_select` is on.
     ///
-    /// Silent when there is nothing to copy or `provider = "none"` turned
+    /// Run after the paint that follows the release (`copy_after_paint`), so
+    /// it reads the selection that paint read, the same text `Ctrl+C` would
+    /// copy. A key in between has already dropped the selection, so it copies
+    /// nothing. Silent when there is nothing to copy or `provider = "none"` turned
     /// copying off: a drag is not a request for a toast the way a key is.
     /// The selection stays highlighted — it shows what was copied, and a pane
     /// reading `thurbox.selection` still sees it — until the next key, click

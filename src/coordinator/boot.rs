@@ -277,6 +277,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         last_area: Rect::new(0, 0, 0, 0),
         screen_size: crossterm::terminal::size().unwrap_or((80, 24)),
         selected_text: None,
+        copy_after_paint: false,
         hovered: None,
         mouse: config.features().mouse,
         paste_burst: crate::coordinator::paste::PasteBurst::for_platform(),

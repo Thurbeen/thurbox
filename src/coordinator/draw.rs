@@ -117,6 +117,11 @@ impl App {
         self.frames += 1;
         Counters::bump(&self.perf.frames);
         self.log_first_frame();
+        // The frame just painted is what `selected_text` was read from, and
+        // ratatui has flushed it, so the OSC 52 write lands after it.
+        if std::mem::take(&mut self.copy_after_paint) {
+            self.copy_on_select();
+        }
         Ok(())
     }
 

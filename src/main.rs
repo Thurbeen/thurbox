@@ -413,6 +413,13 @@ struct App {
     /// reason: a selection outside a terminal can only be read off the painted
     /// buffer, and the buffer is gone by the time `Ctrl+C` arrives.
     selected_text: Option<String>,
+    /// A drag was released under copy-on-select and its copy is owed.
+    ///
+    /// Made after the next paint rather than at the release: outside a
+    /// terminal the text is only read off the painted frame, and a drag whose
+    /// reports all arrived in one batch has had no paint yet. See
+    /// `App::copy_on_select`.
+    copy_after_paint: bool,
     /// The identity under the pointer, for hover highlighting.
     ///
     /// Stored as the identity rather than the position so a move WITHIN the
