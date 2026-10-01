@@ -1636,6 +1636,26 @@ fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
 }
 
 #[test]
+fn the_tui_create_flow_never_asks_which_multiplexer() {
+    // The multiplexer is the platform's (tmux, or psmux on native Windows) or
+    // whatever settings name — never a question on screen. With no hosts the
+    // flow's first question is the repositories.
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_until("the new-session flow to be up", |frame| {
+        frame.contains("Select Repos") || frame.contains("Multiplexer")
+    });
+    let frame = tui.frame();
+    assert!(
+        frame.contains("Select Repos") && !frame.contains("Multiplexer"),
+        "the flow asked which multiplexer to use:\n{frame}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
     let profile = Profile::new();
     std::fs::write(
@@ -3703,10 +3723,10 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
     // Now the wizard, which floats and therefore holds the keyboard.
     tui.send(CTRL_N);
     // Its first question is "Run On" where the machine has hosts and
-    // "Multiplexer" where it has none — this one has sibling WSL distros, so which it
-    // is depends on the machine and neither is the point.
+    // "Select Repos" where it has none — this one has sibling WSL distros, so
+    // which it is depends on the machine and neither is the point.
     tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Run On") || frame.contains("Multiplexer")
+        frame.contains("Run On") || frame.contains("Select Repos")
     });
     tui.send(CTRL_V);
     // It has nothing to paste from — that is what the missing X clipboard

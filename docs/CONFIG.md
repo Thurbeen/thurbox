@@ -347,12 +347,13 @@ multiplexer reports a closed window (tmux does, psmux does not).
 Host and multiplexer are separate choices. `hosts.toml` names the host's
 preference; top-level `multiplexer` in `settings.toml` names the local
 preference. `thurbox-cli session create --multiplexer <name>` overrides either
-for one creation. The TUI asks for a host and then shows the registered
-multiplexers for it. The order is explicit choice, configured host or local
-preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
-Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
-registered implementation is shown as unavailable and creation refuses it
-before making a worktree or pane.
+for one creation. The TUI asks for a host and never for a multiplexer: its
+create names none, so the rest of this order decides. The order is explicit
+choice, configured host or local preference, then platform default (`tmux` on
+POSIX, `psmux` on native Windows). Names are `tmux`, `psmux`, `rmux`, and
+`herdr`. A configured choice without a registered implementation is named as
+unavailable on the TUI's create flow, and creation refuses it before making a
+worktree or pane.
 When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.

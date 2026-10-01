@@ -791,8 +791,8 @@ WSL needs no credentials at all.
   `is_parent`/`parent_path`, so a healed parent keeps the mark its
   children hang off.
 - **Selection**: host and multiplexer are independent. The TUI asks for a
-  host and then a registered multiplexer; `session create --host` and
-  `--multiplexer` are the headless equivalents. `BackendChoice` resolves
+  host only, and its create names no multiplexer; `session create --host`
+  and `--multiplexer` are the headless choices. `BackendChoice` resolves
   explicit choice before configured host/local preference before the platform
   default, and its routing key is persisted.
 - **Persistence/restore**: `backend_type` round-trips in SQLite;
@@ -2398,8 +2398,8 @@ registers probe adapters for all four multiplexers and checks each route
 reaches its own from a POSIX and a Windows thurbox, locally, over ssh to a host
 of either platform and in a WSL distro, built from the placement's platform
 and launcher, with a launcher that adds nothing to the probe's command line.
-The local picker offers every registered multiplexer, so psmux appears on a
-POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
+The TUI offers no multiplexer choice: a create from it takes the configured
+one, else the platform default. The heartbeat, the own-pane status write
 and the hook-state listing went behind the contract in ADR-32. The heartbeat
 only ensures its session exists: every backend applies its config before it
 spawns or attaches. psmux has not been driven live by this change.

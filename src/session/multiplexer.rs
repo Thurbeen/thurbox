@@ -127,6 +127,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_local_create_naming_nothing_takes_tmux_on_posix_and_psmux_on_windows() {
+        // Linux, macOS and WSL are all `Posix`; only native Windows is not.
+        for (platform, expected) in [
+            (Platform::Posix, Multiplexer::Tmux),
+            (Platform::Windows, Multiplexer::Psmux),
+        ] {
+            let chosen = crate::session::platform::simulate_local(platform, || {
+                BackendChoice::resolve(None, None, None).unwrap()
+            });
+            assert_eq!(chosen.multiplexer, expected, "{platform:?}");
+            assert_eq!(chosen.backend_type(), format!("local:{}", expected.name()));
+        }
+    }
+
+    #[test]
     fn explicit_beats_host_or_local_defaults() {
         let host = HostDef {
             name: "example".into(),

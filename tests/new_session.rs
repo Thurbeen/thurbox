@@ -414,9 +414,6 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
 
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
-    if world.snapshot.hosts.is_empty() {
-        press(host, world, "enter");
-    }
 }
 
 // ── Opening and closing ────────────────────────────────────────────────────
@@ -434,25 +431,14 @@ fn the_flow_draws_nothing_until_it_is_opened() {
 
 #[test]
 fn opening_with_no_hosts_starts_at_the_repositories() {
-    // The helper accepts the default multiplexer for tests of later steps.
+    // The multiplexer is never asked: the kernel takes the configured one, else
+    // the platform's.
     let host = host();
     let world = World::default();
     open(&host, &world);
     let screen = drawn(&host, &world);
     assert!(screen.contains("Select Repos"), "{screen}");
-}
-
-#[test]
-fn opening_without_hosts_shows_available_multiplexers_first() {
-    let host = host();
-    let world = World::default();
-    press(&host, &world, "ctrl+n");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Multiplexer"), "{screen}");
-    assert!(
-        screen.contains(thurbox::agent::preflight::local_multiplexer()),
-        "{screen}"
-    );
+    assert!(!screen.contains("Multiplexer"), "{screen}");
 }
 
 #[test]
@@ -1626,7 +1612,7 @@ fn a_plain_selection_names_the_session_then_the_agent() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: None,
             extras: Vec::new(),
         }]
     );
@@ -1667,7 +1653,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: None,
             extras: Vec::new(),
         }]
     );
@@ -1741,7 +1727,7 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
             worktree_path: Some("/src/thurbox/.worktrees/dynamic-tooltips".into()),
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: None,
             extras: Vec::new(),
         }]
     );
@@ -1815,7 +1801,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: None,
             extras: Vec::new(),
         }]
     );
@@ -1880,7 +1866,6 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
     press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
 
     // Repository memory is scoped to the machine the repositories live on.
     assert_eq!(
@@ -2020,7 +2005,6 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
     open(&host, &world);
     press(&host, &world, "j");
     press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
     press(&host, &world, "tab");
     type_text(&host, &world, "/srv/th");
 
@@ -2441,7 +2425,6 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
     open(&h, &world);
     press(&h, &world, "j"); // local → devbox
     press(&h, &world, "enter");
-    press(&h, &world, "enter"); // multiplexer → repositories
     world.wants.bookmarks = Some("ssh:devbox".into());
 
     let empty = drawn(&h, &world);
@@ -2712,6 +2695,38 @@ fn a_missing_multiplexer_is_stated_from_the_first_step_of_the_flow() {
 }
 
 #[test]
+fn a_configured_multiplexer_with_no_adapter_is_named_on_the_repositories() {
+    // There is no multiplexer step to say it on any more, and a create would only
+    // fail on it after every question had been answered.
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.configured = Some("herdr".into());
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(screen.contains("herdr is unavailable"), "{screen}");
+}
+
+#[test]
+fn a_host_multiplexer_with_no_adapter_is_named_once_the_host_is_picked() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+        multiplexer: Some("herdr".into()),
+        available_multiplexers: vec!["tmux".into()],
+    }];
+    open(&host, &world);
+    press(&host, &world, "j");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(screen.contains("herdr is unavailable"), "{screen}");
+}
+
+#[test]
 fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
     // The local machine's tmux has nothing to do with a session that will run on
     // a host — and `unknown` is not `missing`.
@@ -2756,7 +2771,6 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
     press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
     world.wants.bookmarks = Some("ssh:devbox".into());
     press(&host, &world, "space");
     press(&host, &world, "enter");
