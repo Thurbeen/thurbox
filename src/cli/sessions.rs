@@ -920,7 +920,7 @@ fn run_create(
             "backend_id": res.backend_id,
             "backend_type": res.backend_type,
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::instance::local_socket_name(),
+            "tmux_socket": socket_of(&res.backend_type),
             "cwd": res.cwd.display().to_string(),
             "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             "hook_failures": res.hook_failures,
@@ -2144,6 +2144,19 @@ fn check_reports_as(
     .into())
 }
 
+/// The `-L` socket a row's pane is on, as a create document reports it: the
+/// host's for a remote row (ADR-12), this instance's own for a local one.
+///
+/// The key is still `tmux_socket` although psmux serves it on Windows: it is
+/// public JSON (`docs/CONFIG.md` → Relocating an instance), and the name every
+/// tmux-protocol multiplexer takes with `-L`.
+fn socket_of(backend_type: &str) -> String {
+    match crate::session_ops::resolve_host(backend_type) {
+        Some(Some(host)) => crate::backend::instance::host_socket(&host),
+        _ => crate::backend::instance::local_socket_name(),
+    }
+}
+
 /// What `create --on-existing adopt` returns when the session was already there.
 ///
 /// The same document shape a real creation produces, with `created: false` as
@@ -2170,7 +2183,7 @@ fn existing_session_output(
             "agent_session_id": session.agent_session_id,
             "backend_id": session.backend_id,
             "worktrees": session.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::instance::local_socket_name(),
+            "tmux_socket": socket_of(&session.backend_type),
             "cwd": session.cwd.as_ref().map(|p| p.display().to_string()),
             "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
             "hook_failures": Vec::<String>::new(),
