@@ -63,7 +63,7 @@ and last error; `--test` fires a sample — see OS notifications below), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
 or its perf HUD is active; `--plugins` for one row per pane, sorted by cost,
 with hints — see `docs/PERFORMANCE.md`), `plugin`
-(v2 interface plugins without a TTY: `dir` reports the directory in force and
+(interface plugins without a TTY: `dir` reports the directory in force and
 which of the two rules chose it, `new <name>` writes a starter that already
 loads, `check` loads the interface the way `thurbox` does and exits non-zero on
 a failure — **including on a pane that loaded but which no arrangement places**,
@@ -825,7 +825,7 @@ agent/session; its exit status + tail-truncated output land in the run history).
 `Exec` is the deterministic-scheduled-job action (the task-integration sync
 extensions use it). The runner is `session_ops::run_exec_command`, which blocks
 until the child exits and is called from exactly one place —
-`cli::automations`'s `tick`. Firing is **CLI-only in v2**: the interface neither
+`cli::automations`'s `tick`. Firing is **CLI-only**: the interface neither
 runs schedules nor holds a worker for them, so there is no in-flight/`skipped`
 bookkeeping in the binary that draws the screen. The command is stored in the
 `action_command` column (schema **v36**, on both `tasks` and `automations`).

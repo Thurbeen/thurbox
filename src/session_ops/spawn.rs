@@ -611,11 +611,11 @@ fn delegated_mux_option(
     // An older compatible CLI predates both this flag and multiplexer
     // settings. It can only honour its platform default, which is what an
     // unqualified route to the host means.
-    let platform_default = host.route(None).multiplexer(
+    let host_default = host.route(None).multiplexer(
         crate::session::Multiplexer::platform_default(),
         host.multiplexer(),
     );
-    if choice.multiplexer == platform_default {
+    if choice.multiplexer == host_default {
         Ok(Vec::new())
     } else {
         Err(format!(
@@ -1536,7 +1536,7 @@ fn resolve_backend(
     host: Option<&str>,
     multiplexer: Option<&str>,
 ) -> Result<crate::session::BackendChoice, String> {
-    let (_, host_def) = resolve_host(host)?;
+    let (_, host_def) = resolve_host_flag(host)?;
     let configured = crate::agent::settings_config::load_quiet().multiplexer;
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
@@ -1549,7 +1549,8 @@ fn resolve_backend(
     Ok(choice)
 }
 
-/// Resolve `--host` to `(backend_type, host)`.
+/// Resolve the `--host` flag to `(backend_type, host)` — the inverse direction
+/// of [`super::resolve_host`], which reads the host back off a row's route.
 ///
 /// `None`/empty → the local backend. A named host must exist in `hosts.toml`
 /// **or** be an auto-discovered local WSL distro, otherwise an error is
@@ -1559,7 +1560,7 @@ fn resolve_backend(
 /// `ssh:`/`wsl:` backend name the interface's host picker carries — because both
 /// reach here and a bare-name-only lookup silently refused every session the
 /// new-session flow tried to create on a host.
-fn resolve_host(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
+fn resolve_host_flag(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((crate::session::Route::local(None).format(), None));
     };
@@ -1972,27 +1973,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_host_none_is_local() {
-        let (backend_type, host) = resolve_host(None).unwrap();
+    fn resolve_host_flag_none_is_local() {
+        let (backend_type, host) = resolve_host_flag(None).unwrap();
         assert_eq!(backend_type, "local-tmux");
         assert!(host.is_none());
         // Empty string is treated the same as None.
-        let (backend_type, host) = resolve_host(Some("")).unwrap();
+        let (backend_type, host) = resolve_host_flag(Some("")).unwrap();
         assert_eq!(backend_type, "local-tmux");
         assert!(host.is_none());
     }
 
     #[test]
-    fn resolve_host_unknown_errors_with_guidance() {
+    fn resolve_host_flag_unknown_errors_with_guidance() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let err = resolve_host(Some("nope")).unwrap_err();
+        let err = resolve_host_flag(Some("nope")).unwrap_err();
         assert!(err.contains("Unknown host 'nope'"), "got: {err}");
         assert!(err.contains("hosts.toml"), "got: {err}");
     }
 
     #[test]
-    fn resolve_host_reads_configured_host() {
+    fn resolve_host_flag_reads_configured_host() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let path = crate::agent::host_config::hosts_config_path().unwrap();
@@ -2003,13 +2004,13 @@ mod tests {
         )
         .unwrap();
 
-        let (backend_type, host) = resolve_host(Some("devbox")).unwrap();
+        let (backend_type, host) = resolve_host_flag(Some("devbox")).unwrap();
         assert_eq!(backend_type, "ssh:devbox");
         assert_eq!(host.unwrap().destination, "me@devbox");
     }
 
     #[test]
-    fn resolve_host_accepts_the_backend_name_the_interface_carries() {
+    fn resolve_host_flag_accepts_the_backend_name_the_interface_carries() {
         // The new-session flow's host picker hands on `hosts.backend`, so this is
         // the spelling every creation on a host arrives with. Refusing it made
         // remote creation fail for every session started from the interface
@@ -2026,11 +2027,11 @@ mod tests {
         )
         .unwrap();
 
-        let (backend_type, host) = resolve_host(Some("ssh:devbox")).unwrap();
+        let (backend_type, host) = resolve_host_flag(Some("ssh:devbox")).unwrap();
         assert_eq!(backend_type, "ssh:devbox");
         assert_eq!(host.unwrap().destination, "me@devbox");
 
-        let (backend_type, host) = resolve_host(Some("wsl:ubuntu")).unwrap();
+        let (backend_type, host) = resolve_host_flag(Some("wsl:ubuntu")).unwrap();
         assert_eq!(backend_type, "wsl:ubuntu");
         assert_eq!(host.unwrap().name, "ubuntu");
     }

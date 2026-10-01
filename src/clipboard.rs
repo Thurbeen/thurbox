@@ -131,7 +131,7 @@ impl std::fmt::Display for CopyError {
 /// Emitted raw, *not* wrapped in tmux's DCS passthrough: the raw form is
 /// handled by tmux's own OSC 52 handler, which also keeps its paste buffer in
 /// sync, and needs only `set-clipboard on` (which thurbox sets on its own
-/// server — see `TmuxBackend::session_config`). The DCS form would
+/// server — see `Tmux::session_config` in `backend::tmux`). The DCS form would
 /// instead require `allow-passthrough`, which is off by default.
 pub fn osc52_sequence(text: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());

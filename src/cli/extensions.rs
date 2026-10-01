@@ -84,7 +84,7 @@ pub enum Action {
     Deactivate {
         /// Extension name.
         name: String,
-        /// Also tear down each session's tmux window + worktrees (not just a
+        /// Also tear down each session's window + worktrees (not just a
         /// soft delete).
         #[arg(long)]
         force: bool,

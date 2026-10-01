@@ -6,13 +6,13 @@
 //! so the architecture is an explicit decision per module.
 //!
 //! A rule's name is a **node**: a top-level module (`kernel`) or a governed
-//! submodule (`agent::tmux`). A file belongs to the deepest node containing it,
+//! submodule (`backend::tmux`). A file belongs to the deepest node containing it,
 //! and a reference is judged by the node it *resolves to* (see `resolver`):
 //! `super::`, `self::`, bare child-module paths, nested brace groups, `as`
 //! renames, imported names, `pub use` re-exports and `type` aliases are all
 //! followed, so no import shape and no alias carries a crossing past a rule. A
-//! grant names exactly one node and never its children: allowing `agent`
-//! admits nothing in a governed `agent::tmux`.
+//! grant names exactly one node and never its children: allowing `backend`
+//! admits nothing in a governed `backend::tmux`.
 //!
 //! The graph is checked as a whole too: the actual production edges and the
 //! declared allowlist must both be acyclic, and every allowance must be used
@@ -38,7 +38,7 @@ use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
 /// Per-node dependency allowlist.
 struct ModuleRules {
     /// A top-level module (`src/<name>/` or `src/<name>.rs`) or a governed
-    /// submodule path (`agent::tmux`).
+    /// submodule path (`backend::tmux`).
     name: &'static str,
     /// Nodes this node may reference in any form.
     allowed: &'static [&'static str],

@@ -100,7 +100,7 @@ impl Default for RemoteSettings {
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
 /// feature's UI and blocks its keybinding; disabling `automations` also stops
-/// the TUI firing schedules and arming the tmux heartbeat. Data and
+/// the TUI firing schedules and arming the heartbeat. Data and
 /// `thurbox-cli` surfaces stay fully functional regardless, so re-enabling a
 /// flag is lossless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

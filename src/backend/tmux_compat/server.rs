@@ -671,8 +671,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// its binary over SSH, or inside a WSL distro via `wsl.exe`. Named by the
     /// route it drives (`ssh:<host.name>:<mux>` / `wsl:…`) whatever the host
     /// prefers — a row written for tmux is served by tmux on a host that has
-    /// since moved to something else — and using the same socket and session
-    /// names as this machine unless the host overrides them.
+    /// since moved to something else. Its socket is the host's
+    /// ([`host_socket`]), never this instance's own, and its session name is
+    /// the default unless the host overrides it.
     pub fn on_host(host: &HostDef, launcher: HostLauncher, platform: Platform) -> Self {
         let session = host
             .session

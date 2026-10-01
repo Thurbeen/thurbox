@@ -67,26 +67,27 @@ fn a_remote_create_reports_the_hosts_socket() {
     // well as the local one.
     let server = TmuxServer::private(LOCAL_SOCKET);
     let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let search_path = std::env::join_paths(
-        std::iter::once(path("bin")).chain(std::env::split_paths(&inherited)),
-    )
-    .expect("PATH");
+    let search_path =
+        std::env::join_paths(std::iter::once(path("bin")).chain(std::env::split_paths(&inherited)))
+            .expect("PATH");
     let create = |extra: &[&str]| -> Value {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        cmd.args(["--json", "session", "create", "--name", "afar", "--host", "box"])
-            .args(extra)
-            .arg("--repo-path")
-            .arg(path("repo"))
-            .env("PATH", &search_path)
-            .env("HOME", path("home"))
-            .env("XDG_DATA_HOME", path("home/xdg-data"))
-            .env("XDG_CONFIG_HOME", path("home/xdg-config"))
-            .env("THURBOX_CONFIG_DIR", path("config"))
-            .env("THURBOX_DATA_DIR", path("data"))
-            .env_remove("THURBOX_SESSION")
-            .env_remove("THURBOX_SESSION_ID")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE");
+        cmd.args([
+            "--json", "session", "create", "--name", "afar", "--host", "box",
+        ])
+        .args(extra)
+        .arg("--repo-path")
+        .arg(path("repo"))
+        .env("PATH", &search_path)
+        .env("HOME", path("home"))
+        .env("XDG_DATA_HOME", path("home/xdg-data"))
+        .env("XDG_CONFIG_HOME", path("home/xdg-config"))
+        .env("THURBOX_CONFIG_DIR", path("config"))
+        .env("THURBOX_DATA_DIR", path("data"))
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SESSION_ID")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE");
         server.scope(&mut cmd);
         let out = cmd.output().expect("run thurbox-cli");
         let report: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
@@ -116,7 +117,15 @@ fn a_remote_create_reports_the_hosts_socket() {
     let on_host = Command::new("tmux")
         .env("TMUX_TMPDIR", server.tmpdir())
         .env_remove("TMUX")
-        .args(["-L", HOST_SOCKET, "display-message", "-p", "-t", pane, "#{pane_id}"])
+        .args([
+            "-L",
+            HOST_SOCKET,
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_id}",
+        ])
         .output()
         .expect("run tmux");
     assert_eq!(String::from_utf8_lossy(&on_host.stdout).trim(), pane);

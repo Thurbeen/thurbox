@@ -97,7 +97,7 @@ pub enum Action {
         #[arg(long)]
         no_verify: bool,
     },
-    /// Create a new session (runs synchronously — tmux window live on return).
+    /// Create a new session (runs synchronously — its window is live on return).
     Create {
         /// Session name (1-64 chars, no slashes or leading '.').
         #[arg(long)]
@@ -116,7 +116,8 @@ pub enum Action {
         #[arg(long)]
         base_branch: Option<String>,
         /// Remote host to run the session on (name from `hosts.toml`). The
-        /// worktree and tmux window are created on that host over SSH.
+        /// worktree and window are created on that host, over SSH or in its WSL
+        /// distro.
         #[arg(long)]
         host: Option<String>,
         /// Override the configured multiplexer for this creation.
@@ -184,7 +185,7 @@ pub enum Action {
     #[command(alias = "remove")]
     ///
     /// By default only the DB row is soft-deleted, and `session restore`
-    /// brings it back. The session's tmux windows come down once the undo
+    /// brings it back. The session's windows come down once the undo
     /// window closes — by a running interface, by the `automation tick`
     /// heartbeat, or on demand with `session reap` — while the worktrees
     /// stay, which is what makes the undo lossless. Pass `--force` to kill
@@ -193,7 +194,7 @@ pub enum Action {
     Delete {
         /// Session UUID.
         uuid: String,
-        /// Also kill the tmux window, remove worktrees, and cancel
+        /// Also kill the window, remove worktrees, and cancel
         /// pending scheduled commands for this session.
         #[arg(long)]
         force: bool,
@@ -254,7 +255,7 @@ pub enum Action {
         #[arg(long)]
         adopt: bool,
     },
-    /// Record a session that is already running on this machine's tmux server
+    /// Record a session that is already running on this machine's server
     /// — a row for a window a peer created before sharing existed. Takes the
     /// JSON `session get` prints; launches nothing.
     Register {
@@ -266,7 +267,7 @@ pub enum Action {
     ///
     /// The text is delivered as one bracketed paste, so it arrives literally —
     /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
-    /// Local sessions only: the pane lives on this machine's tmux server, so a
+    /// Local sessions only: the pane lives on this machine's server, so a
     /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
         /// Session UUID.

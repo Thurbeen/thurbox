@@ -36,14 +36,13 @@ when multiple PTY sessions are producing concurrent output.
 **Choice**: A `SessionBackend` trait abstracts session lifecycle
 (spawn, adopt, resize, kill, detach, discover). Each session runs
 one coding-agent CLI inside the backend. The default backend is
-local tmux (`tmux -L thurbox`); the same `TmuxBackend` also runs
-over SSH for remote hosts (ADR-13).
+the platform's multiplexer run locally (`tmux -L thurbox`; psmux on native
+Windows), and the same adapters run over SSH or WSL for a host (ADR-13).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
 
-**Why**: The trait-based design keeps the session transport
-behind a clean boundary so the app layer never touches tmux
-directly. tmux provides truly persistent sessions
+**Why**: The trait-based design keeps the multiplexer behind a clean
+boundary so no consumer touches tmux directly (ADR-11). tmux provides truly persistent sessions
 that survive thurbox crashes/restarts, multiple thurbox instances
 share the same running sessions, and external recovery is
 possible via `tmux -L thurbox attach`.
@@ -420,17 +419,52 @@ from `sessions`, `vms`, and `containers`.
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
-**Why**: Keeping session lifecycle behind a trait boundary leaves
-the app layer completely backend-agnostic. The backends today are
-local tmux and one SSH backend per configured host (both
-`TmuxBackend` over a `TmuxTransport`; see ADR-13), and the seam means
-the transport can evolve without touching `App`, `Session`, or any UI
-code.
+**Why**: Every consumer — `session_ops`, `cli` and `kernel` — reaches a
+session through the trait and the registry that holds one backend per route
+(ADR-29), never through an adapter, which `tests/architecture_rules.rs`
+enforces (`consumers_reach_no_concrete_backend`). The adapters today are
+`TmuxBackend` and `PsmuxBackend`, peers over the shared tmux-protocol server
+(ADR-31), each reached locally or on a host over a `TmuxTransport` (ADR-13).
+A multiplexer that does not speak the tmux protocol is a new adapter behind the
+same trait, not a branch in a consumer.
 
-**Trait methods**: `check_available`, `ensure_ready`, `spawn`,
-`adopt`, `discover`, `resize`, `is_dead`, `kill`, `detach`, and the headless
-lifecycle verbs `create_window`, `locate`, `rename_windows` and
-`stamp_window` (ADR-29).
+**Trait methods**, by job (the list itself is `src/backend/contract.rs`):
+
+- *the attach/render half*: `check_available`, `ensure_ready`, `spawn`,
+  `adopt`, `discover`, `resize`, `claim_size`, `is_dead`, `kill`, `detach`,
+  plus snapshots and title seeding;
+- *the headless lifecycle* (ADR-29): `create_window`, `locate`,
+  `rename_windows`, `stamp_window`, `window_panes`, `set_pane_retention`;
+- *pane I/O by pane id* (ADR-30): `send_text`, `send_key`, `capture`,
+  `pane_state`, `pane_path`, `pane_pid(s)`, `pane_ids`;
+- *hook status and the heartbeat* (ADR-32): `hook_signal_command`,
+  `record_hook_state`, `hook_states`, `take_hook_state_events`,
+  `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
+
+A `backend_id` crossing the trait is the multiplexer's **pane id** (`%N`), not a
+backend's name: the column predates the contract and keeps its name as public
+JSON. The backend a row belongs to is its route, `backend_type` (ADR-28).
+
+**Vocabulary.** Each word names one thing, and a name built from it says which:
+
+| Word | Means | Type |
+|---|---|---|
+| backend | whatever implements the contract for one route | `dyn SessionBackend` |
+| adapter | a concrete backend for one multiplexer | `TmuxBackend`, `PsmuxBackend` |
+| multiplexer (mux) | the program that keeps panes alive | `session::Multiplexer` |
+| platform | the OS of the machine a multiplexer runs on | `session::Platform` |
+| host | a machine other than this one, as configured | `session::HostDef` |
+| launcher | how a command reaches a host: ssh, WSL, or nothing | `shell::HostLauncher` |
+| transport | a launcher plus the multiplexer binary run through it | `TmuxTransport` |
+| route | a machine plus a multiplexer; the registry's key | `session::Route` |
+| pane id | the multiplexer's handle for one pane (`%N`) | `backend_id` |
+
+"tmux" in a name means the tmux protocol (`tmux_compat`, `TmuxTransport`,
+`TmuxCompatible`) or the tmux adapter, never "any multiplexer". The persisted
+and published spellings — `backend_type`, `backend_id`, `tmux_socket` — predate
+the vocabulary and keep their names, because changing them would break every
+reader of the database and the JSON (`docs/CONFIG.md` → Relocating an
+instance).
 
 **Key design decisions**:
 
@@ -452,10 +486,11 @@ lifecycle verbs `create_window`, `locate`, `rename_windows` and
 
 ## ADR-12: Local tmux as default backend
 
-**Choice**: The default `SessionBackend` is `TmuxBackend`
-parameterized over its `Local` transport (`TmuxTransport::local()`)
-and registered under the local route (`local:tmux`; `local:psmux` on native
-Windows), using a dedicated tmux server
+**Choice**: The default `SessionBackend` is the platform's multiplexer
+(`Multiplexer::platform_default`) over the local transport
+(`TmuxTransport::local()`): `TmuxBackend` under `local:tmux`, or
+`PsmuxBackend` under `local:psmux` on native Windows (ADR-31). Either runs a
+dedicated server
 (`tmux -L thurbox`) with session name `thurbox`. All I/O goes
 through tmux control mode (`-C`). (The transport abstraction that
 also enables remote SSH backends is ADR-13; here the choice is
@@ -586,7 +621,7 @@ their lines into one answer (issue #1120). The tmux adapter's headless
 this to fold `new-window` and its window options into one list without a later
 command being answered by one of the list's own blocks.
 
-**Session restore**: On reconnect (`TmuxBackend::adopt`),
+**Session restore**: On reconnect (`tmux_compat::Server::adopt`),
 `capture-pane -e -p -J -S -<scrollback_lines>` seeds the fresh
 vt100 parser with the pane's scrollback history **and** visible
 screen (text + colors; `-J` rejoins wrapped lines so they re-wrap
@@ -643,8 +678,10 @@ it carries any program's command line unchanged (`shell::launch`); it adds no
 `-L` — that is the tmux grammar's flag, added by `TmuxTransport::tmux_command`. The
 transport's *only* job is to build the `Command`; everything downstream
 — the control-mode reader/writer threads, pane registration,
-`send-keys`/`%output` — is byte-for-byte identical (`control_mode.rs`
-was already transport-agnostic). SSH and WSL both join and
+`send-keys`/`%output` — is the same whichever launcher carried it
+(`control_mode` is transport-agnostic). What differs between tmux and psmux
+is not the transport's business: it is the adapter's, behind
+`TmuxCompatible` (ADR-31). SSH and WSL both join and
 shell-interpret the trailing POSIX-quoted tokens identically; only the
 launcher differs. `platform` is the OS of the machine the multiplexer
 runs on — see "The host's platform is its own dimension" below.
@@ -677,9 +714,9 @@ WSL needs no credentials at all.
 - **Lazy registration**: off-local backends are registered but *not*
   connected at startup (`check_available`/`ensure_ready` deferred to
   first use), so a down host (or slow WSL discovery) never blocks the
-  TUI. `App::select_backend` only resolves the backend from the
-  registry; the blocking `ensure_backend_ready` runs on the spawn
-  worker, never on the UI thread (ADR-P12).
+  TUI. Choosing a row's backend is only a registry lookup
+  (`session_ops::windows::backend_for`, ADR-29); the blocking
+  `ensure_ready` runs on the spawn worker, never on the UI thread (ADR-P12).
 - **Auto-discovery**: WSL distros appear with zero config; an explicit
   `kind = "wsl"` entry of the same name wins (for overrides like
   `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE
@@ -778,9 +815,12 @@ stalls. Worth the most manual testing.
 
 **Rejected**:
 
-- *A `TmuxTransport` trait with `Box<dyn>`* — an enum with two
-  variants is simpler; promote to a trait only if a third transport
-  (e.g. container exec) appears.
+- *A `TmuxTransport` trait with `Box<dyn>`* — an optional
+  `HostLauncher` plus a binary name is simpler; promote to a trait only if a
+  launcher that is not a command prefix (e.g. a container API) appears. A
+  second multiplexer does not count toward that: it is an adapter (ADR-31),
+  and one that does not speak the tmux protocol is a `SessionBackend` of its
+  own rather than a transport.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
@@ -1661,7 +1701,7 @@ laptop-driven remote path shrank to a fallback.
 **Consequences**: the id is the host's, so `THURBOX_SESSION` inside the agent
 matches a row in whichever database a `thurbox-cli` on that machine reaches —
 `session signal` and `message send` work natively on the host for a session
-created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
+created from afar, and the psmux status gate (`Psmux::HOOK_STATUS`, ADR-32) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
@@ -1761,7 +1801,7 @@ follow from the host owning the record, none of which the first cut had:
   refused connection, a timeout and a rejected key alike. A force delete taken
   while a host was briefly down therefore found nothing to kill, recorded *no
   error at all*, and reported success — the leak above, with the operator told
-  nothing. `TmuxBackend::discover_answered` — what `discover` runs whenever
+  nothing. `tmux_compat::Server::discover_answered` — what `discover` runs whenever
   no control-mode connection is open, and what `locate` and `rename_windows`
   list with — returns an empty listing only when the multiplexer itself
   refused. It also replaces the `has-session` round trip, since `list-windows`
@@ -2074,7 +2114,7 @@ relaunched a parked session or launched the default coding agent in place of a
 **Choice**: a pane is the size of the rect **one** instance paints it into, and
 every other instance shows that pane's screen as it is. The window names its
 sizer in a window option, `@thurbox_sizer`, and a paint's resize
-(`TmuxBackend::resize`) is honoured only for a window that is this instance's to
+(`tmux_compat::Server::resize`) is honoured only for a window that is this instance's to
 size: one nobody names, one it already names, or any window while it is the only
 client attached. Input is what hands the size over — a keystroke, paste or
 forwarded click into a pane that is not at this instance's size claims it

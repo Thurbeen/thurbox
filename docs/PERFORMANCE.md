@@ -228,7 +228,7 @@ won't pay off.
   `app_new_ms` (`App::new`: keybindings load, settings snapshot, channels),
   `restore_ms` (the synchronous local-session restore — remote backends restore
   on background threads, off this phase; see ADR-P7), `heartbeat_ms` (arming
-  the automation-heartbeat tmux window), and `first_frame_ms` (total to first
+  the automation-heartbeat window), and `first_frame_ms` (total to first
   paint).
   When restore is the long pole, the same flag also emits per-backend
   `restore_discover` lines (`discover_ms`; for a remote backend the line comes
@@ -237,13 +237,13 @@ won't pay off.
   covers both restore paths — **adopt** (a live tmux pane is re-attached) and
   **respawn** (no live pane matched, so a fresh agent is launched); on a cold
   socket (e.g. after a reboot) every session respawns. For the adopt path, an
-  `adopt_split` line (in `TmuxBackend::adopt`) further breaks `adopt_ms` into
+  `adopt_split` line (in `tmux_compat::Server::adopt`) further breaks `adopt_ms` into
   `capture_ms` (the independent `tmux capture-pane` subprocess — the only part
   that could run in parallel across sessions) and `connect_ms` (the
   control-mode attach). This split was the deciding measurement for
   parallelizing restore: the control-mode connection is serialized by a single
   mutex held across each command's full round-trip
-  (`TmuxBackend::with_control`), so `connect_ms` is inherently sequential and
+  (`tmux_compat::Server::with_control`), so `connect_ms` is inherently sequential and
   only `capture_ms` can be overlapped — which ADR-P9 now does (on the startup
   restore path `capture_ms` reads ≈ 0 and a `restore_capture_prefetch` line
   reports the overlapped batch).
@@ -1654,7 +1654,7 @@ open connection answers promptly:
   `Session::resize` did that by asking the backend — a control-mode round trip
   inside the paint.
 - `coordinator::input`'s passthrough gate asks whether the focused pane is dead
-  before leaving a `ctrl+<letter>` to the agent — `TmuxBackend::is_dead`, another
+  before leaving a `ctrl+<letter>` to the agent — `tmux_compat::Server::is_dead`, another
   round trip, on the thread that had just read the key.
 
 Both are sub-millisecond on a healthy link, which is why they read as free. The
@@ -1695,7 +1695,7 @@ is unmeasured".
   host says nothing inside it, the answer is the one every caller already reads
   an error as: not known to be dead, so the chord goes to the agent as it would
   have.
-- **The budget covers the lock, not just the answer** (`TmuxBackend::within`).
+- **The budget covers the lock, not just the answer** (`tmux_compat::Server::ctrl_command_within`).
   One backend is one connection is one serialized queue, and the plain
   `with_control` holds that lock across a whole round trip — the mirror pass and
   the attach worker share it with the loop, so an unbounded wait for the lock

@@ -1,6 +1,6 @@
-# The v2 plugin kernel
+# The plugin kernel
 
-thurbox v2 is a session engine with a Lua-driven renderer. The kernel owns no
+thurbox is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
 session list, the agent pane and the search strip — plus the new-session flow,
@@ -18,8 +18,8 @@ Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
 
 Runs as `thurbox`. It **is** the interface now: `src/app/` and `src/ui/` were
 deleted when the kernel took the binary name, so there is no second interface to
-fall back to inside the process. v1 is maintained on the `v1.x` branch and still
-takes patch releases.
+fall back to inside the process. v1 is unsupported; its code stays on the
+`v1.x` branch.
 
 The name matters more than it looks. The updater in an already-installed binary
 hard-fails on a known binary missing from a release archive and swallows the

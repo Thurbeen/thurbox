@@ -678,7 +678,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
 wrap within it), and the TUI neither fires due schedules nor arms the
-tmux heartbeat keeper on startup. Explicit `thurbox-cli automation`
+heartbeat keeper on startup. Explicit `thurbox-cli automation`
 commands still work — and `automation create` still arms the
 heartbeat, so an already-armed keeper window (or an OS timer from
 `packaging/`) keeps firing schedules externally. Disabling

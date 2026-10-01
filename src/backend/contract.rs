@@ -17,7 +17,7 @@ use anyhow::Result;
 ///
 /// A pane on a server other clients share is not necessarily the size of the
 /// rect this instance paints it into: another thurbox may be sizing it (see
-/// `TmuxBackend::resize`). A backend that can say what size the pane really is
+/// `tmux_compat::Server::resize`). A backend that can say what size the pane really is
 /// reports it here **in stream order** — between the last byte written for the
 /// old size and the first written for the new one — and the grid follows, so
 /// an instance that is not sizing still parses the program's output at the
@@ -645,7 +645,7 @@ pub trait SessionBackend: Send + Sync {
     ///
     /// On a multiplexer other clients share, this may be declined: a pane
     /// another client is sizing stays that client's size (see
-    /// `TmuxBackend::resize`), and a backend that declines reports the size the
+    /// `tmux_compat::Server::resize`), and a backend that declines reports the size the
     /// pane really is through [`PaneSize`].
     fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
 

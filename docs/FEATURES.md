@@ -1438,7 +1438,7 @@ each part. `AGENTS.md` keeps a summary and points here.
 ## Automations
 
 > **CLI only, but they still fire.** There is no automations pane, and the
-> interface has no in-TUI scheduler — the tmux heartbeat keeper runs due
+> interface has no in-TUI scheduler — the heartbeat keeper runs due
 > automations whether or not thurbox is open, which is what keeps every extension
 > working. Author and inspect them with `thurbox-cli automation`. The keeper's 60 s
 > cadence is the current resolution; a ~1 s in-TUI pass is owed.
@@ -1495,10 +1495,10 @@ firing** (see below):
 1. **TUI tick loop** (`process_automations`, ~1 s cadence) — while
    the TUI is open. On startup it runs an immediate catch-up pass
    so runs missed while the TUI was down fire once on boot.
-2. **tmux heartbeat keeper** — a detached `automation-heartbeat`
+2. **heartbeat keeper** — a detached `automation-heartbeat`
    window (armed on TUI startup and on `thurbox-cli automation
    create`) that loops `thurbox-cli automation tick` every 60 s.
-   Because it is a live tmux window it also keeps the tmux server
+   Because it is a live window it also keeps the multiplexer server
    alive, so automations — **including spawn** — fire even after
    the TUI is closed and even with no other sessions open. This
    restores (and generalizes) the old scheduled-command behavior
@@ -1616,7 +1616,7 @@ plus a free-text `detail`) for history.
 `create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
 the TUI, sharing the same tables. `run` marks an automation due;
 `tick` fires all currently-due automations headlessly (this is what
-the tmux keeper and the optional OS timers invoke).
+the heartbeat keeper and the optional OS timers invoke).
 
 ---
 
@@ -1930,7 +1930,7 @@ status toast (the chord never reaches the PTY), and contributes no
 global-search results — but its data and the `thurbox-cli` surface
 stay fully functional, so flipping a flag back on is lossless. The one
 deliberate exception is `automations = false`, which also stops the
-TUI firing due schedules and arming the tmux heartbeat at startup —
+TUI firing due schedules and arming the heartbeat at startup —
 "disable automations" should actually stop scheduled work, not just
 hide a list. Explicit CLI automation commands (and an already-armed
 keeper window) keep working, because typing a command is unambiguous
@@ -2842,7 +2842,7 @@ the long list rather than scrolling a flat one:
 > focus on "is it drawn?" makes an alternate unreachable. The `Ctrl+H`/`Ctrl+L`
 > cycle is the other side of that: it stops once per switch slot, on its default
 > occupant, so walking the columns never swaps the terminal for an alternate; one is
-> opened by its own key or pill. See `docs/V2-KERNEL.md`.
+> opened by its own key or pill. See `docs/KERNEL.md`.
 
 Panels use a tri-state focus system (`Focused`, `Active`,
 `Inactive`), mapped in `ui/lib/chrome.lua`. The kernel publishes one `focused`

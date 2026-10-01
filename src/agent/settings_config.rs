@@ -59,7 +59,7 @@ config_version = 1
 
 # Feature flags: turn whole TUI features off. All default to true.
 # Disabling `automations` also stops the TUI firing schedules and arming
-# the tmux heartbeat on startup; explicit `thurbox-cli automation`
+# the heartbeat on startup; explicit `thurbox-cli automation`
 # commands (and an already-armed heartbeat window) keep working. Data is
 # never touched, so re-enabling a flag is lossless.
 # [features]
