@@ -226,6 +226,12 @@ pub fn extract_text_from_rows(
         let mut text = String::new();
         for col in lo..hi {
             if let Some(cell) = screen.cell(grid_row, col) {
+                // A wide character's right half is stored as an empty
+                // continuation cell; the character itself is in the cell
+                // before it, so this column contributes nothing.
+                if cell.is_wide_continuation() {
+                    continue;
+                }
                 // A blank cell has no contents; the visual equivalent is a
                 // space, and dropping it would collapse column alignment.
                 if cell.has_contents() {
@@ -566,6 +572,18 @@ mod tests {
         let sel = make_sel((0, 0), (0, 19), pane);
         // Interior spacing kept (column alignment), trailing trimmed.
         assert_eq!(extract_text_from_screen(p.screen(), &sel, (0, 0)), "a    b");
+    }
+
+    #[test]
+    fn screen_extract_copies_wide_characters_byte_exact() {
+        // vt100 stores the right half of a wide character as an empty
+        // continuation cell; read as a blank it put a space inside `漢字`.
+        // The real spaces and the combining accent around it must survive.
+        let text = "zq漢字 a  e\u{301}-end";
+        let p = screen_with(2, 30, 0, text);
+        let pane = PaneBounds::from_rect(Rect::new(0, 0, 30, 2));
+        let sel = make_sel((0, 0), (0, 29), pane);
+        assert_eq!(extract_text_from_screen(p.screen(), &sel, (0, 0)), text);
     }
 
     #[test]

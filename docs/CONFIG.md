@@ -577,6 +577,10 @@ suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
 
+[clipboard]
+provider       = "auto"        # auto | native | osc52 | none
+copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
+
 [remote]
 transitive_sessions = true     # list sessions a host mirrors from hosts of its own
 ```

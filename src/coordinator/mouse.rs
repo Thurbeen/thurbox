@@ -16,6 +16,8 @@ use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::node::{ClickVerb, Identity};
 use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
+use thurbox::session::settings::ClipboardProvider;
+
 use super::{key_event_from_chord, open_url};
 use crate::{App, ClickTarget, PointerGrab};
 
@@ -695,6 +697,29 @@ impl App {
         };
     }
 
+    /// Copy a finished drag as it is released, when `[clipboard]
+    /// copy_on_select` is on.
+    ///
+    /// Silent when there is nothing to copy or `provider = "none"` turned
+    /// copying off: a drag is not a request for a toast the way a key is.
+    /// The selection stays highlighted — it shows what was copied, and a pane
+    /// reading `thurbox.selection` still sees it — until the next key, click
+    /// or wheel tick drops it; `on_key` keeps `Ctrl+C` from copying it twice.
+    pub(crate) fn copy_on_select(&mut self) {
+        let settings = thurbox::session::settings::global().clipboard;
+        if !settings.copy_on_select || settings.provider == ClipboardProvider::None {
+            return;
+        }
+        let Some(text) = self.selected_text.clone().filter(|t| !t.trim().is_empty()) else {
+            return;
+        };
+        let message = copy_message(
+            &text,
+            thurbox::clipboard::copy(&text, self.clipboard.as_mut(), settings.provider),
+        );
+        self.toast(message);
+    }
+
     /// Copy the selection to the clipboard.
     ///
     /// Only the selection: there is deliberately no fall-back to the whole
@@ -713,14 +738,7 @@ impl App {
                     self.clipboard.as_mut(),
                     thurbox::session::settings::global().clipboard.provider,
                 );
-                match outcome {
-                    Ok(route) => format!(
-                        "copied {} line(s){}",
-                        text.lines().count(),
-                        route.toast_suffix()
-                    ),
-                    Err(e) => format!("copy failed: {e}"),
-                }
+                copy_message(&text, outcome)
             }
             _ => "nothing to copy".to_string(),
         };
@@ -1033,6 +1051,21 @@ impl ClickTrain {
             clicks,
         });
         clicks
+    }
+}
+
+/// The toast a selection copy reports.
+fn copy_message(
+    text: &str,
+    outcome: Result<thurbox::clipboard::CopyRoute, thurbox::clipboard::CopyError>,
+) -> String {
+    match outcome {
+        Ok(route) => format!(
+            "copied {} line(s){}",
+            text.lines().count(),
+            route.toast_suffix()
+        ),
+        Err(e) => format!("copy failed: {e}"),
     }
 }
 

@@ -24,7 +24,9 @@ use super::registry::{binding_from, Binding};
 
 /// Copy the current selection. Fires only while there **is** one: with none,
 /// the chord belongs to whatever has focus, so `Ctrl+C` still interrupts the
-/// agent. That guard is the loop's — see `coordinator::input`.
+/// agent. Under `[clipboard] copy_on_select` (the default) the release has
+/// already copied and the chord never fires on a selection. Both guards are
+/// the loop's — see `coordinator::input`.
 pub const COPY_ACTION: &str = "kernel.copy";
 
 /// Paste the clipboard into the focused session's terminal.
