@@ -435,6 +435,10 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         paint(&terminals, 0);
         grid_size(&terminals) == (ROWS, COLS)
     });
+    let rebuilt_at = last_printed(&pane).expect("the pane has printed");
+    wait_for("the pane to print past the final rebuild", || {
+        last_printed(&pane).is_some_and(|n| n >= rebuilt_at + 300)
+    });
     std::fs::write(&stop, b"").expect("stop");
     wait_for("the output to finish", || {
         tmux_text(&pane).contains("finished")
