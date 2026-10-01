@@ -790,8 +790,10 @@ fn a_long_tmux_paste_is_appended_on_char_boundaries() {
 /// A server's input as a test sees it: keystrokes typed out one line per byte
 /// run, CR spelt `Enter` the way psmux's key-names spell it, and a paste
 /// answered with `paste`.
+#[cfg(unix)]
 struct FakeInput(Option<fn() -> Result<()>>);
 
+#[cfg(unix)]
 impl PaneInput for FakeInput {
     fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(buf)
