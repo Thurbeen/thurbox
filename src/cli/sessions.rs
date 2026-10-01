@@ -2146,15 +2146,18 @@ fn check_reports_as(
 }
 
 /// The `-L` socket a row's pane is on, as a create document reports it: the
-/// host's for a remote row (ADR-12), this instance's own for a local one.
+/// host's for a remote row (ADR-12), this instance's own for a local one, and
+/// none for a row whose host `hosts.toml` no longer describes — this
+/// instance's would name a server on the wrong machine.
 ///
 /// The key is still `tmux_socket` although psmux serves it on Windows: it is
 /// public JSON (`docs/CONFIG.md` → Relocating an instance), and the name every
 /// tmux-protocol multiplexer takes with `-L`.
-fn socket_of(backend_type: &str) -> String {
+fn socket_of(backend_type: &str) -> Option<String> {
     match crate::session_ops::resolve_host(backend_type) {
-        Some(Some(host)) => crate::backend::instance::host_socket(&host),
-        _ => crate::backend::instance::local_socket_name(),
+        Some(Some(host)) => Some(crate::backend::instance::host_socket(&host)),
+        Some(None) => Some(crate::backend::instance::local_socket_name()),
+        None => None,
     }
 }
 
@@ -2532,6 +2535,17 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    /// A row on a host `hosts.toml` no longer describes has no known server,
+    /// and naming this instance's would send a caller to the wrong machine.
+    #[test]
+    fn a_row_on_an_unconfigured_host_reports_no_socket() {
+        assert_eq!(
+            socket_of("local:tmux"),
+            Some(crate::backend::instance::local_socket_name())
+        );
+        assert_eq!(socket_of("ssh:no-such-host-configured:tmux"), None);
     }
 
     #[test]

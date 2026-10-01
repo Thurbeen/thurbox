@@ -1273,7 +1273,8 @@ show` prints it under `Sessions`.
 `session create --json` reports `tmux_socket` too, as the socket of the server
 the new session's pane is on: the host's for a `--host` session (its `socket`
 in `hosts.toml`, else what its own CLI reported), this instance's for a local
-one. Hand it to `tmux -L` together with `backend_id`, which is the pane id.
+one, and `null` for a row on a host `hosts.toml` no longer describes. Hand it
+to `tmux -L` together with `backend_id`, which is the pane id.
 
 The key keeps the name `tmux_socket` on every platform, including native
 Windows where psmux serves it. It is public JSON that scripts already read, and

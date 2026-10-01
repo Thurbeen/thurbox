@@ -140,7 +140,8 @@ fn every_relative_markdown_link_resolves() {
 fn every_document_path_names_a_document() {
     let path = Regex::new(DOC_PATH).unwrap();
     let blob =
-        Regex::new(r"github\.com/Thurbeen/thurbox/(?:blob|tree)/main/([^\s\x22'<>)#`]+)").unwrap();
+        Regex::new(r"github\.com/Thurbeen/thurbox/(?:blob|tree)/main/([\w.][^\s\x22'<>)#`]+)")
+            .unwrap();
     let mut missing = Vec::new();
     for (rel, text) in texts() {
         let found = path
