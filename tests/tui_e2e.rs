@@ -4018,6 +4018,28 @@ struct Xvfb {
     display: String,
 }
 
+/// The first line of `child`'s stdout that `wanted` accepts, read for at most
+/// [`WAIT`]; the child is killed when none comes, so a helper that hangs
+/// fails the test instead of stalling it.
+fn first_line(child: &mut Child, what: &str, wanted: fn(&str) -> bool) -> String {
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let line = std::io::BufRead::lines(std::io::BufReader::new(stdout))
+            .map_while(Result::ok)
+            .find(|line| wanted(line));
+        let _ = tx.send(line);
+    });
+    match rx.recv_timeout(WAIT) {
+        Ok(Some(line)) => line,
+        outcome => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}: {outcome:?}");
+        }
+    }
+}
+
 impl Xvfb {
     fn start() -> Option<Self> {
         // `-displayfd 1`: the server picks a free display and writes its
@@ -4036,15 +4058,12 @@ impl Xvfb {
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
-        let mut line = String::new();
-        let stdout = child.stdout.take().expect("Xvfb stdout");
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
-            .expect("read the Xvfb display");
-        let number = line.trim();
-        assert!(!number.is_empty(), "Xvfb exited without a display");
+        let number = first_line(&mut child, "Xvfb never named its display", |line| {
+            !line.trim().is_empty()
+        });
         Some(Self {
             child,
-            display: format!(":{number}"),
+            display: format!(":{}", number.trim()),
         })
     }
 }
@@ -4092,11 +4111,11 @@ impl ClipboardOwner {
             .stdout(Stdio::piped())
             .spawn()
             .expect("start the clipboard owner");
-        let stdout = child.stdout.take().expect("owner stdout");
-        let owned = std::io::BufRead::lines(std::io::BufReader::new(stdout))
-            .map_while(Result::ok)
-            .any(|line| line.contains("tbx-clipboard-owned"));
-        assert!(owned, "the clipboard owner never took the clipboard");
+        first_line(
+            &mut child,
+            "the clipboard owner never took the clipboard",
+            |line| line.contains("tbx-clipboard-owned"),
+        );
         Self(child)
     }
 }
