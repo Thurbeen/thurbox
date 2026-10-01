@@ -251,11 +251,14 @@ because the squash throws them away.
 ```text
 node                 may reference                     [fully-qualified path only]
 session              nothing — pure data, the dependency sink
-agent                session, paths, shell (NEVER git, NEVER backend)
-agent::host_config   session, paths, agent
+agent                agent::{generic,provider} (re-exports only)
+agent::*             every file a node: session, paths, shell and the other
+                     agent::* files each declares (NEVER git, NEVER backend)
+agent::host_config   session, paths, agent::agent_config
 backend              backend::{contract,pane,registry} (re-exports only)
 backend::contract    nothing — the trait and the values crossing it
 backend::identity    backend::contract
+backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}
 backend::osc8        session
 backend::output_wake nothing
@@ -264,40 +267,43 @@ backend::wiring      session, shell,                   (the factory: the only
                      agent::host_config,                node naming an adapter)
                      backend::{contract,registry,
                      tmux,psmux}
-backend::tmux_compat nothing — declares the four below (tmux protocol helper)
-  ::control_mode     session, shell, backend::contract,
+backend::tmux_compat nothing — declares the three below (tmux protocol helper)
+  ::control_mode     shell, backend::contract,
                      backend::tmux_compat::transport
-  ::server           session, paths, shell, agent,     (the shared server,
-                     backend::{contract,identity},      generic over the mux)
+  ::server           session, paths, shell,            (the shared server,
+                     agent::{host_path,preflight},      generic over the mux)
+                     backend::{contract,identity,
+                     instance},
                      backend::tmux_compat::{control_mode,
-                     socket,transport}
-  ::socket           session, paths                    (ADR-12 socket naming)
-  ::transport        shell, agent
+                     transport}
+  ::transport        shell, agent::preflight
 backend::tmux        session, shell, backend::contract, (the tmux adapter)
                      backend::tmux_compat::{control_mode,
                      server,transport}
-backend::psmux       session, shell, backend::contract, (the psmux adapter —
+backend::psmux       session, shell, backend::{contract, (the psmux adapter —
+                     instance},
                      backend::tmux_compat::{control_mode, a peer, never tmux's)
                      server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
 usage                session, shell                    [paths]
-session_ops          session, storage, git, sync,      [agent, agent::host_config,
+session_ops          session, storage, git, sync,      [agent::<the config it reads>,
                      paths, workspace, shell            backend::{contract,identity,
-                                                        registry}]
-kernel               session, storage, sync, paths,    [agent, agent::host_config,
+                                                        instance,registry}]
+kernel               session, storage, sync, paths,    [agent::<the config it reads>,
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}, usage]
-cli                  session, storage, session_ops,    [agent, agent::host_config,
-                     sync, paths, notifications         backend::{contract,registry},
-                                                        kernel]
+cli                  session, storage, session_ops,    [agent::<the config it reads>,
+                     sync, paths, notifications         backend::{contract,instance,
+                                                        registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 shell                session (HostLauncher::for_host)
-coordinator          agent, backend::{output_wake,     (main's body: the loop,
+coordinator          agent::{input,settings_config},   (main's body: the loop,
+                     backend::{output_wake,
                      wiring}, clipboard, kernel,        the workers, the chrome)
                      paths, session, session_ops,
                      shell, storage
@@ -307,13 +313,17 @@ Enforcement is an **allowlist** over **resolved** edges: every module under
 `src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so
 a new module fails the test until its place is declared, and one loop asserts
 every entry, so no rule can be declared and left unchecked. A node is a top-level
-module or a governed submodule (every file module of `backend` is one), and a
+module or a governed submodule (every file module of `backend` and of `agent`
+is one), and a
 reference counts where it resolves — through `super::`, brace groups, re-exports
 and `type` aliases. Both the actual and the declared graph must be acyclic, an
 unused grant fails, and the crossings still scheduled for removal are listed,
 item by item, in the test's `TRANSITIONAL` table, which must equal what the
-source does. `docs/CONSTITUTION.md` §2 lists the same graph. The full rule, the
-module responsibilities and the event loop are in the `thurbox-kernel` skill.
+source does — empty since status and the heartbeat went behind the contract
+(ADR-32); `consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and
+`kernel` to reaching no adapter, protocol helper or factory.
+`docs/CONSTITUTION.md` §2 lists the same graph. The full rule, the module
+responsibilities and the event loop are in the `thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 

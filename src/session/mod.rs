@@ -69,54 +69,13 @@ pub const DEFAULT_AGENT_NAME: &str = "claude";
 /// without crossing module boundaries.
 pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
 
-/// tmux **pane user option** a remote agent's hooks set to report status
-/// (`tmux set-option -p @thurbox_state <working|blocked|done|idle>`). The
-/// remote-side replacement for `thurbox-cli session signal`, which can't work
-/// off-local (no CLI on the host, and it would write the host's own DB). The
-/// local TUI receives changes over its control-mode connection via a format
-/// subscription (see [`REMOTE_HOOK_SUBSCRIPTION`]). Defined in the pure-data
-/// layer so `agent` (subscription) and `session_ops` (hook-command rewrite)
-/// share one source of truth.
-pub const REMOTE_HOOK_STATE_OPTION: &str = "@thurbox_state";
-
-/// Name of the control-mode format subscription
-/// (`refresh-client -B <name>:%*:#{@thurbox_state}`) that pushes
-/// [`REMOTE_HOOK_STATE_OPTION`] changes as `%subscription-changed`
-/// notifications for every pane of the attached session.
-pub const REMOTE_HOOK_SUBSCRIPTION: &str = "thurbox-status";
-
 /// The states `session signal` accepts — the single source for the CLI's
-/// value parser, the TUI's remote-event allow-list
-/// (`App::drain_remote_hook_events`), and the headless status poll
-/// (`session_ops::remote_hooks`). One list, so a future state (e.g. `error`
+/// value parser, the interface's live drain of each backend's status channel
+/// (`Terminals::drain_hook_events`), and the headless status poll
+/// (`session_ops::remote_hooks::poll_hook_states`). One list, so a future state (e.g. `error`
 /// once exit-code derivation lands) can't be accepted by the CLI yet silently
 /// dropped by the remote channels.
 pub const HOOK_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
-
-/// Whether the remote hooks-driven status path is enabled for a **psmux**
-/// (native-Windows SSH) host — both halves of it: shipping hook configs with
-/// their commands rewritten to the psmux pane-option form
-/// (`session_ops::spawn::remote_config_root`), and arming the 1 s pane-option
-/// poller on the host's control-mode connection (`backend::tmux`). **Gate,
-/// currently closed**: the path rests on behaviors not yet proven against
-/// psmux 3.3.6 — in-pane `set-option -p` without `-t` (no `$TMUX_PANE`
-/// guarantee), `#{@user_option}` expansion for the poller, and claude
-/// accepting a forward-slash `--settings` path on Windows.
-/// `scripts/dev/e2e/windows-vm.sh test` probes the first two — the pane-option
-/// mailbox — and **not** the `--settings` path, which needs a real agent
-/// launch; flip this to `true` only with evidence for all three, and the
-/// harness's own output names the one it cannot give. That harness **reads
-/// this function's body** for which way the gate is set and fails when psmux
-/// disagrees with it — either way round: a gate opened over a mailbox psmux
-/// drops, or a psmux that has grown the scope while the gate is still closed
-/// (issue #1170). So this stays a bare `true`/`false`. Closed = exactly the
-/// old strip behavior
-/// (the agent launches clean with no hooks, surfaced via
-/// `SessionInfo::hook_wiring`). Defined in the pure-data layer so `agent`
-/// (poller) and `session_ops` (rewrite/shipping) flip on the one switch.
-pub fn psmux_hook_rewrite_supported() -> bool {
-    false
-}
 
 /// How to start a session's process when there is no `agents.toml` entry to
 /// look it up in — a session created from a raw command.

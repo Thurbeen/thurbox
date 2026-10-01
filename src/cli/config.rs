@@ -361,7 +361,7 @@ fn show(db: &Database) -> Result<Value, String> {
         // Not a path, but the same question: which instance is this? A
         // relocated data dir gets a socket of its own, so the name is resolved
         // rather than constant and worth reporting where the dirs are.
-        "tmux_socket": crate::backend::tmux_compat::socket::local_socket_name(),
+        "tmux_socket": crate::backend::instance::local_socket_name(),
         "agents": { "default": agents.default_name(), "names": agents.names() },
         "hosts": {
             "names": hosts.names(),

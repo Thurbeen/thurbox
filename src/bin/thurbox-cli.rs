@@ -93,10 +93,13 @@ fn main() {
     // never for the ones that do not. Registration only: nothing connects
     // until a backend is asked something.
     let build = || thurbox::backend::wiring::configured().0;
-    let backends = cli::Backends::lazy(&build);
+    // This machine's backends alone, for `session signal` — run by every
+    // agent hook, so it must not pay for reading every host.
+    let build_local = thurbox::backend::wiring::local_only;
+    let backends = cli::Backends::lazy(&build).with_local(&build_local);
     let outcome = cli::run(cli, &db, &backends);
     // Before any exit below, which runs no destructor.
-    if let Some(registry) = backends.built() {
+    for registry in backends.built() {
         registry.shutdown_all();
     }
     match outcome {

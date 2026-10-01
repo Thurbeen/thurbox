@@ -154,6 +154,20 @@ pub const SIZER_OPTION: &str = sizer_option!();
 /// say its pane is being sized elsewhere.
 const SIZER_SUBSCRIPTION: &str = "thurbox-sizer";
 
+/// The pane **user option** a hook running in a tmux-protocol pane sets to
+/// report its state (`set-option -p @thurbox_state <working|blocked|done|idle>`):
+/// these adapters' status channel. The headless poll lists it, and an attached
+/// connection receives changes through [`REMOTE_HOOK_SUBSCRIPTION`] (tmux) or
+/// a poll (psmux). Protocol vocabulary, so it lives with the protocol: another
+/// backend's status channel need not be a pane option at all.
+pub const REMOTE_HOOK_STATE_OPTION: &str = "@thurbox_state";
+
+/// Name of the control-mode format subscription
+/// (`refresh-client -B <name>:%*:#{@thurbox_state}`) that pushes
+/// [`REMOTE_HOOK_STATE_OPTION`] changes as `%subscription-changed`
+/// notifications for every pane of the attached session.
+pub const REMOTE_HOOK_SUBSCRIPTION: &str = "thurbox-status";
+
 /// Who sizes a pane, as far as anybody else is concerned: the
 /// [`SIZER_OPTION`] while more than one client is attached, and nobody once a
 /// client is alone — an alone client may size any pane (`TmuxBackend::resize`),
@@ -267,7 +281,7 @@ pub enum Notification {
     },
     /// A `refresh-client -B` format subscription reported a changed value
     /// (tmux >= 3.2). Carries the remote hook state for
-    /// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`].
+    /// [`REMOTE_HOOK_SUBSCRIPTION`].
     SubscriptionChanged {
         name: String,
         pane_id: String,
@@ -658,7 +672,7 @@ pub fn is_valid_window_id(s: &str) -> bool {
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
 /// wire data never panics. Shared by the hook poller's diff below and the
-/// headless status poll (`session_ops::remote_hooks::poll_remote_hook_states`).
+/// headless listing (`SessionBackend::hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
         .filter_map(|line| {
@@ -787,7 +801,7 @@ pub(in crate::backend) struct ControlMode {
     /// the wire, not the caller's interest in what comes back.
     response_queue: ResponseQueue,
     /// `(pane_id, state)` pairs from `%subscription-changed` notifications
-    /// (remote hook status — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]),
+    /// (remote hook status — see [`REMOTE_HOOK_STATE_OPTION`]),
     /// pushed by the reader thread and drained by the app tick via
     /// [`Self::take_sub_events`]. Bounded (drop-oldest): a short-lived
     /// connection (e.g. a headless spawn's) has no drainer.
@@ -947,8 +961,7 @@ impl ControlMode {
         if policy.subscriptions {
             let arm = format!(
                 "refresh-client -B '{}:%*:#{{{}}}'",
-                crate::session::REMOTE_HOOK_SUBSCRIPTION,
-                crate::session::REMOTE_HOOK_STATE_OPTION,
+                REMOTE_HOOK_SUBSCRIPTION, REMOTE_HOOK_STATE_OPTION,
             );
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the remote-hook status subscription: {e:#}");
@@ -1213,7 +1226,7 @@ impl ControlMode {
                     pane_id,
                     value,
                 } => {
-                    if name == crate::session::REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
+                    if name == REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
                         Self::queue_sub_events(&sub_events, vec![(pane_id, value)]);
                     } else if name == SIZER_SUBSCRIPTION {
                         let elsewhere = !value.is_empty() && value != sizer;

@@ -7,6 +7,7 @@
 
 pub mod contract;
 pub mod identity;
+pub mod instance;
 mod osc8;
 pub mod output_wake;
 pub mod pane;

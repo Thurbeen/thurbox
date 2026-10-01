@@ -19,7 +19,8 @@ emitter, and the create → get → assert core).
 | `e2e/real-host.sh` | a real Linux/Windows/WSL machine you own | no | ssh, cargo | no (manual) |
 
 `e2e/windows-vm.sh test` also decides whether thurbox's psmux hook-status gate
-(`session::psmux_hook_rewrite_supported`) still matches what psmux does, and
+(as `thurbox-cli runtime status --json` reports it, `hook_status`) still
+matches what psmux does, and
 **fails** when the two disagree either way round — see issue #1170, where the
 probe reported on its own `ok` branch whichever way the measurement went.
 `e2e/windows-vm.bats` drives those helpers with no VM, so the failing branch is

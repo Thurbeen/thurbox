@@ -23,12 +23,10 @@ use crate::backend::contract::{
     SpawnedSession, WindowRole, WindowSpec,
 };
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
+use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
 use crate::backend::tmux_compat::control_mode::{
     self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
     ControlModeWriter, ControlPolicy, PaneInput, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
-};
-use crate::backend::tmux_compat::socket::{
-    host_socket, known_host_socket, learned_host_socket, local_socket,
 };
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
@@ -141,6 +139,18 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// What a control-mode connection to this server may expect of it.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy;
+
+    /// Whether a hook in this server's panes can report its state through the
+    /// pane option ([`control_mode::REMOTE_HOOK_STATE_OPTION`]) and have it
+    /// read back. Where it cannot, the backend has no status channel: no hook
+    /// command is offered, nothing is recorded, and a listing is refused.
+    const HOOK_STATUS: bool;
+
+    /// The in-pane command that sets the option, the state word to follow —
+    /// whatever this server needs to find its own pane from inside one.
+    fn hook_signal_command(server: &Server<Self>) -> String
+    where
+        Self: Sized;
 }
 
 /// A `-V` banner's verdict, overruled by the running server: a banner refused
@@ -167,21 +177,6 @@ pub const TMUX_SESSION: &str = if cfg!(dev_build) {
 } else {
     "thurbox"
 };
-
-/// The transport the heartbeat and the own-pane status one-shots run on: this
-/// machine's default multiplexer ([`Multiplexer::platform_default`]), which is
-/// the server they have always meant. Not a backend's, because nothing hands
-/// them one yet: they move behind the contract with status delivery (F7), and
-/// reach the registry's default backend then.
-fn default_local_transport() -> TmuxTransport {
-    TmuxTransport::local(Multiplexer::platform_default().name())
-}
-
-/// `<default mux> -L <socket> <args…>` on this machine — see
-/// [`default_local_transport`].
-fn local_mux_command(args: &[&str]) -> Command {
-    default_local_transport().tmux_command(&local_socket(), args)
-}
 
 /// The `list-windows` format `discover` reads: pane, name, liveness, and the
 /// two stamps that give the window an identity its name cannot.
@@ -269,7 +264,7 @@ fn window_target(window_name: &str) -> String {
 /// (`sanitize_window_name` collapses `a:b` and `a.b` onto one), while tmux
 /// reissues pane ids from `%0` every time its server starts. A window option
 /// survives both, stored once on the thing it describes — the same channel
-/// [`set_own_pane_state`] already uses for hook state. See ADR-25.
+/// [`SessionBackend::record_hook_state`] uses for hook state. See ADR-25.
 pub const WINDOW_SESSION_OPTION: &str = "@thurbox_session";
 
 /// The tmux window option saying what a stamped window is *for*.
@@ -696,13 +691,74 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// The socket this backend talks to: the configured one, unless the host's
     /// own CLI has since reported a different one (see
-    /// [`crate::backend::tmux_compat::socket::learn_host_socket`]). Resolved per
+    /// [`crate::backend::instance::learn_host_socket`]). Resolved per
     /// call so a backend registered at startup follows the host.
     pub(in crate::backend) fn socket(&self) -> String {
         self.host
             .as_ref()
             .and_then(|host| learned_host_socket(&host.backend_name()))
             .unwrap_or_else(|| self.socket.clone())
+    }
+
+    /// Refuse a status verb on a server whose hooks have no channel
+    /// ([`TmuxCompatible::HOOK_STATUS`]).
+    fn refuse_without_hook_status(&self) -> Result<()> {
+        if !M::HOOK_STATUS {
+            bail!(
+                "{} carries no hook status: its pane-option channel is not proven",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
+    /// The thurbox session on this server, created when it is not there — as
+    /// the backend would create it, peers racing to included, and only once
+    /// the backend agrees its binary may start one. No session config: the
+    /// keeper needs none, and every spawn or attach applies it.
+    fn ensure_heartbeat_session(&self) -> Result<()> {
+        let exists = || self.run_tmux(&["has-session", "-t", &self.session]).is_ok();
+        if exists() {
+            return Ok(());
+        }
+        self.check_available()?;
+        let out = self
+            .transport
+            .tmux_command(
+                &self.socket(),
+                &[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    &self.session,
+                    "-x",
+                    "80",
+                    "-y",
+                    "24",
+                ],
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| {
+                self.transport
+                    .launch_failure("Failed to run tmux command", e)
+            })?;
+        if !out.status.success() && !exists() {
+            bail!(
+                "{} new-session (heartbeat) {}",
+                self.transport.mux(),
+                mux_failure(&out)
+            );
+        }
+        // As `ensure_session_configured` waits after creating one: a server
+        // whose `new-session -d` returns before the session answers would
+        // refuse the keeper's `new-window`.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Ok(())
     }
 
     /// Run a tmux command and return its stdout (used before control mode is available).
@@ -1083,7 +1139,7 @@ impl<M: TmuxCompatible> Server<M> {
     ///
     /// Shared by [`ensure_ready`](Self::ensure_ready) (which then starts control
     /// mode) and the headless spawn paths ([`create_local_window`],
-    /// [`ensure_automation_heartbeat`]) that drive tmux via one-shot commands and
+    /// [`SessionBackend::ensure_heartbeat`]) that drive tmux via one-shot commands and
     /// must not open a control-mode connection.
     fn ensure_session_configured(&self) -> Result<()> {
         // The common case — the session is there — asked and configured in one
@@ -2478,6 +2534,132 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .unwrap_or_default()
     }
 
+    fn hook_signal_command(&self) -> Option<String> {
+        M::HOOK_STATUS.then(|| M::hook_signal_command(self))
+    }
+
+    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()> {
+        self.refuse_without_hook_status()?;
+        if !control_mode::is_valid_pane_id(pane) {
+            bail!("'{pane}' is not a pane id");
+        }
+        self.one_shot(
+            "set-option (hook state)",
+            &[
+                "set-option",
+                "-p",
+                "-t",
+                pane,
+                control_mode::REMOTE_HOOK_STATE_OPTION,
+                state,
+            ],
+        )
+        .map(drop)
+    }
+
+    /// Read-only by design — no `ensure_ready`, so a poll never creates the
+    /// server or the session. A server that says it has no such session (or
+    /// that is not running) holds no states; a question that never reached
+    /// one — an unreachable host, a missing binary — is an `Err`.
+    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+        self.refuse_without_hook_status()?;
+        match self.run_tmux(&["has-session", "-t", &self.session]) {
+            Ok(_) => {}
+            Err(e) if session_absent(&format!("{e:#}")) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        }
+        let format = format!(
+            "#{{pane_id}} #{{{}}}",
+            control_mode::REMOTE_HOOK_STATE_OPTION
+        );
+        let body = self.run_tmux(&["list-panes", "-s", "-t", &self.session, "-F", &format])?;
+        Ok(control_mode::parse_pane_hook_states(
+            String::from_utf8_lossy(&body.stdout).trim(),
+        ))
+    }
+
+    /// A detached window, not `tb-` prefixed so [`Self::discover`] ignores
+    /// it. The live window also keeps the server alive, so spawn-only
+    /// automations work with no other sessions. Asked of the backend serving
+    /// this machine's default multiplexer: `check_available` decides whether
+    /// its binary may start a server at all (an old psmux may not).
+    fn ensure_heartbeat(
+        &self,
+        program: &Path,
+        args: &[String],
+        every: std::time::Duration,
+    ) -> Result<()> {
+        if self.heartbeat_running()? {
+            return Ok(());
+        }
+        self.ensure_heartbeat_session()?;
+        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every);
+        let out = self
+            .transport
+            .tmux_command(
+                &self.socket(),
+                &[
+                    "new-window",
+                    "-d",
+                    "-t",
+                    &self.session,
+                    "-n",
+                    HEARTBEAT_WINDOW,
+                    &loop_cmd,
+                ],
+            )
+            .output()
+            .map_err(|e| {
+                self.transport
+                    .launch_failure("Failed to create automation heartbeat window", e)
+            })?;
+        // Asked again rather than believed: the status may be a failing user
+        // hook's and not this window's — see the same read in
+        // `create_local_window`. There is no `-P` answer to trust here, so the
+        // listing is what says whether the window exists.
+        if !out.status.success() && !self.heartbeat_running()? {
+            bail!(
+                "{} new-window (heartbeat) {}",
+                self.transport.mux(),
+                mux_failure(&out)
+            );
+        }
+        debug!("Armed automation heartbeat keeper window on {}", self.name);
+        Ok(())
+    }
+
+    /// No server, or no session on it, is a heartbeat not running — not an
+    /// unanswered question.
+    fn heartbeat_running(&self) -> Result<bool> {
+        let out = self
+            .transport
+            .tmux_command(
+                &self.socket(),
+                &["list-windows", "-t", &self.session, "-F", "#{window_name}"],
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| {
+                self.transport
+                    .launch_failure("Failed to run tmux command", e)
+            })?;
+        Ok(out.status.success()
+            && String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|w| w == HEARTBEAT_WINDOW))
+    }
+
+    /// Automations stop firing headlessly until something arms it again —
+    /// which any `automation` write does, so this is a pause, not a removal.
+    fn stop_heartbeat(&self) -> Result<bool> {
+        if !self.heartbeat_running()? {
+            return Ok(false);
+        }
+        let target = format!("{}:{HEARTBEAT_WINDOW}", self.session);
+        Ok(self.run_tmux(&["kill-window", "-t", &target]).is_ok())
+    }
+
     /// The shell-pane command must match the OS of the machine the pane runs
     /// on ([`Self::platform`](Server)), not the local binary's — reading
     /// the local `$SHELL`/`%COMSPEC%` shipped e.g. `/bin/zsh` to a remote
@@ -2597,152 +2779,38 @@ fn pane_answer_field(raw: &str, n: usize) -> Option<String> {
 /// infrastructure, not a session.
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
-/// How often the heartbeat keeper invokes `automation tick`.
-const HEARTBEAT_INTERVAL_SECS: u64 = 60;
-
-/// List the window names in the thurbox tmux session (empty if the server is
-/// not running).
-fn list_window_names() -> Vec<String> {
-    let Ok(out) =
-        local_mux_command(&["list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"]).output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-/// Whether the automation heartbeat keeper window is running right now.
-///
-/// The keeper is created implicitly by anything that arms an automation, is not
-/// a session, and so appears in no session listing. That made it the one thing
-/// thurbox puts on a tmux server that nothing could see or reclaim; this and
-/// [`stop_automation_heartbeat`] are what make it accountable.
-pub fn automation_heartbeat_running() -> bool {
-    list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW)
-}
-
-/// Stop the heartbeat keeper. Returns whether there was one to stop.
-///
-/// Automations stop firing headlessly until something arms it again — which any
-/// `automation` write does, so this is a pause rather than a removal.
-pub fn stop_automation_heartbeat() -> bool {
-    if !automation_heartbeat_running() {
-        return false;
-    }
-    let target = format!("{TMUX_SESSION}:{HEARTBEAT_WINDOW}");
-    local_mux_command(&["kill-window", "-t", &target])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
-}
-
-/// Ensure the automation heartbeat keeper window is running.
-///
-/// Creates a detached window that loops `<cli_path> automation tick` every
-/// `HEARTBEAT_INTERVAL_SECS` seconds, so automations fire even with no TUI
-/// attached. The live window also keeps the server alive, so spawn-only
-/// automations work with no other sessions. Idempotent — a no-op when the
-/// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
-///
-/// `backend` is the registry's default — the backend serving this machine's
-/// default multiplexer, the server the keeper lives on. It is asked, through
-/// the contract, whether its binary may start a server at all (an old psmux
-/// may not), and nothing more: the session's config is the adapter's to apply,
-/// which every backend does before it spawns or attaches, and the keeper needs
-/// none of it.
-pub fn ensure_automation_heartbeat(backend: &dyn SessionBackend, cli_path: &Path) -> Result<()> {
-    if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
-        return Ok(());
-    }
-    ensure_default_session(backend)?;
-    let loop_cmd = heartbeat_loop_command(cli_path);
-    let out = local_mux_command(&[
-        "new-window",
-        "-d",
-        "-t",
-        TMUX_SESSION,
-        "-n",
-        HEARTBEAT_WINDOW,
-        &loop_cmd,
-    ])
-    .output()
-    .context("Failed to create automation heartbeat window")?;
-    // Asked again rather than believed: the status may be a failing user hook's
-    // and not this window's — see the same read in `create_local_window`. There is no
-    // `-P` answer to trust here, so the listing is what says whether the window
-    // exists.
-    if !out.status.success() && !automation_heartbeat_running() {
-        bail!("tmux new-window (heartbeat) {}", mux_failure(&out));
-    }
-    debug!("Armed automation heartbeat keeper window");
-    Ok(())
-}
-
-/// The thurbox session on the default local server, created when it is not
-/// there — as a backend would create it, peers racing to included, and only
-/// once `backend` agrees its binary may start one.
-fn ensure_default_session(backend: &dyn SessionBackend) -> Result<()> {
-    let transport = default_local_transport();
-    let exists = || {
-        local_mux_command(&["has-session", "-t", TMUX_SESSION])
-            .output()
-            .is_ok_and(|out| out.status.success())
-    };
-    if exists() {
-        return Ok(());
-    }
-    backend.check_available()?;
-    let out = local_mux_command(&[
-        "new-session",
-        "-d",
-        "-s",
-        TMUX_SESSION,
-        "-x",
-        "80",
-        "-y",
-        "24",
-    ])
-    .output()
-    .map_err(|e| transport.launch_failure("Failed to run tmux command", e))?;
-    if !out.status.success() && !exists() {
-        bail!("tmux new-session (heartbeat) {}", mux_failure(&out));
-    }
-    // As a backend waits after creating one (`ensure_session_configured`): a
-    // server whose `new-session -d` returns before the session answers would
-    // refuse the keeper's `new-window`.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    Ok(())
-}
-
-/// The keeper's loop, as the window command. It runs via the server's shell,
-/// so the CLI path is escaped for it — a POSIX one, or on a Windows machine
-/// PowerShell, which is how the default multiplexer there runs a window command
-/// (psmux: `powershell -NoLogo -Command`). Handed over as **one argv token**
-/// either way, which on psmux also dodges its trailing-token handling. A no-op
-/// on Windows once ("no POSIX shell for the keeper loop"), which silently
-/// degraded headless automation firing to TUI-only there.
-fn heartbeat_loop_command(cli_path: &Path) -> String {
-    let path = cli_path.display().to_string();
-    match Platform::local() {
+/// The keeper's loop, as the window command: `program args…` every `every`,
+/// in the shell of the machine the server runs on (`platform`) — a POSIX one,
+/// or on Windows PowerShell, which is how psmux runs a window command
+/// (`powershell -NoLogo -Command`). Handed over as **one argv token** either
+/// way, which on psmux also dodges its trailing-token handling.
+fn heartbeat_loop_command(
+    platform: Platform,
+    program: &Path,
+    args: &[String],
+    every: std::time::Duration,
+) -> String {
+    let secs = every.as_secs().max(1);
+    let path = program.display().to_string();
+    match platform {
         Platform::Posix => {
-            let cli = shell_escape(&path);
+            let argv: Vec<String> = std::iter::once(path)
+                .chain(args.iter().cloned())
+                .map(|a| shell_escape(&a))
+                .collect();
             format!(
-                "while true; do {cli} automation tick >/dev/null 2>&1; sleep {HEARTBEAT_INTERVAL_SECS}; done"
+                "while true; do {} >/dev/null 2>&1; sleep {secs}; done",
+                argv.join(" ")
             )
         }
         Platform::Windows => {
-            let cli = crate::shell::powershell_quote(&path);
+            let argv: Vec<String> = std::iter::once(path)
+                .chain(args.iter().cloned())
+                .map(|a| crate::shell::powershell_quote(&a))
+                .collect();
             format!(
-                "while ($true) {{ & {cli} automation tick *> $null; Start-Sleep {HEARTBEAT_INTERVAL_SECS} }}"
+                "while ($true) {{ & {} *> $null; Start-Sleep {secs} }}",
+                argv.join(" ")
             )
         }
     }
@@ -3508,113 +3576,6 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
-/// One-shot read of every pane's remote-hook state option on `host`:
-/// `list-panes -s -t <session> -F "#{pane_id} #{@thurbox_state}"` over the
-/// host launcher, parsed to the set `(pane_id, state)` pairs. The headless
-/// status poll (`session_ops::remote_hooks::poll_remote_hook_states`) uses it
-/// to keep remote hook states flowing with no TUI attached. Read-only by
-/// design — no `ensure_ready`, so a poll never creates the remote
-/// server/session; an unreachable host or absent server is an `Err` the
-/// caller treats as "no reports this cycle".
-pub fn list_remote_hook_states(host: &crate::session::HostDef) -> Result<Vec<(String, String)>> {
-    let transport = TmuxTransport::remote(HostLauncher::for_host(host), host.mux());
-    let session = host
-        .session
-        .clone()
-        .unwrap_or_else(|| TMUX_SESSION.to_string());
-    list_hook_states_on(&transport, &host_socket(host), &session)
-}
-
-/// [`list_remote_hook_states`] for this machine's own server: the pane option
-/// a session created *from afar* on this host sets (its hooks were rewritten to
-/// that form), which nothing here read before sessions were shared.
-pub fn list_local_hook_states() -> Result<Vec<(String, String)>> {
-    list_hook_states_on(&default_local_transport(), &local_socket(), TMUX_SESSION)
-}
-
-/// Every pane's hook state on `session`, or nothing when there is no such
-/// session. Grammar any tmux-compatible server answers, so it needs no adapter:
-/// the binary is the host's (or this machine's default) until status delivery
-/// is the backend's (F7).
-fn list_hook_states_on(
-    transport: &TmuxTransport,
-    socket: &str,
-    session: &str,
-) -> Result<Vec<(String, String)>> {
-    let run = |args: &[&str]| -> Result<std::process::Output> {
-        let output = transport
-            .tmux_command(socket, args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| transport.launch_failure("Failed to run tmux command", e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("tmux {} failed: {}", args.join(" "), stderr.trim());
-        }
-        Ok(output)
-    };
-    if run(&["has-session", "-t", session]).is_err() {
-        return Ok(Vec::new());
-    }
-    let format = format!(
-        "#{{pane_id}} #{{{}}}",
-        crate::session::REMOTE_HOOK_STATE_OPTION
-    );
-    let body = run(&["list-panes", "-s", "-t", session, "-F", &format])?;
-    Ok(control_mode::parse_pane_hook_states(
-        String::from_utf8_lossy(&body.stdout).trim(),
-    ))
-}
-
-/// Record a hook state on the pane this process runs in — the pane option a
-/// remote observer's control-mode subscription reads — so a status reported
-/// through the CLI reaches a peer within a second, not at the mirror's
-/// cadence. `$TMUX` is `<socket path>,<pid>,<session index>`; the socket is
-/// addressed by path (`-S`) because it is whichever server the pane is on,
-/// which need not be this build's own. Silently nothing outside tmux.
-pub fn set_own_pane_state(state: &str) -> Result<()> {
-    let (Some(tmux), Some(pane)) = (
-        std::env::var_os("TMUX").map(|s| s.to_string_lossy().into_owned()),
-        std::env::var_os("TMUX_PANE").map(|s| s.to_string_lossy().into_owned()),
-    ) else {
-        return Ok(());
-    };
-    let Some(socket_path) = own_socket_path(&tmux) else {
-        return Ok(());
-    };
-    if !control_mode::is_valid_pane_id(&pane) {
-        return Ok(());
-    }
-    // The pane's own server, addressed by path, running this machine's
-    // default multiplexer — see `default_local_transport`.
-    let status = Command::new(Multiplexer::platform_default().name())
-        .args([
-            "-S",
-            &socket_path,
-            "set-option",
-            "-p",
-            "-t",
-            &pane,
-            crate::session::REMOTE_HOOK_STATE_OPTION,
-            state,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("run tmux set-option on the own pane")?;
-    if !status.success() {
-        bail!("tmux set-option exited {status}");
-    }
-    Ok(())
-}
-
-/// The socket path in a `$TMUX` value (`<path>,<pid>,<index>`).
-pub(crate) fn own_socket_path(tmux_env: &str) -> Option<String> {
-    let path = tmux_env.split(',').next()?.trim();
-    (!path.is_empty()).then(|| path.to_string())
-}
-
 /// The name of the window `pane` is in, from a `list-panes -F
 /// '#{pane_id}|#{window_name}'` answer.
 fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
@@ -3623,6 +3584,15 @@ fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
         .filter_map(|line| line.split_once('|'))
         .find(|(id, _)| *id == pane)
         .map(|(_, window)| window)
+}
+
+/// Whether a failed `has-session` was the server answering that it holds no
+/// such session — or that there is no server — rather than a question that
+/// never reached it (an unreachable host, a refused ssh, a missing binary).
+fn session_absent(error: &str) -> bool {
+    error.contains("can't find session")
+        || error.contains("no server running")
+        || error.contains("error connecting to")
 }
 
 /// Whether a kill's failure says its target is already gone — named by its
@@ -3637,7 +3607,7 @@ fn already_gone(error: &str) -> bool {
 mod tests {
     use super::*;
     use crate::backend::identity::agent_window_name;
-    use crate::backend::tmux_compat::socket::{
+    use crate::backend::instance::{
         host_socket, known_host_socket, learn_host_socket, TMUX_SOCKET,
     };
 
@@ -3716,6 +3686,11 @@ mod tests {
                 subscriptions: true,
                 status_poll: None,
             }
+        }
+        const HOOK_STATUS: bool = true;
+
+        fn hook_signal_command(_: &Server<Self>) -> String {
+            "tmux set-option -p @thurbox_state ".to_string()
         }
     }
 
@@ -4353,16 +4328,6 @@ mod tests {
 
     // --- build_shell_command tests ---
 
-    #[test]
-    fn the_own_socket_path_is_the_first_field_of_tmux_env() {
-        assert_eq!(
-            own_socket_path("/tmp/tmux-1000/thurbox,4242,0").as_deref(),
-            Some("/tmp/tmux-1000/thurbox")
-        );
-        assert_eq!(own_socket_path(",1,0"), None);
-        assert_eq!(own_socket_path(""), None);
-    }
-
     // --- one-shot prompt delivery ---
 
     // --- named keys ---
@@ -4526,6 +4491,38 @@ mod tests {
 
     const ONE: &str = "11111111-1111-4111-8111-111111111111";
     const TWO: &str = "22222222-2222-4222-8222-222222222222";
+
+    /// A status question that never reached a server is no answer: the poll
+    /// must keep the held states rather than be told there are none.
+    #[test]
+    fn an_unanswered_status_listing_is_an_error() {
+        let backend = TestBackend::with_transport(
+            TmuxTransport::local("thurbox-test-no-such-multiplexer"),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+        );
+        assert!(backend.hook_states().is_err());
+    }
+
+    /// The headless status poll reads an empty listing as "every pane quiet",
+    /// so only the server's own "nothing here" may become one.
+    #[test]
+    fn only_the_server_saying_no_session_is_an_empty_status_answer() {
+        for absent in [
+            "tmux has-session -t thurbox failed: can't find session: thurbox",
+            "tmux has-session -t thurbox failed: no server running on /tmp/tmux-1/thurbox",
+            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
+        ] {
+            assert!(session_absent(absent), "{absent}");
+        }
+        for unanswered in [
+            "tmux has-session -t thurbox failed: ssh: connect to host box port 22: Connection refused",
+            "Failed to run tmux command: No such file or directory (os error 2)",
+        ] {
+            assert!(!session_absent(unanswered), "{unanswered}");
+        }
+    }
 
     /// The format is a literal because a `const` cannot interpolate another;
     /// this is what keeps it honest.

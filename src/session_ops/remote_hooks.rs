@@ -7,8 +7,9 @@
 //! Those files never travel with the launch args, so before this module a
 //! remote codex/opencode/… session was silently Idle-only. At spawn time this
 //! module ships the same payloads to the host — with their commands rewritten
-//! to the tmux pane-option form (`builtin_hooks::rewrite_hook_signals_for_target`)
-//! so the local TUI receives state over its control-mode subscription — using
+//! to the command the row's backend reports state through
+//! (`builtin_hooks::rewrite_hook_signals`) so the local interface reads it back
+//! through that backend — using
 //! the same safety rules as the local installer: `requires_dir` probe (skip
 //! when the agent isn't installed there), deep-merge-not-clobber for shared
 //! config files, managed-marker guard for standalone files, and
@@ -21,12 +22,12 @@
 //! **Remote cleanup is deliberately out of scope** (thurbox never uninstalls
 //! anything from a host — same policy as remote worktrees). The shipped
 //! entries carry two prune markers (`thurbox-cli session signal` pre-rewrite,
-//! `@thurbox_state` post-rewrite), so a future remote prune needs no schema
-//! knowledge.
+//! the backend's hook command post-rewrite), so a future remote prune needs no
+//! schema knowledge.
 //!
 //! Besides provisioning (the write side), this module also owns the
-//! **headless status poll** (`poll_remote_hook_states`) — the read side that
-//! keeps remote hook states flowing while no TUI is attached.
+//! **headless status poll** (`poll_hook_states`) — the read side that keeps
+//! every route's hook states flowing while no interface is attached.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -144,7 +145,7 @@ enum ProvisionOutcome {
     Degraded(String),
 }
 
-/// Provisioning bookkeeping, keyed by `(backend_name, agent)`.
+/// Provisioning bookkeeping, keyed by [`ProvisionKey`].
 /// Process-lifetime, like `git`'s remote-home cache: `hosts.toml` is read once
 /// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
 /// so repeat spawns of the same agent on the same host skip the ssh
@@ -155,8 +156,8 @@ enum ProvisionOutcome {
 /// for the holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
-    provisioned: HashSet<(String, String)>,
-    in_flight: HashSet<(String, String)>,
+    provisioned: HashSet<ProvisionKey>,
+    in_flight: HashSet<ProvisionKey>,
 }
 
 fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
@@ -174,11 +175,19 @@ fn cache_lock() -> std::sync::MutexGuard<'static, ProvisionCache> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// `(host, agent, hook command)`: what was shipped carries one backend's
+/// command, so a launch on another route of the same host is not done yet.
+type ProvisionKey = (String, String, String);
+
+fn provision_key(host: &HostDef, agent: &str, signal: &str) -> ProvisionKey {
+    (host.backend_name(), agent.to_string(), signal.to_string())
+}
+
 /// Removes its key from `in_flight` on drop — **including on unwind**, so a
 /// panic inside the provisioning pass can never leak the key and permanently
-/// (and silently) disable provisioning for that `(host, agent)`.
+/// (and silently) disable provisioning for that key.
 struct InFlightGuard {
-    key: (String, String),
+    key: ProvisionKey,
 }
 
 impl Drop for InFlightGuard {
@@ -199,6 +208,7 @@ const IN_FLIGHT_WAIT_MAX: std::time::Duration = std::time::Duration::from_secs(6
 /// UI thread.
 pub(crate) fn provision_agent_hooks_on_host(
     host: &HostDef,
+    signal: Option<&str>,
     agent: &str,
     hooks_enabled: bool,
 ) -> HookDegradation {
@@ -206,16 +216,26 @@ pub(crate) fn provision_agent_hooks_on_host(
         return None;
     }
     let asset = remote_asset_for(agent)?;
-    // Windows/psmux hosts are deferred: these payloads' hook commands run
-    // through `sh`, and each agent's Windows config dir / hook shell differs.
+    // Status is the backend's to carry. One with no channel gets no hooks:
+    // they would have nothing to report through, and the session reads as
+    // reporting nothing rather than as idle.
+    let Some(signal) = signal else {
+        return Some(format!(
+            "{agent} hooks not provisioned on host '{}': its backend reports no hook status",
+            host.name
+        ));
+    };
+    // Windows hosts are deferred: these payloads' hook commands run through
+    // `sh`, and each agent's Windows config dir / hook shell differs. A
+    // property of the payloads and the host's OS, whatever multiplexer it runs.
     if host.is_windows() {
         return Some(format!(
-            "{agent} hooks not provisioned on psmux host '{}'",
+            "{agent} hooks not provisioned on Windows host '{}'",
             host.name
         ));
     }
 
-    let key = (host.backend_name(), agent.to_string());
+    let key = provision_key(host, agent, signal);
     // Claim the key, or wait for the concurrent spawn that holds it: skipping
     // would report this session healthy while its agent may boot before the
     // holder's file lands (or after the holder *fails*). Waiting is bounded —
@@ -243,7 +263,7 @@ pub(crate) fn provision_agent_hooks_on_host(
         std::thread::sleep(IN_FLIGHT_WAIT_STEP);
         waited += IN_FLIGHT_WAIT_STEP;
     };
-    let outcome = provision_uncached(host, &asset);
+    let outcome = provision_uncached(host, signal, &asset);
     if matches!(outcome, ProvisionOutcome::Provisioned) {
         cache_lock().provisioned.insert(key);
     }
@@ -266,7 +286,7 @@ pub(crate) fn provision_agent_hooks_on_host(
 /// ([`crate::git::probe_remote_dir_and_file`]): made separately they were two
 /// serial connections per `(host, agent)` before the copy even started, on the
 /// spawn path.
-fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> ProvisionOutcome {
+fn provision_uncached(host: &HostDef, signal: &str, asset: &RemoteHookAsset) -> ProvisionOutcome {
     use ProvisionOutcome::{Degraded, NotInstalled, Provisioned};
 
     let probed = crate::git::probe_remote_dir_and_file(host, asset.requires_dir, asset.remote_path);
@@ -290,15 +310,14 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> ProvisionOutco
         }
     };
 
-    // POSIX remotes only (psmux is deferred above), so the tmux form is fixed.
-    let rewritten = builtin_hooks::rewrite_hook_signals_for_remote(asset.payload);
+    let rewritten = builtin_hooks::rewrite_hook_signals(asset.payload, signal);
 
     let to_write = match asset.kind {
         RemoteAssetKind::MergeJson | RemoteAssetKind::MergeToml => {
             let existing = existing.as_deref().unwrap_or("");
             let merged = match asset.kind {
                 RemoteAssetKind::MergeToml => merged_remote_toml_doc(existing, &rewritten),
-                _ => merged_remote_doc(existing, &rewritten),
+                _ => merged_remote_doc(existing, &rewritten, signal),
             };
             match merged {
                 Ok(Some(merged)) => merged,
@@ -348,7 +367,11 @@ fn provision_uncached(host: &HostDef, asset: &RemoteHookAsset) -> ProvisionOutco
 /// of accumulating next to them. Returns the pretty-serialized doc to write,
 /// or `None` when the file is already up to date. A malformed existing doc is
 /// an `Err` — never clobber config we can't parse.
-fn merged_remote_doc(existing: &str, payload: &str) -> Result<Option<String>, String> {
+fn merged_remote_doc(
+    existing: &str,
+    payload: &str,
+    signal: &str,
+) -> Result<Option<String>, String> {
     let before: serde_json::Value = if existing.trim().is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
     } else {
@@ -361,9 +384,9 @@ fn merged_remote_doc(existing: &str, payload: &str) -> Result<Option<String>, St
     let mut doc = before.clone();
     // Prune both command forms: the pre-rewrite local marker (a stale entry
     // from an older thurbox that shipped the un-rewritten payload) and the
-    // rewritten pane-option marker (our own previous version).
+    // backend's hook command (our own previous version).
     crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
-    crate::agent::json_merge::prune_marked(&mut doc, crate::session::REMOTE_HOOK_STATE_OPTION);
+    crate::agent::json_merge::prune_marked(&mut doc, signal);
     crate::agent::json_merge::merge(&mut doc, &to_merge);
 
     if doc == before {
@@ -404,20 +427,20 @@ fn merged_remote_toml_doc(existing: &str, payload: &str) -> Result<Option<String
     Ok(Some(after))
 }
 
-/// The hook states a headless poll may write — the same allow-list the TUI's
-/// drain applies (`App::drain_remote_hook_events`): the polled value is
-/// remote-host-controlled free text, so it is matched, never interpolated.
+/// The hook states a headless poll may write — the same allow-list the
+/// interface's live drain applies (`Terminals::drain_hook_events`): the polled
+/// value is pane-controlled free text, so it is matched, never interpolated.
 const VALID_POLL_STATES: [&str; 4] = crate::session::HOOK_STATES;
 
-/// Join one host's polled `(pane_id, state)` pairs against that backend's
-/// sessions, returning the `(session, state)` writes that change anything.
-/// Pure — the ssh/DB plumbing lives in [`poll_remote_hook_states`].
+/// Join one backend's polled `(pane_id, state)` pairs against the sessions on
+/// its route, returning the `(session, state)` writes that change anything.
+/// Pure — the backend/DB plumbing lives in [`poll_hook_states`].
 ///
 /// Comparing against the **stored** state is the resurrection guard: an
 /// acknowledged `done` still stores `done` (`seen_at` is a separate column),
 /// so a steady-state re-report compares equal and is dropped — the headless
-/// equivalent of the TUI drain's dedup against its cache.
-fn remote_status_updates(
+/// equivalent of the interface drain's dedup against its cache.
+fn hook_status_updates(
     polled: &[(String, String)],
     sessions: &[(SessionId, &str, Option<&str>)],
 ) -> Vec<(SessionId, String)> {
@@ -437,92 +460,62 @@ fn remote_status_updates(
         .collect()
 }
 
-/// `server`'s host as the status poll must reach it: its entry as the
-/// adapter for the row's multiplexer is told ([`crate::session::HostDef::served_by`],
-/// platform pinned) — when a backend here serves that route, and otherwise
-/// why the poll skips it.
-fn polled_host(
-    hosts: &crate::session::HostRegistry,
-    backends: &crate::backend::BackendRegistry,
-    server: &str,
-) -> Result<crate::session::HostDef, String> {
-    let route = crate::session::Route::parse(server).map_err(|e| e.to_string())?;
-    let host = hosts.host_of(&route).ok_or_else(|| {
-        format!(
-            "host '{}' is not in hosts.toml",
-            route.host().unwrap_or_default()
-        )
-    })?;
-    let served = hosts.qualify(&route);
-    if !backends.supports(&served) {
-        return Err(format!("no backend here serves {served}"));
-    }
-    let mux = served
-        .mux
-        .ok_or_else(|| format!("{served} names no multiplexer"))?;
-    Ok(host.served_by(mux))
-}
-
-/// Headless counterpart of the TUI's live status channels: poll each remote
-/// host that has **live sessions in the DB** and write changed pane states
-/// into the same hook columns `session signal` uses. Returns the number of
-/// states written.
+/// Headless counterpart of the interface's live status channels: ask the
+/// backend serving each route that has **live sessions in the DB** for its
+/// panes' hook states ([`crate::backend::SessionBackend::hook_states`]), and
+/// write the changed ones into the same hook columns `session signal` uses.
+/// Returns the number of states written.
 ///
-/// The subscription/poller channels live on the TUI's persistent control-mode
-/// connection and die with it, so with the TUI closed a remote session's
-/// status froze at its last pushed value (local sessions are immune —
-/// `session signal` writes SQLite directly). Called from the headless
-/// `automation tick` (the 60 s tmux heartbeat keeper): coarse latency is fine
-/// there — no human is watching a dot; the consumers are `session list
-/// --json` readers — while the TUI stays the sub-second channel when open.
+/// The live channels ride an attached interface's connections and die with
+/// it, so with the interface closed a session whose hooks report through its
+/// backend — every remote one, and a local one a peer created here — froze at
+/// its last pushed value. Called from the headless `automation tick` (the
+/// heartbeat): coarse latency is fine there — no human is watching a dot; the
+/// consumers are `session list --json` readers — while the interface stays the
+/// sub-second channel when open.
 ///
-/// Best-effort everywhere: an unreachable host (bounded by the ssh
-/// `ConnectTimeout`) or a host with no running server is skipped for the
-/// cycle. Hosts from `hosts.toml` with **no** live remote sessions are never
-/// contacted, and psmux hosts stay excluded behind
-/// [`crate::session::psmux_hook_rewrite_supported`] (nothing sets the pane
-/// option there yet).
-pub(crate) fn poll_remote_hook_states(
+/// Rows are grouped by the route they settle to, so a pane id is only ever
+/// matched against the backend that issued it: two servers both have a `%0`.
+/// Best-effort everywhere, and never a guess: a route no backend here serves,
+/// a backend with no status channel, and one that could not be asked are all
+/// skipped for the cycle — the state held stays held, and nothing is ever
+/// inferred idle. Routes with no live sessions are never asked.
+pub(crate) fn poll_hook_states(
     db: &crate::storage::Database,
     backends: &crate::backend::BackendRegistry,
 ) -> usize {
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
-    // By server, not by spelling: a legacy `ssh:box` row and a new
-    // `ssh:box:tmux` one are polled with one listing.
-    let mut by_backend: HashMap<String, Vec<&crate::sync::SharedSession>> = HashMap::new();
+    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    // By the server a row's route settles to, not by its spelling: a legacy
+    // `ssh:box` row and a new `ssh:box:tmux` one are one listing.
+    let mut by_route: HashMap<crate::session::Route, Vec<&crate::sync::SharedSession>> =
+        HashMap::new();
     for s in &sessions {
-        if crate::session::Route::is_remote_key(&s.backend_type) {
-            by_backend
-                .entry(super::server_key(&s.backend_type))
-                .or_default()
-                .push(s);
+        match crate::session::Route::parse(&s.backend_type) {
+            Ok(route) => by_route.entry(hosts.qualify(&route)).or_default().push(s),
+            Err(e) => tracing::debug!("status poll skipped '{}': {e}", s.backend_type),
         }
     }
-    if by_backend.is_empty() {
+    if by_route.is_empty() {
         return 0;
     }
     let hook_rows = db.load_hook_states().unwrap_or_default();
-    let hosts = crate::agent::host_config::load_all();
     let mut written = 0;
-    for (server, group) in by_backend {
-        // Polled with the multiplexer the rows were written for; one nothing
-        // here serves is skipped rather than asked with another binary.
-        let host = match polled_host(&hosts, backends, &server) {
-            Ok(host) => host,
-            Err(e) => {
-                tracing::debug!("remote status poll skipped for {server}: {e}");
-                continue;
-            }
-        };
-        if host.is_windows() && !crate::session::psmux_hook_rewrite_supported() {
+    for (route, group) in by_route {
+        if route.host().is_some() && hosts.host_of(&route).is_none() {
+            tracing::debug!("status poll skipped for {route}: its host is not in hosts.toml");
             continue;
         }
-        let polled = match crate::backend::tmux_compat::server::list_remote_hook_states(&host) {
+        let Some(backend) = backends.get(&route) else {
+            tracing::debug!("status poll skipped for {route}: no backend here serves it");
+            continue;
+        };
+        let polled = match backend.hook_states() {
             Ok(polled) => polled,
             Err(e) => {
-                tracing::debug!("remote status poll skipped for host '{}': {e:#}", host.name);
+                tracing::debug!("status poll skipped for {route}: {e:#}");
                 continue;
             }
         };
@@ -536,12 +529,12 @@ pub(crate) fn poll_remote_hook_states(
                 )
             })
             .collect();
-        for (id, state) in remote_status_updates(&polled, &rows) {
+        for (id, state) in hook_status_updates(&polled, &rows) {
             match db.set_hook_state(id, &state) {
                 // A parked session takes nothing, and that is not a failure:
-                // `session stop` killed the pane the host is still reporting.
+                // `session stop` killed the pane the backend still reports.
                 Ok(taken) => written += usize::from(taken),
-                Err(e) => tracing::debug!("remote status poll write failed for {id}: {e}"),
+                Err(e) => tracing::debug!("status poll write failed for {id}: {e}"),
             }
         }
     }
@@ -552,12 +545,19 @@ pub(crate) fn poll_remote_hook_states(
 mod tests {
     use super::*;
 
+    /// A tmux-protocol backend's hook command, as one answers it.
+    const SIGNAL: &str = "tmux set-option -p @thurbox_state ";
+
     #[test]
     fn in_flight_guard_releases_on_unwind() {
         // A panic inside the provisioning pass must not leak the in-flight
         // key (which would silently disable provisioning for the process
         // lifetime while reporting healthy).
-        let key = ("test-guard-backend".to_string(), "codex".to_string());
+        let key = (
+            "test-guard-backend".to_string(),
+            "codex".to_string(),
+            SIGNAL.to_string(),
+        );
         assert!(cache_lock().in_flight.insert(key.clone()));
         let k = key.clone();
         let unwound = std::panic::catch_unwind(move || {
@@ -572,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_status_updates_writes_changes_only() {
+    fn hook_status_updates_writes_changes_only() {
         let a = SessionId::default();
         let b = SessionId::default();
         let polled = vec![
@@ -585,14 +585,14 @@ mod tests {
             (b, "%2", Some("done")), // unchanged (incl. an acknowledged done) → silent
         ];
         assert_eq!(
-            remote_status_updates(&polled, &sessions),
+            hook_status_updates(&polled, &sessions),
             vec![(a, "working".to_string())]
         );
         // A change writes; a pane whose option is unset stays untouched.
         let sessions = [(a, "%1", Some("working")), (b, "%3", Some("done"))];
         let polled = vec![("%1".to_string(), "done".to_string())];
         assert_eq!(
-            remote_status_updates(&polled, &sessions),
+            hook_status_updates(&polled, &sessions),
             vec![(a, "done".to_string())]
         );
     }
@@ -606,7 +606,7 @@ mod tests {
             ("%1".to_string(), "pwned; DROP TABLE".to_string()),
             ("%1".to_string(), "Working".to_string()), // case-sensitive
         ];
-        assert!(remote_status_updates(&polled, &[(a, "%1", None)]).is_empty());
+        assert!(hook_status_updates(&polled, &[(a, "%1", None)]).is_empty());
     }
 
     /// Every config-dir wiring in the embedded manifest must have a matching
@@ -680,19 +680,19 @@ mod tests {
 
     #[test]
     fn merged_doc_into_empty_writes_rewritten_payload() {
-        let payload = builtin_hooks::rewrite_hook_signals_for_remote(builtin_hooks::CODEX_HOOKS);
-        let merged = merged_remote_doc("", &payload)
+        let payload = builtin_hooks::rewrite_hook_signals(builtin_hooks::CODEX_HOOKS, SIGNAL);
+        let merged = merged_remote_doc("", &payload, SIGNAL)
             .expect("merges")
             .expect("writes");
         assert!(merged.contains("tmux set-option -p @thurbox_state"));
         assert!(!merged.contains("thurbox-cli"));
         // Idempotent: merging into the just-written doc is a no-op.
-        assert_eq!(merged_remote_doc(&merged, &payload).unwrap(), None);
+        assert_eq!(merged_remote_doc(&merged, &payload, SIGNAL).unwrap(), None);
     }
 
     #[test]
     fn merged_toml_doc_preserves_the_remote_users_config_and_replaces_stale_entries() {
-        let payload = builtin_hooks::rewrite_hook_signals_for_remote(builtin_hooks::KIMI_HOOKS);
+        let payload = builtin_hooks::rewrite_hook_signals(builtin_hooks::KIMI_HOOKS, SIGNAL);
         // The host's file carries the remote user's own settings and hook, plus
         // a *stale* thurbox entry an older thurbox shipped in the un-rewritten
         // local command form. Ownership is the comment, so that entry is
@@ -750,8 +750,8 @@ mod tests {
             "userSetting": true
         })
         .to_string();
-        let payload = builtin_hooks::rewrite_hook_signals_for_remote(builtin_hooks::CODEX_HOOKS);
-        let merged = merged_remote_doc(&existing, &payload)
+        let payload = builtin_hooks::rewrite_hook_signals(builtin_hooks::CODEX_HOOKS, SIGNAL);
+        let merged = merged_remote_doc(&existing, &payload, SIGNAL)
             .expect("merges")
             .expect("writes");
         // User content survives; the stale local-form entry is replaced by the
@@ -764,20 +764,54 @@ mod tests {
 
     #[test]
     fn merged_doc_refuses_malformed_existing() {
-        let payload = builtin_hooks::rewrite_hook_signals_for_remote(builtin_hooks::CODEX_HOOKS);
-        assert!(merged_remote_doc("{not json", &payload).is_err());
+        let payload = builtin_hooks::rewrite_hook_signals(builtin_hooks::CODEX_HOOKS, SIGNAL);
+        assert!(merged_remote_doc("{not json", &payload, SIGNAL).is_err());
     }
 
     #[test]
-    fn psmux_host_is_deferred_with_a_degradation_note() {
+    fn a_windows_host_is_deferred_with_a_degradation_note() {
         let host = HostDef {
             name: "winbox".into(),
             destination: "user@winbox".into(),
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let degraded = provision_agent_hooks_on_host(&host, "codex", true);
-        assert!(degraded.is_some_and(|d| d.contains("psmux")));
+        let degraded = provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true);
+        assert!(degraded.is_some_and(|d| d.contains("Windows host")));
+    }
+
+    /// What was shipped carries one backend's hook command, so a launch on
+    /// another route of the same host — another command — is not already done.
+    #[test]
+    fn a_cached_provisioning_counts_only_for_the_command_it_shipped() {
+        let host = HostDef {
+            name: "cache-key-host".into(),
+            destination: "user@cache-key-host.invalid".into(),
+            ..Default::default()
+        };
+        cache_lock()
+            .provisioned
+            .insert(provision_key(&host, "codex", SIGNAL));
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true).is_none(),
+            "the command it shipped is cached"
+        );
+        assert!(
+            provision_agent_hooks_on_host(&host, Some("other-mux signal "), "codex", true)
+                .is_some(),
+            "another route's command was taken as already shipped"
+        );
+    }
+
+    #[test]
+    fn a_route_with_no_status_channel_is_provisioned_nothing() {
+        let host = HostDef {
+            name: "devbox".into(),
+            destination: "user@devbox.invalid".into(),
+            ..Default::default()
+        };
+        let degraded = provision_agent_hooks_on_host(&host, None, "codex", true);
+        assert!(degraded.is_some_and(|d| d.contains("reports no hook status")));
     }
 
     #[test]
@@ -789,32 +823,8 @@ mod tests {
         };
         // Hooks opted out → no-op even for a covered agent (no ssh attempted;
         // the host doesn't exist).
-        assert!(provision_agent_hooks_on_host(&host, "codex", false).is_none());
+        assert!(provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", false).is_none());
         // claude/aider are arg-handled → no-op.
-        assert!(provision_agent_hooks_on_host(&host, "claude", true).is_none());
-    }
-
-    /// Telling the adapter which multiplexer a row names must not change what
-    /// OS its host runs: a legacy entry is Windows *because* it says psmux, so
-    /// the copy polling its `:tmux` row keeps that platform rather than
-    /// re-reading one off the multiplexer it was just handed.
-    #[test]
-    fn the_polled_host_keeps_its_platform() {
-        let hosts = crate::session::HostRegistry {
-            config_version: None,
-            hosts: vec![crate::session::HostDef {
-                name: "win".into(),
-                destination: "me@win".into(),
-                multiplexer: Some("psmux".into()),
-                ..Default::default()
-            }],
-        };
-        let route = crate::session::Route::parse("ssh:win:tmux").unwrap();
-        let backends = crate::backend::registry::inert_serving(&[route]);
-        let polled = polled_host(&hosts, &backends, "ssh:win:tmux").expect("served");
-        assert_eq!(polled.mux(), "tmux");
-        assert!(polled.is_windows());
-        // Unregistered: skipped, never polled with another binary.
-        assert!(polled_host(&hosts, &backends, "ssh:win:rmux").is_err());
+        assert!(provision_agent_hooks_on_host(&host, Some(SIGNAL), "claude", true).is_none());
     }
 }

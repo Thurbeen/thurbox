@@ -181,18 +181,59 @@ impl TmuxCompatible for Psmux {
     ///
     /// No format subscriptions either, so a remote psmux connection **polls**
     /// the hook-state option — but only where a producer can exist: a *remote*
-    /// psmux host with the hook rewrite enabled
-    /// ([`crate::session::psmux_hook_rewrite_supported`]). A local psmux session
-    /// signals via `thurbox-cli` straight into the DB and never sets the pane
-    /// option.
+    /// psmux host, once its status channel is open ([`Self::HOOK_STATUS`]). A
+    /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
             implicit_attach_reply: false,
             tagged_blocks: false,
             subscriptions: false,
-            status_poll: (transport.is_remote() && crate::session::psmux_hook_rewrite_supported())
+            status_poll: (transport.is_remote() && Self::HOOK_STATUS)
                 .then(|| hook_poll_command(session)),
         }
+    }
+
+    /// **Closed.** The channel rests on behaviours not yet proven against
+    /// psmux 3.3.6 — an in-pane `set-option -p` without `-t` (no
+    /// `$TMUX_PANE` guarantee), `#{@user_option}` expansion for the poller,
+    /// and claude accepting a forward-slash `--settings` path on Windows.
+    /// Closed means the old strip behaviour exactly: hook configs are not
+    /// shipped, the agent launches clean (surfaced as
+    /// `SessionInfo::hook_wiring`), and a psmux host's sessions report no
+    /// status — unknown, not idle. `scripts/dev/e2e/windows-vm.sh test` probes
+    /// the first two and holds them against this answer, which it reads from
+    /// `thurbox-cli runtime status --json` (`hook_status`); open it only with
+    /// evidence for all three.
+    const HOOK_STATUS: bool = false;
+
+    /// psmux has no `TMUX_TMPDIR`-style socket directory — every `-L <name>`
+    /// resolves machine-wide — and no `$TMUX` to find its server by, so the
+    /// socket is baked into the command. The name is user-authored
+    /// (`hosts.toml`) yet spliced into JSON/JS/TOML hook text and tokenized by
+    /// psmux unquoted, so it keeps only `[A-Za-z0-9._-]`: a violating name
+    /// lands dark on a wrong socket rather than corrupting the shipped file.
+    fn hook_signal_command(server: &Server<Self>) -> String {
+        let socket = server.socket();
+        let safe: String = socket
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if safe != socket {
+            warn!(
+                "{} socket {socket:?} has characters unsafe for a hook command; using {safe:?}",
+                server.name
+            );
+        }
+        let socket = if safe.is_empty() {
+            crate::backend::instance::TMUX_SOCKET.to_string()
+        } else {
+            safe
+        };
+        format!(
+            "{} -L {socket} set-option -p {} ",
+            Self::MULTIPLEXER.name(),
+            crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
+        )
     }
 }
 
@@ -203,15 +244,14 @@ fn hook_poll_command(session: &str) -> String {
     // but mangles adjacent `'…'` segments (see [`psmux_window_command`]). The
     // session name is user-authored hosts.toml text embedded in a wire command,
     // so it gets the same double-quote framing, minus the `"`/`\` it can't
-    // carry — mirroring the socket sanitization in
-    // `builtin_hooks::remote_signal_target`.
+    // carry — mirroring the socket sanitization in `hook_signal_command`.
     let session_safe: String = session
         .chars()
         .filter(|c| !matches!(c, '"' | '\\'))
         .collect();
     format!(
         "list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}} #{{{}}}\"",
-        crate::session::REMOTE_HOOK_STATE_OPTION,
+        crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION,
     )
 }
 
@@ -805,7 +845,7 @@ mod tests {
             assert!(!policy.subscriptions);
             assert_eq!(
                 policy.status_poll.is_some(),
-                transport.is_remote() && crate::session::psmux_hook_rewrite_supported()
+                transport.is_remote() && Psmux::HOOK_STATUS
             );
         }
         assert_eq!(
@@ -1072,5 +1112,50 @@ mod tests {
             text.push_str(inner);
         }
         assert_eq!(text, input);
+    }
+
+    /// The channel is closed until psmux is proven (see [`Psmux::HOOK_STATUS`]),
+    /// and closed is an answer every caller can see: no hook command, nothing
+    /// recorded, a listing refused rather than read as every pane quiet — and
+    /// none of it runs a process to find that out.
+    #[test]
+    fn a_closed_status_channel_offers_and_reads_nothing() {
+        let host = crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox.invalid".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
+            assert_eq!(backend.hook_signal_command(), None);
+            assert!(backend.record_hook_state("%1", "working").is_err());
+            assert!(backend.hook_states().is_err());
+        }
+    }
+
+    /// The form the channel would use once open: the socket baked in, made
+    /// safe to splice into a hook file, and never empty.
+    #[test]
+    fn the_hook_command_names_a_safe_socket() {
+        let host = |socket: &str| crate::session::HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox.invalid".into(),
+            multiplexer: Some("psmux".into()),
+            socket: Some(socket.into()),
+            ..Default::default()
+        };
+        let command =
+            |socket: &str| Psmux::hook_signal_command(&PsmuxBackend::for_host(&host(socket)));
+        assert_eq!(
+            command("we\"ird sock\\et"),
+            "psmux -L weirdsocket set-option -p @thurbox_state "
+        );
+        assert_eq!(
+            command("\"\\ "),
+            format!(
+                "psmux -L {} set-option -p @thurbox_state ",
+                crate::backend::instance::TMUX_SOCKET
+            )
+        );
     }
 }

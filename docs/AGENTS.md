@@ -350,8 +350,8 @@ ADR-24) none of the remote rewriting applies: the host's own `thurbox-cli`
 launches the agent with the host's own hooks extension, so each agent reports
 exactly as it does locally, into the host's database, which the remote thurbox
 mirrors. That includes a **Windows (psmux) host**, whose remote path stays
-gated (`psmux_hook_rewrite_supported`) but is simply not used when the host
-has — or is provisioned with — a CLI.
+off (the psmux adapter reports no hook status channel, ADR-32) but is simply
+not used when the host has — or is provisioned with — a CLI.
 
 ### `hook_schema` (custom rebrands only)
 

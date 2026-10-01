@@ -361,6 +361,8 @@ pub enum Outcome {
 pub struct Backends<'a> {
     registry: std::cell::OnceCell<crate::backend::BackendRegistry>,
     build: &'a dyn Fn() -> crate::backend::BackendRegistry,
+    local: std::cell::OnceCell<crate::backend::BackendRegistry>,
+    build_local: Option<&'a dyn Fn() -> crate::backend::BackendRegistry>,
 }
 
 impl<'a> Backends<'a> {
@@ -369,7 +371,20 @@ impl<'a> Backends<'a> {
         Self {
             registry: std::cell::OnceCell::new(),
             build,
+            local: std::cell::OnceCell::new(),
+            build_local: None,
         }
+    }
+
+    /// The same, plus how to build a registry of this machine's backends
+    /// alone — no `hosts.toml`, no distro discovery — for a command that only
+    /// ever acts on a local row ([`Self::local`]).
+    pub fn with_local(
+        mut self,
+        build_local: &'a dyn Fn() -> crate::backend::BackendRegistry,
+    ) -> Self {
+        self.build_local = Some(build_local);
+        self
     }
 
     /// A registry already built — a test's, with its own backends registered.
@@ -380,6 +395,8 @@ impl<'a> Backends<'a> {
         Backends {
             registry: std::cell::OnceCell::from(registry),
             build: &built,
+            local: std::cell::OnceCell::new(),
+            build_local: None,
         }
     }
 
@@ -388,9 +405,20 @@ impl<'a> Backends<'a> {
         self.registry.get_or_init(self.build)
     }
 
-    /// The registry if anything asked for it — what the root shuts down.
-    pub fn built(&self) -> Option<&crate::backend::BackendRegistry> {
-        self.registry.get()
+    /// A registry serving this machine's routes: the full one when it is
+    /// already built or there is no cheaper way, else one of local backends
+    /// only. Never the answer for a row on a host.
+    pub fn local(&self) -> &crate::backend::BackendRegistry {
+        match (self.registry.get(), self.build_local) {
+            (Some(full), _) => full,
+            (None, Some(build_local)) => self.local.get_or_init(build_local),
+            (None, None) => self.get(),
+        }
+    }
+
+    /// Every registry anything asked for — what the root shuts down.
+    pub fn built(&self) -> impl Iterator<Item = &crate::backend::BackendRegistry> {
+        self.registry.get().into_iter().chain(self.local.get())
     }
 }
 
@@ -469,7 +497,7 @@ fn dispatch(
 ) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action, db)?,
-        Command::Agent { action } => agents::run(action, db)?,
+        Command::Agent { action } => agents::run(action, db, backends)?,
         Command::Session { action } => sessions::run(action, db, backends)?,
         Command::Automation { action } => automations::run(action, db, backends)?,
         Command::Task { action } => tasks::run(action, db, backends)?,
@@ -484,7 +512,7 @@ fn dispatch(
         // written as each change lands. Handled before dispatch for that
         // reason — see `run`.
         Command::Watch(_) => unreachable!("handled in run(), which owns the stream"),
-        Command::Runtime { action } => runtime::run(action),
+        Command::Runtime { action } => runtime::run(action, backends),
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action)?,
         // Reads the machine, not the database: what is installed is not

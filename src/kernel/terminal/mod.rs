@@ -2539,6 +2539,32 @@ mod tests {
     struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
 
     impl crate::backend::SessionBackend for FakeLivenessBackend {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+        fn record_hook_state(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no status channel")
+        }
+        fn hook_states(&self) -> anyhow::Result<Vec<(String, String)>> {
+            anyhow::bail!("this stub has no status channel")
+        }
+        fn take_hook_state_events(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+        fn ensure_heartbeat(
+            &self,
+            _: &std::path::Path,
+            _: &[String],
+            _: std::time::Duration,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("this stub keeps no heartbeat")
+        }
+        fn heartbeat_running(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn stop_heartbeat(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
         fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
             anyhow::bail!("this stub has no panes to type into")
         }
@@ -2723,6 +2749,32 @@ mod tests {
     struct RefusingLocal;
 
     impl crate::backend::SessionBackend for RefusingLocal {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+        fn record_hook_state(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            anyhow::bail!("this stub has no status channel")
+        }
+        fn hook_states(&self) -> anyhow::Result<Vec<(String, String)>> {
+            anyhow::bail!("this stub has no status channel")
+        }
+        fn take_hook_state_events(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+        fn ensure_heartbeat(
+            &self,
+            _: &std::path::Path,
+            _: &[String],
+            _: std::time::Duration,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("this stub keeps no heartbeat")
+        }
+        fn heartbeat_running(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn stop_heartbeat(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
         fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
             anyhow::bail!("this stub has no panes to type into")
         }

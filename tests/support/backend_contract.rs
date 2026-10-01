@@ -17,6 +17,7 @@ use thurbox::backend::{Key, Owner, Placed, SessionBackend, WindowRole, WindowSpe
 const OWNER_A: &str = "00000000-0000-4000-8000-00000000000a";
 const OWNER_B: &str = "00000000-0000-4000-8000-00000000000b";
 const OWNER_C: &str = "00000000-0000-4000-8000-00000000000c";
+const OWNER_D: &str = "00000000-0000-4000-8000-00000000000d";
 
 /// Run the contract against `backend`, which must hold no thurbox window
 /// named after `contract` when called.
@@ -248,6 +249,88 @@ pub fn pane_io(backend: &dyn SessionBackend) {
         backend.send_text(&pane, "nowhere", true).is_err(),
         "a send to a gone pane reported success"
     );
+}
+
+/// Status delivery and the heartbeat, for a backend that has a status
+/// channel: a state recorded on a pane is what the headless listing reads back
+/// for that pane and no other, and the hook command it hands out can be
+/// spliced into a hook file. The heartbeat is kept, found, never listed as a
+/// session, and stopped — once.
+pub fn status(backend: &dyn SessionBackend) {
+    let env = HashMap::new();
+    let open = |owner: &'static str| {
+        backend
+            .create_window(&WindowSpec {
+                owner: Owner::new(owner, owner),
+                role: WindowRole::Agent,
+                command: "sleep",
+                args: &["300".to_string()],
+                cwd: None,
+                env: &env,
+            })
+            .expect("create_window")
+    };
+    let reporting = open(OWNER_C);
+    let quiet = open(OWNER_D);
+
+    let command = backend
+        .hook_signal_command()
+        .expect("a backend with a status channel names its hook command");
+    assert!(
+        !command.contains(['"', '\\']) && command.ends_with(' '),
+        "a hook command must splice into a JSON string, the state after it: {command:?}"
+    );
+
+    backend
+        .record_hook_state(&reporting, "blocked")
+        .expect("record_hook_state");
+    let states = backend.hook_states().expect("hook_states");
+    assert!(
+        states.contains(&(reporting.clone(), "blocked".to_string())),
+        "the listing reads back the recorded state: {states:?}"
+    );
+    assert!(
+        !states
+            .iter()
+            .any(|(pane, state)| *pane == quiet && !state.is_empty()),
+        "a pane that reported nothing has no state: {states:?}"
+    );
+    assert!(
+        backend.record_hook_state("%999999", "done").is_err(),
+        "a state recorded on no pane reported success"
+    );
+
+    let program = std::path::Path::new("/bin/true");
+    let args = ["automation".to_string(), "tick".to_string()];
+    let every = std::time::Duration::from_secs(60);
+    assert!(!backend.heartbeat_running().expect("asked"));
+    backend
+        .ensure_heartbeat(program, &args, every)
+        .expect("ensure_heartbeat");
+    backend
+        .ensure_heartbeat(program, &args, every)
+        .expect("ensure_heartbeat again");
+    assert!(backend.heartbeat_running().expect("asked"));
+    let names: Vec<String> = backend
+        .discover()
+        .expect("discover")
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    assert!(
+        names.iter().all(|name| name.starts_with("tb")),
+        "the heartbeat is not a session: {names:?}"
+    );
+    assert!(
+        backend.stop_heartbeat().expect("stop"),
+        "there was one to stop"
+    );
+    assert!(!backend.heartbeat_running().expect("asked"));
+    assert!(!backend.stop_heartbeat().expect("stop"), "stopped twice");
+
+    for pane in [reporting, quiet] {
+        backend.kill(&pane).expect("kill");
+    }
 }
 
 /// Shutdown is final: a worker still holding the registry when the process

@@ -38,6 +38,7 @@ pub(crate) fn build_restart_plan(
     db: &Database,
     session: &SharedSession,
     host: Option<&crate::session::HostDef>,
+    signal: Option<&str>,
     hooks_enabled: bool,
     recipe: Option<&crate::session::LaunchRecipe>,
     env: &std::collections::BTreeMap<String, String>,
@@ -83,7 +84,7 @@ pub(crate) fn build_restart_plan(
     // (omp's `--resume {home}/…` must reopen the same JSONL) and hook configs
     // shipped to the host rather than pointing at local paths that do not exist
     // there. Identity for a local restart.
-    let (def, degraded) = super::spawn::adapt_def_for_launch(def, host, hooks_enabled);
+    let (def, degraded) = super::spawn::adapt_def_for_launch(def, host, signal, hooks_enabled);
     if let Some(note) = degraded {
         tracing::warn!("restart of '{}': {note}", session.name);
     }
@@ -471,6 +472,7 @@ fn restart_for(
         db,
         &session,
         host.as_ref(),
+        backend.hook_signal_command().as_deref(),
         hooks_enabled,
         recipe.as_ref(),
         &env,
@@ -886,6 +888,7 @@ mod tests {
             &db,
             &session(None, None),
             None,
+            None,
             true,
             None,
             &Default::default(),
@@ -900,7 +903,8 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
         let sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/tmp/repo")));
-        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
+        let plan =
+            build_restart_plan(&db, &sess, None, None, true, None, &Default::default()).unwrap();
 
         // The thurbox session key and the agent conversation id are both present
         // and distinct, exactly as a fresh spawn would inject them.
@@ -921,6 +925,7 @@ mod tests {
         let plan = build_restart_plan(
             &db,
             &session(Some("sid"), Some(primary.clone())),
+            None,
             None,
             true,
             None,
@@ -943,7 +948,8 @@ mod tests {
         let mut sess = session(Some("sid-multi"), Some(primary.clone()));
         sess.additional_dirs = vec![extra];
 
-        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
+        let plan =
+            build_restart_plan(&db, &sess, None, None, true, None, &Default::default()).unwrap();
         // ≥2 members → the symlink workspace, not the primary repo itself.
         assert_ne!(plan.cwd.as_deref(), Some(primary.as_path()));
         assert!(plan.cwd.is_some());
@@ -975,7 +981,8 @@ mod tests {
         let mut sess = session(Some("agent-conv-uuid"), Some(PathBuf::from("/srv/repo")));
         sess.backend_type = "ssh:devbox".into();
 
-        let plan = build_restart_plan(&db, &sess, None, true, None, &Default::default()).unwrap();
+        let plan =
+            build_restart_plan(&db, &sess, None, None, true, None, &Default::default()).unwrap();
         assert_eq!(plan.env.get("THURBOX_SESSION"), Some(&sess.id.to_string()));
         assert!(!plan.env.contains_key(crate::paths::CONFIG_DIR_OVERRIDE_ENV));
         assert!(!plan.env.contains_key("THURBOX_METRICS_DIR"));

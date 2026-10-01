@@ -382,19 +382,21 @@ control-mode connection. Delivery per agent, at spawn time:
   install: skipped when the agent isn't installed there (`requires_dir` probed
   over ssh), deep-merge-not-clobber for a shared config (prune-then-merge so
   upgrades replace rather than accumulate — JSON on either the `session
-  signal` or `@thurbox_state` marker in an entry's content, TOML on the same
+  signal` marker or the backend's own hook command in an entry's content, TOML on the same
   ownership comment used locally, which recognises a stale entry under either
   command form), managed-marker guard for standalone files, and
   compare-before-write.
 
-The local TUI receives the state over its persistent control-mode connection;
-with the TUI closed, the headless `automation tick` (the 60 s tmux heartbeat)
-polls hosts that have live remote sessions and writes changes to the same
-database columns, so remote status keeps flowing either way.
+The local TUI receives the state through the row's backend while attached;
+with the TUI closed, the headless `automation tick` (the 60 s heartbeat) asks
+the backend of every route with live sessions for its panes' states and writes
+changes to the same database columns, so status keeps flowing either way.
 
 Provisioning is **best-effort** (a down host or refused write degrades to a
 `Hooks: degraded` hint in the info panel — never a failed spawn) and
 **one-way**: thurbox never uninstalls from remote hosts (same policy as remote
 worktrees). The files it leaves carry both prune markers, so removing them by
-hand — or a future remote prune — needs no schema knowledge. Windows (`psmux`)
-hosts are not provisioned yet (gated on `session::psmux_hook_rewrite_supported`).
+hand — or a future remote prune — needs no schema knowledge. Windows hosts are
+not provisioned: these payloads run through `sh`, and claude's forward-slash
+`--settings` path there is unproven. psmux's own status channel is also closed
+(`Psmux::HOOK_STATUS`) until psmux is proven to carry it.

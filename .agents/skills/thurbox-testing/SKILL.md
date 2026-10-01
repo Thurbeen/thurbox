@@ -206,11 +206,11 @@ makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
 child command, **hold it**, and it does three things no call site has to
 remember:
 
-1. **Pins the socket** (`backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV`), so teardown has a
+1. **Pins the socket** (`backend::instance::SOCKET_OVERRIDE_ENV`), so teardown has a
    name to kill.
 2. **Clears `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
    `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
-   thurbox session inherits both. `backend::tmux_compat::socket::socket_for` drops an override
+   thurbox session inherits both. `backend::instance::socket_for` drops an override
    tagged for another instance's data dir — correctly: a harness that isolated
    its database but not its server would be spawning windows on the operator's
    tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in
@@ -264,8 +264,9 @@ sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
 `scripts/dev/README.md` is the newcomer index and carries the old→new path map.
 
 `windows-vm.sh test` additionally holds thurbox's psmux hook-status gate
-(`session::psmux_hook_rewrite_supported`) against psmux itself: it reads which
-way the gate is set out of that function's body and **fails** the harness when
+(`Psmux::HOOK_STATUS`) against psmux itself: it asks the binary which way the
+gate is set (`thurbox-cli runtime status --json` → `hook_status["local:psmux"]`,
+never the source) and **fails** the harness when
 the two disagree — a gate open over a mailbox psmux drops, or a psmux that has
 grown the scope while the gate is still closed. Before that the probe reported
 on its own `ok` branch whichever way the measurement went, which is why psmux

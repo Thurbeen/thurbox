@@ -42,14 +42,23 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    backends: &super::Backends<'_>,
+) -> Result<CommandOutput, CommandError> {
     match action {
         Action::LaunchArgs { agent, session } => {
             let session = session
                 .as_deref()
                 .map(|reference| super::sessions::resolve(db, reference))
                 .transpose()?;
-            let plan = crate::session_ops::agent_launch_plan(db, &agent, session.as_ref())?;
+            let plan = crate::session_ops::agent_launch_plan(
+                db,
+                backends.get(),
+                &agent,
+                session.as_ref(),
+            )?;
             let mut human = format!("{} {}", plan.command, plan.args.join(" "));
             for (key, value) in &plan.env {
                 human.push_str(&format!("\n  {key}={value}"));
@@ -135,6 +144,7 @@ args = ["-i"]
                 session: None,
             },
             &db,
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .expect("launch-args");
 
@@ -158,6 +168,7 @@ args = ["-i"]
                 session: None,
             },
             &db,
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
         )
         .expect_err("unknown agent");
         assert!(err.contains("claude"), "got {err}");

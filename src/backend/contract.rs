@@ -702,17 +702,60 @@ pub trait SessionBackend: Send + Sync {
         anyhow::bail!("pane listing not supported by this backend")
     }
 
-    /// Drain queued `(backend_id, hook-state)` events reported by a remote
-    /// agent's hooks (a tmux pane user option pushed over the control-mode
-    /// subscription — see [`crate::session::REMOTE_HOOK_STATE_OPTION`]).
+    /// The command a hook running in one of this backend's panes runs, with
+    /// the state word appended, to report that state **through this backend**
+    /// — in place of `thurbox-cli session signal --state`, which cannot reach
+    /// this instance's database from a pane on another machine. Shell text,
+    /// free of `"` and `\` so it can be spliced into a JSON, TOML or JS hook
+    /// file as it stands.
     ///
-    /// Poll-style shared state (like the `TermSignals` atomics): the app tick
-    /// drains this and persists each state exactly as a local
-    /// `thurbox-cli session signal` would have. Default: no events — only the
-    /// tmux backend produces them.
-    fn take_hook_state_events(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
+    /// `None`: this backend has no status channel a hook can reach. The hook
+    /// files are then not shipped and the session reports no status — which a
+    /// reader sees as unknown, never as idle. Each backend answers for its own
+    /// channel; nothing about it is read from the multiplexer's name or the
+    /// host's OS.
+    fn hook_signal_command(&self) -> Option<String>;
+
+    /// Record `state` as `pane`'s hook state in this backend's status channel,
+    /// where [`Self::take_hook_state_events`] and [`Self::hook_states`] read
+    /// it: what `session signal` does after writing the database, so a peer
+    /// attached to this backend sees the change live. `Err` when there is no
+    /// channel to record it in, or the backend could not be asked.
+    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()>;
+
+    /// Every pane's hook state as this backend's status channel holds it, in
+    /// one round trip, attached or not — the headless poll's read. `Ok` with an
+    /// empty list only when the backend answered that none is held; an
+    /// unanswered question, or a backend with no channel, is an `Err`, which
+    /// the poll reads as no news rather than as every pane gone quiet.
+    fn hook_states(&self) -> Result<Vec<(String, String)>>;
+
+    /// Drain the `(pane, hook-state)` changes this backend's status channel
+    /// pushed to an attached interface since the last drain.
+    ///
+    /// Poll-style shared state (like the `TermSignals` atomics): the interface's
+    /// tick drains this and persists each state exactly as a local
+    /// `thurbox-cli session signal` would have. Empty when nothing changed or
+    /// nothing is attached.
+    fn take_hook_state_events(&self) -> Vec<(String, String)>;
+
+    /// Keep `program args…` running every `every` on this backend's machine,
+    /// with no interface attached — the automation heartbeat. Infrastructure,
+    /// not a session: [`Self::discover`] never lists it. Idempotent: a no-op
+    /// when it is already running.
+    fn ensure_heartbeat(
+        &self,
+        program: &Path,
+        args: &[String],
+        every: std::time::Duration,
+    ) -> Result<()>;
+
+    /// Whether the heartbeat [`Self::ensure_heartbeat`] keeps is running. `Err`
+    /// when the backend could not be asked.
+    fn heartbeat_running(&self) -> Result<bool>;
+
+    /// Stop the heartbeat. Returns whether there was one to stop.
+    fn stop_heartbeat(&self) -> Result<bool>;
 
     /// Tear down the backend's own long-lived resources (for a tmux backend,
     /// its control-mode connection: child process + reader thread).

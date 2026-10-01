@@ -180,7 +180,7 @@ pub(crate) fn exec_tail(stream: &[u8]) -> String {
 /// the right DB, and finds the right server" is one property, not two.
 ///
 /// The socket is passed rather than left to be re-derived: the child would
-/// otherwise recompute it (`backend::tmux_compat::socket::socket_for`) from an environment that
+/// otherwise recompute it (`backend::instance::socket_for`) from an environment that
 /// need not match this one — a tmux server carries the env it was started with,
 /// which is the same reason the dirs are pinned here at all.
 pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
@@ -201,21 +201,37 @@ pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
         ));
     }
     vars.push((
-        crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV.into(),
-        crate::backend::tmux_compat::socket::local_socket_name(),
+        crate::backend::instance::SOCKET_OVERRIDE_ENV.into(),
+        crate::backend::instance::local_socket_name(),
     ));
     // Which instance that socket belongs to. A pane's `thurbox-cli` inherits
     // both, and they agree — but a child that relocates itself out of this
     // instance (a sandbox, `tests/`, an agent exporting its own
     // `THURBOX_DATA_DIR`) must not keep a socket naming *this* server. Pairing
-    // the two is what lets `backend::tmux_compat::socket::socket_for` tell them apart.
+    // the two is what lets `backend::instance::socket_for` tell them apart.
     if let Some(dir) = crate::paths::data_directory() {
         vars.push((
-            crate::backend::tmux_compat::socket::SOCKET_OWNER_ENV.into(),
+            crate::backend::instance::SOCKET_OWNER_ENV.into(),
             dir.to_string_lossy().into(),
         ));
     }
     vars
+}
+
+/// How often the heartbeat runs `thurbox-cli automation tick`.
+pub const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Ask this machine's backend — the registry's default — to keep the
+/// heartbeat running: `thurbox-cli automation tick` every
+/// [`HEARTBEAT_EVERY`], with no interface attached. Where and how it runs is
+/// the backend's; that it is this build's own CLI is this.
+pub fn arm_heartbeat(backends: &crate::backend::BackendRegistry) -> Result<(), String> {
+    let cli = crate::paths::resolve_cli_binary();
+    let args = ["automation".to_string(), "tick".to_string()];
+    backends
+        .default_backend()
+        .ensure_heartbeat(&cli, &args, HEARTBEAT_EVERY)
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Decide whether to pass the agent's resume group vs starting fresh when
@@ -411,6 +427,7 @@ pub struct LaunchPlan {
 /// asking what to run is starting something, not continuing it.
 pub fn agent_launch_plan(
     db: &crate::storage::Database,
+    backends: &crate::backend::BackendRegistry,
     agent: &str,
     session: Option<&crate::sync::SharedSession>,
 ) -> Result<LaunchPlan, String> {
@@ -447,7 +464,15 @@ pub fn agent_launch_plan(
         None => config.env.extend(thurbox_env_overrides()),
     }
     let hooks = hooks_enabled(db);
-    let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), hooks);
+    // The command a hook reports through on that session's route — asked only
+    // for a host, where `thurbox-cli session signal` cannot reach this DB.
+    let signal = match (session, &host) {
+        (Some(s), Some(_)) => windows::backend_for(backends, &s.backend_type)
+            .ok()
+            .and_then(|backend| backend.hook_signal_command()),
+        _ => None,
+    };
+    let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), hooks);
     let (command, args) = build_agent_invocation(&def, &config);
     Ok(LaunchPlan {
         agent: def.name,
@@ -910,8 +935,8 @@ mod tests {
         assert_eq!(
             config
                 .env
-                .get(crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV),
-            Some(&crate::backend::tmux_compat::socket::local_socket_name()),
+                .get(crate::backend::instance::SOCKET_OVERRIDE_ENV),
+            Some(&crate::backend::instance::local_socket_name()),
             "the session is told which server it is on"
         );
     }
@@ -940,7 +965,7 @@ mod tests {
         // own server, which `hosts.toml` (or the host's CLI) names.
         assert!(!config
             .env
-            .contains_key(crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV));
+            .contains_key(crate::backend::instance::SOCKET_OVERRIDE_ENV));
     }
 
     #[test]

@@ -272,8 +272,8 @@ cmd_ssh() {
 
 # --- the psmux hook-status gate, and the probes that hold it to psmux -------
 #
-# Remote hooks-driven status on a psmux host is gated off in the binary
-# (`psmux_hook_rewrite_supported` in src/session/mod.rs) until psmux is proven
+# Remote hooks-driven status on a psmux host is gated off in the binary (the
+# psmux adapter reports no status channel, `Psmux::HOOK_STATUS`) until psmux is proven
 # to do two things: (A) pane **user options** settable with `set-option -p -t`
 # and expanded by `#{@opt}` in `list-panes -F` — the mailbox the status poller
 # reads; and (B) an **id-less** in-pane `set-option -p` landing on the calling
@@ -292,21 +292,22 @@ cmd_ssh() {
 # change to one line.
 PSMUX_GATE_UNPROBED="claude's forward-slash --settings path on Windows"
 
-# psmux_hook_gate [SRC] — "open" or "closed", read out of the gate function's
-# body in src/session/mod.rs. Read rather than restated, so there is one record
-# of what thurbox believes: a gate flipped without this evidence then fails the
-# verdict below, which a second copy kept here could only do until the two
-# drifted. Non-zero if the body is no longer a bare `true`/`false` — a gate the
-# harness cannot read is an error, not an assumption.
-# shellcheck disable=SC2120 # SRC defaults; windows-vm.bats passes a stand-in
+# psmux_hook_gate [CLI] — "open" or "closed": whether thurbox's psmux adapter
+# offers a hook status channel, as the binary itself answers it in `thurbox-cli
+# runtime status --json` (`hook_status`, one entry per local backend). Asked
+# rather than restated or read out of the source, so there is one record of
+# what thurbox believes and it is the behaviour: a gate flipped without this
+# evidence then fails the verdict below. CLI defaults to $THURBOX_CLI, else the
+# repo's debug build. Non-zero if the CLI cannot be run or its answer names no
+# psmux entry — a gate the harness cannot read is an error, not an assumption.
+# shellcheck disable=SC2120 # CLI defaults; windows-vm.bats passes a stand-in
 psmux_hook_gate() {
-  local src="${1:-$REPO_ROOT/src/session/mod.rs}" body
-  body="$(grep -A1 '^pub fn psmux_hook_rewrite_supported' "$src" 2>/dev/null \
-    | sed -n '2s/[[:space:]]//gp')"
-  case "$body" in
-    true)  printf 'open\n' ;;
-    false) printf 'closed\n' ;;
-    *)     return 1 ;;
+  local cli="${1:-${THURBOX_CLI:-$REPO_ROOT/target/debug/thurbox-cli}}" answer
+  answer="$("$cli" --json runtime status 2>/dev/null)" || return 1
+  case "$(printf '%s' "$answer" | grep -o '"local:psmux":[a-z]*')" in
+    '"local:psmux":true')  printf 'open\n' ;;
+    '"local:psmux":false') printf 'closed\n' ;;
+    *)                     return 1 ;;
   esac
 }
 
@@ -362,9 +363,9 @@ psmux_gate_verdict() {
   elif [ "$gate" = open ] && [ "$a$b" = yesyes ]; then
     ok "psmux pane-option mailbox: both halves hold, per pane, with the hook gate open"
   elif [ "$gate" = open ]; then
-    bad "psmux hook gate: psmux_hook_rewrite_supported() is true but a half is missing (A=$a B=$b) — remote hook state is written into a mailbox psmux drops (#1170)"
+    bad "psmux hook gate: the psmux adapter reports a status channel but a half is missing (A=$a B=$b) — remote hook state is written into a mailbox psmux drops (#1170)"
   elif [ "$a$b" = yesyes ]; then
-    bad "psmux hook gate: psmux implements both mailbox halves now, per pane, but psmux_hook_rewrite_supported() is still false — reconsider the gate; its remaining condition (claude's forward-slash --settings path on Windows) is not probed here (#1170)"
+    bad "psmux hook gate: psmux implements both mailbox halves now, per pane, but the psmux adapter still reports no status channel — reconsider the gate; its remaining condition (claude's forward-slash --settings path on Windows) is not probed here (#1170)"
   else
     info "psmux hook gate stays closed, as recorded: A=$a B=$b — the transport is deferred (#1170)"
   fi
@@ -421,8 +422,14 @@ cmd_test() {
   # measures; the verdict is on the pair, against the gate itself.
   log "probing psmux pane-user-option support (hook-status gate)"
   local gate pane opt inpane measured_a=unknown measured_b=unknown
+  # The gate is the binary's answer, so the binary has to be this checkout's:
+  # an older build would report the gate the source no longer has.
+  if [ -z "${THURBOX_CLI:-}" ]; then
+    ( cd "$REPO_ROOT" && cargo build --quiet --bin thurbox-cli ) \
+      || die "could not build thurbox-cli to read the psmux gate from"
+  fi
   gate="$(psmux_hook_gate)" \
-    || die "could not read psmux_hook_rewrite_supported() out of src/session/mod.rs — the gate probes have nothing to check against"
+    || die "could not read the psmux status channel from 'thurbox-cli runtime status --json' (build it: cargo build --bin thurbox-cli, or set THURBOX_CLI) — the gate probes have nothing to check against"
   ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true
   pane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
   # A second pane is what makes the per-pane half observable: with one pane an

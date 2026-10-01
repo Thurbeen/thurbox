@@ -1,9 +1,10 @@
 //! The built-in **hooks** extension: wires each coding agent's lifecycle hooks
 //! to `thurbox-cli session signal` so sessions report `working`/`blocked`/`done`
 //! back to thurbox (see the hooks-driven `SessionState`). For **remote**
-//! sessions the same hook file is shipped with its commands rewritten to a tmux
-//! pane user option (`rewrite_hook_signals_for_remote`) — the local TUI
-//! receives those over its control-mode subscription.
+//! sessions the same hook file is shipped with its commands rewritten to the
+//! command the row's backend reports state through
+//! (`SessionBackend::hook_signal_command`, via `rewrite_hook_signals`) — the
+//! local interface reads those back through that backend.
 //!
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),
 //! this one ships **embedded** in the binary and is **auto-activated by default**
@@ -40,56 +41,22 @@ pub(crate) const KIMI_HOOKS: &str = include_str!("../../extensions/hooks/kimi-ho
 /// is thurbox's wiring rather than a file that merely lives at that path.
 pub const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
 
-/// How a remote host's rewritten hook commands report state — which
-/// multiplexer binary sets the pane user option.
-pub(crate) enum RemoteSignalTarget {
-    /// POSIX host with real tmux: `tmux set-option -p @thurbox_state <s>`.
-    /// Inside a pane tmux resolves its own socket/pane from `$TMUX`/`$TMUX_PANE`.
-    Tmux,
-    /// Native-Windows host with psmux: `psmux -L <socket> set-option -p …`.
-    /// psmux has no `TMUX_TMPDIR`-style socket dir — every `-L <name>` resolves
-    /// machine-wide — so the socket is baked into the command at rewrite time.
-    Psmux { socket: String },
-}
-
-impl RemoteSignalTarget {
-    /// The replacement for [`SIGNAL_MARKER`]. Must stay free of `"` and `\` so
-    /// the byte-level replace on JSON text stays safe (guarded by a test). The
-    /// only variable part is the socket name, sanitized to a conservative
-    /// charset at construction ([`remote_signal_target`]).
-    fn replacement(&self) -> String {
-        let option = crate::session::REMOTE_HOOK_STATE_OPTION;
-        match self {
-            RemoteSignalTarget::Tmux => format!("tmux set-option -p {option} "),
-            RemoteSignalTarget::Psmux { socket } => {
-                format!("psmux -L {socket} set-option -p {option} ")
-            }
-        }
-    }
-}
-
-/// Rewrite thurbox-managed hook commands for a **remote host**:
-/// `thurbox-cli session signal --state <s>` →
-/// `<mux> set-option -p @thurbox_state <s>`.
+/// Rewrite thurbox-managed hook commands for a pane on another machine:
+/// `thurbox-cli session signal --state <s>` → `<command><s>`, where `command`
+/// is what the row's backend says a hook in its panes runs
+/// ([`crate::backend::SessionBackend::hook_signal_command`]).
 ///
 /// `thurbox-cli` can't signal from a remote host (it isn't installed there,
-/// and it would write the host's own DB — never the one the local TUI reads).
-/// A tmux **pane user option** can: inside a pane `set-option -p` needs no
-/// socket, pane id, or identity (`$TMUX`/`$TMUX_PANE` are in the pane env),
-/// and the local TUI's control-mode connection receives changes through its
-/// [`crate::session::REMOTE_HOOK_SUBSCRIPTION`] format subscription (tmux) or
-/// pane-option polling (psmux). Applied by the spawn-time materialization
-/// (`adapt_agent_args_for_remote`) to every launch arg and every config file
-/// it ships, and by `remote_hooks` to the per-agent config-dir payloads.
-/// Prefix-replace keeps the state word and whatever trails it (`|| true`,
-/// `;; esac; true`) intact; the replacement contains no `"`/`\`, so a
-/// byte-level replace on JSON text is safe. Idempotent, and a no-op for
-/// marker-free content.
-pub(crate) fn rewrite_hook_signals_for_target(
-    contents: &str,
-    target: &RemoteSignalTarget,
-) -> String {
-    // A remotely provisioned hook reports through a pane option: it cannot
+/// and it would write the host's own DB — never the one the local interface
+/// reads); the backend's own status channel can. Applied by the spawn-time
+/// materialization (`adapt_agent_args_for_remote`) to every launch arg and
+/// every config file it ships, and by `remote_hooks` to the per-agent
+/// config-dir payloads. Prefix-replace keeps the state word and whatever
+/// trails it (`|| true`, `;; esac; true`) intact; the contract keeps `command`
+/// free of `"`/`\`, so a byte-level replace on JSON text is safe. Idempotent,
+/// and a no-op for marker-free content.
+pub(crate) fn rewrite_hook_signals(contents: &str, command: &str) -> String {
+    // A remotely provisioned hook reports through its backend: it cannot
     // write to the local session database. Leave its status signal intact but
     // drop the local-only Codex ID binding command from that payload.
     contents
@@ -97,52 +64,7 @@ pub(crate) fn rewrite_hook_signals_for_target(
             "thurbox-cli session bind-codex >/dev/null 2>&1 || true; ",
             "",
         )
-        .replace(SIGNAL_MARKER, &target.replacement())
-}
-
-/// [`rewrite_hook_signals_for_target`] for a real-tmux POSIX host — the
-/// original remote rewrite, kept as the common-case shorthand.
-pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
-    rewrite_hook_signals_for_target(contents, &RemoteSignalTarget::Tmux)
-}
-
-/// The signal target for `host`: a native Windows host gets the
-/// socket-explicit `psmux` form — psmux is the one multiplexer thurbox drives
-/// on Windows, and this whole path stays behind `psmux_hook_rewrite_supported`
-/// until it is proven there — everything else (tmux over SSH, tmux inside a
-/// WSL distro) the plain `tmux` form.
-///
-/// The socket name is user-authored (`hosts.toml`) but gets spliced into
-/// JSON/JS/TOML hook text by a byte-level replace and tokenized by psmux
-/// without quoting, so it is **sanitized** here to a filename-safe charset
-/// (`[A-Za-z0-9._-]`). A violating name keeps only its safe characters (warn
-/// logged): the signal lands dark on a wrong socket instead of corrupting the
-/// shipped config file — and such a name would break every other
-/// `-L <socket>` invocation anyway.
-pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSignalTarget {
-    if host.is_windows() {
-        let socket = crate::backend::tmux_compat::socket::host_socket(host);
-        let safe: String = socket
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            .collect();
-        if safe != socket {
-            tracing::warn!(
-                "host '{}' socket {socket:?} has characters unsafe for the hook \
-                 rewrite; using {safe:?}",
-                host.name
-            );
-        }
-        RemoteSignalTarget::Psmux {
-            socket: if safe.is_empty() {
-                crate::backend::tmux_compat::socket::TMUX_SOCKET.to_string()
-            } else {
-                safe
-            },
-        }
-    } else {
-        RemoteSignalTarget::Tmux
-    }
+        .replace(SIGNAL_MARKER, command)
 }
 
 /// Whether agent status hooks are wired — i.e. the user has not opted out of
@@ -203,11 +125,17 @@ fn hooks_notices(report: &InstallReport) -> Vec<String> {
 mod tests {
     use super::*;
 
-    // --- rewrite_hook_signals_for_remote tests ---
+    /// What a tmux-protocol backend answers for its hook command — a sample,
+    /// not a dependency: the adapters' own tests pin their real answers.
+    const PANE_OPTION: &str = "tmux set-option -p @thurbox_state ";
+
+    fn rewrite_for_tmux(contents: &str) -> String {
+        rewrite_hook_signals(contents, PANE_OPTION)
+    }
 
     #[test]
     fn remote_rewrite_replaces_every_signal_command() {
-        let rewritten = rewrite_hook_signals_for_remote(CLAUDE_SETTINGS);
+        let rewritten = rewrite_for_tmux(CLAUDE_SETTINGS);
         // No local CLI reference survives, every state maps to the pane option.
         assert!(!rewritten.contains("thurbox-cli"));
         for state in ["idle", "working", "blocked", "done"] {
@@ -244,7 +172,7 @@ mod tests {
         // Checked on the *commands*, not the raw text: a payload may mention
         // `thurbox-cli` in a comment (kimi's does, explaining the ownership
         // marker), and a comment is not something the agent runs.
-        let grok = rewrite_hook_signals_for_remote(GROK_HOOKS);
+        let grok = rewrite_for_tmux(GROK_HOOKS);
         let grok_doc: serde_json::Value =
             serde_json::from_str(&grok).expect("grok stays valid JSON");
         for command in json_hook_commands(&grok_doc) {
@@ -254,7 +182,7 @@ mod tests {
             );
         }
 
-        let kimi = rewrite_hook_signals_for_remote(KIMI_HOOKS);
+        let kimi = rewrite_for_tmux(KIMI_HOOKS);
         let kimi_doc: toml::Value = toml::from_str(&kimi).expect("kimi stays valid TOML");
         for hook in kimi_doc["hooks"].as_array().expect("[[hooks]]") {
             let command = hook["command"].as_str().expect("hook has a command");
@@ -273,10 +201,10 @@ mod tests {
 
     #[test]
     fn remote_rewrite_is_idempotent_and_passes_through() {
-        let once = rewrite_hook_signals_for_remote(CLAUDE_SETTINGS);
-        assert_eq!(rewrite_hook_signals_for_remote(&once), once);
+        let once = rewrite_for_tmux(CLAUDE_SETTINGS);
+        assert_eq!(rewrite_for_tmux(&once), once);
         let unrelated = "default = \"claude\"\n[[agents]]\nname = \"claude\"\n";
-        assert_eq!(rewrite_hook_signals_for_remote(unrelated), unrelated);
+        assert_eq!(rewrite_for_tmux(unrelated), unrelated);
     }
 
     #[test]
@@ -320,60 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn psmux_target_rewrite_embeds_socket_and_stays_json_safe() {
-        let target = RemoteSignalTarget::Psmux {
-            socket: "thurbox".into(),
-        };
-        // The replacement must never contain `"`/`\` — it is spliced into JSON
-        // strings by a byte-level replace.
-        assert!(!target.replacement().contains(['"', '\\']));
-        let rewritten = rewrite_hook_signals_for_target(CLAUDE_SETTINGS, &target);
+    fn a_socket_naming_command_rewrites_and_stays_json_safe() {
+        let command = "psmux -L thurbox set-option -p @thurbox_state ";
+        let rewritten = rewrite_hook_signals(CLAUDE_SETTINGS, command);
         assert!(!rewritten.contains("thurbox-cli"));
         for state in ["idle", "working", "blocked", "done"] {
             assert!(
-                rewritten.contains(&format!(
-                    "psmux -L thurbox set-option -p @thurbox_state {state}"
-                )),
+                rewritten.contains(&format!("{command}{state}")),
                 "missing rewritten {state} command"
             );
         }
-        // Still valid JSON, and idempotent.
         serde_json::from_str::<serde_json::Value>(&rewritten).expect("still valid JSON");
-        assert_eq!(
-            rewrite_hook_signals_for_target(&rewritten, &target),
-            rewritten
-        );
-    }
-
-    #[test]
-    fn remote_signal_target_sanitizes_a_hostile_socket_name() {
-        // The socket is user-authored hosts.toml text spliced into JSON by a
-        // byte-level replace — unsafe characters must never survive into the
-        // replacement.
-        let host = crate::session::HostDef {
-            name: "winbox".into(),
-            destination: "user@winbox".into(),
-            multiplexer: Some("psmux".into()),
-            socket: Some("we\"ird sock\\et".into()),
-            ..Default::default()
-        };
-        match remote_signal_target(&host) {
-            RemoteSignalTarget::Psmux { socket } => assert_eq!(socket, "weirdsocket"),
-            RemoteSignalTarget::Tmux => panic!("psmux host must get the psmux target"),
-        }
-
-        // An all-invalid socket falls back to the compile-time default rather
-        // than emitting `psmux -L  set-option …`.
-        let host = crate::session::HostDef {
-            socket: Some("\"\\ ".into()),
-            ..host
-        };
-        match remote_signal_target(&host) {
-            RemoteSignalTarget::Psmux { socket } => {
-                assert_eq!(socket, crate::backend::tmux_compat::socket::TMUX_SOCKET)
-            }
-            RemoteSignalTarget::Tmux => panic!("psmux host must get the psmux target"),
-        }
+        assert_eq!(rewrite_hook_signals(&rewritten, command), rewritten);
     }
 
     #[test]

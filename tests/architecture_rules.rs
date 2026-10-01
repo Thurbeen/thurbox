@@ -60,9 +60,33 @@ const MODULE_RULES: &[ModuleRules] = &[
     // hooks, settings, themes, preflight, self-update. Never a session
     // backend: those live in their own nodes below, and a backend may read an
     // agent's config, so the reverse would be a cycle.
+    //
+    // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
+    // the config it reads and a file added here is reachable by nobody until
+    // that is decided. The root only re-exports the provider types.
     ModuleRules {
         name: "agent",
-        allowed: &["session", "paths", "shell"],
+        allowed: &["agent::generic", "agent::provider"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::agent_config",
+        allowed: &["session", "paths"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::extension_config",
+        allowed: &["session", "paths", "agent::agent_config"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::generic",
+        allowed: &["session", "agent::provider"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::hooks_config",
+        allowed: &["session", "paths", "agent::agent_config"],
         allowed_path_only: &[],
     },
     // hosts.toml, and the cached registry of it every process shares. Its own
@@ -70,7 +94,63 @@ const MODULE_RULES: &[ModuleRules] = &[
     // backend contract and the pure registry must not.
     ModuleRules {
         name: "agent::host_config",
-        allowed: &["session", "paths", "agent"],
+        allowed: &["session", "paths", "agent::agent_config"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::host_path",
+        allowed: &["session", "shell"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::input",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::json_merge",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::preflight",
+        allowed: &["session", "paths", "agent::agent_config"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::provider",
+        allowed: &["session"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::self_update",
+        allowed: &[
+            "session",
+            "paths",
+            "shell",
+            "agent::extension_config",
+            "agent::version_check",
+        ],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::settings_config",
+        allowed: &["session", "paths", "agent::agent_config"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::themes_config",
+        allowed: &["session", "paths", "agent::agent_config"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::toml_merge",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "agent::version_check",
+        allowed: &["session", "paths", "agent::extension_config"],
         allowed_path_only: &[],
     },
     // The boundary's root: re-exports of the contract, nothing of its own —
@@ -159,25 +239,25 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session",
             "paths",
             "shell",
-            "agent",
+            "agent::host_path",
+            "agent::preflight",
             "backend::contract",
             "backend::identity",
             "backend::tmux_compat::control_mode",
-            "backend::tmux_compat::socket",
+            "backend::instance",
             "backend::tmux_compat::transport",
         ],
         allowed_path_only: &[],
     },
     // Which server an instance's sessions live on (ADR-12).
     ModuleRules {
-        name: "backend::tmux_compat::socket",
+        name: "backend::instance",
         allowed: &["session", "paths"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "backend::tmux_compat::control_mode",
         allowed: &[
-            "session",
             "shell",
             "backend::contract",
             "backend::tmux_compat::transport",
@@ -188,7 +268,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     // `session` for the one local-multiplexer default (`Multiplexer`).
     ModuleRules {
         name: "backend::tmux_compat::transport",
-        allowed: &["shell", "agent"],
+        allowed: &["shell", "agent::preflight"],
         allowed_path_only: &[],
     },
     // The two adapters, peers: each reaches the protocol helper and never the
@@ -211,6 +291,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session",
             "shell",
             "backend::contract",
+            "backend::instance",
             "backend::tmux_compat::control_mode",
             "backend::tmux_compat::server",
             "backend::tmux_compat::transport",
@@ -259,10 +340,22 @@ const MODULE_RULES: &[ModuleRules] = &[
             "shell",
         ],
         allowed_path_only: &[
-            "agent",
+            "agent::agent_config",
+            "agent::extension_config",
+            "agent::generic",
+            "agent::hooks_config",
             "agent::host_config",
+            "agent::host_path",
+            "agent::json_merge",
+            "agent::preflight",
+            "agent::provider",
+            "agent::self_update",
+            "agent::settings_config",
+            "agent::toml_merge",
+            "agent::version_check",
             "backend::contract",
             "backend::identity",
+            "backend::instance",
             "backend::registry",
         ],
     },
@@ -285,12 +378,20 @@ const MODULE_RULES: &[ModuleRules] = &[
         // kernel-owned surfaces asked about from outside, not session logic
         // duplicated here; the session engine the CLI shares with the loop is
         // `session_ops`, and that is where the reap sweep it drives lives.
-        // Path-only, like `agent`, so the crossing stays visible at each call
+        // Path-only, like the agent config, so the crossing stays visible at each call
         // site.
         allowed_path_only: &[
-            "agent",
+            "agent::agent_config",
+            "agent::extension_config",
+            "agent::hooks_config",
             "agent::host_config",
+            "agent::preflight",
+            "agent::self_update",
+            "agent::settings_config",
+            "agent::themes_config",
+            "agent::version_check",
             "backend::contract",
+            "backend::instance",
             "backend::registry",
             "kernel",
         ],
@@ -328,8 +429,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops` and `cli` follow, so every crossing into the
         // side-effect layer is visible at its call site.
         allowed_path_only: &[
-            "agent",
+            "agent::agent_config",
+            "agent::extension_config",
             "agent::host_config",
+            "agent::preflight",
+            "agent::self_update",
+            "agent::settings_config",
+            "agent::themes_config",
+            "agent::version_check",
             "backend::contract",
             "backend::identity",
             "backend::pane",
@@ -364,7 +471,8 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "coordinator",
         allowed: &[
-            "agent",
+            "agent::input",
+            "agent::settings_config",
             "backend::output_wake",
             "backend::wiring",
             "clipboard",
@@ -413,7 +521,7 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// its own, so a new file there is a decision rather than something its
 /// parent's rule silently covers. An inline `mod x { … }` belongs to the file
 /// that holds it.
-const SUBMODULE_GOVERNED: &[&str] = &["backend"];
+const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent"];
 
 /// The task in the backend-boundary sequence that removes a transitional
 /// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.
@@ -435,7 +543,9 @@ enum Remover {
     /// the sequence reads in order.
     #[allow(dead_code)]
     F6b,
-    /// Status delivery and the heartbeat owned by the backend.
+    /// Status delivery and the heartbeat owned by the backend. Removed its
+    /// crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
     F7,
 }
 
@@ -455,60 +565,10 @@ struct Transitional {
     why: &'static str,
 }
 
-const TRANSITIONAL: &[Transitional] = &[
-    // Status delivery, the heartbeat, and the instance socket (ADR-12) they
-    // are addressed by — backend-owned once status is. They name the protocol
-    // helper rather than an adapter: they run this machine's default
-    // multiplexer, or a host's, whichever adapter that is.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux_compat::socket",
-        items: &[
-            "SOCKET_OVERRIDE_ENV",
-            "SOCKET_OWNER_ENV",
-            "TMUX_SOCKET",
-            "host_socket",
-            "learn_host_socket",
-            "local_socket_name",
-        ],
-        remover: Remover::F7,
-        why: "hook provisioning names the socket the remote hook writes its status on",
-    },
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux_compat::server",
-        items: &["list_remote_hook_states"],
-        remover: Remover::F7,
-        why: "the headless remote status poll reads the hook-state pane option",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux_compat::socket",
-        items: &["local_socket_name"],
-        remover: Remover::F7,
-        why: "the socket report (`tmux_socket` in version, config and session JSON)",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux_compat::server",
-        items: &[
-            "automation_heartbeat_running",
-            "ensure_automation_heartbeat",
-            "list_local_hook_states",
-            "set_own_pane_state",
-            "stop_automation_heartbeat",
-        ],
-        remover: Remover::F7,
-        why: "session signal, the headless status poll and the heartbeat",
-    },
-    Transitional {
-        from: "coordinator",
-        to: "backend::tmux_compat::server",
-        items: &["ensure_automation_heartbeat"],
-        remover: Remover::F7,
-        why: "the interface arms the heartbeat window on the local default server",
-    },
-];
+/// Empty: F7 removed the last crossings — status delivery, the heartbeat and
+/// the instance socket now reach a backend through the contract. The table
+/// stays so the next boundary change records its debt the same way.
+const TRANSITIONAL: &[Transitional] = &[];
 
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -759,6 +819,74 @@ fn only_the_composition_roots_name_the_factory() {
             entry.from
         );
     }
+}
+
+/// The nodes that consume backends: the session engine, the CLI and the
+/// kernel. Each is handed a registry and reaches what is in it through the
+/// contract.
+const BACKEND_CONSUMERS: &[&str] = &["session_ops", "cli", "kernel"];
+
+/// One multiplexer's code, or the grammar only some multiplexers speak, or
+/// the factory that names them: what a consumer must never reach by name.
+fn is_concrete_backend(node: &str) -> bool {
+    node == FACTORY || ADAPTERS.contains(&node) || in_protocol_helper(node)
+}
+
+/// A4, at the end of the boundary sequence: status delivery, headless status
+/// polling, the heartbeat and the instance socket go through the contract like
+/// every other verb, so no consumer can reach a concrete backend at all.
+///
+/// Checked three ways, because each closes a door the others leave open:
+/// - **references**, resolved through `use`, `super::`, brace groups,
+///   re-exports and `type` aliases, test code included — what the code does;
+/// - **grants**, followed transitively — what a consumer could start doing
+///   without this file changing, including through a node it is allowed;
+/// - **no grant of a whole parent** that holds files of its own, so a module
+///   added under `agent` is not reachable until someone decides it is.
+#[test]
+fn consumers_reach_no_concrete_backend() {
+    let tree = src_tree();
+    let mut found = Vec::new();
+    for edge in tree.edges(&node_names(MODULE_RULES)) {
+        if BACKEND_CONSUMERS.contains(&edge.from.as_str()) && is_concrete_backend(&edge.to) {
+            found.push(describe(tree, MODULE_RULES, &edge));
+        }
+    }
+    let declared = declared_edges(MODULE_RULES);
+    for consumer in BACKEND_CONSUMERS {
+        let mut reach = vec![consumer.to_string()];
+        let mut seen = BTreeSet::new();
+        while let Some(node) = reach.pop() {
+            if !seen.insert(node.clone()) {
+                continue;
+            }
+            for (from, to) in &declared {
+                if *from == node {
+                    if is_concrete_backend(to) {
+                        found.push(format!("{consumer} may reach {to} (granted to {from})"));
+                    }
+                    reach.push(to.clone());
+                }
+            }
+        }
+        let rules = rules_for(MODULE_RULES, consumer);
+        for to in rules.allowed.iter().chain(rules.allowed_path_only) {
+            if SUBMODULE_GOVERNED.contains(to) {
+                found.push(format!(
+                    "{consumer} is granted all of `{to}`; name the submodules it uses"
+                ));
+            }
+        }
+    }
+    assert!(
+        SUBMODULE_GOVERNED.contains(&"agent"),
+        "`agent` must stay submodule-governed, so a grant names what it reaches"
+    );
+    assert!(
+        found.is_empty(),
+        "\na consumer reaches a concrete backend:\n  {}\n",
+        found.join("\n  ")
+    );
 }
 
 /// The adapters are peers (A10): neither reaches the other, and the protocol

@@ -180,6 +180,19 @@ impl TmuxCompatible for Tmux {
             status_poll: None,
         }
     }
+
+    const HOOK_STATUS: bool = true;
+
+    /// Inside a pane tmux finds its own server and pane from `$TMUX` and
+    /// `$TMUX_PANE`, so the command names neither — and works whichever
+    /// socket the pane's server is on.
+    fn hook_signal_command(_server: &Server<Self>) -> String {
+        format!(
+            "{} set-option -p {} ",
+            Self::MULTIPLEXER.name(),
+            crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
+        )
+    }
 }
 
 /// tmux's input: every byte as `send-keys -H` hex, a paste included — its
@@ -445,5 +458,15 @@ mod tests {
         };
         assert!(TmuxBackend::for_host(&winbox).stamps_are_per_window());
         assert!(TmuxBackend::local().stamps_are_per_window());
+    }
+
+    /// Inside a pane tmux resolves its own server and pane, so the command a
+    /// hook runs names neither, and splices into a JSON string as it stands.
+    #[test]
+    fn the_hook_command_needs_no_socket_or_pane() {
+        let command = TmuxBackend::local()
+            .hook_signal_command()
+            .expect("tmux has a status channel");
+        assert_eq!(command, "tmux set-option -p @thurbox_state ");
     }
 }
