@@ -264,8 +264,9 @@ sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
 `scripts/dev/README.md` is the newcomer index and carries the old→new path map.
 
 `windows-vm.sh test` additionally holds thurbox's psmux hook-status gate
-(`session::psmux_hook_rewrite_supported`) against psmux itself: it reads which
-way the gate is set out of that function's body and **fails** the harness when
+(`Psmux::HOOK_STATUS`) against psmux itself: it asks the binary which way the
+gate is set (`thurbox-cli runtime status --json` → `hook_status["local:psmux"]`,
+never the source) and **fails** the harness when
 the two disagree — a gate open over a mailbox psmux drops, or a psmux that has
 grown the scope while the gate is still closed. Before that the probe reported
 on its own `ok` branch whichever way the measurement went, which is why psmux

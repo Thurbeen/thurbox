@@ -167,17 +167,19 @@ reports everything but blocked. See the per-agent matrix in
 `extensions/hooks/README.md` (and the website's *Agent hooks* page).
 
 **Remote sessions report status too** (same per-agent range): at spawn
-time the hook commands are rewritten to a tmux pane user option
-(`@thurbox_state`) and each agent's hook config is shipped to the host —
+time the hook commands are rewritten to the command the row's backend
+reports state through (on tmux, the `@thurbox_state` pane user option;
+ADR-32) and each agent's hook config is shipped to the host —
 claude's via its `--settings` arg, the config-dir agents via
 `session_ops::remote_hooks` provisioning (probe → prune-then-merge or
 managed-file write, best-effort). The local TUI receives changes over its
 control-mode connection (a format subscription on tmux hosts; a 1 s
-pane-option poller on psmux hosts, armed once the psmux gate —
-`session::psmux_hook_rewrite_supported` — is flipped). With the TUI closed,
-the headless `automation tick` (60 s heartbeat) polls hosts that have live
-remote sessions and writes changed states into the same DB columns, so
-remote status never freezes at its last pushed value. When wiring is
+pane-option poller on psmux hosts, armed once the psmux adapter's status
+channel is opened). With the TUI closed, the headless `automation tick`
+(60 s heartbeat) asks the backend of every route with live sessions for its
+panes' states and writes changed ones into the same DB columns, so status
+never freezes at its last pushed value — and a route that cannot answer
+keeps its state rather than reading as idle. When wiring is
 degraded (host
 unreachable mid-provision, a user-owned file refused, or the
 still-gated psmux provisioning), the session shows a `Hooks: degraded`

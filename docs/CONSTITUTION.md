@@ -21,11 +21,27 @@ asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
 session              (no crate-internal references — the dependency sink)
-agent                → session, paths, shell
-agent::host_config   → session, paths, agent
+agent                → agent::{generic, provider}       (re-exports only)
+agent::agent_config  → session, paths
+agent::extension_config → session, paths, agent::agent_config
+agent::generic       → session, agent::provider
+agent::hooks_config  → session, paths, agent::agent_config
+agent::host_config   → session, paths, agent::agent_config
+agent::host_path     → session, shell
+agent::input         (no crate-internal references)
+agent::json_merge    (no crate-internal references)
+agent::preflight     → session, paths, agent::agent_config
+agent::provider      → session
+agent::self_update   → session, paths, shell,
+                       agent::{extension_config, version_check}
+agent::settings_config → session, paths, agent::agent_config
+agent::themes_config → session, paths, agent::agent_config
+agent::toml_merge    (no crate-internal references)
+agent::version_check → session, paths, agent::extension_config
 backend              → backend::{contract, pane, registry}   (re-exports only)
 backend::contract    (no crate-internal references)
 backend::identity    → backend::contract
+backend::instance    → session, paths                 (ADR-12 socket naming)
 backend::pane        → session, backend::{contract, identity, osc8, output_wake}
 backend::osc8        → session
 backend::output_wake (no crate-internal references)
@@ -33,38 +49,45 @@ backend::registry    → session, backend::contract
 backend::wiring      → session, shell, agent::host_config,
                        backend::{contract, registry, tmux, psmux}
 backend::tmux_compat (declares the modules below — no references)
-  ::control_mode     → session, shell, backend::contract,
+  ::control_mode     → shell, backend::contract,
                        backend::tmux_compat::transport
-  ::server           → session, paths, shell, agent,
-                       backend::{contract, identity},
-                       backend::tmux_compat::{control_mode, socket, transport}
-  ::socket           → session, paths
-  ::transport        → shell, agent
+  ::server           → session, paths, shell, agent::{host_path, preflight},
+                       backend::{contract, identity, instance},
+                       backend::tmux_compat::{control_mode, transport}
+  ::transport        → shell, agent::preflight
 backend::tmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}
-backend::psmux       → session, shell, backend::contract,
+backend::psmux       → session, shell, backend::{contract, instance},
                        backend::tmux_compat::{control_mode, server, transport}
 git                  → session, paths, shell
 storage              → session, sync, paths
 sync                 → session
 usage                → session, shell           [path-only: paths]
 session_ops          → session, storage, git, sync, paths, workspace, shell
-                       [path-only: agent, agent::host_config,
-                        backend::{contract, identity, registry}]
+                       [path-only: agent::{agent_config, extension_config,
+                        generic, hooks_config, host_config, host_path,
+                        json_merge, preflight, provider, self_update,
+                        settings_config, toml_merge, version_check},
+                        backend::{contract, identity, instance, registry}]
 kernel               → session, storage, sync, paths, session_ops, git,
                        notifications, shell
-                       [path-only: agent, agent::host_config,
+                       [path-only: agent::{agent_config, extension_config,
+                        host_config, preflight, self_update, settings_config,
+                        themes_config, version_check},
                         backend::{contract, identity, pane, registry}, usage]
 cli                  → session, storage, session_ops, sync, paths,
                        notifications
-                       [path-only: agent, agent::host_config,
-                        backend::{contract, registry}, kernel]
+                       [path-only: agent::{agent_config, extension_config,
+                        hooks_config, host_config, preflight, self_update,
+                        settings_config, themes_config, version_check},
+                        backend::{contract, instance, registry}, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 shell                → session                 (a host entry → its launcher)
-coordinator          → agent, backend::{output_wake, wiring}, clipboard,
+coordinator          → agent::{input, settings_config},
+                       backend::{output_wake, wiring}, clipboard,
                        kernel, paths, session, session_ops, shell, storage
 ```
 
@@ -76,7 +99,11 @@ references nothing, which is what lets every other module depend on it.
 `backend::registry`), and only the factory, `backend::wiring`, names an
 adapter. Only a composition root may reach the factory. The tmux and psmux
 adapters are peers: neither reaches the other, and `backend::tmux_compat`, the
-protocol both speak, reaches neither (ADR-31).
+protocol both speak, reaches neither (ADR-31). `session_ops`, `cli` and
+`kernel` reach no adapter, protocol helper or factory at all — not by
+reference, alias or re-export, and not through anything they are granted —
+status and the heartbeat included (ADR-32). Every file of `agent` is a node
+of its own, so a grant names the config it reads.
 
 Some crossings are permitted **by fully-qualified path only**, never by
 `use` — not even a function-local `use` or an alias. The restriction is

@@ -1126,10 +1126,6 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        assert!(
-            !Psmux::HOOK_STATUS,
-            "open it only with evidence for all three"
-        );
         for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
             assert_eq!(backend.hook_signal_command(), None);
             assert!(backend.record_hook_state("%1", "working").is_err());

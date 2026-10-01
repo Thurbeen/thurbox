@@ -3,7 +3,7 @@
 //! back to thurbox (see the hooks-driven `SessionState`). For **remote**
 //! sessions the same hook file is shipped with its commands rewritten to the
 //! command the row's backend reports state through
-//! (`SessionBackend::hook_signal_command`, via [`rewrite_hook_signals`]) — the
+//! (`SessionBackend::hook_signal_command`, via `rewrite_hook_signals`) — the
 //! local interface reads those back through that backend.
 //!
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),

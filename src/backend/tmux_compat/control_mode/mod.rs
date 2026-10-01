@@ -672,7 +672,7 @@ pub fn is_valid_window_id(s: &str) -> bool {
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
 /// wire data never panics. Shared by the hook poller's diff below and the
-/// headless status poll (`session_ops::remote_hooks::poll_remote_hook_states`).
+/// headless listing (`SessionBackend::hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
         .filter_map(|line| {

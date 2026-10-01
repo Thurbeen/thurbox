@@ -112,7 +112,8 @@ jobs:
               - '.github/workflows/ci.yml'
             # The Windows harness needs a VM, but its psmux hook-status gate
             # probes do not: they check what the VM measured against the gate
-            # in src/session/mod.rs, and that comparison runs here.
+            # thurbox-cli reports (`runtime status --json`), and that
+            # comparison runs here against a stand-in CLI.
             windows_e2e_probes:
               - 'scripts/dev/e2e/windows-vm.sh'
               - 'scripts/dev/e2e/windows-vm.bats'
@@ -120,7 +121,6 @@ jobs:
               # suite asserts on both: a change to them can make the probes
               # advisory again, which is the whole defect (#1170).
               - 'scripts/dev/e2e/lib/e2e-common.sh'
-              - 'src/session/mod.rs'
               - '.github/workflows/ci.yml'
             # The package builds the crate, so every Rust input is a Nix input
             # too: a new `include_str!` outside the package's source set, or a

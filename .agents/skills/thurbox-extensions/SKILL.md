@@ -124,9 +124,10 @@ whichever coding CLI the user runs the knowledge of how to edit the interface.
 each can report) is documented per agent in `docs/AGENTS.md` → "Status hook
 mechanisms"** — that is the reference to update when adding an agent.
 Remote sessions are provisioned by
-`session_ops::remote_hooks::provision_agent_hooks_on_host`; a psmux/Windows host
-is gated off (`session::psmux_hook_rewrite_supported`) and shows `Hooks:
-degraded`. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
+`session_ops::remote_hooks::provision_agent_hooks_on_host`, rewritten to the
+command the row's backend reports through; a route whose backend has no status
+channel (psmux today) or a Windows host is provisioned nothing and shows
+`Hooks: degraded`. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
 `builtin_<name>_optout` metadata flag so self-heal won't resurrect it — the key
 format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
 wrote before there was more than one built-in); `activate`/`install <name>`

@@ -136,11 +136,14 @@ included (`the_adapters_are_peers`) — and each adapter's code names exactly it
 own `Multiplexer` variant (`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own`,
 ADR-31), and the crossings still to be
 removed are the `TRANSITIONAL` table — each item tagged with the task that
-removes it (F7 status and heartbeat; the lifecycle, pane I/O and platform
-entries are gone, and the registry is injected from the roots — ADR-29,
-ADR-30),
-checked both ways so a new crossing fails and so does a stale entry. The table
-ends empty. Fixture trees under `tests/fixtures/architecture/` pin that the
+removes it, checked both ways so a new crossing fails and so does a stale
+entry. It is **empty**: lifecycle, pane I/O, platform and finally status and
+the heartbeat (ADR-29, ADR-30, ADR-32) go through the contract, and
+`consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and `kernel`
+to reaching no adapter, protocol helper or factory — by reference, through
+aliases and re-exports, or through any grant transitively. `agent` is
+submodule-governed like `backend`, so a grant names the agent config a node
+reads. Fixture trees under `tests/fixtures/architecture/` pin that the
 resolver sees the old three-node backend cycle, PR #1272's mux/registry cycles,
 alias and re-export laundering, and test-only edges.
 

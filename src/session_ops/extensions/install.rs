@@ -308,7 +308,7 @@ fn install_external_file(
 /// …`). [`crate::agent::json_merge::prune_marked`] uses it to remove exactly our
 /// merged entries on uninstall — robust across payload schema changes. The
 /// remote provisioning (`remote_hooks`) prunes on it too, paired with the
-/// rewritten form's [`crate::session::REMOTE_HOOK_STATE_OPTION`] marker.
+/// rewritten form's marker: the row's backend's hook command.
 pub(crate) const HOOK_SIGNAL_MARKER: &str = "thurbox-cli session signal";
 
 /// Whether this document already carries an ownership stamp of ours — i.e.

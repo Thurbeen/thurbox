@@ -382,10 +382,14 @@ A refusal survives only where delegation is genuinely impossible — no
 
 ### `runtime` — what thurbox runs that is not a session
 
-The automation heartbeat keeper is a detached tmux window created implicitly by
-anything that arms an automation. It is not a session, so no session listing
-showed it and no delete reclaimed it. `runtime status` reports it and the socket
-in force; `runtime stop` kills it (the next `automation` write arms it again).
+The automation heartbeat is kept by this machine's backend — the registry's
+default (`SessionBackend::ensure_heartbeat`; on a tmux-protocol server a
+detached `automation-heartbeat` window) — and created implicitly by anything
+that arms an automation. It is not a session, so no session listing shows it
+and no delete reclaims it. `runtime status` reports it (`null` when the backend
+did not answer), the socket in force, the backend, and `hook_status` — whether
+each local backend has a hook status channel; `runtime stop` stops it (the next
+`automation` write arms it again).
 
 ### thurbox-cli is an AXI
 
@@ -831,17 +835,17 @@ Author one headlessly with `thurbox-cli automation create --command "<shell>"`
 `Task.action` shares the enum but tasks never carry an `Exec`
 (it's automation-only).
 
-Automations fire even when the TUI is closed: a tmux heartbeat
-keeper window (`automation-heartbeat`, armed on TUI startup and on
-`automation create`) loops `automation tick` every 60 s and keeps
-the tmux server alive. `packaging/` ships opt-in systemd/launchd
+Automations fire even when the TUI is closed: the heartbeat the
+local backend keeps (`session_ops::arm_heartbeat`, armed on TUI
+startup and on `automation create`; on tmux the `automation-heartbeat`
+window) loops `automation tick` every 60 s and keeps the server alive. `packaging/` ships opt-in systemd/launchd
 units for reboot-proof firing. Concurrent firers are de-duplicated
 by `Database::claim_due_automation` (atomic CAS), so the keeper,
 an OS timer and a hand-run `tick` never double-fire.
 
 **No automations pane.** The interface has none, and `[features] automations`
-no longer hides one: its only *effect* in the TUI is gating **arming the tmux
-heartbeat keeper** at startup (`src/main.rs`; it also rides the live-reload merge
+no longer hides one: its only *effect* in the TUI is gating **arming the
+heartbeat** at startup (`src/main.rs`; it also rides the live-reload merge
 as a restart-only flag and is published to Lua in `thurbox.features`). The rows
 are published as `thurbox.automations` and the kernel accepts an `automation`
 command (enable/disable/run/delete — `run_now` only marks it due, so the tick

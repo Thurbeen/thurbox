@@ -344,9 +344,11 @@ growth would bloat the database over months of use.
 
 **Choice**: Automations fire from three places that all funnel
 through one headless entry point, `thurbox-cli automation tick`:
-the TUI tick loop, a detached **tmux heartbeat keeper** window
-(`automation-heartbeat`, armed on TUI startup and on `automation
-create`, looping `tick` every 60 s), and optional systemd/launchd
+the TUI tick loop, a **heartbeat** this machine's backend keeps
+running (`SessionBackend::ensure_heartbeat`, armed on TUI startup and
+on `automation create`, looping `tick` every 60 s — on a tmux-protocol
+server, the detached `automation-heartbeat` window; ADR-32), and
+optional systemd/launchd
 units (`packaging/`) for reboot-proof firing. Concurrency is made
 safe by **claim-based firing** — `Database::claim_due_automation`
 advances `next_run_at` with an atomic compare-and-swap, so exactly
@@ -1663,10 +1665,12 @@ created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
-tmux hosts because `session signal` also sets the pane option (`backend::tmux_compat::server::
-set_own_pane_state`). A fork — which resumes the parent's conversation in the
-parent's checkout, two facts the host's `create` does not take — stays on the
-legacy path and is registered on the host by `session sync --adopt`, as is
+hosts whose backend has a status channel because `session signal` also records
+the state in the row's backend (`SessionBackend::record_hook_state` — on tmux,
+the pane option a peer's subscription reads; ADR-32). A fork — which resumes
+the parent's conversation in the parent's checkout, two facts the host's
+`create` does not take — stays on the legacy path and is registered on the
+host by `session sync --adopt`, as is
 any session created before this change. `session register` is the one place
 a row is made for a window that already runs, and it refuses to launch.
 
@@ -1856,8 +1860,8 @@ delete, `stop`, `restart`, spawn rollback — could therefore kill a live
 session's window. That is the "deleting a frozen session kills its
 replacement 30-60s later, and each delete-and-recreate makes the next one die
 sooner" report. A window option is the same fact stored once, on the thing it
-describes, and it is the channel `set_own_pane_state` already uses for hook
-state.
+describes, and it is the channel a tmux-protocol backend's hook status uses
+too (ADR-32).
 
 **Rejected**:
 
@@ -2251,9 +2255,7 @@ the interface holds a connection to a backend, a lifecycle kill goes through
 it (reconnecting once on a dead link) rather than one-shot; either way it
 kills the pane's whole window, so a window somebody split leaves nothing
 running.
-Pane I/O followed in ADR-30. Hook status and the heartbeat still reach the tmux
-adapter directly; `tests/architecture_rules.rs` lists what is left in
-`TRANSITIONAL`.
+Pane I/O followed in ADR-30, and hook status and the heartbeat in ADR-32.
 
 ## ADR-30: Pane I/O is located by the row, then addressed by pane
 
@@ -2358,10 +2360,75 @@ of either platform and in a WSL distro, built from the placement's platform
 and launcher, with a launcher that adds nothing to the probe's command line.
 The local picker offers every registered multiplexer, so psmux appears on a
 POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
-and the hook-state listing still run this machine's (or the host's) default
-binary from `tmux_compat::server`, and the socket naming lives in
-`backend::instance`; they are the status-delivery step's to move behind the
-contract, and are listed as such in `TRANSITIONAL`. The heartbeat now only
-ensures its session exists: with no adapter handed to it, it cannot know which
-multiplexer's config to apply, and every backend applies its config before it
+and the hook-state listing went behind the contract in ADR-32. The heartbeat
+only ensures its session exists: every backend applies its config before it
 spawns or attaches. psmux has not been driven live by this change.
+
+## ADR-32: Hook status and the heartbeat are the route's backend's
+
+**Choice**: how a hook in a session's pane reports its state, how that state is
+read back with no interface attached, and what keeps the automation heartbeat
+running are all verbs of `SessionBackend`, answered by the backend serving the
+row's route:
+
+- `hook_signal_command()` — the command a hook in this backend's panes runs, the
+  state word appended, in place of `thurbox-cli session signal` where that CLI
+  cannot reach this instance's database (a pane on a host). Spawn, restart and
+  `agent launch-args` rewrite the shipped hook files and literal args to it;
+  `None` means no channel, and then no hook config is shipped at all.
+- `record_hook_state(pane, state)` — what `session signal` does after writing
+  the row, on the row's own pane, so a peer attached to that backend sees it.
+- `hook_states()` — every pane's state in one round trip, attached or not: what
+  `automation tick` polls (`session_ops::remote_hooks::poll_hook_states`) for
+  every route with live rows, local ones included.
+- `take_hook_state_events()` — the live drain an attached interface already
+  used.
+- `ensure_heartbeat` / `heartbeat_running` / `stop_heartbeat` — the heartbeat
+  is a request to the registry's default backend, and `runtime status` / `stop`
+  ask the same one.
+
+None has a default body. On a tmux-protocol server the channel is the
+`@thurbox_state` pane option, its subscription and its poll — vocabulary that
+moved out of `session` into `backend::tmux_compat::control_mode` — and each
+adapter says whether it has one (`TmuxCompatible::HOOK_STATUS`): tmux does;
+psmux does not until it is proven, which replaces the old
+`session::psmux_hook_rewrite_supported` switch. The instance socket (ADR-12)
+moved from `tmux_compat::socket` to `backend::instance`: it names the
+instance's server, whichever multiplexer runs it.
+
+**Why**: status was the last thing a consumer reached a concrete backend for.
+`session_ops` built tmux and psmux command text itself, the headless poll ran
+`tmux list-panes` on this machine's default server or ssh'd the host's binary,
+`session signal` parsed `$TMUX`, and the heartbeat was a window on whatever
+tmux was local. An RMUX or Herdr adapter — on either OS, with a channel that is
+not a pane option at all — could not report status without editing `session`,
+`session_ops` and `cli`, and a local server other than the default one was
+never polled. Asking the route's backend makes each of those its own answer,
+and grouping the poll by route means a pane id is matched only against the
+backend that issued it: every server has a `%0`.
+
+**Rejected**:
+
+- *A default body returning "no status".* It compiles and goes dark: a new
+  adapter would launch agents whose hooks report nowhere, with nothing saying
+  so. Required, with `None`/`Err` as an explicit answer, is the same outcome
+  said out loud.
+- *Inferring the channel from the multiplexer's name or the host's OS.* That is
+  what the psmux gate in `session` did; it is the adapter's fact.
+- *Reading "no answer" as idle.* A backend that did not answer, has no channel,
+  or serves no route here leaves the held state as it is.
+
+**Consequences**: `tests/hook_status_routing.rs` registers in-memory backends
+for `local:rmux`, `ssh:<h>:rmux` and stand-ins for a tmux and a psmux host,
+each reporting a state for its own `%0`, and checks `automation tick` writes
+each to its own row with no tmux window made and no host asked; `session
+signal` reaches the row's backend; and the heartbeat and `runtime` reach the
+local one. The contract suite holds tmux and the fake to the same status and
+heartbeat behaviour. `consumers_reach_no_concrete_backend` checks that
+`session_ops`, `cli` and `kernel` reference no adapter, protocol helper or
+factory — through aliases and re-exports, test code included — and that no
+grant, followed transitively, would let them; `TRANSITIONAL` is empty. `agent`
+is now governed file by file, so a consumer names the agent config it reads.
+`scripts/dev/e2e/windows-vm.sh` reads the psmux gate from `thurbox-cli runtime
+status --json` (`hook_status`) instead of grepping the source. psmux status
+over a live Windows host is still unproven, and stays off.
