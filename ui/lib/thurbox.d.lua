@@ -698,6 +698,12 @@
 ---@field rebound boolean
 ---@field group string
 
+--- A chord-less action a plugin declares in `commands`, for the palette.
+---@class (exact) thurbox.RegistryCommand
+---@field plugin string
+---@field action string
+---@field desc string
+
 ---@class (exact) thurbox.RegistrySetting
 ---@field plugin string
 ---@field id string
@@ -709,6 +715,7 @@
 --- What every plugin declared, so help and settings render from it.
 ---@class (exact) thurbox.RegistrySnapshot
 ---@field keys thurbox.RegistryKey[]
+---@field commands thurbox.RegistryCommand[]
 ---@field settings thurbox.RegistrySetting[]
 ---@field sections string[] The order help renders its sections in.
 

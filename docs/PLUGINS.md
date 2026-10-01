@@ -905,6 +905,54 @@ An entry's `action` has to be one some plugin **declares**, in `keys` or in
 which answers nothing, so the entry closes the menu and does nothing — declare
 `files.open` and `files.delete` in the example above, or they are dead entries.
 
+#### Adding entries to the sessions menu
+
+The sessions column's row menu is open to other plugins. A plugin that owns a
+per-session action offers it by leaving its entries in
+`store["sessions.menu_extra"]`, under its own name. Write it at the top level
+of your file, which runs on every load and reload, or from a handler — never
+from `render`:
+
+```lua
+local extra = store["sessions.menu_extra"] or {}
+extra["auto-continue"] = {
+  { label = "Auto-continue", action = "auto-continue.toggle" },
+}
+store["sessions.menu_extra"] = extra   -- a read is a copy: write it back
+```
+
+Each contributor's list takes the same entries and `"sep"` rules as
+`store.menu.items`. The pane appends them after its own entries when a row's
+menu opens, contributors in name order and each after a rule. Keying the table
+by owner means rewriting your own list never overwrites another plugin's, and
+writing the same list again changes nothing. Write `nil` under your name to
+withdraw.
+
+An entry is shown only if its action is **declared**, in `keys` or in
+`commands`, so a misspelt or removed action is dropped rather than offered as a
+dead entry. A rule left with nothing to separate is dropped with it. A `label`
+that is not a string is ignored, and the entry shows its action's name. Entries
+appear on a row's menu only, never on the menu for empty space. The check reads
+`thurbox.registry.keys` and `thurbox.registry.commands`, the palette's
+chord-less rows.
+
+The pane opens the menu with `target` set to the row that was pressed. Read it
+from `store["menu.chosen"].target` in your `on_action`, not from
+`store.selected`, because the cursor may have moved by the time the action
+lands. Clear `store["menu.chosen"]` once you have read it:
+
+```lua
+on_action = function(action)
+  if action ~= "auto-continue.toggle" then return false end
+  local chosen = store["menu.chosen"]
+  store["menu.chosen"] = nil
+  local session = type(chosen) == "table" and chosen.action == action and chosen.target
+  session = session or store.selected   -- run from Ctrl+P, not the menu
+  -- …act on `session`…
+  return true
+end,
+```
+
 Its own hook rather than a button field on `hit`, because the two presses do not
 mean the same thing to anyone. Every `on_click` ever written reads "act on this
 row" — open the file, run the action — so a right press arriving there would do

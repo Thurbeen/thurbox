@@ -599,6 +599,8 @@ globals:
   # What every plugin declared, so help and settings render from it.
   thurbox.registry.keys:
     property: read-only
+  thurbox.registry.commands:
+    property: read-only
   thurbox.registry.settings:
     property: read-only
   thurbox.registry.sections:
