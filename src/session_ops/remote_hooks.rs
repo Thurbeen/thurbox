@@ -153,26 +153,26 @@ enum ProvisionOutcome {
 /// `provisioned` holds, per host and agent, the one hook command last shipped:
 /// the file on the host carries one, so a launch on another route of the host
 /// replaces what an earlier one is still remembered as having shipped.
-/// `in_flight` makes the read-merge-write exclusive per key **without**
-/// holding the lock across the ssh round-trips (a slow or down host must not
-/// stall an unrelated host's spawn): a concurrent spawn of the same key waits
-/// for the holder (bounded), then reads the cache or retries the pass itself.
+/// `in_flight` makes the read-merge-write exclusive per host and agent — the
+/// file it rewrites, whichever command a launch ships — **without** holding
+/// the lock across the ssh round-trips (a slow or down host must not stall an
+/// unrelated host's spawn): a concurrent spawn for the same file waits for the
+/// holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
-    provisioned: HashMap<(String, String), String>,
-    in_flight: HashSet<ProvisionKey>,
+    provisioned: HashMap<HookFile, String>,
+    in_flight: HashSet<HookFile>,
 }
 
 impl ProvisionCache {
-    fn has_shipped(&self, (host, agent, signal): &ProvisionKey) -> bool {
+    fn has_shipped(&self, key: &ProvisionKey) -> bool {
         self.provisioned
-            .get(&(host.clone(), agent.clone()))
-            .is_some_and(|shipped| shipped == signal)
+            .get(&hook_file(key))
+            .is_some_and(|shipped| *shipped == key.2)
     }
 
-    fn shipped(&mut self, (host, agent, signal): &ProvisionKey) {
-        self.provisioned
-            .insert((host.clone(), agent.clone()), signal.clone());
+    fn shipped(&mut self, key: &ProvisionKey) {
+        self.provisioned.insert(hook_file(key), key.2.clone());
     }
 }
 
@@ -199,11 +199,18 @@ fn provision_key(host: &HostDef, agent: &str, signal: &str) -> ProvisionKey {
     (host.backend_name(), agent.to_string(), signal.to_string())
 }
 
+/// `(host, agent)`: the one hook file a key's launch rewrites on the host.
+type HookFile = (String, String);
+
+fn hook_file((host, agent, _): &ProvisionKey) -> HookFile {
+    (host.clone(), agent.clone())
+}
+
 /// Removes its key from `in_flight` on drop — **including on unwind**, so a
 /// panic inside the provisioning pass can never leak the key and permanently
 /// (and silently) disable provisioning for that key.
 struct InFlightGuard {
-    key: ProvisionKey,
+    key: HookFile,
 }
 
 impl Drop for InFlightGuard {
@@ -266,8 +273,10 @@ pub(crate) fn provision_agent_hooks_on_host(
             if cache.has_shipped(&key) {
                 return None;
             }
-            if cache.in_flight.insert(key.clone()) {
-                break InFlightGuard { key: key.clone() };
+            if cache.in_flight.insert(hook_file(&key)) {
+                break InFlightGuard {
+                    key: hook_file(&key),
+                };
             }
         }
         if waited >= IN_FLIGHT_WAIT_MAX {
@@ -569,11 +578,7 @@ mod tests {
         // A panic inside the provisioning pass must not leak the in-flight
         // key (which would silently disable provisioning for the process
         // lifetime while reporting healthy).
-        let key = (
-            "test-guard-backend".to_string(),
-            "codex".to_string(),
-            SIGNAL.to_string(),
-        );
+        let key = ("test-guard-backend".to_string(), "codex".to_string());
         assert!(cache_lock().in_flight.insert(key.clone()));
         let k = key.clone();
         let unwound = std::panic::catch_unwind(move || {
@@ -847,7 +852,7 @@ mod tests {
             destination: "user@exclusive-file-host.invalid".into(),
             ..Default::default()
         };
-        let held = provision_key(&host, "opencode", SIGNAL);
+        let held = hook_file(&provision_key(&host, "opencode", SIGNAL));
         assert!(cache_lock().in_flight.insert(held.clone()));
         let guard = InFlightGuard { key: held };
         let other = {
