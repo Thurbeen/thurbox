@@ -143,6 +143,23 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy;
 }
 
+/// A `-V` banner's verdict, overruled by the running server: a banner refused
+/// for its version floor stands only when no server answered (`running` is
+/// `None`), or the one that did is below [`TmuxCompatible::VERSION_FLOOR`]
+/// too. A binary older than the server it would talk to starts nothing.
+pub fn admit_banner<M: TmuxCompatible>(
+    banner: Result<()>,
+    running: Option<String>,
+    socket: &str,
+) -> Result<()> {
+    match (banner, running, M::VERSION_FLOOR) {
+        (Err(refused), Some(version), Some(refuse_old)) => {
+            refuse_old(&version, socket).map_err(|_| refused)
+        }
+        (banner, ..) => banner,
+    }
+}
+
 /// The tmux session name grouping every thurbox window. Dev builds use
 /// "thurbox-dev" to avoid interfering with an installed release binary.
 pub const TMUX_SESSION: &str = if cfg!(dev_build) {
@@ -1763,7 +1780,17 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        M::check_banner(&version_str, &self.socket())?;
+        let banner = M::check_banner(&version_str, &self.socket());
+        // Only asked when the banner was refused: the running server, not the
+        // binary on `PATH`, is what births panes.
+        let running = match (&banner, M::VERSION_FLOOR) {
+            (Err(_), Some(_)) => self
+                .tmux_output(&["display-message", "-t", &self.session, "-p", "#{version}"])
+                .ok()
+                .filter(|v| !v.is_empty()),
+            _ => None,
+        };
+        admit_banner::<M>(banner, running, &self.socket())?;
         debug!("multiplexer version: {}", version_str.trim());
         Ok(())
     }

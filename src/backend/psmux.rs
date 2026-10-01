@@ -657,6 +657,20 @@ mod tests {
         assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
     }
 
+    /// An old binary on `PATH` beside a server that is new enough is no
+    /// reason to refuse: the server is what births panes. Without a server, or
+    /// with an old one, the banner's refusal stands.
+    #[test]
+    fn a_safe_running_server_outranks_an_old_binary() {
+        use crate::backend::tmux_compat::server::admit_banner;
+        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
+        assert!(admit_banner::<Psmux>(old, Some("3.3.8".into()), "thurbox").is_ok());
+        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
+        assert!(admit_banner::<Psmux>(old, Some("3.3.6".into()), "thurbox").is_err());
+        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
+        assert!(admit_banner::<Psmux>(old, None, "thurbox").is_err());
+    }
+
     #[test]
     fn a_running_server_is_judged_by_its_own_version() {
         assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());
