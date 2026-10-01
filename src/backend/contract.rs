@@ -449,7 +449,8 @@ pub struct AdoptedSession {
 
 /// Trait that all session backends implement. The app layer interacts only through this trait.
 pub trait SessionBackend: Send + Sync {
-    /// Human-readable name (e.g., "local-tmux", "ssh-remote").
+    /// The qualified route this backend serves (`local:tmux`,
+    /// `ssh:<host>:psmux`), as logs and `runtime status` name it.
     fn name(&self) -> &str;
 
     /// Backends whose stream does not reliably end when a window is deleted

@@ -1815,8 +1815,8 @@ impl Terminals {
     /// hosts, so the backend is part of the identity, not decoration. The
     /// backend is named by the qualified route it serves, which is what a
     /// row's `backend_type` settles to whichever spelling it was stored under
-    /// (`session_ops::server_key`). Only the tmux backend produces any; the
-    /// rest return nothing.
+    /// (`session_ops::server_key`). A backend with no status channel returns
+    /// nothing.
     pub fn drain_hook_events(&self) -> Vec<(String, String, String)> {
         self.backends
             .all_backends()

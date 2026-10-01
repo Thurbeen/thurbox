@@ -2197,7 +2197,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // Nothing to write where an option is not a window's
         // ([`Self::stamps_are_per_window`]): such a server would take this as
         // a *global* one and hand it back as every window's identity. Ok rather
-        // than an error for the same reason `set_remain_on_exit` is — the
+        // than an error for the same reason `set_pane_retention` is — the
         // caller is not being refused, there is simply no per-window option to
         // set, and `WindowIndex` resolves by name there (ADR-25).
         if !self.stamps_are_per_window() {
@@ -2242,7 +2242,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
         self.known_socket()?;
         self.refuse_exited(pane)?;
-        // Bracketed-paste-wrapped either way (see `paste_prompt_args`), so the
+        // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
         // text arrives literally: no shell is involved, and the wrap is also
         // what keeps a leading `-` from reading as a flag and a newline from
         // submitting the line before it.
@@ -4221,8 +4221,6 @@ mod tests {
         );
     }
 
-    // --- parse_tmux_version tests ---
-
     // --- path_led_by (the PATH a pane is handed) ---
 
     #[cfg(not(windows))]
@@ -4300,10 +4298,6 @@ mod tests {
         );
     }
 
-    // --- check_min_version (multiplexer version gate) ---
-
-    // --- check_psmux_version (the psmux#450 floor) ---
-
     // --- local command resolution ---
 
     /// An executable on a directory only *this process* has on `PATH` — the
@@ -4332,10 +4326,6 @@ mod tests {
         );
     }
 
-    // --- build_shell_command tests ---
-
-    // --- one-shot prompt delivery ---
-
     // --- named keys ---
 
     #[test]
@@ -4362,11 +4352,6 @@ mod tests {
         assert!(answered_for("thurbox:=tb-x", Some("tb-x"), Some("%9")));
         assert!(!answered_for("thurbox:=tb-x", Some("tb-y"), Some("%9")));
     }
-
-    // --- psmux_window_command tests ---
-    // psmux keeps only the FIRST trailing new-window token (tmux joins them) and
-    // ignores `-e` entirely, so the whole launch — env included — must be one
-    // double-quoted token of PowerShell (verified against psmux 3.3.6).
 
     #[test]
     fn a_shareable_host_that_has_not_said_which_socket_it_uses_is_refused() {
@@ -4439,8 +4424,6 @@ mod tests {
             .collect();
         assert_eq!(env_part, " -e 'MSG=hello world'");
     }
-
-    // --- window-name sanitization tests ---
 
     /// Only an agent's window keeps its corpse — and the answer is read off the
     /// *name*, so it is pinned against the three name builders rather than

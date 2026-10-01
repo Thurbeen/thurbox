@@ -229,15 +229,15 @@ session), never on the loop, ADR-P12).
   resize is honoured only for a window whose `@thurbox_sizer` is this backend's
   (or nobody's, or when it is the only client attached); input into a pane not
   at this instance's size claims it (`claim_size`). Every grid follows the
-  pane's real size from `%layout-change`, in stream order (`PaneEvent`,
-  `PaneSize`). The conditional list answers with **five** `%begin` blocks
+  pane's real size from `%layout-change`, in stream order
+  (`PaneSize`). The conditional list answers with **five** `%begin` blocks
   either way — `send_command_detached` is told the count, because an `if-shell`
   adds a block per command it runs. psmux keeps last-writer-wins.
 - **Headless**: `thurbox-cli session create --host <name>` spawns on the host
   (an SSH name or an auto-discovered WSL distro name).
 - **The agent's `PATH` on a host** (`agent::host_path`). ssh/`wsl.exe -e` give
   a command a non-login `PATH`, and a delegated `session create` pins its own
-  `PATH` on the pane (`tmux::path_prefix_args`), so the host's login `PATH`
+  `PATH` on the pane (`tmux_compat::server::path_prefix_args`), so the host's login `PATH`
   (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
   included, bounded by `timeout` and a 15 s kill) is assigned in front of every
   POSIX script `host_cli` runs and inside `login_wrap_for_remote`: hosts.toml

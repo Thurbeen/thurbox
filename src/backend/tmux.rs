@@ -228,7 +228,7 @@ const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
 /// Parse a `tmux -V` version string (e.g. `"tmux 3.4"`, `"tmux 3.3a"`) into a
-/// `(major, minor)` pair. Shared by the local and remote backends.
+/// `(major, minor)` pair.
 fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
     let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
 

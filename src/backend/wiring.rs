@@ -1,10 +1,8 @@
 //! What fills the registry for a running process: the one place that names a
 //! concrete adapter.
 //!
-//! Only the composition roots may call it (`tests/architecture_rules.rs`).
-//! Every other consumer is handed the registry this builds, or — while the
-//! backend-boundary sequence is under way — builds one here through a crossing
-//! the architecture test lists as transitional.
+//! Only the composition roots may call it (`tests/architecture_rules.rs`);
+//! every other consumer is handed the registry this builds.
 
 use std::sync::Arc;
 
@@ -90,7 +88,7 @@ fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
 
 /// Every adapter in `table`, for this machine and for each of `hosts`.
 ///
-/// Registration is by adapter, never by OS (§4b.3 of the backend design): a
+/// Registration is by adapter, never by OS (ADR-31): a
 /// machine — this one or a host — is served by every multiplexer an adapter
 /// implements, whatever its platform or its preference. Those decide only what
 /// an unqualified route means ([`HostRegistry::qualify`]) and which backend is
@@ -195,7 +193,7 @@ mod tests {
         );
     }
 
-    /// Registration is by adapter, never by OS (§4b.3): every adapter here
+    /// Registration is by adapter, never by OS (ADR-31): every adapter here
     /// is registered for this machine and for every host whichever OS either
     /// is, and the platform only picks what an unqualified route means.
     #[test]
@@ -237,7 +235,7 @@ mod tests {
         }
     }
 
-    /// The selection matrix (E1, E4): a probe adapter registered for each of
+    /// The selection matrix: a probe adapter registered for each of
     /// [`Multiplexer::ALL`] — the RMUX and Herdr ones included, which no
     /// adapter here implements — on this machine, an ssh host and a WSL
     /// distro, from a POSIX and a Windows thurbox, and on a POSIX and a Windows
@@ -372,7 +370,7 @@ mod tests {
                             "{at}: the launcher is the placement's"
                         );
 
-                        // E4: the probe's own grammar, unchanged.
+                        // The probe's own grammar, unchanged.
                         let command = crate::shell::launch(
                             spec.launcher.as_ref(),
                             mux.name(),

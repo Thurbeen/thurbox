@@ -306,18 +306,6 @@ impl HostDef {
         self.platform() == Platform::Windows
     }
 
-    /// This entry as the adapter serving `mux` on it is told: `multiplexer`
-    /// set to that binary, and [`platform`](Self::platform) pinned first, so
-    /// a legacy entry that is Windows *because* it names psmux stays Windows
-    /// when one of its rows is driven with another multiplexer.
-    pub fn served_by(&self, mux: Multiplexer) -> Self {
-        Self {
-            platform: Some(self.platform()),
-            multiplexer: Some(mux.name().to_string()),
-            ..self.clone()
-        }
-    }
-
     /// The route to this host served by `mux` — or unqualified, the way a row
     /// written before routes named their multiplexer reads.
     pub fn route(&self, mux: Option<Multiplexer>) -> Route {

@@ -265,7 +265,6 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     // How the multiplexer is launched: locally, over ssh, or in a WSL distro.
-    // `session` for the one local-multiplexer default (`Multiplexer`).
     ModuleRules {
         name: "backend::tmux_compat::transport",
         allowed: &["shell", "agent::preflight"],
@@ -523,32 +522,6 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// that holds it.
 const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent"];
 
-/// The task in the backend-boundary sequence that removes a transitional
-/// crossing. F7 is the last, and ends with [`TRANSITIONAL`] empty.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Remover {
-    /// Lifecycle through the contract, one registry injected at the roots.
-    /// Removed its crossings; kept so the sequence reads in order.
-    #[allow(dead_code)]
-    F5a,
-    /// Pane I/O through `locate` and the contract's pane verbs. Removed its
-    /// crossings; kept so the sequence reads in order.
-    #[allow(dead_code)]
-    F5b,
-    /// Host platform and launcher separated from the multiplexer. Removed
-    /// its crossings; kept so the sequence reads in order.
-    #[allow(dead_code)]
-    F6,
-    /// psmux extracted into its own adapter. Removed its crossings; kept so
-    /// the sequence reads in order.
-    #[allow(dead_code)]
-    F6b,
-    /// Status delivery and the heartbeat owned by the backend. Removed its
-    /// crossings; kept so the sequence reads in order.
-    #[allow(dead_code)]
-    F7,
-}
-
 /// A crossing that breaks a rule today, is known, and is scheduled to go.
 ///
 /// Not an allowance: [`every_module_rule_holds`] fails on any violation this
@@ -561,13 +534,12 @@ struct Transitional {
     to: &'static str,
     /// Items of `to` that `from` still reaches.
     items: &'static [&'static str],
-    remover: Remover,
+    /// Why it is still there, and what removes it.
     why: &'static str,
 }
 
-/// Empty: F7 removed the last crossings — status delivery, the heartbeat and
-/// the instance socket now reach a backend through the contract. The table
-/// stays so the next boundary change records its debt the same way.
+/// Empty. A boundary change that cannot land in one step lists the crossings
+/// it leaves here until the step that removes them.
 const TRANSITIONAL: &[Transitional] = &[];
 
 fn src_root() -> PathBuf {
@@ -748,10 +720,9 @@ fn transitional_table_names_only_live_crossings() {
     for entry in TRANSITIONAL {
         assert!(
             !entry.items.is_empty() && !entry.why.is_empty(),
-            "TRANSITIONAL entry {} → {} ({:?}'s) names no items or no reason",
+            "TRANSITIONAL entry {} → {} names no items or no reason",
             entry.from,
-            entry.to,
-            entry.remover
+            entry.to
         );
         for item in entry.items {
             assert!(
@@ -832,9 +803,9 @@ fn is_concrete_backend(node: &str) -> bool {
     node == FACTORY || ADAPTERS.contains(&node) || in_protocol_helper(node)
 }
 
-/// A4, at the end of the boundary sequence: status delivery, headless status
-/// polling, the heartbeat and the instance socket go through the contract like
-/// every other verb, so no consumer can reach a concrete backend at all.
+/// Every verb a consumer needs — lifecycle, pane I/O, status delivery and
+/// polling, the heartbeat — goes through the contract, so no consumer can
+/// reach a concrete backend at all.
 ///
 /// Checked three ways, because each closes a door the others leave open:
 /// - **references**, resolved through `use`, `super::`, brace groups,
@@ -889,7 +860,7 @@ fn consumers_reach_no_concrete_backend() {
     );
 }
 
-/// The adapters are peers (A10): neither reaches the other, and the protocol
+/// The adapters are peers: neither reaches the other, and the protocol
 /// helper they share reaches neither — in code, test code included, or in a
 /// grant. A quirk of one multiplexer is then a body in its own adapter, never a
 /// branch in code the other runs; and an adapter that serves a second
@@ -995,8 +966,8 @@ const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
 
 /// What a neutral file may not reach: how one kind of host is launched
 /// (`shell`'s ssh/wsl launchers, a host's own `hosts.toml` entry and the
-/// loader of it) or how one multiplexer is driven (the tmux adapter and its
-/// command grammar).
+/// loader of it) or how one multiplexer is driven (an adapter, or the tmux
+/// command grammar two of them share).
 const HOST_OR_MUX_SPECIFIC: &[&str] = &[
     "shell",
     "session::host_def",
@@ -1511,7 +1482,6 @@ fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
         from: "kernel",
         to: "agent::tmux",
         items: &["Index", "gone"],
-        remover: Remover::F5b,
         why: "fixture",
     }];
     let (unlisted, stale) = reconcile(&violations(&tree, &rules), &table);
