@@ -3101,6 +3101,28 @@ tradeoff — `set-clipboard on` lets any process in a pane write your
 system clipboard, which is why tmux's own default is more
 conservative.
 
+### What a terminal receives from a paste
+
+`Ctrl+V` and the terminal's own paste reach a session the same way, and two
+rules hold for both:
+
+- **Bracketed only for an app that asked.** The multiplexer frames the paste in
+  `ESC[200~ … ESC[201~` only when the pane's app enabled bracketed paste (mode
+  2004): tmux through `set-buffer` and `paste-buffer -p`, psmux through its own
+  `send-paste`. `cat`, a `read` prompt or a REPL without readline gets the bare
+  text, not stray `^[[200~` markers. The multiplexer decides because it is the
+  one that knows: a pane adopted after thurbox restarts turned the mode on
+  before this interface ever saw its output.
+- **No control characters but tab, line feed and carriage return.** ESC, the
+  other C0 controls, DEL and C1 are **removed** before the paste is sent
+  (`paste_safe`). A clipboard holding `ESC[201~` would otherwise end the paste
+  early, and the carriage return after it would run whatever followed as a
+  command. `Ctrl+V` reads the native clipboard directly, with no terminal to
+  filter it first. Text, Unicode and line breaks arrive byte for byte.
+
+A paste the multiplexer cannot take is dropped with a warning in the log, never
+typed out key by key, where every carriage return is Enter.
+
 ### Pasting over SSH
 
 Paste never uses OSC 52. Terminals disable clipboard *reads* by

@@ -653,8 +653,9 @@ impl App {
     /// One path for both routes — `ctrl+v` and the terminal's own paste — so the
     /// two cannot come to behave differently. A surface that takes typing gets
     /// the characters replayed as keystrokes, which is how it already receives
-    /// them; a terminal gets one bracketed paste, so a prompt with newlines in
-    /// it does not fire on the first one.
+    /// them; a terminal gets the text as one paste, which its multiplexer
+    /// brackets for an app that enabled bracketed paste, so a prompt with
+    /// newlines in it does not fire on the first one.
     pub(crate) fn on_paste(&mut self, text: String) {
         if text.is_empty() {
             return;
@@ -698,7 +699,11 @@ impl App {
         self.paste_text_into(&surface, &text);
     }
 
-    /// Send `text` to one surface as a bracketed paste.
+    /// Send `text` to one surface as a paste, made safe by [`paste_safe`].
+    ///
+    /// The frame is the backend's signal that this is a paste, not the bytes
+    /// the app receives: the multiplexer re-frames it only when the app turned
+    /// bracketed paste on (`control_mode::ControlModeWriter`).
     ///
     /// Takes the surface rather than reading the focus, because not every paste
     /// is delivered in the same turn it was asked for: the WSL image probe
@@ -709,6 +714,7 @@ impl App {
     /// `dispatch_session_input` routes by what the pane is showing, and a pane
     /// showing a plugin's program used to take typing and refuse pastes.
     fn paste_text_into(&mut self, surface: &str, text: &str) {
+        let text = paste_safe(text);
         if text.is_empty() {
             return;
         }
@@ -728,8 +734,8 @@ impl App {
     /// Paste the clipboard into the focused session's terminal, or decline the
     /// chord when there is no text to paste.
     ///
-    /// Sent as a bracketed paste, so a multi-line paste arrives as text rather
-    /// than as a series of submissions — an agent prompt with newlines in it
+    /// Sent as a paste, bracketed for an app that asked, so a multi-line paste
+    /// arrives as text rather than as a series of submissions — an agent prompt with newlines in it
     /// would otherwise fire on the first one.
     ///
     /// **A local clipboard holding no text is not an error, it is someone else's
@@ -965,6 +971,25 @@ enum PasteRoute {
     GiveToAgent,
 }
 
+/// `text` with every control character removed except the three a paste carries
+/// as content: tab, line feed and carriage return.
+///
+/// **Removed, not shown.** An `ESC[201~` inside the text ends a bracketed
+/// paste early, and the CR after it is then Enter — a clipboard that ran a
+/// command. Without ESC no marker can be spelt, and no other sequence either;
+/// what follows the ESC stays, as text (`[201~`). The other C0 controls, DEL
+/// and C1 go too: `^C` or `^D` inside a paste would act as the key. A
+/// terminal's own paste is sanitised by the terminal first, but `Ctrl+V` reads
+/// the native clipboard directly, so this is the only filter that route has.
+fn paste_safe(text: &str) -> std::borrow::Cow<'_, str> {
+    let keep = |ch: char| !ch.is_control() || matches!(ch, '\t' | '\n' | '\r');
+    if text.chars().all(keep) {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(text.chars().filter(|&ch| keep(ch)).collect())
+    }
+}
+
 fn paste_route(clipboard_present: bool, yielded_text: bool) -> PasteRoute {
     match (clipboard_present, yielded_text) {
         (false, _) => PasteRoute::Hint,
@@ -1046,6 +1071,20 @@ fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paste_keeps_its_text_lines_and_unicode() {
+        let text = "l1 é漢\nl2\ttab\r\nl3 🙂";
+        assert!(matches!(paste_safe(text), std::borrow::Cow::Borrowed(t) if t == text));
+    }
+
+    #[test]
+    fn a_paste_cannot_spell_a_marker_or_a_control_key() {
+        assert_eq!(
+            paste_safe("echo a\x1b[201~echo b\r\x1b[200~\x03\x04\x7f\u{9b}c"),
+            "echo a[201~echo b\r[200~c"
+        );
+    }
 
     /// The half of this change that reaches every platform: a reachable
     /// clipboard holding no text hands the press on instead of swallowing it,

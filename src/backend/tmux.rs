@@ -195,8 +195,9 @@ impl TmuxCompatible for Tmux {
     }
 }
 
-/// tmux's input: every byte as `send-keys -H` hex, a paste included — its
-/// markers reach the pane intact, so it needs no other way in.
+/// tmux's input: every keystroke as `send-keys -H` hex. A paste takes no other
+/// way in: the writer pastes it through control mode (`set-buffer` and
+/// `paste-buffer -p`), so tmux frames it only for an app that asked.
 struct HexKeys;
 
 impl PaneInput for HexKeys {

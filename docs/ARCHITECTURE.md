@@ -884,13 +884,14 @@ reference to read before touching that path.
   command (`psmux::PsmuxPaste`, issue #916): psmux's control-mode
   dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
   `send-paste` are CLI/server-only), so a bracketed-paste payload
-  (`bracketed_paste_text` unwraps one; anything else keeps the key encoding)
-  goes to the one-shot CLI `psmux send-paste -t <pane> <base64>` — the same
-  command psmux's client uses for Ctrl+Shift+V, so CRLF is normalized for
-  ConPTY, markers are written contiguously and **only** when the pane's app
-  enabled bracketed paste. A failure falls back to the key encoding (degraded
-  beats dropped). Base64 because a raw newline in a psmux command argument is
-  cut by the server's line-oriented read, truncating the payload *and*
+  (`bracketed_paste_text` unwraps one) goes to the one-shot CLI
+  `psmux send-paste -t <pane> <base64>` — the same command psmux's client uses
+  for Ctrl+Shift+V, so CRLF is normalized for ConPTY, markers are written
+  contiguously and **only** when the pane's app enabled bracketed paste. A
+  failure **drops** the paste with a warning, and so does a payload that is not
+  one clean frame: falling back to the key encoding typed every CR as Enter,
+  which ran each pasted line. Base64 because a raw newline in a psmux command
+  argument is cut by the server's line-oriented read, truncating the payload *and*
   executing its tail as a command (psmux #560) — the same reason the headless
   prompt path (`TmuxCompatible::paste_args`, feeding `send_text`, and
   `deferred_paste_script`) sends `send-paste` where tmux gets

@@ -3936,3 +3936,215 @@ fn creating_a_session_runs_a_handful_of_tmux_processes() {
          configure, create, check for a duplicate):\n{calls}"
     );
 }
+
+// --- what a paste looks like to the program it lands in ---------------------
+
+/// A terminal's own paste — Cmd+V, Ctrl+Shift+V — as the outer terminal sends
+/// it to thurbox, which turned bracketed paste on for itself.
+fn terminal_paste(text: &str) -> Vec<u8> {
+    [b"\x1b[200~", text.as_bytes(), b"\x1b[201~"].concat()
+}
+
+/// Start `command` in the shell and wait for it to be reading: the echo of the
+/// command line, then a quiet stream.
+fn run_in_shell(tui: &mut Tui, command: &str, shown: &str) {
+    tui.send(format!("{command}\r").as_bytes());
+    tui.wait_for(shown);
+    tui.wait_until_quiet();
+}
+
+#[test]
+fn a_paste_into_an_app_without_bracketed_paste_has_no_markers() {
+    // The pane never asked for bracketed paste, so the markers are noise to
+    // it: `cat -v` showed `^[[200~tb-pasted^[[201~`, as does any `read`
+    // prompt, `dash` or REPL without readline. A multiplexer brackets a paste
+    // only for a pane that enabled mode 2004 — tmux's `paste-buffer -p`.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    run_in_shell(&mut tui, "cat -v", "cat -v");
+    tui.send(&terminal_paste("tb-pasted\ntb-line2"));
+    tui.send(b"\r");
+    tui.wait_for("tb-line2");
+    tui.wait_until_quiet();
+    let frame = tui.frame();
+    assert!(
+        frame.contains("tb-pasted") && !frame.contains("[200~") && !frame.contains("[201~"),
+        "a paste into an app that never enabled bracketed paste carried the markers:\n{frame}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_paste_into_an_app_with_bracketed_paste_is_one_frame_even_after_a_restart() {
+    // The twin: an app that enabled mode 2004 gets exactly one frame. Then the
+    // interface restarts under the running app — which turned the mode on
+    // before this process ever read its output — and the next paste must
+    // still be framed. Whatever decides must know the mode the pane is in,
+    // not only what this interface happened to see.
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    run_in_shell(&mut tui, "printf '\\033[?2004h'; cat -v", "cat -v");
+    tui.send(&terminal_paste("tb-framed"));
+    tui.send(b"\r");
+    tui.wait_for("^[[200~tb-framed^[[201~");
+    tui.wait_until_quiet();
+    assert!(
+        !tui.frame().contains("^[[200~^[[200~"),
+        "the paste was framed twice:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("tb-framed");
+    tui.wait_until_quiet();
+    tui.send(&terminal_paste("tb-again"));
+    tui.send(b"\r");
+    tui.wait_for("^[[200~tb-again^[[201~");
+    assert!(tui.quit().success());
+}
+
+/// A private X server, killed on drop. `None` where there is no `Xvfb`.
+struct Xvfb {
+    child: Child,
+    display: String,
+}
+
+impl Xvfb {
+    fn start() -> Option<Self> {
+        // `-displayfd 1`: the server picks a free display and writes its
+        // number to stdout once it is accepting connections.
+        let mut child = Command::new("Xvfb")
+            .args([
+                "-displayfd",
+                "1",
+                "-nolisten",
+                "tcp",
+                "-screen",
+                "0",
+                "640x480x24",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut line = String::new();
+        let stdout = child.stdout.take().expect("Xvfb stdout");
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("read the Xvfb display");
+        let number = line.trim();
+        assert!(!number.is_empty(), "Xvfb exited without a display");
+        Some(Self {
+            child,
+            display: format!(":{number}"),
+        })
+    }
+}
+
+impl Drop for Xvfb {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The environment variable [`clipboard_owner`] reads its text from.
+const SEED_CLIPBOARD: &str = "TBX_E2E_SEED_CLIPBOARD";
+
+/// Not a test: the process that owns the X clipboard for
+/// [`a_pasted_end_marker_cannot_submit_a_line`]. An X selection lives only as
+/// long as a client serves it, and the native read thurbox makes is the one
+/// route a terminal does not sanitise first, so this holds it from a process
+/// of its own — this test binary, re-run on this one test — until it is
+/// killed. Without the variable it does nothing, so `--ignored` runs are safe.
+#[test]
+#[ignore = "a helper process, started by a_pasted_end_marker_cannot_submit_a_line"]
+fn clipboard_owner() {
+    let Ok(text) = std::env::var(SEED_CLIPBOARD) else {
+        return;
+    };
+    let mut clipboard = arboard::Clipboard::new().expect("connect to the X server");
+    clipboard.set_text(text).expect("own the clipboard");
+    println!("tbx-clipboard-owned");
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+/// [`clipboard_owner`], running on `display` with `text`, killed on drop.
+struct ClipboardOwner(Child);
+
+impl ClipboardOwner {
+    fn hold(display: &str, text: &str) -> Self {
+        let mut child = Command::new(std::env::current_exe().expect("test binary"))
+            .args(["clipboard_owner", "--exact", "--ignored", "--nocapture"])
+            .env("DISPLAY", display)
+            .env_remove("WAYLAND_DISPLAY")
+            .env(SEED_CLIPBOARD, text)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start the clipboard owner");
+        let stdout = child.stdout.take().expect("owner stdout");
+        let owned = std::io::BufRead::lines(std::io::BufReader::new(stdout))
+            .map_while(Result::ok)
+            .any(|line| line.contains("tbx-clipboard-owned"));
+        assert!(owned, "the clipboard owner never took the clipboard");
+        Self(child)
+    }
+}
+
+impl Drop for ClipboardOwner {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn a_pasted_end_marker_cannot_submit_a_line() {
+    // Security, not formatting. A native clipboard holding `ESC[201~` ended
+    // the bracketed paste early, and the CR after it reached bash as Enter:
+    // the probe ran `echo tb-pasted-onlyecho tb-INJECTED-ran`. Ctrl+V reads
+    // the clipboard itself, so no terminal stands in between to defang it.
+    // The `""` keeps the command's own echo from matching what running it
+    // would print.
+    let Some(x) = Xvfb::start() else {
+        eprintln!("skipping: Xvfb is not installed");
+        return;
+    };
+    let _owner = ClipboardOwner::hold(
+        &x.display,
+        "echo tb-pasted-only é漢\x1b[201~echo tb-INJ\"\"ECTED-ran\r",
+    );
+    let display = x.display.clone();
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("DISPLAY", display);
+        cmd.env_remove("WAYLAND_DISPLAY");
+    }) else {
+        return;
+    };
+    // bash enables bracketed paste at its prompt (5.1 and later), which is
+    // what makes an early end marker the difference between text and Enter.
+    run_in_shell(
+        &mut tui,
+        "exec bash --norc --noprofile -i",
+        "exec bash --norc --noprofile -i",
+    );
+    tui.send(&[0x16]);
+    tui.wait_for("tb-pasted-only é漢");
+    tui.wait_until_quiet();
+    let frame = tui.frame();
+    assert!(
+        !frame.contains("tb-INJECTED-ran"),
+        "a pasted end marker let the line after it run:\n{frame}"
+    );
+    assert!(tui.quit().success());
+}

@@ -199,8 +199,9 @@ jobs:
       # `tests/tui_e2e.rs` — the real binary on a pty, attached to a pane with
       # a shell in it. Every one of them lands on a private socket under a
       # private `TMUX_TMPDIR`.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      # xvfb: `tui_e2e`'s native-clipboard paste runs against a private X server.
+      - name: Install tmux and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb
       - run: cargo nextest run --all --profile ci
 
   # Native-Windows gate (psmux backend selection, known-folder paths, toast

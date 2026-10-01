@@ -386,9 +386,9 @@ pub const SEND_KEYS_CHUNK_BYTES: usize = 512;
 ///
 /// The byte-exact hex flag (each byte → two hex digits), chunked at
 /// `SEND_KEYS_CHUNK_BYTES` so no single control-mode line gets over-long; the
-/// raw bytes — including the bracketed-paste markers — span the chunks and the
-/// receiving pane reassembles them. tmux's encoding; a server without `-H`
-/// encodes its own way ([`PaneInput`]).
+/// raw bytes span the chunks and the receiving pane reassembles them. tmux's
+/// encoding; a server without `-H` encodes its own way ([`PaneInput`]). A paste
+/// does not come here — see [`ControlModeWriter`].
 pub fn hex_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     buf.chunks(SEND_KEYS_CHUNK_BYTES)
         .map(|chunk| format_send_keys(pane_id, chunk))
@@ -402,10 +402,12 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// The pasted text inside a bracketed-paste payload (`ESC[200~ … ESC[201~`), or
 /// `None` when `buf` is not exactly one such payload — ordinary keystrokes, a
 /// payload split across writes, a marker in the middle (two pastes, or pasted
-/// marker text), or non-UTF-8 bytes. Those keep the key encoding.
+/// marker text), or non-UTF-8 bytes. [`ControlModeWriter`] refuses a write
+/// that opens with a marker and is not one, rather than typing it out.
 ///
-/// The markers are stripped: a server that takes a paste out of band
-/// ([`PaneInput::paste`]) is handed the bare text and re-adds them itself.
+/// The markers are stripped: the server is handed the bare text and re-adds
+/// them itself, only when the receiving app has bracketed paste on —
+/// [`PaneInput::paste`], or `tmux_paste_commands` where that declines.
 pub fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
     let inner = buf.strip_prefix(PASTE_START)?.strip_suffix(PASTE_END)?;
     let has_marker = |m: &[u8]| inner.windows(m.len()).any(|w| w == m);
@@ -421,15 +423,101 @@ pub trait PaneInput: Send + Sync {
     /// The ordered control-mode lines that type `buf` into `pane_id`.
     fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String>;
 
-    /// Deliver `text`, a whole bracketed paste, to `pane_id` some other way
-    /// than typing it, or `None` where a paste is typed like anything else. An
-    /// `Err` falls back to typing it: a degraded paste beats a dropped one.
+    /// Deliver `text`, a whole bracketed paste, to `pane_id` out of band, or
+    /// `None` where the server pastes through control mode itself
+    /// (`tmux_paste_commands`). An `Err` drops the paste: typing it out instead
+    /// would make every CR in it `Enter`.
     fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>>;
+}
+
+/// Max text bytes per `set-buffer` line of `tmux_paste_commands`. Every
+/// escape `tmux_quote` writes is at most four characters for one byte, so the
+/// line stays within the budget [`SEND_KEYS_CHUNK_BYTES`] keeps `send-keys` to.
+const SET_BUFFER_CHUNK_BYTES: usize = 384;
+
+/// Split `text` into pieces of at most `max` bytes, never inside a character.
+fn chunks_on_char_boundaries(text: &str, max: usize) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + max).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
+}
+
+/// Double-quote `s` as one tmux command argument that survives a control-mode
+/// line: tmux's parser reads `\n`, `\r`, `\t` and `\NNN` inside `"…"` (since
+/// 3.0), so no raw line break ends the line early, and `$`/`~` are escaped
+/// because tmux expands them there. A C1 control is written as `\u00NN`.
+fn tmux_quote(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' | '"' | '$' | '~' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_ascii_control() => write!(out, "\\{:03o}", c as u32).unwrap(),
+            c if c.is_control() => write!(out, "\\u{:04x}", c as u32).unwrap(),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The control-mode lines that paste `text` into `pane_id` on a server that
+/// takes no paste out of band.
+///
+/// The text goes into a buffer and `paste-buffer -p` puts it in the pane, so it
+/// is **the server** that decides the markers: they are written only when the
+/// pane's app has mode 2004 on, from its own record of the pane. thurbox's grid
+/// cannot answer that — a pane adopted after a restart never showed this
+/// process the `ESC[?2004h` that turned the mode on. `-r` keeps line feeds as
+/// they are (tmux would turn each into a CR) and `-d` deletes the buffer once
+/// pasted.
+///
+/// The buffer is this paste's alone — process id and a sequence number — since
+/// two interfaces pasting into one pane over two connections would otherwise
+/// interleave their `set-buffer -a` and `paste-buffer -d` on one buffer.
+fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
+    static PASTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let buffer = format!(
+        "thurbox-paste-{}-{}",
+        std::process::id(),
+        PASTES.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut cmds: Vec<String> = chunks_on_char_boundaries(text, SET_BUFFER_CHUNK_BYTES)
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let append = if i == 0 { "" } else { " -a" };
+            format!("set-buffer{append} -b {buffer} -- {}\n", tmux_quote(chunk))
+        })
+        .collect();
+    cmds.push(format!("paste-buffer -d -p -r -b {buffer} -t {pane_id}\n"));
+    cmds
 }
 
 /// Per-pane writer that sends input via control-mode `send-keys` through the
 /// shared control stdin, encoded the way the server's adapter says
 /// ([`PaneInput`]).
+///
+/// A write that opens with `ESC[200~` is a paste, and a paste is never typed
+/// out: in a key encoding every CR is `Enter`, so a paste typed out runs each
+/// line it holds. It goes to the server's own paste path instead, which frames
+/// it only for an app that asked; one that is not a single clean frame, or that
+/// the server could not take, is dropped with a warning.
 pub struct ControlModeWriter {
     pub stdin: Arc<Mutex<std::process::ChildStdin>>,
     pub pane_id: String,
@@ -441,18 +529,32 @@ impl Write for ControlModeWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        if let Some(text) = bracketed_paste_text(buf) {
+        // `Ok` either way for a paste that is dropped: an error here ends the
+        // writer task, and with it every later keystroke to this pane.
+        let cmds = if buf.starts_with(PASTE_START) {
+            let Some(text) = bracketed_paste_text(buf) else {
+                warn!("dropped a paste that is not one bracketed frame");
+                return Ok(buf.len());
+            };
+            if text.is_empty() {
+                return Ok(buf.len());
+            }
             match self.input.paste(&self.pane_id, text) {
                 Some(Ok(())) => return Ok(buf.len()),
-                Some(Err(e)) => warn!("out-of-band paste failed, falling back to send-keys: {e:#}"),
-                None => {}
+                Some(Err(e)) => {
+                    warn!("out-of-band paste failed; the paste is dropped: {e:#}");
+                    return Ok(buf.len());
+                }
+                None => tmux_paste_commands(&self.pane_id, text),
             }
-        }
+        } else {
+            self.input.send_keys(&self.pane_id, buf)
+        };
         let mut stdin = self
             .stdin
             .lock()
             .map_err(|e| std::io::Error::other(format!("stdin lock: {e}")))?;
-        for cmd in self.input.send_keys(&self.pane_id, buf) {
+        for cmd in cmds {
             stdin.write_all(cmd.as_bytes())?;
         }
         stdin.flush()?;
