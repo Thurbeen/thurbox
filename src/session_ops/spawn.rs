@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::session::{psmux_hook_rewrite_supported, ExtraRepo, HostDef, SessionConfig, SessionId};
+use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -311,7 +311,11 @@ pub fn spawn_session_headless_with_progress(
     // config-dir hook files on the host so it reports status remotely.
     // Degradation is best-effort-logged (headless has no info panel).
     let hooks_enabled = super::hooks_enabled(db);
-    let (adapted, hook_degraded) = adapt_def_for_launch(agent_def, host.as_ref(), hooks_enabled);
+    let signal = backends
+        .get(&choice.route)
+        .and_then(|backend| backend.hook_signal_command());
+    let (adapted, hook_degraded) =
+        adapt_def_for_launch(agent_def, host.as_ref(), signal.as_deref(), hooks_enabled);
     agent_def = adapted;
     if let Some(reason) = hook_degraded {
         tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
@@ -1084,8 +1088,8 @@ pub fn existing_launch_cwd(
 ///   a location the host can hold ([`remote_config_root`] — the *remote* home
 ///   for a home-anchored POSIX root, `$HOME/.config/<root-name>` for a Windows
 ///   one), copy the local file there, and substitute the rewritten arg.
-/// - **Strip as fallback**: on a `psmux` host (native Windows, while
-///   [`psmux_hook_rewrite_supported`] stays off), a POSIX config path outside
+/// - **Strip as fallback**: on a route whose backend has no status channel
+///   (`signal` is `None` — a psmux host today), a POSIX config path outside
 ///   the local home that a home-translation can't map, or a failed remote
 ///   copy/home lookup, drop the path **and its preceding flag** (e.g. the whole
 ///   `--settings <path>` pair) with a warning so the agent launches clean
@@ -1095,17 +1099,18 @@ pub fn existing_launch_cwd(
 /// are touched (and only existing local files are copied), so an arbitrary
 /// path in the agent's own args — a repo path, a user file — is never
 /// rewritten or shipped. Each shipped file also has its thurbox-managed hook
-/// commands rewritten for the host
-/// ([`super::builtin_hooks::rewrite_hook_signals_for_target`]): the local
-/// `thurbox-cli session signal` can't work there, but a tmux pane user option
-/// can — the local TUI receives it over its control-mode subscription (tmux)
-/// or pane-option polling (psmux), so remote sessions get live hooks-driven
-/// status. The same rewrite maps over every **literal** arg too, so a hook
+/// commands rewritten to `signal`, the command the row's backend reports state
+/// through ([`super::builtin_hooks::rewrite_hook_signals`]): the local
+/// `thurbox-cli session signal` can't work there, but the backend's own status
+/// channel can, so remote sessions get live hooks-driven status. The same
+/// rewrite maps over every **literal** arg too, so a hook
 /// command carried directly in the args (aider's
 /// `--notifications-command "thurbox-cli session signal --state blocked"`)
 /// also reports remotely instead of invoking a CLI that isn't there — it is
 /// marker-keyed and idempotent, so non-matching args pass through
-/// byte-identical.
+/// byte-identical. With no `signal` a literal is left as it is: there is no
+/// command it could report through, and the config files carrying the rest
+/// are stripped.
 ///
 /// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
 /// both paths launch a remote session with the same args.
@@ -1115,13 +1120,17 @@ pub fn existing_launch_cwd(
 /// means the session reports no status.
 pub(crate) fn adapt_agent_args_for_remote_with_report(
     host: &HostDef,
+    signal: Option<&str>,
     args: Vec<String>,
 ) -> (Vec<String>, Vec<String>) {
-    let target = super::builtin_hooks::remote_signal_target(host);
     let rewrite_literals = |args: Vec<String>| -> Vec<String> {
-        args.into_iter()
-            .map(|a| super::builtin_hooks::rewrite_hook_signals_for_target(&a, &target))
-            .collect()
+        match signal {
+            Some(command) => args
+                .into_iter()
+                .map(|a| super::builtin_hooks::rewrite_hook_signals(&a, command))
+                .collect(),
+            None => args,
+        }
     };
     let Some(config_root) = crate::paths::config_file()
         .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
@@ -1135,13 +1144,13 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
     let args = rewrite_config_path_args(args, &config_root, |local_path| {
         let materialized = (|| {
             let root = remote_root
-                .get_or_insert_with(|| remote_config_root(host, &config_root))
+                .get_or_insert_with(|| remote_config_root(host, signal, &config_root))
                 .clone()?;
+            let command = signal?;
             let remote_path = remote_config_path(&root, &config_root, local_path);
             // Read failure (missing/unreadable/non-file) → strip, as before.
             let contents = std::fs::read_to_string(local_path).ok()?;
-            let contents =
-                super::builtin_hooks::rewrite_hook_signals_for_target(&contents, &target);
+            let contents = super::builtin_hooks::rewrite_hook_signals(&contents, command);
             // A native Windows host has no `sh`/`cat` for the POSIX
             // stream copy, so the payload goes via the PowerShell variant.
             let copied = if host.is_windows() {
@@ -1178,6 +1187,7 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
 pub(crate) fn adapt_def_for_launch(
     mut def: crate::session::AgentDef,
     host: Option<&HostDef>,
+    signal: Option<&str>,
     hooks_enabled: bool,
 ) -> (
     crate::session::AgentDef,
@@ -1205,12 +1215,12 @@ pub(crate) fn adapt_def_for_launch(
             def.name
         );
     }
-    let (args, stripped) = adapt_agent_args_for_remote_with_report(h, def.args);
+    let (args, stripped) = adapt_agent_args_for_remote_with_report(h, signal, def.args);
     def.args = args;
     // A stripped config path outranks a provisioning note: it means the
     // agent's own hooks file never reached the host at all.
     let degraded = if stripped.is_empty() {
-        super::remote_hooks::provision_agent_hooks_on_host(h, &def.name, hooks_enabled)
+        super::remote_hooks::provision_agent_hooks_on_host(h, signal, &def.name, hooks_enabled)
     } else {
         Some(format!(
             "hooks config stripped for host '{}' (no status): {}",
@@ -1248,10 +1258,10 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
 
 /// Where the local thurbox config root lands on `host`, or `None` when no
 /// remote location can hold it (→ strip the args instead):
-/// - a `psmux` (native-Windows) host maps onto
-///   `%USERPROFILE%/.config/<root-name>` — dev/release isolation carries over
-///   via the root's final component — but only once
-///   [`psmux_hook_rewrite_supported`] is flipped;
+/// - nowhere, when the row's backend has no status channel (`signal` is
+///   `None`): the files would carry hooks with nothing to report through;
+/// - a native-Windows host maps onto `%USERPROFILE%/.config/<root-name>` —
+///   dev/release isolation carries over via the root's final component;
 /// - a **Windows-local** root (`C:\Users\me\AppData\Roaming\thurbox`, a Windows
 ///   TUI driving a POSIX host) has no absolute counterpart to mirror, so it
 ///   maps onto `$HOME/.config/<root-name>` there — same shape as the psmux
@@ -1260,16 +1270,16 @@ fn def_references_home(def: &crate::session::AgentDef) -> bool {
 ///   when local and remote `$HOME` agree — the common same-user WSL/devbox
 ///   case);
 /// - a POSIX root outside the local home is mirrored at the same absolute path.
-fn remote_config_root(host: &HostDef, config_root: &str) -> Option<String> {
+fn remote_config_root(host: &HostDef, signal: Option<&str>, config_root: &str) -> Option<String> {
+    if signal.is_none() {
+        tracing::warn!(
+            "stripping local agent-config args for host '{}': its backend reports no \
+             hook status",
+            host.name
+        );
+        return None;
+    }
     if host.is_windows() {
-        if !psmux_hook_rewrite_supported() {
-            tracing::warn!(
-                "stripping local agent-config args for host '{}': psmux hook rewrite \
-                 is not enabled",
-                host.name
-            );
-            return None;
-        }
         return match crate::git::remote_home_windows(host) {
             Ok(home) => Some(format!("{home}/.config/{}", root_leaf_name(config_root))),
             Err(e) => {
@@ -1649,17 +1659,21 @@ mod tests {
             .map(String::from)
             .into();
         assert_eq!(
-            adapt_agent_args_for_remote_with_report(&host, args.clone()).0,
+            adapt_agent_args_for_remote_with_report(&host, Some(SIGNAL), args.clone()).0,
             args
         );
     }
+
+    /// A backend's hook command, as one would answer it.
+    const SIGNAL: &str = "probe-signal --pane-of-caller ";
 
     #[test]
     fn adapt_agent_args_rewrites_literal_signal_commands() {
         // aider carries its hook as a literal arg (`--notifications-command
         // "thurbox-cli session signal --state blocked"`), not a config-file
-        // path — the remote adaptation must rewrite it to the pane-option form
-        // or the host invokes a CLI that isn't there.
+        // path — the remote adaptation must rewrite it to the command the
+        // row's backend reports through, or the host invokes a CLI that isn't
+        // there.
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let host = HostDef {
@@ -1674,28 +1688,35 @@ mod tests {
         ]
         .map(String::from)
         .into();
-        let out = adapt_agent_args_for_remote_with_report(&host, args.clone()).0;
-        assert_eq!(
-            out,
-            [
-                "--notifications",
-                "--notifications-command",
-                "tmux set-option -p @thurbox_state blocked",
-            ]
-            .map(String::from)
-        );
+        let out = adapt_agent_args_for_remote_with_report(&host, Some(SIGNAL), args.clone()).0;
+        assert_eq!(out[2], format!("{SIGNAL}blocked"));
 
-        // A psmux host gets the socket-explicit psmux form (psmux has no
-        // in-pane `$TMUX` socket resolution).
-        let psmux_host = HostDef {
-            name: "winbox".into(),
-            destination: "user@winbox".into(),
-            multiplexer: Some("psmux".into()),
-            socket: Some("tb".into()),
+        // A backend with no status channel has nothing to rewrite to.
+        let out = adapt_agent_args_for_remote_with_report(&host, None, args.clone()).0;
+        assert_eq!(out, args);
+    }
+
+    #[test]
+    fn a_route_with_no_status_channel_ships_no_hook_config() {
+        // The hooks file would carry commands with nothing to report through,
+        // so the flag and its path are stripped and named — and no ssh round
+        // trip is made to find where it would have gone.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let config = crate::paths::config_file().unwrap();
+        let root = config.parent().unwrap();
+        let settings = root.join("hooks/claude.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+        let host = HostDef {
+            name: "nonexistent-host".into(),
+            destination: "user@nonexistent-host".into(),
             ..Default::default()
         };
-        let out = adapt_agent_args_for_remote_with_report(&psmux_host, args).0;
-        assert_eq!(out[2], "psmux -L tb set-option -p @thurbox_state blocked");
+        let args = vec!["--settings".to_string(), settings.display().to_string()];
+        let (out, stripped) = adapt_agent_args_for_remote_with_report(&host, None, args);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(stripped, [settings.display().to_string()]);
     }
 
     #[test]

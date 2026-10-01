@@ -494,7 +494,7 @@ pub fn worktrees_directory() -> Option<PathBuf> {
 ///
 /// [`relocated_data_dir`] answers the narrower "was this instance *moved*";
 /// this answers "where is it", which is what a consumer comparing against
-/// somebody else's recorded data dir needs (`backend::tmux_compat::socket::socket_for`, deciding
+/// somebody else's recorded data dir needs (`backend::instance::socket_for`, deciding
 /// whether an inherited socket still belongs to this instance).
 pub fn data_directory() -> Option<PathBuf> {
     data_app_dir()

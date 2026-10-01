@@ -206,12 +206,16 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
-    let armed = thurbox::backend::tmux_compat::server::ensure_automation_heartbeat(
-        &thurbox::backend::tmux::TmuxBackend::new(),
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let armed = thurbox::backend::SessionBackend::ensure_heartbeat(
+        &backend,
         &dir.path().join("thurbox-cli"),
+        &["automation".to_string(), "tick".to_string()],
+        std::time::Duration::from_secs(60),
     );
     let names = window_names();
-    let running = thurbox::backend::tmux_compat::server::automation_heartbeat_running();
+    let running =
+        thurbox::backend::SessionBackend::heartbeat_running(&backend).expect("the server answers");
 
     if let Err(e) = armed {
         panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");

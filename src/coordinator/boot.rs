@@ -174,7 +174,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     }
     startup.extension_heal_ms = phase.elapsed().as_millis() as u64;
 
-    // The tmux heartbeat keeper, so a schedule keeps firing after this exits —
+    // The heartbeat, kept by this machine's backend, so a schedule keeps
+    // firing after this exits —
     // and, while it runs, at the keeper's 60s cadence rather than not at all.
     // Best-effort: a missing or old tmux just means no headless firing. Skipped
     // when the feature is off, exactly as v1 skips it.
@@ -184,11 +185,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // install on PATH (ADR-24).
     thurbox::session_ops::host_cli::advertise_running_cli();
     if thurbox::session::settings::global().features.automations {
-        let cli = thurbox::paths::resolve_cli_binary();
-        if let Err(e) = thurbox::backend::tmux_compat::server::ensure_automation_heartbeat(
-            backends.default_backend().as_ref(),
-            &cli,
-        ) {
+        if let Err(e) = thurbox::session_ops::arm_heartbeat(&backends) {
             tracing::warn!("could not arm the automation heartbeat: {e}");
         }
     }

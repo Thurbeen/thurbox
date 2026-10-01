@@ -469,7 +469,7 @@ fn dispatch(
 ) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action, db)?,
-        Command::Agent { action } => agents::run(action, db)?,
+        Command::Agent { action } => agents::run(action, db, backends)?,
         Command::Session { action } => sessions::run(action, db, backends)?,
         Command::Automation { action } => automations::run(action, db, backends)?,
         Command::Task { action } => tasks::run(action, db, backends)?,
@@ -484,7 +484,7 @@ fn dispatch(
         // written as each change lands. Handled before dispatch for that
         // reason — see `run`.
         Command::Watch(_) => unreachable!("handled in run(), which owns the stream"),
-        Command::Runtime { action } => runtime::run(action),
+        Command::Runtime { action } => runtime::run(action, backends),
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action)?,
         // Reads the machine, not the database: what is installed is not

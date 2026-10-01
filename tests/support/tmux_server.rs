@@ -62,7 +62,7 @@ impl TmuxServer {
         let server = Self::private(socket);
         std::env::set_var("TMUX_TMPDIR", server.tmpdir());
         std::env::set_var(
-            thurbox::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV,
+            thurbox::backend::instance::SOCKET_OVERRIDE_ENV,
             &server.socket,
         );
         // Cleared, not merely overridden: thurbox tags an injected socket with
@@ -70,7 +70,7 @@ impl TmuxServer {
         // inherits a tag naming the operator's instance. `socket_for` then
         // reads the override above as inherited and derives a socket from this
         // test's own data dir — a server no `kill-server` here names.
-        std::env::remove_var(thurbox::backend::tmux_compat::socket::SOCKET_OWNER_ENV);
+        std::env::remove_var(thurbox::backend::instance::SOCKET_OWNER_ENV);
         server
     }
 
@@ -113,10 +113,10 @@ impl TmuxServer {
     pub fn scope<'c>(&self, cmd: &'c mut Command) -> &'c mut Command {
         cmd.env("TMUX_TMPDIR", self.tmpdir());
         cmd.env(
-            thurbox::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV,
+            thurbox::backend::instance::SOCKET_OVERRIDE_ENV,
             &self.socket,
         );
-        cmd.env_remove(thurbox::backend::tmux_compat::socket::SOCKET_OWNER_ENV)
+        cmd.env_remove(thurbox::backend::instance::SOCKET_OWNER_ENV)
     }
 
     /// `tmux <args>` on this server.

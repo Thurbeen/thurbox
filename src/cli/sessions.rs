@@ -637,7 +637,7 @@ pub fn run(
         } => set_reports_as(db, &session, agent.as_deref(), clear),
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
-        Action::Signal { state, session } => run_signal(db, state, session),
+        Action::Signal { state, session } => run_signal(db, backends, state, session),
         Action::BindCodex => run_bind_codex(db),
     }
 }
@@ -920,7 +920,7 @@ fn run_create(
             "backend_id": res.backend_id,
             "backend_type": res.backend_type,
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::tmux_compat::socket::local_socket_name(),
+            "tmux_socket": crate::backend::instance::local_socket_name(),
             "cwd": res.cwd.display().to_string(),
             "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             "hook_failures": res.hook_failures,
@@ -1237,6 +1237,7 @@ fn run_fork(
 
 fn run_signal(
     db: &Database,
+    backends: &super::Backends<'_>,
     state: String,
     session: Option<String>,
 ) -> Result<CommandOutput, CommandError> {
@@ -1259,10 +1260,15 @@ fn run_signal(
     if session.is_none() {
         super::delivery::remember_claude_socket(db, &target);
     }
-    // The same state on the pane, for a peer's live subscription:
-    // best-effort, and nothing at all outside tmux.
-    if let Err(e) = crate::backend::tmux_compat::server::set_own_pane_state(&state) {
-        tracing::debug!("could not set the pane state option: {e:#}");
+    // The same state in the row's backend, on the row's own pane — the
+    // channel a peer attached to that backend reads live, and the one the
+    // headless poll reads, so neither later reports the state this replaced.
+    // Best-effort: a backend with no status channel has nowhere to put it.
+    let recorded = crate::session_ops::windows::backend_for(backends.get(), &target.backend_type)
+        .map_err(anyhow::Error::msg)
+        .and_then(|backend| backend.record_hook_state(&target.backend_id, &state));
+    if let Err(e) = recorded {
+        tracing::debug!("could not record the state in the row's backend: {e:#}");
     }
     Ok(CommandOutput::new(
         json!({
@@ -2144,7 +2150,7 @@ fn existing_session_output(
             "agent_session_id": session.agent_session_id,
             "backend_id": session.backend_id,
             "worktrees": session.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::tmux_compat::socket::local_socket_name(),
+            "tmux_socket": crate::backend::instance::local_socket_name(),
             "cwd": session.cwd.as_ref().map(|p| p.display().to_string()),
             "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
             "hook_failures": Vec::<String>::new(),

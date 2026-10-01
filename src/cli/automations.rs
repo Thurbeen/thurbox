@@ -114,7 +114,7 @@ pub enum Action {
         limit: Option<u32>,
     },
     /// Fire all currently-due automations headlessly (no TUI required). This is
-    /// the entry point the tmux heartbeat keeper and any systemd/cron timer call.
+    /// the entry point the heartbeat and any systemd/cron timer call.
     Tick,
 }
 
@@ -458,8 +458,8 @@ fn render_tick(v: &Value) -> String {
 /// Fire every due automation headlessly: claim (atomic CAS, so this is safe to
 /// run alongside the TUI and other tickers), perform the action, record the run.
 fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Value, String> {
-    // Self-heal active extensions before firing: this runs from the tmux
-    // heartbeat keeper every 60s, so an extension's deleted session/automation is
+    // Self-heal active extensions before firing: this runs from the
+    // heartbeat every 60s, so an extension's deleted session/automation is
     // recreated even with the TUI closed. Best-effort — heal messages are
     // reported but never abort the due-automation pass below.
     let healed = crate::session_ops::heal_active_extensions(db, backends);
@@ -505,23 +505,17 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             "detail": detail,
         }));
     }
-    // Headless remote-status poll: the live control-mode channels
-    // (subscription / psmux poller) die with the TUI, so this keeps remote
-    // sessions' hook states flowing at the heartbeat's 60 s cadence — the TUI
-    // stays the sub-second channel while open. AFTER the due-automation pass:
-    // an unreachable host costs up to ConnectTimeout per attempt, which must
-    // never delay a scheduled firing. Skipped when the built-in hooks
-    // extension is opted out (nothing sets the pane option then).
+    // Headless status poll: the live channels ride an attached interface and
+    // die with it, so this keeps every route's hook states flowing at the
+    // heartbeat's cadence — each read from the backend that serves the route,
+    // the interface staying the sub-second channel while open. AFTER the
+    // due-automation pass: an unreachable host costs up to ConnectTimeout per
+    // attempt, which must never delay a scheduled firing. Skipped when the
+    // built-in hooks extension is opted out (no hook reports anything then).
     if crate::session_ops::hooks_enabled(db) {
-        let polled = crate::session_ops::remote_hooks::poll_remote_hook_states(db, backends);
+        let polled = crate::session_ops::remote_hooks::poll_hook_states(db, backends);
         if polled > 0 {
-            tracing::info!("remote status poll: {polled} hook state(s) updated");
-        }
-        // The same option on this machine's own panes: a session a peer created
-        // *here* had its hooks rewritten to set it, and nothing local read it.
-        let polled = poll_local_pane_states(db);
-        if polled > 0 {
-            tracing::info!("local pane status poll: {polled} hook state(s) updated");
+            tracing::info!("status poll: {polled} hook state(s) updated");
         }
     }
     // Shared hosts, mirrored at the heartbeat's cadence so `session list`
@@ -551,60 +545,6 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
         "reaped": reaped,
         "teardowns": teardowns,
     }))
-}
-
-/// Write the `@thurbox_state` pane option of every live local pane into the
-/// hook columns, for sessions whose rows are here. Returns how many changed.
-fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::backend::tmux_compat::server::list_local_hook_states() {
-        Ok(states) if !states.is_empty() => states,
-        Ok(_) => return 0,
-        Err(e) => {
-            tracing::debug!("local pane status poll skipped: {e:#}");
-            return 0;
-        }
-    };
-    let Ok(sessions) = db.list_active_sessions() else {
-        return 0;
-    };
-    // The server polled is this machine's default; another local server's
-    // panes reuse the same ids and are not its.
-    let default = crate::session::Multiplexer::platform_default();
-    let served = crate::session::Route::local(Some(default));
-    let hook_rows = db.load_hook_states().unwrap_or_default();
-    let mut written = 0;
-    for (pane, state) in states {
-        if !crate::session::HOOK_STATES.contains(&state.as_str()) {
-            continue;
-        }
-        let Some(session) = local_owner(&sessions, &served, default, &pane) else {
-            continue;
-        };
-        if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
-            continue;
-        }
-        // `Ok(false)` is a parked session refusing a state it has no process
-        // to be in — not a write that failed, and not one that happened.
-        if matches!(db.set_hook_state(session.id, &state), Ok(true)) {
-            written += 1;
-        }
-    }
-    written
-}
-
-/// The row `pane` on the local server `served` belongs to: a row whose route,
-/// settled against this machine's `default`, is that server's.
-fn local_owner<'a>(
-    sessions: &'a [crate::sync::state::SharedSession],
-    served: &crate::session::Route,
-    default: crate::session::Multiplexer,
-    pane: &str,
-) -> Option<&'a crate::sync::state::SharedSession> {
-    sessions.iter().find(|s| {
-        s.backend_id == pane
-            && crate::session::Route::parse(&s.backend_type)
-                .is_ok_and(|route| route.qualify(default, None) == *served)
-    })
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.
@@ -845,9 +785,10 @@ fn automation_to_json(a: &Automation) -> Value {
     })
 }
 
-/// Best-effort: ensure the tmux heartbeat keeper is running so the automation
-/// fires even when no TUI is attached. Failures (e.g. tmux missing) are
-/// non-fatal — the automation still works while the TUI is up.
+/// Best-effort: ask this machine's backend — the registry's default — to keep
+/// the heartbeat running, so the automation fires even when no interface is
+/// attached. Failures (e.g. its multiplexer missing) are non-fatal — the
+/// automation still works while the interface is up.
 ///
 /// Gated on `[features] automations`: when disabled the TUI neither fires
 /// schedules nor arms the heartbeat, so the CLI must not arm it either (it
@@ -856,11 +797,7 @@ pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry) {
     if !crate::session::settings::global().features.automations {
         return;
     }
-    let cli = crate::paths::resolve_cli_binary();
-    if let Err(e) = crate::backend::tmux_compat::server::ensure_automation_heartbeat(
-        backends.default_backend().as_ref(),
-        &cli,
-    ) {
+    if let Err(e) = crate::session_ops::arm_heartbeat(backends) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
     }
 }
@@ -879,54 +816,6 @@ fn run_to_json(r: &AutomationRun) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// With tmux and psmux both able to host local sessions, a pane id on the
-    /// default server is only that server's: a row on the other one with the
-    /// same id is not its owner, and an unqualified local row is the
-    /// default's.
-    #[test]
-    fn a_local_pane_state_belongs_only_to_a_row_on_the_server_polled() {
-        use crate::session::{Multiplexer, Route};
-        let row = |backend_type: &str| crate::sync::state::SharedSession {
-            id: crate::session::SessionId::default(),
-            name: backend_type.into(),
-            agent: "claude".into(),
-            backend_id: "%1".into(),
-            backend_type: backend_type.into(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            worktrees: Vec::new(),
-            shell_backend_id: None,
-            parent_session_id: None,
-            display_order: None,
-            tombstone: false,
-            tombstone_at: None,
-        };
-        for default in [Multiplexer::Tmux, Multiplexer::Psmux] {
-            let other = Multiplexer::ALL
-                .into_iter()
-                .find(|m| *m != default)
-                .unwrap();
-            let served = Route::local(Some(default));
-            let sessions = vec![
-                row(&Route::local(Some(other)).format()),
-                row(&served.format()),
-            ];
-            assert_eq!(
-                local_owner(&sessions, &served, default, "%1").map(|s| s.name.as_str()),
-                Some(served.format().as_str()),
-            );
-            let legacy = vec![row(&Route::local(Some(other)).format()), row("local-tmux")];
-            // `local-tmux` is whatever this machine's default is.
-            assert_eq!(
-                local_owner(&legacy, &served, default, "%1").map(|s| s.name.as_str()),
-                Some("local-tmux"),
-                "{default:?}"
-            );
-            assert!(local_owner(&sessions, &served, default, "%2").is_none());
-        }
-    }
 
     #[test]
     fn tick_reports_fired_and_skipped_arrays() {

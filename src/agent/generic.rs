@@ -42,12 +42,23 @@ impl AgentProvider for GenericProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::agent_config::builtin_registry;
+    use crate::session::AgentDef;
+
+    /// Claude's arg groups, as `agents.toml` declares them: the provider is
+    /// tested against a definition, not against the registry that loads one.
+    fn claude() -> AgentDef {
+        AgentDef {
+            name: "claude".into(),
+            command: "claude".into(),
+            resume_args: vec!["--resume".into(), "{id}".into()],
+            new_session_args: vec!["--session-id".into(), "{id}".into()],
+            ..AgentDef::default()
+        }
+    }
 
     #[test]
     fn claude_provider_builds_resume_without_model() {
-        let reg = builtin_registry();
-        let provider = GenericProvider::new(reg.get("claude").unwrap().clone());
+        let provider = GenericProvider::new(claude());
         assert_eq!(provider.command(), "claude");
 
         let config = SessionConfig {
@@ -61,8 +72,7 @@ mod tests {
 
     #[test]
     fn fresh_session_pins_id_no_model() {
-        let reg = builtin_registry();
-        let provider = GenericProvider::new(reg.get("claude").unwrap().clone());
+        let provider = GenericProvider::new(claude());
 
         let config = SessionConfig {
             agent_session_id: Some("new-id".into()),

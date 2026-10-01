@@ -35,6 +35,7 @@ fn the_recording_backend_keeps_the_contract() {
     backend_contract::suite(&*fake);
     backend_contract::lifecycle(&*fake);
     backend_contract::pane_io(&*fake);
+    backend_contract::status(&*fake);
     backend_contract::shutdown_is_final(&*fake);
 }
 
@@ -54,6 +55,7 @@ fn the_tmux_backend_keeps_the_contract() {
     let headless = TmuxBackend::new();
     backend_contract::lifecycle(&headless);
     backend_contract::pane_io(&headless);
+    backend_contract::status(&headless);
     let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
     assert_eq!(
         String::from_utf8_lossy(&clients.stdout).trim(),

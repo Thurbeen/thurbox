@@ -439,6 +439,7 @@ fn respawn(
         db,
         &session,
         None,
+        None,
         hooks_enabled,
         recipe.as_ref(),
         &env,

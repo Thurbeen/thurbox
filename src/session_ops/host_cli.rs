@@ -168,7 +168,7 @@ fn is_fresh(verdict: &Verdict) -> bool {
 fn remember_socket(host: &HostDef, verdict: &Usable) {
     if let Usable::Yes(cli) = verdict {
         if let Some(socket) = &cli.tmux_socket {
-            crate::backend::tmux_compat::socket::learn_host_socket(host, socket);
+            crate::backend::instance::learn_host_socket(host, socket);
         }
     }
 }

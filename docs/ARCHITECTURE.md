@@ -534,7 +534,7 @@ remembered pane id; see ADR-25.
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
-`THURBOX_DATA_DIR` has relocated (`backend::tmux_compat::socket::socket_for`). The data dir is
+`THURBOX_DATA_DIR` has relocated (`backend::instance::socket_for`). The data dir is
 the anchor because it holds the database, and the database is the record of
 which sessions exist: an instance keeping its own record of them has no
 business creating their windows on the operator's server — which is what made
@@ -2360,7 +2360,7 @@ The local picker offers every registered multiplexer, so psmux appears on a
 POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
 and the hook-state listing still run this machine's (or the host's) default
 binary from `tmux_compat::server`, and the socket naming lives in
-`tmux_compat::socket`; they are the status-delivery step's to move behind the
+`backend::instance`; they are the status-delivery step's to move behind the
 contract, and are listed as such in `TRANSITIONAL`. The heartbeat now only
 ensures its session exists: with no adapter handed to it, it cannot know which
 multiplexer's config to apply, and every backend applies its config before it

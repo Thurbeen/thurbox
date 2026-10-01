@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use serde_json::Value;
-use thurbox::backend::WindowRole;
+use thurbox::backend::{SessionBackend, WindowRole};
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
@@ -199,6 +199,9 @@ fn cli(
         Some(thurbox::cli::Command::Automation { action }) => {
             thurbox::cli::automations::run(action, db, backends)?
         }
+        Some(thurbox::cli::Command::Runtime { action }) => {
+            thurbox::cli::runtime::run(action, backends)
+        }
         other => panic!("not a command this test drives: {other:?}"),
     };
     match output.failure {
@@ -308,7 +311,8 @@ fn automation_tick_records_each_routes_own_hook_state() {
         .open("tb-down", &down.to_string(), WindowRole::Agent);
     routes.down.hook(&pane, "done");
     routes.down.set_reachable(false);
-    db.set_hook_state(down, "working").expect("seed a held state");
+    db.set_hook_state(down, "working")
+        .expect("seed a held state");
 
     let backends = thurbox::cli::Backends::ready(routes.registry());
     cli(&db, &backends, &["automation", "tick"]).expect("automation tick");
@@ -416,8 +420,30 @@ fn the_heartbeat_is_kept_by_the_local_backend() {
 
     instance.assert_untouched("arming the heartbeat");
     assert!(
-        here.calls().iter().any(|c| c.starts_with("ensure_heartbeat")),
+        here.calls()
+            .iter()
+            .any(|c| c.starts_with("ensure_heartbeat")),
         "the local backend was never asked to keep the heartbeat; calls: {:?}",
         here.calls()
     );
+
+    // What `runtime` reports and stops is that backend's heartbeat, and each
+    // local backend answers for its own status channel.
+    let status = cli(&db, &backends, &["runtime", "status"]).expect("runtime status");
+    assert_eq!(
+        status["automation_heartbeat"],
+        Value::Bool(true),
+        "{status}"
+    );
+    assert_eq!(status["backend"], Value::String(here.name().to_string()));
+    assert_eq!(
+        status["hook_status"][local_probe().format()],
+        Value::Bool(true),
+        "{status}"
+    );
+    let stopped = cli(&db, &backends, &["runtime", "stop"]).expect("runtime stop");
+    assert_eq!(stopped["stopped"], Value::Bool(true));
+    let status = cli(&db, &backends, &["runtime", "status"]).expect("runtime status");
+    assert_eq!(status["automation_heartbeat"], Value::Bool(false));
+    instance.assert_untouched("runtime status and stop");
 }

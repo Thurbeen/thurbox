@@ -2,7 +2,7 @@
 //!
 //! thurbox injects `THURBOX_SOCKET` **and** `THURBOX_SOCKET_FOR` into every
 //! pane it spawns, so a suite run from inside a thurbox session — which is how
-//! this repository is developed — inherits both. `backend::tmux_compat::socket::socket_for`
+//! this repository is developed — inherits both. `backend::instance::socket_for`
 //! reads the pair: an override tagged for somebody else's data directory is an
 //! inherited one and is dropped, and an instance that also relocated
 //! `THURBOX_DATA_DIR` then lands on a socket *derived* from that directory.

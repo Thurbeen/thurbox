@@ -28,6 +28,9 @@ use thurbox::backend::{
 };
 use thurbox::session::Route;
 
+/// What the fake hands a hook to report through, the state word to follow.
+pub const SIGNAL_COMMAND: &str = "thurbox-probe-signal";
+
 /// One window, as the fake multiplexer holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
@@ -63,6 +66,8 @@ struct State {
     calls: Vec<String>,
     /// Hook reports not yet drained by an attached interface.
     hook_events: Vec<(String, String)>,
+    /// What the heartbeat runs, while one is kept.
+    heartbeat: Option<String>,
 }
 
 /// See the module doc.
@@ -164,7 +169,9 @@ impl RecordingBackend {
             .find(|w| w.pane == pane)
             .unwrap_or_else(|| panic!("no pane {pane} to report from"));
         window.hook = Some(state.to_string());
-        state_.hook_events.push((pane.to_string(), state.to_string()));
+        state_
+            .hook_events
+            .push((pane.to_string(), state.to_string()));
     }
 
     fn lock(&self, call: String) -> Result<std::sync::MutexGuard<'_, State>> {
@@ -553,8 +560,65 @@ impl SessionBackend for RecordingBackend {
         Ok(state.windows.iter().map(|w| w.pane.clone()).collect())
     }
 
+    /// A command of the fake's own, nothing like tmux's: what a backend whose
+    /// panes report somewhere other than a pane option would hand the hooks.
+    fn hook_signal_command(&self) -> Option<String> {
+        Some(format!("{SIGNAL_COMMAND} "))
+    }
+
+    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()> {
+        let mut state_ = self.lock(format!("record_hook_state {pane} {state}"))?;
+        state_.find(pane)?;
+        let window = state_
+            .windows
+            .iter_mut()
+            .find(|w| w.pane == pane)
+            .expect("found above");
+        window.hook = Some(state.to_string());
+        state_
+            .hook_events
+            .push((pane.to_string(), state.to_string()));
+        Ok(())
+    }
+
+    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+        let state = self.lock("hook_states".into())?;
+        Ok(state
+            .windows
+            .iter()
+            .filter_map(|w| Some((w.pane.clone(), w.hook.clone()?)))
+            .collect())
+    }
+
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         std::mem::take(&mut self.state.lock().unwrap().hook_events)
+    }
+
+    fn ensure_heartbeat(
+        &self,
+        program: &Path,
+        args: &[String],
+        every: std::time::Duration,
+    ) -> Result<()> {
+        let command = std::iter::once(program.display().to_string())
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut state = self.lock(format!("ensure_heartbeat {command} {}s", every.as_secs()))?;
+        state.heartbeat.get_or_insert(command);
+        Ok(())
+    }
+
+    fn heartbeat_running(&self) -> Result<bool> {
+        Ok(self.lock("heartbeat_running".into())?.heartbeat.is_some())
+    }
+
+    fn stop_heartbeat(&self) -> Result<bool> {
+        Ok(self
+            .lock("stop_heartbeat".into())?
+            .heartbeat
+            .take()
+            .is_some())
     }
 
     fn shutdown(&self) {
