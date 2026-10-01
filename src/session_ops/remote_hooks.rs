@@ -803,6 +803,28 @@ mod tests {
         );
     }
 
+    /// An agent's hook file on a host holds one command. Once a launch on
+    /// another route of the host has shipped its own, the earlier one is no
+    /// longer what the file says, and a launch on that route ships it again
+    /// rather than boot an agent that reports through the other backend.
+    #[test]
+    fn a_cached_provisioning_is_forgotten_once_another_command_replaces_it() {
+        let host = HostDef {
+            name: "cache-replaced-host".into(),
+            destination: "user@cache-replaced-host.invalid".into(),
+            ..Default::default()
+        };
+        for signal in [SIGNAL, "other-mux signal "] {
+            cache_lock()
+                .provisioned
+                .insert(provision_key(&host, "opencode", signal));
+        }
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "opencode", true).is_some(),
+            "the file now carries the other route's command, and was taken as this one's"
+        );
+    }
+
     #[test]
     fn a_route_with_no_status_channel_is_provisioned_nothing() {
         let host = HostDef {

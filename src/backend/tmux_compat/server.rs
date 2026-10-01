@@ -4506,6 +4506,68 @@ mod tests {
         assert!(backend.hook_states().is_err());
     }
 
+    /// A multiplexer binary that answers every command it is not told about
+    /// with `stderr` and exit 1, and `list-windows` with `windows`.
+    #[cfg(unix)]
+    fn answering_mux(dir: &std::path::Path, windows: &str, stderr: &str) -> TestBackend {
+        use std::os::unix::fs::PermissionsExt;
+        let mux = dir.join("mux");
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *list-windows*) [ -n '{windows}' ] && {{ echo '{windows}'; exit 0; }} ;;\nesac\necho '{stderr}' >&2\nexit 1\n"
+        );
+        std::fs::write(&mux, script).unwrap();
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).unwrap();
+        TestBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy().into_owned()),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+        )
+    }
+
+    /// tmux prints `error connecting to` for a socket it cannot open while a
+    /// server is alive behind it — another user's, or a stale one. That is a
+    /// question nobody answered, so status and the heartbeat must say so
+    /// rather than report no states and no heartbeat.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_that_cannot_be_opened_is_no_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        for refused in [
+            "error connecting to /tmp/tmux-1/thurbox-test (Permission denied)",
+            "error connecting to /tmp/tmux-1/thurbox-test (Connection refused)",
+        ] {
+            let backend = answering_mux(dir.path(), "", refused);
+            assert!(backend.hook_states().is_err(), "hook_states: {refused}");
+            assert!(
+                backend.heartbeat_running().is_err(),
+                "heartbeat_running: {refused}"
+            );
+        }
+        for absent in [
+            "error connecting to /tmp/tmux-1/thurbox-test (No such file or directory)",
+            "can't find session: thurbox-test",
+        ] {
+            let backend = answering_mux(dir.path(), "", absent);
+            assert_eq!(backend.hook_states().unwrap(), Vec::new(), "{absent}");
+            assert!(!backend.heartbeat_running().unwrap(), "{absent}");
+        }
+    }
+
+    /// A kill that failed is not "there was none to stop".
+    #[cfg(unix)]
+    #[test]
+    fn a_heartbeat_that_could_not_be_killed_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = answering_mux(
+            dir.path(),
+            HEARTBEAT_WINDOW,
+            "error connecting to /tmp/tmux-1/thurbox-test (Permission denied)",
+        );
+        assert!(backend.heartbeat_running().unwrap());
+        assert!(backend.stop_heartbeat().is_err());
+    }
+
     /// The headless status poll reads an empty listing as "every pane quiet",
     /// so only the server's own "nothing here" may become one.
     #[test]
