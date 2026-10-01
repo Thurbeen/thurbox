@@ -1300,11 +1300,11 @@ impl Terminals {
         self.pane(surface)?.is_dead()
     }
 
-    /// The OSC 52 write the focused pane's app made, if it made one — and the
-    /// only pane whose writes are kept at all.
+    /// The OSC 52 writes the focused pane's app made since the last call,
+    /// oldest first — and the only pane whose writes are kept at all.
     ///
     /// `focused` is the surface raw input goes to, or `None` when no session
-    /// pane has the focus. Focus moving to another pane, or to none, revokes
+    /// pane is taking the keys (a modal or a field has them, say). Focus moving to another pane, or to none, revokes
     /// the old pane's gate before anything is read, so a background app — local
     /// or on a remote host — never writes the user's clipboard, and a write it
     /// made while hidden is not released when it is brought forward (see
@@ -1313,7 +1313,7 @@ impl Terminals {
     pub fn take_app_copy(
         &mut self,
         focused: Option<&str>,
-    ) -> Option<crate::backend::pane::AppCopyRequest> {
+    ) -> Vec<crate::backend::pane::AppCopyRequest> {
         let current = focused
             .and_then(|surface| self.pane(surface))
             .and_then(|pane| pane.wired())
@@ -1334,7 +1334,10 @@ impl Terminals {
             }
             self.app_copy_focus = current;
         }
-        self.app_copy_focus.as_ref()?.take()
+        self.app_copy_focus
+            .as_ref()
+            .map(|copy| copy.take())
+            .unwrap_or_default()
     }
 
     /// Where a surface was painted, and the parser it is showing.

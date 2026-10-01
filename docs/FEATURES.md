@@ -3144,7 +3144,9 @@ hands a control-mode client a selection), so it is the process that puts
 that copy on your clipboard, through the same native → OSC 52 path as
 `Ctrl+C`, with an `app copied N line(s)` toast.
 
-Only the **focused** session may do it — the pane your keystrokes go to.
+Only the **focused** session may do it — the pane your keystrokes go to,
+and not while a modal, a float or a field has the keys instead. If an app
+writes several times between two frames, the newest valid copy wins.
 A session working off screen, local or on a remote host, cannot replace
 what you just copied, and a write it made while hidden is not released
 when you bring it forward: the clipboard belongs to the machine you sit

@@ -108,19 +108,24 @@ impl App {
     ///
     /// tmux never hands a control-mode client a selection, so this process —
     /// the one on the user's machine reading the pane's bytes — is the only one
-    /// that can. Writes from any pane but the focused one are refused at the
-    /// pane (`Terminals::take_app_copy`). tmux's own paste buffer and its
-    /// `%paste-buffer-changed` for the same write are deliberately not acted
-    /// on: this is the one copy.
+    /// that can. Only the pane a keystroke would reach may write: any other,
+    /// and the focused one while a modal, a float or a field takes the keys,
+    /// is refused at the pane (`Terminals::take_app_copy`). Of the writes since
+    /// the last iteration, the newest that is a copy wins, as it would at a
+    /// terminal. tmux never sees the write (`set-clipboard external`), so there
+    /// is no second copy to suppress.
     pub(crate) fn forward_app_copy(&mut self) {
-        let Some(request) = self
-            .terminals
-            .take_app_copy(self.focused_surface.as_deref())
+        let takes_keys = !self.overlay_owns_input() && self.focused_wants_session_input();
+        let focused = self.focused_surface.as_deref().filter(|_| takes_keys);
+        let requests = self.terminals.take_app_copy(focused);
+        let Some(text) = requests
+            .iter()
+            .rev()
+            .find_map(|request| thurbox::clipboard::app_copy_text(&request.target, &request.data))
         else {
-            return;
-        };
-        let Some(text) = thurbox::clipboard::app_copy_text(&request.target, &request.data) else {
-            tracing::debug!("ignored an app's OSC 52 write that is not a copy");
+            if !requests.is_empty() {
+                tracing::debug!("ignored an app's OSC 52 write that is not a copy");
+            }
             return;
         };
         let message = match thurbox::clipboard::copy(

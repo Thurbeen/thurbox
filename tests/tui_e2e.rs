@@ -2656,6 +2656,62 @@ fn a_focused_apps_malformed_or_oversized_osc52_writes_change_nothing() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+#[test]
+fn a_valid_copy_survives_a_write_that_follows_it_and_is_refused() {
+    // Two writes in one burst — the clipboard, then the primary selection
+    // only — reach the forwarder in the same iteration. The refused second
+    // one must not cost the first.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let line = format!(
+        "{}; {}",
+        osc52_printf("c", &b64(b"tb-kept-copy")),
+        osc52_printf("p", &b64(b"tb-primary-only")),
+    );
+    tui.send(format!("{line}; echo tb-burst-\"\"done\r").as_bytes());
+    tui.wait_for("tb-burst-done");
+    tui.wait_until("the clipboard write at the outer terminal", |_| {
+        tui.raw_since(mark).contains(OSC52)
+    });
+    let out = settled_since(&tui, mark);
+    assert_eq!(osc52_payload(&out).as_deref(), Some("tb-kept-copy"));
+    assert_eq!(osc52_count(&out), 1, "wrote:\n{out:?}");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_app_behind_a_modal_cannot_write_the_clipboard() {
+    // A modal takes the keys, so the session behind it is not the one the
+    // user is in, for the clipboard as for typing. Nor is its write held
+    // until the modal closes.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let line = osc52_printf("c", &b64(b"tb-behind-modal"));
+    tui.send(format!("sleep 1; {line}; echo tb-modal-\"\"done\r").as_bytes());
+    let mark = tui.raw_len();
+    tui.send(F6);
+    // The modal's tab row; the footer always names "Settings".
+    tui.wait_for("Interface");
+    std::thread::sleep(Duration::from_millis(1500));
+    tui.send(ESC);
+    tui.wait_gone("Interface");
+    tui.wait_for("tb-modal-done");
+    let out = settled_since(&tui, mark);
+    assert_eq!(
+        osc52_count(&out),
+        0,
+        "an app behind a modal wrote the clipboard:\n{out:?}"
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 /// What the second session's app copies, once the test lets it.
 const BACKGROUND_COPY: &str = "tb-background-secret";
 

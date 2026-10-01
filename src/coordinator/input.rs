@@ -802,7 +802,7 @@ impl App {
 
     /// Whether a modal, a float or a pane's own field is taking typed input
     /// right now — somewhere a paste is typing, and a picture cannot go.
-    fn overlay_owns_input(&self) -> bool {
+    pub(crate) fn overlay_owns_input(&self) -> bool {
         self.modals.is_open() || self.grabbed.is_some() || self.focused_typing
     }
 

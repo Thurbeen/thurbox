@@ -129,6 +129,13 @@ pub struct AppCopyRequest {
     pub data: Vec<u8>,
 }
 
+/// How many OSC 52 writes a focused pane may have waiting at once. A few,
+/// rather than the newest, because which of them is a copy is decided later:
+/// a valid write followed in the same burst by one that will be refused (a
+/// primary-selection-only write, say) must still land. Past this the oldest
+/// go, so an app flooding the stream holds a bounded amount.
+const PENDING_APP_COPIES: usize = 8;
+
 /// The one gate between an app printing OSC 52 and the user's clipboard.
 ///
 /// A write is kept only while the pane holds a focus token, and handed out
@@ -144,8 +151,9 @@ pub struct AppCopyRequest {
 pub struct AppCopy {
     /// The token focus gave this pane; `0` while it has none.
     focus: AtomicU64,
-    /// The newest write made under a token, with that token.
-    pending: Mutex<Option<(u64, AppCopyRequest)>>,
+    /// The writes made since the last take, oldest first, each with the token
+    /// it was made under.
+    pending: Mutex<std::collections::VecDeque<(u64, AppCopyRequest)>>,
 }
 
 impl AppCopy {
@@ -153,7 +161,7 @@ impl AppCopy {
     /// discarding anything held from before.
     pub fn focus(&self, token: u64) {
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = None;
+            pending.clear();
         }
         self.focus.store(token, Ordering::Release);
     }
@@ -162,15 +170,22 @@ impl AppCopy {
     pub fn blur(&self) {
         self.focus.store(0, Ordering::Release);
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = None;
+            pending.clear();
         }
     }
 
-    /// The write made since the last call, if it was made under the token
-    /// the pane holds now.
-    pub fn take(&self) -> Option<AppCopyRequest> {
-        let (token, request) = self.pending.lock().ok()?.take()?;
-        (token != 0 && token == self.focus.load(Ordering::Acquire)).then_some(request)
+    /// The writes made since the last call under the token the pane holds
+    /// now, oldest first.
+    pub fn take(&self) -> Vec<AppCopyRequest> {
+        let held = self.focus.load(Ordering::Acquire);
+        let Ok(mut pending) = self.pending.lock() else {
+            return Vec::new();
+        };
+        pending
+            .drain(..)
+            .filter(|(token, _)| *token != 0 && *token == held)
+            .map(|(_, request)| request)
+            .collect()
     }
 
     fn offer(&self, target: &[u8], data: &[u8]) {
@@ -179,7 +194,10 @@ impl AppCopy {
             return;
         }
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some((
+            if pending.len() == PENDING_APP_COPIES {
+                pending.pop_front();
+            }
+            pending.push_back((
                 token,
                 AppCopyRequest {
                     target: target.to_vec(),
@@ -1798,24 +1816,38 @@ mod tests {
         };
 
         print_copy(&copy, "unfocused");
-        assert_eq!(copy.take(), None, "a pane without focus keeps nothing");
+        assert_eq!(copy.take(), [], "a pane without focus keeps nothing");
 
         copy.focus(1);
         print_copy(&copy, "focused");
-        assert_eq!(copy.take(), Some(request("focused")));
-        assert_eq!(copy.take(), None, "taken once");
+        print_copy(&copy, "and-again");
+        assert_eq!(copy.take(), [request("focused"), request("and-again")]);
+        assert_eq!(copy.take(), [], "taken once");
 
         // Made under focus, then focus left and came back: the write belongs
         // to a focus that ended.
         print_copy(&copy, "before-blur");
         copy.blur();
         copy.focus(2);
-        assert_eq!(copy.take(), None);
+        assert_eq!(copy.take(), []);
 
         // The reader read token 2, focus moved on to 3, then the write landed.
         copy.focus(3);
-        *copy.pending.lock().unwrap() = Some((2, request("raced")));
-        assert_eq!(copy.take(), None, "an old token's write is refused");
+        copy.pending
+            .lock()
+            .unwrap()
+            .push_back((2, request("raced")));
+        assert_eq!(copy.take(), [], "an old token's write is refused");
+
+        for i in 0..PENDING_APP_COPIES + 2 {
+            print_copy(&copy, &format!("flood-{i}"));
+        }
+        let kept = copy.take();
+        assert_eq!(kept.len(), PENDING_APP_COPIES, "a flood is bounded");
+        assert_eq!(
+            kept.last(),
+            Some(&request(&format!("flood-{}", PENDING_APP_COPIES + 1)))
+        );
     }
 
     #[test]
