@@ -145,7 +145,7 @@ enum ProvisionOutcome {
     Degraded(String),
 }
 
-/// Provisioning bookkeeping, keyed by `(backend_name, agent)`.
+/// Provisioning bookkeeping, keyed by [`ProvisionKey`].
 /// Process-lifetime, like `git`'s remote-home cache: `hosts.toml` is read once
 /// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
 /// so repeat spawns of the same agent on the same host skip the ssh
@@ -156,8 +156,8 @@ enum ProvisionOutcome {
 /// for the holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
-    provisioned: HashSet<(String, String)>,
-    in_flight: HashSet<(String, String)>,
+    provisioned: HashSet<ProvisionKey>,
+    in_flight: HashSet<ProvisionKey>,
 }
 
 fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
@@ -175,11 +175,19 @@ fn cache_lock() -> std::sync::MutexGuard<'static, ProvisionCache> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// `(host, agent, hook command)`: what was shipped carries one backend's
+/// command, so a launch on another route of the same host is not done yet.
+type ProvisionKey = (String, String, String);
+
+fn provision_key(host: &HostDef, agent: &str, signal: &str) -> ProvisionKey {
+    (host.backend_name(), agent.to_string(), signal.to_string())
+}
+
 /// Removes its key from `in_flight` on drop — **including on unwind**, so a
 /// panic inside the provisioning pass can never leak the key and permanently
-/// (and silently) disable provisioning for that `(host, agent)`.
+/// (and silently) disable provisioning for that key.
 struct InFlightGuard {
-    key: (String, String),
+    key: ProvisionKey,
 }
 
 impl Drop for InFlightGuard {
@@ -227,7 +235,7 @@ pub(crate) fn provision_agent_hooks_on_host(
         ));
     }
 
-    let key = (host.backend_name(), agent.to_string());
+    let key = provision_key(host, agent, signal);
     // Claim the key, or wait for the concurrent spawn that holds it: skipping
     // would report this session healthy while its agent may boot before the
     // holder's file lands (or after the holder *fails*). Waiting is bounded —
@@ -545,7 +553,11 @@ mod tests {
         // A panic inside the provisioning pass must not leak the in-flight
         // key (which would silently disable provisioning for the process
         // lifetime while reporting healthy).
-        let key = ("test-guard-backend".to_string(), "codex".to_string());
+        let key = (
+            "test-guard-backend".to_string(),
+            "codex".to_string(),
+            SIGNAL.to_string(),
+        );
         assert!(cache_lock().in_flight.insert(key.clone()));
         let k = key.clone();
         let unwound = std::panic::catch_unwind(move || {
@@ -766,6 +778,29 @@ mod tests {
         };
         let degraded = provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true);
         assert!(degraded.is_some_and(|d| d.contains("Windows host")));
+    }
+
+    /// What was shipped carries one backend's hook command, so a launch on
+    /// another route of the same host — another command — is not already done.
+    #[test]
+    fn a_cached_provisioning_counts_only_for_the_command_it_shipped() {
+        let host = HostDef {
+            name: "cache-key-host".into(),
+            destination: "user@cache-key-host.invalid".into(),
+            ..Default::default()
+        };
+        cache_lock()
+            .provisioned
+            .insert(provision_key(&host, "codex", SIGNAL));
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true).is_none(),
+            "the command it shipped is cached"
+        );
+        assert!(
+            provision_agent_hooks_on_host(&host, Some("other-mux signal "), "codex", true)
+                .is_some(),
+            "another route's command was taken as already shipped"
+        );
     }
 
     #[test]

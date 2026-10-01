@@ -1182,8 +1182,8 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
 }
 
 /// Drop every literal arg carrying a thurbox hook command, and the flag
-/// before it when it is the flag that takes it (`--notifications-command
-/// "<cmd>"`), returning the args and the commands dropped. For a route with
+/// before it when the arg is that flag's value (`--notifications-command
+/// "<cmd>"`, not `--notifications-command=<cmd>`), returning the args and the commands dropped. For a route with
 /// no status channel: left in place, the host would run `thurbox-cli`, which
 /// is absent there or writes the host's own database rather than this one.
 fn strip_literal_signals(args: Vec<String>) -> (Vec<String>, Vec<String>) {
@@ -1191,9 +1191,12 @@ fn strip_literal_signals(args: Vec<String>) -> (Vec<String>, Vec<String>) {
     let mut dropped = Vec::new();
     for arg in args {
         if arg.contains(super::builtin_hooks::SIGNAL_MARKER) {
-            if kept
-                .last()
-                .is_some_and(|flag| flag.starts_with('-') && !flag.contains('='))
+            // Only a bare value is the flag before it's: `--opt=<cmd>` carries
+            // its own, and the option before that is somebody else's.
+            if !arg.starts_with('-')
+                && kept
+                    .last()
+                    .is_some_and(|flag| flag.starts_with('-') && !flag.contains('='))
             {
                 kept.pop();
             }
@@ -1740,6 +1743,23 @@ mod tests {
         let (out, stripped) = adapt_agent_args_for_remote_with_report(&host, None, args.clone());
         assert_eq!(out, ["--notifications"]);
         assert_eq!(stripped, ["thurbox-cli session signal --state blocked"]);
+    }
+
+    /// A hook arg that carries its own flag (`--opt=<cmd>`) is the only thing
+    /// stripped: the option before it is somebody else's.
+    #[test]
+    fn a_self_contained_hook_arg_strips_alone() {
+        let args: Vec<String> = [
+            "--verbose",
+            "--notifications-command=thurbox-cli session signal --state blocked",
+            "--model",
+            "x",
+        ]
+        .map(String::from)
+        .into();
+        let (kept, dropped) = strip_literal_signals(args);
+        assert_eq!(kept, ["--verbose", "--model", "x"]);
+        assert_eq!(dropped.len(), 1);
     }
 
     #[test]
