@@ -206,11 +206,11 @@ makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
 child command, **hold it**, and it does three things no call site has to
 remember:
 
-1. **Pins the socket** (`backend::tmux::SOCKET_OVERRIDE_ENV`), so teardown has a
+1. **Pins the socket** (`backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV`), so teardown has a
    name to kill.
 2. **Clears `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
    `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
-   thurbox session inherits both. `backend::tmux::socket_for` drops an override
+   thurbox session inherits both. `backend::tmux_compat::socket::socket_for` drops an override
    tagged for another instance's data dir — correctly: a harness that isolated
    its database but not its server would be spawning windows on the operator's
    tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in

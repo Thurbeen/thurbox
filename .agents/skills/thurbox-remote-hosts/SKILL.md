@@ -78,28 +78,31 @@ in-distro shell like `ssh` does, so the same POSIX quoting
 (`control_mode.rs`) apply — only the one-time process launch differs. (An arg
 *containing whitespace* is preserved as one word, so multi-word `sh -c` scripts
 go through `wsl.exe --exec` instead — see `shell::wsl_command` /
-`git::host_shell_c`.) The local `DEFAULT_MUX` is **`tmux` on
-Linux/macOS and `psmux` on Windows** — psmux is a native-Windows, drop-in tmux
-clone (ConPTY, no WSL) speaking the **same control-mode wire protocol** and
-pane-id (`%N`) / `-L` socket model, so the whole backend is parameterized by
-binary name rather than forked (a remote SSH host can also pin
+`git::host_shell_c`.) The local default multiplexer
+(`Multiplexer::default_for`) is **`tmux` on Linux/macOS and `psmux` on
+Windows**, but both adapters are registered on every machine and host
+(ADR-31) — psmux is a native-Windows, drop-in tmux clone (ConPTY, no WSL)
+speaking the **same control-mode wire protocol** and pane-id (`%N`) / `-L`
+socket model, so the shared server (`backend::tmux_compat::server::Server<M>`)
+is generic over the multiplexer and `backend::tmux` / `backend::psmux` are
+peer adapters answering `TmuxCompatible` (a remote SSH host can also pin
 `multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
 control-mode protocol is byte-identical over either transport/binary, with
-**psmux divergences** (verified against psmux 3.3.6, each branched on
-`TmuxTransport::uses_psmux()`; spawning needs psmux ≥ 3.3.7, asked of the
-server by `check_psmux_version` — ADR-13 has why) — psmux lacks `send-keys -H`, does not join
+**psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
+adapter, never a branch on the binary's name; spawning needs psmux ≥ 3.3.7,
+asked of the server by `check_psmux_version` — ADR-13 has why) — psmux lacks `send-keys -H`, does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
-keystrokes from the primitives psmux does support (`send_keys_commands`), folds
+keystrokes from the primitives psmux does support (`psmux_send_keys_commands`), folds
 env + command into **one token** of PowerShell (`psmux_window_powershell`),
 routes a bracketed paste out of band through the one-shot CLI
-`psmux send-paste` (`control_mode::PsmuxPaste`), and neither writes nor reads
+`psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /
 `stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
 `#{@...}` then answers with for **every** window, which made one session's id
 every window's identity. psmux also **answers the argv `attach-session` with
 no `%begin`/`%end` block**, so `ControlMode::start` drains one only where one
-is sent (`sends_implicit_attach_response`); draining psmux parks `ensure_ready`
+is sent (`ControlPolicy::implicit_attach_reply`); draining psmux parks `ensure_ready`
 on a read that never returns, which is why discovery reported nothing and no
 pane ever attached on Windows (issue #1168 — the two faults are independent and
 either alone is the whole symptom). Each
@@ -128,9 +131,10 @@ so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
 envelope is decoded to the message inside it. See the two subsections after
 "psmux divergences" in ADR-13.
 
-Each host registers a backend named
-`ssh:<name>` / `wsl:<name>` (`TmuxBackend::from_host`, registered lazily in
-`main.rs` from `host_config::load_all_with_warnings`: discovery/down hosts must
+Each host registers one backend per adapter, named by its route
+(`ssh:<name>:<mux>` / `wsl:<name>:<mux>`, `backend::wiring`'s table, built from a
+`BackendSpec` of route, launcher, platform and host), registered lazily from
+`host_config::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
 — looking a backend up is a map read, and the blocking `ensure_ready` runs on the
 attach worker in `kernel::terminal` (and on the spawn worker for a fresh
@@ -269,8 +273,8 @@ session), never on the loop, ADR-P12).
   provisioned host it is, `resolve_cli_binary` answering with a sibling of the
   running exe — leaves a regular file there alone, and removes an existing
   self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
-  host CLI's `tmux_socket`, which the backend adopts (`backend::tmux::
-  learn_host_socket`) so a dev laptop attaches to a release host's server.
+  host CLI's `tmux_socket`, which the backend adopts (`backend::tmux_compat::
+  socket::learn_host_socket`) so a dev laptop attaches to a release host's server.
   Kept per host, not per route: it names the host's thurbox instance, which
   every multiplexer there runs under.
   Everything below this bullet — the hooks rewrite, remote provisioning, the

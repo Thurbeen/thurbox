@@ -15,7 +15,7 @@ use anyhow::{bail, Result};
 /// data dir — isolates thurbox sessions from the user's tmux. Dev builds use
 /// "thurbox-dev" to avoid interfering with an installed release binary. An
 /// instance relocated by `THURBOX_DATA_DIR` derives its own name from this one
-/// ([`derived_socket`]). Crate-visible as the last-resort fallback when a
+/// (`derived_socket`). Crate-visible as the last-resort fallback when a
 /// host's configured socket sanitizes to empty
 /// (`builtin_hooks::remote_signal_target`).
 pub const TMUX_SOCKET: &str = if cfg!(dev_build) {

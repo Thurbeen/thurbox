@@ -10,6 +10,9 @@ use thurbox::session::{HostDef, Multiplexer, Platform, Route};
 #[path = "support/backend_contract.rs"]
 mod backend_contract;
 
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
 fn host(name: &str, platform: Platform, preferred: Option<&str>) -> HostDef {
     HostDef {
         name: name.into(),
@@ -131,11 +134,11 @@ fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
         eprintln!("skipping: psmux is not installed");
         return;
     }
-    // psmux has no socket directory, so the socket's name is all that keeps
-    // this off the operator's own server.
+    // psmux has no socket directory, so the pinned socket's name is all that
+    // keeps this off the operator's own server — and a tmux reap does not
+    // reach a psmux server, so it is killed by name too.
     const SOCKET: &str = "thurbox-psmux-contract";
-    std::env::set_var("THURBOX_SOCKET", SOCKET);
-    std::env::remove_var("THURBOX_SOCKET_FOR");
+    let _pinned = tmux_server::TmuxServer::pin(SOCKET);
     struct Reap;
     impl Drop for Reap {
         fn drop(&mut self) {

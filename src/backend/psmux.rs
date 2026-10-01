@@ -109,7 +109,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// None: psmux ignores `new-window -e`, so the environment is folded into
-    /// the window command ([`psmux_window_powershell`]).
+    /// the window command (`psmux_window_powershell`).
     fn env_flags(_env: &HashMap<String, String>) -> String {
         String::new()
     }
@@ -125,7 +125,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// One argv token: the environment and the program as the PowerShell
-    /// [`psmux_window_powershell`] builds, since `-e` would be ignored.
+    /// `psmux_window_powershell` builds, since `-e` would be ignored.
     fn push_window_program(
         cmd: &mut Command,
         command: &str,
@@ -136,7 +136,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// psmux's own `send-paste`, which wraps and writes the payload itself (see
-    /// [`PsmuxPaste`] for why key-encoded markers do not survive there): a raw
+    /// `PsmuxPaste` for why key-encoded markers do not survive there): a raw
     /// newline inside a psmux command argument is cut by the server's
     /// line-oriented read, so a multi-line prompt arrived truncated *and* its
     /// tail ran as a psmux command (psmux #560).
@@ -149,7 +149,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// Key-names and `-l` literals for keystrokes, and a paste out of band
-    /// ([`PsmuxPaste`]).
+    /// (`PsmuxPaste`).
     fn pane_input(transport: &TmuxTransport, socket: &str) -> Arc<dyn PaneInput> {
         Arc::new(PsmuxInput {
             paste: PsmuxPaste::new(transport.clone(), socket.to_string()),
@@ -473,7 +473,7 @@ fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
 
 /// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes, even a
 /// bare word, so whitespace never splits the run into several arguments (a
-/// leading `-` needs more than quoting — see [`psmux_literal_args`]). Double
+/// leading `-` needs more than quoting — see `psmux_literal_args`). Double
 /// quotes — not POSIX single quotes — because psmux's tokenizer has no working
 /// escape for a `'` inside `'…'`, but inside `"…"` it passes `'` through and
 /// reads exactly two escapes: `\"` (literal quote) and `\\` (literal

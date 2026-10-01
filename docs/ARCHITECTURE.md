@@ -225,7 +225,7 @@ as before. The coalescer is inert where `Event::Paste` arrives on its own, and
 its decisions are unit-tested on every platform against a driven clock.
 
 This is the *inbound* half of a journey whose outbound half is ADR-13's
-`PsmuxPaste`: the reassembled paste is carried to a psmux pane in one piece by
+`PsmuxPaste` (`backend::psmux`): the reassembled paste is carried to a psmux pane in one piece by
 psmux's own paste command.
 
 ---
@@ -534,7 +534,7 @@ remembered pane id; see ADR-25.
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
-`THURBOX_DATA_DIR` has relocated (`backend::tmux::socket_for`). The data dir is
+`THURBOX_DATA_DIR` has relocated (`backend::tmux_compat::socket::socket_for`). The data dir is
 the anchor because it holds the database, and the database is the record of
 which sessions exist: an instance keeping its own record of them has no
 business creating their windows on the operator's server — which is what made
@@ -558,11 +558,12 @@ by the existing `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
 
 **Input**: `send-keys -H <hex>` through the shared control mode
-stdin, wrapped in a `ControlModeWriter` (implements `Write`). On a
-**psmux** backend, which has no `-H`, the same writer encodes the byte
-stream from the primitives psmux does support, and a **paste** leaves
-control mode entirely for psmux's own `send-paste` — see "psmux divergences
-from tmux" under ADR-13 below, and `control_mode::PsmuxPaste`.
+stdin, wrapped in a `ControlModeWriter` (implements `Write`), which encodes
+the bytes the way its adapter's `PaneInput` says. The **psmux** adapter, whose
+multiplexer has no `-H`, encodes the byte stream from the primitives psmux does
+support, and sends a **paste** out of control mode entirely through psmux's own
+`send-paste` — see "psmux divergences from tmux" under ADR-13 below, and
+`backend::psmux`'s `PsmuxPaste`.
 
 **Command synchronization**: All commands that precede a
 `send_command` (waited) call must themselves be waited. A
@@ -627,16 +628,17 @@ restored — it is an event, not state.
 **Choice**: Run agent sessions on a remote host (over SSH) or in a
 local WSL distro (via `wsl.exe`) by launching the same tmux
 control-mode protocol behind a launch prefix. The local tmux backend is
-generalized into `TmuxBackend { transport, socket, session, name,
-platform }` where `transport: TmuxTransport` is two independent halves:
-an optional **launcher** (`shell::HostLauncher` — `Ssh { destination,
-ssh_opts }` for `ssh <dest> …`, `Wsl { distro }` for `wsl.exe -d
-<distro> …`, none to run on this machine) and the **multiplexer**
-binary run there (`tmux` by default, `psmux` for a Windows host, the
-route's multiplexer for a row that names one). The launcher is the same
-one every other remote command uses (`git`, probes, usage reads), built
-by the one conversion `HostLauncher::for_host`; it adds no `-L` — that
-is the multiplexer's flag, added by `TmuxTransport::tmux_command`. The
+generalized into `tmux_compat::server::Server<M> { transport, socket,
+session, name, platform }` — one per tmux-compatible multiplexer `M`, tmux
+and psmux each an adapter of their own (ADR-31) — where `transport:
+TmuxTransport` is two independent halves: an optional **launcher**
+(`shell::HostLauncher` — `Ssh { destination, ssh_opts }` for `ssh <dest> …`,
+`Wsl { distro }` for `wsl.exe -d <distro> …`, none to run on this machine) and
+the **multiplexer** binary run there (the adapter's own, whatever the host
+prefers). The launcher is the same one every other remote command uses (`git`,
+probes, usage reads), built by the one conversion `HostLauncher::for_host`, and
+it carries any program's command line unchanged (`shell::launch`); it adds no
+`-L` — that is the tmux grammar's flag, added by `TmuxTransport::tmux_command`. The
 transport's *only* job is to build the `Command`; everything downstream
 — the control-mode reader/writer threads, pane registration,
 `send-keys`/`%output` — is byte-for-byte identical (`control_mode.rs`
@@ -649,9 +651,9 @@ Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
 and WSL distros are additionally **auto-discovered**
 (`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
-combined set is loaded by `agent::host_config::load_all`, each
-registered as a backend named `ssh:<host>` / `wsl:<distro>` via
-`TmuxBackend::from_host`.
+combined set is loaded by `agent::host_config::load_all`, and each host
+gets one backend per adapter, named by its route (`ssh:<host>:<mux>` /
+`wsl:<distro>:<mux>`, `backend::wiring`).
 
 **Why WSL = "SSH without the ssh"**: `wsl.exe` runs `tmux`, `git`, the
 agent, and the worktrees all *inside* the distro at native Linux paths,
@@ -797,13 +799,14 @@ stalls. Worth the most manual testing.
 ### psmux divergences from tmux
 
 The control-mode protocol is byte-identical over either transport, but the
-**psmux** binary diverges from tmux in five places (all verified against psmux
-3.3.6, each branched on `TmuxTransport::uses_psmux()`). The
-`thurbox-remote-hosts` skill keeps a summary; this is the reference to read
-before touching that path.
+**psmux** binary diverges from tmux in the places below (all verified against
+psmux 3.3.6). Each is the psmux adapter's answer to `TmuxCompatible`
+(`backend::psmux`), never a branch on the binary's name in shared code
+(ADR-31). The `thurbox-remote-hosts` skill keeps a summary; this is the
+reference to read before touching that path.
 
 - **`send-keys -H`** is not implemented (it injects the hex digits as literal
-  text). `send_keys_commands` rebuilds the same PTY byte stream from the
+  text). `psmux_send_keys_commands` rebuilds the same PTY byte stream from the
   primitives psmux does support (`send-keys -l` literal runs +
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names); tmux (incl. a WSL
   distro's tmux) keeps the byte-exact `-H` path. Literal runs go out as
@@ -821,7 +824,7 @@ before touching that path.
 - **`new-window` trailing tokens are not joined** (psmux keeps only the first
   and drops the rest — the agent launched with **no args**) and **`new-window
   -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
-  `TmuxBackend::psmux_window_powershell` folds env + command into **one token**
+  `psmux::psmux_window_powershell` folds env + command into **one token**
   of PowerShell (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs
   it via `powershell -NoLogo -Command`, whose Win32 command line strips
   unescaped double quotes, hence PowerShell single-quoting throughout;
@@ -836,7 +839,7 @@ before touching that path.
   own `Escape` key-name, so the agent saw a bare Escape instead of the
   `ESC[200~` marker and took each embedded CR as Enter — a pasted stack trace
   submitted line by line). It goes **out of band** through psmux's own paste
-  command (`control_mode::PsmuxPaste`, issue #916): psmux's control-mode
+  command (`psmux::PsmuxPaste`, issue #916): psmux's control-mode
   dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
   `send-paste` are CLI/server-only), so a bracketed-paste payload
   (`bracketed_paste_text` unwraps one; anything else keeps the key encoding)
@@ -847,8 +850,8 @@ before touching that path.
   beats dropped). Base64 because a raw newline in a psmux command argument is
   cut by the server's line-oriented read, truncating the payload *and*
   executing its tail as a command (psmux #560) — the same reason the headless
-  prompt path (`paste_prompt_args`, feeding the adapter's `send_text` and
-  `deferred_prompt_script`) sends `send-paste` where tmux gets
+  prompt path (`TmuxCompatible::paste_args`, feeding `send_text`, and
+  `deferred_paste_script`) sends `send-paste` where tmux gets
   `send-keys -l <ESC[200~…>`. Probed by `windows-vm.sh test` (probe C).
 - **There are no per-window options.** `set-option -w -t <pane> @k v` stores one
   option for the whole server, and `#{@k}` then expands to *that* on every
@@ -889,7 +892,7 @@ before touching that path.
   ```
 
   So the drain is asked only of a multiplexer that answers
-  (`sends_implicit_attach_response`). Asking psmux parks `ControlMode::start`
+  (`ControlPolicy::implicit_attach_reply`, psmux's `false`). Asking psmux parks `ControlMode::start`
   on a `read_until` that returns only when psmux closes the pipe: `ensure_ready`
   never returns, `kernel::terminal`'s discovery worker never reports, and every
   session renders "session has no pane yet" with **nothing logged**, because
@@ -914,9 +917,9 @@ on the existing-worktree flow) only because a long-lived server that has been
 typed into is the precondition, not anything about the session.
 
 The window command cannot work around it — the handles are corrupt from the
-pane's birth, before any PowerShell of ours runs — so `TmuxBackend::spawn` and
-the headless `create_window` refuse to create a pane on psmux older than 3.3.7
-(`check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
+pane's birth, before any PowerShell of ours runs — so `spawn` and the headless
+`create_window` refuse to create a pane on psmux older than 3.3.7 (the psmux
+adapter's `VERSION_FLOOR`, `check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
 upgrading psmux leaves a server started before it on the old code, and the
 message says to restart it. Only where no session exists yet, so no server to
 ask, does the binary's `-V` answer — before it starts one that every spawn
@@ -937,9 +940,10 @@ OS is read as a platform.
   the way it always did: `multiplexer = "psmux"` was the declaration that a
   host is Windows before a platform could be written down, so it still is, and
   anything else is POSIX. A WSL distro is POSIX whatever its entry says.
-  Telling the adapter which multiplexer a row names (`HostDef::served_by`)
-  pins the platform before it swaps the multiplexer, so a legacy Windows
-  entry driven for a `:tmux` row stays Windows.
+  An adapter is built with the host's platform beside the host as configured
+  (`BackendSpec`, ADR-31), so a legacy Windows entry driven for a `:tmux` row
+  stays Windows; the headless status poll, told the row's multiplexer through
+  `HostDef::served_by`, pins the platform first for the same reason.
 - **Each decision reads the dimension it is about.** The shell a pane gets
   (`default_shell`), whether the server's `default-command` is pinned to a
   POSIX shell (`config_shell`), and the `/bin/sh -lc` login wrap all follow
@@ -955,17 +959,18 @@ OS is read as a platform.
 - **Nothing is reserved to an OS.** Every multiplexer name — including the
   prospective rmux and herdr — can be the route of a session on either
   platform, locally or on a host; whether one is usable is the registry's
-  answer (`wiring::implements`), which does not depend on the OS. Neither
-  adapter exists yet.
+  answer (`wiring::implements`), which does not depend on the OS: the tmux and
+  psmux adapters are registered on every machine and every host (ADR-31).
+  Neither an rmux nor a Herdr adapter exists yet.
 - **Enforced**: `tests/architecture_rules.rs`
   (`the_route_and_the_contract_know_no_launcher_adapter_or_build_os`) keeps
   `session::route` and `backend::contract` free of the launchers, host
   entries, the tmux adapter and its grammar, and of any `cfg(windows)`.
 - **What is simulated.** The Windows-build branches are covered on Linux by
-  `Platform::local`'s test override (`platform::simulate_local`); code still
-  behind `cfg(windows)` — the local psmux spawn path, which moves with
-  psmux into an adapter of its own — is not simulated, and no test here ran against a live
-  Windows host.
+  `Platform::local`'s test override (`platform::simulate_local`). No
+  multiplexer decision is behind `cfg(windows)` any more — the local psmux
+  spawn path is the psmux adapter's on every OS (ADR-31) — and no test here ran
+  against a live Windows host.
 
 ### A Windows host speaks PowerShell, not `sh`
 
@@ -2146,9 +2151,9 @@ way such rows were always read: the platform default locally, psmux for a host
 configured `psmux` and tmux for any other. New rows are written qualified. One
 resolver finds a row's host, `HostRegistry::host_of`, and returns it exactly as
 configured. The backend registry is keyed by qualified `Route` and looks up
-only the route it is asked for; `backend::wiring` registers this machine's
-platform default and, per host, what that host's unqualified rows mean, when an
-adapter implements it (`wiring::implements`).
+only the route it is asked for; `backend::wiring` registers every adapter for
+this machine and for every host (ADR-31), and the platform default and a host's
+preference decide only what an unqualified route means.
 
 **Why**: before, about fifty sites read `backend_type` with prefix predicates,
 `split_once(':')` or string equality, and two host lookups disagreed. The TUI
@@ -2186,10 +2191,10 @@ so an explicit tmux there is `local:tmux` and never mistaken for it. An older
 build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
 Only what drives the multiplexer gets a host told the row's multiplexer: the
-backend `wiring` registers for the route, and the headless status poll's host
-(`remote_hooks::polled_host`), both through `HostDef::served_by`, which pins
-the host's platform first — ADR-13, "The host's platform is its own
-dimension".
+backend `wiring` registers for the route, built with the host's own platform,
+and the headless status poll's host (`remote_hooks::polled_host`), through
+`HostDef::served_by`, which pins the host's platform first — ADR-13, "The
+host's platform is its own dimension".
 
 ---
 
@@ -2295,3 +2300,68 @@ host gets its prompt there. `pane_state` reads the foreground process's argv
 with a local `ps` only for a local pane, and an answer that names another pane
 than the one asked about — `display-message` answers for the current pane
 against a target it cannot resolve — is no answer.
+
+---
+
+## ADR-31: tmux and psmux are peer adapters over one tmux-protocol server
+
+**Choice**: `backend::tmux` and `backend::psmux` are two adapters, and neither
+names the other. What both speak — the tmux command grammar, control mode, the
+session config, discovery, the headless spawn — is
+`backend::tmux_compat::server::Server<M>`, generic over a `TmuxCompatible`
+multiplexer `M`; each adapter is its multiplexer's answers to that trait: what
+its server can do (`WINDOW_OPTIONS`, `WINDOW_EVENTS`, `SNAPSHOTS`, …), how it
+quotes, how a window's command and environment reach it, how keystrokes and a
+paste are typed (`PaneInput`), what its control-mode connection may expect
+(`ControlPolicy`), and its version floor. The shared code asks what a server
+can do and never which multiplexer it is. `backend::wiring` builds the
+registry from one table, `(Multiplexer, AdapterFactory)`, where a factory is
+`fn(&BackendSpec) -> Arc<dyn SessionBackend>` and a `BackendSpec` is the
+route, the launcher, the platform and the host. Every adapter is registered
+for this machine and for every host, whatever either's OS or preference; the
+platform default (`Multiplexer::default_for`) and a host's preference decide
+only what an unqualified route means and which backend is the default.
+
+**Why**: psmux was one `TmuxBackend` with nineteen `uses_psmux()` branches —
+a comparison of the binary's *name* — plus `cfg(windows)` sites in the local
+spawn path that read the build OS as "the local multiplexer is psmux". So a
+local tmux on Windows, or a local psmux anywhere else, could not exist, the
+registry refused both by OS, and no rule could tell a psmux decision from a
+tmux one because neither was visible as a reference. Status delivery (the
+next step of the backend sequence) has to be owned by real, independent
+adapters, and a third tmux-compatible multiplexer must be one module and one
+table row.
+
+**Rejected alternatives**:
+
+- **Flags on one backend** (a `MuxDialect` of `const bool`s read by one
+  `TmuxBackend`): keeps "psmux = tmux + an OS", and a quirk is still a branch
+  in code the other multiplexer runs.
+- **Duplicating the server in each adapter**: some three thousand lines that
+  are the same protocol, which would drift.
+- **Each adapter implementing `SessionBackend` by delegating to the shared
+  server**: forty forwarding methods per adapter, saying nothing the trait
+  does not; the multiplexer's own bodies are already the adapter's.
+- **Registering a local adapter only on its "own" OS**: the gate this
+  replaces. A binary that is not installed is reported, by name, when its
+  backend is first asked to start (`preflight::Dependency::Multiplexer`).
+
+**Consequences**: `tests/architecture_rules.rs` holds the shape by resolved
+references: `the_adapters_are_peers` (neither adapter reaches the other, and
+the helper reaches neither, test code included) and
+`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own` (each
+adapter's code names exactly its own `Multiplexer` variant, no two the same,
+and every one the factory names has one). `backend::wiring`'s selection matrix
+registers probe adapters for all four multiplexers and checks each route
+reaches its own from a POSIX and a Windows thurbox, locally, over ssh to a host
+of either platform and in a WSL distro, built from the placement's platform
+and launcher, with a launcher that adds nothing to the probe's command line.
+The local picker offers every registered multiplexer, so psmux appears on a
+POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
+and the hook-state listing still run this machine's (or the host's) default
+binary from `tmux_compat::server`, and the socket naming lives in
+`tmux_compat::socket`; they are the status-delivery step's to move behind the
+contract, and are listed as such in `TRANSITIONAL`. The heartbeat now only
+ensures its session exists: with no adapter handed to it, it cannot know which
+multiplexer's config to apply, and every backend applies its config before it
+spawns or attaches. psmux has not been driven live by this change.

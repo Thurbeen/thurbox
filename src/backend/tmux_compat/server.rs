@@ -2507,7 +2507,7 @@ fn mux_failure(out: &std::process::Output) -> String {
 /// How tmux names each of [`Key::NAMED`] — `ctrl-<letter>` is `C-<letter>`.
 ///
 /// `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>` are also the set
-/// psmux implements (see [`crate::backend::tmux_compat::control_mode::send_keys_commands`]);
+/// psmux implements (its adapter's key encoding, `backend::psmux`);
 /// the rest are tmux-only, which is what a Windows host runs into.
 const TMUX_KEYS: &[(&str, &str)] = &[
     ("enter", "Enter"),
@@ -2625,7 +2625,7 @@ pub fn stop_automation_heartbeat() -> bool {
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
 ///
 /// It only makes sure the session exists, and does not configure it: with no
-/// backend handed to it (see [`default_local_transport`]) it cannot know which
+/// backend handed to it (see `default_local_transport`) it cannot know which
 /// multiplexer's config to apply, and the keeper needs none of it. Every
 /// backend applies the config itself before it spawns or attaches on the
 /// server.
@@ -4641,7 +4641,7 @@ mod tests {
 
         // A multiplexer whose `#{@...}` is not per-window says nothing about
         // whose window this is, so the name decides — the pre-ADR-25 shape
-        // `local_mux_is_psmux` already keeps for it everywhere else.
+        // a server without window options keeps everywhere else.
         let unstamped = listing(false);
         assert_eq!(
             unstamped.agent_window(TWO, "second"),

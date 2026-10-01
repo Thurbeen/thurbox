@@ -565,8 +565,8 @@ pub trait SessionBackend: Send + Sync {
     fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()>;
 
     /// Stamp a window with the identity every reconciler resolves it by: which
-    /// session row owns it, and in what role (see
-    /// [`crate::backend::tmux::WINDOW_SESSION_OPTION`]).
+    /// session row owns it, and in what role (on a tmux-protocol server, the
+    /// `@thurbox_session` and `@thurbox_role` window options).
     ///
     /// A backend with no place to keep one returns `Ok` and its windows read
     /// as unstamped, which [`crate::backend::identity::WindowIndex`] resolves

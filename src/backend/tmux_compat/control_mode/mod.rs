@@ -816,7 +816,7 @@ const HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 pub struct ControlPolicy {
     /// Whether the server answers the `attach-session` carried on argv with a
     /// `%begin`/`%end` block of its own, which
-    /// [`ControlMode::drain_implicit_attach_response`] must consume before any
+    /// `ControlMode::drain_implicit_attach_response` must consume before any
     /// waiter exists. Waiting for one a server never sends never returns.
     pub implicit_attach_reply: bool,
     /// Whether a reply block's `%end` carries its `%begin`'s tag, so a block
@@ -828,7 +828,7 @@ pub struct ControlPolicy {
     pub subscriptions: bool,
     /// Where status cannot be subscribed to but can be asked for: the command
     /// listing every pane's hook-state option, polled each
-    /// [`HOOK_POLL_INTERVAL`] into the queue a subscription would feed.
+    /// `HOOK_POLL_INTERVAL` into the queue a subscription would feed.
     pub status_poll: Option<String>,
 }
 

@@ -62,15 +62,25 @@ backend::pane        session, backend::{contract,identity,osc8,output_wake}
 backend::osc8        session
 backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
-backend::wiring      session, agent::host_config,      (the factory: the only
-                     backend::{contract,registry,tmux}  node naming an adapter)
-backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+backend::wiring      session, shell,                   (the factory: the only
+                     agent::host_config,                node naming an adapter)
+                     backend::{contract,registry,
+                     tmux,psmux}
+backend::tmux_compat nothing — declares the four below (tmux protocol helper)
   ::control_mode     session, shell, backend::contract,
                      backend::tmux_compat::transport
-  ::transport        session, shell, agent
-backend::tmux        session, paths, shell, agent,     (the tmux adapter)
-                     backend::{contract,identity},
-                     backend::tmux_compat::{control_mode,transport}
+  ::server           session, paths, shell, agent,     (the shared server,
+                     backend::{contract,identity},      generic over the mux)
+                     backend::tmux_compat::{control_mode,
+                     socket,transport}
+  ::socket           session, paths                    (ADR-12 socket naming)
+  ::transport        shell, agent
+backend::tmux        session, shell, backend::contract, (the tmux adapter)
+                     backend::tmux_compat::{control_mode,
+                     server,transport}
+backend::psmux       session, shell, backend::contract, (the psmux adapter —
+                     backend::tmux_compat::{control_mode, a peer, never tmux's)
+                     server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
@@ -120,7 +130,11 @@ must both be acyclic (`the_production_graph_is_acyclic`,
 `the_declared_graph_is_acyclic`), every grant must be used by production code
 (`every_allowance_is_used`), only `coordinator` may be granted the factory
 `backend::wiring` and only the factory an adapter
-(`only_the_composition_roots_name_the_factory`), and the crossings still to be
+(`only_the_composition_roots_name_the_factory`), the two adapters are peers —
+neither reaches the other and `backend::tmux_compat` reaches neither, test code
+included (`the_adapters_are_peers`) — and each adapter's code names exactly its
+own `Multiplexer` variant (`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own`,
+ADR-31), and the crossings still to be
 removed are the `TRANSITIONAL` table — each item tagged with the task that
 removes it (F7 status and heartbeat; the lifecycle, pane I/O and platform
 entries are gone, and the registry is injected from the roots — ADR-29,
