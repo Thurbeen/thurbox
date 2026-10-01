@@ -4,6 +4,7 @@
 //! adapter's is a stand-in for it.
 
 use thurbox::backend::identity::WindowIndex;
+use thurbox::backend::psmux::PsmuxBackend;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::{BackendLiveness, SessionBackend, WindowRole};
 use thurbox::session::{Multiplexer, Route};
@@ -301,7 +302,7 @@ fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
         session: Some("probe".into()),
         ..Default::default()
     };
-    let backend = TmuxBackend::for_route(&host, Multiplexer::Psmux);
+    let backend = PsmuxBackend::for_host(&host);
     let row = "00000000-0000-4000-8000-0000000000bb";
 
     // An id reissued to a window of another name is not this row's.

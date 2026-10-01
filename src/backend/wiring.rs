@@ -9,24 +9,59 @@
 use std::sync::Arc;
 
 use crate::backend::registry::BackendRegistry;
-use crate::backend::tmux::TmuxBackend;
 use crate::backend::SessionBackend;
-use crate::session::{HostRegistry, Multiplexer, Route};
+use crate::session::{HostDef, HostRegistry, Multiplexer, Platform, Route};
+use crate::shell::HostLauncher;
 
-/// The multiplexers an adapter here implements. The tmux adapter speaks tmux
-/// and psmux; a route naming any other is refused by name rather than driven
-/// through the tmux command grammar, and adding one is an adapter plus a
-/// line here.
-const IMPLEMENTED: [Multiplexer; 2] = [Multiplexer::Tmux, Multiplexer::Psmux];
+/// What an adapter is built from: the route it will serve and where that is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSpec {
+    /// The qualified route the backend serves, and is named by.
+    pub route: Route,
+    /// How the host is reached, or `None` for this machine.
+    pub launcher: Option<HostLauncher>,
+    /// The OS of the machine the multiplexer runs on: this one's, or the
+    /// host's — never the multiplexer's.
+    pub platform: Platform,
+    /// The host as configured, or `None` for this machine.
+    pub host: Option<HostDef>,
+}
+
+/// Builds the backend serving a [`BackendSpec`].
+pub type AdapterFactory = fn(&BackendSpec) -> Arc<dyn SessionBackend>;
+
+/// One adapter per multiplexer: the only list of them. Adding one is a module
+/// and a row here; a route naming a multiplexer with no row is refused by name
+/// rather than driven through another's grammar.
+const ADAPTERS: &[(Multiplexer, AdapterFactory)] =
+    &[(Multiplexer::Tmux, tmux), (Multiplexer::Psmux, psmux)];
+
+fn tmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+    match (&spec.host, &spec.launcher) {
+        (Some(host), Some(launcher)) => {
+            crate::backend::tmux::on_host(host, launcher.clone(), spec.platform)
+        }
+        _ => crate::backend::tmux::local(),
+    }
+}
+
+fn psmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+    match (&spec.host, &spec.launcher) {
+        (Some(host), Some(launcher)) => {
+            crate::backend::psmux::on_host(host, launcher.clone(), spec.platform)
+        }
+        _ => crate::backend::psmux::local(),
+    }
+}
 
 /// Whether an adapter here implements `mux`.
 pub fn implements(mux: Multiplexer) -> bool {
-    IMPLEMENTED.contains(&mux)
+    ADAPTERS.iter().any(|(implemented, _)| *implemented == mux)
 }
 
-/// The registry as a running interface needs it: the local multiplexer as
-/// the default plus one backend per configured or discovered host — the
-/// same construction the v1 binary did by hand.
+/// The registry as a running interface needs it: one backend per adapter on
+/// this machine and on every configured or discovered host, with this
+/// platform's own multiplexer as the default.
 ///
 /// Backends are registered, never readied: registration is a map insert,
 /// where readying is a blocking connect (an ssh round trip for a remote
@@ -41,24 +76,58 @@ pub fn configured() -> (BackendRegistry, HostRegistry, Vec<String>) {
     (for_hosts(hosts), hosts.clone(), warnings.clone())
 }
 
-/// The registry for `hosts`.
-///
-/// This machine serves its platform's own multiplexer, the one the local
-/// adapter runs. Each host serves the multiplexer its unqualified rows have
-/// always meant — which is its preference whenever that is implemented — so
-/// a host that prefers rmux keeps serving the tmux rows written before, and
-/// is never registered for rmux itself until an adapter implements it. No
-/// route is rewritten to another: one nothing serves is simply absent.
+/// The registry for `hosts`, from [`ADAPTERS`].
 fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
-    let local: Arc<dyn SessionBackend> = Arc::new(TmuxBackend::new());
-    let mut backends =
-        BackendRegistry::new(Route::local(Some(Multiplexer::platform_default())), local);
-    for host in &hosts.hosts {
-        let route = hosts.qualify(&host.route(None));
-        let Some(mux) = route.mux.filter(|mux| implements(*mux)) else {
-            continue;
+    registry_from(ADAPTERS, hosts)
+}
+
+/// Every adapter in `table`, for this machine and for each of `hosts`.
+///
+/// Registration is by adapter, never by OS (§4b.3 of the backend design): a
+/// machine — this one or a host — is served by every multiplexer an adapter
+/// implements, whatever its platform or its preference. Those decide only what
+/// an unqualified route means ([`HostRegistry::qualify`]) and which backend is
+/// the default; a binary that is not installed is reported when its backend
+/// is first asked to start, by name.
+///
+/// `table` must serve this platform's default multiplexer, which the registry
+/// is never without.
+fn registry_from(table: &[(Multiplexer, AdapterFactory)], hosts: &HostRegistry) -> BackendRegistry {
+    let platform = Platform::local();
+    let default = Multiplexer::default_for(platform);
+    let build = |mux: Multiplexer, host: Option<&HostDef>| {
+        let factory = table
+            .iter()
+            .find(|(implemented, _)| *implemented == mux)
+            .map(|(_, factory)| factory)?;
+        let spec = match host {
+            None => BackendSpec {
+                route: Route::local(Some(mux)),
+                launcher: None,
+                platform,
+                host: None,
+            },
+            Some(host) => BackendSpec {
+                route: host.route(Some(mux)),
+                launcher: Some(HostLauncher::for_host(host)),
+                platform: host.platform(),
+                host: Some(host.clone()),
+            },
         };
-        backends.register(route, Arc::new(TmuxBackend::for_route(host, mux)));
+        Some((spec.route.clone(), factory(&spec)))
+    };
+    let (route, backend) =
+        build(default, None).expect("the adapter table serves this platform's default");
+    let mut backends = BackendRegistry::new(route, backend);
+    for (mux, _) in table {
+        for host in std::iter::once(None).chain(hosts.hosts.iter().map(Some)) {
+            if host.is_none() && *mux == default {
+                continue;
+            }
+            if let Some((route, backend)) = build(*mux, host) {
+                backends.register(route, backend);
+            }
+        }
     }
     backends
 }
@@ -82,26 +151,29 @@ mod tests {
         }
     }
 
+    /// What a host's unqualified rows have always meant is served — psmux on
+    /// a host that prefers it, tmux on one that prefers a multiplexer nothing
+    /// implements — and what nothing implements is never served.
     #[test]
     fn each_host_serves_what_its_unqualified_rows_mean() {
-        let registry = for_hosts(&hosts(&[
+        let hosts = hosts(&[
             ("plain", None),
             ("win", Some("psmux")),
             ("moved", Some("rmux")),
             ("herd", Some("herdr")),
-        ]));
-        let served = |host: &str, mux: Multiplexer| {
-            registry.supports(&Route::remote(crate::session::Via::Ssh, host, Some(mux)))
-        };
-        assert!(served("plain", Multiplexer::Tmux));
-        assert!(served("win", Multiplexer::Psmux));
-        assert!(!served("win", Multiplexer::Tmux));
-        // Rows written for tmux keep a backend; the preference itself has none.
-        for host in ["moved", "herd"] {
-            assert!(served(host, Multiplexer::Tmux), "{host}");
-            assert!(!served(host, Multiplexer::Rmux), "{host}");
-            assert!(!served(host, Multiplexer::Herdr), "{host}");
+        ]);
+        let registry = for_hosts(&hosts);
+        for host in &hosts.hosts {
+            let meant = hosts.qualify(&host.route(None));
+            assert!(registry.supports(&meant), "{}", meant.format());
+            for mux in [Multiplexer::Rmux, Multiplexer::Herdr] {
+                assert!(!registry.supports(&host.route(Some(mux))), "{}", host.name);
+            }
         }
+        assert_eq!(
+            hosts.qualify(&hosts.hosts[1].route(None)).mux,
+            Some(Multiplexer::Psmux)
+        );
     }
 
     #[test]

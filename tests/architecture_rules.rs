@@ -132,19 +132,46 @@ const MODULE_RULES: &[ModuleRules] = &[
         name: "backend::wiring",
         allowed: &[
             "session",
+            "shell",
             "agent::host_config",
             "backend::contract",
             "backend::registry",
             "backend::tmux",
+            "backend::psmux",
         ],
         allowed_path_only: &[],
     },
-    // The tmux command and control-mode protocol. Shared grammar, not an
-    // adapter: it may know the contract, never an adapter using it. Its root
-    // only declares the two below.
+    // The tmux command and control-mode protocol tmux and psmux both speak.
+    // Shared grammar, not an adapter: it may know the contract, never an
+    // adapter using it (`the_adapters_are_peers`). Its root only declares the
+    // modules below.
     ModuleRules {
         name: "backend::tmux_compat",
         allowed: &[],
+        allowed_path_only: &[],
+    },
+    // A tmux-protocol server as a session backend, generic over the
+    // multiplexer: everything the two adapters share, asking each what its
+    // server can do and never which it is.
+    ModuleRules {
+        name: "backend::tmux_compat::server",
+        allowed: &[
+            "session",
+            "paths",
+            "shell",
+            "agent",
+            "backend::contract",
+            "backend::identity",
+            "backend::tmux_compat::control_mode",
+            "backend::tmux_compat::socket",
+            "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    // Which server an instance's sessions live on (ADR-12).
+    ModuleRules {
+        name: "backend::tmux_compat::socket",
+        allowed: &["session", "paths"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -161,21 +188,31 @@ const MODULE_RULES: &[ModuleRules] = &[
     // `session` for the one local-multiplexer default (`Multiplexer`).
     ModuleRules {
         name: "backend::tmux_compat::transport",
-        allowed: &["session", "shell", "agent"],
+        allowed: &["shell", "agent"],
         allowed_path_only: &[],
     },
-    // The tmux adapter. Reaches the contract, the identity rule and the
-    // protocol helper; nothing reaches it but the factory.
+    // The two adapters, peers: each reaches the protocol helper and never the
+    // other; nothing reaches either but the factory.
     ModuleRules {
         name: "backend::tmux",
         allowed: &[
             "session",
-            "paths",
             "shell",
-            "agent",
             "backend::contract",
-            "backend::identity",
             "backend::tmux_compat::control_mode",
+            "backend::tmux_compat::server",
+            "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "backend::psmux",
+        allowed: &[
+            "session",
+            "shell",
+            "backend::contract",
+            "backend::tmux_compat::control_mode",
+            "backend::tmux_compat::server",
             "backend::tmux_compat::transport",
         ],
         allowed_path_only: &[],
@@ -394,8 +431,8 @@ enum Remover {
     /// its crossings; kept so the sequence reads in order.
     #[allow(dead_code)]
     F6,
-    /// psmux extracted into its own adapter. It owns no crossing today; the
-    /// variant is here so an entry can name it once one exists.
+    /// psmux extracted into its own adapter. Removed its crossings; kept so
+    /// the sequence reads in order.
     #[allow(dead_code)]
     F6b,
     /// Status delivery and the heartbeat owned by the backend.
@@ -420,42 +457,56 @@ struct Transitional {
 
 const TRANSITIONAL: &[Transitional] = &[
     // Status delivery, the heartbeat, and the instance socket (ADR-12) they
-    // are addressed by — backend-owned once status is.
+    // are addressed by — backend-owned once status is. They name the protocol
+    // helper rather than an adapter: they run this machine's default
+    // multiplexer, or a host's, whichever adapter that is.
     Transitional {
         from: "session_ops",
-        to: "backend::tmux",
+        to: "backend::tmux_compat::socket",
         items: &[
             "SOCKET_OVERRIDE_ENV",
             "SOCKET_OWNER_ENV",
             "TMUX_SOCKET",
             "host_socket",
             "learn_host_socket",
-            "list_remote_hook_states",
             "local_socket_name",
         ],
         remover: Remover::F7,
-        why: "hook provisioning and the remote status poll name tmux's socket and options",
+        why: "hook provisioning names the socket the remote hook writes its status on",
+    },
+    Transitional {
+        from: "session_ops",
+        to: "backend::tmux_compat::server",
+        items: &["list_remote_hook_states"],
+        remover: Remover::F7,
+        why: "the headless remote status poll reads the hook-state pane option",
     },
     Transitional {
         from: "cli",
-        to: "backend::tmux",
+        to: "backend::tmux_compat::socket",
+        items: &["local_socket_name"],
+        remover: Remover::F7,
+        why: "the socket report (`tmux_socket` in version, config and session JSON)",
+    },
+    Transitional {
+        from: "cli",
+        to: "backend::tmux_compat::server",
         items: &[
             "automation_heartbeat_running",
             "ensure_automation_heartbeat",
             "list_local_hook_states",
-            "local_socket_name",
             "set_own_pane_state",
             "stop_automation_heartbeat",
         ],
         remover: Remover::F7,
-        why: "session signal, the headless status poll, the heartbeat and the socket report",
+        why: "session signal, the headless status poll and the heartbeat",
     },
     Transitional {
         from: "coordinator",
-        to: "backend::tmux",
+        to: "backend::tmux_compat::server",
         items: &["ensure_automation_heartbeat"],
         remover: Remover::F7,
-        why: "the interface arms the heartbeat window on the local tmux server",
+        why: "the interface arms the heartbeat window on the local default server",
     },
 ];
 

@@ -531,7 +531,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
 /// Write the `@thurbox_state` pane option of every live local pane into the
 /// hook columns, for sessions whose rows are here. Returns how many changed.
 fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::backend::tmux::list_local_hook_states() {
+    let states = match crate::backend::tmux_compat::server::list_local_hook_states() {
         Ok(states) if !states.is_empty() => states,
         Ok(_) => return 0,
         Err(e) => {
@@ -815,7 +815,7 @@ pub(crate) fn arm_heartbeat() {
         return;
     }
     let cli = crate::paths::resolve_cli_binary();
-    if let Err(e) = crate::backend::tmux::ensure_automation_heartbeat(&cli) {
+    if let Err(e) = crate::backend::tmux_compat::server::ensure_automation_heartbeat(&cli) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
     }
 }

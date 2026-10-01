@@ -48,7 +48,7 @@ fn a_spawn_with_no_multiplexer_installed_names_it_the_search_and_the_fix() {
         format!("{err:#}")
     });
 
-    let mux = thurbox::backend::tmux_compat::transport::DEFAULT_MUX;
+    let mux = "tmux";
     assert!(
         message.contains(mux),
         "the message never names the missing binary: {message}"

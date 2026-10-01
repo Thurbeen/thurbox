@@ -510,7 +510,7 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 }
 
 /// The tmux session the local backend groups its windows under in a test
-/// build (`backend::tmux::TMUX_SESSION`, private; `thurbox-dev` because a test
+/// build (`backend::tmux_compat::server::TMUX_SESSION`, private; `thurbox-dev` because a test
 /// build carries the dev marker).
 const LOCAL_SESSION: &str = "thurbox-dev";
 

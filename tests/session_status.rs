@@ -150,7 +150,7 @@ fn a_blocked_session_is_never_time_gated() {
 const PROBE_SOCKET: &str = "thurbox-probe-test";
 
 /// The tmux session name the local backend groups its windows under. Mirrors
-/// `backend::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
+/// `backend::tmux_compat::server::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
 /// because a test build carries the same `dev_build` marker a dev binary does.
 const TMUX_SESSION: &str = "thurbox-dev";
 

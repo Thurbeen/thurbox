@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 
 use thurbox::backend::identity::Located;
-use thurbox::backend::tmux;
+use thurbox::backend::tmux_compat::server as tmux;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -118,7 +118,7 @@ fn plant_stamp(server: &TmuxServer, pane: &str) {
 /// Every thurbox window on the private server, indexed.
 fn local_index() -> thurbox::backend::identity::WindowIndex {
     thurbox::backend::identity::WindowIndex::from_listing(
-        thurbox::backend::SessionBackend::discover(&tmux::TmuxBackend::new())
+        thurbox::backend::SessionBackend::discover(&thurbox::backend::tmux::TmuxBackend::new())
             .expect("list windows"),
     )
 }
@@ -126,7 +126,7 @@ fn local_index() -> thurbox::backend::identity::WindowIndex {
 /// Kill the session's agent window, found as every teardown finds it.
 fn kill_agent(session: &str, name: &str) -> anyhow::Result<()> {
     use thurbox::backend::SessionBackend;
-    let backend = tmux::TmuxBackend::new();
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
     if let Located::At(pane) = backend
         .locate(thurbox::backend::Owner::new(session, name))?
         .agent

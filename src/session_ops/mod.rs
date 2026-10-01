@@ -180,7 +180,7 @@ pub(crate) fn exec_tail(stream: &[u8]) -> String {
 /// the right DB, and finds the right server" is one property, not two.
 ///
 /// The socket is passed rather than left to be re-derived: the child would
-/// otherwise recompute it (`backend::tmux::socket_for`) from an environment that
+/// otherwise recompute it (`backend::tmux_compat::socket::socket_for`) from an environment that
 /// need not match this one — a tmux server carries the env it was started with,
 /// which is the same reason the dirs are pinned here at all.
 pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
@@ -201,17 +201,17 @@ pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
         ));
     }
     vars.push((
-        crate::backend::tmux::SOCKET_OVERRIDE_ENV.into(),
-        crate::backend::tmux::local_socket_name(),
+        crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV.into(),
+        crate::backend::tmux_compat::socket::local_socket_name(),
     ));
     // Which instance that socket belongs to. A pane's `thurbox-cli` inherits
     // both, and they agree — but a child that relocates itself out of this
     // instance (a sandbox, `tests/`, an agent exporting its own
     // `THURBOX_DATA_DIR`) must not keep a socket naming *this* server. Pairing
-    // the two is what lets `backend::tmux::socket_for` tell them apart.
+    // the two is what lets `backend::tmux_compat::socket::socket_for` tell them apart.
     if let Some(dir) = crate::paths::data_directory() {
         vars.push((
-            crate::backend::tmux::SOCKET_OWNER_ENV.into(),
+            crate::backend::tmux_compat::socket::SOCKET_OWNER_ENV.into(),
             dir.to_string_lossy().into(),
         ));
     }
@@ -908,8 +908,10 @@ mod tests {
                 .and_then(|p| p.parent())
         );
         assert_eq!(
-            config.env.get(crate::backend::tmux::SOCKET_OVERRIDE_ENV),
-            Some(&crate::backend::tmux::local_socket_name()),
+            config
+                .env
+                .get(crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV),
+            Some(&crate::backend::tmux_compat::socket::local_socket_name()),
             "the session is told which server it is on"
         );
     }
@@ -938,7 +940,7 @@ mod tests {
         // own server, which `hosts.toml` (or the host's CLI) names.
         assert!(!config
             .env
-            .contains_key(crate::backend::tmux::SOCKET_OVERRIDE_ENV));
+            .contains_key(crate::backend::tmux_compat::socket::SOCKET_OVERRIDE_ENV));
     }
 
     #[test]

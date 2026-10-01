@@ -153,6 +153,16 @@ pub(crate) mod tests {
         typed_stub(route)
     }
 
+    /// A stub named `name` rather than by a route — a probe adapter's, which
+    /// says which factory built it.
+    pub(crate) fn stub_named(name: &str) -> Arc<dyn SessionBackend> {
+        Arc::new(StubBackend {
+            backend_name: name.to_string(),
+            shutdowns: std::sync::atomic::AtomicUsize::new(0),
+            windows: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
     impl SessionBackend for StubBackend {
         fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
             anyhow::bail!("this stub has no panes to type into")

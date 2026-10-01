@@ -25,10 +25,10 @@ pub enum Action {
 }
 
 pub fn run(action: Action) -> CommandOutput {
-    let socket = crate::backend::tmux::local_socket_name();
+    let socket = crate::backend::tmux_compat::socket::local_socket_name();
     match action {
         Action::Status => {
-            let running = crate::backend::tmux::automation_heartbeat_running();
+            let running = crate::backend::tmux_compat::server::automation_heartbeat_running();
             CommandOutput::new(
                 json!({
                     "tmux_socket": socket,
@@ -45,7 +45,7 @@ pub fn run(action: Action) -> CommandOutput {
             ])
         }
         Action::Stop => {
-            let stopped = crate::backend::tmux::stop_automation_heartbeat();
+            let stopped = crate::backend::tmux_compat::server::stop_automation_heartbeat();
             CommandOutput::new(
                 json!({ "tmux_socket": socket, "stopped": stopped }),
                 if stopped {
