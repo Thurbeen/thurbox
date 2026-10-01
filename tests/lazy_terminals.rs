@@ -386,20 +386,19 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let go = dir.path().join("go");
-    // Steady output in ten batches of 300 lines, each ~0.2s long. Round n
-    // below starts once batch n-1 is printing, and batch n waits for the
-    // `ack-<n>` the round writes when it is done, so every rebuild lands in a
-    // batch of its own however loaded the machine is. Paced by the wall clock
-    // alone, a loaded machine got through only three rounds before the output
-    // ran out (#1248).
+    let stop = dir.path().join("stop");
+    // Steady output until the test says stop, so every rebuild below lands
+    // while the pane is printing. Each round waits for the pane to have moved
+    // on by 300 lines rather than for time to pass: a fixed amount of output
+    // paced by the wall clock ran out after three rounds on a loaded machine
+    // (#1248).
     let pane = pane_running(&format!(
-        "sh -c 'while [ ! -e {dir}/go ]; do sleep 0.05; done; i=0; \
-         while [ $i -lt 3000 ]; do echo line-$i; i=$((i+1)); \
-         if [ $((i % 30)) -eq 0 ]; then sleep 0.02; fi; \
-         if [ $((i % 300)) -eq 0 ] && [ $i -lt 3000 ]; then \
-         while [ ! -e {dir}/ack-$((i / 300)) ]; do sleep 0.01; done; fi; done; \
+        "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; i=0; \
+         while [ ! -e {stop} ]; do echo line-$i; i=$((i+1)); \
+         if [ $((i % 30)) -eq 0 ]; then sleep 0.02; fi; done; \
          echo finished; exec sleep 100000'",
-        dir = dir.path().display()
+        go = go.display(),
+        stop = stop.display()
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
@@ -415,8 +414,9 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // the stream; left to take live output for a moment, then checked; then
     // off screen, which drops it again on the next sync.
     for rebuild in 1..10 {
-        let batch = format!("line-{}\n", 300 * (rebuild - 1));
-        wait_for("the batch to start", || tmux_text(&pane).contains(&batch));
+        wait_for("the pane to print on", || {
+            last_printed(&pane).is_some_and(|n| n >= 300 * (rebuild - 1))
+        });
         wait_for("the rebuilt grid", || {
             paint(&terminals, 0);
             grid_size(&terminals) == (ROWS, COLS)
@@ -426,7 +426,6 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         terminals.forget_rects();
         terminals.sync(&snap, ROWS, COLS);
         assert!(grid_size(&terminals) <= (2, 2), "dropped again");
-        std::fs::write(dir.path().join(format!("ack-{rebuild}")), b"").expect("ack");
     }
 
     // The last one is kept, so the rest of the output lands in a grid that was
@@ -436,6 +435,7 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         paint(&terminals, 0);
         grid_size(&terminals) == (ROWS, COLS)
     });
+    std::fs::write(&stop, b"").expect("stop");
     wait_for("the output to finish", || {
         tmux_text(&pane).contains("finished")
     });
@@ -448,7 +448,15 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         numbers.len()
     );
     assert_contiguous(&numbers, "after the last rebuild");
-    assert_eq!(numbers.last(), Some(&2999));
+    assert_eq!(numbers.last().copied(), last_printed(&pane));
+}
+
+/// The number of the last `line-N` the pane has printed, as tmux holds it.
+fn last_printed(pane: &str) -> Option<u64> {
+    tmux_text(pane)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("line-")?.parse().ok())
 }
 
 #[tokio::test(flavor = "multi_thread")]
