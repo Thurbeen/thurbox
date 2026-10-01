@@ -726,6 +726,156 @@ fn hex_send_keys_commands_chunks_large_input_losslessly() {
 // --- bracketed paste payloads ---
 
 #[test]
+fn tmux_quote_keeps_a_line_on_one_line() {
+    assert_eq!(
+        tmux_quote("a\nb\r\tc \"d\" $HOME ~ \\ é\x1b\u{9b}"),
+        "\"a\\nb\\r\\tc \\\"d\\\" \\$HOME \\~ \\\\ é\\033\\u009b\""
+    );
+}
+
+/// The buffer a paste's commands name, which every one of them must agree on.
+fn paste_buffer_of(cmds: &[String]) -> &str {
+    let last = cmds.last().expect("a paste-buffer line");
+    let name = last
+        .split(" -b ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap();
+    assert!(cmds.iter().all(|c| c.contains(&format!(" -b {name} "))));
+    name
+}
+
+#[test]
+fn a_tmux_paste_lets_tmux_decide_the_markers() {
+    let cmds = tmux_paste_commands("%7", "-a\nb");
+    let buffer = paste_buffer_of(&cmds).to_string();
+    assert_eq!(
+        cmds,
+        vec![
+            format!("set-buffer -b {buffer} -- \"-a\\nb\"\n"),
+            format!("paste-buffer -d -p -r -b {buffer} -t %7\n"),
+        ]
+    );
+}
+
+#[test]
+fn two_tmux_pastes_never_share_a_buffer() {
+    // Two interfaces can paste into one pane over two connections, and their
+    // `set-buffer -a` and `paste-buffer -d` lines then interleave on the
+    // server: a buffer named after the pane alone mixed one paste into the
+    // other, or was deleted before the second could paste it.
+    let first = tmux_paste_commands("%7", "one");
+    let second = tmux_paste_commands("%7", "two");
+    assert_ne!(paste_buffer_of(&first), paste_buffer_of(&second));
+}
+
+#[test]
+fn a_long_tmux_paste_is_appended_on_char_boundaries() {
+    let text = "é".repeat(SET_BUFFER_CHUNK_BYTES);
+    let cmds = tmux_paste_commands("%1", &text);
+    assert!(cmds.len() > 2);
+    assert!(cmds[0].starts_with("set-buffer -b "));
+    assert!(cmds[1..cmds.len() - 1]
+        .iter()
+        .all(|c| c.starts_with("set-buffer -a -b ")));
+    let joined: String = cmds[..cmds.len() - 1]
+        .iter()
+        .map(|c| c.split_once("-- \"").unwrap().1.trim_end_matches("\"\n"))
+        .collect();
+    assert_eq!(joined, text);
+}
+
+/// A server's input as a test sees it: keystrokes typed out one line per byte
+/// run, CR spelt `Enter` the way psmux's key-names spell it, and a paste
+/// answered with `paste`.
+#[cfg(unix)]
+struct FakeInput(Option<fn() -> Result<()>>);
+
+#[cfg(unix)]
+impl PaneInput for FakeInput {
+    fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String> {
+        String::from_utf8_lossy(buf)
+            .split_inclusive('\r')
+            .map(|run| format!("send-keys -t {pane_id} {}\n", run.replace('\r', " Enter")))
+            .collect()
+    }
+
+    fn paste(&self, _: &str, _: &str) -> Option<Result<()>> {
+        self.0.map(|deliver| deliver())
+    }
+}
+
+/// What a [`ControlModeWriter`] wrote to its control connection for `buf` —
+/// the connection a `cat` standing in for the server copies to a file.
+#[cfg(unix)]
+fn written_by(input: FakeInput, buf: &[u8]) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("control");
+    let mut cat = std::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::fs::File::create(&out).expect("create"))
+        .spawn()
+        .expect("spawn cat");
+    let stdin = cat.stdin.take().expect("cat stdin");
+    {
+        let mut writer = ControlModeWriter {
+            stdin: Arc::new(Mutex::new(stdin)),
+            pane_id: "%1".to_string(),
+            input: Arc::new(input),
+        };
+        writer.write_all(buf).expect("write");
+    }
+    cat.wait().expect("cat exits once its stdin closes");
+    std::fs::read_to_string(&out).expect("read")
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tmux_paste_goes_through_a_buffer_never_send_keys() {
+    let sent = written_by(FakeInput(None), b"\x1b[200~echo a\recho b\x1b[201~");
+    assert!(!sent.contains("send-keys"), "{sent}");
+    assert!(sent.contains("paste-buffer -d -p -r"), "{sent}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_paste_that_cannot_go_out_of_band_presses_no_key() {
+    // The key encoding is what the out-of-band channel exists to avoid: every
+    // CR in it is `Enter`. Falling back to it when psmux's `send-paste` failed
+    // ran each pasted line as it went.
+    let failing = FakeInput(Some(|| Err(anyhow::anyhow!("send-paste failed"))));
+    let sent = written_by(
+        failing,
+        b"\x1b[200~echo tb-pasted\recho tb-INJECTED\r\x1b[201~",
+    );
+    assert!(
+        !sent.contains("Enter") && !sent.contains("tb-INJECTED"),
+        "a failed out-of-band paste was typed out key by key:\n{sent}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_paste_with_a_marker_inside_presses_no_key() {
+    // A frame holding a second marker is not one paste, and was typed out
+    // through the key encoding — where the CR after the early end marker is
+    // `Enter`. Whatever the coordinator sanitised, the writer is the last
+    // place that can refuse it.
+    for input in [FakeInput(None), FakeInput(Some(|| Ok(())))] {
+        let sent = written_by(
+            input,
+            b"\x1b[200~echo a\x1b[201~echo tb-INJECTED\r\x1b[201~",
+        );
+        assert!(
+            !sent.contains("Enter") && !sent.contains("tb-INJECTED"),
+            "a paste with an embedded end marker was typed out key by key:\n{sent}"
+        );
+    }
+}
+
+#[test]
 fn bracketed_paste_text_unwraps_a_whole_payload() {
     assert_eq!(
         bracketed_paste_text(b"\x1b[200~line one\nline two\r\x1b[201~"),

@@ -609,8 +609,8 @@ impl PsmuxPaste {
     ///
     /// A paste past [`PASTE_CHUNK_BYTES`] goes out as several commands, each its
     /// own paste — the text still arrives whole and no CR submits. An error on a
-    /// *later* chunk is reported but not returned: the caller's fallback would
-    /// re-send text the pane already has.
+    /// *later* chunk is reported but not returned: the first chunk is in the
+    /// pane already.
     fn deliver(&self, pane_id: &str, text: &str) -> Result<()> {
         for (i, chunk) in paste_chunks(text).into_iter().enumerate() {
             if let Err(e) = self.send_one(pane_id, chunk) {
@@ -1027,9 +1027,9 @@ mod tests {
     fn psmux_bracketed_paste_splits_markers_from_text() {
         // A paste arrives wrapped in `\x1b[200~ … \x1b[201~`; the ESC bytes
         // become `Escape`, the rest stays literal — reconstructing the wrapper.
-        // This encoding is only the *fallback* for a psmux pane (the split ESC
-        // reaches the pane as a bare Escape keypress, so the marker is lost);
-        // the live path is `PsmuxPaste`.
+        // Which is why a paste never takes this encoding: the split ESC reaches
+        // the pane as a bare Escape keypress, so the marker is lost and every CR
+        // after it is Enter. The writer sends it through `PsmuxPaste` instead.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b[200~hi\x1b[201~"),
             vec![
