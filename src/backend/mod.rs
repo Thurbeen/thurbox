@@ -10,6 +10,7 @@ pub mod identity;
 mod osc8;
 pub mod output_wake;
 pub mod pane;
+pub mod psmux;
 pub mod registry;
 pub mod tmux;
 pub mod tmux_compat;

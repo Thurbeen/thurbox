@@ -218,7 +218,7 @@ own, which is the point.
   `|| true` swallowed the failure: the host's rows never gained a `hook_state`
   and every session on it read as statusless on the TUI mirroring them. Both
   local spawn paths now put the CLI's own directory in front
-  (`backend::tmux::path_prefix_args` → `resolve_cli_binary`, empty components
+  (`backend::tmux_compat::server::path_prefix_args` → `resolve_cli_binary`, empty components
   dropped). It rides as an `env PATH=…` prefix on the window command because
   `PATH` is the one variable tmux will not take in `-e`: `new-window -e PATH=…`
   and `set-environment -g PATH …` are both ignored and the client's wins

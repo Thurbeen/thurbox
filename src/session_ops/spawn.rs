@@ -125,7 +125,7 @@ pub struct SpawnResult {
     /// the caller is told the session exists and finds a row with no pane and
     /// no reason. It is not an error because the command may still be
     /// launchable — a shell function, or something installed a second later —
-    /// which is the same rule `backend::tmux::resolve_local_program` is written
+    /// which is the same rule `backend::tmux_compat::server::resolve_local_program` is written
     /// under.
     pub warnings: Vec<String>,
     /// Why this session on a remote host was **not** created by the host's own

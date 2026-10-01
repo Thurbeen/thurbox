@@ -1,12 +1,13 @@
 //! Shared tmux control mode I/O infrastructure.
 //!
 //! Both halves of control mode live here: the transport-agnostic protocol
-//! (notification parsing, octal decoding, the per-pane reader/writer and the
-//! psmux encodings) and the live `ControlMode` connection itself (the `-C`
-//! child process, its reader thread, the FIFO response queue and the psmux
-//! hook poller). `TmuxBackend` drives one `ControlMode` per backend across its
-//! local and SSH/WSL (`TmuxTransport`) transports — the wire protocol is
-//! identical over either.
+//! (notification parsing, octal decoding, the per-pane reader/writer) and the
+//! live `ControlMode` connection itself (the `-C` child process, its reader
+//! thread, the FIFO response queue and the hook poller). A tmux-protocol
+//! backend drives one `ControlMode` across its local and SSH/WSL
+//! (`TmuxTransport`) transports — the wire protocol is identical over either.
+//! What a server can be expected to do on that wire is its adapter's to say
+//! ([`ControlPolicy`], [`PaneInput`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -17,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{bail, Context, Result};
-use base64::Engine as _;
 use tracing::{debug, warn};
 
 use super::transport::TmuxTransport;
@@ -362,170 +362,23 @@ impl Read for ControlModeReader {
     }
 }
 
-/// Max input bytes encoded into a single `send-keys -H` command. Each byte
-/// becomes 3 chars (` XX`), so the command line stays ≈ `prefix + 3·512` ≈ 1.6
-/// KB — well under tmux's per-command line limit (which would truncate a longer
-/// line). `send_keys_commands` splits larger writes across multiple commands.
-const SEND_KEYS_CHUNK_BYTES: usize = 512;
+/// Max input bytes encoded into a single `send-keys` command. Each byte
+/// becomes 3 chars (` XX`) under `-H`, so the command line stays ≈ `prefix +
+/// 3·512` ≈ 1.6 KB — well under tmux's per-command line limit (which would
+/// truncate a longer line). Larger writes are split across several commands.
+pub const SEND_KEYS_CHUNK_BYTES: usize = 512;
 
-/// Split `buf` into the ordered `send-keys` command lines for `pane_id`.
+/// Split `buf` into the ordered `send-keys -H` command lines for `pane_id`.
 ///
-/// Two encodings: real tmux uses the byte-exact `send-keys -H` hex flag (each
-/// byte → two hex digits), chunked at `SEND_KEYS_CHUNK_BYTES` so no single
-/// control-mode line gets over-long (tmux truncates those); the raw bytes —
-/// including the bracketed-paste markers — span the chunks and the receiving
-/// pane reassembles them. psmux (the native-Windows tmux clone) does **not**
-/// implement `-H` — given `-H 62` it injects the literal text "62" instead of
-/// byte 0x62, so the whole `-H` path is silently broken there — so
-/// `psmux = true` selects the key-name/literal encoding it does support
-/// (`psmux_send_keys_commands`).
-pub fn send_keys_commands(pane_id: &str, buf: &[u8], psmux: bool) -> Vec<String> {
-    if psmux {
-        return psmux_send_keys_commands(pane_id, buf);
-    }
+/// The byte-exact hex flag (each byte → two hex digits), chunked at
+/// `SEND_KEYS_CHUNK_BYTES` so no single control-mode line gets over-long; the
+/// raw bytes — including the bracketed-paste markers — span the chunks and the
+/// receiving pane reassembles them. tmux's encoding; a server without `-H`
+/// encodes its own way ([`PaneInput`]).
+pub fn hex_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     buf.chunks(SEND_KEYS_CHUNK_BYTES)
         .map(|chunk| format_send_keys(pane_id, chunk))
         .collect()
-}
-
-/// Build the psmux-compatible `send-keys` command line(s) for `buf`.
-///
-/// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
-/// `Escape`, `BSpace`, `C-<letter>`, …) but not tmux's `-H` hex flag. Encode the
-/// exact byte stream with those primitives: contiguous printable/UTF-8 runs go
-/// out as one `-l` literal command, each control byte as its key-name. Because
-/// every key-name injects exactly the byte it stands for, multi-byte sequences
-/// round-trip — an arrow key (`\x1b[A`) becomes `Escape` then literal `[A`,
-/// which the pane's PTY receives back as `\x1b[A`.
-fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
-    let mut cmds = Vec::new();
-    let mut literal: Vec<u8> = Vec::new();
-    for &b in buf {
-        match psmux_key_name(b) {
-            Some(name) => {
-                flush_psmux_literal(pane_id, &mut literal, &mut cmds);
-                cmds.push(format!("send-keys -t {pane_id} {name}\n"));
-            }
-            None => literal.push(b),
-        }
-    }
-    flush_psmux_literal(pane_id, &mut literal, &mut cmds);
-    cmds
-}
-
-/// Map a control byte to the psmux key-name that injects exactly that byte, or
-/// `None` for a printable / UTF-8 byte (which joins an `-l` literal run).
-fn psmux_key_name(b: u8) -> Option<String> {
-    Some(match b {
-        b'\r' => "Enter".to_string(),
-        b'\t' => "Tab".to_string(),
-        0x1b => "Escape".to_string(),
-        0x7f => "BSpace".to_string(),
-        // Ctrl+letter: 0x01..=0x1a → C-a..C-z (covers e.g. LF 0x0a → C-j).
-        0x01..=0x1a => format!("C-{}", (b'a' + b - 1) as char),
-        _ => return None,
-    })
-}
-
-/// Emit the pending printable run as one or more `send-keys -l -N 1` commands
-/// and clear it. Long runs are split at `SEND_KEYS_CHUNK_BYTES` (on char
-/// boundaries) so no control-mode line gets over-long.
-///
-/// The `-N 1` is load-bearing, not a stray repeat count. psmux's control-mode
-/// reader runs every line through a send-coalescing pass
-/// (`coalesce_send_commands` in psmux) that decodes each send's bytes and
-/// re-emits them re-quoted with the POSIX `'\''` escape — which psmux's own
-/// tokenizer cannot read back, so any `'` in the text arrived in the pane as
-/// `\` (`it's` was typed as `it\s`), regardless of how the client framed it.
-/// The decoder bails on a `-N` flag, letting the original line reach the
-/// direct send-keys handler, whose single parse handles the argument encoding
-/// of [`psmux_literal_args`] correctly. Verified against psmux 3.3.6.
-fn flush_psmux_literal(pane_id: &str, literal: &mut Vec<u8>, cmds: &mut Vec<String>) {
-    if literal.is_empty() {
-        return;
-    }
-    let text = String::from_utf8_lossy(literal).into_owned();
-    let emit = |chunk: &str, cmds: &mut Vec<String>| {
-        cmds.push(format!(
-            "send-keys -t {pane_id} -l -N 1 {}\n",
-            psmux_literal_args(chunk)
-        ));
-    };
-    let mut chunk = String::new();
-    for ch in text.chars() {
-        if !chunk.is_empty() && chunk.len() + ch.len_utf8() > SEND_KEYS_CHUNK_BYTES {
-            emit(&chunk, cmds);
-            chunk.clear();
-        }
-        chunk.push(ch);
-    }
-    if !chunk.is_empty() {
-        emit(&chunk, cmds);
-    }
-    literal.clear();
-}
-
-/// Encode one printable run as the argument list of a psmux `send-keys -l`
-/// command.
-///
-/// Quoting alone is not enough, because psmux classifies arguments *after*
-/// tokenizing (which strips the quotes) and drops every one that
-/// `starts_with('-')` as an unknown flag — so a typed `-` never reached the
-/// pane (issue #920). It also rewrites any argument shaped like tmux's `0xNN`
-/// hex codepoint (the encoding iTerm2's gateway sends) into the character it
-/// names, so a run literally spelling `0x41` would arrive as `A`.
-///
-/// Both are escaped by emitting the offending *leading* character as its own
-/// `0xNN` argument: psmux converts that back to the same character and, in
-/// literal mode, joins the arguments with no separator, so the run is
-/// reassembled exactly. Escaping repeats until the remainder is safe — `--x`
-/// needs both hyphens escaped, and `-0x41` needs the hyphen and then the `0`.
-fn psmux_literal_args(run: &str) -> String {
-    let mut args: Vec<String> = Vec::new();
-    let mut rest = run;
-    while let Some(ch) = rest.chars().next() {
-        if !psmux_arg_is_reinterpreted(rest) {
-            break;
-        }
-        args.push(format!("0x{:x}", ch as u32));
-        rest = &rest[ch.len_utf8()..];
-    }
-    if !rest.is_empty() {
-        args.push(psmux_quote(rest));
-    }
-    args.join(" ")
-}
-
-/// Whether psmux would read `arg` as anything other than the literal text it
-/// spells: a flag (any leading `-`, quoted or not) or a `0xNN` hex codepoint.
-fn psmux_arg_is_reinterpreted(arg: &str) -> bool {
-    if arg.starts_with('-') {
-        return true;
-    }
-    arg.strip_prefix("0x")
-        .or_else(|| arg.strip_prefix("0X"))
-        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
-}
-
-/// Double-quote `s` for a psmux `send-keys -l` argument. Always quotes, even a
-/// bare word, so whitespace never splits the run into several arguments (a
-/// leading `-` needs more than quoting — see [`psmux_literal_args`]). Double
-/// quotes — not POSIX single quotes — because psmux's tokenizer has no working
-/// escape for a `'` inside `'…'`, but inside `"…"` it passes `'` through and
-/// reads exactly two escapes: `\"` (literal quote) and `\\` (literal
-/// backslash); any other backslash stays literal, so both are escaped here. A
-/// literal run never contains a newline (LF and CR map to key-names), but the
-/// control-mode line is `\n`-delimited, so newlines are replaced defensively.
-/// Also the argument encoding for any other psmux control-mode line (e.g.
-/// `new-window -c/-n` in [`crate::backend::tmux`]) — same tokenizer, so
-/// [`shell_escape`]'s POSIX `'\''` idiom would arrive mangled there too.
-pub(crate) fn psmux_quote(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', " ")
-    )
 }
 
 /// The bracketed-paste markers a paste payload is wrapped in.
@@ -537,9 +390,9 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// payload split across writes, a marker in the middle (two pastes, or pasted
 /// marker text), or non-UTF-8 bytes. Those keep the key encoding.
 ///
-/// The markers are stripped: [`PsmuxPaste`] hands psmux the bare text and psmux
-/// re-adds them itself, only when the receiving app has bracketed paste on.
-fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
+/// The markers are stripped: a server that takes a paste out of band
+/// ([`PaneInput::paste`]) is handed the bare text and re-adds them itself.
+pub fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
     let inner = buf.strip_prefix(PASTE_START)?.strip_suffix(PASTE_END)?;
     let has_marker = |m: &[u8]| inner.windows(m.len()).any(|w| w == m);
     if has_marker(PASTE_START) || has_marker(PASTE_END) {
@@ -548,127 +401,25 @@ fn bracketed_paste_text(buf: &[u8]) -> Option<&str> {
     std::str::from_utf8(inner).ok()
 }
 
-/// Max text bytes per `send-paste` command. The base64 payload travels as a
-/// process argument, and Windows caps a whole command line at ~32,767 chars —
-/// which base64 reaches at ~24 KB of text. 8 KB leaves generous headroom for
-/// the rest of the argv while keeping an ordinary paste a single command.
-const PASTE_CHUNK_BYTES: usize = 8 * 1024;
+/// How a pane's input reaches it through control mode — the server's own
+/// encoding, chosen by its adapter.
+pub trait PaneInput: Send + Sync {
+    /// The ordered control-mode lines that type `buf` into `pane_id`.
+    fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String>;
 
-/// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
-/// decodes the payload as UTF-8 and drops it whole if that fails, so a
-/// multi-byte character must never straddle two chunks.
-fn paste_chunks(text: &str) -> Vec<&str> {
-    if text.len() <= PASTE_CHUNK_BYTES {
-        return vec![text];
-    }
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let mut end = (start + PASTE_CHUNK_BYTES).min(text.len());
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        chunks.push(&text[start..end]);
-        start = end;
-    }
-    chunks
-}
-
-/// The `send-paste` argv delivering `text` into `pane_id`.
-///
-/// The payload is standard base64 — psmux's own client encodes a paste the same
-/// way, and it is what the server decodes. It also keeps CR/LF off the wire: a
-/// raw newline inside a psmux command argument is cut by the server's
-/// line-oriented read, which delivers a truncated payload and then executes the
-/// tail as a psmux command (psmux #560).
-fn psmux_send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
-    vec![
-        "send-paste".to_string(),
-        "-t".to_string(),
-        pane_id.to_string(),
-        base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
-    ]
-}
-
-/// Out-of-band paste channel for a psmux backend.
-///
-/// psmux's control-mode dispatcher implements no paste command at all
-/// (`paste-buffer`, `set-buffer` and psmux's own `send-paste` are CLI/server
-/// only), and its `send-keys` encoding cannot carry a paste: an ESC byte has to
-/// go out as its own `Escape` key-name, which reaches the pane as a standalone
-/// PTY write, so the agent sees a bare Escape keypress instead of the
-/// `ESC[200~` opening marker and then reads every embedded CR that follows as
-/// Enter — a pasted stack trace was submitted one line at a time (issue #916).
-///
-/// So a paste is handed to psmux's *own* paste path with a one-shot
-/// `psmux send-paste` (the same command psmux's client uses for a Ctrl+Shift+V):
-/// it normalizes CRLF for ConPTY, writes the markers contiguously with the text,
-/// and adds them only when the pane's app actually enabled bracketed paste.
-/// Verified present since psmux 3.3.6.
-#[derive(Debug, Clone)]
-pub struct PsmuxPaste {
-    transport: TmuxTransport,
-    socket: String,
-}
-
-impl PsmuxPaste {
-    pub fn new(transport: TmuxTransport, socket: String) -> Self {
-        Self { transport, socket }
-    }
-
-    /// Deliver `text` to `pane_id` as a paste. Blocks until psmux has applied it
-    /// (the psmux CLI round-trips a barrier before exiting), so a keystroke
-    /// written to control mode afterwards cannot overtake it. Callers reach this
-    /// through the session's writer task, never the UI thread, so the wait only
-    /// holds back that session's own later input — the ordering we want.
-    ///
-    /// A paste past [`PASTE_CHUNK_BYTES`] goes out as several commands, each its
-    /// own paste — the text still arrives whole and no CR submits. An error on a
-    /// *later* chunk is reported but not returned: the caller's fallback would
-    /// re-send text the pane already has.
-    fn send(&self, pane_id: &str, text: &str) -> Result<()> {
-        for (i, chunk) in paste_chunks(text).into_iter().enumerate() {
-            if let Err(e) = self.send_one(pane_id, chunk) {
-                if i == 0 {
-                    return Err(e);
-                }
-                warn!("psmux send-paste truncated after {i} chunk(s): {e:#}");
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
-    fn send_one(&self, pane_id: &str, text: &str) -> Result<()> {
-        let args = psmux_send_paste_args(pane_id, text);
-        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = self
-            .transport
-            .tmux_command(&self.socket, &argv)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .context("failed to run psmux send-paste")?;
-        if !out.status.success() {
-            bail!(
-                "psmux send-paste exited with {}: {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(())
-    }
+    /// Deliver `text`, a whole bracketed paste, to `pane_id` some other way
+    /// than typing it, or `None` where a paste is typed like anything else. An
+    /// `Err` falls back to typing it: a degraded paste beats a dropped one.
+    fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>>;
 }
 
 /// Per-pane writer that sends input via control-mode `send-keys` through the
-/// shared control stdin. `psmux` selects the key-name/literal encoding when the
-/// backend is psmux instead of tmux's `-H` hex (see [`send_keys_commands`]), and
-/// `paste` carries that backend's out-of-band paste channel ([`PsmuxPaste`]).
+/// shared control stdin, encoded the way the server's adapter says
+/// ([`PaneInput`]).
 pub struct ControlModeWriter {
     pub stdin: Arc<Mutex<std::process::ChildStdin>>,
     pub pane_id: String,
-    pub psmux: bool,
-    pub paste: Option<PsmuxPaste>,
+    pub input: Arc<dyn PaneInput>,
 }
 
 impl Write for ControlModeWriter {
@@ -676,22 +427,18 @@ impl Write for ControlModeWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        // A paste cannot be encoded as psmux key-names (see `PsmuxPaste`), so it
-        // goes out of band. A failure falls through to the key encoding: a
-        // degraded paste beats a dropped one.
-        if let Some(paste) = self.paste.as_ref() {
-            if let Some(text) = bracketed_paste_text(buf) {
-                match paste.send(&self.pane_id, text) {
-                    Ok(()) => return Ok(buf.len()),
-                    Err(e) => warn!("psmux send-paste failed, falling back to send-keys: {e:#}"),
-                }
+        if let Some(text) = bracketed_paste_text(buf) {
+            match self.input.paste(&self.pane_id, text) {
+                Some(Ok(())) => return Ok(buf.len()),
+                Some(Err(e)) => warn!("out-of-band paste failed, falling back to send-keys: {e:#}"),
+                None => {}
             }
         }
         let mut stdin = self
             .stdin
             .lock()
             .map_err(|e| std::io::Error::other(format!("stdin lock: {e}")))?;
-        for cmd in send_keys_commands(&self.pane_id, buf, self.psmux) {
+        for cmd in self.input.send_keys(&self.pane_id, buf) {
             stdin.write_all(cmd.as_bytes())?;
         }
         stdin.flush()?;
@@ -910,7 +657,7 @@ pub fn is_valid_window_id(s: &str) -> bool {
 /// Parse `list-panes -F "#{pane_id} #{@thurbox_state}"` output into the
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
-/// wire data never panics. Shared by the psmux poller's diff below and the
+/// wire data never panics. Shared by the hook poller's diff below and the
 /// headless status poll (`session_ops::remote_hooks::poll_remote_hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
@@ -954,7 +701,7 @@ pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
         .collect()
 }
 
-/// Diff one psmux hook-poll result against the previous poll, returning the
+/// Diff one hook-poll result against the previous poll, returning the
 /// `(pane_id, value)` pairs to report — the poller-side equivalent of tmux's
 /// `%subscription-changed` edge semantics.
 ///
@@ -1046,7 +793,7 @@ pub(in crate::backend) struct ControlMode {
     /// connection (e.g. a headless spawn's) has no drainer.
     sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
     /// True while this connection lives; cleared on reader EOF and in `Drop`.
-    /// The psmux hook poller checks it each cycle so a replaced connection's
+    /// The hook poller checks it each cycle so a replaced connection's
     /// poller winds down instead of writing into a dead pipe forever.
     alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
@@ -1058,35 +805,31 @@ pub(in crate::backend) struct ControlMode {
 /// connection against unbounded growth.
 const SUB_EVENTS_CAP: usize = 256;
 
-/// How often the psmux hook poller lists pane options — matches tmux's own
-/// ≤1/s subscription-report cadence, so both channels have the same worst-case
+/// How often a hook poller lists pane options — matches tmux's own ≤1/s
+/// subscription-report cadence, so both channels have the same worst-case
 /// status latency.
-const PSMUX_HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+const HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// Whether this multiplexer answers the `attach-session` carried on argv with
-/// a `%begin`/`%end` block of its own.
-///
-/// tmux does, and [`ControlMode::drain_implicit_attach_response`] must consume
-/// it before any waiter exists. **psmux does not** (measured against psmux
-/// 3.3.6 — ADR-13): its command counter starts at 1 for the *client's* first
-/// command, so the attach is never numbered at all.
-///
-/// ```text
-/// $ printf 'display-message -p first\ndisplay-message -p second\n' \
-///     | psmux -L s -C attach-session -t thurbox
-/// %begin 1789657328 1 1     <- the first command sent, not the attach
-/// %begin 1789657328 2 1
-/// ```
-///
-/// Draining there waits on a `read_until` for a block that never comes, which
-/// is the whole of issue #1168's headline symptom: `ensure_ready` never
-/// returns, so the discovery worker never reports, `Terminals::discovered`
-/// stays empty, and **every** session renders "session has no pane yet" with
-/// nothing logged — the interface never attaches a single pane on Windows. The
-/// blocking read ends only when psmux closes the pipe, which is the other face
-/// of it ("control mode closed before sending its implicit attach response").
-fn sends_implicit_attach_response(transport: &TmuxTransport) -> bool {
-    !transport.uses_psmux()
+/// What a control-mode connection may expect of the server it talks to — its
+/// adapter's answer, measured, never a guess from the binary's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlPolicy {
+    /// Whether the server answers the `attach-session` carried on argv with a
+    /// `%begin`/`%end` block of its own, which
+    /// `ControlMode::drain_implicit_attach_response` must consume before any
+    /// waiter exists. Waiting for one a server never sends never returns.
+    pub implicit_attach_reply: bool,
+    /// Whether a reply block's `%end` carries its `%begin`'s tag, so a block
+    /// can hold any line a pane showed. Where it does not, any `%end` ends the
+    /// block, as before tags were read.
+    pub tagged_blocks: bool,
+    /// Whether the server pushes format subscriptions (`refresh-client -B`):
+    /// the remote-hook status and which client sizes each pane.
+    pub subscriptions: bool,
+    /// Where status cannot be subscribed to but can be asked for: the command
+    /// listing every pane's hook-state option, polled each
+    /// `HOOK_POLL_INTERVAL` into the queue a subscription would feed.
+    pub status_poll: Option<String>,
 }
 
 impl ControlMode {
@@ -1099,6 +842,7 @@ impl ControlMode {
         socket: &str,
         session: &str,
         sizer: &str,
+        policy: &ControlPolicy,
     ) -> Result<Self> {
         // -C (single C): control mode with echo — works with piped stdin.
         // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
@@ -1135,7 +879,7 @@ impl ControlMode {
         // connection's life. Draining here, before any waiter can exist,
         // makes that race impossible instead of merely unlikely.
         let mut reader = BufReader::new(stdout);
-        if sends_implicit_attach_response(transport) {
+        if policy.implicit_attach_reply {
             Self::drain_implicit_attach_response(&mut reader)?;
         }
 
@@ -1159,7 +903,7 @@ impl ControlMode {
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
 
-        let strict_blocks = !transport.uses_psmux();
+        let strict_blocks = policy.tagged_blocks;
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
             .spawn(move || {
@@ -1196,11 +940,11 @@ impl ControlMode {
         // Subscribe to the remote-hook status option of every pane of the
         // attached session (tmux pushes `%subscription-changed` on change) —
         // how an off-local agent's hooks reach the local status derivation.
-        // tmux-only (psmux has no format subscriptions) and best-effort: a
+        // Only where the server has format subscriptions, and best-effort: a
         // refusal must not brick the whole backend, status just stays dark.
         // Armed here — not per pane — so `reconnect_control` re-arms for free
         // and panes created later are covered (`%*` is session-scoped).
-        if !transport.uses_psmux() {
+        if policy.subscriptions {
             let arm = format!(
                 "refresh-client -B '{}:%*:#{{{}}}'",
                 crate::session::REMOTE_HOOK_SUBSCRIPTION,
@@ -1216,68 +960,50 @@ impl ControlMode {
             if let Err(e) = control.send_command(&arm) {
                 warn!("failed to arm the pane sizer subscription: {e:#}");
             }
-        } else if transport.is_remote() && crate::session::psmux_hook_rewrite_supported() {
+        } else if let Some(command) = &policy.status_poll {
             // Unlike the subscription (passive — zero recurring cost), the
-            // poller is a 1 Hz command, so it only runs where a producer can
-            // exist: a *remote* psmux host with the hook rewrite enabled. A
-            // local psmux (Windows) session signals via `thurbox-cli` straight
-            // into the DB and never sets the pane option.
-            control.spawn_psmux_hook_poller(session);
+            // poller is a 1 Hz command, so the adapter asks for it only where a
+            // producer can exist.
+            control.spawn_hook_poller(command.clone());
         }
 
         Ok(control)
     }
 
-    /// psmux has no format subscriptions, so a remote psmux connection
-    /// **polls** the remote-hook pane option instead (once
-    /// [`crate::session::psmux_hook_rewrite_supported`] is flipped — the same
-    /// gate that enables shipping the rewritten hooks that set it): a
-    /// background thread lists every pane of the session with its
-    /// `@thurbox_state` each [`PSMUX_HOOK_POLL_INTERVAL`], diffs against the
-    /// previous poll ([`diff_polled_hook_states`]), and feeds
-    /// changes into the same `sub_events` queue the tmux subscription uses —
-    /// everything downstream (`take_hook_state_events` → the app's drain) is
-    /// shared. Best-effort: a command failure ends the thread (the connection
-    /// is dying; a reconnect's fresh `ControlMode` spawns a fresh poller), and
-    /// an idle server pays one cheap command per second on an
-    /// already-persistent connection.
+    /// A server with no format subscriptions **polls** the remote-hook pane
+    /// option instead, where its adapter asks for it
+    /// ([`ControlPolicy::status_poll`]): a background thread runs `cmd` — a
+    /// listing of every pane of the session with its `@thurbox_state` — each
+    /// [`HOOK_POLL_INTERVAL`], diffs against the previous poll
+    /// ([`diff_polled_hook_states`]), and feeds changes into the same
+    /// `sub_events` queue the tmux subscription uses — everything downstream
+    /// (`take_hook_state_events` → the app's drain) is shared. Best-effort: a
+    /// command failure ends the thread (the connection is dying; a reconnect's
+    /// fresh `ControlMode` spawns a fresh poller), and an idle server pays one
+    /// cheap command per second on an already-persistent connection.
     ///
     /// The thread is deliberately **detached** (not joined in `Drop`): a poll
     /// blocked in its command timeout when the connection dies would stall the
     /// drop for [`COMMAND_TIMEOUT`]; instead it exits on its own via the
     /// `alive` flag or the dead pipe shortly after.
-    fn spawn_psmux_hook_poller(&self, session: &str) {
+    fn spawn_hook_poller(&self, cmd: String) {
         let stdin = Arc::clone(&self.stdin);
         let queue = Arc::clone(&self.response_queue);
         let events = Arc::clone(&self.sub_events);
         let alive = Arc::clone(&self.alive);
-        // Double-quoted framing: psmux's tokenizer passes `'` through `"…"`
-        // tokens but mangles adjacent `'…'` segments (see
-        // `psmux_window_command`). The session name is user-authored
-        // hosts.toml text embedded in a wire command, so it gets the same
-        // double-quote framing, minus the `"`/`\` it can't carry — mirroring
-        // the socket sanitization in `builtin_hooks::remote_signal_target`.
-        let session_safe: String = session
-            .chars()
-            .filter(|c| !matches!(c, '"' | '\\'))
-            .collect();
-        let cmd = format!(
-            "list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}} #{{{}}}\"",
-            crate::session::REMOTE_HOOK_STATE_OPTION,
-        );
         let spawned = std::thread::Builder::new()
-            .name("psmux-hook-poller".into())
+            .name("hook-poller".into())
             .spawn(move || {
                 let mut last = std::collections::HashMap::new();
                 loop {
-                    std::thread::sleep(PSMUX_HOOK_POLL_INTERVAL);
+                    std::thread::sleep(HOOK_POLL_INTERVAL);
                     if !alive.load(Ordering::Relaxed) {
                         break;
                     }
                     let body = match Self::send_command_on(&stdin, &queue, &cmd, 1) {
                         Ok(body) => body,
                         Err(e) => {
-                            debug!("psmux hook poller stopping: {e:#}");
+                            debug!("hook poller stopping: {e:#}");
                             break;
                         }
                     };
@@ -1286,7 +1012,7 @@ impl ControlMode {
                 }
             });
         if let Err(e) = spawned {
-            warn!("failed to spawn the psmux hook poller: {e}");
+            warn!("failed to spawn the hook poller: {e}");
         }
     }
 
@@ -1433,9 +1159,9 @@ impl ControlMode {
                     Self::dispatch_output(&pane_senders, &pane_id, data);
                 }
                 Notification::Begin => {
-                    // psmux's blocks are not known to carry tmux's tag, so
-                    // there a block is framed as it was before tags were read:
-                    // any `%end` ends it.
+                    // A server whose blocks are not known to carry tmux's tag
+                    // ([`ControlPolicy::tagged_blocks`]) has a block framed as
+                    // it was before tags were read: any `%end` ends it.
                     let tag = block_tag(&line).map(joined_tag).filter(|_| strict_blocks);
                     collecting = Some((tag, Vec::new()));
                 }
@@ -1753,7 +1479,7 @@ impl ControlMode {
     }
 
     /// [`Self::send_command`] without `&self`, so background threads holding
-    /// only the shared handles (the psmux hook poller) can issue commands.
+    /// only the shared handles (the hook poller) can issue commands.
     ///
     /// Both locks are held across enqueue **and** write: concurrent senders
     /// (a backend caller vs the poller) must not interleave one thread's
@@ -1796,7 +1522,7 @@ impl ControlMode {
             // Lock order: stdin first, queue only for the brief push/pop.
             // Holding stdin across enqueue AND write keeps the FIFO waiter
             // order matching the on-wire command order for concurrent senders
-            // (a backend caller vs the psmux poller) — while never holding the
+            // (a backend caller vs the hook poller) — while never holding the
             // queue lock across the pipe write, so a write blocked on a wedged
             // transport can't stall the reader thread (whose response dispatch
             // needs the queue lock) or any other `send_command` caller beyond
@@ -1965,7 +1691,7 @@ impl ControlMode {
 
 impl Drop for ControlMode {
     fn drop(&mut self) {
-        // Wind down the (detached) psmux hook poller; it observes the flag on
+        // Wind down the (detached) hook poller; it observes the flag on
         // its next cycle, or exits via the dead pipe once the child is killed.
         self.alive.store(false, Ordering::Relaxed);
 

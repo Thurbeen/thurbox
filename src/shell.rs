@@ -223,6 +223,31 @@ impl HostLauncher {
     }
 }
 
+/// `program` with `args`: run on this machine when there is no `launcher`, or
+/// on the host it reaches.
+///
+/// Through a launcher the tokens are re-split by the host's login shell, so
+/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged).
+/// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
+/// them — are its adapter's to write, so a launcher carries any adapter's
+/// command line exactly as the adapter wrote it.
+pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> Command {
+    match launcher {
+        None => {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        }
+        Some(launcher) => {
+            let mut cmd = launcher.command();
+            for token in std::iter::once(&program).chain(args) {
+                cmd.arg(posix_quote(token));
+            }
+            cmd
+        }
+    }
+}
+
 /// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
 /// the in-distro command and its arguments.
 ///

@@ -165,7 +165,10 @@ fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
     let found = spawned.as_ref().ok().map(|pane| {
         let out = tmux(&["display-message", "-p", "-t", pane, "#{window_name}"]);
         let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let stamp = window_option(pane, thurbox::backend::tmux::WINDOW_SESSION_OPTION);
+        let stamp = window_option(
+            pane,
+            thurbox::backend::tmux_compat::server::WINDOW_SESSION_OPTION,
+        );
         (name, stamp)
     });
 
@@ -203,10 +206,12 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
-    let armed =
-        thurbox::backend::tmux::ensure_automation_heartbeat(&dir.path().join("thurbox-cli"));
+    let armed = thurbox::backend::tmux_compat::server::ensure_automation_heartbeat(
+        &thurbox::backend::tmux::TmuxBackend::new(),
+        &dir.path().join("thurbox-cli"),
+    );
     let names = window_names();
-    let running = thurbox::backend::tmux::automation_heartbeat_running();
+    let running = thurbox::backend::tmux_compat::server::automation_heartbeat_running();
 
     if let Err(e) = armed {
         panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");

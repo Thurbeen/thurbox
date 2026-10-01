@@ -1,29 +1,21 @@
-//! Transport seam for the tmux backend.
+//! How a tmux-compatible multiplexer is launched.
 //!
-//! The tmux control-mode protocol is identical whether tmux runs on the local
-//! machine or on a remote host reached over SSH (see [`crate::backend::tmux_compat::control_mode`]).
-//! The *only* thing that differs is how the `tmux` process is launched: a bare
-//! `Command::new("tmux")` locally, or `ssh <dest> tmux …` remotely.
+//! The control-mode protocol is identical whether the server runs on this
+//! machine or on a host reached over SSH or in a WSL distro (see
+//! [`crate::backend::tmux_compat::control_mode`]). What differs is how the
+//! binary is started: directly, or behind a [`HostLauncher`].
 //!
 //! [`TmuxTransport`] is two independent halves: the **launcher** that reaches
-//! the host ([`HostLauncher`], shared with every other remote command) and the
-//! **multiplexer** binary run there. It builds [`Command`]s; it never touches
-//! I/O, threading, or the protocol, and it knows nothing of the host's OS.
+//! the host and the **binary** run there, which the adapter using it names. It
+//! builds [`Command`]s; it never touches I/O, threading, or the protocol, and it
+//! knows neither the host's OS nor which multiplexer the binary is.
 
 use std::process::Command;
 
-use crate::shell::{posix_quote, HostLauncher};
-
-/// The local multiplexer binary: the platform default's name — `psmux` on
-/// Windows (a native, drop-in tmux replacement with an identical control-mode
-/// wire protocol), `tmux` elsewhere. psmux also installs `tmux`/`pmux`
-/// aliases, but `psmux` is the canonical name. Derived rather than restated,
-/// so the binary run here and the route a local row is written under cannot
-/// disagree.
-pub const DEFAULT_MUX: &str = crate::session::Multiplexer::platform_default().name();
+use crate::shell::HostLauncher;
 
 /// How to launch the multiplexer for a backend: which launcher reaches its
-/// machine (none, for this one) and which multiplexer binary runs there.
+/// machine (none, for this one) and which binary runs there.
 #[derive(Debug, Clone)]
 pub struct TmuxTransport {
     /// `None` runs the multiplexer on this machine; otherwise `ssh …` or
@@ -32,8 +24,7 @@ pub struct TmuxTransport {
     /// does (see [`crate::shell::wsl_command`]), so the same control-mode
     /// protocol and POSIX quoting apply to both.
     launcher: Option<HostLauncher>,
-    /// The multiplexer binary: [`DEFAULT_MUX`] locally, the route's
-    /// multiplexer on a host.
+    /// The multiplexer binary, as the adapter using this names it.
     mux: String,
 }
 
@@ -64,11 +55,11 @@ pub(crate) fn strip_mux_nesting_env(cmd: &mut Command) {
 }
 
 impl TmuxTransport {
-    /// This machine's own multiplexer, run directly.
-    pub fn local() -> Self {
+    /// `mux` on this machine, run directly.
+    pub fn local(mux: impl Into<String>) -> Self {
         Self {
             launcher: None,
-            mux: DEFAULT_MUX.to_string(),
+            mux: mux.into(),
         }
     }
 
@@ -81,30 +72,17 @@ impl TmuxTransport {
     }
 
     /// Build a [`Command`] running `<mux> -L <socket> <args…>`, behind the
-    /// launcher for a remote host.
-    ///
-    /// Through a launcher the command tokens are re-split by the host's login
-    /// shell, so each token is shell-escaped to survive intact. Simple tokens
-    /// (the binary name, `-L`, the socket name) pass through unquoted. `-L` is
-    /// the multiplexer's flag and is added here, never by the launcher.
+    /// launcher for a remote host ([`crate::shell::launch`], which adds
+    /// nothing of its own: `-L` is the tmux grammar's, so it is written here).
     ///
     /// Nesting env vars are stripped (see `strip_mux_nesting_env`) so the
     /// command targets thurbox's own server even when thurbox runs inside a pane.
     pub fn tmux_command(&self, socket: &str, args: &[&str]) -> Command {
-        let mut cmd = match &self.launcher {
-            None => {
-                let mut cmd = Command::new(&self.mux);
-                cmd.arg("-L").arg(socket).args(args);
-                cmd
-            }
-            Some(launcher) => {
-                let mut cmd = launcher.command();
-                for token in [self.mux.as_str(), "-L", socket].iter().chain(args) {
-                    cmd.arg(posix_quote(token));
-                }
-                cmd
-            }
-        };
+        let argv: Vec<&str> = ["-L", socket]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        let mut cmd = crate::shell::launch(self.launcher.as_ref(), &self.mux, &argv);
         strip_mux_nesting_env(&mut cmd);
         cmd
     }
@@ -140,7 +118,7 @@ impl TmuxTransport {
     /// multiplexer.
     pub fn launch_failure(&self, context: &'static str, err: std::io::Error) -> anyhow::Error {
         let launcher = self.is_remote().then(|| self.launcher());
-        crate::agent::preflight::launch_failure(launcher, context, err)
+        crate::agent::preflight::launch_failure(launcher, &self.mux, context, err)
     }
 
     /// Whether the multiplexer is reached over `ssh`, and so whether ssh's own
@@ -154,15 +132,6 @@ impl TmuxTransport {
     /// claiming it does would be the guess this exists to avoid.
     pub fn is_ssh(&self) -> bool {
         matches!(self.launcher, Some(HostLauncher::Ssh { .. }))
-    }
-
-    /// Whether the multiplexer is psmux (the native-Windows tmux clone), whose
-    /// protocol divergences — no `send-keys -H`, no per-window options, no
-    /// `%window-close` — branch on this. A question about the multiplexer,
-    /// never about the host's OS: see
-    /// [`crate::backend::tmux_compat::control_mode::send_keys_commands`].
-    pub fn uses_psmux(&self) -> bool {
-        self.mux == "psmux"
     }
 }
 
@@ -178,6 +147,10 @@ mod tests {
             },
             mux,
         )
+    }
+
+    fn local() -> TmuxTransport {
+        TmuxTransport::local("tmux")
     }
 
     fn wsl(distro: &str) -> TmuxTransport {
@@ -200,10 +173,10 @@ mod tests {
 
     #[test]
     fn local_builds_bare_mux() {
-        let t = TmuxTransport::local();
+        let t = local();
         let cmd = t.tmux_command("thurbox", &["has-session", "-t", "thurbox"]);
         let (prog, args) = program_and_args(&cmd);
-        assert_eq!(prog, DEFAULT_MUX);
+        assert_eq!(prog, "tmux");
         assert_eq!(args, ["-L", "thurbox", "has-session", "-t", "thurbox"]);
     }
 
@@ -283,7 +256,7 @@ mod tests {
 
     #[test]
     fn tmux_command_strips_nesting_env() {
-        let cmd = TmuxTransport::local().tmux_command("thurbox", &["has-session"]);
+        let cmd = local().tmux_command("thurbox", &["has-session"]);
         // Removed vars surface in get_envs() as (key, None).
         let removed: Vec<String> = cmd
             .get_envs()
@@ -299,20 +272,15 @@ mod tests {
     }
 
     #[test]
-    fn uses_psmux_reflects_mux_binary() {
-        assert_eq!(TmuxTransport::local().uses_psmux(), cfg!(windows));
-        assert!(ssh("h", vec![], "psmux").uses_psmux());
-        assert!(!ssh("h", vec![], "tmux").uses_psmux());
-        // A WSL distro runs Linux `tmux`, which supports the `-H` hex flag, so
-        // it must NOT take the psmux keystroke-encoding path.
-        let wsl = wsl("Ubuntu");
-        assert_eq!(wsl.mux(), "tmux");
-        assert!(!wsl.uses_psmux());
+    fn a_transport_runs_the_binary_its_adapter_names() {
+        assert_eq!(TmuxTransport::local("psmux").mux(), "psmux");
+        assert_eq!(ssh("h", vec![], "psmux").mux(), "psmux");
+        assert_eq!(wsl("Ubuntu").mux(), "tmux");
     }
 
     #[test]
     fn is_remote_reflects_variant() {
-        assert!(!TmuxTransport::local().is_remote());
+        assert!(!local().is_remote());
         assert!(ssh("h", vec![], "tmux").is_remote());
         assert!(wsl("Ubuntu").is_remote());
     }

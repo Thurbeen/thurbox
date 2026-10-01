@@ -35,7 +35,7 @@ fi
 export TBX_REPO_ROOT
 
 # The sandbox's tmux socket name (the dev build's default — mirrors
-# src/backend/tmux.rs TMUX_SOCKET for a dev_build). It lives inside the sandbox's
+# src/backend/tmux_compat/socket.rs TMUX_SOCKET for a dev_build). It lives inside the sandbox's
 # private TMUX_TMPDIR, so killing it can never reach a real server. Exported to
 # thurbox as THURBOX_SOCKET by the init flavors below: a sandbox relocates
 # THURBOX_DATA_DIR, and thurbox derives a socket of its own from a relocated

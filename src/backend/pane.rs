@@ -1167,7 +1167,7 @@ impl Session {
     ///
     /// `seed_len` is the number of bytes at the front of `reader` that are
     /// replayed history (an adopt's scrollback seed, chained ahead of the
-    /// live stream — see [`crate::backend::tmux::TmuxBackend::adopt`]) rather
+    /// live stream — see `SessionBackend::adopt` on the tmux-protocol server) rather
     /// than genuine pane activity. Those bytes still reach the parser, but
     /// must not stamp `last_output_at`: a restart/reattach replaying hours of
     /// scrollback would otherwise look identical to the agent having just

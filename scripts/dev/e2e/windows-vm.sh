@@ -400,8 +400,9 @@ cmd_test() {
 
   log "checking psmux is installed and control-mode capable"
   local ver sessions
-  # `psmux` is the canonical binary thurbox's TmuxBackend invokes on Windows
-  # (DEFAULT_MUX); it also ships `tmux`/`pmux` aliases. -V proves binary + PATH.
+  # `psmux` is the canonical binary thurbox's psmux adapter invokes (the default
+  # multiplexer on Windows); it also ships `tmux`/`pmux` aliases. -V proves
+  # binary + PATH.
   ver="$(ssh_vm 'psmux -V' 2>/dev/null | tr -d '\r')" \
     || die "psmux not found on PATH inside the VM"
   log "psmux reports: $ver"
@@ -449,7 +450,7 @@ cmd_test() {
   # A paste cannot be key-encoded for psmux (a split ESC arrives as a bare
   # Escape keypress, losing the ESC[200~ marker, and every embedded CR then
   # submits — issue #916), so thurbox hands pastes to psmux's own
-  # `send-paste` (see `control_mode::PsmuxPaste`). This probes the two
+  # `send-paste` (see `backend::psmux`'s `PsmuxPaste`). This probes the two
   # properties that path relies on: the payload is standard **base64**, and a
   # multi-line payload keeps its newlines instead of being cut on the wire with
   # its tail executed as a psmux command (psmux #560). `rename-window` is the

@@ -388,12 +388,14 @@ A host name may not contain `:`, which separates it from the multiplexer in a
 route. `hosts.toml` ignores such an entry with a warning, and
 `config validate` fails naming it.
 
-Which multiplexers work is what is **registered**, never the OS: this machine
-serves its platform default, and each host serves what its unqualified rows
-mean. A route naming anything else is refused by name, including rows for a
-multiplexer no adapter implements (`rmux`, `herdr` today), which are neither
-created nor driven with another binary. A force-delete or reap of a local
-row on a multiplexer this machine does not run refuses rather than removing a
+Which multiplexers work is what is **registered**, never the OS: every
+multiplexer an adapter implements (`tmux` and `psmux` today) is registered for
+this machine and for every host, whatever either's platform or preference — a
+binary that is not installed is reported by name when a session first needs
+it. A route naming a multiplexer no adapter implements (`rmux`, `herdr` today)
+is refused by name, and is neither created nor driven with another binary. A
+force-delete or reap of a local row on a multiplexer this machine does not run
+refuses rather than removing a
 checkout or killing a local window of the same name; a delete without
 `--force` still works and leaves it restorable. An adapter for another multiplexer
 registers its own routes; it must read them on restart, restore, delete,

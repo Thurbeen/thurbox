@@ -39,7 +39,7 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-lazy-test";
 
-/// `backend::tmux::TMUX_SESSION` in a test build — see `tests/attach_by_name.rs`.
+/// `backend::tmux_compat::server::TMUX_SESSION` in a test build — see `tests/attach_by_name.rs`.
 const SESSION: &str = "thurbox-dev";
 
 const ID: &str = "22222222-2222-2222-2222-222222222222";

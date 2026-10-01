@@ -139,8 +139,21 @@ pub fn run(
             command,
             disabled,
         } => create_automation(
-            db, name, trigger, time, weekday, timezone, prompt, session, repo, worktree, base,
-            agent, command, disabled,
+            db,
+            backends.get(),
+            name,
+            trigger,
+            time,
+            weekday,
+            timezone,
+            prompt,
+            session,
+            repo,
+            worktree,
+            base,
+            agent,
+            command,
+            disabled,
         ),
         Action::List => list_automations(db),
         Action::Show { id } => {
@@ -161,7 +174,17 @@ pub fn run(
             enabled,
             disabled,
         } => edit_automation(
-            db, id, name, trigger, time, weekday, timezone, prompt, enabled, disabled,
+            db,
+            backends.get(),
+            id,
+            name,
+            trigger,
+            time,
+            weekday,
+            timezone,
+            prompt,
+            enabled,
+            disabled,
         ),
         Action::Remove { id } => remove_automation(db, id),
         Action::Run { id } => trigger_automation(db, id),
@@ -184,6 +207,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 fn create_automation(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     name: String,
     trigger: String,
     time: Option<String>,
@@ -231,7 +255,7 @@ fn create_automation(
         .create_automation(&new)
         .map_err(|e| format!("create_automation: {e}"))?;
     if !disabled {
-        arm_heartbeat();
+        arm_heartbeat(backends);
     }
     let auto = db
         .get_automation(id)
@@ -267,6 +291,7 @@ fn list_automations(db: &Database) -> Result<CommandOutput, String> {
 #[allow(clippy::too_many_arguments)]
 fn edit_automation(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     id: i64,
     name: Option<String>,
     trigger: Option<String>,
@@ -298,7 +323,7 @@ fn edit_automation(
     db.update_automation(&auto)
         .map_err(|e| format!("update_automation: {e}"))?;
     if auto.enabled {
-        arm_heartbeat();
+        arm_heartbeat(backends);
     }
     let auto = load(db, id)?;
     Ok(CommandOutput::new(
@@ -531,7 +556,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
 /// Write the `@thurbox_state` pane option of every live local pane into the
 /// hook columns, for sessions whose rows are here. Returns how many changed.
 fn poll_local_pane_states(db: &Database) -> usize {
-    let states = match crate::backend::tmux::list_local_hook_states() {
+    let states = match crate::backend::tmux_compat::server::list_local_hook_states() {
         Ok(states) if !states.is_empty() => states,
         Ok(_) => return 0,
         Err(e) => {
@@ -542,15 +567,17 @@ fn poll_local_pane_states(db: &Database) -> usize {
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
+    // The server polled is this machine's default; another local server's
+    // panes reuse the same ids and are not its.
+    let default = crate::session::Multiplexer::platform_default();
+    let served = crate::session::Route::local(Some(default));
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let mut written = 0;
     for (pane, state) in states {
         if !crate::session::HOOK_STATES.contains(&state.as_str()) {
             continue;
         }
-        let Some(session) = sessions.iter().find(|s| {
-            !crate::session::Route::is_remote_key(&s.backend_type) && s.backend_id == pane
-        }) else {
+        let Some(session) = local_owner(&sessions, &served, default, &pane) else {
             continue;
         };
         if hook_rows.get(&session.id).and_then(|r| r.state.as_deref()) == Some(state.as_str()) {
@@ -563,6 +590,21 @@ fn poll_local_pane_states(db: &Database) -> usize {
         }
     }
     written
+}
+
+/// The row `pane` on the local server `served` belongs to: a row whose route,
+/// settled against this machine's `default`, is that server's.
+fn local_owner<'a>(
+    sessions: &'a [crate::sync::state::SharedSession],
+    served: &crate::session::Route,
+    default: crate::session::Multiplexer,
+    pane: &str,
+) -> Option<&'a crate::sync::state::SharedSession> {
+    sessions.iter().find(|s| {
+        s.backend_id == pane
+            && crate::session::Route::parse(&s.backend_type)
+                .is_ok_and(|route| route.qualify(default, None) == *served)
+    })
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.
@@ -810,12 +852,15 @@ fn automation_to_json(a: &Automation) -> Value {
 /// Gated on `[features] automations`: when disabled the TUI neither fires
 /// schedules nor arms the heartbeat, so the CLI must not arm it either (it
 /// would spawn a keeper window that can never fire anything).
-pub(crate) fn arm_heartbeat() {
+pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry) {
     if !crate::session::settings::global().features.automations {
         return;
     }
     let cli = crate::paths::resolve_cli_binary();
-    if let Err(e) = crate::backend::tmux::ensure_automation_heartbeat(&cli) {
+    if let Err(e) = crate::backend::tmux_compat::server::ensure_automation_heartbeat(
+        backends.default_backend().as_ref(),
+        &cli,
+    ) {
         eprintln!("warning: failed to arm automation heartbeat: {e}");
     }
 }
@@ -834,6 +879,54 @@ fn run_to_json(r: &AutomationRun) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With tmux and psmux both able to host local sessions, a pane id on the
+    /// default server is only that server's: a row on the other one with the
+    /// same id is not its owner, and an unqualified local row is the
+    /// default's.
+    #[test]
+    fn a_local_pane_state_belongs_only_to_a_row_on_the_server_polled() {
+        use crate::session::{Multiplexer, Route};
+        let row = |backend_type: &str| crate::sync::state::SharedSession {
+            id: crate::session::SessionId::default(),
+            name: backend_type.into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: backend_type.into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+        };
+        for default in [Multiplexer::Tmux, Multiplexer::Psmux] {
+            let other = Multiplexer::ALL
+                .into_iter()
+                .find(|m| *m != default)
+                .unwrap();
+            let served = Route::local(Some(default));
+            let sessions = vec![
+                row(&Route::local(Some(other)).format()),
+                row(&served.format()),
+            ];
+            assert_eq!(
+                local_owner(&sessions, &served, default, "%1").map(|s| s.name.as_str()),
+                Some(served.format().as_str()),
+            );
+            let legacy = vec![row(&Route::local(Some(other)).format()), row("local-tmux")];
+            // `local-tmux` is whatever this machine's default is.
+            assert_eq!(
+                local_owner(&legacy, &served, default, "%1").map(|s| s.name.as_str()),
+                Some("local-tmux"),
+                "{default:?}"
+            );
+            assert!(local_owner(&sessions, &served, default, "%2").is_none());
+        }
+    }
 
     #[test]
     fn tick_reports_fired_and_skipped_arrays() {
@@ -970,6 +1063,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let err = create_automation(
             &db,
+            &crate::backend::registry::inert(),
             "n".into(),
             "daily".into(),
             None,

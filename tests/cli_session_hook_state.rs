@@ -33,7 +33,7 @@ use tmux_server::TmuxServer;
 const SOCKET: &str = "thurbox-hookstate-test";
 
 /// The tmux session name the local backend groups its windows under. Mirrors
-/// `backend::tmux::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
+/// `backend::tmux_compat::server::TMUX_SESSION`, which is private — and is `thurbox-dev` here,
 /// because a test build carries the same `dev_build` marker a dev binary does.
 const SESSION: &str = "thurbox-dev";
 
@@ -95,8 +95,14 @@ fn tmux(args: &[&str]) -> std::process::Output {
 /// creates one.
 fn stamp(target: &str, session_id: &str) {
     for (option, value) in [
-        (thurbox::backend::tmux::WINDOW_SESSION_OPTION, session_id),
-        (thurbox::backend::tmux::WINDOW_ROLE_OPTION, "agent"),
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_SESSION_OPTION,
+            session_id,
+        ),
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_ROLE_OPTION,
+            "agent",
+        ),
     ] {
         tmux(&["set-option", "-w", "-t", target, option, value]);
     }

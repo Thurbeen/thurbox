@@ -260,15 +260,25 @@ backend::pane        session, backend::{contract,identity,osc8,output_wake}
 backend::osc8        session
 backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
-backend::wiring      session, agent::host_config,      (the factory: the only
-                     backend::{contract,registry,tmux}  node naming an adapter)
-backend::tmux_compat nothing — declares the two below  (tmux protocol helper)
+backend::wiring      session, shell,                   (the factory: the only
+                     agent::host_config,                node naming an adapter)
+                     backend::{contract,registry,
+                     tmux,psmux}
+backend::tmux_compat nothing — declares the four below (tmux protocol helper)
   ::control_mode     session, shell, backend::contract,
                      backend::tmux_compat::transport
-  ::transport        session, shell, agent
-backend::tmux        session, paths, shell, agent,     (the tmux adapter)
-                     backend::{contract,identity},
-                     backend::tmux_compat::{control_mode,transport}
+  ::server           session, paths, shell, agent,     (the shared server,
+                     backend::{contract,identity},      generic over the mux)
+                     backend::tmux_compat::{control_mode,
+                     socket,transport}
+  ::socket           session, paths                    (ADR-12 socket naming)
+  ::transport        shell, agent
+backend::tmux        session, shell, backend::contract, (the tmux adapter)
+                     backend::tmux_compat::{control_mode,
+                     server,transport}
+backend::psmux       session, shell, backend::contract, (the psmux adapter —
+                     backend::tmux_compat::{control_mode, a peer, never tmux's)
+                     server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
@@ -329,7 +339,9 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
-- Session backend: `TmuxBackend` over a `TmuxTransport`
+- Session backend: a tmux-protocol server per adapter — `TmuxBackend`
+  (`backend::tmux`) and `PsmuxBackend` (`backend::psmux`), peers over the
+  shared `tmux_compat::server` (ADR-31) — over a `TmuxTransport`
   (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
   `ssh:<host>` backends from `hosts.toml`). The local socket is
   `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one

@@ -301,7 +301,7 @@ fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
         session: Some("probe".into()),
         ..Default::default()
     };
-    let backend = TmuxBackend::for_route(&host, Multiplexer::Psmux);
+    let backend = thurbox::backend::psmux::PsmuxBackend::for_host(&host);
     let row = "00000000-0000-4000-8000-0000000000bb";
 
     // An id reissued to a window of another name is not this row's.

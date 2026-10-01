@@ -21,7 +21,7 @@
 //! being made, not a refusal: an agent `command` can be a shell function, an
 //! alias or something installed a second later, and treating "not on `PATH`"
 //! as fatal would turn an improvement into a new way to fail — the same rule
-//! `crate::backend::tmux::resolve_local_program` is written under.
+//! `crate::backend::tmux_compat::server::resolve_local_program` is written under.
 
 use std::path::Path;
 
@@ -65,7 +65,7 @@ impl Presence {
 /// Windows: the same walk, but a bare name is also tried with each extension in
 /// `PATHEXT`, because that is how the loader finds `psmux.exe` given `psmux`.
 /// The *spawn* path deliberately has no such munging (see
-/// `crate::backend::tmux::resolve_local_program`) — this is detection, and a
+/// `crate::backend::tmux_compat::server::resolve_local_program`) — this is detection, and a
 /// detector that called psmux missing on every Windows machine would be worse
 /// than no detector at all.
 ///
@@ -137,9 +137,11 @@ fn names_to_try(exe: &str) -> Vec<String> {
 /// nothing about beyond the `command` the registry gives it.
 #[derive(Debug, Clone, Copy)]
 pub enum Dependency<'a> {
-    /// The multiplexer a *local* session's window lives in: `tmux`, or `psmux`
-    /// on native Windows.
+    /// The multiplexer a *local* session's window lives in by default: `tmux`,
+    /// or `psmux` on native Windows.
     LocalMultiplexer,
+    /// A multiplexer binary a backend runs on this machine, as it names it.
+    Multiplexer(&'a str),
     /// What reaches a remote host's multiplexer from this machine: `ssh`, or
     /// `wsl.exe` for a WSL distro.
     Launcher(&'a str),
@@ -152,7 +154,7 @@ impl Dependency<'_> {
     pub fn binary(&self) -> &str {
         match self {
             Dependency::LocalMultiplexer => local_multiplexer(),
-            Dependency::Launcher(bin) => bin,
+            Dependency::Multiplexer(bin) | Dependency::Launcher(bin) => bin,
             Dependency::Agent { command, .. } => command,
         }
     }
@@ -164,8 +166,8 @@ impl Dependency<'_> {
     /// fix behind it does not get.
     fn role(&self) -> String {
         match self {
-            Dependency::LocalMultiplexer => {
-                format!("{} (thurbox's multiplexer)", local_multiplexer())
+            Dependency::LocalMultiplexer | Dependency::Multiplexer(_) => {
+                format!("{} (thurbox's multiplexer)", self.binary())
             }
             Dependency::Launcher(bin) => format!("{bin} (how thurbox reaches a host)"),
             Dependency::Agent { name, command } if name == command => {
@@ -187,18 +189,11 @@ impl Dependency<'_> {
     /// rather than with an install command for a CLI thurbox does not know.
     pub fn fix(&self) -> String {
         match self {
-            Dependency::LocalMultiplexer if cfg!(windows) => {
-                "install psmux, the Windows multiplexer: https://github.com/psmux/psmux".to_string()
-            }
-            Dependency::LocalMultiplexer if cfg!(target_os = "macos") => {
-                "install tmux 3.2 or newer (`brew install tmux`), or see \
-                 https://github.com/tmux/tmux/wiki/Installing"
-                    .to_string()
-            }
-            Dependency::LocalMultiplexer => {
-                "install tmux 3.2 or newer — the package is called `tmux` on every major \
-                 distribution; see https://github.com/tmux/tmux/wiki/Installing"
-                    .to_string()
+            Dependency::LocalMultiplexer | Dependency::Multiplexer(_) => {
+                match Multiplexer::parse(self.binary()) {
+                    Ok(mux) => mux.install_hint(),
+                    Err(_) => format!("install {}", self.binary()),
+                }
             }
             Dependency::Launcher(bin) if bin.starts_with("wsl") => {
                 "wsl.exe comes with the Windows Subsystem for Linux: \
@@ -282,9 +277,10 @@ fn searched(binary: &str) -> String {
 /// missing binary sends the reader somewhere there is nothing to find.
 ///
 /// `remote_launcher` is what reaches a remote host from here (`ssh`,
-/// `wsl.exe`), or `None` when the multiplexer was launched locally.
+/// `wsl.exe`), or `None` when the multiplexer — `mux` — was launched locally.
 pub fn launch_failure(
     remote_launcher: Option<&str>,
+    mux: &str,
     context: &'static str,
     err: std::io::Error,
 ) -> anyhow::Error {
@@ -293,7 +289,7 @@ pub fn launch_failure(
     }
     let dependency = match remote_launcher {
         Some(launcher) => Dependency::Launcher(launcher),
-        None => Dependency::LocalMultiplexer,
+        None => Dependency::Multiplexer(mux),
     };
     anyhow::Error::new(MissingDependency(dependency.missing_message()))
 }

@@ -85,8 +85,14 @@ fn open_shell_window(session_id: &str, name: &str) -> String {
     let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert!(pane.starts_with('%'), "new-window said {pane:?}");
     for (option, value) in [
-        (thurbox::backend::tmux::WINDOW_SESSION_OPTION, session_id),
-        (thurbox::backend::tmux::WINDOW_ROLE_OPTION, "shell"),
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_SESSION_OPTION,
+            session_id,
+        ),
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_ROLE_OPTION,
+            "shell",
+        ),
     ] {
         tmux(&["set-option", "-w", "-t", &pane, option, value]);
     }

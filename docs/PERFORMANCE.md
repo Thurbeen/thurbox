@@ -2402,9 +2402,9 @@ spawn path never received the same treatment.
 
 #### 3. The mailbox wake reports success at a pane nothing is listening to
 
-`send_prompt_now` (`src/backend/tmux.rs`) targets the session's tmux window and
+`send_prompt_now` (`src/backend/tmux_compat/server.rs`) targets the session's tmux window and
 treats a zero exit from `send-keys` as delivery. thurbox sets
-`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/backend/tmux.rs`;
+`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/backend/tmux_compat/server.rs`;
 at the time of this measurement it was asked for session-wide in `SESSION_OPTS`,
 which — being a window option — actually reached only whichever window was
 current), so an agent that exits or crashes **leaves its window and pane in

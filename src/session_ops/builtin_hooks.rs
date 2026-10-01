@@ -121,7 +121,7 @@ pub(crate) fn rewrite_hook_signals_for_remote(contents: &str) -> String {
 /// `-L <socket>` invocation anyway.
 pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSignalTarget {
     if host.is_windows() {
-        let socket = crate::backend::tmux::host_socket(host);
+        let socket = crate::backend::tmux_compat::socket::host_socket(host);
         let safe: String = socket
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -135,7 +135,7 @@ pub(crate) fn remote_signal_target(host: &crate::session::HostDef) -> RemoteSign
         }
         RemoteSignalTarget::Psmux {
             socket: if safe.is_empty() {
-                crate::backend::tmux::TMUX_SOCKET.to_string()
+                crate::backend::tmux_compat::socket::TMUX_SOCKET.to_string()
             } else {
                 safe
             },
@@ -370,7 +370,7 @@ mod tests {
         };
         match remote_signal_target(&host) {
             RemoteSignalTarget::Psmux { socket } => {
-                assert_eq!(socket, crate::backend::tmux::TMUX_SOCKET)
+                assert_eq!(socket, crate::backend::tmux_compat::socket::TMUX_SOCKET)
             }
             RemoteSignalTarget::Tmux => panic!("psmux host must get the psmux target"),
         }

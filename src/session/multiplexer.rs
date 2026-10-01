@@ -1,6 +1,6 @@
 //! The multiplexer choice is independent of the machine that runs a session.
 
-use super::{HostDef, Route};
+use super::{HostDef, Platform, Route};
 
 /// A name accepted in settings, hosts, and per-create commands. Implementations
 /// register separately; accepting a name here never claims its binary is usable.
@@ -37,12 +37,41 @@ impl Multiplexer {
             })
     }
 
-    pub const fn platform_default() -> Self {
-        if cfg!(windows) {
-            Self::Psmux
-        } else {
-            Self::Tmux
+    /// What a machine of `platform` runs when nothing names a multiplexer: a
+    /// default policy for the unqualified route, never a gate on which
+    /// multiplexers a machine can be driven with.
+    pub const fn default_for(platform: Platform) -> Self {
+        match platform {
+            Platform::Windows => Self::Psmux,
+            Platform::Posix => Self::Tmux,
         }
+    }
+
+    /// The one thing to do when this multiplexer's binary is missing here.
+    ///
+    /// Never a package-manager line thurbox has not verified: where the command
+    /// depends on a distribution, this names the package and links the
+    /// project's own install page instead of guessing an invocation.
+    pub fn install_hint(self) -> String {
+        match self {
+            Self::Psmux => {
+                "install psmux, the Windows multiplexer: https://github.com/psmux/psmux".to_string()
+            }
+            Self::Tmux if cfg!(target_os = "macos") => {
+                "install tmux 3.2 or newer (`brew install tmux`), or see \
+                 https://github.com/tmux/tmux/wiki/Installing"
+                    .to_string()
+            }
+            Self::Tmux => "install tmux 3.2 or newer — the package is called `tmux` on every \
+                           major distribution; see https://github.com/tmux/tmux/wiki/Installing"
+                .to_string(),
+            Self::Rmux | Self::Herdr => format!("install {}", self.name()),
+        }
+    }
+
+    /// [`Self::default_for`] this machine.
+    pub fn platform_default() -> Self {
+        Self::default_for(Platform::local())
     }
 }
 
