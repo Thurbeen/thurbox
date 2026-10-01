@@ -837,6 +837,34 @@ mod tests {
         );
     }
 
+    /// Two routes' launches write the same file on the host, so one waits for
+    /// the other whatever command each ships: interleaved, the cache could
+    /// name the command that lost the race.
+    #[test]
+    fn provisioning_is_exclusive_per_hook_file_not_per_command() {
+        let host = HostDef {
+            name: "exclusive-file-host".into(),
+            destination: "user@exclusive-file-host.invalid".into(),
+            ..Default::default()
+        };
+        let held = provision_key(&host, "opencode", SIGNAL);
+        assert!(cache_lock().in_flight.insert(held.clone()));
+        let guard = InFlightGuard { key: held };
+        let other = {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                provision_agent_hooks_on_host(&host, Some("other-mux signal "), "opencode", true)
+            })
+        };
+        std::thread::sleep(IN_FLIGHT_WAIT_STEP * 3);
+        assert!(
+            !other.is_finished(),
+            "a launch shipping another command went ahead while the file was held"
+        );
+        drop(guard);
+        assert!(other.join().unwrap().is_some());
+    }
+
     #[test]
     fn a_route_with_no_status_channel_is_provisioned_nothing() {
         let host = HostDef {
