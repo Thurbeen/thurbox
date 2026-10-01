@@ -890,7 +890,7 @@ fn run_create(
     // A host driven from afar has no interface of its own to arm the
     // heartbeat: this creation is the moment its sessions start needing
     // the tick (status polls, extension self-heal, reaping).
-    super::automations::arm_heartbeat();
+    super::automations::arm_heartbeat(backends);
     let mut human = format!(
         "Created session '{}' ({}) — {}\ncwd: {}",
         res.name,

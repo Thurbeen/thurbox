@@ -88,11 +88,12 @@ impl TmuxCompatible for Psmux {
 
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
-    /// Any banner: psmux numbers itself independently, so once it has answered
-    /// `-V` it is accepted as-is. Its floor is a different question, asked where
-    /// panes are born ([`Self::VERSION_FLOOR`]).
-    fn check_banner(_banner: &str) -> Result<()> {
-        Ok(())
+    /// The 3.3.7 floor, on the binary that would start a server: psmux numbers
+    /// itself independently, so this is its own floor and never tmux's. A
+    /// running server is judged by its own `#{version}` where panes are born
+    /// ([`Self::VERSION_FLOOR`]).
+    fn check_banner(banner: &str, socket: &str) -> Result<()> {
+        check_psmux_version(banner, socket)
     }
 
     /// Nothing beyond the shared options: psmux has no OSC 52 clipboard
@@ -647,6 +648,15 @@ mod tests {
 
     /// `#{version}` is answered by the running server, which is what matters:
     /// upgrading the binary leaves a server started before it on the old code.
+    /// The heartbeat asks a backend's `check_available` before it starts a
+    /// server, so an old psmux is refused there too, not only where panes are
+    /// born.
+    #[test]
+    fn an_old_psmux_banner_is_refused_before_a_server_starts() {
+        assert!(Psmux::check_banner("tmux 3.3.6\n", "thurbox").is_err());
+        assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
+    }
+
     #[test]
     fn a_running_server_is_judged_by_its_own_version() {
         assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());

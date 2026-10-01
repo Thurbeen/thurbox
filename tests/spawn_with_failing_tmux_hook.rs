@@ -207,6 +207,7 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
     let armed = thurbox::backend::tmux_compat::server::ensure_automation_heartbeat(
+        &thurbox::backend::tmux::TmuxBackend::new(),
         &dir.path().join("thurbox-cli"),
     );
     let names = window_names();

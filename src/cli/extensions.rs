@@ -142,7 +142,7 @@ fn install_extension(
         let _ = db.set_builtin_extension_optout(builtin.name, false);
     }
     // Arm the heartbeat so the extension's automations fire headlessly.
-    arm_heartbeat();
+    arm_heartbeat(backends);
     Ok(CommandOutput::from_summary(install_report_to_json(&report)))
 }
 
@@ -197,7 +197,7 @@ fn update_extensions(
         Some(name) => {
             let report = crate::session_ops::update_extension(db, backends, &name, force)?;
             // Arm the heartbeat so the refreshed automations keep firing headlessly.
-            arm_heartbeat();
+            arm_heartbeat(backends);
             Ok(CommandOutput::from_summary(update_report_to_json(&report)))
         }
         None => Ok(update_all_extensions(db, backends, force)),
@@ -212,7 +212,7 @@ fn update_all_extensions(
     force: bool,
 ) -> CommandOutput {
     let results = crate::session_ops::update_all_extensions(db, backends, force);
-    arm_heartbeat();
+    arm_heartbeat(backends);
     let total = results.len();
     let mut changed = 0;
     let mut failed = 0;
@@ -247,7 +247,7 @@ fn reinstall_extension(
     purge: bool,
 ) -> Result<CommandOutput, String> {
     let report = crate::session_ops::reinstall_extension(db, backends, &name, purge)?;
-    arm_heartbeat();
+    arm_heartbeat(backends);
     let version = report.install.version.as_deref().unwrap_or("?");
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
@@ -293,7 +293,7 @@ fn activate_extension(
         db.set_builtin_extension_optout(builtin.name, false)
             .map_err(|e| format!("clear opt-out: {e}"))?;
         let msgs = builtin.ensure(db, backends);
-        arm_heartbeat();
+        arm_heartbeat(backends);
         return Ok(CommandOutput::from_summary(json!({
             "ok": true,
             "summary": format!("Activated '{}' ({} re-applied)", builtin.name, builtin.blurb),
@@ -306,7 +306,7 @@ fn activate_extension(
     // A `Send` automation only fires while something ticks it. Arm the
     // heartbeat keeper so the extension works headlessly (TUI closed),
     // matching how `automation create` arms it.
-    arm_heartbeat();
+    arm_heartbeat(backends);
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
         "summary": with_blocked(

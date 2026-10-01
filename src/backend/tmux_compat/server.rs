@@ -92,8 +92,9 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// birth them, before a session is created on it.
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>>;
 
-    /// Refuse a `-V` banner this adapter cannot work with.
-    fn check_banner(banner: &str) -> Result<()>;
+    /// Refuse a `-V` banner this adapter cannot work with, or that would start
+    /// a server on `socket` too old to give a pane its own console.
+    fn check_banner(banner: &str, socket: &str) -> Result<()>;
 
     /// The session config only this multiplexer takes, applied after the shared
     /// options and best-effort or fatal as each says.
@@ -1082,11 +1083,7 @@ impl<M: TmuxCompatible> Server<M> {
             // No session to ask for `#{version}` yet, and creating one may start
             // a server — with an idle shell in it — that every spawn would then
             // refuse. The binary is what would start it, so it answers instead.
-            let banner = self.tmux_output(&["-V"])?;
-            M::check_banner(&banner)?;
-            if let Some(refuse_old) = M::VERSION_FLOOR {
-                refuse_old(&banner, &self.socket())?;
-            }
+            M::check_banner(&self.tmux_output(&["-V"])?, &self.socket())?;
             debug!(
                 "Creating tmux session '{}' on socket '{}'",
                 self.session,
@@ -1766,7 +1763,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        M::check_banner(&version_str)?;
+        M::check_banner(&version_str, &self.socket())?;
         debug!("multiplexer version: {}", version_str.trim());
         Ok(())
     }
@@ -2626,16 +2623,17 @@ pub fn stop_automation_heartbeat() -> bool {
 /// automations work with no other sessions. Idempotent — a no-op when the
 /// keeper already exists. `cli_path` is the absolute path to `thurbox-cli`.
 ///
-/// It only makes sure the session exists, and does not configure it: with no
-/// backend handed to it (see `default_local_transport`) it cannot know which
-/// multiplexer's config to apply, and the keeper needs none of it. Every
-/// backend applies the config itself before it spawns or attaches on the
-/// server.
-pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
+/// `backend` is the registry's default — the backend serving this machine's
+/// default multiplexer, the server the keeper lives on. It is asked, through
+/// the contract, whether its binary may start a server at all (an old psmux
+/// may not), and nothing more: the session's config is the adapter's to apply,
+/// which every backend does before it spawns or attaches, and the keeper needs
+/// none of it.
+pub fn ensure_automation_heartbeat(backend: &dyn SessionBackend, cli_path: &Path) -> Result<()> {
     if list_window_names().iter().any(|w| w == HEARTBEAT_WINDOW) {
         return Ok(());
     }
-    ensure_default_session()?;
+    ensure_default_session(backend)?;
     let loop_cmd = heartbeat_loop_command(cli_path);
     let out = local_mux_command(&[
         "new-window",
@@ -2660,8 +2658,9 @@ pub fn ensure_automation_heartbeat(cli_path: &Path) -> Result<()> {
 }
 
 /// The thurbox session on the default local server, created when it is not
-/// there — as a backend would create it, peers racing to included.
-fn ensure_default_session() -> Result<()> {
+/// there — as a backend would create it, peers racing to included, and only
+/// once `backend` agrees its binary may start one.
+fn ensure_default_session(backend: &dyn SessionBackend) -> Result<()> {
     let transport = default_local_transport();
     let exists = || {
         local_mux_command(&["has-session", "-t", TMUX_SESSION])
@@ -2671,6 +2670,7 @@ fn ensure_default_session() -> Result<()> {
     if exists() {
         return Ok(());
     }
+    backend.check_available()?;
     let out = local_mux_command(&[
         "new-session",
         "-d",
@@ -3644,7 +3644,7 @@ mod tests {
         const SERVER_SCOPE: &'static str = "-s";
         const DISPLAY_FLAGS: &'static [&'static str] = &[];
         const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
-        fn check_banner(_: &str) -> Result<()> {
+        fn check_banner(_: &str, _: &str) -> Result<()> {
             Ok(())
         }
         fn session_config(_: &str) -> Vec<ConfigOption> {

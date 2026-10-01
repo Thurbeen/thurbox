@@ -61,7 +61,7 @@ impl TmuxCompatible for Tmux {
     /// it is told `-s` and `-H` and waited on for an attach reply it never
     /// sends. A psmux 3.3.6 prints only `tmux 3.3.6` and cannot be told apart
     /// here.
-    fn check_banner(banner: &str) -> Result<()> {
+    fn check_banner(banner: &str, _socket: &str) -> Result<()> {
         if banner
             .lines()
             .any(|line| line.trim_start().starts_with("psmux "))
@@ -314,11 +314,11 @@ mod tests {
     /// A banner that says psmux is refused instead.
     #[test]
     fn a_psmux_answering_as_tmux_is_refused() {
-        let err = Tmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n")
+        let err = Tmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
             .unwrap_err()
             .to_string();
         assert!(err.contains("psmux"), "{err}");
-        assert!(Tmux::check_banner("tmux 3.5a\n").is_ok());
+        assert!(Tmux::check_banner("tmux 3.5a\n", "thurbox").is_ok());
     }
 
     #[test]
