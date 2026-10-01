@@ -896,7 +896,7 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     .unwrap();
     assert!(
         hook.wait().unwrap().success(),
-        "in-pane /new must leave a safe recovery state"
+        "in-pane /clear must leave a safe recovery state"
     );
     assert_eq!(
         db.get_session_meta(first.session_id, "thurbox.codex_conversation_id")

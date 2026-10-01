@@ -1316,11 +1316,12 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
                 .map_err(|e| format!("save Codex id: {e}"))?
         }
         Some(existing) if existing == PICKER_REQUIRED || existing == conversation => {}
-        Some(_) if source == "startup" => {}
         Some(_) => {
-            // A nested Codex process inherits the row identity. A clear or
-            // resume event cannot prove which process switched conversations,
-            // so the picker must establish the next address.
+            // A nested Codex process inherits the row identity, so no event
+            // naming another conversation proves which process switched. That
+            // includes `startup`: the pane's own `/new` reports it too, and
+            // keeping the old id would queue messages on the thread it left.
+            // The picker must establish the next address.
             db.set_session_meta(target.id, KEY, PICKER_REQUIRED)
                 .map_err(|e| format!("mark ambiguous Codex id: {e}"))?;
         }
