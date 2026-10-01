@@ -386,13 +386,20 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let go = dir.path().join("go");
-    // ~2s of steady output, so the rebuilds below land in the middle of it.
+    // Steady output in ten batches of 300 lines, each ~0.2s long. Round n
+    // below starts once batch n-1 is printing, and batch n waits for the
+    // `ack-<n>` the round writes when it is done, so every rebuild lands in a
+    // batch of its own however loaded the machine is. Paced by the wall clock
+    // alone, a loaded machine got through only three rounds before the output
+    // ran out (#1248).
     let pane = pane_running(&format!(
-        "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; i=0; \
+        "sh -c 'while [ ! -e {dir}/go ]; do sleep 0.05; done; i=0; \
          while [ $i -lt 3000 ]; do echo line-$i; i=$((i+1)); \
-         if [ $((i % 30)) -eq 0 ]; then sleep 0.02; fi; done; \
+         if [ $((i % 30)) -eq 0 ]; then sleep 0.02; fi; \
+         if [ $((i % 300)) -eq 0 ] && [ $i -lt 3000 ]; then \
+         while [ ! -e {dir}/ack-$((i / 300)) ]; do sleep 0.01; done; fi; done; \
          echo finished; exec sleep 100000'",
-        go = go.display()
+        dir = dir.path().display()
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
@@ -407,20 +414,20 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // Each round: shown, which rebuilds the grid where the snapshot lands in
     // the stream; left to take live output for a moment, then checked; then
     // off screen, which drops it again on the next sync.
-    let mut rebuilds = 0;
-    while !tmux_text(&pane).contains("line-2000") {
+    for rebuild in 1..10 {
+        let batch = format!("line-{}\n", 300 * (rebuild - 1));
+        wait_for("the batch to start", || tmux_text(&pane).contains(&batch));
         wait_for("the rebuilt grid", || {
             paint(&terminals, 0);
             grid_size(&terminals) == (ROWS, COLS)
         });
         tokio::time::sleep(Duration::from_millis(30)).await;
-        rebuilds += 1;
-        assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuilds}"));
+        assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuild}"));
         terminals.forget_rects();
         terminals.sync(&snap, ROWS, COLS);
         assert!(grid_size(&terminals) <= (2, 2), "dropped again");
+        std::fs::write(dir.path().join(format!("ack-{rebuild}")), b"").expect("ack");
     }
-    assert!(rebuilds > 5, "only {rebuilds} rebuilds happened mid-output");
 
     // The last one is kept, so the rest of the output lands in a grid that was
     // rebuilt mid-stream — and the history it ends with crosses the splice.
