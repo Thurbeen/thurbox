@@ -549,6 +549,10 @@ pub struct Terminals {
     /// ([`Self::evict_hidden`]); `None` keeps every grid for as long as the
     /// pane runs. `settings.toml`'s `hidden_terminal_secs`.
     keep_hidden: Option<std::time::Duration>,
+    /// The pane whose OSC 52 writes are accepted — the focused surface's, as of
+    /// the last [`Self::take_app_copy`] — and the last focus token handed out.
+    app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
+    app_copy_tokens: u64,
 }
 
 impl Terminals {
@@ -597,6 +601,8 @@ impl Terminals {
                 0 => None,
                 secs => Some(std::time::Duration::from_secs(secs)),
             },
+            app_copy_focus: None,
+            app_copy_tokens: 0,
         }
     }
 
@@ -1292,6 +1298,43 @@ impl Terminals {
     /// known to be dead", so an unsure answer changes nothing.
     pub fn is_dead(&self, surface: &str) -> Option<bool> {
         self.pane(surface)?.is_dead()
+    }
+
+    /// The OSC 52 write the focused pane's app made, if it made one — and the
+    /// only pane whose writes are kept at all.
+    ///
+    /// `focused` is the surface raw input goes to, or `None` when no session
+    /// pane has the focus. Focus moving to another pane, or to none, revokes
+    /// the old pane's gate before anything is read, so a background app — local
+    /// or on a remote host — never writes the user's clipboard, and a write it
+    /// made while hidden is not released when it is brought forward (see
+    /// [`crate::backend::pane::AppCopy`]). A program pane is not a session pane
+    /// and resolves to none here.
+    pub fn take_app_copy(
+        &mut self,
+        focused: Option<&str>,
+    ) -> Option<crate::backend::pane::AppCopyRequest> {
+        let current = focused
+            .and_then(|surface| self.pane(surface))
+            .and_then(|pane| pane.wired())
+            .map(|wired| wired.app_copy());
+        let unchanged = match (&self.app_copy_focus, current) {
+            (Some(held), Some(now)) => std::sync::Arc::ptr_eq(held, now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            let current = current.cloned();
+            if let Some(old) = self.app_copy_focus.take() {
+                old.blur();
+            }
+            if let Some(new) = &current {
+                self.app_copy_tokens += 1;
+                new.focus(self.app_copy_tokens);
+            }
+            self.app_copy_focus = current;
+        }
+        self.app_copy_focus.as_ref()?.take()
     }
 
     /// Where a surface was painted, and the parser it is showing.

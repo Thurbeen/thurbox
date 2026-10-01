@@ -96,10 +96,46 @@ impl App {
             }
 
             self.paint_if_due(&mut terminal)?;
+            // After the paint, which is what says which surface has the focus.
+            self.forward_app_copy();
             self.report_perf();
             self.drain_input(&mut input_failures)?;
         }
         Ok(())
+    }
+
+    /// Put the focused app's OSC 52 copy on the user's clipboard.
+    ///
+    /// tmux never hands a control-mode client a selection, so this process —
+    /// the one on the user's machine reading the pane's bytes — is the only one
+    /// that can. Writes from any pane but the focused one are refused at the
+    /// pane (`Terminals::take_app_copy`). tmux's own paste buffer and its
+    /// `%paste-buffer-changed` for the same write are deliberately not acted
+    /// on: this is the one copy.
+    pub(crate) fn forward_app_copy(&mut self) {
+        let Some(request) = self
+            .terminals
+            .take_app_copy(self.focused_surface.as_deref())
+        else {
+            return;
+        };
+        let Some(text) = thurbox::clipboard::app_copy_text(&request.target, &request.data) else {
+            tracing::debug!("ignored an app's OSC 52 write that is not a copy");
+            return;
+        };
+        let message = match thurbox::clipboard::copy(
+            &text,
+            self.clipboard.as_mut(),
+            thurbox::session::settings::global().clipboard.provider,
+        ) {
+            Ok(route) => format!(
+                "app copied {} line(s){}",
+                text.lines().count(),
+                route.toast_suffix()
+            ),
+            Err(e) => format!("app copy failed: {e}"),
+        };
+        self.toast(message);
     }
 
     /// The interface directory and live configuration files.

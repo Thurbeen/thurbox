@@ -96,6 +96,8 @@ fn utf8_ready_prefix_len(buf: &[u8]) -> usize {
 ///   of timing-only Busy/Waiting.
 /// - **Hyperlinks** (OSC `8`) → the target of each rich-text link the agent
 ///   printed, which `vt100` itself discards (see the `osc8` module).
+/// - **Clipboard writes** (OSC `52`) → held in [`AppCopy`] while the pane has
+///   the user's focus, and dropped otherwise. Reads (`?`) are never answered.
 #[derive(Clone, Default)]
 pub struct TermSignals {
     title: Arc<Mutex<Option<String>>>,
@@ -113,6 +115,79 @@ pub struct TermSignals {
     hyperlinks: HyperlinkTable,
     /// The OSC 8 run whose closing sequence has not arrived yet.
     pending_link: Option<osc8::PendingHyperlink>,
+    /// Where an OSC 52 write goes — see [`AppCopy`].
+    app_copy: Arc<AppCopy>,
+}
+
+/// An app's OSC 52 clipboard write, as its pane printed it: the target letters
+/// and the base64 payload, neither of them checked yet. The coordinator decides
+/// what is a copy (`clipboard::app_copy_text`), since the limit that decides it
+/// is the outer terminal's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppCopyRequest {
+    pub target: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+/// The one gate between an app printing OSC 52 and the user's clipboard.
+///
+/// A write is kept only while the pane holds a focus token, and handed out
+/// only under the token it was kept under. The token is what makes "focused"
+/// exact across threads: the parser runs on the pane's reader thread and
+/// focus moves on the UI thread, so a write the reader checked just before
+/// focus left carries the old token and is refused, and a pane brought back to
+/// the front gets a new token, so nothing it printed while hidden is released.
+/// Shared by the pane and its parser's [`TermSignals`], which moves with the
+/// callbacks when a grid is dropped and rebuilt — so a pane with no grid still
+/// reads its writes, and one that is focused always has its grid anyway.
+#[derive(Debug, Default)]
+pub struct AppCopy {
+    /// The token focus gave this pane; `0` while it has none.
+    focus: AtomicU64,
+    /// The newest write made under a token, with that token.
+    pending: Mutex<Option<(u64, AppCopyRequest)>>,
+}
+
+impl AppCopy {
+    /// Accept writes from now on, under `token` (nonzero, never reused),
+    /// discarding anything held from before.
+    pub fn focus(&self, token: u64) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = None;
+        }
+        self.focus.store(token, Ordering::Release);
+    }
+
+    /// Refuse writes from now on, and discard the one held.
+    pub fn blur(&self) {
+        self.focus.store(0, Ordering::Release);
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = None;
+        }
+    }
+
+    /// The write made since the last call, if it was made under the token
+    /// the pane holds now.
+    pub fn take(&self) -> Option<AppCopyRequest> {
+        let (token, request) = self.pending.lock().ok()?.take()?;
+        (token != 0 && token == self.focus.load(Ordering::Acquire)).then_some(request)
+    }
+
+    fn offer(&self, target: &[u8], data: &[u8]) {
+        let token = self.focus.load(Ordering::Acquire);
+        if token == 0 {
+            return;
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = Some((
+                token,
+                AppCopyRequest {
+                    target: target.to_vec(),
+                    data: data.to_vec(),
+                },
+            ));
+        }
+    }
 }
 
 impl TermSignals {
@@ -186,6 +261,14 @@ impl vt100::Callbacks for TermSignals {
             _ => {}
         }
     }
+
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        self.app_copy.offer(ty, data);
+    }
+
+    // `paste_from_clipboard` keeps vt100's no-op: an app is never told what is
+    // on the clipboard, and tmux is kept from answering either
+    // (`set-clipboard external`, `Tmux::session_config` in `backend::tmux`).
 }
 
 /// Session terminal parser, specialized to capture terminal signals via
@@ -299,6 +382,7 @@ struct SignalCells {
     attention_at: Arc<AtomicU64>,
     notification: Arc<Mutex<Option<String>>>,
     meta_gen: Arc<AtomicU64>,
+    app_copy: Arc<AppCopy>,
 }
 
 impl SignalCells {
@@ -308,6 +392,7 @@ impl SignalCells {
             attention_at: Arc::new(AtomicU64::new(0)),
             notification: Arc::new(Mutex::new(None)),
             meta_gen: Arc::new(AtomicU64::new(0)),
+            app_copy: Arc::default(),
         }
     }
 
@@ -318,6 +403,7 @@ impl SignalCells {
             attention_at: Arc::clone(&self.attention_at),
             notification: Arc::clone(&self.notification),
             meta_gen: Arc::clone(&self.meta_gen),
+            app_copy: Arc::clone(&self.app_copy),
             ..Default::default()
         }
     }
@@ -471,9 +557,16 @@ pub struct WiredPane {
     /// The size last asked for from the rect this pane is painted into
     /// ([`pack_size`]; 0 before the first).
     wanted: AtomicU32,
+    /// The OSC 52 writes this pane's app makes — see [`AppCopy`].
+    app_copy: Arc<AppCopy>,
 }
 
 impl WiredPane {
+    /// The gate this pane's OSC 52 writes go through.
+    pub fn app_copy(&self) -> &Arc<AppCopy> {
+        &self.app_copy
+    }
+
     /// Send input, taking the pane's size first when it is not the size of the
     /// rect it is painted into here.
     ///
@@ -1060,6 +1153,7 @@ impl Session {
             // The rect the caller is about to paint into, which the render
             // path's own memo starts from too — so the first claim knows it.
             wanted: AtomicU32::new(pack_size(rows, cols)),
+            app_copy: Arc::clone(&signals.app_copy),
         };
         (wired, signals)
     }
@@ -1141,6 +1235,7 @@ impl Session {
                 backend: None,
                 size: None,
                 wanted: AtomicU32::new(0),
+                app_copy: Arc::clone(&signals.app_copy),
             },
             backend: Arc::clone(backend),
             signals,
@@ -1638,6 +1733,7 @@ impl Session {
                 backend: None,
                 size: None,
                 wanted: AtomicU32::new(0),
+                app_copy: Arc::clone(&signals.app_copy),
             },
             backend: Arc::clone(backend),
             signals,
@@ -1675,6 +1771,52 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    /// A parser wired to `copy`, fed one OSC 52 write of `text`.
+    fn print_copy(copy: &Arc<AppCopy>, text: &str) {
+        let mut parser = vt100::Parser::new_with_callbacks(
+            4,
+            20,
+            0,
+            TermSignals {
+                app_copy: Arc::clone(copy),
+                ..Default::default()
+            },
+        );
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text.as_bytes());
+        parser.process(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+    }
+
+    #[test]
+    fn an_osc52_write_is_kept_only_under_the_focus_it_was_made_in() {
+        let copy = Arc::new(AppCopy::default());
+        let request = |data: &str| AppCopyRequest {
+            target: b"c".to_vec(),
+            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data)
+                .into_bytes(),
+        };
+
+        print_copy(&copy, "unfocused");
+        assert_eq!(copy.take(), None, "a pane without focus keeps nothing");
+
+        copy.focus(1);
+        print_copy(&copy, "focused");
+        assert_eq!(copy.take(), Some(request("focused")));
+        assert_eq!(copy.take(), None, "taken once");
+
+        // Made under focus, then focus left and came back: the write belongs
+        // to a focus that ended.
+        print_copy(&copy, "before-blur");
+        copy.blur();
+        copy.focus(2);
+        assert_eq!(copy.take(), None);
+
+        // The reader read token 2, focus moved on to 3, then the write landed.
+        copy.focus(3);
+        *copy.pending.lock().unwrap() = Some((2, request("raced")));
+        assert_eq!(copy.take(), None, "an old token's write is refused");
+    }
 
     #[test]
     fn input_channel_overflow_fails_fast_without_blocking() {

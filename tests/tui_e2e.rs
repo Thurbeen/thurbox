@@ -2547,6 +2547,266 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+// --- an app's own OSC 52: the focused session writes, nobody reads ----------
+
+/// `text` as an OSC 52 clipboard write, spelled as a `printf` format a shell
+/// turns into the escape — so the line the shell echoes carries no ESC.
+fn osc52_printf(target: &str, payload: &str) -> String {
+    format!("printf '\\033]52;{target};{payload}\\007'")
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+}
+
+/// How many OSC 52 writes `out` carries.
+fn osc52_count(out: &str) -> usize {
+    out.matches(OSC52).count()
+}
+
+/// Give the binary a moment to act on output it has already read, then return
+/// what it wrote since `mark`. The negative assertions read this: nothing can
+/// prove a write will *never* come, only that it did not come in a window
+/// several frames long.
+fn settled_since(tui: &Tui, mark: usize) -> String {
+    std::thread::sleep(Duration::from_millis(600));
+    tui.wait_until_quiet();
+    tui.raw_since(mark)
+}
+
+#[test]
+fn an_app_osc52_copy_in_the_focused_session_reaches_the_outer_terminal() {
+    // An agent's `/copy`, nvim's OSC 52 provider, lazygit: each writes the
+    // clipboard by printing OSC 52 into its own pane. Thurbox is the process on
+    // the user's machine that reads those bytes, so it is the one that has to
+    // put them on the user's clipboard — tmux never hands a control-mode client
+    // a selection. It was dropped: tmux kept a paste buffer and nothing reached
+    // the outer terminal.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let line = osc52_printf("c", &b64("tb-agent-copy é".as_bytes()));
+    tui.send(format!("{line}; echo tb-copied-\"\"done\r").as_bytes());
+    tui.wait_for("tb-copied-done");
+    tui.wait_until("the app's copy at the outer terminal", |_| {
+        tui.raw_since(mark).contains(OSC52)
+    });
+    let out = settled_since(&tui, mark);
+    assert_eq!(
+        osc52_payload(&out).as_deref(),
+        Some("tb-agent-copy é"),
+        "the outer terminal must get the app's text, byte for byte"
+    );
+    // tmux stores the same write as a paste buffer and announces it with
+    // `%paste-buffer-changed`; acting on that too would copy it twice.
+    assert_eq!(osc52_count(&out), 1, "one copy, once; wrote:\n{out:?}");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_focused_apps_malformed_or_oversized_osc52_writes_change_nothing() {
+    // Each of these reaches the pane's parser and none is a copy the user can
+    // want: an empty write (which once wiped peers' users' clipboards), a
+    // payload that is not base64, one that does not decode to UTF-8 text, one
+    // larger than an OSC 52 can carry to the outer terminal whole, and a write
+    // to the primary selection rather than the clipboard.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let writes = [
+        osc52_printf("c", ""),
+        osc52_printf("c", "abc"),
+        osc52_printf("c", &b64(b"\xff\xfe-not-utf8")),
+        osc52_printf("p", &b64(b"tb-primary-only")),
+        // 75,000 bytes, past OSC52_MAX_BYTES (74,994): built by the shell so
+        // the command line stays short.
+        "printf '\\033]52;c;%s\\007' \"$(head -c 75000 /dev/zero | tr '\\0' a | base64 | tr -d '\\n')\""
+            .to_string(),
+    ];
+    for write in &writes {
+        tui.send(format!("{write}\r").as_bytes());
+    }
+    tui.send(b"echo tb-bad-writes-\"\"done\r");
+    tui.wait_for("tb-bad-writes-done");
+    let out = settled_since(&tui, mark);
+    assert_eq!(
+        osc52_count(&out),
+        0,
+        "no malformed write may reach the clipboard; wrote:\n{out:?}"
+    );
+
+    // And the path is live, so the silence above is a refusal and not a
+    // forwarder that never ran.
+    let mark = tui.raw_len();
+    let line = osc52_printf("c", &b64(b"tb-good-write"));
+    tui.send(format!("{line}\r").as_bytes());
+    tui.wait_until("the well-formed copy at the outer terminal", |_| {
+        tui.raw_since(mark).contains(OSC52)
+    });
+    assert_eq!(
+        osc52_payload(&tui.raw_since(mark)).as_deref(),
+        Some("tb-good-write")
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// What the second session's app copies, once the test lets it.
+const BACKGROUND_COPY: &str = "tb-background-secret";
+
+/// The shell session, plus a second one — `copier` — that prints an OSC 52
+/// write of [`BACKGROUND_COPY`] when `copy-now` appears in the profile, says
+/// so by creating `copied`, and is then a shell. `probe` holds the focus;
+/// `copier` is off screen.
+fn shell_session_beside_a_copier() -> Option<(Profile, Tui)> {
+    let (profile, mut tui) = shell_session_prepared(
+        |profile| {
+            let script = format!(
+                "echo tb-copier-ready; while [ ! -e '{}' ]; do sleep 0.05; done; {}; : > '{}'; \
+                 exec sh",
+                profile.path("copy-now").display(),
+                osc52_printf("c", &b64(BACKGROUND_COPY.as_bytes())),
+                profile.path("copied").display(),
+            );
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "copier",
+                "--repo-path",
+                profile.path("repo").to_str().expect("utf-8 path"),
+                "--command",
+                "sh",
+                "--arg",
+                "-c",
+                "--arg",
+                &script,
+            ]);
+        },
+        plain_shell,
+    )?;
+    // Which row is selected at start is the list's business; this test needs
+    // `probe` in front, and says so.
+    profile.cli(&["session", "focus", "probe"]);
+    tui.send(b"echo tb-probe-\"\"focused\r");
+    tui.wait_for("tb-probe-focused");
+    assert!(
+        !tui.frame().contains("tb-copier-ready"),
+        "the copier must be off screen"
+    );
+    Some((profile, tui))
+}
+
+/// Let the copier copy, and wait until it has written the sequence to its
+/// pane.
+fn let_the_copier_copy(profile: &Profile, tui: &Tui) {
+    std::fs::write(profile.path("copy-now"), "").expect("touch trigger");
+    let deadline = Instant::now() + WAIT;
+    while !profile.path("copied").exists() {
+        if Instant::now() > deadline {
+            tui.give_up("the copier to print its copy");
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+#[test]
+fn a_background_sessions_osc52_copy_never_reaches_the_clipboard() {
+    // The operator's rule: an app writes the clipboard only from the session
+    // the user is in. An agent working off screen — a local one or one on a
+    // remote host — must not replace what the user just copied, and must not
+    // have its write held until the user happens to look at it.
+    let Some((profile, mut tui)) = shell_session_beside_a_copier() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let_the_copier_copy(&profile, &tui);
+    // Output the binary reads after the copier's, so the copier's has been
+    // parsed by the time the window below closes.
+    tui.send(b"echo tb-after-\"\"copy\r");
+    tui.wait_for("tb-after-copy");
+    let out = settled_since(&tui, mark);
+    assert_eq!(
+        osc52_count(&out),
+        0,
+        "a background copy reached the outer terminal:\n{out:?}"
+    );
+
+    // Bringing it forward must not release a write it made while hidden.
+    let mark = tui.raw_len();
+    profile.cli(&["session", "focus", "copier"]);
+    tui.wait_for("tb-copier-ready");
+    let out = settled_since(&tui, mark);
+    assert_eq!(
+        osc52_count(&out),
+        0,
+        "focusing the copier released its hidden copy:\n{out:?}"
+    );
+
+    // Now in front, it copies like any focused app — so the silence above
+    // was the focus rule and not a pane whose output was never read.
+    tui.wait_until_quiet();
+    let mark = tui.raw_len();
+    let line = osc52_printf("c", &b64(b"tb-copier-focused"));
+    tui.send(format!("{line}\r").as_bytes());
+    tui.wait_until("the focused copier's copy", |_| {
+        tui.raw_since(mark).contains(OSC52)
+    });
+    assert_eq!(
+        osc52_payload(&tui.raw_since(mark)).as_deref(),
+        Some("tb-copier-focused")
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn an_app_cannot_read_back_another_sessions_copy() {
+    // An OSC 52 `?` asks the terminal for the clipboard. Under `set-clipboard
+    // on`, tmux answers it from its newest paste buffer, which that setting
+    // fills with every app's copy on the server: an app in one session could
+    // read what an app in another had copied. No reply at all is the answer
+    // every peer gives — whatever buffers the server holds, so one is put
+    // there by hand as well.
+    let Some((profile, mut tui)) = shell_session_beside_a_copier() else {
+        return;
+    };
+    let_the_copier_copy(&profile, &tui);
+    let seeded = profile.server.tmux(&["set-buffer", "tb-buffered-secret"]);
+    assert!(seeded.status.success(), "seed a paste buffer");
+
+    // `min 0 time 10`: a read returns whatever came within a second, or end of
+    // file, so `cat` ends by itself — and stays in the foreground, where it can
+    // read the terminal at all.
+    let reply = profile.path("reply.bin");
+    let reader = profile.path("read-clipboard.sh");
+    std::fs::write(
+        &reader,
+        format!(
+            "stty raw -echo min 0 time 10\nprintf '\\033]52;c;?\\007'\ncat > '{}'\nstty sane\n",
+            reply.display()
+        ),
+    )
+    .expect("write reader");
+    tui.send(format!("sh '{}'; echo tb-read-\"\"done\r", reader.display()).as_bytes());
+    tui.wait_for("tb-read-done");
+    let answered = std::fs::read(&reply).expect("read reply");
+    assert!(
+        answered.is_empty(),
+        "an app was answered a clipboard read: {:?}",
+        String::from_utf8_lossy(&answered)
+    );
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 /// The mouse text selection reaches a Lua pane through `thurbox.selection`.
 ///
 /// The coordinator recomputes the selection every frame for `copy_selection`;
