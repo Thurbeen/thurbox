@@ -457,17 +457,18 @@ the instant it is typed. **`session key <uuid> <name>`** is the other half: one
 named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
-resolved through the closed table in `backend::tmux::NAMED_KEYS`. The table is
+resolved through the closed set in `backend::Key` (each adapter spells it in its
+own grammar, reported as `tmux_key`). The table is
 closed on purpose: tmux does **not** validate a key name — an unrecognized one
 is typed into the pane as literal text — so `session key` refuses what it does
 not know rather than injecting `Escpe` into somebody's prompt. Text goes out
 bracketed-paste-wrapped either way (`paste_prompt_args`), which is what makes it
 literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and a
-newline cannot submit the line before it. The one-shot helpers themselves drive
-only this machine's tmux server, so `send`/`key`/`capture` on an `ssh:`/`wsl:`
-backend are delegated to that host's own `thurbox-cli` (`delegate_to_host` in
-`src/cli/sessions.rs`) instead of failing as a tmux status code against a
-window that was never there. The refusal survives only where delegation is
+newline cannot submit the line before it. Locally the verbs go through the
+backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
+`send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
+(`delegate_to_host` in `src/cli/sessions.rs`), which records their effects in
+the host's own database. The refusal survives only where delegation is
 genuinely impossible: a backend with no `hosts.toml` entry, or one whose
 `thurbox-cli` could not be reached.
 

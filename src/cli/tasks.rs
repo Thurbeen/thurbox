@@ -327,9 +327,6 @@ fn status_glyph(status: TaskStatus) -> String {
 
 /// Execute a task's action without a TUI, returning a JSON outcome.
 ///
-/// tmux/spawn helpers are reached via fully-qualified paths (no `use
-/// crate::agent`) to keep the cli module free of an `agent` import — see
-/// tests/architecture_rules.rs::cli_module_isolation.
 fn run_task(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -348,11 +345,11 @@ fn run_task(
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if !crate::backend::tmux::window_exists(&target.id.to_string(), &target.name) {
+            if crate::session_ops::windows::agent_pane(backends, &target)?.is_none() {
                 return Err("target session not running".into());
             }
-            crate::session_ops::send_text_with_status(db, &target, &prompt, true)
-                .map_err(|e| format!("send_prompt_now: {e}"))?;
+            crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
+                .map_err(|e| format!("send: {e:#}"))?;
             mark_in_progress(db, task)?;
             Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
         }
@@ -367,17 +364,37 @@ fn run_task(
             // Reuse an existing session window (re-trigger / restored session).
             // Match by the `· #<id>` tag rather than the exact name so a
             // since-edited title (and legacy `task-<id>` sessions) are found too.
-            let existing = db
+            let mut running = Vec::new();
+            for session in db
                 .list_active_sessions()
                 .map_err(|e| format!("list_active_sessions: {e}"))?
                 .into_iter()
-                .find(|s| {
-                    task.matches_spawn_session(&s.name)
-                        && crate::backend::tmux::window_exists(&s.id.to_string(), &s.name)
-                });
-            if let Some(session) = existing {
-                crate::session_ops::send_text_with_status(db, &session, &prompt, true)
-                    .map_err(|e| format!("send_prompt_now: {e}"))?;
+                .filter(|s| task.matches_spawn_session(&s.name))
+            {
+                // A task spawns on this machine, so a same-named row on a host
+                // is another machine's, and a row on a route nothing here
+                // serves is not one to reuse; not knowing whether a served one
+                // runs must not launch a second one.
+                if crate::session::Route::is_remote_key(&session.backend_type)
+                    || crate::session_ops::windows::backend_for(backends, &session.backend_type)
+                        .is_err()
+                {
+                    continue;
+                }
+                if crate::session_ops::windows::agent_pane(backends, &session)?.is_some() {
+                    running.push(session);
+                }
+            }
+            if running.len() > 1 {
+                return Err(format!(
+                    "{} running sessions carry this task's tag, so there is no telling which \
+                     one it meant",
+                    running.len()
+                ));
+            }
+            if let Some(session) = running.pop() {
+                crate::session_ops::send_text_with_status(db, backends, &session, &prompt, true)
+                    .map_err(|e| format!("send: {e:#}"))?;
                 mark_in_progress(db, task)?;
                 return Ok(json!({ "reused": session.name, "id": task.id }));
             }

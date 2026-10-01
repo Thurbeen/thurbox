@@ -561,8 +561,8 @@ pub fn run(
             parent,
             deleted: false,
             verify,
-        } => run_list_active(db, parent, verify),
-        Action::Get { uuid, no_verify } => run_get(db, uuid, no_verify),
+        } => run_list_active(db, backends, parent, verify),
+        Action::Get { uuid, no_verify } => run_get(db, backends, uuid, no_verify),
         Action::Create {
             name,
             repo_path,
@@ -614,9 +614,11 @@ pub fn run(
             uuid,
             text,
             no_enter,
-        } => run_send(db, uuid, text, no_enter),
-        Action::Key { uuid, key } => run_key(db, uuid, key),
-        Action::Capture { uuid, lines, ansi } => capture_pane(db, &uuid, lines, ansi),
+        } => run_send(db, backends.get(), uuid, text, no_enter),
+        Action::Key { uuid, key } => run_key(db, backends.get(), uuid, key),
+        Action::Capture { uuid, lines, ansi } => {
+            capture_pane(db, backends.get(), &uuid, lines, ansi)
+        }
         Action::Focus { uuid } => run_focus(db, uuid),
         Action::Sync { host, adopt } => run_sync(db, host, adopt),
         Action::Register { json_row } => run_register(db, backends.get(), json_row),
@@ -634,7 +636,7 @@ pub fn run(
             clear,
         } => set_reports_as(db, &session, agent.as_deref(), clear),
         Action::Meta { action } => run_meta(action, db),
-        Action::Doctor { uuid } => super::session_doctor::run(db, uuid.as_deref()),
+        Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
         Action::Signal { state, session } => run_signal(db, state, session),
         Action::BindCodex => run_bind_codex(db),
     }
@@ -678,6 +680,7 @@ fn run_list_deleted(db: &Database) -> Result<CommandOutput, CommandError> {
 
 fn run_list_active(
     db: &Database,
+    backends: &super::Backends<'_>,
     parent: Option<String>,
     verify: bool,
 ) -> Result<CommandOutput, CommandError> {
@@ -697,7 +700,7 @@ fn run_list_active(
     let registry = crate::agent::agent_config::load_or_seed();
     let assessments: Vec<crate::session::Assessment> = sessions
         .iter()
-        .map(|s| facts.assess(&registry, s, verify))
+        .map(|s| facts.assess(&registry, s, verify.then(|| backends.get())))
         .collect();
     let json = Value::Array(
         sessions
@@ -736,12 +739,17 @@ fn run_list_active(
     )
 }
 
-fn run_get(db: &Database, uuid: String, no_verify: bool) -> Result<CommandOutput, CommandError> {
+fn run_get(
+    db: &Database,
+    backends: &super::Backends<'_>,
+    uuid: String,
+    no_verify: bool,
+) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
-    let hook = facts.assess(&registry, &session, !no_verify);
+    let hook = facts.assess(&registry, &session, (!no_verify).then(|| backends.get()));
     Ok(CommandOutput::new(
         crate::session_ops::mirror::session_to_json_assessed(
             &session,
@@ -1005,6 +1013,7 @@ fn run_rename(
 
 fn run_send(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     uuid: String,
     text: String,
     no_enter: bool,
@@ -1023,8 +1032,8 @@ fn run_send(
         return Ok(remote);
     }
     let submit = !no_enter;
-    crate::session_ops::send_text_with_status(db, &session, &text, submit)
-        .map_err(|e| format!("send_text_now: {e}"))?;
+    crate::session_ops::send_text_with_status(db, backends, &session, &text, submit)
+        .map_err(|e| format!("send: {e:#}"))?;
     let human = if submit {
         format!("Sent to '{}'.", session.name)
     } else {
@@ -1041,15 +1050,21 @@ fn run_send(
     ))
 }
 
-fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, CommandError> {
+fn run_key(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    uuid: String,
+    key: String,
+) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
-    let resolved = crate::backend::tmux::resolve_key(&key).ok_or_else(|| unknown_key(&key))?;
+    let resolved = crate::backend::Key::parse(&key).ok_or_else(|| unknown_key(&key))?;
     refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
-    if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, &resolved.name])? {
+    if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, resolved.name()])? {
         return Ok(remote);
     }
-    let prior = if session.agent == "codex" && resolved.name == "enter" {
+    let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
+    let prior = if session.agent == "codex" && resolved.name() == "enter" {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
             Err(e) => {
@@ -1060,8 +1075,9 @@ fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, Co
     } else {
         None
     };
-    crate::backend::tmux::send_key_now(&session.id.to_string(), &session.name, &resolved.tmux)
-        .map_err(|e| format!("send_key_now: {e}"))?;
+    let spelled = backend
+        .send_key(&pane, &resolved)
+        .map_err(|e| format!("send_key: session '{}': {e:#}", session.name))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
@@ -1070,12 +1086,14 @@ fn run_key(db: &Database, uuid: String, key: String) -> Result<CommandOutput, Co
     Ok(CommandOutput::new(
         json!({
             "sent": true,
-            "key": resolved.name,
-            "tmux_key": resolved.tmux,
+            "key": resolved.name(),
+            // The key as the session's backend spelled it; the field keeps the
+            // name it has always had.
+            "tmux_key": spelled,
             "session_id": session.id.to_string(),
             "session_name": session.name,
         }),
-        format!("Sent {} to '{}'.", resolved.name, session.name),
+        format!("Sent {} to '{}'.", resolved.name(), session.name),
     ))
 }
 
@@ -1341,12 +1359,11 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
 /// foreground process and live cwd are additive JSON fields, so a caller that
 /// only ever read `output` sees exactly what it always did.
 ///
-/// Refuses a remote session up front. `capture` has only ever read the *local*
-/// multiplexer, so a `--host` session's pane — which lives on that host's own
-/// tmux server — was already unreachable here; saying so beats the "can't find
-/// window" tmux reports for a window that was never meant to be local.
+/// A session on a host is captured by that host's own CLI (see
+/// [`delegate_to_host`]), like every pane verb.
 fn capture_pane(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     uuid: &str,
     lines: u32,
     ansi: bool,
@@ -1362,17 +1379,14 @@ fn capture_pane(
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
-    let output = crate::backend::tmux::capture_pane_text(
-        &session.id.to_string(),
-        &session.name,
-        lines,
-        ansi,
-    )
-    .map_err(|e| format!("capture_pane_text: {e}"))?;
+    let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
+    let output = backend
+        .capture(&pane, lines, ansi)
+        .map_err(|e| format!("capture: session '{}': {e:#}", session.name))?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
-    // Same target resolution, so the state describes the pane just captured.
-    let state = crate::backend::tmux::pane_state(&session.id.to_string(), &session.name);
+    // The same pane, so the state describes the one just captured.
+    let state = backend.pane_state(&pane).unwrap_or_default();
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -2018,7 +2032,7 @@ fn resolve_existing(
                     .map_err(|e| format!("set_reports_as: {e}"))?;
             }
             Ok(Existing::Answered(Box::new(existing_session_output(
-                db, &found[0],
+                db, backends, &found[0],
             ))))
         }
         (OnExisting::Replace, 1) => {
@@ -2114,10 +2128,14 @@ fn check_reports_as(
 /// reason to adopt is to skip the follow-up read, and without them the answer
 /// could be a **parked** session — no pane, every `send`/`key`/`capture`
 /// refused — with nothing in it saying so.
-fn existing_session_output(db: &Database, session: &SharedSession) -> CommandOutput {
+fn existing_session_output(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &SharedSession,
+) -> CommandOutput {
     let registry = crate::agent::agent_config::load_or_seed();
     let facts = SessionFacts::load(db);
-    let hook = facts.assess(&registry, session, true);
+    let hook = facts.assess(&registry, session, Some(backends));
     CommandOutput::new(
         json!({
             "id": session.id.to_string(),
@@ -2179,12 +2197,12 @@ pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, C
 
 /// Run a pane command on the machine the session actually lives on.
 ///
-/// `backend::tmux`'s one-shot helpers talk to the *local* multiplexer, so a
-/// session created with `--host` has no pane here. That used to be a refusal,
-/// which made `--host` produce a shape no other verb accepted: creatable, and
-/// then undrivable. thurbox already knows how to run its own CLI on a host —
-/// the mirror pass does it on every tick — so a pane verb is delegated there
-/// instead, and means the same thing on every machine.
+/// A session on a host is driven by that host's own `thurbox-cli`, not through
+/// this machine's connection to the host's server: the host's CLI is the one
+/// that records a verb's effects in the host's own database (ADR-24), and the
+/// one that knows which socket its server really uses. thurbox already knows
+/// how to run its own CLI on a host — the mirror pass does it on every tick —
+/// so a pane verb means the same thing on every machine.
 ///
 /// `Ok(None)` means "this is local, carry on". `Ok(Some(output))` is the host's
 /// own answer, already a document. The refusal survives only where delegation
@@ -2225,11 +2243,7 @@ fn delegate_to_host(
 /// What `session key` says about a spelling it does not know, listing the set
 /// so the answer is in the error rather than in `--help`.
 fn unknown_key(key: &str) -> String {
-    let names = crate::backend::tmux::NAMED_KEYS
-        .iter()
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let names = crate::backend::Key::NAMED.join(", ");
     format!("Unknown key '{key}'. Known keys: {names}, or ctrl-<letter> (e.g. ctrl-c).")
 }
 
@@ -2317,7 +2331,7 @@ impl SessionFacts {
         &self,
         registry: &crate::session::AgentRegistry,
         s: &SharedSession,
-        probe: bool,
+        probe: Option<&crate::backend::BackendRegistry>,
     ) -> crate::session::Assessment {
         let agent = self.reporting_agent(s);
         let row = self.states.get(&s.id);
@@ -2332,9 +2346,9 @@ impl SessionFacts {
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
-        if !probe {
+        let Some(backends) = probe else {
             return hook;
-        }
+        };
         if crate::session::Route::is_remote_key(&s.backend_type) {
             return hook.pane_unavailable();
         }
@@ -2344,7 +2358,11 @@ impl SessionFacts {
             .get(agent)
             .map(|d| d.command.clone())
             .unwrap_or_else(|| agent.to_string());
-        let pane = crate::backend::tmux::pane_state(&s.id.to_string(), &s.name);
+        let pane = crate::session_ops::windows::agent_pane(backends, s)
+            .ok()
+            .flatten()
+            .and_then(|(backend, pane)| backend.pane_state(&pane).ok())
+            .unwrap_or_default();
         hook.with_pane(
             &command,
             registry,
@@ -2657,7 +2675,7 @@ mod tests {
         let registry = crate::agent::agent_config::builtin_registry();
 
         let facts = SessionFacts::load(&db);
-        let hook = facts.assess(&registry, &session, false);
+        let hook = facts.assess(&registry, &session, None);
         assert_eq!(hook.coverage, crate::session::Coverage::None);
         assert!(!hook.blocked_is_heuristic());
         assert!(!facts.hooks_expected(&session), "no agent was ever wired");
@@ -2674,7 +2692,7 @@ mod tests {
         .unwrap();
 
         let facts = SessionFacts::load(&db);
-        let hook = facts.assess(&registry, &session, false);
+        let hook = facts.assess(&registry, &session, None);
         assert_eq!(hook.coverage, crate::session::Coverage::Full);
         assert!(hook.blocked_is_heuristic());
         assert_eq!(facts.declared_agent(&session), Some("claude"));

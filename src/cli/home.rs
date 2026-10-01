@@ -48,7 +48,7 @@ pub fn run(db: &Database) -> Result<CommandOutput, String> {
     let rows: Vec<Value> = sessions
         .iter()
         .map(|s| {
-            let hook = facts.assess(&registry, s, false);
+            let hook = facts.assess(&registry, s, None);
             json!({
                 "name": s.name,
                 "agent": s.agent,

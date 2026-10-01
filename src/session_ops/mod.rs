@@ -52,14 +52,18 @@ use crate::session::{AutomationRunStatus, SessionConfig};
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
-/// Deliver local input and retire a Codex report made before that submission.
-/// A hook arriving while tmux delivers the prompt keeps its newer report.
+/// Deliver input to a session's agent through the backend its route names, and
+/// retire a Codex report made before that submission. A hook arriving while the
+/// backend delivers the prompt keeps its newer report.
 pub fn send_text_with_status(
     db: &Database,
+    backends: &crate::backend::BackendRegistry,
     session: &SharedSession,
     text: &str,
     submit: bool,
 ) -> anyhow::Result<()> {
+    let (backend, pane) =
+        windows::require_agent_pane(backends, session).map_err(anyhow::Error::msg)?;
     let prior = if submit && session.agent == "codex" {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
@@ -71,13 +75,35 @@ pub fn send_text_with_status(
     } else {
         None
     };
-    crate::backend::tmux::send_text_now(&session.id.to_string(), &session.name, text, submit)?;
+    backend
+        .send_text(&pane, text, submit)
+        .map_err(|e| anyhow::anyhow!("session '{}': {e:#}", session.name))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
         }
     }
     Ok(())
+}
+
+/// Hand a session that was just launched its prompt once its agent has had
+/// `delay` to boot, scheduled on the backend its route names so the delivery
+/// outlives a headless caller.
+pub fn send_text_when_booted(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session_id: crate::session::SessionId,
+    text: &str,
+    delay: std::time::Duration,
+) -> Result<(), String> {
+    let session = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("get session: {e}"))?
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let (backend, pane) = windows::require_agent_pane(backends, &session)?;
+    backend
+        .send_text_after(&pane, text, delay)
+        .map_err(|e| format!("session '{}': {e:#}", session.name))
 }
 
 /// Run an `Exec` automation's shell command headlessly (`sh -c`, or `cmd /C` on

@@ -263,6 +263,125 @@ pub struct WindowSpec<'a> {
     pub env: &'a HashMap<String, String>,
 }
 
+/// A key a caller presses into a pane, in thurbox's own spelling — `enter`,
+/// `page-up`, `ctrl-c` — which each backend says in its own grammar.
+///
+/// A closed set because a multiplexer need not validate a key name: tmux types
+/// an unrecognized one into the pane as literal text, so a typo would inject
+/// `Escpe` into an agent's prompt rather than fail. Only [`Key::parse`] makes
+/// one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Key(String);
+
+impl Key {
+    /// Every named key, canonically spelled. `ctrl-a` … `ctrl-z` are parsed
+    /// generically and deliberately not listed.
+    pub const NAMED: &[&str] = &[
+        "enter",
+        "escape",
+        "tab",
+        "backspace",
+        "space",
+        "up",
+        "down",
+        "left",
+        "right",
+        "home",
+        "end",
+        "page-up",
+        "page-down",
+        "delete",
+    ];
+
+    /// Alternate spellings, each resolving to one canonical name — forgiving
+    /// on purpose, so an integrator writing `esc` or `pgup` need not look the
+    /// table up, while the name echoed back is always the one spelling.
+    const ALIASES: &[(&str, &str)] = &[
+        ("return", "enter"),
+        ("esc", "escape"),
+        ("bspace", "backspace"),
+        ("pageup", "page-up"),
+        ("pgup", "page-up"),
+        ("pagedown", "page-down"),
+        ("pgdn", "page-down"),
+        ("del", "delete"),
+    ];
+
+    /// Resolve a caller's spelling, or `None` for a key thurbox does not know.
+    ///
+    /// Case-insensitive, and `ctrl-c`, `ctrl+c`, `C-c` and `c+c` are the same
+    /// key: the separator and the `ctrl`/`c` prefix are what people actually
+    /// spell differently, and half-supporting them would mean a typo lands as
+    /// text in an agent's prompt.
+    pub fn parse(input: &str) -> Option<Self> {
+        let lower = input.trim().to_ascii_lowercase();
+        let lower = Self::ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == lower)
+            .map_or(lower.as_str(), |(_, canonical)| *canonical);
+        if let Some(name) = Self::NAMED.iter().find(|name| **name == lower) {
+            return Some(Self((*name).to_string()));
+        }
+        let rest = ["ctrl-", "ctrl+", "c-", "c+"]
+            .iter()
+            .find_map(|prefix| lower.strip_prefix(prefix))?;
+        let mut chars = rest.chars();
+        let letter = chars.next().filter(char::is_ascii_lowercase)?;
+        if chars.next().is_some() {
+            return None;
+        }
+        Some(Self(format!("ctrl-{letter}")))
+    }
+
+    /// The canonical spelling.
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+
+    /// The letter of a `ctrl-<letter>` key.
+    pub fn ctrl(&self) -> Option<char> {
+        self.0
+            .strip_prefix("ctrl-")
+            .and_then(|rest| rest.chars().next())
+    }
+}
+
+/// A pane's live state *around* its rendered text: where the cursor sits,
+/// what is running in the foreground, and where that process thinks it is.
+///
+/// Every field is independently optional and never guessed. A backend that
+/// cannot answer one, a pane that went away between two questions, or a
+/// machine with no way to read a process's argv each leave the affected fields
+/// `None` rather than a plausible wrong value — the caller can then say
+/// "unknown" instead of acting on a fabrication.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PaneState {
+    /// Cursor row, 0-based, relative to the visible pane.
+    pub cursor_row: Option<u32>,
+    /// Cursor column, 0-based.
+    pub cursor_col: Option<u32>,
+    /// The foreground process's argv0 — its executable as invoked.
+    pub foreground_process: Option<String>,
+    /// The foreground process's **full** command line.
+    ///
+    /// `Some` only when the process was really resolved, which is also what
+    /// makes this the field worth reading: a Node-based agent CLI is a bare
+    /// `node` in every command-*name* view, and only its argv distinguishes
+    /// `node …/cursor-agent/cli.js` from a REPL.
+    pub foreground_command: Option<String>,
+    /// The foreground process's live working directory — where it is, not the
+    /// directory the session was launched in.
+    pub foreground_cwd: Option<String>,
+    /// Whether the pane's program has **exited**.
+    ///
+    /// A pane kept after its program exits keeps naming whatever last ran
+    /// there. Without this, an agent that crashed reports its own name as the
+    /// foreground process: a plausible wrong answer rather than an honest
+    /// absence, which a caller reconciling a latched state against reality must
+    /// not be handed.
+    pub dead: Option<bool>,
+}
+
 /// Metadata returned when discovering existing sessions from the backend.
 #[derive(Clone)]
 pub struct DiscoveredSession {
@@ -484,6 +603,44 @@ pub trait SessionBackend: Send + Sync {
     /// naming, so this is one round trip and no lookup.
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()>;
 
+    /// Type `text` into a pane, pressing Enter after it when `submit`.
+    ///
+    /// The text arrives literally — never read as keys or flags — and a
+    /// multi-line text is one input, not a line submitted per newline.
+    /// `submit = false` leaves it in the agent's composer unsent, which is what
+    /// "type it, check what the pane shows, then submit" needs.
+    ///
+    /// Refuses a pane whose program has exited: a pane kept after its program
+    /// exits may still accept input and discard it, and every caller reads
+    /// success as "the agent got it".
+    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()>;
+
+    /// [`Self::send_text`] with `submit`, `delay` from now, scheduled where the
+    /// pane lives so it happens after the caller has returned: a headless
+    /// command hands a freshly launched agent its prompt once it has had time to
+    /// boot, and there is no process of its own left to wait in. Returns once
+    /// scheduled.
+    fn send_text_after(&self, pane: &str, text: &str, delay: std::time::Duration) -> Result<()>;
+
+    /// Press one key in a pane — no text, no Enter. Refuses an exited pane, as
+    /// [`Self::send_text`] does. Returns the key as this backend spelled it.
+    fn send_key(&self, pane: &str, key: &Key) -> Result<String>;
+
+    /// A pane's rendered text, with up to `lines` of history before the visible
+    /// region, and its styling as SGR sequences when `ansi`.
+    fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String>;
+
+    /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
+    /// could not ask; an answer it could not read is a default field, not an
+    /// error.
+    fn pane_state(&self, pane: &str) -> Result<PaneState>;
+
+    /// The `PATH` thurbox handed the pane's program when it opened the window,
+    /// read back from the backend's own record of it. `Ok(None)`: the pane is
+    /// there, and its `PATH` is not one thurbox wrote or one this backend can
+    /// read — which a caller must report as unknown, never as a working one.
+    fn pane_path(&self, pane: &str) -> Result<Option<String>>;
+
     /// Match a pane to the rect it is painted into.
     ///
     /// On a multiplexer other clients share, this may be declined: a pane
@@ -573,4 +730,56 @@ pub trait SessionBackend: Send + Sync {
     /// host and auto-discovered WSL distro. Must be idempotent: a later `Drop`
     /// still runs and has to be a no-op.
     fn shutdown(&self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_named_key_parses_as_itself() {
+        for name in Key::NAMED {
+            assert_eq!(Key::parse(name).expect("a listed key").name(), *name);
+        }
+    }
+
+    #[test]
+    fn a_key_accepts_the_spellings_people_write() {
+        // Separator, prefix and case are the three things spelled differently;
+        // all the forms are the one key, and the canonical name is what the
+        // caller gets back to depend on.
+        for spelling in ["ctrl-c", "ctrl+c", "C-c", "c+C", " CTRL-C "] {
+            let key = Key::parse(spelling).expect("{spelling} should parse");
+            assert_eq!(key.name(), "ctrl-c");
+            assert_eq!(key.ctrl(), Some('c'));
+        }
+        assert_eq!(Key::parse("esc").unwrap().name(), "escape");
+        assert_eq!(Key::parse("RETURN").unwrap().name(), "enter");
+        assert_eq!(Key::parse("pgup").unwrap().name(), "page-up");
+        assert_eq!(Key::parse("enter").unwrap().ctrl(), None);
+    }
+
+    #[test]
+    fn a_key_refuses_what_a_multiplexer_would_type_as_text() {
+        for bad in [
+            "",
+            "escpe",
+            "ctrl-",
+            "ctrl-cc",
+            "ctrl-1",
+            "Enter Enter",
+            "F1",
+            "c",
+        ] {
+            assert!(Key::parse(bad).is_none(), "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn every_control_letter_parses() {
+        for letter in 'a'..='z' {
+            let key = Key::parse(&format!("ctrl-{letter}")).expect("ctrl-<letter>");
+            assert_eq!(key.ctrl(), Some(letter));
+        }
+    }
 }

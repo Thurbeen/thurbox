@@ -166,8 +166,8 @@ pub(super) fn execute(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::session_ops::send_text_with_status(&db, &session, text, true)
-                .map_err(|e| format!("send: {e}"))
+            crate::session_ops::send_text_with_status(&db, backends, &session, text, true)
+                .map_err(|e| format!("send: {e:#}"))
         }
         Command::RetireHook {
             state, state_at, ..
@@ -655,8 +655,8 @@ fn dispatch_task(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::session_ops::send_text_with_status(db, &target, &prompt, true)
-                .map_err(|e| format!("send: {e}"))?;
+            crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
+                .map_err(|e| format!("send: {e:#}"))?;
         }
         None => {
             // Create a session for the task, then hand it the prompt once its
@@ -672,11 +672,12 @@ fn dispatch_task(
             let spawned = crate::session_ops::spawn::spawn_session_headless(db, backends, request)?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
-            crate::backend::tmux::send_prompt_after_delay(
-                &spawned.session_id.to_string(),
-                &spawned.name,
+            crate::session_ops::send_text_when_booted(
+                db,
+                backends,
+                spawned.session_id,
                 &prompt,
-                3,
+                std::time::Duration::from_secs(3),
             )
             .map_err(|e| format!("send: {e}"))?;
         }

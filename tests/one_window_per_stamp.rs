@@ -47,6 +47,19 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
+/// Type `text` into the session's own window, located the way every pane verb
+/// locates it: by the row, through the backend.
+fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
+    use thurbox::backend::SessionBackend;
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let pane = backend
+        .locate(thurbox::backend::Owner::new(session_id, name))?
+        .agent
+        .pane()
+        .ok_or_else(|| anyhow::anyhow!("session '{name}' has no window of its own here"))?;
+    backend.send_text(&pane, text, false)
+}
+
 /// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
     thurbox::backend::SessionBackend::create_window(
@@ -154,7 +167,7 @@ fn a_second_spawn_for_one_session_retires_the_window_the_first_left() {
 
     // The symptom as the operator meets it: an unresolvable session is one
     // nothing can be sent to.
-    tmux::send_text_now(SESSION, NAME, "true", false)
+    send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send to a session with one window: {e:#}"));
 }
 
@@ -196,7 +209,7 @@ fn a_repairers_relaunch_inside_a_restart_leaves_the_session_one_window() {
         "one window, so the session resolves again; server holds:\n{}",
         listing(&server)
     );
-    tmux::send_text_now(SESSION, NAME, "true", false)
+    send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send after a relaunch inside a restart: {e:#}"));
 }
 
@@ -246,7 +259,7 @@ fn two_restarts_at_once_still_leave_the_session_one_window() {
         "the surviving window must be the one the session resolves to; server holds:\n{}",
         listing(&server)
     );
-    tmux::send_text_now(SESSION, NAME, "true", false)
+    send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send after two overlapping restarts: {e:#}"));
 }
 
@@ -276,7 +289,7 @@ fn a_pair_already_on_the_server_becomes_addressable_again() {
 
     // Acting on the session is what repairs it — the same verb the operator
     // found refused ("has no window of its own here").
-    tmux::send_text_now(SESSION, NAME, "true", false)
+    send_to(SESSION, NAME, "true")
         .unwrap_or_else(|e| panic!("send to a session a pair had locked out: {e:#}"));
 
     assert_eq!(

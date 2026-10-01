@@ -6,8 +6,8 @@
 //! [`output::Format`] for the precedence and [`toon`] for the format itself.
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
-//! `storage::Database`, `session_ops`, or the tmux helpers in
-//! `backend::tmux`, and prints the result. No TUI, no event loop.
+//! `storage::Database`, `session_ops`, or a session's backend through the
+//! registry it is handed, and prints the result. No TUI, no event loop.
 //!
 //! It is also an **AXI** (`axi/1.0-2026-07`, <https://axi.md>) — an interface
 //! shaped for an agent rather than for a person at a keyboard. Four of that
@@ -414,7 +414,7 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
     // writes a line per change for as long as it runs, so the one-document rule
     // below (and the renderer it exists for) does not apply to it.
     if let Some(Command::Watch(args)) = cli.command {
-        watch::run(db, args, format)?;
+        watch::run(db, backends, args, format)?;
         return Ok(Outcome::Ok);
     }
 

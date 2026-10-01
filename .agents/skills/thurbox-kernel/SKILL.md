@@ -82,7 +82,8 @@ kernel               session, storage, sync, paths,    [agent, agent::host_confi
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}, usage]
 cli                  session, storage, session_ops,    [agent, agent::host_config,
-                     sync, paths, notifications         backend::registry, kernel]
+                     sync, paths, notifications         backend::{contract,registry},
+                                                        kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
@@ -121,8 +122,9 @@ must both be acyclic (`the_production_graph_is_acyclic`,
 `backend::wiring` and only the factory an adapter
 (`only_the_composition_roots_name_the_factory`), and the crossings still to be
 removed are the `TRANSITIONAL` table — each item tagged with the task that
-removes it (F5b pane I/O, F7 status and heartbeat; the lifecycle and platform
-entries are gone, and the registry is injected from the roots — ADR-29),
+removes it (F7 status and heartbeat; the lifecycle, pane I/O and platform
+entries are gone, and the registry is injected from the roots — ADR-29,
+ADR-30),
 checked both ways so a new crossing fails and so does a stale entry. The table
 ends empty. Fixture trees under `tests/fixtures/architecture/` pin that the
 resolver sees the old three-node backend cycle, PR #1272's mux/registry cycles,

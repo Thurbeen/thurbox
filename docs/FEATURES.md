@@ -1514,13 +1514,12 @@ can all run at once without an automation firing twice. Ordering is
 claim-then-act (at-most-once): a crash between claim and side effect
 loses a run rather than duplicating one.
 
-**Headless send vs spawn.** `send` types into the still-alive tmux
-window (`send_prompt_now`). `spawn` creates the session headlessly
-(`spawn_session_headless`); the prompt is delivered via a short
-deferred `tmux run-shell` timer once the agent boots, and the TUI
-adopts the `auto-<id>` session by name on its next startup. All of
-this is local-tmux scoped today; a future remote/SSH `SessionBackend`
-would plug into the same dispatch seam.
+**Headless send vs spawn.** `send` types into the target session's
+window on the backend its route names. `spawn` creates the session
+headlessly (`spawn_session_headless`) and schedules the prompt on its
+backend (`send_text_after`, a short `run-shell` timer on tmux) once the
+agent boots; a later fire reuses the `auto-<id>` session it finds by its
+row, and never types into a window no row owns (ADR-30).
 
 ### Automations pane
 

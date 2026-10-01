@@ -250,7 +250,13 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `session_ops`, and that is where the reap sweep it drives lives.
         // Path-only, like `agent`, so the crossing stays visible at each call
         // site.
-        allowed_path_only: &["agent", "agent::host_config", "backend::registry", "kernel"],
+        allowed_path_only: &[
+            "agent",
+            "agent::host_config",
+            "backend::contract",
+            "backend::registry",
+            "kernel",
+        ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
     // session engine to build the snapshot plugins render from (`storage` +
@@ -380,7 +386,9 @@ enum Remover {
     /// Removed its crossings; kept so the sequence reads in order.
     #[allow(dead_code)]
     F5a,
-    /// Pane I/O through `locate` and the contract's pane verbs.
+    /// Pane I/O through `locate` and the contract's pane verbs. Removed its
+    /// crossings; kept so the sequence reads in order.
+    #[allow(dead_code)]
     F5b,
     /// Host platform and launcher separated from the multiplexer. Removed
     /// its crossings; kept so the sequence reads in order.
@@ -411,39 +419,6 @@ struct Transitional {
 }
 
 const TRANSITIONAL: &[Transitional] = &[
-    // Pane I/O addressed by (id, name) on the local tmux server.
-    Transitional {
-        from: "session_ops",
-        to: "backend::tmux",
-        items: &["send_text_now"],
-        remover: Remover::F5b,
-        why: "text reaches a pane through the tmux adapter, not locate + the contract",
-    },
-    Transitional {
-        from: "cli",
-        to: "backend::tmux",
-        items: &[
-            "NAMED_KEYS",
-            "PanePath",
-            "agent_pane_path",
-            "capture_pane_text",
-            "pane_state",
-            "resolve_key",
-            "send_key_now",
-            "send_prompt_after_delay",
-            "send_prompt_now",
-            "window_exists",
-        ],
-        remover: Remover::F5b,
-        why: "send, key, capture, watch, automations, tasks and doctor read panes via tmux",
-    },
-    Transitional {
-        from: "kernel",
-        to: "backend::tmux",
-        items: &["pane_state", "send_prompt_after_delay"],
-        remover: Remover::F5b,
-        why: "dispatch_task and the snapshot's pane state go around the contract",
-    },
     // Status delivery, the heartbeat, and the instance socket (ADR-12) they
     // are addressed by — backend-owned once status is.
     Transitional {

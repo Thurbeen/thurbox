@@ -34,6 +34,7 @@ fn the_recording_backend_keeps_the_contract() {
     let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
     backend_contract::suite(&*fake);
     backend_contract::lifecycle(&*fake);
+    backend_contract::pane_io(&*fake);
     backend_contract::shutdown_is_final(&*fake);
 }
 
@@ -52,6 +53,7 @@ fn the_tmux_backend_keeps_the_contract() {
     // from `thurbox-cli` opens no control client on the server it acts on.
     let headless = TmuxBackend::new();
     backend_contract::lifecycle(&headless);
+    backend_contract::pane_io(&headless);
     let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
     assert_eq!(
         String::from_utf8_lossy(&clients.stdout).trim(),
@@ -328,4 +330,65 @@ fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
         panes.contains(&other.as_str()),
         "the other window was killed"
     );
+}
+
+/// Input the tmux adapter must refuse or defer, on a real server: a pane whose
+/// program exited keeps its frame (`remain-on-exit`) and `send-keys` would
+/// exit 0 into it, and a deferred prompt runs on the pane's own server after
+/// the caller has gone.
+#[test]
+fn the_tmux_backend_refuses_an_exited_pane_and_delivers_a_deferred_prompt() {
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    use thurbox::backend::{Owner, WindowSpec};
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let backend = TmuxBackend::new();
+    let env = HashMap::new();
+    let open = |id: &'static str, name: &'static str, command: &'static str| {
+        backend
+            .create_window(&WindowSpec {
+                owner: Owner::new(id, name),
+                role: WindowRole::Agent,
+                command,
+                args: &[],
+                cwd: None,
+                env: &env,
+            })
+            .expect("create_window")
+    };
+    let until = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} never happened");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    let exited = open("00000000-0000-4000-8000-0000000000e1", "exits", "true");
+    until("the program's exit", &|| {
+        backend
+            .pane_state(&exited)
+            .is_ok_and(|s| s.dead == Some(true))
+    });
+    assert!(
+        backend.send_text(&exited, "into a corpse", true).is_err(),
+        "a send into an exited pane reported success"
+    );
+
+    let live = open("00000000-0000-4000-8000-0000000000e2", "later", "cat");
+    backend
+        .send_text_after(&live, "deferred 'quoted' line", Duration::from_secs(1))
+        .expect("schedule");
+    until("the deferred prompt", &|| {
+        backend
+            .capture(&live, 20, false)
+            .is_ok_and(|screen| screen.contains("deferred 'quoted' line"))
+    });
+    backend.kill(&exited).expect("kill");
+    backend.kill(&live).expect("kill");
 }
