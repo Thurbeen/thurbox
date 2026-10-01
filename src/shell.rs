@@ -254,7 +254,7 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
 /// This is the WSL analogue of [`ssh_command`], but `wsl.exe`'s argument
 /// forwarding is subtly different from ssh's plain space-join (observed against
 /// current `wsl.exe`; callers that need argv to arrive verbatim bypass the
-/// shell entirely by appending `-e`/`--exec` — see `git::host_shell_c`):
+/// shell entirely by appending `-e`/`--exec` — see `git::remote::host_shell_c`):
 ///
 /// - a **whitespace-free** token reaches the in-distro shell for interpretation
 ///   exactly like over ssh — POSIX-quote it the same way (the shell strips the
@@ -262,7 +262,7 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
 /// - an argument **containing whitespace** is preserved as a single word — do
 ///   *not* pre-quote a multi-word `sh -c` script for WSL, or the quotes arrive
 ///   literally and the shell treats the whole blob as one command name (see
-///   `git::host_shell_c`, which branches on this).
+///   `git::remote::host_shell_c`, which branches on this).
 ///
 /// No `--` separator is used (none of thurbox's commands start with a `-`,
 /// matching the SSH path which also omits it).

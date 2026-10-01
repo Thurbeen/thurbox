@@ -53,11 +53,14 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 ```text
 node                 may reference                     [fully-qualified path only]
 session              nothing — pure data, the dependency sink
-agent                session, paths, shell (NEVER git, NEVER backend)
-agent::host_config   session, paths, agent
+agent                agent::{generic,provider} (re-exports only)
+agent::*             every file a node: session, paths, shell and the other
+                     agent::* files each declares (NEVER git, NEVER backend)
+agent::host_config   session, paths, agent::agent_config
 backend              backend::{contract,pane,registry} (re-exports only)
 backend::contract    nothing — the trait and the values crossing it
 backend::identity    backend::contract
+backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}
 backend::osc8        session
 backend::output_wake nothing
@@ -66,40 +69,43 @@ backend::wiring      session, shell,                   (the factory: the only
                      agent::host_config,                node naming an adapter)
                      backend::{contract,registry,
                      tmux,psmux}
-backend::tmux_compat nothing — declares the four below (tmux protocol helper)
-  ::control_mode     session, shell, backend::contract,
+backend::tmux_compat nothing — declares the three below (tmux protocol helper)
+  ::control_mode     shell, backend::contract,
                      backend::tmux_compat::transport
-  ::server           session, paths, shell, agent,     (the shared server,
-                     backend::{contract,identity},      generic over the mux)
+  ::server           session, paths, shell,            (the shared server,
+                     agent::{host_path,preflight},      generic over the mux)
+                     backend::{contract,identity,
+                     instance},
                      backend::tmux_compat::{control_mode,
-                     socket,transport}
-  ::socket           session, paths                    (ADR-12 socket naming)
-  ::transport        shell, agent
+                     transport}
+  ::transport        shell, agent::preflight
 backend::tmux        session, shell, backend::contract, (the tmux adapter)
                      backend::tmux_compat::{control_mode,
                      server,transport}
-backend::psmux       session, shell, backend::contract, (the psmux adapter —
+backend::psmux       session, shell, backend::{contract, (the psmux adapter —
+                     instance},
                      backend::tmux_compat::{control_mode, a peer, never tmux's)
                      server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
 usage                session, shell                    [paths]
-session_ops          session, storage, git, sync,      [agent, agent::host_config,
+session_ops          session, storage, git, sync,      [agent::<the config it reads>,
                      paths, workspace, shell            backend::{contract,identity,
-                                                        registry}]
-kernel               session, storage, sync, paths,    [agent, agent::host_config,
+                                                        instance,registry}]
+kernel               session, storage, sync, paths,    [agent::<the config it reads>,
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}, usage]
-cli                  session, storage, session_ops,    [agent, agent::host_config,
-                     sync, paths, notifications         backend::{contract,registry},
-                                                        kernel]
+cli                  session, storage, session_ops,    [agent::<the config it reads>,
+                     sync, paths, notifications         backend::{contract,instance,
+                                                        registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 shell                session (HostLauncher::for_host)
-coordinator          agent, backend::{output_wake,     (main's body: the loop,
+coordinator          agent::{input,settings_config},   (main's body: the loop,
+                     backend::{output_wake,
                      wiring}, clipboard, kernel,        the workers, the chrome)
                      paths, session, session_ops,
                      shell, storage
@@ -120,8 +126,8 @@ entry — a rule used to be able to exist with no test calling it, which is how
 `kernel` drifted.
 
 A rule names a **node**: a top-level module, or a submodule governed on its own —
-every file module of `backend`, at any depth, is one (`SUBMODULE_GOVERNED`), and so is
-`agent::host_config`. A grant covers exactly its node, never the node's children,
+every file module of `backend` and of `agent`, at any depth, is one
+(`SUBMODULE_GOVERNED`). A grant covers exactly its node, never the node's children,
 and a reference is judged where it **resolves** (`tests/architecture/resolver.rs`):
 `super::`, `self::`, nested brace groups, `as`, an imported name, a `pub use`
 re-export and a `type` alias are all followed, so no spelling carries a crossing
@@ -135,8 +141,8 @@ neither reaches the other and `backend::tmux_compat` reaches neither, test code
 included (`the_adapters_are_peers`) — and each adapter's code names exactly its
 own `Multiplexer` variant (`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own`,
 ADR-31), and the crossings still to be
-removed are the `TRANSITIONAL` table — each item tagged with the task that
-removes it, checked both ways so a new crossing fails and so does a stale
+removed are the `TRANSITIONAL` table — each item saying why it is there and
+what removes it, checked both ways so a new crossing fails and so does a stale
 entry. It is **empty**: lifecycle, pane I/O, platform and finally status and
 the heartbeat (ADR-29, ADR-30, ADR-32) go through the contract, and
 `consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and `kernel`
@@ -450,7 +456,7 @@ construction. Reuses the companion-shell machinery whole (`ProgramPane` mirrors
 prefix (`tbp-`; `discover` lists it, but it is stamped `@thurbox_role=program`
 with no session id, so it can never resolve as a session's agent — ADR-25), and
 that **nothing is persisted**: the window name is deterministic, so re-adoption
-after a restart is a lookup (`find_window`) and there is no stored id to go stale. Gated by its own
+after a restart is a lookup (`find_program_window`) and there is no stored id to go stale. Gated by its own
 capability, **not** `run`'s — `run` is bounded (256 KB, 600 s, 4 at a time) and an
 interactive program is none of those, so an existing grant must not silently widen.
 Four panes per plugin. `thurbox.granted.<name>` is how a pane knows, since

@@ -150,14 +150,30 @@ enum ProvisionOutcome {
 /// at startup. Only [`ProvisionOutcome::Provisioned`] lands in `provisioned`,
 /// so repeat spawns of the same agent on the same host skip the ssh
 /// round-trips while failures and not-installed skips are re-tried.
-/// `in_flight` makes the read-merge-write exclusive per key **without**
-/// holding the lock across the ssh round-trips (a slow or down host must not
-/// stall an unrelated host's spawn): a concurrent spawn of the same key waits
-/// for the holder (bounded), then reads the cache or retries the pass itself.
+/// `provisioned` holds, per host and agent, the one hook command last shipped:
+/// the file on the host carries one, so a launch on another route of the host
+/// replaces what an earlier one is still remembered as having shipped.
+/// `in_flight` makes the read-merge-write exclusive per host and agent — the
+/// file it rewrites, whichever command a launch ships — **without** holding
+/// the lock across the ssh round-trips (a slow or down host must not stall an
+/// unrelated host's spawn): a concurrent spawn for the same file waits for the
+/// holder (bounded), then reads the cache or retries the pass itself.
 #[derive(Default)]
 struct ProvisionCache {
-    provisioned: HashSet<ProvisionKey>,
-    in_flight: HashSet<ProvisionKey>,
+    provisioned: HashMap<HookFile, String>,
+    in_flight: HashSet<HookFile>,
+}
+
+impl ProvisionCache {
+    fn has_shipped(&self, key: &ProvisionKey) -> bool {
+        self.provisioned
+            .get(&hook_file(key))
+            .is_some_and(|shipped| *shipped == key.2)
+    }
+
+    fn shipped(&mut self, key: &ProvisionKey) {
+        self.provisioned.insert(hook_file(key), key.2.clone());
+    }
 }
 
 fn provisioned_cache() -> &'static Mutex<ProvisionCache> {
@@ -183,11 +199,18 @@ fn provision_key(host: &HostDef, agent: &str, signal: &str) -> ProvisionKey {
     (host.backend_name(), agent.to_string(), signal.to_string())
 }
 
+/// `(host, agent)`: the one hook file a key's launch rewrites on the host.
+type HookFile = (String, String);
+
+fn hook_file((host, agent, _): &ProvisionKey) -> HookFile {
+    (host.clone(), agent.clone())
+}
+
 /// Removes its key from `in_flight` on drop — **including on unwind**, so a
 /// panic inside the provisioning pass can never leak the key and permanently
 /// (and silently) disable provisioning for that key.
 struct InFlightGuard {
-    key: ProvisionKey,
+    key: HookFile,
 }
 
 impl Drop for InFlightGuard {
@@ -247,11 +270,13 @@ pub(crate) fn provision_agent_hooks_on_host(
     let _guard = loop {
         {
             let mut cache = cache_lock();
-            if cache.provisioned.contains(&key) {
+            if cache.has_shipped(&key) {
                 return None;
             }
-            if cache.in_flight.insert(key.clone()) {
-                break InFlightGuard { key: key.clone() };
+            if cache.in_flight.insert(hook_file(&key)) {
+                break InFlightGuard {
+                    key: hook_file(&key),
+                };
             }
         }
         if waited >= IN_FLIGHT_WAIT_MAX {
@@ -265,7 +290,7 @@ pub(crate) fn provision_agent_hooks_on_host(
     };
     let outcome = provision_uncached(host, signal, &asset);
     if matches!(outcome, ProvisionOutcome::Provisioned) {
-        cache_lock().provisioned.insert(key);
+        cache_lock().shipped(&key);
     }
     match outcome {
         ProvisionOutcome::Provisioned | ProvisionOutcome::NotInstalled => None,
@@ -553,11 +578,7 @@ mod tests {
         // A panic inside the provisioning pass must not leak the in-flight
         // key (which would silently disable provisioning for the process
         // lifetime while reporting healthy).
-        let key = (
-            "test-guard-backend".to_string(),
-            "codex".to_string(),
-            SIGNAL.to_string(),
-        );
+        let key = ("test-guard-backend".to_string(), "codex".to_string());
         assert!(cache_lock().in_flight.insert(key.clone()));
         let k = key.clone();
         let unwound = std::panic::catch_unwind(move || {
@@ -789,9 +810,7 @@ mod tests {
             destination: "user@cache-key-host.invalid".into(),
             ..Default::default()
         };
-        cache_lock()
-            .provisioned
-            .insert(provision_key(&host, "codex", SIGNAL));
+        cache_lock().shipped(&provision_key(&host, "codex", SIGNAL));
         assert!(
             provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true).is_none(),
             "the command it shipped is cached"
@@ -801,6 +820,54 @@ mod tests {
                 .is_some(),
             "another route's command was taken as already shipped"
         );
+    }
+
+    /// An agent's hook file on a host holds one command. Once a launch on
+    /// another route of the host has shipped its own, the earlier one is no
+    /// longer what the file says, and a launch on that route ships it again
+    /// rather than boot an agent that reports through the other backend.
+    #[test]
+    fn a_cached_provisioning_is_forgotten_once_another_command_replaces_it() {
+        let host = HostDef {
+            name: "cache-replaced-host".into(),
+            destination: "user@cache-replaced-host.invalid".into(),
+            ..Default::default()
+        };
+        for signal in [SIGNAL, "other-mux signal "] {
+            cache_lock().shipped(&provision_key(&host, "opencode", signal));
+        }
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "opencode", true).is_some(),
+            "the file now carries the other route's command, and was taken as this one's"
+        );
+    }
+
+    /// Two routes' launches write the same file on the host, so one waits for
+    /// the other whatever command each ships: interleaved, the cache could
+    /// name the command that lost the race.
+    #[test]
+    fn provisioning_is_exclusive_per_hook_file_not_per_command() {
+        let host = HostDef {
+            name: "exclusive-file-host".into(),
+            destination: "user@exclusive-file-host.invalid".into(),
+            ..Default::default()
+        };
+        let held = hook_file(&provision_key(&host, "opencode", SIGNAL));
+        assert!(cache_lock().in_flight.insert(held.clone()));
+        let guard = InFlightGuard { key: held };
+        let other = {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                provision_agent_hooks_on_host(&host, Some("other-mux signal "), "opencode", true)
+            })
+        };
+        std::thread::sleep(IN_FLIGHT_WAIT_STEP * 3);
+        assert!(
+            !other.is_finished(),
+            "a launch shipping another command went ahead while the file was held"
+        );
+        drop(guard);
+        assert!(other.join().unwrap().is_some());
     }
 
     #[test]

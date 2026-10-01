@@ -984,8 +984,8 @@ OS is read as a platform.
   anything else is POSIX. A WSL distro is POSIX whatever its entry says.
   An adapter is built with the host's platform beside the host as configured
   (`BackendSpec`, ADR-31), so a legacy Windows entry driven for a `:tmux` row
-  stays Windows; the headless status poll, told the row's multiplexer through
-  `HostDef::served_by`, pins the platform first for the same reason.
+  stays Windows. The headless status poll asks that same backend (ADR-32), so
+  it is told nothing of its own.
 - **Each decision reads the dimension it is about.** The shell a pane gets
   (`default_shell`), whether the server's `default-command` is pinned to a
   POSIX shell (`config_shell`), and the `/bin/sh -lc` login wrap all follow
@@ -2234,11 +2234,10 @@ Local routes are qualified like remote ones (`local:<mux>`); the legacy
 so an explicit tmux there is `local:tmux` and never mistaken for it. An older
 build cannot attach a local row written as `local:<mux>`. A socket learned from a host's CLI is keyed
 per host, because it names that host's thurbox instance, not one multiplexer.
-Only what drives the multiplexer gets a host told the row's multiplexer: the
-backend `wiring` registers for the route, built with the host's own platform,
-and the headless status poll's host (`remote_hooks::polled_host`), through
-`HostDef::served_by`, which pins the host's platform first — ADR-13, "The
-host's platform is its own dimension".
+Only what drives the multiplexer is told the row's multiplexer: the backend
+`wiring` registers for the route, built with the host's own platform (ADR-13,
+"The host's platform is its own dimension"). The headless status poll asks
+that backend too (ADR-32).
 
 ---
 

@@ -109,7 +109,7 @@ pub struct TermSignals {
     meta_gen: Arc<AtomicU64>,
     /// OSC 8 hyperlink runs the agent printed. Unlike the cells above this is
     /// not shared state: readers reach it through the parser lock they already
-    /// take to read the screen ([`Self::hyperlink_at`]).
+    /// take to read the screen ([`Self::hyperlinks`]).
     hyperlinks: HyperlinkTable,
     /// The OSC 8 run whose closing sequence has not arrived yet.
     pending_link: Option<osc8::PendingHyperlink>,
@@ -451,7 +451,7 @@ pub struct WiredPane {
     /// the next start is what stops a restart forgetting the shell and
     /// orphaning its window. A program pane's is deliberately not persisted —
     /// its window *name* is the identity that survives a restart
-    /// (`tmux::program_window_name`), because a deterministic name cannot go
+    /// (`identity::program_window_name`), because a deterministic name cannot go
     /// stale where a stored id can.
     pub(crate) backend_id: String,
     exited: Arc<AtomicBool>,

@@ -1,5 +1,5 @@
 //! Hook status reaches a session's row through the backend its route names,
-//! and through nothing else (audit S7).
+//! and through nothing else.
 //!
 //! Every pathway runs through the real entry points — `cli`'s command modules
 //! in-process, with the registry the binary would build handed in. The
@@ -269,7 +269,7 @@ impl Routes {
     }
 }
 
-/// S7: each backend reports a hook state for a pane of the same id, and
+/// Each backend reports a hook state for a pane of the same id, and
 /// `automation tick` writes each to the row on that backend's route — with no
 /// local tmux pane, no host contacted, and nothing inferred for a route that
 /// could not answer.

@@ -2197,7 +2197,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // Nothing to write where an option is not a window's
         // ([`Self::stamps_are_per_window`]): such a server would take this as
         // a *global* one and hand it back as every window's identity. Ok rather
-        // than an error for the same reason `set_remain_on_exit` is — the
+        // than an error for the same reason `set_pane_retention` is — the
         // caller is not being refused, there is simply no per-window option to
         // set, and `WindowIndex` resolves by name there (ADR-25).
         if !self.stamps_are_per_window() {
@@ -2242,7 +2242,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
         self.known_socket()?;
         self.refuse_exited(pane)?;
-        // Bracketed-paste-wrapped either way (see `paste_prompt_args`), so the
+        // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
         // text arrives literally: no shell is involved, and the wrap is also
         // what keeps a leading `-` from reading as a flag and a newline from
         // submitting the line before it.
@@ -2566,7 +2566,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         self.refuse_without_hook_status()?;
         match self.run_tmux(&["has-session", "-t", &self.session]) {
             Ok(_) => {}
-            Err(e) if session_absent(&format!("{e:#}")) => return Ok(Vec::new()),
+            Err(e) if mux_answered_absent(&format!("{e:#}")) => return Ok(Vec::new()),
             Err(e) => return Err(e),
         }
         let format = format!(
@@ -2590,7 +2590,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         args: &[String],
         every: std::time::Duration,
     ) -> Result<()> {
-        if self.heartbeat_running()? {
+        // A probe nobody answered is not a reason to stop arming: readying the
+        // session below either starts the server or fails with its own error.
+        if self.heartbeat_running().unwrap_or(false) {
             return Ok(());
         }
         self.ensure_heartbeat_session()?;
@@ -2629,8 +2631,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    /// No server, or no session on it, is a heartbeat not running — not an
-    /// unanswered question.
+    /// No server, or no session on it, is a heartbeat not running. Any other
+    /// failed listing is an unanswered question (`listing_is_absence`).
     fn heartbeat_running(&self) -> Result<bool> {
         let out = self
             .transport
@@ -2645,10 +2647,20 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 self.transport
                     .launch_failure("Failed to run tmux command", e)
             })?;
-        Ok(out.status.success()
-            && String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .any(|w| w == HEARTBEAT_WINDOW))
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if listing_is_absence(self.transport.is_ssh(), out.status.code(), stderr.trim()) {
+                return Ok(false);
+            }
+            bail!(
+                "{} list-windows (heartbeat) {}",
+                self.transport.mux(),
+                mux_failure(&out)
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|w| w == HEARTBEAT_WINDOW))
     }
 
     /// Automations stop firing headlessly until something arms it again —
@@ -2658,7 +2670,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return Ok(false);
         }
         let target = format!("{}:{HEARTBEAT_WINDOW}", self.session);
-        Ok(self.run_tmux(&["kill-window", "-t", &target]).is_ok())
+        match self.run_tmux(&["kill-window", "-t", &target]) {
+            Ok(_) => Ok(true),
+            Err(e) if already_gone(&format!("{e:#}")) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// The shell-pane command must match the OS of the machine the pane runs
@@ -3587,15 +3603,6 @@ fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
         .map(|(_, window)| window)
 }
 
-/// Whether a failed `has-session` was the server answering that it holds no
-/// such session — or that there is no server — rather than a question that
-/// never reached it (an unreachable host, a refused ssh, a missing binary).
-fn session_absent(error: &str) -> bool {
-    error.contains("can't find session")
-        || error.contains("no server running")
-        || error.contains("error connecting to")
-}
-
 /// Whether a kill's failure says its target is already gone — named by its
 /// pane or by its name — which is what the kill wanted.
 fn already_gone(error: &str) -> bool {
@@ -4216,8 +4223,6 @@ mod tests {
         );
     }
 
-    // --- parse_tmux_version tests ---
-
     // --- path_led_by (the PATH a pane is handed) ---
 
     #[cfg(not(windows))]
@@ -4295,10 +4300,6 @@ mod tests {
         );
     }
 
-    // --- check_min_version (multiplexer version gate) ---
-
-    // --- check_psmux_version (the psmux#450 floor) ---
-
     // --- local command resolution ---
 
     /// An executable on a directory only *this process* has on `PATH` — the
@@ -4327,10 +4328,6 @@ mod tests {
         );
     }
 
-    // --- build_shell_command tests ---
-
-    // --- one-shot prompt delivery ---
-
     // --- named keys ---
 
     #[test]
@@ -4357,11 +4354,6 @@ mod tests {
         assert!(answered_for("thurbox:=tb-x", Some("tb-x"), Some("%9")));
         assert!(!answered_for("thurbox:=tb-x", Some("tb-y"), Some("%9")));
     }
-
-    // --- psmux_window_command tests ---
-    // psmux keeps only the FIRST trailing new-window token (tmux joins them) and
-    // ignores `-e` entirely, so the whole launch — env included — must be one
-    // double-quoted token of PowerShell (verified against psmux 3.3.6).
 
     #[test]
     fn a_shareable_host_that_has_not_said_which_socket_it_uses_is_refused() {
@@ -4435,8 +4427,6 @@ mod tests {
         assert_eq!(env_part, " -e 'MSG=hello world'");
     }
 
-    // --- window-name sanitization tests ---
-
     /// Only an agent's window keeps its corpse — and the answer is read off the
     /// *name*, so it is pinned against the three name builders rather than
     /// against hand-written prefixes that could drift from them.
@@ -4506,6 +4496,68 @@ mod tests {
         assert!(backend.hook_states().is_err());
     }
 
+    /// A multiplexer binary that answers every command it is not told about
+    /// with `stderr` and exit 1, and `list-windows` with `windows`.
+    #[cfg(unix)]
+    fn answering_mux(dir: &std::path::Path, windows: &str, stderr: &str) -> TestBackend {
+        use std::os::unix::fs::PermissionsExt;
+        let mux = dir.join("mux");
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *list-windows*) [ -n '{windows}' ] && {{ echo '{windows}'; exit 0; }} ;;\nesac\ncat >&2 <<'EOF'\n{stderr}\nEOF\nexit 1\n"
+        );
+        std::fs::write(&mux, script).unwrap();
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).unwrap();
+        TestBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy().into_owned()),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+        )
+    }
+
+    /// tmux prints `error connecting to` for a socket it cannot open while a
+    /// server is alive behind it — another user's, or a stale one. That is a
+    /// question nobody answered, so status and the heartbeat must say so
+    /// rather than report no states and no heartbeat.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_that_cannot_be_opened_is_no_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        for refused in [
+            "error connecting to /tmp/tmux-1/thurbox-test (Permission denied)",
+            "error connecting to /tmp/tmux-1/thurbox-test (Connection refused)",
+        ] {
+            let backend = answering_mux(dir.path(), "", refused);
+            assert!(backend.hook_states().is_err(), "hook_states: {refused}");
+            assert!(
+                backend.heartbeat_running().is_err(),
+                "heartbeat_running: {refused}"
+            );
+        }
+        for absent in [
+            "error connecting to /tmp/tmux-1/thurbox-test (No such file or directory)",
+            "can't find session: thurbox-test",
+        ] {
+            let backend = answering_mux(dir.path(), "", absent);
+            assert_eq!(backend.hook_states().unwrap(), Vec::new(), "{absent}");
+            assert!(!backend.heartbeat_running().unwrap(), "{absent}");
+        }
+    }
+
+    /// A kill that failed is not "there was none to stop".
+    #[cfg(unix)]
+    #[test]
+    fn a_heartbeat_that_could_not_be_killed_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = answering_mux(
+            dir.path(),
+            HEARTBEAT_WINDOW,
+            "error connecting to /tmp/tmux-1/thurbox-test (Permission denied)",
+        );
+        assert!(backend.heartbeat_running().unwrap());
+        assert!(backend.stop_heartbeat().is_err());
+    }
+
     /// The headless status poll reads an empty listing as "every pane quiet",
     /// so only the server's own "nothing here" may become one.
     #[test]
@@ -4515,13 +4567,14 @@ mod tests {
             "tmux has-session -t thurbox failed: no server running on /tmp/tmux-1/thurbox",
             "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
         ] {
-            assert!(session_absent(absent), "{absent}");
+            assert!(mux_answered_absent(absent), "{absent}");
         }
         for unanswered in [
             "tmux has-session -t thurbox failed: ssh: connect to host box port 22: Connection refused",
             "Failed to run tmux command: No such file or directory (os error 2)",
+            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (Permission denied)",
         ] {
-            assert!(!session_absent(unanswered), "{unanswered}");
+            assert!(!mux_answered_absent(unanswered), "{unanswered}");
         }
     }
 
