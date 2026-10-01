@@ -2609,7 +2609,7 @@ fn an_app_osc52_copy_in_the_focused_session_reaches_the_outer_terminal() {
 #[test]
 fn a_focused_apps_malformed_or_oversized_osc52_writes_change_nothing() {
     // Each of these reaches the pane's parser and none is a copy the user can
-    // want: an empty write (which once wiped peers' users' clipboards), a
+    // want: an empty write, which would wipe the clipboard; a
     // payload that is not base64, one that does not decode to UTF-8 text, one
     // larger than an OSC 52 can carry to the outer terminal whole, and a write
     // to the primary selection rather than the clipboard.

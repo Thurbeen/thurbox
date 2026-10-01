@@ -138,8 +138,8 @@ pub struct AppCopyRequest {
 /// focus left carries the old token and is refused, and a pane brought back to
 /// the front gets a new token, so nothing it printed while hidden is released.
 /// Shared by the pane and its parser's [`TermSignals`], which moves with the
-/// callbacks when a grid is dropped and rebuilt — so a pane with no grid still
-/// reads its writes, and one that is focused always has its grid anyway.
+/// callbacks when a grid is dropped and rebuilt — so a pane focused while its
+/// grid is still on its way back reads its writes all the same.
 #[derive(Debug, Default)]
 pub struct AppCopy {
     /// The token focus gave this pane; `0` while it has none.
