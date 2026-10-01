@@ -121,6 +121,10 @@ jobs:
               # suite asserts on both: a change to them can make the probes
               # advisory again, which is the whole defect (#1170).
               - 'scripts/dev/e2e/lib/e2e-common.sh'
+              # What the probes compare against: the psmux gate, and the
+              # command that reports it.
+              - 'src/backend/psmux.rs'
+              - 'src/cli/runtime.rs'
               - '.github/workflows/ci.yml'
             # The package builds the crate, so every Rust input is a Nix input
             # too: a new `include_str!` outside the package's source set, or a

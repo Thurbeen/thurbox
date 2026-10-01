@@ -1108,9 +1108,9 @@ pub fn existing_launch_cwd(
 /// `--notifications-command "thurbox-cli session signal --state blocked"`)
 /// also reports remotely instead of invoking a CLI that isn't there — it is
 /// marker-keyed and idempotent, so non-matching args pass through
-/// byte-identical. With no `signal` a literal is left as it is: there is no
-/// command it could report through, and the config files carrying the rest
-/// are stripped.
+/// byte-identical. With no `signal` there is no command to report through, so
+/// a literal carrying one is stripped with its flag, like the config files
+/// carrying the rest, and named among the stripped.
 ///
 /// Shared by the headless spawn and the TUI (`App::build_spawn_inputs`) so
 /// both paths launch a remote session with the same args.
@@ -1123,19 +1123,21 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
     signal: Option<&str>,
     args: Vec<String>,
 ) -> (Vec<String>, Vec<String>) {
-    let rewrite_literals = |args: Vec<String>| -> Vec<String> {
+    let rewrite_literals = |args: Vec<String>| -> (Vec<String>, Vec<String>) {
         match signal {
-            Some(command) => args
-                .into_iter()
-                .map(|a| super::builtin_hooks::rewrite_hook_signals(&a, command))
-                .collect(),
-            None => args,
+            Some(command) => (
+                args.into_iter()
+                    .map(|a| super::builtin_hooks::rewrite_hook_signals(&a, command))
+                    .collect(),
+                Vec::new(),
+            ),
+            None => strip_literal_signals(args),
         }
     };
     let Some(config_root) = crate::paths::config_file()
         .and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()))
     else {
-        return (rewrite_literals(args), Vec::new());
+        return rewrite_literals(args);
     };
     // Resolve the translation target lazily (one ssh round-trip) and at most
     // once; `None` = strip mode.
@@ -1174,7 +1176,33 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
         }
         materialized
     });
-    (rewrite_literals(args), stripped)
+    let (args, literals) = rewrite_literals(args);
+    stripped.extend(literals);
+    (args, stripped)
+}
+
+/// Drop every literal arg carrying a thurbox hook command, and the flag
+/// before it when it is the flag that takes it (`--notifications-command
+/// "<cmd>"`), returning the args and the commands dropped. For a route with
+/// no status channel: left in place, the host would run `thurbox-cli`, which
+/// is absent there or writes the host's own database rather than this one.
+fn strip_literal_signals(args: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut kept: Vec<String> = Vec::with_capacity(args.len());
+    let mut dropped = Vec::new();
+    for arg in args {
+        if arg.contains(super::builtin_hooks::SIGNAL_MARKER) {
+            if kept
+                .last()
+                .is_some_and(|flag| flag.starts_with('-') && !flag.contains('='))
+            {
+                kept.pop();
+            }
+            dropped.push(arg);
+        } else {
+            kept.push(arg);
+        }
+    }
+    (kept, dropped)
 }
 
 /// Adapt an agent def for launch on an optional remote host: rewrite/ship its
@@ -1706,9 +1734,12 @@ mod tests {
         let out = adapt_agent_args_for_remote_with_report(&host, Some(SIGNAL), args.clone()).0;
         assert_eq!(out[2], format!("{SIGNAL}blocked"));
 
-        // A backend with no status channel has nothing to rewrite to.
-        let out = adapt_agent_args_for_remote_with_report(&host, None, args.clone()).0;
-        assert_eq!(out, args);
+        // A backend with no status channel has nothing to rewrite to: the
+        // command and the flag carrying it go, reported as stripped, so the
+        // host never runs a CLI that is absent there or writes its own DB.
+        let (out, stripped) = adapt_agent_args_for_remote_with_report(&host, None, args.clone());
+        assert_eq!(out, ["--notifications"]);
+        assert_eq!(stripped, ["thurbox-cli session signal --state blocked"]);
     }
 
     #[test]
