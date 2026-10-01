@@ -52,8 +52,8 @@ impl TmuxCompatible for Tmux {
     const COMMAND_LISTS: bool = true;
     const ONE_SHOT_SPAWN_ANSWERS: bool = true;
     const CONDITIONAL_RESIZE: bool = true;
-    const SERVER_SCOPE: &'static str = "-s";
-    const DISPLAY_FLAGS: &'static [&'static str] = &[PANE_STATE_UTF8_FLAG];
+    const SERVER_SCOPE: &str = "-s";
+    const DISPLAY_FLAGS: &[&str] = &[PANE_STATE_UTF8_FLAG];
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
     /// The tmux floor, and never psmux under tmux's name: psmux installs a

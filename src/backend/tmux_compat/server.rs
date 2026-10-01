@@ -79,12 +79,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     const CONDITIONAL_RESIZE: bool;
 
     /// The `set-option` flag scoping a server-wide option.
-    const SERVER_SCOPE: &'static str;
+    const SERVER_SCOPE: &str;
 
     /// The flags that make a `display-message` answer keep its separators
     /// whatever the locale (see `PANE_STATE_UTF8_FLAG`'s reason in the tmux
     /// adapter), before the command itself.
-    const DISPLAY_FLAGS: &'static [&'static str];
+    const DISPLAY_FLAGS: &[&str];
 
     /// Refuse a server too old to give a new pane its own console, from its
     /// `-V` banner or its `#{version}` answer, or `None` when nothing is known
@@ -3668,8 +3668,8 @@ mod tests {
         const COMMAND_LISTS: bool = true;
         const ONE_SHOT_SPAWN_ANSWERS: bool = true;
         const CONDITIONAL_RESIZE: bool = true;
-        const SERVER_SCOPE: &'static str = "-s";
-        const DISPLAY_FLAGS: &'static [&'static str] = &[];
+        const SERVER_SCOPE: &str = "-s";
+        const DISPLAY_FLAGS: &[&str] = &[];
         const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
         fn check_banner(_: &str, _: &str) -> Result<()> {
             Ok(())

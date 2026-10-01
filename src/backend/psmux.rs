@@ -81,10 +81,10 @@ impl TmuxCompatible for Psmux {
 
     /// psmux 3.3.8 refuses `-s` ("unknown flag -s") and keeps one option table
     /// anyway, so it gets `-g`, which 3.3.7 and 3.3.8 both take.
-    const SERVER_SCOPE: &'static str = "-g";
+    const SERVER_SCOPE: &str = "-g";
 
     /// psmux has no locale sanitizing, and need not know tmux's `-u`.
-    const DISPLAY_FLAGS: &'static [&'static str] = &[];
+    const DISPLAY_FLAGS: &[&str] = &[];
 
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
