@@ -276,7 +276,7 @@ pub struct Key(String);
 impl Key {
     /// Every named key, canonically spelled. `ctrl-a` … `ctrl-z` are parsed
     /// generically and deliberately not listed.
-    pub const NAMED: &'static [&'static str] = &[
+    pub const NAMED: &[&str] = &[
         "enter",
         "escape",
         "tab",
@@ -296,7 +296,7 @@ impl Key {
     /// Alternate spellings, each resolving to one canonical name — forgiving
     /// on purpose, so an integrator writing `esc` or `pgup` need not look the
     /// table up, while the name echoed back is always the one spelling.
-    const ALIASES: &'static [(&'static str, &'static str)] = &[
+    const ALIASES: &[(&str, &str)] = &[
         ("return", "enter"),
         ("esc", "escape"),
         ("bspace", "backspace"),
