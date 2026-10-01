@@ -3586,8 +3586,6 @@ fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
         .map(|(_, window)| window)
 }
 
-/// Whether a kill's failure says its target is already gone — named by its
-/// pane or by its name — which is what the kill wanted.
 /// Whether a failed `has-session` was the server answering that it holds no
 /// such session — or that there is no server — rather than a question that
 /// never reached it (an unreachable host, a refused ssh, a missing binary).
@@ -3597,6 +3595,8 @@ fn session_absent(error: &str) -> bool {
         || error.contains("error connecting to")
 }
 
+/// Whether a kill's failure says its target is already gone — named by its
+/// pane or by its name — which is what the kill wanted.
 fn already_gone(error: &str) -> bool {
     error.contains("can't find window")
         || error.contains("window not found")
@@ -4492,8 +4492,6 @@ mod tests {
     const ONE: &str = "11111111-1111-4111-8111-111111111111";
     const TWO: &str = "22222222-2222-4222-8222-222222222222";
 
-    /// The format is a literal because a `const` cannot interpolate another;
-    /// this is what keeps it honest.
     /// A status question that never reached a server is no answer: the poll
     /// must keep the held states rather than be told there are none.
     #[test]
@@ -4526,6 +4524,8 @@ mod tests {
         }
     }
 
+    /// The format is a literal because a `const` cannot interpolate another;
+    /// this is what keeps it honest.
     #[test]
     fn the_discover_format_reads_both_stamps() {
         assert!(DISCOVER_FORMAT.contains(&format!("#{{{WINDOW_SESSION_OPTION}}}")));

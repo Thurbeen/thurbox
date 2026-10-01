@@ -403,10 +403,28 @@ fn session_signal_on_a_local_row_builds_no_host_registry() {
         .local
         .open("tb-local-probe", &id.to_string(), WindowRole::Agent);
 
+    // Host discovery runs `wsl.exe -l -q` wherever one is on PATH: a stand-in
+    // that records being asked is what shows whether this signal read hosts.
+    let wsl = instance.root.path().join("bin/wsl.exe");
+    std::fs::write(
+        &wsl,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            instance.root.path().join("wsl.log").display()
+        ),
+    )
+    .expect("wsl.exe stand-in");
+    std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     let hosts = || -> thurbox::backend::BackendRegistry {
         panic!("a local signal built the registry of every host")
     };
-    let here = || routes.registry();
+    // What the binary's root hands down: this machine's adapters alone, with
+    // the probe serving the row's local route.
+    let here = || {
+        let mut registry = thurbox::backend::wiring::local_only();
+        registry.register(local_probe(), routes.local.clone());
+        registry
+    };
     let backends = thurbox::cli::Backends::lazy(&hosts).with_local(&here);
     cli(
         &db,
@@ -428,6 +446,11 @@ fn session_signal_on_a_local_row_builds_no_host_registry() {
         .find(|w| w.pane == pane)
         .expect("the row's window");
     assert_eq!(window.hook.as_deref(), Some("done"));
+    let asked = std::fs::read_to_string(instance.root.path().join("wsl.log")).unwrap_or_default();
+    assert!(
+        asked.is_empty(),
+        "a local signal discovered WSL hosts: {asked}"
+    );
 }
 
 /// Arming the heartbeat is a request to this machine's backend — the
