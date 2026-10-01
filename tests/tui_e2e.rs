@@ -2236,6 +2236,18 @@ fn osc52_payload(out: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A left press at a 0-based cell, `over` moves to the right and the release,
+/// as one run of SGR reports — what `drain_input` reads as a single batch.
+fn drag_gesture((x, y): (u16, u16), over: u16) -> Vec<u8> {
+    let (px, py) = (x + 1, y + 1);
+    let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
+    for cx in px + 1..=px + over {
+        seq.extend_from_slice(format!("\x1b[<32;{cx};{py}M").as_bytes());
+    }
+    seq.extend_from_slice(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+    seq
+}
+
 impl Tui {
     /// Where `needle` is painted, as a 0-based (column, row).
     ///
@@ -2273,13 +2285,8 @@ impl Tui {
     /// (press, `over` moves, release) is followed immediately by the chord
     /// byte, so a handler bound to the chord runs in the same batch as the drag
     /// that made the selection.
-    fn drag_then_chord(&mut self, (x, y): (u16, u16), over: u16, key: u8) {
-        let (px, py) = (x + 1, y + 1);
-        let mut seq = format!("\x1b[<0;{px};{py}M").into_bytes();
-        for cx in px + 1..=px + over {
-            seq.extend_from_slice(format!("\x1b[<32;{cx};{py}M").as_bytes());
-        }
-        seq.extend_from_slice(format!("\x1b[<0;{};{py}m", px + over).as_bytes());
+    fn drag_then_chord(&mut self, at: (u16, u16), over: u16, key: u8) {
+        let mut seq = drag_gesture(at, over);
         seq.push(key);
         self.send(&seq);
     }
@@ -2358,6 +2365,121 @@ impl Tui {
     }
 }
 
+/// A shell session whose settings turn copy-on-select off — the opt-out, under
+/// which a drag only selects and `Ctrl+C` is what copies.
+fn shell_session_without_copy_on_select() -> Option<(Profile, Tui)> {
+    shell_session_prepared(
+        |profile| {
+            let settings = profile.path("config/settings.toml");
+            let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
+            seeded.push_str("[clipboard]\ncopy_on_select = false\n");
+            std::fs::write(&settings, seeded).expect("seed settings");
+        },
+        |_| {},
+    )
+}
+
+#[test]
+fn a_drag_release_copies_by_default_and_ctrl_c_stays_the_interrupt() {
+    // Copy-on-select is on by default: releasing a drag is the copy, with no
+    // key pressed — the one copy gesture no emulator can intercept, which is
+    // what macOS needs when the terminal keeps Cmd+C for itself. `Ctrl+C`
+    // after it is never a second copy; it is the shell's interrupt.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+
+    // A bare click copies nothing.
+    let mark = tui.raw_len();
+    tui.drag(at, 0);
+    assert!(
+        !tui.raw_since(mark).contains(OSC52),
+        "a click is not a selection and must not copy"
+    );
+
+    // A drag and its release, and nothing else.
+    let mark = tui.raw_len();
+    tui.drag(at, 12);
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
+    assert_eq!(copied, "tb-select-me");
+
+    // The selection is still on screen, and `Ctrl+C` interrupts a command
+    // rather than copying it again.
+    tui.send(b"sleep 30 && echo tb-not-\"\"interrupted\r");
+    std::thread::sleep(Duration::from_millis(200));
+    let out = tui.ctrl_c_then("tb-after-copy");
+    assert!(
+        !out.contains(OSC52),
+        "Ctrl+C after a copy-on-select must be the interrupt; wrote:\n{out:?}"
+    );
+    assert!(!tui.frame().contains("tb-not-interrupted"));
+
+    // Wide characters copy byte for byte: no space inside `漢字`. Printed
+    // from octal escapes so the line editor never sees a multi-byte key.
+    tui.send(b"printf 'tbw\\346\\274\\242\\345\\255\\227-\\303\\251-end\\n'\r");
+    tui.wait_for("tbw漢字-é-end");
+    let at = tui.find("tbw漢字-é-end");
+    let mark = tui.raw_len();
+    // 3 + 2×2 + 1 + 1 + 4 = 13 cells, so the release lands 12 to the right.
+    tui.drag(at, 12);
+    tui.wait_for_output_since(mark, "the copy of the wide line");
+    tui.wait_until_quiet();
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence for the wide line"));
+    assert_eq!(copied, "tbw漢字-é-end");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_key_right_behind_a_release_does_not_cancel_its_copy() {
+    // A terminal's selection is read off its grid, so the release can copy at
+    // once. Waiting for the next paint instead lost the copy to a key queued in
+    // the same batch: the key drops the selection before that paint runs.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"echo tb-select-\"\"me\r");
+    tui.wait_for("tb-select-me");
+    let at = tui.find("tb-select-me");
+    let mark = tui.raw_len();
+    tui.drag_then_chord(at, 11, b':');
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
+    assert_eq!(copied, "tb-select-me");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+#[test]
+fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
+    // A pane that is not a terminal has no grid: its text is read off the
+    // painted frame. A drag whose every report lands in one input batch has had
+    // no paint by its release, so a copy made there would carry the text of the
+    // last paint (none) instead of the selection now highlighted.
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mark = tui.raw_len();
+    let at = tui.find("── repo");
+    tui.send(&drag_gesture(at, 6));
+    tui.wait_for("copied 1 line(s)");
+    let copied = osc52_payload(&tui.raw_since(mark))
+        .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
+    assert_eq!(copied, "── repo");
+
+    let status = tui.quit();
+    assert!(status.success(), "exit must be clean: {status:?}");
+}
+
 #[test]
 fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     // Clicking into a terminal is how it is focused, and the press used to
@@ -2367,7 +2489,10 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
     // reached the shell as the interrupt it was. v1's rule, restored here: a
     // press that never moved is a click, and a selection is only what was
     // dragged over.
-    let Some((_profile, mut tui)) = shell_session() else {
+    //
+    // Run with copy-on-select turned off, which is where `Ctrl+C` is still
+    // the copy chord — the opt-out has to keep that working.
+    let Some((_profile, mut tui)) = shell_session_without_copy_on_select() else {
         return;
     };
     tui.send(b"echo tb-select-\"\"me\r");
@@ -2389,7 +2514,12 @@ fn a_click_is_not_a_selection_so_ctrl_c_still_interrupts_the_shell() {
 
     // A drag is a selection, and the chord copies exactly what was dragged
     // over — as OSC 52, since a headless pty has no native clipboard.
+    let released = tui.raw_len();
     tui.drag(at, 12);
+    assert!(
+        !tui.raw_since(released).contains(OSC52),
+        "with copy_on_select = false a release must only select"
+    );
     let mark = tui.raw_len();
     tui.send(b"\x03");
     tui.wait_for("copied 1 line(s)");

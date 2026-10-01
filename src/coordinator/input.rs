@@ -129,6 +129,11 @@ impl App {
                             | MouseEventKind::Drag(MouseButton::Left)
                             | MouseEventKind::Up(MouseButton::Left)
                     );
+                    // A release that ends a drag still in progress — not one
+                    // forwarded to a pty, and not a second release of a
+                    // selection already finished.
+                    let ends_drag = mouse.kind == MouseEventKind::Up(MouseButton::Left)
+                        && self.selection.as_ref().is_some_and(|s| s.dragging);
                     self.on_mouse(mouse);
                     // The drag builds the selection here, but `selected_text` is
                     // only recomputed at paint time — so a chord queued behind it
@@ -141,6 +146,24 @@ impl App {
                     if may_move_selection && self.refresh_selection_text() {
                         self.host
                             .set_published_selection(self.selected_text.as_deref().unwrap_or(""));
+                    }
+                    // `on_mouse` has already dropped a release that never
+                    // moved, so a click reaches here with no selection. A
+                    // terminal's text came off its grid in the refresh above, so
+                    // it is copied now, before a key queued behind the release
+                    // can drop it; any other pane's text exists only once the
+                    // next paint has read it.
+                    if ends_drag {
+                        match self.selection.clone() {
+                            Some(sel) if self.grid_selection_text(&sel).is_some() => {
+                                self.copy_on_select();
+                            }
+                            Some(_) => {
+                                self.copy_after_paint = true;
+                                self.dirty = true;
+                            }
+                            None => {}
+                        }
                     }
                     self.note_input();
                 }
@@ -188,7 +211,14 @@ impl App {
         // selection is for; it clears it itself once the copy is made. Asked of
         // the registry rather than matched literally, so the exception follows a
         // rebound copy instead of staying on `Ctrl+C`.
-        let is_copy = kernel_action.as_deref() == Some(clipboard::COPY_ACTION);
+        //
+        // Under copy-on-select the release already copied, so the chord is no
+        // exception: it clears the selection like any key, finds none, and
+        // falls through as the interrupt (Herdr's rule).
+        let is_copy = kernel_action.as_deref() == Some(clipboard::COPY_ACTION)
+            && !thurbox::session::settings::global()
+                .clipboard
+                .copy_on_select;
         if !is_copy && self.selection.take().is_some() {
             self.dirty = true;
         }

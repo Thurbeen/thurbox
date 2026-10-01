@@ -103,7 +103,7 @@ config_version = 1
 # min_interval_secs = 5         # per-session dedup floor (seconds)
 # backend = "auto"              # delivery backend: auto | dbus | windows | off
 
-# Clipboard transport for copy (Ctrl+C). `auto` writes to the local clipboard
+# Clipboard transport for copy. `auto` writes to the local clipboard
 # when one is reachable and otherwise emits an OSC 52 escape sequence, which
 # your *terminal emulator* turns into a clipboard write — so copy works over
 # SSH, including nested SSH, with no setup on either end. Force `native` if
@@ -111,8 +111,14 @@ config_version = 1
 # looking at, or `none` to disable copy. Pasting never uses OSC 52 (terminals
 # disable clipboard reads for security) — over SSH use your terminal's own
 # paste, usually Ctrl+Shift+V.
+#
+# Releasing a mouse drag copies the selection (copy-on-select), so copying
+# needs no key — the reliable copy on macOS, where the terminal may keep Cmd+C.
+# While it is on, Ctrl+C is always the interrupt. Set it to false to make a drag
+# only select and Ctrl+C copy the selection instead.
 # [clipboard]
 # provider = "auto"             # auto | native | osc52 | none
+# copy_on_select = true
 
 # Sessions on remote hosts (hosts.toml). A shareable host lists its own
 # sessions and, when it mirrors hosts of its own, theirs too. Those transitive

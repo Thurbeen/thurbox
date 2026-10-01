@@ -2986,14 +2986,32 @@ confined to the active pane bounds.
   moves is a click, not a selection — so clicking into a shell to
   focus it leaves `Ctrl+C` as the shell's interrupt — and any key
   press or wheel tick drops a selection (the key still does its job).
+- **Copy on select** (`[clipboard] copy_on_select`, on by default):
+  releasing a drag copies the selection, with no key pressed — as
+  Herdr, Zellij and WezTerm do. It is the one copy gesture no
+  terminal emulator can intercept, which is what makes copying work
+  on macOS where the emulator keeps `Cmd+C` for itself. A click
+  copies nothing, a selection of only blanks copies nothing, and
+  `provider = "none"` turns it off with the rest of copying (silently:
+  a drag is not a request for a toast). The highlight **stays** after
+  the copy, so you see what was copied and a pane reading
+  `thurbox.selection` still has it; the next key, click or wheel tick
+  drops it. Herdr clears it instead — keeping it costs nothing,
+  because `Ctrl+C` no longer copies (next bullet). Every drag
+  replaces the clipboard; set `copy_on_select = false` if that is not
+  what you want.
 - **`Shift`+drag**: Bypasses thurbox entirely and uses your
   **terminal's own** selection. Most emulators reserve Shift for this
   while an application holds the mouse; use it when you want the
   terminal's native copy behaviour (including its own clipboard
   integration) instead of thurbox's.
-- **`Ctrl+C`** (with active selection): Copies the selection. See
-  the transport section below.
-- **`Ctrl+C`** (no selection): Forwarded to the terminal as SIGINT.
+- **`Ctrl+C`** with copy-on-select on: always forwarded to the
+  terminal as SIGINT. The release already copied, so the chord drops
+  the selection like any other key and is the interrupt (Herdr's
+  rule).
+- **`Ctrl+C`** with `copy_on_select = false`: copies an active
+  selection (see the transport section below); with no selection it
+  is forwarded to the terminal as SIGINT.
 - **`Ctrl+V`**: Pastes from the local clipboard. When a modal text
   input (worktree/session name, repo-picker path or search,
   automation editor) or an in-pane editor (task/automation) is
@@ -3011,23 +3029,51 @@ confined to the active pane bounds.
 - **`Ctrl+Shift+V`** (your terminal's paste): the way to paste when
   thurbox runs over SSH — see "Pasting over SSH" below.
 - **`Cmd+C` / `Cmd+V`** (macOS): the same two actions, declared beside the
-  Ctrl pair because `Ctrl+C` in a terminal means interrupt. They arrive only
-  under the kitty keyboard protocol (iTerm2 3.5+, kitty, WezTerm, Ghostty),
-  which thurbox pushes at startup; Terminal.app delivers no Cmd chord. The
-  **emulator still gets the chord first**: one that copies its own selection
-  on `Cmd+C` and swallows the key when it has none never lets thurbox see it —
-  and with thurbox holding the mouse, the emulator's selection is usually
-  empty. Emulators that forward a shortcut they did not perform (Ghostty's
-  `performable:` keybinds) pass it through; elsewhere, unmap the emulator's
-  own `Cmd+C` (thurbox's copy writes the *system* clipboard, so nothing is
-  lost by doing so), or use `Ctrl+C`.
+  Ctrl pair because `Ctrl+C` in a terminal means interrupt — see *Copying
+  on macOS* below for which emulators let them through.
 - **Both pairs are ordinary bindings** (`kernel::clipboard`), listed in `F1`
   and rebindable — they were literal key arms in the loop, matched ahead of the
   registry, which is why help used to list them as *Fixed*.
 - Any other keypress clears the selection.
 
-Selection is highlighted in the terminal render buffer using
-inverted colors.
+Selection is highlighted in the terminal render buffer in the theme's
+selection colours.
+
+### Copying on macOS
+
+Copy-on-select is the reliable path, because the emulator sees every
+key before thurbox does and a Cmd chord reaches thurbox only when the
+emulator lets it through. These were read from each emulator's source,
+not checked on a Mac:
+
+- **Cmd chords need the kitty keyboard protocol.** thurbox pushes it
+  at startup; Terminal.app has none and delivers no Cmd chord.
+- **Ghostty** binds `performable:super+c=copy_to_clipboard`: with no
+  selection of its own (the usual case, since thurbox holds the mouse)
+  it acts as if the key were unbound and forwards it, so thurbox's
+  `Cmd+C` works.
+- **kitty** binds `cmd+c` to `copy_or_noop`, which passes the key
+  through when kitty has no selection, so thurbox's `Cmd+C` works.
+- **WezTerm** binds `SUPER+c` to `CopyTo(Clipboard)` and consumes the
+  key whether or not it has a selection, and leaves the kitty keyboard
+  protocol off by default. thurbox never sees the chord, and pressing
+  it can overwrite the clipboard copy-on-select just filled with
+  WezTerm's own empty selection. To hand `Cmd+C` to thurbox, add to
+  `wezterm.lua`:
+
+  ```lua
+  config.enable_kitty_keyboard = true
+  config.keys = {
+    { key = 'c', mods = 'CMD', action = wezterm.action.DisableDefaultAssignment },
+  }
+  ```
+
+- **iTerm2 and Terminal.app** keep `Cmd+C` as a menu shortcut.
+- **`Cmd+V` usually never arrives as a key.** The emulator pastes on
+  its own and thurbox receives the text as a bracketed paste
+  (`Event::Paste`), routed exactly as `Ctrl+V` is. Because no key
+  arrives, an image-only clipboard does nothing on `Cmd+V`; `Ctrl+V`
+  is the chord that hands an image to the agent.
 
 ### What gets copied
 
@@ -3043,7 +3089,10 @@ session's vt100 grid rather than the painted cells
   code line pastes intact.
 
 Trailing whitespace is trimmed per logical line; interior spacing is
-preserved so column alignment survives. Other panes (session list,
+preserved so column alignment survives. A wide character (CJK, most
+emoji) fills two cells, and the second is a continuation the grid
+leaves empty; it is skipped, so `漢字` copies as typed rather than
+with a space inside it. Real spaces and combining marks are kept. Other panes (session list,
 info panel) have no grid behind them and are read from the frame
 buffer as before.
 

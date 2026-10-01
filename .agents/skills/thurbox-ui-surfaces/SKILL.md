@@ -28,7 +28,7 @@ Global chords (kernel-owned):
 | `F1` / `Ctrl+G` | Keybindings help |
 | `F10` | Reload the interface from disk |
 | `F12` | Perf HUD |
-| `Ctrl+C` / `Ctrl+V` (+ `Cmd+C` / `Cmd+V` on macOS) | Copy the selection / paste |
+| `Ctrl+C` / `Ctrl+V` (+ `Cmd+C` / `Cmd+V` on macOS) | Copy the selection / paste — copy only with `[clipboard] copy_on_select = false`; by default a drag's release copies and `Ctrl+C` is the interrupt |
 
 Everything else belongs to a plugin and is listed in `F1`. Rebindings persist to
 `ui.json` beside trust and the disabled set — a *user decision*, distinct from the

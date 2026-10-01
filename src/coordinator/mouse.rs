@@ -16,6 +16,8 @@ use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::node::{ClickVerb, Identity};
 use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
+use thurbox::session::settings::ClipboardProvider;
+
 use super::{key_event_from_chord, open_url};
 use crate::{App, ClickTarget, PointerGrab};
 
@@ -36,6 +38,9 @@ impl App {
                 // otherwise. `on_click` re-arms it when this press is itself
                 // forwarded.
                 self.pty_pointer = None;
+                // And it starts a new gesture before the last one's copy was
+                // made: that copy would read whatever this press selects.
+                self.copy_after_paint = false;
                 self.on_click(mouse.column, mouse.row, mouse.modifiers)
             }
             // The other press a pane can be taught to answer. Nothing else in
@@ -695,6 +700,32 @@ impl App {
         };
     }
 
+    /// Copy a released drag, when `[clipboard] copy_on_select` is on.
+    ///
+    /// Run at the release for a terminal, whose text the grid gives at once,
+    /// and after the next paint for any other pane (`copy_after_paint`), whose
+    /// text only that paint reads. In the second case a key in between has
+    /// already dropped the selection and taken the gesture, so nothing is
+    /// copied. Silent when there is nothing to copy or `provider = "none"` turned
+    /// copying off: a drag is not a request for a toast the way a key is.
+    /// The selection stays highlighted — it shows what was copied, and a pane
+    /// reading `thurbox.selection` still sees it — until the next key, click
+    /// or wheel tick drops it; `on_key` keeps `Ctrl+C` from copying it twice.
+    pub(crate) fn copy_on_select(&mut self) {
+        let settings = thurbox::session::settings::global().clipboard;
+        if !settings.copy_on_select || settings.provider == ClipboardProvider::None {
+            return;
+        }
+        let Some(text) = self.selected_text.clone().filter(|t| !t.trim().is_empty()) else {
+            return;
+        };
+        let message = copy_message(
+            &text,
+            thurbox::clipboard::copy(&text, self.clipboard.as_mut(), settings.provider),
+        );
+        self.toast(message);
+    }
+
     /// Copy the selection to the clipboard.
     ///
     /// Only the selection: there is deliberately no fall-back to the whole
@@ -713,14 +744,7 @@ impl App {
                     self.clipboard.as_mut(),
                     thurbox::session::settings::global().clipboard.provider,
                 );
-                match outcome {
-                    Ok(route) => format!(
-                        "copied {} line(s){}",
-                        text.lines().count(),
-                        route.toast_suffix()
-                    ),
-                    Err(e) => format!("copy failed: {e}"),
-                }
+                copy_message(&text, outcome)
             }
             _ => "nothing to copy".to_string(),
         };
@@ -1033,6 +1057,21 @@ impl ClickTrain {
             clicks,
         });
         clicks
+    }
+}
+
+/// The toast a selection copy reports.
+fn copy_message(
+    text: &str,
+    outcome: Result<thurbox::clipboard::CopyRoute, thurbox::clipboard::CopyError>,
+) -> String {
+    match outcome {
+        Ok(route) => format!(
+            "copied {} line(s){}",
+            text.lines().count(),
+            route.toast_suffix()
+        ),
+        Err(e) => format!("copy failed: {e}"),
     }
 }
 

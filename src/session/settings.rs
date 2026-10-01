@@ -70,7 +70,8 @@ pub struct Settings {
     /// per-session dedup).
     #[serde(default)]
     pub notifications: NotificationSettings,
-    /// Clipboard transport settings (`[clipboard]` table). Absent = `auto`.
+    /// Clipboard settings (`[clipboard]` table). Absent = `auto` transport,
+    /// copy-on-select on.
     #[serde(default)]
     pub clipboard: ClipboardSettings,
     /// Remote-host settings (`[remote]` table).
@@ -214,11 +215,28 @@ pub enum ClipboardProvider {
 }
 
 /// Clipboard settings (`[clipboard]` in settings.toml).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipboardSettings {
     /// Transport selection. See [`ClipboardProvider`].
     #[serde(default)]
     pub provider: ClipboardProvider,
+    /// Copy a mouse selection when the drag is released, with no key pressed.
+    ///
+    /// On by default, as in Herdr, Zellij and WezTerm: it is the one copy no
+    /// terminal emulator can intercept, which is what macOS needs where the
+    /// terminal keeps `Cmd+C` for itself. While it is on, `Ctrl+C` is always
+    /// the interrupt; turned off, `Ctrl+C` copies a selection instead.
+    #[serde(default = "default_true")]
+    pub copy_on_select: bool,
+}
+
+impl Default for ClipboardSettings {
+    fn default() -> Self {
+        Self {
+            provider: ClipboardProvider::default(),
+            copy_on_select: true,
+        }
+    }
 }
 
 /// How `Ctrl+O` launches the editor (the DB `editor_mode` key, set via
@@ -428,6 +446,17 @@ mod tests {
         assert_eq!(s.two_panel_min_cols, 80);
         assert_eq!(s.three_panel_min_cols, 120);
         assert_eq!(s.audit_retention_days, 90);
+    }
+
+    #[test]
+    fn copy_on_select_is_on_unless_turned_off() {
+        let s: Settings = toml::from_str("").unwrap();
+        assert!(s.clipboard.copy_on_select);
+        let s: Settings = toml::from_str("[clipboard]\nprovider = \"osc52\"").unwrap();
+        assert!(s.clipboard.copy_on_select);
+        let s: Settings = toml::from_str("[clipboard]\ncopy_on_select = false").unwrap();
+        assert!(!s.clipboard.copy_on_select);
+        assert_eq!(s.clipboard.provider, ClipboardProvider::Auto);
     }
 
     #[test]
