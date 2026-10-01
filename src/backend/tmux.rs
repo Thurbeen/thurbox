@@ -56,7 +56,21 @@ impl TmuxCompatible for Tmux {
     const DISPLAY_FLAGS: &'static [&'static str] = &[PANE_STATE_UTF8_FLAG];
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
+    /// The tmux floor, and never psmux under tmux's name: psmux installs a
+    /// `tmux` alias, and from 3.3.7 its banner says what it is. Driven as tmux
+    /// it is told `-s` and `-H` and waited on for an attach reply it never
+    /// sends. A psmux 3.3.6 prints only `tmux 3.3.6` and cannot be told apart
+    /// here.
     fn check_banner(banner: &str) -> Result<()> {
+        if banner
+            .lines()
+            .any(|line| line.trim_start().starts_with("psmux "))
+        {
+            bail!(
+                "this `tmux` is psmux ({}); choose the psmux multiplexer for it",
+                banner.trim().replace('\n', ", ")
+            );
+        }
         check_min_version(banner)
     }
 
@@ -292,6 +306,19 @@ mod tests {
     #[test]
     fn parse_tmux_version_rejects_garbage() {
         assert!(parse_tmux_version("not a version").is_err());
+    }
+
+    /// psmux installs a `tmux` alias, so the tmux adapter on a Windows
+    /// machine can reach psmux under tmux's name — and drive it with tmux's
+    /// grammar (`-s`, `-H`, an attach reply psmux never sends: the #1168 hang).
+    /// A banner that says psmux is refused instead.
+    #[test]
+    fn a_psmux_answering_as_tmux_is_refused() {
+        let err = Tmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux"), "{err}");
+        assert!(Tmux::check_banner("tmux 3.5a\n").is_ok());
     }
 
     #[test]

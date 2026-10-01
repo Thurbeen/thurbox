@@ -1082,8 +1082,10 @@ impl<M: TmuxCompatible> Server<M> {
             // No session to ask for `#{version}` yet, and creating one may start
             // a server — with an idle shell in it — that every spawn would then
             // refuse. The binary is what would start it, so it answers instead.
+            let banner = self.tmux_output(&["-V"])?;
+            M::check_banner(&banner)?;
             if let Some(refuse_old) = M::VERSION_FLOOR {
-                refuse_old(&self.tmux_output(&["-V"])?, &self.socket())?;
+                refuse_old(&banner, &self.socket())?;
             }
             debug!(
                 "Creating tmux session '{}' on socket '{}'",
@@ -2683,6 +2685,13 @@ fn ensure_default_session() -> Result<()> {
     .map_err(|e| transport.launch_failure("Failed to run tmux command", e))?;
     if !out.status.success() && !exists() {
         bail!("tmux new-session (heartbeat) {}", mux_failure(&out));
+    }
+    // As a backend waits after creating one (`ensure_session_configured`): a
+    // server whose `new-session -d` returns before the session answers would
+    // refuse the keeper's `new-window`.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     Ok(())
 }

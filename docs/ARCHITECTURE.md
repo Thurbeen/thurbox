@@ -1663,7 +1663,7 @@ created from afar, and the psmux hooks-rewrite gate (ADR-13) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
-tmux hosts because `session signal` also sets the pane option (`backend::tmux::
+tmux hosts because `session signal` also sets the pane option (`backend::tmux_compat::server::
 set_own_pane_state`). A fork — which resumes the parent's conversation in the
 parent's checkout, two facts the host's `create` does not take — stays on the
 legacy path and is registered on the host by `session sync --adopt`, as is
@@ -1774,7 +1774,7 @@ follow from the host owning the record, none of which the first cut had:
   passes a remote command's status through untouched (a remote `exit 7` exits
   7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
-  (`backend::tmux::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  (`backend::tmux_compat::server::listing_is_absence`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
   can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
   deliberately its own answer rather than being rounded to the nearest of the
@@ -1919,9 +1919,9 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `backend::tmux::retire_duplicate_windows` runs after every local stamp
+  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every local stamp
   (the headless `create_window`, whose stamp rides in `new-window`'s own
-  command list, and `TmuxBackend::stamp_window` for the interface's own spawn,
+  command list, and `stamp_window` for the interface's own spawn,
   an adopt, a restore and a `session register`) and **the highest window id
   keeps the identity**.
   Not "the window I just made": both racers run the sweep, so "mine wins" has
