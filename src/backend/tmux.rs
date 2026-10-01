@@ -76,28 +76,24 @@ impl TmuxCompatible for Tmux {
 
     fn session_config(session: &str) -> Vec<ConfigOption> {
         let mut config = Vec::new();
-        // The two silent gates that would otherwise drop an OSC 52 clipboard
-        // write originating **inside** a pane (thurbox's own copy, or an
-        // agent's). Both are no-ops-on-failure by design, hence best-effort:
+        // An app's OSC 52 copy does not need tmux: control mode hands thurbox
+        // the raw bytes in `%output` whatever `set-clipboard` says, and thurbox
+        // puts the focused pane's write on the user's clipboard itself
+        // (`TermSignals::copy_to_clipboard`). tmux never sends a control-mode
+        // client a selection, so `set-clipboard on` never delivered one here.
         //
-        // 1. `set-clipboard` must be exactly `on`. tmux's `input_osc_52_parse`
-        //    bails on `!= 2`, and the shipped default is `external` (1) — which
-        //    forwards tmux's *own* copy-mode yanks but **discards** an
-        //    application's OSC 52 with no error and no visual artifact. This is
-        //    the default-broken case: without it every other part of the
-        //    clipboard path is dead under tmux.
-        // 2. The `Ms` terminfo capability must be present, or
-        //    `tty_set_selection` returns early — a second, independent silent
-        //    drop. A `*:clipboard` entry in `terminal-features` injects it for
-        //    every terminal (tmux 3.2+, matching thurbox's floor; the pre-3.2
-        //    form was a raw `terminal-overrides` Ms= string). Written at the end
-        //    of the list, below.
-        //
-        // Security tradeoff: `set-clipboard on` lets any process in a pane set
-        // the user's system clipboard — an exfiltration channel, and why tmux
-        // moved the default to `external` in 2.6. Scoped here to thurbox's own
-        // socket, and the price of copy working at all over SSH.
-        config.push(ConfigOption::set(&["-s", "set-clipboard", "on"], false));
+        // What `on` did do was make tmux parse the write: keep it as a paste
+        // buffer, and answer every app's OSC 52 *read* (`?`) with the newest
+        // one — so an app in one session could read what an app in another had
+        // copied, local or on a remote host. `get-clipboard off` stops the
+        // answer only on tmux 3.7+; `external` stops tmux handling an app's
+        // OSC 52 at all on every tmux from the 3.2 floor up, and still
+        // forwards tmux's own copy-mode yanks to a terminal attached directly
+        // (which is what the `*:clipboard` feature below is for).
+        config.push(ConfigOption::set(
+            &["-s", "set-clipboard", "external"],
+            false,
+        ));
 
         // Apps inside tmux can inspect this option before deciding whether to
         // request mouse reports. With it off, a full-screen app may leave wheel

@@ -3135,20 +3135,41 @@ over ~74 KB skips OSC 52 — tmux discards an oversized sequence
 **entirely** — and is an error only when the native write did not
 carry it either.
 
-thurbox sets `set-clipboard on` and a `*:clipboard` entry in
-`terminal-features` on its own tmux server (the tmux adapter's `Tmux::session_config`).
-The entry is written at a fixed index (`terminal-features[100]`), and only
-while that slot is empty, rather than appended: the config is re-applied on
-every spawn and the server outlives thurbox, so appending grew the list by one
-duplicate a run (#1278), and a slot your `~/.tmux.conf` already set is yours.
-Duplicates an older thurbox left are not removed; they are harmless and go
-with the server. Both
-are required: tmux's default `set-clipboard external` **silently
-discards** an OSC 52 originating inside a pane, and a missing `Ms`
-terminfo capability drops it again at a second gate. Note the
-tradeoff — `set-clipboard on` lets any process in a pane write your
-system clipboard, which is why tmux's own default is more
-conservative.
+### Copies an app makes (OSC 52)
+
+An app inside a session — an agent's `/copy`, Neovim's OSC 52 provider,
+lazygit — copies by printing OSC 52 into its pane. thurbox reads every
+pane's output itself (tmux control mode hands it the raw bytes, and never
+hands a control-mode client a selection), so it is the process that puts
+that copy on your clipboard, through the same native → OSC 52 path as
+`Ctrl+C`, with an `app copied N line(s)` toast.
+
+Only the **focused** session may do it — the pane your keystrokes go to,
+and not while a modal, a float or a field has the keys instead. If an app
+writes several times between two frames, the newest valid copy wins.
+A session working off screen, local or on a remote host, cannot replace
+what you just copied, and a write it made while hidden is not released
+when you bring it forward: the clipboard belongs to the machine you sit
+at, not to whatever host an agent runs on. A write is ignored unless it
+targets the clipboard (`c`), is valid base64, decodes to non-empty UTF-8
+text, and fits in one OSC 52 (~74 KB). A focused program pane a plugin
+opened is not a session and does not write the clipboard either.
+
+No app can **read** the clipboard. thurbox never answers an OSC 52 `?`,
+and it sets `set-clipboard external` on its own tmux server
+(the tmux adapter's `Tmux::session_config`) so tmux does not either. Under `on`, tmux
+kept every app's copy as a paste buffer and answered any app's read with
+the newest one, so a session could read what another had copied;
+`get-clipboard off` only exists from tmux 3.7, and `external` closes it
+on every tmux from the 3.2 floor up. `external` still forwards tmux's own
+copy-mode yanks to a terminal attached to the server directly, which is
+what the `*:clipboard` entry in `terminal-features` is for. That entry is
+written at a fixed index (`terminal-features[100]`), and only while that
+slot is empty, rather than appended: the config is re-applied on every
+spawn and the server outlives thurbox, so appending grew the list by one
+duplicate a run (#1278), and a slot your `~/.tmux.conf` already set is
+yours. Duplicates an older thurbox left are not removed; they are
+harmless and go with the server.
 
 ### What a terminal receives from a paste
 

@@ -128,14 +128,35 @@ impl std::fmt::Display for CopyError {
 /// multiplexers. (crossterm's own `CopyToClipboard` hardcodes ST, which is why
 /// this is spelled out here rather than delegated to it.)
 ///
-/// Emitted raw, *not* wrapped in tmux's DCS passthrough: the raw form is
-/// handled by tmux's own OSC 52 handler, which also keeps its paste buffer in
-/// sync, and needs only `set-clipboard on` (which thurbox sets on its own
-/// server — see `Tmux::session_config` in `backend::tmux`). The DCS form would
-/// instead require `allow-passthrough`, which is off by default.
+/// Emitted raw, *not* wrapped in tmux's DCS passthrough. This goes to the
+/// terminal thurbox itself runs in, never into thurbox's own tmux server; when
+/// that terminal is a tmux of the user's, the raw form is handled by its OSC 52
+/// handler, which needs `set-clipboard on` in *their* config, while the DCS
+/// form would instead require `allow-passthrough`, which is off by default.
 pub fn osc52_sequence(text: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     format!("\x1b]52;c;{encoded}\x07")
+}
+
+/// The text an app's OSC 52 write carries, if it is one thurbox puts on the
+/// user's clipboard: aimed at the clipboard (`c`, not only the primary
+/// selection or a cut buffer), valid base64, UTF-8 text, not empty — an
+/// empty write would wipe the clipboard, which no app means by a copy — and
+/// small enough to reach the outer terminal whole ([`OSC52_MAX_BYTES`]).
+///
+/// The size is checked on the encoded form first, so an oversized payload is
+/// refused without decoding it.
+pub fn app_copy_text(target: &[u8], data: &[u8]) -> Option<String> {
+    if !target.contains(&b'c') || data.is_empty() || data.len() > OSC52_MAX_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() > OSC52_MAX_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Write an OSC 52 sequence for `text` to the controlling terminal.
@@ -903,5 +924,31 @@ mod tests {
         let huge = "x".repeat(OSC52_MAX_BYTES + 1);
         let err = copy(&huge, None, ClipboardProvider::Auto).unwrap_err();
         assert!(matches!(err, CopyError::TooLarge { .. }));
+    }
+
+    #[test]
+    fn an_app_copy_is_clipboard_targeted_utf8_text_that_fits_one_osc52() {
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        assert_eq!(
+            app_copy_text(b"c", b64("é漢".as_bytes()).as_bytes()).as_deref(),
+            Some("é漢")
+        );
+        assert_eq!(
+            app_copy_text(b"pc", b64(b"x").as_bytes()).as_deref(),
+            Some("x")
+        );
+        assert_eq!(app_copy_text(b"p", b64(b"x").as_bytes()), None);
+        assert_eq!(app_copy_text(b"", b64(b"x").as_bytes()), None);
+        assert_eq!(app_copy_text(b"c", b""), None);
+        assert_eq!(app_copy_text(b"c", b"abc"), None);
+        assert_eq!(app_copy_text(b"c", b64(b"\xff\xfe").as_bytes()), None);
+
+        let fits = "a".repeat(OSC52_MAX_BYTES);
+        assert_eq!(
+            app_copy_text(b"c", b64(fits.as_bytes()).as_bytes()),
+            Some(fits)
+        );
+        let over = "a".repeat(OSC52_MAX_BYTES + 1);
+        assert_eq!(app_copy_text(b"c", b64(over.as_bytes()).as_bytes()), None);
     }
 }
