@@ -2590,7 +2590,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         args: &[String],
         every: std::time::Duration,
     ) -> Result<()> {
-        if self.heartbeat_running()? {
+        // A probe nobody answered is not a reason to stop arming: readying the
+        // session below either starts the server or fails with its own error.
+        if self.heartbeat_running().unwrap_or(false) {
             return Ok(());
         }
         self.ensure_heartbeat_session()?;
