@@ -18,7 +18,7 @@ bats extensions/*/scripts/*.bats      # Test the extensions' shell scripts
 just test-scripts                     # Both of the above, the way CI runs them
 ```
 
-`tests/doc_references.rs` keeps the documents honest about each other: every
+`tests/doc_references.rs` keeps the tracked documents honest about each other: every
 relative Markdown link, every `docs/<NAME>.md` and `.agents/skills/<name>` path
 and every `github.com/Thurbeen/thurbox/blob/main/…` link names a file that
 exists, and the names in its `RETIRED` table appear nowhere. Rename a document

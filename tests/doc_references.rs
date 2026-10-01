@@ -4,8 +4,8 @@
 //! A renamed document leaves its old name behind in every file that cited it,
 //! and nothing else notices: a Markdown link to a missing file still renders,
 //! a backticked `docs/X.md` is only text, and a skill naming a symbol that was
-//! deleted reads as authoritative. This walks every tracked-looking text file
-//! and fails on:
+//! deleted reads as authoritative. This reads every tracked text file and
+//! fails on:
 //!
 //! - a relative Markdown link whose target does not exist;
 //! - a `docs/<NAME>.md` or `.agents/skills/<name>` path that does not exist,
@@ -38,17 +38,22 @@ const RETIRED: &[(&str, &str)] = &[
     ("RemoteSignalTarget", "SessionBackend::hook_signal_command"),
 ];
 
-/// Directories never walked: build output, dependencies, fixtures that are
-/// deliberately old or broken, and `.claude/skills`, whose entries are links
-/// into `.agents/skills` (walked under that name).
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "_site",
-    ".direnv",
-    ".lavish",
-    ".claude",
+/// Tracked paths never read: fixtures that are deliberately old or broken,
+/// and `.claude/skills`, whose entries are links into `.agents/skills` (read
+/// under that name).
+const SKIP_PREFIXES: &[&str] = &["tests/fixtures/", ".claude/"];
+
+/// The location variables git exports to hook processes: a suite run from
+/// this repository's own pre-commit hook would otherwise ask another index.
+const GIT_LOCATION_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
 ];
 
 const TEXT_EXTENSIONS: &[&str] = &[
@@ -61,47 +66,52 @@ const TEXT_EXTENSIONS: &[&str] = &[
 /// another tree, and a lowercase `docs/notes.md` is a demo repository's.
 const DOC_PATH: &str = r"(?:^|[^\w.~/-])(docs/[A-Z][A-Z0-9_-]*\.md|\.agents/skills/[a-z0-9-]+)";
 
+/// A Markdown inline link's target: up to whitespace, a fragment or the
+/// closing parenthesis, whatever title follows it.
+const MD_LINK: &str = r"\]\(([^)\s#]+)[^)]*\)";
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            let fixtures = name == "fixtures" && dir.ends_with("tests");
-            if !SKIP_DIRS.contains(&name.as_ref()) && !fixtures {
-                walk(&path, found);
-            }
-        } else if name == "justfile"
-            || path
-                .extension()
-                .is_some_and(|ext| TEXT_EXTENSIONS.contains(&ext.to_string_lossy().as_ref()))
-        {
-            found.push(path);
-        }
+/// The tracked files, relative to the root. Tracked rather than walked, so a
+/// scratch file or build output in an ignored directory cannot fail the suite.
+fn tracked() -> Vec<String> {
+    let mut git = std::process::Command::new("git");
+    git.args(["ls-files", "-z"]).current_dir(root());
+    for var in GIT_LOCATION_ENV {
+        git.env_remove(var);
     }
+    let out = git.output().expect("run git ls-files");
+    assert!(
+        out.status.success(),
+        "git ls-files failed — this test reads a git checkout: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .expect("utf-8 paths")
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Every text file but this one, whose examples are the stale references the
 /// checks look for, as (path relative to the root, contents).
 fn texts() -> Vec<(String, String)> {
-    let root = root();
-    let this = root.join(file!());
-    let mut files = Vec::new();
-    walk(&root, &mut files);
-    files.sort();
-    files
+    let this = file!().replace('\\', "/");
+    tracked()
         .into_iter()
-        .filter(|path| *path != this)
-        .filter_map(|path| {
-            let text = std::fs::read_to_string(&path).ok()?;
-            let rel = path.strip_prefix(&root).ok()?.display().to_string();
+        .filter(|rel| *rel != this && !SKIP_PREFIXES.iter().any(|skip| rel.starts_with(skip)))
+        .filter(|rel| {
+            let path = Path::new(rel);
+            rel == "justfile"
+                || path
+                    .extension()
+                    .is_some_and(|ext| TEXT_EXTENSIONS.contains(&ext.to_string_lossy().as_ref()))
+        })
+        .filter_map(|rel| {
+            let text = std::fs::read_to_string(root().join(&rel)).ok()?;
             Some((rel, text))
         })
         .collect()
@@ -113,7 +123,7 @@ fn line_of(text: &str, offset: usize) -> usize {
 
 #[test]
 fn every_relative_markdown_link_resolves() {
-    let link = Regex::new(r"\]\(([^)\s#]+)(?:#[^)]*)?\)").unwrap();
+    let link = Regex::new(MD_LINK).unwrap();
     let mut broken = Vec::new();
     for (rel, text) in texts().iter().filter(|(rel, _)| rel.ends_with(".md")) {
         let dir = root().join(rel);
@@ -198,4 +208,11 @@ fn the_patterns_catch_what_they_are_for() {
     assert!(hits("~/.agents/skills/thurbox-ui/SKILL.md").is_empty());
     assert!(hits("website/docs/INDEX.md").is_empty());
     assert!(hits("a demo repo's docs/notes.md").is_empty());
+
+    let link = Regex::new(MD_LINK).unwrap();
+    let targets =
+        |s: &str| -> Vec<String> { link.captures_iter(s).map(|m| m[1].to_string()).collect() };
+    assert_eq!(targets("[a](gone.md)"), ["gone.md"]);
+    assert_eq!(targets("[a](gone.md#part)"), ["gone.md"]);
+    assert_eq!(targets("[guide](missing.md \"Guide\")"), ["missing.md"]);
 }
