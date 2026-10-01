@@ -1,4 +1,4 @@
-//! The v2 plugin kernel: a session engine with a Lua-driven renderer.
+//! The plugin kernel: a session engine with a Lua-driven renderer.
 //!
 //! The kernel owns no pane. It owns a *vocabulary* ([`node`], four primitives),
 //! the arithmetic that resolves where things go ([`layout`]), a read-only view

@@ -8,7 +8,7 @@
 //! server: twelve SIGWINCHes in twelve seconds of alternating rect changes, the
 //! agent bouncing between 26×73 and 41×118.
 //!
-//! What must hold instead (`TmuxBackend::resize`, `docs/ARCHITECTURE.md`):
+//! What must hold instead (`tmux_compat::Server::resize`, `docs/ARCHITECTURE.md`):
 //!
 //! - an instance painting a different rect does not move a pane another
 //!   instance is sizing;

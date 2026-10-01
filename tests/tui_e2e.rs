@@ -3494,7 +3494,7 @@ fn a_chord_is_answered_while_a_remote_sessions_link_is_wedged() {
     // A *passthrough* chord is the one that goes over the wire. Before it can
     // be left to the agent, `coordinator::input`'s gate asks whether the
     // focused pane is dead — `focused_terminal_is_dead` -> `Terminals::is_dead`
-    // -> `TmuxBackend::is_dead`, a control-mode round trip made on the loop
+    // -> `tmux_compat::Server::is_dead`, a control-mode round trip made on the loop
     // itself. With the link wedged that runs out `COMMAND_TIMEOUT`, reconnects,
     // and runs out again, and nothing else is handled meanwhile.
     //

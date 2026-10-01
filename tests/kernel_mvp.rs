@@ -1,4 +1,4 @@
-//! End-to-end test of the v2 kernel against the *real* bundled plugins.
+//! End-to-end test of the kernel against the *real* bundled plugins.
 //!
 //! Loads `ui/` exactly as the binary does, publishes a snapshot, resolves the
 //! arrangement and renders every plugin into its resolved rect — so this fails

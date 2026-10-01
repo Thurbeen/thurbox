@@ -2281,7 +2281,7 @@ impl Terminals {
 /// Say why a terminal is not the size of the rect it is painted into.
 ///
 /// On a server several thurbox instances share, one of them sizes each pane
-/// (`TmuxBackend::resize`) and the others show that pane's screen as it is —
+/// (`tmux_compat::Server::resize`) and the others show that pane's screen as it is —
 /// with blank margins when their rect is bigger, cropped when it is smaller —
 /// rather than parsing its output into a grid of their own size. Without a word
 /// on it that reads as a rendering bug, so the bottom row says whose size this

@@ -1,4 +1,4 @@
-//! thurbox v2 — a session engine with a Lua-driven renderer.
+//! thurbox — a session engine with a Lua-driven renderer.
 //!
 //! The kernel owns no pane. It resolves rects, calls plugins, paints what they
 //! return, and refreshes a snapshot of the session engine on its own schedule.

@@ -44,7 +44,7 @@ base64 = "0.23"
 # built, so 0.11 here is the only copy compiled.
 sha2 = "0.11"
 
-# v2 plugin kernel: the Lua runtime plugins are written in, and the filesystem
+# The plugin kernel: the Lua runtime plugins are written in, and the filesystem
 # watch that reloads them on save. Lua 5.4 is vendored so no system Lua is
 # needed; the `send` feature is deliberately NOT enabled, which makes "plugins
 # never touch the render thread" a compile error rather than a review rule.
@@ -146,7 +146,7 @@ harness = false
 # v2 renders through an embedded Lua VM, so a dev build runs interpreter-heavy
 # work on every frame in a way v1 never did. At opt-level 0 that is felt as lag
 # in the TUI itself, and `cargo run` is the documented way to
-# run it -- so the dev profile is part of how fast thurbox v2 *is*, not just
+# run it -- so the dev profile is part of how fast thurbox *is*, not just
 # how fast it builds.
 opt-level = 1
 

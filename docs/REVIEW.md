@@ -331,7 +331,7 @@ such as .publish.yaml, so a root-level config file is not automatically
 docs/CONFIG.md's. docs/REVIEW.md owns the house rules a change is reviewed
 against - the per-path blocks above, the trees excluded from review, and this
 ownership map. docs/AGENTS.md owns each built-in coding agent's exact
-configuration and the checklist for adding one. docs/V2-KERNEL.md owns the
+configuration and the checklist for adding one. docs/KERNEL.md owns the
 kernel's shape and its five rules, and docs/PLUGINS.md owns interface-plugin
 authoring. docs/DEVELOPMENT.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,

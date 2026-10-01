@@ -187,12 +187,13 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 
 ### 8. Backend-first session model
 
-Coding-agent sessions run via a `SessionBackend` trait. The default is
-a local multiplexer (`tmux -L thurbox`; `psmux` on native Windows), and
-the same `TmuxBackend` runs over a transport — local, SSH, or WSL — so a
-session can live on another host without a second backend (ADR-13). The
-multiplexer provides truly persistent sessions that survive
-crashes/restarts.
+Coding-agent sessions run via a `SessionBackend` trait, one backend per route
+in the registry (ADR-29). The default is the platform's multiplexer run
+locally (`tmux -L thurbox`; `psmux` on native Windows). Each adapter —
+`TmuxBackend`, `PsmuxBackend`, peers over one tmux-protocol server (ADR-31) —
+runs over a transport, local, SSH or WSL, so a session can live on another
+host with no adapter of its own for that (ADR-13). The multiplexer provides
+truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 The backend is the source of truth for session lifecycle.
 

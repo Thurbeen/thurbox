@@ -97,7 +97,7 @@ pub enum Action {
         #[arg(long)]
         no_verify: bool,
     },
-    /// Create a new session (runs synchronously — tmux window live on return).
+    /// Create a new session (runs synchronously — its window is live on return).
     Create {
         /// Session name (1-64 chars, no slashes or leading '.').
         #[arg(long)]
@@ -116,7 +116,8 @@ pub enum Action {
         #[arg(long)]
         base_branch: Option<String>,
         /// Remote host to run the session on (name from `hosts.toml`). The
-        /// worktree and tmux window are created on that host over SSH.
+        /// worktree and window are created on that host, over SSH or in its WSL
+        /// distro.
         #[arg(long)]
         host: Option<String>,
         /// Override the configured multiplexer for this creation.
@@ -184,7 +185,7 @@ pub enum Action {
     #[command(alias = "remove")]
     ///
     /// By default only the DB row is soft-deleted, and `session restore`
-    /// brings it back. The session's tmux windows come down once the undo
+    /// brings it back. The session's windows come down once the undo
     /// window closes — by a running interface, by the `automation tick`
     /// heartbeat, or on demand with `session reap` — while the worktrees
     /// stay, which is what makes the undo lossless. Pass `--force` to kill
@@ -193,7 +194,7 @@ pub enum Action {
     Delete {
         /// Session UUID.
         uuid: String,
-        /// Also kill the tmux window, remove worktrees, and cancel
+        /// Also kill the window, remove worktrees, and cancel
         /// pending scheduled commands for this session.
         #[arg(long)]
         force: bool,
@@ -254,7 +255,7 @@ pub enum Action {
         #[arg(long)]
         adopt: bool,
     },
-    /// Record a session that is already running on this machine's tmux server
+    /// Record a session that is already running on this machine's server
     /// — a row for a window a peer created before sharing existed. Takes the
     /// JSON `session get` prints; launches nothing.
     Register {
@@ -266,7 +267,7 @@ pub enum Action {
     ///
     /// The text is delivered as one bracketed paste, so it arrives literally —
     /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
-    /// Local sessions only: the pane lives on this machine's tmux server, so a
+    /// Local sessions only: the pane lives on this machine's server, so a
     /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
         /// Session UUID.
@@ -920,7 +921,7 @@ fn run_create(
             "backend_id": res.backend_id,
             "backend_type": res.backend_type,
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::instance::local_socket_name(),
+            "tmux_socket": socket_of(&res.backend_type),
             "cwd": res.cwd.display().to_string(),
             "parent_session_id": res.parent_session_id.map(|id| id.to_string()),
             "hook_failures": res.hook_failures,
@@ -2144,6 +2145,22 @@ fn check_reports_as(
     .into())
 }
 
+/// The `-L` socket a row's pane is on, as a create document reports it: the
+/// host's for a remote row (ADR-12), this instance's own for a local one, and
+/// none for a row whose host `hosts.toml` no longer describes — this
+/// instance's would name a server on the wrong machine.
+///
+/// The key is still `tmux_socket` although psmux serves it on Windows: it is
+/// public JSON (`docs/CONFIG.md` → Relocating an instance), and the name every
+/// tmux-protocol multiplexer takes with `-L`.
+fn socket_of(backend_type: &str) -> Option<String> {
+    match crate::session_ops::resolve_host(backend_type) {
+        Some(Some(host)) => Some(crate::backend::instance::host_socket(&host)),
+        Some(None) => Some(crate::backend::instance::local_socket_name()),
+        None => None,
+    }
+}
+
 /// What `create --on-existing adopt` returns when the session was already there.
 ///
 /// The same document shape a real creation produces, with `created: false` as
@@ -2170,7 +2187,7 @@ fn existing_session_output(
             "agent_session_id": session.agent_session_id,
             "backend_id": session.backend_id,
             "worktrees": session.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
-            "tmux_socket": crate::backend::instance::local_socket_name(),
+            "tmux_socket": socket_of(&session.backend_type),
             "cwd": session.cwd.as_ref().map(|p| p.display().to_string()),
             "parent_session_id": session.parent_session_id.map(|id| id.to_string()),
             "hook_failures": Vec::<String>::new(),
@@ -2518,6 +2535,17 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    /// A row on a host `hosts.toml` no longer describes has no known server,
+    /// and naming this instance's would send a caller to the wrong machine.
+    #[test]
+    fn a_row_on_an_unconfigured_host_reports_no_socket() {
+        assert_eq!(
+            socket_of("local:tmux"),
+            Some(crate::backend::instance::local_socket_name())
+        );
+        assert_eq!(socket_of("ssh:no-such-host-configured:tmux"), None);
     }
 
     #[test]

@@ -171,7 +171,7 @@ and an [FAQ](https://thurbox.thurbeen.eu/docs/faq.html).
 The rationale behind the decisions is in this repository, under
 [`docs/`](docs/): [CONSTITUTION](docs/CONSTITUTION.md) (non-negotiable
 principles), [ARCHITECTURE](docs/ARCHITECTURE.md), [FEATURES](docs/FEATURES.md),
-[CONFIG](docs/CONFIG.md), [V2-KERNEL](docs/V2-KERNEL.md),
+[CONFIG](docs/CONFIG.md), [KERNEL](docs/KERNEL.md),
 [PLUGINS](docs/PLUGINS.md), [ORCHESTRATION](docs/ORCHESTRATION.md),
 [DEVELOPMENT](docs/DEVELOPMENT.md) and [RELEASING](docs/RELEASING.md).
 

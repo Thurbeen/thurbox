@@ -678,7 +678,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 `automations = false` is a full stop on the TUI side: the pane
 disappears (the session list takes the whole left column and `j`/`k`
 wrap within it), and the TUI neither fires due schedules nor arms the
-tmux heartbeat keeper on startup. Explicit `thurbox-cli automation`
+heartbeat keeper on startup. Explicit `thurbox-cli automation`
 commands still work — and `automation create` still arms the
 heartbeat, so an already-armed keeper window (or an OS timer from
 `packaging/`) keeps firing schedules externally. Disabling
@@ -1269,6 +1269,19 @@ Three rules keep the ordinary case ordinary:
 Ask a build which server it is on rather than assuming: `thurbox-cli version
 --json` reports the socket in force as `tmux_socket`, and `thurbox-cli config
 show` prints it under `Sessions`.
+
+`session create --json` reports `tmux_socket` too, as the socket of the server
+the new session's pane is on: the host's for a `--host` session (its `socket`
+in `hosts.toml`, else what its own CLI reported), this instance's for a local
+one, and `null` for a row on a host `hosts.toml` no longer describes. Hand it
+to `tmux -L` together with `backend_id`, which is the pane id.
+
+The key keeps the name `tmux_socket` on every platform, including native
+Windows where psmux serves it. It is public JSON that scripts already read, and
+it is the `-L` name every tmux-protocol multiplexer takes. A rename would break
+those scripts for no new information, so there is no alias. A multiplexer that
+is not addressed by `-L` would have to add its own key rather than reuse this
+one.
 
 **An instance relocated before this existed is a new instance.** Its old
 sessions are still on the default server, and its database still lists them —

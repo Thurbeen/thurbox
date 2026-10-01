@@ -6,8 +6,9 @@
 //!
 //! Remote hosts are reached through a stand-in `ssh` that records what it was
 //! asked to run and then fails the way an unreachable host does, so each test
-//! reads the argv a real host would have received. POSIX-only for that
-//! stand-in, which is a shell script.
+//! reads the argv a real host would have received. A test that needs the host
+//! to answer uses [`Env::reaching`] instead, whose stand-in runs the command
+//! on this machine. POSIX-only for those stand-ins, which are shell scripts.
 
 #![cfg(unix)]
 
@@ -64,6 +65,30 @@ impl Env {
         )
         .expect("ssh stand-in");
         std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        env
+    }
+
+    /// The same instance, with an `ssh` that reaches the host: it drops the
+    /// options and the destination and runs the rest here, re-split by a
+    /// shell as a host's login shell would. The host's multiplexer then runs
+    /// under this instance's socket directory, so `server` reaps it too.
+    fn reaching(hosts_toml: &str) -> Self {
+        let env = Self::new(hosts_toml);
+        std::fs::write(
+            env.path("bin/ssh"),
+            "#!/bin/sh\n\
+             while [ \"$#\" -gt 0 ]; do\n\
+             \x20 case \"$1\" in\n\
+             \x20   -o) shift; shift ;;\n\
+             \x20   -*) shift ;;\n\
+             \x20   *) break ;;\n\
+             \x20 esac\n\
+             done\n\
+             [ \"$#\" -gt 0 ] && shift\n\
+             [ \"$#\" -eq 0 ] && exit 0\n\
+             eval \"exec $*\"\n",
+        )
+        .expect("ssh stand-in");
         env
     }
 
@@ -720,4 +745,65 @@ fn a_host_entry_without_a_platform_keeps_its_posix_meaning() {
         !calls.iter().any(|call| call.contains("USERPROFILE")),
         "a POSIX host was asked for a Windows profile: {calls:?}"
     );
+}
+
+/// A host that pins its own socket, apart from this instance's.
+const HOST_WITH_SOCKET: &str = "[[hosts]]\n\
+     name = \"box\"\n\
+     destination = \"e2e@box.invalid\"\n\
+     socket = \"thurbox-routes-host\"\n\
+     share_sessions = false\n";
+
+/// `tmux_socket` in a create document is what a caller hands `tmux -L` to
+/// reach the pane it was just given, so for a session on a host it is the
+/// host's socket (ADR-12), not this instance's: that one names a server on
+/// another machine. The adopt answer is the same document, so it names the
+/// same server.
+#[test]
+fn a_remote_create_reports_the_hosts_socket() {
+    let env = Env::reaching(HOST_WITH_SOCKET);
+    let repo = env.path("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+    let create = |extra: &[&str]| {
+        let mut args = vec![
+            "session",
+            "create",
+            "--name",
+            "afar",
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--host",
+            "box",
+        ];
+        args.extend_from_slice(extra);
+        env.cli_json(&args)
+    };
+
+    let report = create(&[]);
+    assert_eq!(report["backend_type"], "ssh:box:tmux", "{report}");
+    assert_eq!(
+        report["tmux_socket"], "thurbox-routes-host",
+        "a remote session's socket is the host's: {report}"
+    );
+    let adopted = create(&["--on-existing", "adopt"]);
+    assert_eq!(adopted["created"], false, "{adopted}");
+    assert_eq!(adopted["tmux_socket"], "thurbox-routes-host", "{adopted}");
+
+    // And it is the socket the pane is really on.
+    let pane = report["backend_id"].as_str().expect("backend_id");
+    let on_host = Command::new("tmux")
+        .env("TMUX_TMPDIR", env.server.tmpdir())
+        .env_remove("TMUX")
+        .args([
+            "-L",
+            "thurbox-routes-host",
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_id}",
+        ])
+        .output()
+        .expect("run tmux");
+    assert_eq!(String::from_utf8_lossy(&on_host.stdout).trim(), pane);
 }

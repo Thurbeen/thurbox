@@ -1,6 +1,6 @@
 ---
 name: thurbox-kernel
-description: The thurbox v2 plugin kernel: the five rules, module dependency rules enforced by tests/architecture_rules.rs, module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
+description: The thurbox plugin kernel: the five rules, module dependency rules enforced by tests/architecture_rules.rs, module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
 ---
 
 # Thurbox plugin kernel and plugin authoring
@@ -166,11 +166,17 @@ alias and re-export laundering, and test-only edges.
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — side-effect layer, unchanged by the retirement. `AgentProvider`
+- **`agent/`** — the agent and host config layer. `AgentProvider`
   - `GenericProvider` build the CLI invocation from a declarative `AgentDef`;
-  `Session` wraps a `SessionBackend`; `TmuxBackend` runs tmux over a
-  `TmuxTransport` (`Local` / `Ssh` / `Wsl`). Output is read into
-  `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
+  the other files read thurbox's config (agents, hosts, hooks, settings,
+  themes) and run the preflight and self-update.
+- **`backend/`** — the session-backend boundary. `contract` is the
+  `SessionBackend` trait every consumer names; `registry` holds one backend
+  per route and `wiring` is the only factory naming an adapter. `TmuxBackend`
+  and `PsmuxBackend` are peer adapters over `tmux_compat::Server<M>`, reached
+  through a `TmuxTransport` (an optional `HostLauncher` — ssh or WSL — plus the
+  multiplexer binary). `pane::Session` wraps a backend's pane: output is read
+  into `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
 - **`session/`** — plain data: `SessionId`, `SessionInfo`, `SessionState` and
   the read-time status folds (`hook_status`, the one module the kernel *and*
   the CLI derive a session's state through),
@@ -500,7 +506,7 @@ becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` was
 taken deliberately from the chords held for v1's panes (`tests/keymap.rs`),
 and the creation flow's folder import moved to `Alt+P` for it.
 
-- `docs/V2-KERNEL.md` — the kernel's shape, its five rules, and the traps
+- `docs/KERNEL.md` — the kernel's shape, its five rules, and the traps
 - `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
   lists the mistakes that are invisible until runtime
 

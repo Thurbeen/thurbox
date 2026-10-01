@@ -66,12 +66,14 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
-How it works: `TmuxBackend` is transport-neutral
-(`backend::tmux_compat::transport::TmuxTransport`, an optional
+How it works: each tmux-protocol adapter — `TmuxBackend` and `PsmuxBackend`,
+both `tmux_compat::Server<M>` — runs over a transport-neutral
+`backend::tmux_compat::transport::TmuxTransport` (an optional
 `shell::HostLauncher` plus the multiplexer binary — the launcher never adds
 `-L`). The local backend launches `<mux> -L thurbox …`; an SSH backend launches
-`ssh <dest> <mux> -L thurbox …`; a **WSL backend launches `wsl.exe -d <distro>
-tmux -L thurbox …`** (`HostLauncher::Wsl`). Every remote command builds its
+`ssh <dest> <mux> -L <host socket> …` (the host's socket, ADR-12); a **WSL
+backend launches `wsl.exe -d <distro> tmux -L <host socket> …`**
+(`HostLauncher::Wsl`). Every remote command builds its
 launcher with the one conversion `HostLauncher::for_host`. `wsl.exe` forwards whitespace-free tokens to the
 in-distro shell like `ssh` does, so the same POSIX quoting
 (`shell::posix_quote`) and the byte-identical control-mode protocol
@@ -218,7 +220,7 @@ session), never on the loop, ADR-P12).
   (`ControlMode::send_command_detached` — a place kept in the waiter queue with
   the receiver dropped, which is what `send_command_nowait` lacks), and the
   passthrough gate's deadness question gets `LOOP_COMMAND_BUDGET`. Both go through
-  `TmuxBackend::within`, which bounds the wait for the **control lock** as well
+  `tmux_compat::Server::ctrl_command_within`, which bounds the wait for the **control lock** as well
   as for the answer — one backend is one connection is one serialized queue,
   shared with the mirror pass and the attach worker — and neither reconnects,
   because a reconnect is a fresh handshake plus a synchronous read of the
@@ -273,8 +275,8 @@ session), never on the loop, ADR-P12).
   provisioned host it is, `resolve_cli_binary` answering with a sibling of the
   running exe — leaves a regular file there alone, and removes an existing
   self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
-  host CLI's `tmux_socket`, which the backend adopts (`backend::tmux_compat::
-  socket::learn_host_socket`) so a dev laptop attaches to a release host's server.
+  host CLI's `tmux_socket`, which the backend adopts
+  (`backend::instance::learn_host_socket`) so a dev laptop attaches to a release host's server.
   Kept per host, not per route: it names the host's thurbox instance, which
   every multiplexer there runs under.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
@@ -421,7 +423,7 @@ session), never on the loop, ADR-P12).
   answers**, and the teardown is where confusing them costs the most.
   `discover` gates on `has-session` and reads its failure as an empty server,
   so a force delete taken while a host was briefly down found nothing to kill
-  and recorded *no error at all*. `TmuxBackend::discover_answered` (what
+  and recorded *no error at all*. `tmux_compat::Server::discover_answered` (what
   `discover` runs with no control mode open, and what `locate` and
   `rename_windows` list with) answers empty only on the multiplexer's own
   refusal, and drops the `has-session` round trip while it is there. It is

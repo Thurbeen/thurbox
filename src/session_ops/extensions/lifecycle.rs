@@ -337,7 +337,7 @@ pub fn activate_extension(
 
 /// Deactivate an extension: delete its declared automations and sessions, then
 /// drop it from the active set so self-heal won't resurrect it. `force` also
-/// tears down each session's tmux window/worktrees (otherwise a soft delete).
+/// tears down each session's window/worktrees (otherwise a soft delete).
 /// Idempotent — missing resources are simply skipped.
 pub fn deactivate_extension(
     db: &Database,

@@ -55,7 +55,7 @@ thurbox/
 __pycache__/
 *.pyc
 
-# What the v2 interface delivery last wrote. Only appears in the repo's own
+# What the interface delivery last wrote. Only appears in the repo's own
 # ui/ when a dev build restores or removes a file from inside the running TUI;
 # it describes one directory's state and belongs to nobody else.
 ui/.bundled.json
