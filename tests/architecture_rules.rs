@@ -662,8 +662,17 @@ fn transitional_table_names_only_live_crossings() {
 /// The node that builds the registry, naming every concrete adapter.
 const FACTORY: &str = "backend::wiring";
 
-/// The concrete adapters. Each is reached only through [`FACTORY`].
-const ADAPTERS: &[&str] = &["backend::tmux"];
+/// The concrete adapters. Each is reached only through [`FACTORY`], and each
+/// serves one multiplexer of its own.
+const ADAPTERS: &[&str] = &["backend::tmux", "backend::psmux"];
+
+/// The tmux command and control-mode protocol both adapters above speak: a
+/// helper either may use, which uses neither.
+const PROTOCOL_HELPER: &str = "backend::tmux_compat";
+
+fn in_protocol_helper(node: &str) -> bool {
+    node == PROTOCOL_HELPER || node.starts_with(&format!("{PROTOCOL_HELPER}::"))
+}
 
 /// Only the composition roots may build the registry — `coordinator` here, and
 /// the exempt crate roots (`main`, `bin/`) — and only the factory may name an
@@ -701,6 +710,106 @@ fn only_the_composition_roots_name_the_factory() {
     }
 }
 
+/// The adapters are peers (A10): neither reaches the other, and the protocol
+/// helper they share reaches neither — in code, test code included, or in a
+/// grant. A quirk of one multiplexer is then a body in its own adapter, never a
+/// branch in code the other runs; and an adapter that serves a second
+/// multiplexer through flags is an adapter missing.
+#[test]
+fn the_adapters_are_peers() {
+    let tree = src_tree();
+    let mut found = Vec::new();
+    for adapter in ADAPTERS {
+        if !tree.has_module(adapter) {
+            found.push(format!(
+                "{adapter} does not exist, so another adapter serves its multiplexer"
+            ));
+        }
+    }
+    let crosses = |from: &str, to: &str| {
+        ADAPTERS.contains(&to)
+            && from != to
+            && (ADAPTERS.contains(&from) || in_protocol_helper(from))
+    };
+    for edge in tree.edges(&node_names(MODULE_RULES)) {
+        if crosses(&edge.from, &edge.to) {
+            found.push(describe(tree, MODULE_RULES, &edge));
+        }
+    }
+    for (from, to) in declared_edges(MODULE_RULES) {
+        if crosses(&from, &to) {
+            found.push(format!("MODULE_RULES lets {from} reach {to}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "\nthe adapters are not peers:\n  {}\n",
+        found.join("\n  ")
+    );
+}
+
+/// The multiplexers each adapter's production code names, and the ones the
+/// factory names — resolved references to `session::Multiplexer`'s variants.
+fn multiplexers_named(tree: &Tree) -> (BTreeMap<&'static str, BTreeSet<String>>, BTreeSet<String>) {
+    let mut owned: BTreeMap<&'static str, BTreeSet<String>> =
+        ADAPTERS.iter().map(|a| (*a, BTreeSet::new())).collect();
+    let mut served = BTreeSet::new();
+    for reference in tree.references(&node_names(MODULE_RULES)) {
+        if reference.test {
+            continue;
+        }
+        let Some(variant) = multiplexer_variant(&reference) else {
+            continue;
+        };
+        if let Some(names) = owned.get_mut(reference.from.as_str()) {
+            names.insert(variant.to_string());
+        }
+        if reference.from == FACTORY {
+            served.insert(variant.to_string());
+        }
+    }
+    (owned, served)
+}
+
+/// One multiplexer, one adapter: each adapter names exactly the multiplexer it
+/// is, no two adapters name the same one, and every multiplexer the factory
+/// serves is one an adapter is. An adapter serving a multiplexer it does not
+/// name is deciding by the binary's *name* instead — `if mux == "psmux"` —
+/// which no resolved reference shows and every rule above would miss.
+#[test]
+fn every_multiplexer_the_factory_serves_has_an_adapter_of_its_own() {
+    let (owned, served) = multiplexers_named(src_tree());
+    let mut found = Vec::new();
+    let mut owner: BTreeMap<String, &str> = BTreeMap::new();
+    for (adapter, names) in &owned {
+        if names.len() != 1 {
+            found.push(format!(
+                "{adapter} names {} multiplexer(s) {names:?}; an adapter is exactly one",
+                names.len()
+            ));
+        }
+        for name in names {
+            if let Some(other) = owner.insert(name.clone(), adapter) {
+                found.push(format!(
+                    "{other} and {adapter} both are Multiplexer::{name}"
+                ));
+            }
+        }
+    }
+    for name in &served {
+        if !owner.contains_key(name) {
+            found.push(format!(
+                "{FACTORY} serves Multiplexer::{name}, which no adapter is (adapters: {owned:?})"
+            ));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "\na multiplexer is served without an adapter of its own:\n  {}\n",
+        found.join("\n  ")
+    );
+}
+
 /// The files that say where a session runs and what a backend is, for every
 /// host and every multiplexer alike: the route grammar and the contract.
 const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
@@ -714,6 +823,7 @@ const HOST_OR_MUX_SPECIFIC: &[&str] = &[
     "session::host_def",
     "agent::host_config",
     "backend::tmux",
+    "backend::psmux",
     "backend::tmux_compat",
 ];
 

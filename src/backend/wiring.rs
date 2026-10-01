@@ -116,6 +116,48 @@ mod tests {
         );
     }
 
+    /// Registration is by adapter, never by OS (§4b.3): every adapter here
+    /// is registered for this machine and for every host whichever OS either
+    /// is, and the platform only picks what an unqualified route means.
+    #[test]
+    fn every_adapter_is_registered_whatever_the_platform() {
+        use crate::session::platform::simulate_local;
+        use crate::session::{Platform, Via};
+        for platform in Platform::ALL {
+            simulate_local(platform, || {
+                let registry = for_hosts(&hosts(&[("plain", None), ("win", Some("psmux"))]));
+                for mux in [Multiplexer::Tmux, Multiplexer::Psmux] {
+                    assert!(
+                        registry.supports(&Route::local(Some(mux))),
+                        "{} on a {} machine has an adapter and is not registered",
+                        mux.name(),
+                        platform.name()
+                    );
+                }
+                for mux in [Multiplexer::Tmux, Multiplexer::Psmux] {
+                    for host in ["plain", "win"] {
+                        assert!(
+                            registry.supports(&Route::remote(Via::Ssh, host, Some(mux))),
+                            "{} on host {host} from a {} machine is not registered",
+                            mux.name(),
+                            platform.name()
+                        );
+                    }
+                }
+                let default = match platform {
+                    Platform::Windows => Multiplexer::Psmux,
+                    Platform::Posix => Multiplexer::Tmux,
+                };
+                assert_eq!(
+                    registry.default_route(),
+                    &Route::local(Some(default)),
+                    "on a {} machine",
+                    platform.name()
+                );
+            });
+        }
+    }
+
     #[test]
     fn only_implemented_multiplexers_are_served() {
         assert!(implements(Multiplexer::Tmux));
