@@ -47,6 +47,9 @@ pub struct Window {
     /// What reached the pane, in order: typed text, `\n` for each Enter, and
     /// `<name>` for any other key. What a capture reads back.
     pub screen: String,
+    /// The last hook state the pane's agent reported through this backend's
+    /// own status channel — never a tmux pane option: the fake has none.
+    pub hook: Option<String>,
 }
 
 #[derive(Default)]
@@ -58,6 +61,8 @@ struct State {
     closed: bool,
     /// Every call that reached the backend, in order, as `verb detail`.
     calls: Vec<String>,
+    /// Hook reports not yet drained by an attached interface.
+    hook_events: Vec<(String, String)>,
 }
 
 /// See the module doc.
@@ -143,8 +148,23 @@ impl RecordingBackend {
             cwd: None,
             screen: String::new(),
             path: None,
+            hook: None,
         });
         pane
+    }
+
+    /// An agent hook running in `pane` reports `state` the way this backend's
+    /// panes do: into the backend's own record, where an attached interface
+    /// drains it live and a headless poll lists it.
+    pub fn hook(&self, pane: &str, state: &str) {
+        let mut state_ = self.state.lock().unwrap();
+        let window = state_
+            .windows
+            .iter_mut()
+            .find(|w| w.pane == pane)
+            .unwrap_or_else(|| panic!("no pane {pane} to report from"));
+        window.hook = Some(state.to_string());
+        state_.hook_events.push((pane.to_string(), state.to_string()));
     }
 
     fn lock(&self, call: String) -> Result<std::sync::MutexGuard<'_, State>> {
@@ -302,6 +322,7 @@ impl SessionBackend for RecordingBackend {
             cwd: cwd.map(|p| p.display().to_string()),
             screen: String::new(),
             path: None,
+            hook: None,
         });
         Ok(SpawnedSession {
             backend_id: pane,
@@ -346,6 +367,7 @@ impl SessionBackend for RecordingBackend {
             cwd: spec.cwd.map(|p| p.display().to_string()),
             screen: String::new(),
             path: spec.env.get("PATH").cloned(),
+            hook: None,
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);
         Ok(pane)
@@ -529,6 +551,10 @@ impl SessionBackend for RecordingBackend {
     fn pane_ids(&self) -> Result<HashSet<String>> {
         let state = self.lock("pane_ids".into())?;
         Ok(state.windows.iter().map(|w| w.pane.clone()).collect())
+    }
+
+    fn take_hook_state_events(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.state.lock().unwrap().hook_events)
     }
 
     fn shutdown(&self) {
