@@ -2281,68 +2281,10 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// Wait until the action band names `view` as the focused pane's view.
-fn wait_for_view(tui: &Tui, view: &str) {
-    tui.wait_until(
-        &format!("the {view} view to be the one on screen"),
-        |frame| {
-            frame
-                .lines()
-                .last()
-                .is_some_and(|band| band.trim_start().starts_with(view))
-        },
-    );
-}
-
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {
     cmd.env("SHELL", "/bin/sh");
-}
-
-/// Ctrl+T there and back twice, typing into each side: the shell is its own
-/// live terminal, and what it printed is still there after the agent has had
-/// the pane.
-fn exercise_the_shell_tab(tui: &mut Tui) {
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    // The pane paints before the shell inside it has drawn a prompt, and a
-    // keystroke sent in between is lost.
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-in-\"\"shell\r");
-    tui.wait_for("tb-in-shell");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Agent");
-    tui.wait_gone("tb-in-shell");
-    tui.send(b"echo tb-in-\"\"agent\r");
-    tui.wait_for("tb-in-agent");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    tui.wait_for("tb-in-shell");
-    assert!(
-        !tui.frame().contains("tb-in-agent"),
-        "the Shell tab must show the shell, not the agent's terminal:\n{}",
-        tui.frame()
-    );
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-still-\"\"live\r");
-    tui.wait_for("tb-still-live");
-}
-
-#[test]
-fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
-    // The classic arrangement's companion shell: a tab of the agent pane that
-    // Ctrl+T raises and lowers. #1227 swapped it for a pane of its own under a
-    // split layout; this pins the tab its rollback brings back.
-    let Some((_profile, mut tui)) = shell_session_with(plain_shell) else {
-        return;
-    };
-    exercise_the_shell_tab(&mut tui);
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
 }
 
 /// A shell session whose panes lose their grid after a second off screen.

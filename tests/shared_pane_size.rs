@@ -26,17 +26,25 @@
 
 #![cfg(unix)]
 
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::{bail, Result};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use thurbox::backend::contract::PaneSnapshot;
 use thurbox::backend::pane::ProgramPane;
 use thurbox::backend::tmux::TmuxBackend;
-use thurbox::backend::SessionBackend;
+use thurbox::backend::{
+    AdoptedSession, DiscoveredSession, Key, Owner, PaneState, Placed, SessionBackend,
+    SpawnedSession, WindowRole, WindowSpec,
+};
 use thurbox::kernel::paint::SurfaceProvider;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
@@ -124,6 +132,161 @@ fn instance() -> Arc<dyn SessionBackend> {
         .ensure_ready()
         .unwrap_or_else(|e| panic!("tmux control mode would not start: {e:#}"));
     backend
+}
+
+/// A real instance whose resizes can be made to fail, as they do while its
+/// control connection is down — without shutting it down, which is final.
+struct FlakyResize {
+    inner: Arc<dyn SessionBackend>,
+    failing: AtomicBool,
+}
+
+impl SessionBackend for FlakyResize {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn needs_liveness_poll(&self) -> bool {
+        self.inner.needs_liveness_poll()
+    }
+    fn check_available(&self) -> Result<()> {
+        self.inner.check_available()
+    }
+    fn ensure_ready(&self) -> Result<()> {
+        self.inner.ensure_ready()
+    }
+    fn spawn(
+        &self,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<SpawnedSession> {
+        self.inner
+            .spawn(window_name, command, args, cwd, env, rows, cols)
+    }
+    fn adopt(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+        seed: Option<Vec<u8>>,
+    ) -> Result<AdoptedSession> {
+        self.inner.adopt(backend_id, rows, cols, seed)
+    }
+    fn capture_history(&self, backend_id: &str) -> Result<Vec<u8>> {
+        self.inner.capture_history(backend_id)
+    }
+    fn supports_snapshots(&self) -> bool {
+        self.inner.supports_snapshots()
+    }
+    fn request_snapshot(&self, backend_id: &str) -> Result<()> {
+        self.inner.request_snapshot(backend_id)
+    }
+    fn snapshot(&self, backend_id: &str) -> Result<PaneSnapshot> {
+        self.inner.snapshot(backend_id)
+    }
+    fn title_seed(&self, backend_id: &str) -> Vec<u8> {
+        self.inner.title_seed(backend_id)
+    }
+    fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+        self.inner.discover()
+    }
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+        self.inner.create_window(spec)
+    }
+    fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
+        self.inner.locate(owner)
+    }
+    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()> {
+        self.inner.rename_windows(owner, to)
+    }
+    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()> {
+        self.inner.stamp_window(backend_id, session_id, role)
+    }
+    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
+        self.inner.window_panes(window_name)
+    }
+    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+        self.inner.set_pane_retention(backend_id, keep)
+    }
+    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
+        self.inner.send_text(pane, text, submit)
+    }
+    fn send_text_after(&self, pane: &str, text: &str, delay: Duration) -> Result<()> {
+        self.inner.send_text_after(pane, text, delay)
+    }
+    fn send_key(&self, pane: &str, key: &Key) -> Result<String> {
+        self.inner.send_key(pane, key)
+    }
+    fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String> {
+        self.inner.capture(pane, lines, ansi)
+    }
+    fn pane_state(&self, pane: &str) -> Result<PaneState> {
+        self.inner.pane_state(pane)
+    }
+    fn pane_path(&self, pane: &str) -> Result<Option<String>> {
+        self.inner.pane_path(pane)
+    }
+    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        if self.failing.load(Ordering::SeqCst) {
+            bail!("control mode is down");
+        }
+        self.inner.resize(backend_id, rows, cols)
+    }
+    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+        self.inner.claim_size(backend_id, rows, cols)
+    }
+    fn is_dead(&self, backend_id: &str) -> Result<bool> {
+        self.inner.is_dead(backend_id)
+    }
+    fn pane_gone(&self, backend_id: &str) -> Result<bool> {
+        self.inner.pane_gone(backend_id)
+    }
+    fn kill(&self, backend_id: &str) -> Result<()> {
+        self.inner.kill(backend_id)
+    }
+    fn detach(&self, backend_id: &str) -> Result<()> {
+        self.inner.detach(backend_id)
+    }
+    fn default_shell(&self) -> String {
+        self.inner.default_shell()
+    }
+    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
+        self.inner.pane_pid(backend_id)
+    }
+    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
+        self.inner.pane_pids()
+    }
+    fn pane_ids(&self) -> Result<HashSet<String>> {
+        self.inner.pane_ids()
+    }
+    fn hook_signal_command(&self) -> Option<String> {
+        self.inner.hook_signal_command()
+    }
+    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()> {
+        self.inner.record_hook_state(pane, state)
+    }
+    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+        self.inner.hook_states()
+    }
+    fn take_hook_state_events(&self) -> Vec<(String, String)> {
+        self.inner.take_hook_state_events()
+    }
+    fn ensure_heartbeat(&self, program: &Path, args: &[String], every: Duration) -> Result<()> {
+        self.inner.ensure_heartbeat(program, args, every)
+    }
+    fn heartbeat_running(&self) -> Result<bool> {
+        self.inner.heartbeat_running()
+    }
+    fn stop_heartbeat(&self) -> Result<bool> {
+        self.inner.stop_heartbeat()
+    }
+    fn shutdown(&self) {
+        self.inner.shutdown()
+    }
 }
 
 /// An agent-like program: long-running, and it wraps at whatever it is told.
@@ -261,9 +424,12 @@ async fn a_failed_retake_is_retried_after_the_backend_recovers() {
         return;
     }
 
-    let a_backend = instance();
+    let a_backend = Arc::new(FlakyResize {
+        inner: instance(),
+        failing: AtomicBool::new(false),
+    });
     let a = ProgramPane::spawn(
-        Arc::clone(&a_backend),
+        Arc::clone(&a_backend) as Arc<dyn SessionBackend>,
         "tbp-retry-released-size",
         "sh",
         &wrapper_args(),
@@ -301,10 +467,10 @@ async fn a_failed_retake_is_retried_after_the_backend_recovers() {
     // Lose the control connection for the frame that first sees the release,
     // then restore it. The next frame must retry the retake even though this
     // instance's rect has not changed.
-    a_backend.shutdown();
+    a_backend.failing.store(true, Ordering::SeqCst);
     a.retake_size();
     assert_eq!(pane_size(&server, &id), (40, 120));
-    a_backend.ensure_ready().expect("restore A's control mode");
+    a_backend.failing.store(false, Ordering::SeqCst);
     until("the recovered instance to retry its retake", || {
         a.retake_size();
         pane_size(&server, &id) == (26, 80)
