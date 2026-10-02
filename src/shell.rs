@@ -468,9 +468,19 @@ mod tests {
             }
             cmd.spawn().expect("spawn ping")
         };
-        let mut sharing = start(false);
+        // A child joins the console while it starts up, after `spawn` has
+        // returned, so the list is read once the unflagged child is on it —
+        // started second, so the flagged one has had at least as long.
         let mut kept_off = start(true);
-        let list = attached().expect("the console lists its processes");
+        let mut sharing = start(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let list = loop {
+            let list = attached().expect("the console lists its processes");
+            if list.contains(&sharing.id()) || std::time::Instant::now() > deadline {
+                break list;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
         for child in [&mut sharing, &mut kept_off] {
             let _ = child.kill();
             let _ = child.wait();
