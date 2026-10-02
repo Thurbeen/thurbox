@@ -427,6 +427,10 @@ enforces (`consumers_reach_no_concrete_backend`). The adapters today are
 (ADR-31), each reached locally or on a host over a `TmuxTransport` (ADR-13).
 A multiplexer that does not speak the tmux protocol is a new adapter behind the
 same trait, not a branch in a consumer.
+The tmux-compatible connection takes its optional flow-control setup command
+from each adapter's `ControlPolicy`; a backend without that facility leaves it
+absent. The shared lifecycle asks for outcomes through `SessionBackend` and
+does not send control-mode commands.
 
 **Trait methods**, by job (the list itself is `src/backend/contract.rs`):
 
@@ -441,9 +445,10 @@ same trait, not a branch in a consumer.
   `record_hook_state`, `hook_states`, `take_hook_state_events`,
   `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
 
-A `backend_id` crossing the trait is the multiplexer's **pane id** (`%N`), not a
-backend's name: the column predates the contract and keeps its name as public
-JSON. The backend a row belongs to is its route, `backend_type` (ADR-28).
+A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
+tmux's `%N`), not a backend's name: the column predates the contract and keeps
+its name as public JSON. The backend a row belongs to is its route,
+`backend_type` (ADR-28).
 
 **Vocabulary.** Each word names one thing, and a name built from it says which:
 
@@ -457,7 +462,7 @@ JSON. The backend a row belongs to is its route, `backend_type` (ADR-28).
 | launcher | how a command reaches a host: ssh, WSL, or nothing | `shell::HostLauncher` |
 | transport | a launcher plus the multiplexer binary run through it | `TmuxTransport` |
 | route | a machine plus a multiplexer; the registry's key | `session::Route` |
-| pane id | the multiplexer's handle for one pane (`%N`) | `backend_id` |
+| pane id | the multiplexer's handle for one pane (tmux: `%N`) | `backend_id` |
 
 "tmux" in a name means the tmux protocol (`tmux_compat`, `TmuxTransport`,
 `TmuxCompatible`) or the tmux adapter, never "any multiplexer". The persisted
@@ -2386,8 +2391,9 @@ paste are typed (`PaneInput`), what its control-mode connection may expect
 (`ControlPolicy`), and its version floor. The shared code asks what a server
 can do and never which multiplexer it is. POSIX quoting, environment flags,
 and window commands have shared trait defaults; adapters with a different
-tokenizer or launch grammar override them. `ControlPolicy::flow_control` gates
-the startup `refresh-client -f` command, `PANE_MONITORING` gates
+tokenizer or launch grammar override them. `ControlPolicy::flow_control_command`
+provides an optional startup command to limit buffered output;
+`PANE_MONITORING` gates
 `refresh-client -A` when a server streams attached panes on its own, and
 `COMMAND_LIST_SINGLE_REPLY` selects the number of reply blocks expected for
 one semicolon-separated list. `backend::wiring` builds the

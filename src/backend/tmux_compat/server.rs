@@ -3766,7 +3766,7 @@ mod tests {
         }
         fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
             ControlPolicy {
-                flow_control: true,
+                flow_control_command: Some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,
@@ -3778,6 +3778,115 @@ mod tests {
         fn hook_signal_command(_: &Server<Self>) -> String {
             "tmux set-option -p @thurbox_state ".to_string()
         }
+    }
+
+    #[cfg(unix)]
+    struct UnmonitoredMux;
+
+    #[cfg(unix)]
+    impl TmuxCompatible for UnmonitoredMux {
+        const MULTIPLEXER: Multiplexer = Multiplexer::Tmux;
+        const WINDOW_OPTIONS: bool = false;
+        const WINDOW_SETTINGS: bool = false;
+        const WINDOW_EVENTS: bool = false;
+        const PANE_MONITORING: bool = false;
+        const SNAPSHOTS: bool = false;
+        const COMMAND_LISTS: bool = false;
+        const COMMAND_LIST_SINGLE_REPLY: bool = false;
+        const ONE_SHOT_SPAWN_ANSWERS: bool = false;
+        const CONDITIONAL_RESIZE: bool = false;
+        const SERVER_SCOPE: &str = "-s";
+        const DISPLAY_FLAGS: &[&str] = &[];
+        const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
+
+        fn check_banner(_: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn session_config(_: &str) -> Vec<ConfigOption> {
+            Vec::new()
+        }
+        fn paste_args(_: &str, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> String {
+            String::new()
+        }
+        fn pane_input(_: &TmuxTransport, _: &str) -> Arc<dyn PaneInput> {
+            Arc::new(TypedKeys)
+        }
+        fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
+            ControlPolicy {
+                flow_control_command: None,
+                implicit_attach_reply: false,
+                tagged_blocks: false,
+                subscriptions: false,
+                status_poll: None,
+            }
+        }
+        const HOOK_STATUS: bool = false;
+        fn hook_signal_command(_: &Server<Self>) -> String {
+            String::new()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unmonitored_pane_streams_output_without_refreshing_on_attach_or_detach() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("unmonitored-mux");
+        std::fs::write(
+            &mux,
+            "#!/bin/sh\nwhile IFS= read -r line; do\n\
+             printf '%s\\n' \"$line\" >> \"$0.log\"\n\
+             case \"$line\" in\n\
+               *'refresh-client -A'*) printf '%%begin 1 1 0\\n%%error 1 1 0\\n' ;;\n\
+               *' ; '*) printf '%%begin 1 1 0\\n%%end 1 1 0\\n%%begin 1 1 0\\n%%end 1 1 0\\n%%output %%1 streamed\\n' ;;\n\
+               *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+             esac\n\
+             done\n",
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let transport = TmuxTransport::local(mux.to_string_lossy());
+        let backend = Server::<UnmonitoredMux>::with_transport(
+            transport.clone(),
+            "unused",
+            "unused",
+            "local:tmux",
+        );
+        let control = ControlMode::start(
+            &transport,
+            "unused",
+            "unused",
+            "tests",
+            &UnmonitoredMux::control_policy(&transport, "unused"),
+        )
+        .expect("control client");
+        *backend.control.lock().unwrap() = Some(control);
+
+        let pane = backend
+            .connect_pane("%1", Some("@1"), 24, 80)
+            .expect("attach without monitoring command");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut output = [0; 8];
+            let mut pane_output = pane.output;
+            let _ = tx.send(pane_output.read_exact(&mut output).map(|_| output));
+        });
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("streamed output arrived")
+            .expect("streamed output read");
+        reader.join().expect("reader thread");
+        assert_eq!(&output, b"streamed");
+        backend.detach("%1").expect("detach");
+        drop(backend);
+        let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
+        assert!(commands.contains("resize-window"), "{commands}");
+        assert!(!commands.contains("refresh-client -A"), "{commands}");
     }
 
     /// The whole point of the fix: what tmux is handed must not need tmux's own

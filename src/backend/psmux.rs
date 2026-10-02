@@ -187,7 +187,7 @@ impl TmuxCompatible for Psmux {
     /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
-            flow_control: true,
+            flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: false,
             tagged_blocks: false,
             subscriptions: false,

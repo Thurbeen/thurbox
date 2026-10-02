@@ -34,7 +34,7 @@ pub const SIGNAL_COMMAND: &str = "thurbox-probe-signal";
 /// One window, as the fake multiplexer holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
-    /// `%N`, issued in order and never reused while the fake lives.
+    /// `pane-N`, issued in order and never reused while the fake lives.
     pub pane: String,
     pub name: String,
     /// The owning row's id as stamped on the window; empty when unstamped.
@@ -205,7 +205,7 @@ impl State {
     }
 
     fn issue(&mut self) -> String {
-        let pane = format!("%{}", self.next);
+        let pane = format!("pane-{}", self.next);
         self.next += 1;
         pane
     }
@@ -250,7 +250,9 @@ impl State {
 }
 
 fn pane_number(pane: &str) -> u32 {
-    pane.trim_start_matches('%').parse().unwrap_or(0)
+    pane.strip_prefix("pane-")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 /// The role a window's name implies, for one nobody stamped.
