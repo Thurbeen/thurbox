@@ -539,6 +539,56 @@ fn a_picker_refresh_keeps_the_chosen_backend() {
 }
 
 #[test]
+fn ui_state_tracks_host_and_multiplexer_selection() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "Ubuntu".into(),
+        detail: "WSL".into(),
+        backend: "wsl:Ubuntu".into(),
+        multiplexer: None,
+        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+    }];
+    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "host");
+    assert_eq!(state()["selection"], 2);
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "multiplexer");
+    assert_eq!(state()["selection"], 2);
+}
+
+#[test]
+fn ui_state_tracks_branch_and_agent_selection() {
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_branches_for_test(
+        "",
+        "/src/thurbox",
+        Branches::Ready(vec!["origin/main".into(), "main".into()]),
+    );
+    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "enter");
+    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
+    publish(&host, &world);
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "branch");
+    assert_eq!(state()["selection"], 2);
+    press(&host, &world, "enter");
+    type_text(&host, &world, "review-selection");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "agent");
+    assert_eq!(state()["selection"], 2);
+}
+
+#[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
     let world = World::default();

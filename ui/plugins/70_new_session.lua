@@ -1353,7 +1353,19 @@ return {
     if not flow then
       return { open = false }
     end
-    return { open = true, step = flow.step, selection = flow.cursor or 1 }
+    local selection = flow.cursor or 1
+    if flow.step == "host" then
+      selection = flow.host_index
+    elseif flow.step == "multiplexer" then
+      selection = mux_index(mux_options(flow), flow.mux_name)
+    elseif flow.step == "branch" then
+      selection = flow.branch_index
+    elseif flow.step == "agent" then
+      selection = flow.agent_index
+    elseif flow.step == "new_folder" then
+      selection = flow.folder_index
+    end
+    return { open = true, step = flow.step, selection = selection }
   end,
   -- A slot the arrangement never places: this pane only ever floats, and a slot
   -- it could also occupy would make it an alternative to the terminal.

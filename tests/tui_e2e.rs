@@ -1524,6 +1524,75 @@ fn ui_state_reports_an_explicit_error_when_the_snapshot_exceeds_the_reply_limit(
 }
 
 #[test]
+fn ui_watch_keeps_action_outcomes_behind_a_large_state_delta() {
+    let interface = interface_plus(
+        "90_bulk_00.lua",
+        r#"local generation = 0
+return {
+  name = "bulk00", slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  ui_state = function()
+    generation = generation + 1
+    local result = {}
+    for i = 1, 16 do result["key" .. i] = string.rep("x", 250) .. generation end
+    return result
+  end,
+}"#,
+    );
+    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
+        .expect("bulk plugin");
+    for index in 1..4 {
+        std::fs::write(
+            interface
+                .path()
+                .join(format!("plugins/90_bulk_{index:02}.lua")),
+            source.replace("bulk00", &format!("bulk{index:02}")),
+        )
+        .expect("bulk plugin");
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No active sessions");
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd
+            .args(["--json", "ui"])
+            .args(args)
+            .output()
+            .expect("ui cli");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("JSON")
+    };
+    let initial = cli(&["state"]);
+    let initial_revision = initial["revision"].as_u64().expect("initial revision");
+    cli(&["action", "search.open", "--query", "bulk-review"]);
+    tui.wait_for("Search bulk-review");
+    let mut since = initial_revision;
+    let mut found_action = false;
+    for _ in 0..8 {
+        let revision = since.to_string();
+        let batch = cli(&["watch", "--since", &revision, "--once"]);
+        assert_eq!(batch["kind"], "delta", "watch lost events: {batch}");
+        found_action |= batch["events"].as_array().unwrap().iter().any(|event| {
+            event["kind"] == "action.completed" && event["value"]["action"] == "search.open"
+        });
+        since = batch["revision"].as_u64().expect("batch revision");
+        if found_action {
+            break;
+        }
+    }
+    assert!(found_action, "watch omitted the action outcome");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_paste_lands_in_the_search_strip() {
     // A paste goes where the caret is. It used to go to the terminal behind
     // the strip — or, with no terminal on screen, nowhere — because only a

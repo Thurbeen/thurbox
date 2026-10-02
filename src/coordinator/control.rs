@@ -207,7 +207,7 @@ impl App {
             .filter(|e| e["revision"].as_u64().unwrap_or(0) > since)
         {
             let size = serde_json::to_vec(event).map_or(0, |data| data.len());
-            if events.len() == 16 || bytes + size > 12 * 1024 {
+            if events.len() == 16 || (!events.is_empty() && bytes + size > 12 * 1024) {
                 break;
             }
             bytes += size;
