@@ -875,8 +875,8 @@ psmux 3.3.6). Each is the psmux adapter's answer to `TmuxCompatible`
 (ADR-31). The `thurbox-remote-hosts` skill keeps a summary; this is the
 reference to read before touching that path.
 
-- **`send-keys -H`** is not implemented (it injects the hex digits as literal
-  text). `psmux_send_keys_commands` rebuilds the same PTY byte stream from the
+- **`send-keys -H`** was absent in psmux 3.3.6 (it injected the hex digits as literal
+  text). `psmux_send_keys_commands` encodes input from the
   primitives psmux does support (`send-keys -l` literal runs +
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names). Arrow and navigation
   escape sequences use one named key command, so psmux can deliver them as a

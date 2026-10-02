@@ -99,7 +99,7 @@ peer adapters answering `TmuxCompatible` (a remote SSH host can also pin
 control-mode protocol is byte-identical over either transport/binary, with
 **psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
 adapter, never a branch on the binary's name; spawning needs psmux ≥ 3.3.7,
-asked of the server by `check_psmux_version` — ADR-13 has why) — psmux lacks `send-keys -H`, does not join
+asked of the server by `check_psmux_version` — ADR-13 has why) — older psmux lacks `send-keys -H`, and psmux does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
 keystrokes from the primitives psmux does support (`psmux_send_keys_commands`),

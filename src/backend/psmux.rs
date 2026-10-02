@@ -2,8 +2,8 @@
 //!
 //! psmux is a native-Windows clone of tmux that speaks its command and
 //! control-mode protocol — with the divergences measured against it (ADR-13)
-//! and kept here: its keystrokes go as key-names and `-l` literals (it has no
-//! `send-keys -H`), a paste through its own `send-paste`, a window's command and
+//! and kept here: its keystrokes go as key-names and `-l` literals (compatible
+//! with versions before `send-keys -H`), a paste through its own `send-paste`, a window's command and
 //! environment as one PowerShell token, and its server option scope, version
 //! floor and control-mode framing are its own. What it shares with tmux is
 //! [`Server`]; nothing here is tmux's, and nothing in the shared code asks
@@ -399,7 +399,7 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
 /// Build the psmux-compatible `send-keys` command line(s) for `buf`.
 ///
 /// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
-/// `Escape`, `BSpace`, `C-<letter>`, …) but not tmux's `-H` hex flag. Encode the
+/// `Escape`, `BSpace`, `C-<letter>`, …). Encode the
 /// input with those primitives: contiguous printable/UTF-8 runs go
 /// out as one `-l` literal command, each control byte as its key-name. Navigation
 /// sequences use one named key command: splitting ESC from the rest makes psmux
@@ -433,13 +433,11 @@ pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
 /// SS3 cursor keys when an application has enabled DECCKM. psmux owns the
 /// pane's cursor mode and emits the right form for an unmodified named key.
 fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
-    let (body, prefix_len) = if buf.starts_with(b"\x1b[") {
-        (&buf[2..], 2)
-    } else if buf.starts_with(b"\x1bO") {
-        (&buf[2..], 2)
-    } else {
+    let prefix = buf.get(..2)?;
+    if prefix != b"\x1b[" && prefix != b"\x1bO" {
         return None;
-    };
+    }
+    let body = &buf[2..];
     let key = |suffix| match suffix {
         b'A' => Some("Up"),
         b'B' => Some("Down"),
@@ -451,10 +449,10 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     };
     if let Some(&suffix) = body.first() {
         if let Some(name) = key(suffix) {
-            return Some((prefix_len + 1, name.to_string()));
+            return Some((3, name.to_string()));
         }
     }
-    if buf[1] != b'[' {
+    if prefix[1] != b'[' {
         return None;
     }
     if body.len() >= 2 && body[1] == b'~' {
@@ -499,7 +497,7 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
         name.push_str("S-");
     }
     name.push_str(base);
-    Some((prefix_len + suffix_pos + 1, name))
+    Some((suffix_pos + 3, name))
 }
 
 /// Map a control byte to the psmux key-name that injects exactly that byte, or
@@ -956,7 +954,7 @@ mod tests {
 
     // --- psmux send-keys encoding tests ---
     //
-    // Regression: psmux has no `send-keys -H`, so on Windows the hex path
+    // Regression: psmux 3.3.6 has no `send-keys -H`, so on Windows the hex path
     // injected the literal text "62" when the user typed `b` (0x62), and Enter /
     // Backspace did nothing. The psmux encoding must use `-l` literals + key-names.
 
