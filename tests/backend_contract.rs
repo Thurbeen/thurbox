@@ -72,6 +72,37 @@ fn the_tmux_backend_keeps_the_contract() {
     );
 }
 
+#[test]
+fn the_registered_rmux_backend_keeps_the_contract() {
+    if std::process::Command::new("rmux")
+        .arg("-V")
+        .output()
+        .map_or(true, |out| !out.status.success())
+    {
+        eprintln!("skipping: rmux is not installed");
+        return;
+    }
+    let socket = format!("thurbox-rmux-contract-{}", std::process::id());
+    let _server = TmuxServer::pin(&socket);
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("rmux")
+                .args(["-L", &self.0, "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(socket);
+    let registry = thurbox::backend::wiring::local_only();
+    let route = Route::local(Some(Multiplexer::Rmux));
+    let backend = registry.get(&route).expect("rmux route must be registered");
+    backend_contract::suite(backend.as_ref());
+    backend_contract::lifecycle(backend.as_ref());
+    backend_contract::pane_io(backend.as_ref());
+    backend_contract::status(backend.as_ref());
+    backend.shutdown();
+}
+
 /// An unreachable machine answers nothing, and a fake that answered "empty"
 /// instead would make every teardown through it look finished.
 #[test]

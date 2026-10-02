@@ -13,6 +13,7 @@ pub mod output_wake;
 pub mod pane;
 pub mod psmux;
 pub mod registry;
+pub mod rmux;
 pub mod tmux;
 pub mod tmux_compat;
 pub mod wiring;

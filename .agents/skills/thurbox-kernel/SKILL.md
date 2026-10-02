@@ -68,7 +68,7 @@ backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, shell,                   (the factory: the only
                      agent::host_config,                node naming an adapter)
                      backend::{contract,registry,
-                     tmux,psmux}
+                     tmux,psmux,rmux}
 backend::tmux_compat nothing — declares the three below (tmux protocol helper)
   ::control_mode     shell, backend::contract,
                      backend::tmux_compat::transport
@@ -85,6 +85,9 @@ backend::tmux        session, shell, backend::contract, (the tmux adapter)
 backend::psmux       session, shell, backend::{contract, (the psmux adapter —
                      instance},
                      backend::tmux_compat::{control_mode, a peer, never tmux's)
+                     server,transport}
+backend::rmux        session, shell, backend::contract, (the RMUX adapter)
+                     backend::tmux_compat::{control_mode,
                      server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
@@ -136,8 +139,8 @@ must both be acyclic (`the_production_graph_is_acyclic`,
 `the_declared_graph_is_acyclic`), every grant must be used by production code
 (`every_allowance_is_used`), only `coordinator` may be granted the factory
 `backend::wiring` and only the factory an adapter
-(`only_the_composition_roots_name_the_factory`), the two adapters are peers —
-neither reaches the other and `backend::tmux_compat` reaches neither, test code
+(`only_the_composition_roots_name_the_factory`), the adapters are peers —
+none reaches another and `backend::tmux_compat` reaches none, test code
 included (`the_adapters_are_peers`) — and each adapter's code names exactly its
 own `Multiplexer` variant (`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own`,
 ADR-31), and the crossings still to be

@@ -1043,12 +1043,12 @@ OS is read as a platform.
   `%window-close`, psmux does not, and any other multiplexer is polled until
   an adapter says otherwise. The contract's `default_shell` has no default, so
   no backend inherits this build's shell.
-- **Nothing is reserved to an OS.** Every multiplexer name — including the
-  prospective rmux and herdr — can be the route of a session on either
+- **Nothing is reserved to an OS.** Every multiplexer name — including RMUX
+  and the prospective Herdr — can be the route of a session on either
   platform, locally or on a host; whether one is usable is the registry's
-  answer (`wiring::implements`), which does not depend on the OS: the tmux and
-  psmux adapters are registered on every machine and every host (ADR-31).
-  Neither an rmux nor a Herdr adapter exists yet.
+  answer (`wiring::implements`), which does not depend on the OS: the tmux,
+  psmux, and RMUX adapters are registered on every machine and every host
+  (ADR-31). No Herdr adapter exists yet.
 - **Enforced**: `tests/architecture_rules.rs`
   (`the_route_and_the_contract_know_no_launcher_adapter_or_build_os`) keeps
   `session::route` and `backend::contract` free of the launchers, host
@@ -2333,7 +2333,7 @@ before refusing.
   nothing, which let a stub compile and misbehave. Each backend now says what
   it does.
 
-**Consequences**: a future RMUX or Herdr adapter owns a session's lifecycle by
+**Consequences**: RMUX and any future Herdr adapter own a session's lifecycle by
 registering for its route in `wiring`; `session_ops` does not change. The
 interface's registry is built from the `hosts.toml` of its start, so a host
 added later is served once the interface restarts — the headless heartbeat
@@ -2445,7 +2445,7 @@ table row.
   backend is first asked to start (`preflight::Dependency::Multiplexer`).
 
 **Consequences**: `tests/architecture_rules.rs` holds the shape by resolved
-references: `the_adapters_are_peers` (neither adapter reaches the other, and
+references: `the_adapters_are_peers` (no adapter reaches another, and
 the helper reaches neither, test code included) and
 `every_multiplexer_the_factory_serves_has_an_adapter_of_its_own` (each
 adapter's code names exactly its own `Multiplexer` variant, no two the same,
@@ -2459,6 +2459,12 @@ POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
 and the hook-state listing went behind the contract in ADR-32. The heartbeat
 only ensures its session exists: every backend applies its config before it
 spawns or attaches. psmux has not been driven live by this change.
+
+RMUX extends this arrangement as a third adapter. Its control-mode policy
+skips `pause-after` and pane monitoring, and treats a command list as one
+reply, matching the protocol observed with RMUX 0.10.0. The local RMUX route
+has been driven live; SSH, WSL, native Windows, and TUI-open pane deletion
+remain unverified.
 
 ## ADR-32: Hook status and the heartbeat are the route's backend's
 

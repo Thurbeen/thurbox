@@ -351,7 +351,7 @@ pub(crate) mod tests {
 
     /// Every multiplexer is a route on every machine; which of them work is
     /// what registered, and nothing else. A test registers an implementation
-    /// for rmux and herdr the way an adapter someday would — locally and on a
+    /// for each multiplexer the way a factory does — locally and on a
     /// host of either kind — and only those routes resolve.
     #[test]
     fn availability_is_registration_for_every_mux_on_every_machine() {

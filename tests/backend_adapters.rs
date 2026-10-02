@@ -1,8 +1,9 @@
-//! tmux and psmux are two adapters, each serving its own multiplexer on any
+//! Each adapter serves its own multiplexer on any
 //! machine, rather than one adapter that becomes the other when the binary's
 //! name or the build OS says so.
 
 use thurbox::backend::psmux::PsmuxBackend;
+use thurbox::backend::rmux::RmuxBackend;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::SessionBackend;
 use thurbox::session::{HostDef, Multiplexer, Platform, Route};
@@ -35,6 +36,10 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
         PsmuxBackend::local().name(),
         Route::local(Some(Multiplexer::Psmux)).format()
     );
+    assert_eq!(
+        RmuxBackend::local().name(),
+        Route::local(Some(Multiplexer::Rmux)).format()
+    );
     for host in [
         host("linux", Platform::Posix, None),
         host("windows", Platform::Windows, Some("psmux")),
@@ -47,6 +52,10 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
         assert_eq!(
             PsmuxBackend::for_host(&host).name(),
             host.route(Some(Multiplexer::Psmux)).format()
+        );
+        assert_eq!(
+            RmuxBackend::for_host(&host).name(),
+            host.route(Some(Multiplexer::Rmux)).format()
         );
     }
 }
@@ -78,7 +87,7 @@ fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     }
 }
 
-/// Each adapter runs its own binary: a fake `tmux` and a fake `psmux` on
+/// Each adapter runs its own binary: fake multiplexers on
 /// `PATH` record which one each adapter asked for its version.
 #[cfg(unix)]
 #[test]
@@ -87,12 +96,17 @@ fn each_adapter_runs_its_own_binary() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let log = dir.path().join("argv");
-    for binary in ["tmux", "psmux"] {
+    for binary in ["tmux", "psmux", "rmux"] {
         let path = dir.path().join(binary);
+        let banner = if binary == "rmux" {
+            "rmux 0.10.0"
+        } else {
+            "tmux 3.4"
+        };
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\necho \"{binary} $*\" >> '{}'\necho 'tmux 3.4'\n",
+                "#!/bin/sh\necho \"{binary} $*\" >> '{}'\necho '{banner}'\n",
                 log.display()
             ),
         )
@@ -108,13 +122,16 @@ fn each_adapter_runs_its_own_binary() {
     PsmuxBackend::local()
         .check_available()
         .expect("psmux answers");
+    RmuxBackend::local()
+        .check_available()
+        .expect("rmux answers");
 
     let ran = std::fs::read_to_string(&log).expect("the fakes ran");
     let binaries: Vec<&str> = ran
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    assert_eq!(binaries, ["tmux", "psmux"], "argv seen: {ran}");
+    assert_eq!(binaries, ["tmux", "psmux", "rmux"], "argv seen: {ran}");
 }
 
 fn have(binary: &str) -> bool {

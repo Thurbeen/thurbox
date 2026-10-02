@@ -47,7 +47,7 @@ backend::osc8        → session
 backend::output_wake (no crate-internal references)
 backend::registry    → session, backend::contract
 backend::wiring      → session, shell, agent::host_config,
-                       backend::{contract, registry, tmux, psmux}
+                       backend::{contract, registry, tmux, psmux, rmux}
 backend::tmux_compat (declares the modules below — no references)
   ::control_mode     → shell, backend::contract,
                        backend::tmux_compat::transport
@@ -58,6 +58,8 @@ backend::tmux_compat (declares the modules below — no references)
 backend::tmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}
 backend::psmux       → session, shell, backend::{contract, instance},
+                       backend::tmux_compat::{control_mode, server, transport}
+backend::rmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}
 git                  → session, paths, shell
 storage              → session, sync, paths
@@ -99,9 +101,9 @@ references nothing, which is what lets every other module depend on it.
 `backend` is the session-backend boundary: consumers name its contract
 (`backend::contract`, `backend::identity`, `backend::pane`,
 `backend::registry`), and only the factory, `backend::wiring`, names an
-adapter. Only a composition root may reach the factory. The tmux and psmux
-adapters are peers: neither reaches the other, and `backend::tmux_compat`, the
-protocol both speak, reaches neither (ADR-31). `session_ops`, `cli` and
+adapter. Only a composition root may reach the factory. The tmux, psmux, and
+RMUX adapters are peers: none reaches another, and `backend::tmux_compat`, the
+protocol they speak, reaches none (ADR-31). `session_ops`, `cli` and
 `kernel` reach no adapter, protocol helper or factory at all — not by
 reference, alias or re-export, and not through anything they are granted —
 status and the heartbeat included (ADR-32). Every file of `agent` is a node

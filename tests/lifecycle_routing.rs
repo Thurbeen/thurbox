@@ -4,12 +4,12 @@
 //! Every verb here runs through the real entry points — `cli::run` in-process,
 //! with the registry the binary would build handed in, and the `session_ops`
 //! sweeps the heartbeat drives — against a registry with an in-memory backend
-//! registered for `local:rmux` and `ssh:probehost:rmux`, routes no adapter in
-//! this build serves. The probe never runs a process and never speaks the tmux
+//! registered for `local:rmux` and `ssh:probehost:rmux`, overriding the real
+//! adapter to record each call. The probe never runs a process or speaks the tmux
 //! command grammar, so a window it holds can only have got there through the
 //! trait, and a private tmux server that stays empty proves nothing went the
-//! old way. That is the claim a future RMUX or Herdr adapter rests on: it can
-//! own a session's lifecycle by registering, without `session_ops` naming it.
+//! old way. The same seam lets the real RMUX adapter own lifecycle without
+//! `session_ops` naming it.
 //!
 //! The second test is the other half. A route nothing is registered for is
 //! refused by every verb, with the row left as it was and no window opened

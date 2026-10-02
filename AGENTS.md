@@ -266,7 +266,7 @@ backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, shell,                   (the factory: the only
                      agent::host_config,                node naming an adapter)
                      backend::{contract,registry,
-                     tmux,psmux}
+                     tmux,psmux,rmux}
 backend::tmux_compat nothing — declares the three below (tmux protocol helper)
   ::control_mode     shell, backend::contract,
                      backend::tmux_compat::transport
@@ -283,6 +283,9 @@ backend::tmux        session, shell, backend::contract, (the tmux adapter)
 backend::psmux       session, shell, backend::{contract, (the psmux adapter —
                      instance},
                      backend::tmux_compat::{control_mode, a peer, never tmux's)
+                     server,transport}
+backend::rmux        session, shell, backend::contract, (the RMUX adapter)
+                     backend::tmux_compat::{control_mode,
                      server,transport}
 git                  session, paths, shell
 storage              session, sync, paths
@@ -351,7 +354,8 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 - MSRV: 1.75, Edition 2021
 - Async runtime: tokio (multi-threaded)
 - Session backend: a tmux-protocol server per adapter — `TmuxBackend`
-  (`backend::tmux`) and `PsmuxBackend` (`backend::psmux`), peers over the
+  (`backend::tmux`), `PsmuxBackend` (`backend::psmux`), and opt-in
+  `RmuxBackend` (`backend::rmux`), peers over the
   shared `tmux_compat::server` (ADR-31) — over a `TmuxTransport`
   (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
   `ssh:<host>` backends from `hosts.toml`). The local socket is

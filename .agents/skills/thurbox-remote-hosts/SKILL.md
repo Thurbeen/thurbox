@@ -330,8 +330,8 @@ session), never on the loop, ADR-P12).
   identity vars travel.
 - **Remote session status** (hooks-driven, like local, **all agents**) is the
   **route's backend's** (ADR-32): every step below is a `SessionBackend` verb,
-  so nothing in `session_ops`/`cli` names a multiplexer, and an RMUX/Herdr
-  adapter supplies its own channel by answering them.
+  so nothing in `session_ops`/`cli` names a multiplexer. RMUX supplies its own
+  channel by answering them; a future Herdr adapter would do the same.
   `thurbox-cli session signal` can't work from a host (no CLI there; it would
   write the host's own DB), so hook commands are **rewritten**
   (`builtin_hooks::rewrite_hook_signals`) to the command the row's backend
