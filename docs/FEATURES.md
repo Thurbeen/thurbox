@@ -408,8 +408,10 @@ not applicable.
    never blocking the UI on a host round trip; the worktree and multiplexer
    window are created on that host through its configured transport.
 2. **Multiplexer picker** — choose a backend offered on that host. The
-   configured choice or platform default stays selected. RMUX sits next to
-   tmux; locally it appears only when `rmux` resolves on `PATH`.
+   configured choice or platform default stays selected. An unavailable
+   configured choice requires an explicit replacement selection. RMUX sits next
+   to tmux; locally it appears only when `rmux` resolves on `PATH`. A choice
+   stays tied to its backend name when the available list refreshes.
 3. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is

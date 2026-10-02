@@ -2454,17 +2454,21 @@ registers probe adapters for all four multiplexers and checks each route
 reaches its own from a POSIX and a Windows thurbox, locally, over ssh to a host
 of either platform and in a WSL distro, built from the placement's platform
 and launcher, with a launcher that adds nothing to the probe's command line.
-The local picker offers every registered multiplexer, so psmux appears on a
-POSIX machine and tmux on Windows. The heartbeat, the own-pane status write
+The local picker offers every registered multiplexer whose optional binary is
+available, so psmux appears on a POSIX machine and tmux on Windows. The
+heartbeat, the own-pane status write
 and the hook-state listing went behind the contract in ADR-32. The heartbeat
 only ensures its session exists: every backend applies its config before it
 spawns or attaches. psmux has not been driven live by this change.
 
 RMUX extends this arrangement as a third adapter. Its control-mode policy
-skips `pause-after` and pane monitoring, and treats a command list as one
-reply, matching the protocol observed with RMUX 0.10.0. The local RMUX route
-has been driven live; SSH, WSL, native Windows, and TUI-open pane deletion
-remain unverified.
+skips `pause-after`, pane monitoring, and format subscriptions, and treats a
+command list as one reply, matching RMUX 0.10.0. Boundary markers split that
+one reply into the three parts of a pane snapshot; detached resizes reserve one
+reply too. RMUX polls pane liveness and remote hook options because its control
+stream does not complete a killed pane's reader and refuses `refresh-client -B`.
+Local creation, TUI attachment, and TUI-open pane deletion have been driven
+live; SSH, WSL, and native Windows remain unverified.
 
 ## ADR-32: Hook status and the heartbeat are the route's backend's
 

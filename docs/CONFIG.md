@@ -354,6 +354,8 @@ The TUI keeps that default selected. Where both are offered, it places `rmux`
 immediately after `tmux`. The local picker offers `rmux` only while its binary
 resolves on `PATH`; a remote host's binaries cannot be checked locally, so its
 registered choices remain visible.
+If a configured choice is unavailable, the TUI requires an explicit selection
+of another offered multiplexer before continuing.
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
@@ -425,8 +427,8 @@ agent, and worktree once. An exited pane still held by the server remains
 visible for inspection. A backend that is unreachable or has not verified the
 window cannot authorize a relaunch. A session intentionally parked with
 `session stop` stays stopped. A deleted companion shell is forgotten without
-relaunching the agent. RMUX's local headless path has a live pane-deletion
-test; a TUI-open pane-deletion path and Herdr remain unverified.
+relaunching the agent. RMUX's local headless and TUI-open pane-deletion paths
+have live tests; Herdr remains unverified.
 
 ## hooks.toml
 

@@ -501,6 +501,44 @@ fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
 }
 
 #[test]
+fn an_unavailable_configured_rmux_requires_an_explicit_backend_choice() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.configured = Some("rmux".into());
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("rmux is unavailable"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Multiplexer"));
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_picker_refresh_keeps_the_chosen_backend() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    assert!(drawn(&host, &world).contains("▸ psmux"));
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into(), "rmux".into()];
+    assert!(drawn(&host, &world).contains("▸ psmux"));
+    press(&host, &world, "enter");
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    assert!(matches!(
+        issued.as_slice(),
+        [Command::Create { multiplexer: Some(mux), .. }] if mux == "psmux"
+    ));
+}
+
+#[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
     let world = World::default();

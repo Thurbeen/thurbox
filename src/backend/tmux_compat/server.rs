@@ -1577,8 +1577,13 @@ impl<M: TmuxCompatible> Server<M> {
     ///
     /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
     /// the budget covers only the lock, there being no answer to wait for.
-    /// `blocks` is what [`ControlMode::send_command_detached`] says it is.
+    /// `blocks` is tmux's count; a one-block server needs one waiter slot.
     fn ctrl_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
+        let blocks = if M::COMMAND_LIST_SINGLE_REPLY {
+            1
+        } else {
+            blocks
+        };
         self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
             ctrl.send_command_detached(cmds, blocks)
         })
@@ -3852,6 +3857,7 @@ mod tests {
                 flow_control_command: Some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
+                command_list_single_reply: false,
                 subscriptions: true,
                 status_poll: None,
             }
@@ -3902,6 +3908,7 @@ mod tests {
                 flow_control_command: None,
                 implicit_attach_reply: false,
                 tagged_blocks: false,
+                command_list_single_reply: false,
                 subscriptions: false,
                 status_poll: None,
             }

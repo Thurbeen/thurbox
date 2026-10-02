@@ -211,6 +211,7 @@ impl TmuxCompatible for Psmux {
             flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: false,
             tagged_blocks: false,
+            command_list_single_reply: Self::COMMAND_LIST_SINGLE_REPLY,
             subscriptions: false,
             status_poll: (transport.is_remote() && Self::HOOK_STATUS)
                 .then(|| hook_poll_command(session)),

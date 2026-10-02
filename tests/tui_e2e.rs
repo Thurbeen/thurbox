@@ -36,6 +36,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use thurbox::backend::tmux_compat::server::TmuxCompatible;
+
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -94,10 +96,14 @@ fn have_tmux() -> bool {
 }
 
 fn have_rmux() -> bool {
-    Command::new("rmux")
-        .arg("-V")
-        .output()
-        .is_ok_and(|output| output.status.success())
+    Command::new("rmux").arg("-V").output().is_ok_and(|output| {
+        output.status.success()
+            && thurbox::backend::rmux::Rmux::check_banner(
+                &String::from_utf8_lossy(&output.stdout),
+                "test",
+            )
+            .is_ok()
+    })
 }
 
 /// The isolated profile a scenario runs in: every directory the binary reads
@@ -2571,6 +2577,32 @@ fn the_tui_picker_creates_a_session_on_rmux() {
         .expect("read session")
         .expect("created session");
     assert_eq!(row.backend_type, "local:rmux");
+    tui.wait_for("$ ");
+    let old_pane = row.backend_id;
+    let mut kill = Command::new("rmux");
+    profile.apply(&mut kill);
+    let killed = kill
+        .args(["-L", profile.server.socket(), "kill-pane", "-t", &old_pane])
+        .output()
+        .expect("kill RMUX pane while TUI is open");
+    assert!(killed.status.success(), "{killed:?}");
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && db
+            .get_session_by_name("rmux-picker")
+            .expect("read session during relaunch")
+            .is_some_and(|row| row.backend_id == old_pane)
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let relaunched = db
+        .get_session_by_name("rmux-picker")
+        .expect("read relaunched session")
+        .expect("same session row");
+    assert_ne!(relaunched.backend_id, old_pane);
+    tui.wait_for("$ ");
+    tui.send(b"echo rmux-relaunched-live\r");
+    tui.wait_for("rmux-relaunched-live");
     assert!(tui.quit().success());
 }
 

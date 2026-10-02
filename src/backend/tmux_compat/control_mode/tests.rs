@@ -1197,6 +1197,7 @@ fn a_control_client_without_flow_control_attaches_without_refreshing() {
             flow_control_command: None,
             implicit_attach_reply: false,
             tagged_blocks: false,
+            command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
         },
@@ -1224,6 +1225,7 @@ fn a_control_client_without_flow_control_attaches_without_refreshing() {
             flow_control_command: Some("display-message -p policy"),
             implicit_attach_reply: false,
             tagged_blocks: false,
+            command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
         },
@@ -1264,6 +1266,7 @@ fn a_single_reply_command_list_leaves_the_next_reply_aligned() {
             flow_control_command: None,
             implicit_attach_reply: false,
             tagged_blocks: false,
+            command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
         },
@@ -1336,6 +1339,7 @@ impl ThrowawayServer {
                 flow_control_command: flow_control.then_some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
+                command_list_single_reply: false,
                 subscriptions: true,
                 status_poll: None,
             },
@@ -1396,6 +1400,7 @@ fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
             flow_control_command: None,
             implicit_attach_reply: true,
             tagged_blocks: true,
+            command_list_single_reply: true,
             subscriptions: false,
             status_poll: None,
         },
@@ -1631,6 +1636,25 @@ fn a_snapshot_is_read_from_its_three_blocks() {
         alternate.alternate,
         Some(vec!["current".to_string(), "rows".to_string()])
     );
+}
+
+#[test]
+fn a_snapshot_is_read_from_one_reply_block_with_boundaries() {
+    let snapshot = parse_snapshot(vec![vec![
+        "80 24 5 3 0".into(),
+        "__thurbox_snapshot_test__normal__".into(),
+        "current".into(),
+        "rows".into(),
+        "__thurbox_snapshot_test__alternate__".into(),
+        "saved".into(),
+    ]])
+    .expect("one-block snapshot");
+    assert_eq!(
+        (snapshot.cols, snapshot.rows, snapshot.cursor),
+        (80, 24, (5, 3))
+    );
+    assert_eq!(snapshot.normal, vec!["current", "rows"]);
+    assert_eq!(snapshot.alternate, None);
 }
 
 #[test]

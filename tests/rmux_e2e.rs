@@ -6,6 +6,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use thurbox::backend::rmux::Rmux;
+use thurbox::backend::tmux_compat::server::TmuxCompatible;
 use thurbox::backend::wiring;
 use thurbox::session::{Multiplexer, Route};
 use thurbox::session_ops::{delete, rename, restart, restore, spawn};
@@ -58,12 +60,11 @@ fn git(repo: &Path, args: &[&str]) {
 
 #[test]
 fn rmux_create_restart_rename_restore_relaunch_and_delete() {
-    if !Command::new("rmux")
-        .arg("-V")
-        .output()
-        .is_ok_and(|out| out.status.success())
-    {
-        eprintln!("skipping: rmux is not installed");
+    if !Command::new("rmux").arg("-V").output().is_ok_and(|out| {
+        out.status.success()
+            && Rmux::check_banner(&String::from_utf8_lossy(&out.stdout), "test").is_ok()
+    }) {
+        eprintln!("skipping: RMUX 0.10.0 or newer is not installed");
         return;
     }
     let root = tempfile::tempdir().expect("isolated paths");
@@ -136,8 +137,8 @@ fn rmux_create_restart_rename_restore_relaunch_and_delete() {
     let backend = backends.get(&rmux_route).expect("RMUX backend");
     let hook = backend.hook_signal_command().expect("RMUX hook command");
     assert!(
-        hook.contains("$RMUX_PANE"),
-        "the hook must target an RMUX pane"
+        !hook.contains('$'),
+        "Grok rejects bare shell variables: {hook}"
     );
     let hook_pane = backend
         .create_window(&thurbox::backend::WindowSpec {

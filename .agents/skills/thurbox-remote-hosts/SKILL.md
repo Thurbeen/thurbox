@@ -135,8 +135,8 @@ declares a native Windows host on any multiplexer, and an entry that sets none
 keeps the old reading (`multiplexer = "psmux"` ⇒ Windows, else POSIX; a WSL
 distro is always POSIX). `default_shell`, the `default-command` pin and the
 `/bin/sh -lc` login wrap follow the platform, never `cfg(windows)` or the
-multiplexer's name; `needs_liveness_poll` follows whether the multiplexer
-reports `%window-close` (tmux yes, psmux no). Tests simulate the Windows build
+multiplexer's name; `needs_liveness_poll` follows whether its control stream
+closes pane readers on window deletion (tmux yes, psmux and RMUX no). Tests simulate the Windows build
 with `session::platform::simulate_local`. A Windows host has no POSIX shell. So
 each remote probe ships **two scripts emitting one line protocol** —
 `git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
@@ -356,7 +356,7 @@ session), never on the loop, ADR-P12).
   (`refresh-client -B 'thurbox-status:%*:#{@thurbox_state}'`, armed in
   `ControlMode::start` so reconnects re-arm; the wire names live in
   `backend::tmux_compat::control_mode`) and receives `%subscription-changed`
-  pushes (≤1/s); a **remote psmux** connection would instead run a 1 s
+  pushes (≤1/s); a **remote psmux or RMUX** connection instead runs a 1 s
   **poller thread** (`control_mode::diff_polled_hook_states`) — armed only when
   its channel is open. Both feed `take_hook_state_events`, drained each tick by
   `Terminals::drain_hook_events` into the same `set_hook_state` columns local

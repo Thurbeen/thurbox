@@ -32,7 +32,9 @@ impl TmuxCompatible for Rmux {
     const MULTIPLEXER: Multiplexer = Multiplexer::Rmux;
     const WINDOW_OPTIONS: bool = true;
     const WINDOW_SETTINGS: bool = true;
-    const WINDOW_EVENTS: bool = true;
+    // RMUX does not end a pane stream when its window is killed externally.
+    // Poll liveness so an open TUI can relaunch that pane.
+    const WINDOW_EVENTS: bool = false;
     const PANE_MONITORING: bool = false;
     const SNAPSHOTS: bool = true;
     const COMMAND_LISTS: bool = false;
@@ -41,6 +43,9 @@ impl TmuxCompatible for Rmux {
     const CONDITIONAL_RESIZE: bool = true;
     const SERVER_SCOPE: &str = "-s";
     const DISPLAY_FLAGS: &[&str] = &[];
+    // RMUX 0.9.1 speaks wire version 5, which the 0.10.0 client (wire 8)
+    // rejects before it can ask that daemon to create a pane. `#{version}`
+    // reports tmux compatibility 3.4, so it cannot be used as an RMUX floor.
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
     fn check_banner(banner: &str, _socket: &str) -> Result<()> {
@@ -96,21 +101,31 @@ impl TmuxCompatible for Rmux {
         Arc::new(RmuxInput)
     }
 
-    fn control_policy(_transport: &TmuxTransport, _session: &str) -> ControlPolicy {
+    fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
             flow_control_command: None,
             implicit_attach_reply: true,
             tagged_blocks: true,
-            subscriptions: true,
-            status_poll: None,
+            command_list_single_reply: Self::COMMAND_LIST_SINGLE_REPLY,
+            // RMUX 0.10.0 refuses `refresh-client -B`.
+            subscriptions: false,
+            status_poll: (transport.is_remote() && Self::HOOK_STATUS).then(|| {
+                format!(
+                    "list-panes -s -t {} -F '#{{pane_id}} #{{{}}}'",
+                    shell_escape(session),
+                    crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
+                )
+            }),
         }
     }
 
     const HOOK_STATUS: bool = true;
 
+    // In a pane RMUX resolves `set-option -p` to that pane. Grok rejects a
+    // hook file with a bare `$VAR`, so the command needs no shell variable.
     fn hook_signal_command(_server: &Server<Self>) -> String {
         format!(
-            "test x$RMUX_PANE != x && rmux set-option -p -t $RMUX_PANE {} ",
+            "rmux set-option -p {} ",
             crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
         )
     }
@@ -138,5 +153,28 @@ mod tests {
         assert!(Rmux::check_banner("rmux 0.10.0", "test").is_ok());
         assert!(Rmux::check_banner("rmux 0.11.0", "test").is_ok());
         assert!(Rmux::check_banner("tmux 3.4", "test").is_err());
+    }
+
+    #[test]
+    fn the_remote_control_policy_polls_hooks_without_subscriptions() {
+        let remote = TmuxTransport::remote(
+            HostLauncher::Ssh {
+                destination: "example.invalid".into(),
+                ssh_opts: Vec::new(),
+            },
+            "rmux",
+        );
+        let policy = Rmux::control_policy(&remote, "thurbox");
+        assert!(!policy.subscriptions);
+        assert!(policy.command_list_single_reply);
+        assert_eq!(
+            policy.status_poll.as_deref(),
+            Some("list-panes -s -t thurbox -F '#{pane_id} #{@thurbox_state}'")
+        );
+        assert!(
+            Rmux::control_policy(&TmuxTransport::local("rmux"), "thurbox")
+                .status_poll
+                .is_none()
+        );
     }
 }
