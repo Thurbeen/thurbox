@@ -553,8 +553,9 @@ pub struct Terminals {
     /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
     app_copy_tokens: u64,
-    /// The surface [`Self::focus`] last handed its size — the edge it acts on.
-    size_focus: Option<String>,
+    /// The surface [`Self::focus`] last handed its size, and the pane behind
+    /// it — the edge it acts on.
+    size_focus: Option<(String, String)>,
 }
 
 impl Terminals {
@@ -1354,15 +1355,13 @@ impl Terminals {
     /// this frame's.
     ///
     /// On the edge only: keeping the focus is not gaining it, or two instances
-    /// focused on one pane would take it from each other every frame. `None`
+    /// focused on one pane would take it from each other every frame. A pane
+    /// replaced under the focused surface is a new pane gaining it. `None`
     /// (focus on a pane with no terminal, or on a modal) clears the edge, so
     /// coming back is focusing again. A pane already at this size costs an
     /// atomic comparison and sends nothing, and one nobody else shares was
     /// already sized by its paint.
     pub fn focus(&mut self, surface: Option<&str>) {
-        if self.size_focus.as_deref() == surface {
-            return;
-        }
         let Some(surface) = surface else {
             self.size_focus = None;
             return;
@@ -1376,8 +1375,17 @@ impl Terminals {
         let Some(wired) = wired else {
             return;
         };
+        // Keyed on the pane as well as the surface: a restart replaces the pane
+        // under a name that keeps the focus, and the new pane has never had it.
+        if self
+            .size_focus
+            .as_ref()
+            .is_some_and(|(held, pane)| held == surface && pane == wired.backend_id())
+        {
+            return;
+        }
         wired.claim_size();
-        self.size_focus = Some(surface.to_string());
+        self.size_focus = Some((surface.to_string(), wired.backend_id().to_string()));
     }
 
     /// Where a surface was painted, and the parser it is showing.

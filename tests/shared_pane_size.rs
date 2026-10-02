@@ -351,20 +351,8 @@ fn session_grid(terminals: &Terminals) -> (u16, u16) {
         .size()
 }
 
-/// Focus hands the size over the way input does, so a session focused after
-/// another instance sized it is not left at that size until the first
-/// keystroke. Driven through the interface's own terminals — the paint and the
-/// focus step the loop runs — against a second instance on the same server.
-#[tokio::test(flavor = "multi_thread")]
-async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystroke() {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let server = TmuxServer::pin(SOCKET);
-    let here_rect = (24, 80);
-    let there_rect = (40, 120);
-    let (rows, cols) = here_rect;
+/// The server, with the session the interface finds its windows in.
+fn start_interface_session(server: &TmuxServer, (rows, cols): (u16, u16)) -> bool {
     let started = server.tmux(&[
         "new-session",
         "-d",
@@ -383,8 +371,13 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
             "skipping: tmux would not start a server: {}",
             String::from_utf8_lossy(&started.stderr).trim()
         );
-        return;
     }
+    started.status.success()
+}
+
+/// A window for the session row, named the way the interface looks it up
+/// (`tb-<name>`); its pane id.
+fn session_window(server: &TmuxServer) -> String {
     let out = server.tmux(&[
         "new-window",
         "-P",
@@ -396,21 +389,45 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
         "tb-shared",
         "sh -c 'exec sleep 100000'",
     ]);
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Sync the interface to a row naming `pane` until it holds that pane.
+async fn attach(terminals: &mut Terminals, pane: &str, (rows, cols): (u16, u16)) {
+    let snap = snapshot(pane);
+    let deadline = Instant::now() + DEADLINE;
+    while terminals.backend_handle(ID).map(|(_, id)| id).as_deref() != Some(pane) {
+        assert!(
+            Instant::now() < deadline,
+            "never attached {pane}: {}",
+            terminals.failure(ID).unwrap_or_default()
+        );
+        terminals.sync(&snap, rows, cols);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Focus hands the size over the way input does, so a session focused after
+/// another instance sized it is not left at that size until the first
+/// keystroke. Driven through the interface's own terminals — the paint and the
+/// focus step the loop runs — against a second instance on the same server.
+#[tokio::test(flavor = "multi_thread")]
+async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystroke() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin(SOCKET);
+    let here_rect = (24, 80);
+    let there_rect = (40, 120);
+    if !start_interface_session(&server, here_rect) {
+        return;
+    }
+    let id = session_window(&server);
 
     // This instance shows the session without the focus, and sizes the pane.
     let mut here = Terminals::with_registry(Arc::new(thurbox::backend::wiring::configured().0));
-    let snap = snapshot(&id);
-    let deadline = Instant::now() + DEADLINE;
-    while !here.is_attached(ID) {
-        assert!(
-            Instant::now() < deadline,
-            "never attached: {}",
-            here.failure(ID).unwrap_or_default()
-        );
-        here.sync(&snap, rows, cols);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    attach(&mut here, &id, here_rect).await;
     frame(&mut here, here_rect, false);
     until("this instance's rect to reach the pane", || {
         pane_size(&server, &id) == here_rect
@@ -483,6 +500,64 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     frame(&mut here, here_rect, true);
     until("refocusing to size the pane again", || {
         pane_size(&server, &id) == here_rect
+    })
+    .await;
+
+    drop(there);
+    there_backend.shutdown();
+}
+
+/// A pane replaced under a session that keeps the focus — a restart — is a pane
+/// that never had the focus here, so it takes this instance's size the way a
+/// newly focused one does, even though the focused surface's name never moved.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin(SOCKET);
+    let here_rect = (24, 80);
+    let there_rect = (40, 120);
+    if !start_interface_session(&server, here_rect) {
+        return;
+    }
+    let first = session_window(&server);
+    let mut here = Terminals::with_registry(Arc::new(thurbox::backend::wiring::configured().0));
+    attach(&mut here, &first, here_rect).await;
+    frame(&mut here, here_rect, true);
+    until("this instance's rect to reach the pane", || {
+        pane_size(&server, &first) == here_rect
+    })
+    .await;
+
+    // The session restarts: its window goes and a new one takes its place, and
+    // another instance sizes the new pane before this one attaches to it.
+    // `forget` is the restart telling the interface, as the coordinator does.
+    server.tmux(&["kill-window", "-t", &first]);
+    here.forget(ID);
+    let second = session_window(&server);
+    let there_backend = instance();
+    let there = ProgramPane::adopt(
+        Arc::clone(&there_backend),
+        &second,
+        "sh",
+        there_rect.0,
+        there_rect.1,
+    )
+    .expect("adopt in the other instance");
+    assert!(there.resize(there_rect.0, there_rect.1));
+    there.send_input(Vec::new()).expect("input there");
+    until("the other instance's claim to reach the new pane", || {
+        pane_size(&server, &second) == there_rect
+    })
+    .await;
+
+    // This instance picks up the new pane with the session focused throughout.
+    attach(&mut here, &second, here_rect).await;
+    until("the new pane to take this instance's size", || {
+        frame(&mut here, here_rect, true);
+        pane_size(&server, &second) == here_rect
     })
     .await;
 
