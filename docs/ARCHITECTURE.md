@@ -875,15 +875,19 @@ psmux 3.3.6 unless a different version is named). Each is the psmux adapter's an
 (ADR-31). The `thurbox-remote-hosts` skill keeps a summary; this is the
 reference to read before touching that path.
 
-- **Cold server creation can fail transiently.** On psmux 3.3.8, repeated
-  `new-session -d` calls on separate empty sockets sometimes returned
-  `psmux: failed to create session 'thurbox'`; another returned success but
-  left no server for the following `has-session`. A session create then failed
-  at its first `set-option` with `no server running`. The psmux adapter allows
-  three bootstrap attempts when no session survived; tmux keeps one. A failed
-  option on a live server is still an error, and a retry is entered only if
-  no session remains. The failure also occurs without Thurbox, so it is not a
-  v2.42.0 control-mode regression.
+- **Cold server creation can outlast the psmux client.** On psmux 3.3.8,
+  `new-session -d` sometimes returned `psmux: failed to create session`, or
+  returned success before the server could answer its next command. Its
+  `has-session` removes the session port file after a failed TCP connection,
+  including one to a server that is still starting. The adapter instead probes
+  with `list-windows`, which leaves that file intact. It omits `-x/-y` for the
+  initial placeholder so psmux may claim a warm server, retries a transient
+  `no server running` answer during setup or window creation, and gives a late
+  server a bounded final wait. Psmux can route an untargeted `set-option -g` to
+  the nonexistent `__default` session; server options therefore include
+  `-t <session>`.
+  tmux retains its size arguments and one attempt. The failure also occurs
+  without Thurbox and is not a v2.42.0 control-mode regression.
 - **`send-keys -H`** was absent in psmux 3.3.6 (it injected the hex digits as literal
   text). `psmux_send_keys_commands` encodes input from the
   primitives psmux does support (`send-keys -l` literal runs +

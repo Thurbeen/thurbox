@@ -120,9 +120,14 @@ workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
 On psmux 3.3.8, cold `new-session -d` sometimes refuses or returns before a
-server survives. Only its adapter opts into three bootstrap attempts when
-there is still no session; tmux keeps one. This occurs with psmux alone and is
-independent of v2.42.0's control-mode changes.
+server answers. Its `has-session` deletes a starting server's port file after
+a failed TCP connection, so the adapter probes with `list-windows`. The
+adapter omits `-x/-y` for the initial placeholder, allowing psmux to claim a
+warm server, and retries transient `no server running` replies from setup and
+window creation with a bounded final wait. tmux keeps its size flags and one
+attempt. Psmux's global `set-option -g` commands include `-t <session>` so
+they do not route to `__default`. The failure occurs
+with psmux alone and is independent of v2.42.0's control-mode changes.
 
 A host's **platform** is its own field (`HostDef::platform`, `session::Platform`,
 ADR-13 "The host's platform is its own dimension"): `platform = "windows"`
