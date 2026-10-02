@@ -33,6 +33,19 @@ decide() { # <throttle-days> <prs-json>
   echo "$output" | jq -e '.reason | test("#405639")'
 }
 
+# Since 2026-08 a community auto-updater opens most thurbox PRs on winget-pkgs.
+# Its open PR is the same queue entry as ours, so it must block too; the
+# workflow lists PRs from every author for exactly this (v2.41.8 tried to stack
+# on its open #445600 because the query only asked for the token's own).
+@test "decide: an open PR from another account blocks a second submission" {
+  prs='[{"number":445600,"state":"OPEN","createdAt":"2026-10-02T09:04:42Z","title":"Update version: Thurbeen.thurbox version 2.41.7","author":{"login":"a-community-bot"}},
+        {"number":406494,"state":"MERGED","createdAt":"2026-07-23T14:10:14Z","title":"Thurbeen.thurbox version 1.1.1","author":{"login":"the-token-account"}}]'
+  run decide 0 "$prs"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .should_submit)" = "false" ]
+  echo "$output" | jq -e '.reason | test("#445600")'
+}
+
 @test "decide: an open PR blocks even when the throttle window has elapsed" {
   prs='[{"number":1,"state":"OPEN","createdAt":"2026-01-01T12:00:00Z","title":"New version: Thurbeen.thurbox version 2.0.0"}]'
   run decide 30 "$prs"
@@ -139,6 +152,54 @@ after_submit() { # <exit-code> <submit output>
     result="$(after_submit "$code" "$text")"
     [ "$(echo "$result" | jq -r '.opened and .fail')" = "false" ]
   done
+}
+
+# `after-sync` decides what a failed `gh repo sync` of the token account's fork
+# means. Every release from 2026-09-10 to v2.41.8 died here: winget-pkgs had
+# started changing `.github/workflows`, GitHub refuses to move a ref across such
+# a change for a token without the `workflow` scope, and the step then ran
+# `--force`, which hits the same check, and hid the reason behind a generic
+# error.
+after_sync() { # <ahead-by> <exit-code> <sync output>
+  echo "$3" | python3 "${DIR}/submit-decision.py" after-sync --ahead "$1" --exit-code "$2"
+}
+
+@test "after-sync: a clean sync is done" {
+  run after_sync 0 0 "✓ Synced the \"the-account:master\" branch from \"microsoft:master\""
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .action)" = "done" ]
+}
+
+# Run 36989062882's exact message.
+@test "after-sync: a token without the workflow scope fails with the fix, not a reset" {
+  msg='Upstream commits contain workflow changes, which require the `workflow` scope or permission to merge. To request it, run: gh auth refresh -s workflow'
+  run after_sync 0 1 "$msg"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .action)" = "fail" ]
+  echo "$output" | jq -e '.reason | test("WINGET_TOKEN") and test("workflow")'
+}
+
+@test "after-sync: the workflow-scope refusal is never reset away, even on a diverged fork" {
+  msg='Upstream commits contain workflow changes, which require the `workflow` scope or permission to merge.'
+  run after_sync 3 1 "$msg"
+  [ "$(echo "$output" | jq -r .action)" = "fail" ]
+}
+
+# A fork with nothing of its own can always fast-forward, so a refusal there is
+# never divergence and a reset could not fix it.
+@test "after-sync: a fork with no commits of its own is not reset" {
+  run after_sync 0 1 "HTTP 422: something else"
+  [ "$(echo "$output" | jq -r .action)" = "fail" ]
+}
+
+@test "after-sync: only a diverged fork is reset" {
+  run after_sync 2 1 "HTTP 409: There are merge conflicts"
+  [ "$(echo "$output" | jq -r .action)" = "force" ]
+}
+
+@test "after-sync: an unknown divergence is not reset" {
+  run after_sync -1 1 "HTTP 409: There are merge conflicts"
+  [ "$(echo "$output" | jq -r .action)" = "fail" ]
 }
 
 # bump-manifests.py against a recorded release checksums.txt.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""The winget channel's two decisions, out of the workflow so they are testable.
+"""The winget channel's three decisions, out of the workflow so they are testable.
 
 Usage: submit-decision.py decide --throttle-days N [--now ISO8601] [PRS_JSON]
+       submit-decision.py after-sync --ahead N --exit-code N [OUTPUT_FILE]
        submit-decision.py after-submit --exit-code N [OUTPUT_FILE]
 
 `decide` reads `gh pr list --json number,state,createdAt,title` output (stdin by
@@ -12,6 +13,16 @@ no "update the pending PR" mode), and a last submission younger than
 `--throttle-days`. At `--throttle-days 0` only the open-PR rule can gate, which
 is the Chocolatey-parity cadence: attempt every release, let the moderation
 queue itself set the pace.
+
+`after-sync` reads a finished `gh repo sync` of the token account's fork — its
+exit code and output, plus how many commits the fork's default branch has that
+upstream's lacks (`--ahead`, -1 when unknown) — and prints `{"action": "done" |
+"force" | "fail", "reason": str}`. `force` (reset the default branch to
+upstream's) is reserved for a fork that has really diverged: a fork with no
+commits of its own can always fast-forward, so a refusal there is something a
+reset cannot fix, and the one refusal seen in practice — winget-pkgs changing
+`.github/workflows` while the token lacks the `workflow` scope — applies to the
+reset just the same.
 
 `after-submit` reads a finished `wingetcreate submit` — its exit code, plus its
 output (stdin by default) — and prints `{"opened": bool, "deferrable": bool,
@@ -87,6 +98,40 @@ def decide(prs, throttle_days: int, now: datetime) -> dict:
     }
 
 
+# GitHub's refusal to move a ref across upstream `.github/workflows` changes for a
+# token without the `workflow` scope (merge-upstream and a forced ref update
+# alike).
+WORKFLOW_SCOPE = r"(?i)workflow.{0,40}\bscope\b|\bscope\b.{0,40}workflow"
+
+
+def after_sync(exit_code: int, ahead: int, output: str) -> dict:
+    if exit_code == 0:
+        return {"action": "done", "reason": "fork synced from microsoft/winget-pkgs"}
+    if re.search(WORKFLOW_SCOPE, output):
+        return {
+            "action": "fail",
+            "reason": (
+                "microsoft/winget-pkgs changed .github/workflows and WINGET_TOKEN lacks the "
+                "`workflow` scope, so GitHub refuses to update the fork (a reset hits the same "
+                "check). Regenerate WINGET_TOKEN as a classic PAT with `public_repo` and `workflow`"
+            ),
+        }
+    if ahead == 0:
+        return {
+            "action": "fail",
+            "reason": "the fork has no commits of its own, so it is not diverged and a reset cannot help",
+        }
+    if ahead < 0:
+        return {
+            "action": "fail",
+            "reason": "could not tell whether the fork diverged from upstream, so it is left alone",
+        }
+    return {
+        "action": "force",
+        "reason": f"the fork's default branch has {ahead} commit(s) upstream lacks",
+    }
+
+
 def after_submit(exit_code: int, output: str) -> dict:
     if exit_code == 0:
         return {
@@ -115,6 +160,11 @@ def main() -> int:
     d.add_argument("--throttle-days", type=int, required=True)
     d.add_argument("--now", default=None, help="ISO-8601 instant to age against (default: now)")
 
+    s = sub.add_parser("after-sync")
+    s.add_argument("output", nargs="?", default="-", help="gh repo sync output, or - for stdin")
+    s.add_argument("--exit-code", type=int, required=True, help="gh repo sync's exit code")
+    s.add_argument("--ahead", type=int, required=True, help="fork commits upstream lacks; -1 = unknown")
+
     a = sub.add_parser("after-submit")
     a.add_argument("output", nargs="?", default="-", help="wingetcreate output, or - for stdin")
     a.add_argument("--exit-code", type=int, required=True, help="wingetcreate submit's exit code")
@@ -129,6 +179,8 @@ def main() -> int:
             return 2
         now = parse_iso(args.now) if args.now else datetime.now(timezone.utc)
         result = decide(json.loads(source), args.throttle_days, now)
+    elif args.command == "after-sync":
+        result = after_sync(args.exit_code, args.ahead, source)
     else:
         result = after_submit(args.exit_code, source)
 
