@@ -110,16 +110,22 @@ impl App {
                     json!({
                         "name": plugin.name,
                         "id": plugin.path,
-                        "state": plugin_states.get(&plugin.name),
+                        "state": plugin_states.get(&plugin.path),
                     })
                 })
             })
             .collect();
         overlays.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         let search_query = self.host.shared_string("search.query");
+        let search_state = self
+            .host
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "search")
+            .and_then(|plugin| plugin_states.get(&plugin.path));
         let search = json!({
             "query": search_query,
-            "selected_result": plugin_states.get("search").and_then(|s| s.get("selected_result")),
+            "selected_result": search_state.and_then(|s| s.get("selected_result")),
         });
         let current = json!({
             "focused_pane": focused,

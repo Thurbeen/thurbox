@@ -1381,7 +1381,7 @@ impl LuaHost {
                 };
                 fields.insert(key, value);
             }
-            states.insert(plugin.name.clone(), serde_json::Value::Object(fields));
+            states.insert(plugin.path.clone(), serde_json::Value::Object(fields));
         }
         states
     }

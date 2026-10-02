@@ -1053,6 +1053,10 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
         initial["search"]["selected_result"],
         serde_json::Value::Null
     );
+    assert_eq!(
+        initial["plugin_state"]["plugins/65_search.lua"]["open"],
+        false
+    );
 
     let mut watch_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut watch_cmd);
