@@ -2050,25 +2050,24 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
         "a backend name is not a machine the list can group by:\n{screen}"
     );
     assert_eq!(
-        screen.matches("buildbox · website").count(),
+        screen.matches("buildbox").count(),
         1,
-        "the creation joins the host's own group rather than building a \
-         second one beside it:\n{screen}"
+        "the creation joins the existing host row:\n{screen}"
     );
     assert!(
-        line_of(&screen, "creating") > line_of(&screen, "buildbox · website"),
+        line_of(&screen, "creating") > line_of(&screen, "buildbox"),
         "and draws inside it:\n{screen}"
     );
 
-    // The same repo, asked for here: a `local · website` group is built for it
-    // even though this machine holds no session of that repo.
+    // The same repo, asked for here: a local website group is built above the
+    // host row, even though this machine holds no session of that repo.
     let screen = screen_for(&create("website", None));
     assert!(
-        line_of(&screen, "creating") > line_of(&screen, "local · website"),
+        line_of(&screen, "creating") > line_of(&screen, "── website"),
         "a creation on this machine draws under this machine:\n{screen}"
     );
     assert!(
-        line_of(&screen, "creating") < line_of(&screen, "buildbox · website"),
+        line_of(&screen, "creating") < line_of(&screen, "buildbox"),
         "and not under the host that happens to hold that repo:\n{screen}"
     );
 }
@@ -2108,8 +2107,8 @@ fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
 
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(
-        screen.contains("local · thurbox"),
-        "the existing row's machine is named:\n{screen}"
+        screen.contains("fix-osc52"),
+        "the local row remains:\n{screen}"
     );
     let creating = screen
         .lines()
@@ -2117,8 +2116,8 @@ fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
         .unwrap_or_else(|| panic!("no placeholder in:\n{screen}"));
     let header = screen
         .lines()
-        .position(|l| l.contains("buildbox · thurbox"))
-        .unwrap_or_else(|| panic!("no group for the machine asked for in:\n{screen}"));
+        .position(|l| l.contains("buildbox"))
+        .unwrap_or_else(|| panic!("no host row for the machine asked for in:\n{screen}"));
     assert!(
         creating > header,
         "the placeholder names the machine it is being created on:\n{screen}"

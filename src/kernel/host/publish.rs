@@ -835,6 +835,7 @@ fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         set(&item, "name", host.name.clone())?;
         set(&item, "detail", host.detail.clone())?;
         set(&item, "backend", host.backend.clone())?;
+        set(&item, "platform", host.platform.clone())?;
         set(&item, "multiplexer", host.multiplexer.clone())?;
         set(
             &item,
@@ -941,6 +942,11 @@ fn build_theme(lua: &Lua, themes: &Themes) -> Result<Value, String> {
     }
     let theme = lua.create_table().map_err(|e| e.to_string())?;
     set(&theme, "name", themes.active_name())?;
+    set(
+        &theme,
+        "nerd_font",
+        themes.active().palette.nerd_font_enabled,
+    )?;
     set(&theme, "roles", roles)?;
 
     // The selectable list, so a picker can be an ordinary plugin.

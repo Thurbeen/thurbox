@@ -641,11 +641,10 @@ by being declared and nothing else. The same is true of `settings`: declare
 `{ id, desc, default }` and the settings modal grows a row for it.
 
 A plugin can also **write** its own settings — `command("set", { text =
-"yourpane.wrap", flag = true })` — which is what a view toggle should do. Keeping a
-second copy of the value in `state` is the mistake to avoid: both persist, so the
-shadow buys nothing and costs the property that matters, because the settings modal
-then shows a value your key has silently overridden and resetting it there does
-nothing. One home per setting.
+"yourpane.wrap", flag = true })` for a boolean, `number = 2` for a number, or
+`value = "compact"` for text. A `state` value may hold the requested value until
+the queued command lands; after that, read the registry's value so a change in
+the settings modal is respected. One durable home per setting.
 Plugin-scoped keys fire only while you have focus, so several panes can all
 declare `j`.
 

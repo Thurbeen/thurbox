@@ -738,8 +738,10 @@ impl Command {
             Some(SettingValue::Bool(flag))
         } else if let Some(number) = args.number {
             Some(SettingValue::Number(number))
+        } else if let Some(value) = args.value {
+            Some(SettingValue::Text(value))
         } else {
-            return Err("command \"set\" needs a flag, a number, or reset = true".to_string());
+            return Err("command \"set\" needs a flag, number, value, or reset = true".to_string());
         };
         Ok(Command::Setting { key, value })
     }
@@ -933,6 +935,7 @@ pub struct Args {
     pub session: String,
     pub target: Option<String>,
     pub text: Option<String>,
+    pub value: Option<String>,
     pub delta: Option<i64>,
     pub force: bool,
     pub flag: Option<bool>,
@@ -1257,9 +1260,21 @@ mod tests {
                 "set",
                 Args {
                     text: text("p.k"),
+                    value: text("one"),
                     ..Args::default()
                 },
-                err("command \"set\" needs a flag, a number, or reset = true"),
+                Ok(Command::Setting {
+                    key: "p.k".into(),
+                    value: Some(SettingValue::Text("one".into())),
+                }),
+            ),
+            (
+                "set",
+                Args {
+                    text: text("p.k"),
+                    ..Args::default()
+                },
+                err("command \"set\" needs a flag, number, value, or reset = true"),
             ),
             (
                 "set",

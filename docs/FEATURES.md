@@ -274,28 +274,24 @@ moved fall back to creation order:
   (`webapp + infra`) rather than being filed arbitrarily under one repo;
   sessions touching the same set cluster together. Sessions with no repo share a
   `(no repo)` group.
-- When the list spans **more than one machine** — the live sessions, or a
-  creation in flight naming a host — and the `group_by_host` setting is on
-  (settings → Sessions, on by default), the host becomes the **outer** axis:
-  this machine's groups first, then each remote host's by name, and a header
-  names both (`buildbox · webapp`). Repo grouping keeps working
-  inside a host, and with `group_by_repo` off the flat list is one flat list per
-  host. A single-machine list — a laptop with no remote sessions, and equally a
-  machine whose every session is on the same remote box — renders exactly what
-  it rendered before the axis existed, until something on it names a second
-  machine.
+- With `group_by_host` on (settings → Sessions, on by default), local sessions
+  stay at the top. Each remote host gets a selectable row, even if it is the
+  only host in the list, followed by its repo groups and sessions. `h` folds the
+  selected host and `l` unfolds it; clicking its row toggles it. A folded row
+  shows `S` for sessions, `W` for working, `I` for idle, and `!` for attention
+  beside the host name. Up/down navigation skips the hidden sessions. Searching
+  temporarily reveals them, and the fold choice returns when search closes.
+  Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
+  they survive a restart. The host uses Nerd Font `` when the active theme
+  enables Nerd Font glyphs, and `▣` otherwise. SSH, WSL and Windows hosts have
+  text labels, and a status glyph and theme colour convey reachability.
+  Local-only lists keep their previous shape.
 
-**Why the host axis has two conditions.** The tally is not a preference and the
-switch is not a tally. The tally counts the machines on screen — and a creation
-in flight counts, because creating your *first* session on a host is a list
-whose rows are all local and whose next row is not; counting rows alone, the
-placeholder sat under a header naming no machine until the session landed and
-the list regrouped underneath it. A header naming the only machine there is
-noise whatever was asked for, so one machine draws no host header with the
-switch on. The switch answers the other question, which the tally cannot: an
-operator who thinks of a remote session as one more session, and orders the list
-by hand across machines, had no way to say so. It defaults to on, so a list that
-already separates its machines keeps doing it.
+**Why the local rows have no host row.** On a local-only list a local heading
+adds no information. Keeping local rows at the top also preserves the familiar
+starting position when remote sessions arrive. A remote row always needs its
+own heading because that is the fold handle and the place its summary remains
+visible. A creation in flight on a remote host counts for this purpose.
 
 **Why a second switch and not one choice row.** `none / repo / host / host then
 repo` would read as one decision, and the settings modal cannot render it: a
@@ -304,13 +300,8 @@ you type into — cycling a fixed set is wired to the core rows' one enum, not
 declared. So the row would be a box where a misspelling silently means "none",
 and it would first need a choice type in the registry, in the Lua declaration
 and in the modal. The two switches are independent axes rather than two
-spellings of one: all four combinations render — one flat list, repos, machines,
-`buildbox · webapp` — so no pair of values contradicts.
-
-It is a second header *axis*, not a second header *level*: `ui/lib/order.lua`
-finds a group's edges by the single row that carries a header, and two levels
-would have to be taught to the move algebra, the click targets and the border
-dots as well for an axis most users never see.
+spellings of one: all four combinations render — one flat list, repos, hosts,
+and repo groups inside hosts — so no pair of values contradicts.
 
 **Why group by repo?** With several parallel agents the dominant question
 is "which project is this?" — clustering same-repo sessions answers it at a

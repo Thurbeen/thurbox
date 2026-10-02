@@ -244,6 +244,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
             session: get_string("session").unwrap_or_default(),
             target: get_string("target"),
             text: get_string("text"),
+            value: get_string("value"),
             delta: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<i64>>("delta").ok().flatten()),

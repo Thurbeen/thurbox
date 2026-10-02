@@ -463,6 +463,7 @@ fn opening_with_hosts_asks_where_to_run_first() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -1979,6 +1980,7 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -2120,6 +2122,7 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -2198,6 +2201,7 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            platform: "posix".into(),
             multiplexer: None,
             available_multiplexers: vec!["tmux".into()],
         },
@@ -2205,6 +2209,7 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             name: "builder".into(),
             detail: "me@builder".into(),
             backend: "ssh:builder".into(),
+            platform: "posix".into(),
             multiplexer: None,
             available_multiplexers: vec!["tmux".into()],
         },
@@ -2543,6 +2548,7 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -2831,6 +2837,7 @@ fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -2855,6 +2862,7 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];
@@ -3099,6 +3107,7 @@ fn a_hovered_host_row_is_banded() {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
     }];

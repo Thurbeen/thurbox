@@ -528,6 +528,8 @@ globals:
   # catch `thurbox.Role` makes on the lua-language-server side.
   thurbox.theme.name:
     property: read-only
+  thurbox.theme.nerd_font:
+    property: read-only
   thurbox.theme.roles.accent:
     property: read-only
   thurbox.theme.roles.accent_bright:

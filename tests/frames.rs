@@ -362,14 +362,14 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━⠇●○○┓",
-            "┃── local · thurbox ───────────────────┃",
+            "┃── thurbox ───────────────────────────┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ● ⑂ perf-cache                       ┃",
-            "┃── local · website ───────────────────┃",
+            "┃── website ───────────────────────────┃",
             "┃ ○ ⑂ update-deps                      ┃",
-            "┃── buildbox · thurbox ────────────────┃",
+            "┃▾ ●▣ !0 ssh buildbox  S1 W0 I1 · conn…┃",
+            "┃── thurbox ───────────────────────────┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
-            "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
@@ -378,12 +378,7 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
 }
 
 #[test]
-fn one_host_keeps_the_headers_it_has_always_had() {
-    // The case a second axis is most likely to make worse: every session on
-    // ONE host — a laptop with no remote sessions, and equally a machine whose
-    // every session is on the same remote box. Both name one machine, so
-    // naming it in every header is noise, and the frame is the repo grouping's
-    // alone.
+fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
     let host = host();
     publish(
         &host,
@@ -397,11 +392,27 @@ fn one_host_keeps_the_headers_it_has_always_had() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━⠇●○┓",
+            "┃▾ ●▣ !1 ssh buildbox  S3 W1 I1 · conn…┃",
             "┃── thurbox ───────────────────────────┃",
             "┃ ⠇ ⇅ ⑂ fix-osc52                      ┃",
             "┃ ● ⇅ ⑂ perf-cache                     ┃",
             "┃── website ───────────────────────────┃",
             "┃ ○ ⇅ ⑂ update-deps                    ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+        ],
+    );
+    press(&host, "sessions", 'h');
+    assert_frame(
+        &text(&paint(&host, "sessions", 40, 10, true)),
+        &[
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "┃▸ ●▣ !1 ssh buildbox  S3 W1 I1 · conn…┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -418,11 +429,7 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
     // comparing those keys, the refusal that keeps a group on its own machine
     // went with it.
     //
-    // What this frame pins is that they are TWO groups. That both headers read
-    // `local` is a known cosmetic limit of naming this machine after a word a
-    // host could also be called, and not what the test is for: the keys differ,
-    // so the grouping and the boundary are right and only the label is
-    // ambiguous.
+    // The local rows have no host handle; the remote one called `local` does.
     let host = host();
     publish(
         &host,
@@ -435,11 +442,11 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━⠇○┓",
-            "┃── local · thurbox ───────────────────┃",
+            "┃── thurbox ───────────────────────────┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
-            "┃── local · thurbox ───────────────────┃",
+            "┃▾ ●▣ !0 ssh local  S1 W0 I1 · connect…┃",
+            "┃── thurbox ───────────────────────────┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
-            "┃                                      ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
