@@ -680,7 +680,10 @@ end
 return {
   name = NAME,
   ui_state = function()
-    return { selected_result = state.cursor or 1, scope = state.scope or "all" }
+    if store[QUERY] == nil then
+      return { open = false }
+    end
+    return { open = true, selected_result = state.cursor or 1, scope = state.scope or "all" }
   end,
   slot = NAME,
   order = 65,

@@ -1049,6 +1049,10 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
     let initial = cli(&["ui", "--instance", &first_id, "state"]);
     assert_eq!(initial["modal"], serde_json::Value::Null);
     assert!(initial["slots"].is_array());
+    assert_eq!(
+        initial["search"]["selected_result"],
+        serde_json::Value::Null
+    );
 
     let mut watch_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut watch_cmd);

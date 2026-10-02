@@ -107,8 +107,9 @@ impl App {
             })
             .collect();
         overlays.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let search_query = self.host.shared_string("search.query");
         let search = json!({
-            "query": self.host.shared_string("search.query"),
+            "query": search_query,
             "selected_result": plugin_states.get("search").and_then(|s| s.get("selected_result")),
         });
         let current = json!({
@@ -124,7 +125,7 @@ impl App {
             "overlays": overlays,
             "plugin_state": plugin_states,
             "search": search,
-            "search_query": self.host.shared_string("search.query"),
+            "search_query": search_query,
             "catalog_revision": self.registry.version(),
         });
         if self.control_observed.as_ref() == Some(&current) {
