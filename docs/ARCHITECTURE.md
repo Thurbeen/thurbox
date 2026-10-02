@@ -869,12 +869,21 @@ stalls. Worth the most manual testing.
 ### psmux divergences from tmux
 
 The control-mode protocol is byte-identical over either transport, but the
-**psmux** binary diverges from tmux in the places below (all verified against
-psmux 3.3.6). Each is the psmux adapter's answer to `TmuxCompatible`
+**psmux** binary diverges from tmux in the places below (verified against
+psmux 3.3.6 unless a different version is named). Each is the psmux adapter's answer to `TmuxCompatible`
 (`backend::psmux`), never a branch on the binary's name in shared code
 (ADR-31). The `thurbox-remote-hosts` skill keeps a summary; this is the
 reference to read before touching that path.
 
+- **Cold server creation can fail transiently.** On psmux 3.3.8, repeated
+  `new-session -d` calls on separate empty sockets sometimes returned
+  `psmux: failed to create session 'thurbox'`; another returned success but
+  left no server for the following `has-session`. A session create then failed
+  at its first `set-option` with `no server running`. The psmux adapter allows
+  three bootstrap attempts when no session survived; tmux keeps one. A failed
+  option on a live server is still an error, and a retry is entered only if
+  no session remains. The failure also occurs without Thurbox, so it is not a
+  v2.42.0 control-mode regression.
 - **`send-keys -H`** was absent in psmux 3.3.6 (it injected the hex digits as literal
   text). `psmux_send_keys_commands` encodes input from the
   primitives psmux does support (`send-keys -l` literal runs +

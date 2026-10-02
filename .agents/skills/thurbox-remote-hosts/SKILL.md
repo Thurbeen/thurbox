@@ -119,6 +119,10 @@ either alone is the whole symptom). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
+On psmux 3.3.8, cold `new-session -d` sometimes refuses or returns before a
+server survives. Only its adapter opts into three bootstrap attempts when
+there is still no session; tmux keeps one. This occurs with psmux alone and is
+independent of v2.42.0's control-mode changes.
 
 A host's **platform** is its own field (`HostDef::platform`, `session::Platform`,
 ADR-13 "The host's platform is its own dimension"): `platform = "windows"`
