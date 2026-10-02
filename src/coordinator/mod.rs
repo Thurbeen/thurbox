@@ -98,10 +98,21 @@ impl App {
             self.paint_if_due(&mut terminal)?;
             // After the paint, which is what says which surface has the focus.
             self.forward_app_copy();
+            self.focus_terminal();
             self.report_perf();
             self.drain_input(&mut input_failures)?;
         }
         Ok(())
+    }
+
+    /// Tell the terminals which surface the keys go to, so a pane gaining the
+    /// focus is sized to its rect here before anything is typed into it
+    /// (`Terminals::focus`). Gated as [`Self::forward_app_copy`] is: a pane
+    /// under a modal, a float or a field is not where the user is typing.
+    pub(crate) fn focus_terminal(&mut self) {
+        let takes_keys = !self.overlay_owns_input() && self.focused_wants_session_input();
+        let focused = self.focused_surface.as_deref().filter(|_| takes_keys);
+        self.terminals.focus(focused);
     }
 
     /// Put the focused app's OSC 52 copy on the user's clipboard.

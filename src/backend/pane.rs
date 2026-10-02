@@ -599,7 +599,11 @@ impl WiredPane {
         send_to_input_channel(&self.input_tx, data, self.label)
     }
 
-    fn claim_size(&self) {
+    /// Size the pane to the rect it was last painted into here, and become the
+    /// instance that sizes it — the user is at this one. Called before input,
+    /// and on focus (`Terminals::focus`). Nothing is sent for a pane already
+    /// that size, nor before the pane has been painted.
+    pub fn claim_size(&self) {
         let (Some(backend), Some(size)) = (&self.backend, &self.size) else {
             return;
         };
@@ -1113,6 +1117,12 @@ impl Session {
         // one-column pane would otherwise panic on its first line of output,
         // before any resize could correct it.
         let (rows, cols) = vt_floor(rows, cols);
+        // The rect the caller is about to paint into, which the render path's
+        // own memo starts from too — so the first claim knows it. Taken before
+        // a dormant pane's grid size replaces `rows`/`cols`: the memo matches
+        // the rect, so no paint resizes the pane to correct it, and a claim
+        // would size it to the dormant grid.
+        let wanted = pack_size(rows, cols);
         let (residency, (rows, cols), scrollback) = if io.resident {
             (
                 Residency::default(),
@@ -1168,9 +1178,7 @@ impl Session {
             residency,
             backend: Some(Arc::clone(backend)),
             size: io.size,
-            // The rect the caller is about to paint into, which the render
-            // path's own memo starts from too — so the first claim knows it.
-            wanted: AtomicU32::new(pack_size(rows, cols)),
+            wanted: AtomicU32::new(wanted),
             app_copy: Arc::clone(&signals.app_copy),
         };
         (wired, signals)

@@ -15,6 +15,9 @@
 //! - every instance's grid is the pane's real size, so the one that is not
 //!   sizing renders the same screen rather than a re-wrapped one;
 //! - input is what hands the size over: the instance typed into takes it;
+//! - and so is focus: a pane gaining the focus in an instance takes its size
+//!   before anything is typed, while a pane that merely keeps the focus does
+//!   not take it back, or two instances focused on it would trade it forever;
 //! - an instance left alone sizes freely again, with no flap on the way.
 //!
 //! Two `TmuxBackend`s in one process are two control-mode clients, which is
@@ -27,9 +30,17 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ratatui::backend::TestBackend;
+use ratatui::layout::Rect;
+use ratatui::Terminal;
+
 use thurbox::backend::pane::ProgramPane;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::SessionBackend;
+use thurbox::kernel::paint::SurfaceProvider;
+use thurbox::kernel::snapshot::{SessionRow, Snapshot};
+use thurbox::kernel::terminal::Terminals;
+use thurbox::session::SessionState;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -271,4 +282,210 @@ async fn a_lone_instance_still_resizes_to_every_rect() {
         until("the grid to match", || grid_size(&pane) == (rows, cols)).await;
     }
     pane.kill();
+}
+
+/// `backend::tmux_compat::server::TMUX_SESSION` in a test build — see
+/// `tests/attach_by_name.rs`. A session row is attached by finding its pane
+/// there.
+const INTERFACE_SESSION: &str = "thurbox-dev";
+
+const ID: &str = "33333333-3333-3333-3333-333333333333";
+
+fn snapshot(pane: &str) -> Snapshot {
+    Snapshot {
+        sessions: vec![SessionRow {
+            id: ID.into(),
+            name: "shared".into(),
+            agent: "claude".into(),
+            status: SessionState::Idle,
+            cwd: None,
+            repo: None,
+            repos: Vec::new(),
+            branch: None,
+            base_branch: None,
+            backend: "local-tmux".into(),
+            backend_id: Some(pane.into()),
+            remote_host: None,
+            agent_session_id: None,
+            parent_id: None,
+            display_order: None,
+            worktree_count: 0,
+            git: None,
+            stopped: false,
+            hook_state: None,
+            reports_as: None,
+            detected_agent: None,
+            shell_backend_id: None,
+            member_dirs: Vec::new(),
+        }],
+        ..Snapshot::default()
+    }
+}
+
+/// One iteration of the interface's loop with the session in a `rows`×`cols`
+/// pane: the paint, with the keys going to the session or not, and then the
+/// step after it that is told where they went.
+fn frame(terminals: &mut Terminals, (rows, cols): (u16, u16), focused: bool) {
+    let input = focused.then_some(ID);
+    let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
+    term.draw(|frame| {
+        terminals
+            .cursor_on(input)
+            .render_session(frame, Rect::new(0, 0, cols, rows), ID, 0);
+    })
+    .expect("draw");
+    terminals.focus(input);
+}
+
+/// The interface's grid for the session: the pane's size as it last heard it.
+fn session_grid(terminals: &Terminals) -> (u16, u16) {
+    terminals
+        .search_sources(&[ID.to_string()])
+        .into_iter()
+        .find(|source| !source.shell)
+        .expect("the agent pane is a search source")
+        .parser
+        .lock()
+        .expect("parser")
+        .screen()
+        .size()
+}
+
+/// Focus hands the size over the way input does, so a session focused after
+/// another instance sized it is not left at that size until the first
+/// keystroke. Driven through the interface's own terminals — the paint and the
+/// focus step the loop runs — against a second instance on the same server.
+#[tokio::test(flavor = "multi_thread")]
+async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystroke() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin(SOCKET);
+    let here_rect = (24, 80);
+    let there_rect = (40, 120);
+    let (rows, cols) = here_rect;
+    let started = server.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        INTERFACE_SESSION,
+        "-x",
+        &cols.to_string(),
+        "-y",
+        &rows.to_string(),
+        "-n",
+        "idle",
+        "sh",
+    ]);
+    if !started.status.success() {
+        eprintln!(
+            "skipping: tmux would not start a server: {}",
+            String::from_utf8_lossy(&started.stderr).trim()
+        );
+        return;
+    }
+    let out = server.tmux(&[
+        "new-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        INTERFACE_SESSION,
+        "-n",
+        "tb-shared",
+        "sh -c 'exec sleep 100000'",
+    ]);
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // This instance shows the session without the focus, and sizes the pane.
+    let mut here = Terminals::with_registry(Arc::new(thurbox::backend::wiring::configured().0));
+    let snap = snapshot(&id);
+    let deadline = Instant::now() + DEADLINE;
+    while !here.is_attached(ID) {
+        assert!(
+            Instant::now() < deadline,
+            "never attached: {}",
+            here.failure(ID).unwrap_or_default()
+        );
+        here.sync(&snap, rows, cols);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    frame(&mut here, here_rect, false);
+    until("this instance's rect to reach the pane", || {
+        pane_size(&server, &id) == here_rect
+    })
+    .await;
+
+    // Another instance, in a bigger terminal, is typed into: the pane is its.
+    let there_backend = instance();
+    let there = ProgramPane::adopt(
+        Arc::clone(&there_backend),
+        &id,
+        "sh",
+        there_rect.0,
+        there_rect.1,
+    )
+    .expect("adopt in the other instance");
+    assert!(there.resize(there_rect.0, there_rect.1));
+    there.send_input(Vec::new()).expect("input there");
+    until("the other instance's claim to reach the pane", || {
+        pane_size(&server, &id) == there_rect
+    })
+    .await;
+    until("this instance to hear the pane's new size", || {
+        frame(&mut here, here_rect, false);
+        session_grid(&here) == there_rect
+    })
+    .await;
+
+    // Painted here without the focus, it stays the other instance's.
+    frame(&mut here, here_rect, false);
+    assert_eq!(
+        sizes_over_settle(&server, &id).await,
+        vec![there_rect],
+        "an unfocused paint took the size"
+    );
+
+    // Focused here, and nothing typed: the pane is this instance's size.
+    until("focus to size the pane to this instance's rect", || {
+        frame(&mut here, here_rect, true);
+        pane_size(&server, &id) == here_rect
+    })
+    .await;
+    until("this instance's grid to follow", || {
+        frame(&mut here, here_rect, true);
+        session_grid(&here) == here_rect
+    })
+    .await;
+
+    // The other instance is typed into while this one keeps the focus. Keeping
+    // it is not gaining it, so the pane stays where that input put it.
+    there.send_input(Vec::new()).expect("input there");
+    until("the other instance's claim to reach the pane", || {
+        pane_size(&server, &id) == there_rect
+    })
+    .await;
+    until("this instance to hear it", || {
+        frame(&mut here, here_rect, true);
+        session_grid(&here) == there_rect
+    })
+    .await;
+    frame(&mut here, here_rect, true);
+    assert_eq!(
+        sizes_over_settle(&server, &id).await,
+        vec![there_rect],
+        "a pane that kept the focus took the size back"
+    );
+
+    // The focus leaves and comes back: that is gaining it again.
+    frame(&mut here, here_rect, false);
+    frame(&mut here, here_rect, true);
+    until("refocusing to size the pane again", || {
+        pane_size(&server, &id) == here_rect
+    })
+    .await;
+
+    drop(there);
+    there_backend.shutdown();
 }
