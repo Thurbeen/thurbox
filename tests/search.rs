@@ -564,6 +564,35 @@ fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() 
 }
 
 #[test]
+fn a_hit_that_comes_back_after_an_empty_answer_is_revealed_again() {
+    // A query edit that matches nothing selects nothing, and while it does the
+    // terminal is the user's to scroll. Backing the edit out brings the same
+    // hit back at the same place — and it is selected again, so it is shown
+    // again rather than taken for the place already previewed.
+    let host = host();
+    open(&host);
+    type_query(&host, "ENOSPC");
+    let found = answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)]);
+    render_answered(&host, Some(&found));
+    let _ = host.drain_commands();
+
+    type_query(&host, "x");
+    render_answered(&host, Some(&answer("ENOSPCx", &[])));
+    let _ = host.drain_commands();
+
+    press(&host, "backspace");
+    render_answered(&host, Some(&found));
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("ccc 120 7")
+    );
+    assert!(host.drain_commands().contains(&Command::Action {
+        owner: "plugins/65_search.lua".into(),
+        action: "terminal.reveal".into(),
+    }));
+}
+
+#[test]
 fn opening_a_text_hit_lands_the_agent_pane_on_the_line() {
     // The operator's failure, at the plugin level: opening a hit must show the
     // session SCROLLED TO the match, not merely focus it. The agent pane is

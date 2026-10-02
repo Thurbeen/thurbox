@@ -743,9 +743,11 @@ return {
     -- agent printed since is a changed place, which is what keeps the mark on
     -- the line rather than on the row the line was on (Enter re-sends the
     -- fresh place too, so the two cannot disagree).
+    -- Nothing selected forgets the place, so a result that comes back once a
+    -- query edit is undone is shown again rather than taken as already shown.
     local current = rows[search.cursor]
     local place = place_of(current)
-    if current and place ~= search.previewed then
+    if place ~= search.previewed then
       preview(search, current, true)
       search.previewed = place
     end
