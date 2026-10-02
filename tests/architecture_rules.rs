@@ -91,10 +91,11 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     // hosts.toml, and the cached registry of it every process shares. Its own
     // node so that reading global host config is a visible decision: the
-    // backend contract and the pure registry must not.
+    // backend contract and the pure registry must not. `shell` for the one
+    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
     ModuleRules {
         name: "agent::host_config",
-        allowed: &["session", "paths", "agent::agent_config"],
+        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {

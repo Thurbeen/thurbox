@@ -289,11 +289,53 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
 /// `/mnt/c/…` under default automount; there is no universally-valid Windows
 /// pin, and `--cd` would trade this edge case for a hard legacy failure).
 pub fn wsl_command(distro: &str) -> Command {
-    let mut cmd = Command::new("wsl.exe");
+    let mut cmd = wsl_exe();
     cmd.arg("-d").arg(distro);
     #[cfg(unix)]
     cmd.arg("--cd").arg("/");
     cmd
+}
+
+/// `wsl.exe` with no arguments yet, kept off the interface's terminal.
+///
+/// A `wsl.exe` child takes keyboard input from the console it is attached to
+/// even when its stdin, stdout and stderr are all redirected. Measured on
+/// Windows 11: a console reader received 0 of 8 keys while `wsl.exe -d <distro>
+/// sleep 40` ran beside it, and 8 of 8 when the same child was started with
+/// `CREATE_NO_WINDOW`. A control-mode connection is such a child for as long as
+/// a WSL session is attached, so the interface stopped answering the keyboard
+/// the moment one connected. Every `wsl.exe` thurbox starts talks to it over
+/// pipes only, so none of them needs the terminal.
+///
+/// Inside a WSL distro, where interop puts `wsl.exe` on `PATH`, the same child
+/// is started in a session of its own, so it has no controlling terminal to
+/// read either.
+pub fn wsl_exe() -> Command {
+    let mut cmd = Command::new("wsl.exe");
+    off_the_terminal(&mut cmd);
+    cmd
+}
+
+#[cfg(windows)]
+fn off_the_terminal(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    /// The child gets a console of its own, with no window, instead of ours.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(unix)]
+fn off_the_terminal(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setsid` is async-signal-safe, which is all `pre_exec` asks. It
+    // can only fail for a process group leader, which a freshly forked child is
+    // not, so its result is not checked.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]
@@ -388,6 +430,71 @@ mod tests {
         let ours = args.iter().position(|a| a == "ConnectTimeout=5").unwrap();
         assert!(user < ours, "user opt must precede hardening opt");
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
+    }
+
+    /// The flag [`wsl_exe`] starts every `wsl.exe` with keeps the child out of
+    /// this process's console, the one whose keyboard an attached WSL session
+    /// used to take. Asked of the console itself: every process attached to it
+    /// is in `GetConsoleProcessList`. `ping` stands in for `wsl.exe`, which a
+    /// runner need not have. A child started without the flag is checked too,
+    /// so a console that lists nothing cannot make this pass.
+    #[cfg(windows)]
+    #[test]
+    fn a_child_kept_off_the_terminal_is_not_attached_to_our_console() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        }
+        fn attached() -> Option<Vec<u32>> {
+            let mut list = vec![0u32; 1024];
+            // SAFETY: `list` holds the `count` entries the call may write.
+            let n = unsafe { GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) };
+            let n = usize::try_from(n)
+                .ok()
+                .filter(|n| (1..=list.len()).contains(n))?;
+            list.truncate(n);
+            Some(list)
+        }
+        if attached().is_none() {
+            eprintln!("skipping: this process has no console");
+            return;
+        }
+        let start = |kept_off: bool| {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "30", "127.0.0.1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if kept_off {
+                off_the_terminal(&mut cmd);
+            }
+            cmd.spawn().expect("spawn ping")
+        };
+        // A child joins the console while it starts up, after `spawn` has
+        // returned, so the list is read once the unflagged child is on it —
+        // started second, so the flagged one has had at least as long.
+        let mut kept_off = start(true);
+        let mut sharing = start(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let list = loop {
+            let list = attached().expect("the console lists its processes");
+            if list.contains(&sharing.id()) || std::time::Instant::now() > deadline {
+                break list;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        for child in [&mut sharing, &mut kept_off] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            list.contains(&sharing.id()),
+            "a child started without the flag should share this console: {list:?}"
+        );
+        assert!(
+            !list.contains(&kept_off.id()),
+            "a child kept off the terminal is attached to this console: {list:?}"
+        );
     }
 
     #[test]

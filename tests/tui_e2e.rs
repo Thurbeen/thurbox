@@ -4874,3 +4874,137 @@ fn the_search_mark_follows_a_redraw_on_the_alternate_screen() {
     wait_for_mark_on(&tui, "tb-alt v2", "the opened result");
     assert!(tui.quit().success());
 }
+
+// --- a WSL session whose launcher shares the interface's terminal ----------
+
+/// The WSL session's name.
+const WSL_NAME: &str = "in-the-distro";
+
+/// A stand-in for `wsl.exe` that runs the "distro" command on this machine and,
+/// like the real one, reads the terminal it was started under for as long as it
+/// runs.
+///
+/// That second half is the whole point. On Windows 11 a `wsl.exe` child whose
+/// stdin, stdout and stderr are all redirected still attaches to its parent's
+/// console and takes that console's input: a console reader received 0 of 8
+/// keys while `wsl.exe -d <distro> sleep 40` ran beside it, and 8 of 8 once the
+/// same child was started with `CREATE_NO_WINDOW`. A control-mode connection is
+/// such a child for as long as a session on the distro is attached, so the
+/// interface stopped answering the keyboard the moment one connected.
+///
+/// A pty has no console. What a child that was not kept off the interface's
+/// terminal can reach here is the controlling terminal, `/dev/tty`, so that is
+/// what the stand-in reads — and the read is only possible for a child that
+/// still has one. Everything else is `fake_ssh`'s shape: `-l` lists one distro,
+/// `-d`/`--cd` are dropped, `--exec` runs argv as given and anything else goes
+/// through the shell, which is how `wsl.exe` forwards whitespace-free tokens.
+fn fake_wsl(profile: &Profile, distro: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = profile.bin.join("wsl.exe");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = -l ]; then printf '%s\\n' {distro}; exit 0; fi\n\
+             direct=\n\
+             while [ \"$#\" -gt 0 ]; do\n\
+             \x20 case \"$1\" in\n\
+             \x20   -d|--cd) shift; shift ;;\n\
+             \x20   -e|--exec) shift; direct=1; break ;;\n\
+             \x20   *) break ;;\n\
+             \x20 esac\n\
+             done\n\
+             relay=\n\
+             if (: < /dev/tty) 2>/dev/null; then\n\
+             \x20 cat < /dev/tty > /dev/null &\n\
+             \x20 relay=$!\n\
+             fi\n\
+             if [ -n \"$direct\" ]; then \"$@\"; else eval \"$*\"; fi\n\
+             status=$?\n\
+             [ -n \"$relay\" ] && kill \"$relay\"\n\
+             exit \"$status\"\n",
+        ),
+    )
+    .expect("write the wsl.exe stand-in");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+}
+
+#[test]
+fn the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached() {
+    // The freeze reported against native Windows: create or switch to a
+    // session on a WSL distro and the interface stops answering. It is still
+    // painting — the loop is not blocked — but no key reaches it, because the
+    // `wsl.exe` behind the session's control-mode connection is reading them.
+    //
+    // A printable run typed into the palette's filter is the assertion rather
+    // than one chord: with two readers on a terminal each key goes to
+    // whichever is woken first, so a single key could slip through by luck,
+    // while twenty-six in order cannot.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let distro = "e2e-distro";
+    let profile = Profile::new();
+    fake_wsl(&profile, distro);
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    // Configured rather than left to discovery so the socket can be named — the
+    // "distro" is this machine, and a default would land on the developer's own
+    // server — and sharing is off because its database would be this one.
+    std::fs::write(
+        profile.path("config/hosts.toml"),
+        format!(
+            "[[hosts]]\n\
+             name = \"{distro}\"\n\
+             kind = \"wsl\"\n\
+             socket = \"{socket}\"\n\
+             share_sessions = false\n\
+             worktrees_dir = \"{worktrees}\"\n",
+            socket = profile.server.socket(),
+            worktrees = profile.path("worktrees").display(),
+        ),
+    )
+    .expect("seed hosts");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        WSL_NAME,
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+        "--host",
+        distro,
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for(WSL_NAME);
+    // Its prompt is painted, so the control-mode connection is up — and with it
+    // the `wsl.exe` that has to stay off this terminal.
+    tui.wait_for("$ ");
+
+    tui.send(CTRL_P);
+    tui.wait_within(
+        RESPONSIVE,
+        "the palette to open while a WSL session is attached",
+        |frame| frame.contains("type to filter commands"),
+    );
+    let typed = "qwertyuiopasdfghjklzxcvbnm";
+    tui.send(typed.as_bytes());
+    tui.wait_within(
+        RESPONSIVE,
+        "every key typed into the palette to reach it",
+        |frame| frame.contains(&format!("> {typed}")),
+    );
+
+    tui.send(ESC);
+    tui.wait_gone("type to filter commands");
+    assert!(tui.quit().success());
+}

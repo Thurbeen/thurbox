@@ -9,7 +9,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::session::{HostDef, HostRegistry, WslRepairPlan};
 
@@ -526,7 +525,7 @@ pub(crate) fn discover_wsl_hosts() -> Result<Vec<HostDef>, String> {
     if !wsl_exe_available() {
         return Ok(Vec::new());
     }
-    let output = match Command::new("wsl.exe").arg("-l").arg("-q").output() {
+    let output = match crate::shell::wsl_exe().arg("-l").arg("-q").output() {
         Ok(o) if o.status.success() => o,
         Ok(o) => return Err(format!("wsl.exe -l -q failed: {}", o.status)),
         Err(e) => return Err(format!("could not run wsl.exe: {e}")),
