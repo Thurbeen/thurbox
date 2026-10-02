@@ -136,9 +136,10 @@ The sandbox's `hosts.toml` contains these mock hosts:
 
 On Linux, sandbox-local `ssh` and `wsl.exe` stubs intercept only these fixture
 names. The reachable SSH and WSL stubs execute commands locally with a sandbox
-home; they are test doubles, not independent machines. Native Windows sandbox
-launches still seed the hosts and repositories, but the POSIX relay stubs are
-Linux-only, so host reachability there depends on real transports.
+home; they are test doubles, not independent machines. The same seed path is
+intended for native Windows, but the POSIX relay stubs are Linux-only, so host
+reachability there depends on real transports. The CI seed check runs on Linux;
+native Windows was not exercised here.
 Each reachable relay uses a separate tmux socket directory beneath the sandbox
 socket root; `--clean`, `--reset`, and fresh teardown reap those servers.
 
