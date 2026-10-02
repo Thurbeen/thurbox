@@ -386,13 +386,19 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let go = dir.path().join("go");
-    // ~2s of steady output, so the rebuilds below land in the middle of it.
+    let stop = dir.path().join("stop");
+    // Steady output until the test says stop, so every rebuild below lands
+    // while the pane is printing. Each round waits for the pane to have moved
+    // on by 300 lines rather than for time to pass: a fixed amount of output
+    // paced by the wall clock ran out after three rounds on a loaded machine
+    // (#1248).
     let pane = pane_running(&format!(
         "sh -c 'while [ ! -e {go} ]; do sleep 0.05; done; i=0; \
-         while [ $i -lt 3000 ]; do echo line-$i; i=$((i+1)); \
+         while [ ! -e {stop} ]; do echo line-$i; i=$((i+1)); \
          if [ $((i % 30)) -eq 0 ]; then sleep 0.02; fi; done; \
          echo finished; exec sleep 100000'",
-        go = go.display()
+        go = go.display(),
+        stop = stop.display()
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
@@ -407,20 +413,20 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     // Each round: shown, which rebuilds the grid where the snapshot lands in
     // the stream; left to take live output for a moment, then checked; then
     // off screen, which drops it again on the next sync.
-    let mut rebuilds = 0;
-    while !tmux_text(&pane).contains("line-2000") {
+    for rebuild in 1..10 {
+        wait_for("the pane to print on", || {
+            last_printed(&pane).is_some_and(|n| n >= 300 * (rebuild - 1))
+        });
         wait_for("the rebuilt grid", || {
             paint(&terminals, 0);
             grid_size(&terminals) == (ROWS, COLS)
         });
         tokio::time::sleep(Duration::from_millis(30)).await;
-        rebuilds += 1;
-        assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuilds}"));
+        assert_contiguous(&numbered_lines(&terminals), &format!("rebuild {rebuild}"));
         terminals.forget_rects();
         terminals.sync(&snap, ROWS, COLS);
         assert!(grid_size(&terminals) <= (2, 2), "dropped again");
     }
-    assert!(rebuilds > 5, "only {rebuilds} rebuilds happened mid-output");
 
     // The last one is kept, so the rest of the output lands in a grid that was
     // rebuilt mid-stream — and the history it ends with crosses the splice.
@@ -429,6 +435,11 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         paint(&terminals, 0);
         grid_size(&terminals) == (ROWS, COLS)
     });
+    let rebuilt_at = last_printed(&pane).expect("the pane has printed");
+    wait_for("the pane to print past the final rebuild", || {
+        last_printed(&pane).is_some_and(|n| n >= rebuilt_at + 300)
+    });
+    std::fs::write(&stop, b"").expect("stop");
     wait_for("the output to finish", || {
         tmux_text(&pane).contains("finished")
     });
@@ -441,7 +452,15 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
         numbers.len()
     );
     assert_contiguous(&numbers, "after the last rebuild");
-    assert_eq!(numbers.last(), Some(&2999));
+    assert_eq!(numbers.last().copied(), last_printed(&pane));
+}
+
+/// The number of the last `line-N` the pane has printed, as tmux holds it.
+fn last_printed(pane: &str) -> Option<u64> {
+    tmux_text(pane)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("line-")?.parse().ok())
 }
 
 #[tokio::test(flavor = "multi_thread")]
