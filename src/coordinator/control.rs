@@ -161,9 +161,8 @@ impl App {
 
     fn control_watch(&mut self, since: Option<u64>) -> Value {
         self.refresh_control_state();
-        let snapshot = self.control_state();
         let Some(since) = since else {
-            return json!({"kind": "snapshot", "revision": self.control_revision, "state": snapshot, "events": []});
+            return json!({"kind": "snapshot", "revision": self.control_revision, "state": self.control_state(), "events": []});
         };
         let oldest = self
             .control_events
@@ -171,7 +170,7 @@ impl App {
             .and_then(|e| e["revision"].as_u64())
             .unwrap_or(self.control_revision + 1);
         if since < oldest.saturating_sub(1) || since > self.control_revision {
-            return json!({"kind": "resync_required", "revision": self.control_revision, "state": snapshot, "events": []});
+            return json!({"kind": "resync_required", "revision": self.control_revision, "state": self.control_state(), "events": []});
         }
         let mut events = Vec::new();
         let mut bytes = 0;
@@ -188,7 +187,7 @@ impl App {
             events.push(event.clone());
         }
         if events.is_empty() && self.control_revision > since {
-            return json!({"kind": "resync_required", "revision": self.control_revision, "state": snapshot, "events": []});
+            return json!({"kind": "resync_required", "revision": self.control_revision, "state": self.control_state(), "events": []});
         }
         let revision = events
             .last()
