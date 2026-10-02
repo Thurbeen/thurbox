@@ -56,6 +56,8 @@ jobs:
               # green. The `lua` filter below lists the same two roots.
               - 'ui/**'
               - 'examples/**'
+              # Hook payload tests read these files from the checked-out tree.
+              - 'extensions/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.config/nextest.toml'
