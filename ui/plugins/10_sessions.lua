@@ -493,14 +493,25 @@ local function folded_hosts()
   if type(saved) ~= "string" then
     saved = ""
   end
-  if state.folded_base == saved and type(state.folded_hosts) == "string" then
-    return state.folded_hosts
+  if type(state.folded_hosts) == "string" then
+    if state.folded_base == saved then
+      return state.folded_hosts
+    end
+    state.folded_base = nil
+    state.folded_hosts = nil
   end
   return saved
 end
 
-local function model()
-  return session_model.build(sessions(), folded_hosts(), search_query() ~= nil)
+local function escape_host(name)
+  return name:gsub("[^%w._-]", function(char)
+    return string.format("%%%02X", string.byte(char))
+  end)
+end
+
+local function host_is_folded(host)
+  local saved = ";" .. folded_hosts() .. ";"
+  return saved:find(";" .. escape_host(host) .. ";", 1, true) ~= nil
 end
 
 local function set_host_folded(host, folded)
@@ -514,15 +525,44 @@ local function set_host_folded(host, folded)
   names[host] = folded or nil
   local ordered = {}
   for name in pairs(names) do
-    ordered[#ordered + 1] = name:gsub("[^%w._-]", function(char)
-      return string.format("%%%02X", string.byte(char))
-    end)
+    ordered[#ordered + 1] = escape_host(name)
   end
   table.sort(ordered)
   local value = table.concat(ordered, ";")
   state.folded_base = plugin_settings.get("sessions", "folded_hosts", "")
   state.folded_hosts = value
   command("set", { text = "sessions.folded_hosts", value = value })
+end
+
+local function model()
+  -- A focus from another pane or the CLI must be able to reach a folded child.
+  -- `ui.cursor` consumes the request after this model is built, so uncover its
+  -- host first; the setting write also makes the reveal survive that frame.
+  local searching = search_query() ~= nil
+  local search_open = panels.shown("search") or searching
+  local search_closed = state.search_was_open and not search_open
+  state.search_was_open = search_open
+  if search_closed then
+    -- Search revealed hidden rows temporarily. Its selection is not a new
+    -- focus request, so let the saved fold resume when the strip closes.
+    state["sessions.follow"] = nil
+  end
+  local wanted = store.focus_session
+  if not wanted and not search_open and not search_closed then
+    wanted = state["sessions.follow"]
+    if not wanted and store.selected ~= state["sessions.published"] then
+      wanted = store.selected
+    end
+  end
+  if type(wanted) == "string" then
+    for _, session in ipairs(sessions()) do
+      if session.id == wanted and session.host and host_is_folded(session.host) then
+        set_host_folded(session.host, false)
+        break
+      end
+    end
+  end
+  return session_model.build(sessions(), folded_hosts(), searching, true)
 end
 
 --- Header ownership is a rendering property of the first row in a group, so
@@ -540,7 +580,7 @@ local function persist_order(items)
 end
 
 local function ordering_items()
-  local items = session_model.build(sessions(), "", false)
+  local items = session_model.build(sessions(), "", false, true)
   local ordered = {}
   local previous_host
   for _, item in ipairs(items) do
@@ -1119,6 +1159,9 @@ return {
     if action == "sessions.collapse_host" or action == "sessions.expand_host" then
       local host = selected and selected.host
       if host and host:sub(1, 1) ~= "\0" then
+        if action == "sessions.collapse_host" then
+          cursor:select_by_id("host:" .. host)
+        end
         set_host_folded(host, action == "sessions.collapse_host")
       end
       return true

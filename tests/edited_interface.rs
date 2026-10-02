@@ -113,7 +113,7 @@ fn row(name: &str) -> SessionRow {
     }
 }
 
-fn publish(host: &LuaHost) {
+fn publish_rows(host: &LuaHost, sessions: Vec<SessionRow>) {
     let themes = Themes::load(None);
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
@@ -121,7 +121,7 @@ fn publish(host: &LuaHost) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     let snapshot = Snapshot {
-        sessions: vec![row("alpha"), row("beta")],
+        sessions,
         ..Snapshot::default()
     };
     host.publish(&Published {
@@ -149,6 +149,10 @@ fn publish(host: &LuaHost) {
         printing: &Default::default(),
     })
     .expect("publish");
+}
+
+fn publish(host: &LuaHost) {
+    publish_rows(host, vec![row("alpha"), row("beta")]);
 }
 
 fn ctx(width: u16, height: u16, focused: bool) -> RenderContext {
@@ -213,6 +217,21 @@ fn edited_layouts_and_panes_from_old_releases_still_arrange_and_render() {
                 .unwrap_or_else(|e| panic!("{release}: the edited agent pane renders: {e:?}"));
         }
     }
+}
+
+#[test]
+fn edited_session_pane_still_renders_remote_sessions() {
+    let dir = upgraded_edited_interface("v2.22.4", RELEASES[0].1);
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let mut remote = row("remote");
+    remote.backend = "ssh:example-host".into();
+    remote.remote_host = Some("example-host".into());
+    publish_rows(&host, vec![row("alpha"), remote]);
+    let list = host
+        .render(index_of(&host, "sessions"), ctx(48, 40, true))
+        .expect("preserved pane renders remote session");
+    assert!(format!("{:?}", list.node).contains("remote"));
 }
 
 #[test]
