@@ -432,6 +432,59 @@ mod tests {
         assert!(args.iter().any(|a| a == "BatchMode=yes"));
     }
 
+    /// The flag [`wsl_exe`] starts every `wsl.exe` with keeps the child out of
+    /// this process's console, the one whose keyboard an attached WSL session
+    /// used to take. Asked of the console itself: every process attached to it
+    /// is in `GetConsoleProcessList`. `ping` stands in for `wsl.exe`, which a
+    /// runner need not have. A child started without the flag is checked too,
+    /// so a console that lists nothing cannot make this pass.
+    #[cfg(windows)]
+    #[test]
+    fn a_child_kept_off_the_terminal_is_not_attached_to_our_console() {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        }
+        fn attached() -> Option<Vec<u32>> {
+            let mut list = vec![0u32; 1024];
+            // SAFETY: `list` holds the `count` entries the call may write.
+            let n = unsafe { GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) };
+            let n = usize::try_from(n).ok().filter(|n| (1..=list.len()).contains(n))?;
+            list.truncate(n);
+            Some(list)
+        }
+        if attached().is_none() {
+            eprintln!("skipping: this process has no console");
+            return;
+        }
+        let start = |kept_off: bool| {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "30", "127.0.0.1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if kept_off {
+                off_the_terminal(&mut cmd);
+            }
+            cmd.spawn().expect("spawn ping")
+        };
+        let mut sharing = start(false);
+        let mut kept_off = start(true);
+        let list = attached().expect("the console lists its processes");
+        for child in [&mut sharing, &mut kept_off] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            list.contains(&sharing.id()),
+            "a child started without the flag should share this console: {list:?}"
+        );
+        assert!(
+            !list.contains(&kept_off.id()),
+            "a child kept off the terminal is attached to this console: {list:?}"
+        );
+    }
+
     #[test]
     fn wsl_command_sets_program_distro_and_neutral_cwd() {
         let cmd = wsl_command("Ubuntu");
