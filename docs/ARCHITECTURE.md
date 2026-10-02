@@ -2528,7 +2528,8 @@ size, clients, queue depth and wait time, then hands typed requests to the
 coordinator. Only the coordinator reads UI state or invokes Lua, and it replies
 after applying or refusing the request.
 An endpoint failure leaves the interface running with a startup notice; startup
-notices appear in turn so another warning is not lost.
+notices appear in turn on their own timer so other status messages cannot hide
+later warnings.
 Discovery prunes records confirmed dead, keeping repeated scans bounded
 by currently reachable interfaces and the records left since the last scan.
 

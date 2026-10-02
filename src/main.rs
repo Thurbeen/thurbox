@@ -489,6 +489,8 @@ struct App {
     status: Option<(String, Level, Instant)>,
     /// Boot can produce several notices; the one-line band shows each in turn.
     startup_notices: std::collections::VecDeque<String>,
+    /// Independent of `status`, since other reports must not defer boot warnings.
+    startup_notice_due: Option<Instant>,
     /// Commands whose failure has already been reported, so the window in which
     /// a failure lingers for the panes does not re-raise it every poll.
     reported_failures: std::collections::HashSet<u64>,

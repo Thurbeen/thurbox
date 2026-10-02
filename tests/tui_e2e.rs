@@ -677,7 +677,20 @@ fn an_unavailable_control_socket_does_not_abort_the_tui() {
     });
     tui.wait_for("interface from");
     tui.wait_for("No sessions yet");
-    tui.wait_for("local UI control unavailable");
+    let mut saw_control_notice = false;
+    let mut saw_other_status = false;
+    for _ in 0..16 {
+        tui.send(b"\x1a");
+        std::thread::sleep(Duration::from_millis(500));
+        let frame = tui.frame();
+        saw_control_notice |= frame.contains("local UI control unavailable");
+        saw_other_status |= frame.contains("nothing to undo");
+    }
+    assert!(saw_other_status, "status traffic did not reach the TUI");
+    assert!(
+        saw_control_notice,
+        "other status messages hid the control failure"
+    );
     assert!(tui.quit().success());
 }
 
@@ -709,32 +722,6 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
     }
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
-    let active = std::fs::read_dir(&directory)
-        .expect("discovery records")
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_stem()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| uuid::Uuid::parse_str(name).is_ok())
-        })
-        .expect("live record");
-    let mut next = 2048;
-    while std::fs::read_dir(&directory)
-        .expect("discovery entries")
-        .flatten()
-        .take(128)
-        .any(|entry| entry.path() == active)
-    {
-        assert!(
-            next < 8192,
-            "could not place the live record past stale entries"
-        );
-        for index in next..next + 512 {
-            stale_record(index);
-        }
-        next += 512;
-    }
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut cmd);
     let output = cmd

@@ -314,6 +314,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         floor: None,
         status: None,
         startup_notices: startup_notices.into(),
+        startup_notice_due: None,
         reported_failures: std::collections::HashSet::new(),
         tracked_commands: std::collections::HashMap::new(),
         band_targets: Vec::new(),
@@ -368,6 +369,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // real signal rather than noise on every launch.
     if let Some(notice) = app.startup_notices.pop_front() {
         app.toast(notice);
+        if !app.startup_notices.is_empty() {
+            app.startup_notice_due = Some(Instant::now() + crate::STATUS_TTL);
+        }
     }
 
     let terminal = ratatui::init();

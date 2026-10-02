@@ -428,9 +428,17 @@ impl App {
             .is_some_and(|(_, _, at)| at.elapsed() >= STATUS_TTL)
         {
             self.status = None;
+            self.changed_this_frame = true;
+        }
+        if self
+            .startup_notice_due
+            .is_some_and(|due| Instant::now() >= due)
+        {
             if let Some(notice) = self.startup_notices.pop_front() {
                 self.toast(notice);
             }
+            self.startup_notice_due =
+                (!self.startup_notices.is_empty()).then(|| Instant::now() + STATUS_TTL);
             self.changed_this_frame = true;
         }
 
