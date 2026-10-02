@@ -1107,6 +1107,25 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
         std::thread::sleep(Duration::from_millis(40));
     };
     assert!(moved["revision"].as_u64().unwrap() > state["revision"].as_u64().unwrap());
+    let selection_since = state["revision"].as_u64().unwrap().to_string();
+    let selection_events = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        &selection_since,
+        "--once",
+    ]);
+    assert!(selection_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["kind"] == "overlay.changed"
+                && event["value"]["field"] == "modal"
+                && event["value"]["value"]["selection"] == moved["modal"]["selection"]
+        }));
     let other = cli(&["ui", "--instance", &second_id, "state"]);
     assert_eq!(other["modal"], serde_json::Value::Null);
     let since = initial["revision"].as_u64().unwrap().to_string();

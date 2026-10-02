@@ -19,7 +19,12 @@ impl App {
         if self.control.is_none() {
             return;
         }
-        if self.control_observed.is_some() && !self.dirty && !self.changed_this_frame {
+        let state_version = self.host.ui_state_version();
+        if self.control_observed.is_some()
+            && !self.dirty
+            && !self.changed_this_frame
+            && self.control_state_version == state_version
+        {
             return;
         }
         let focused_plugin = self
@@ -117,6 +122,7 @@ impl App {
             "catalog_revision": self.registry.version(),
         });
         if self.control_observed.as_ref() == Some(&current) {
+            self.control_state_version = self.host.ui_state_version();
             return;
         }
         if let Some(previous) = self.control_observed.take() {
@@ -146,6 +152,7 @@ impl App {
             self.control_revision += 1;
         }
         self.control_observed = Some(current);
+        self.control_state_version = self.host.ui_state_version();
     }
 
     fn control_watch(&mut self, since: Option<u64>) -> Value {

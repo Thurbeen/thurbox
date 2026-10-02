@@ -1386,6 +1386,10 @@ impl LuaHost {
         states
     }
 
+    pub fn ui_state_version(&self) -> u64 {
+        self.state_version.get()
+    }
+
     /// Read a boolean out of the shared `store`.
     ///
     /// The panel flags live there (`panels.<name>`) because the arrangement has
