@@ -1169,6 +1169,119 @@ mod transport_proptests {
 
 // --- command lists on a real tmux ---
 
+#[cfg(unix)]
+#[test]
+fn a_control_client_without_flow_control_attaches_without_refreshing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mux = root.path().join("fake-mux");
+    std::fs::write(
+        &mux,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n\
+         printf '%s\\n' \"$line\" >> \"$0.log\"\n\
+         case \"$line\" in\n\
+           refresh-client*) printf '%%begin 1 1 0\\n%%error 1 1 0\\n' ;;\n\
+           *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+         esac\n\
+         done\n",
+    )
+    .expect("write fake mux");
+    std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let control = ControlMode::start(
+        &TmuxTransport::local(mux.to_string_lossy()),
+        "unused",
+        "unused",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: None,
+            implicit_attach_reply: false,
+            tagged_blocks: false,
+            subscriptions: false,
+            status_poll: None,
+        },
+    )
+    .expect("attach without flow control");
+    control
+        .send_command("display-message -p ready")
+        .expect("command reply");
+    drop(control);
+    let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
+    assert!(commands
+        .lines()
+        .any(|line| line == "display-message -p ready"));
+    assert!(
+        !commands.contains("refresh-client"),
+        "unexpected setup command: {commands}"
+    );
+
+    let chosen = ControlMode::start(
+        &TmuxTransport::local(mux.to_string_lossy()),
+        "unused",
+        "unused",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: Some("display-message -p policy"),
+            implicit_attach_reply: false,
+            tagged_blocks: false,
+            subscriptions: false,
+            status_poll: None,
+        },
+    )
+    .expect("adapter-selected setup command");
+    drop(chosen);
+    let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
+    assert!(commands
+        .lines()
+        .any(|line| line == "display-message -p policy"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_single_reply_command_list_leaves_the_next_reply_aligned() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mux = root.path().join("single-reply-mux");
+    std::fs::write(
+        &mux,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n\
+         case \"$line\" in\n\
+           *' ; '*) printf '%%begin 1 1 0\\nfirst\\nsecond\\n%%end 1 1 0\\n' ;;\n\
+           *next*) printf '%%begin 1 1 0\\nnext\\n%%end 1 1 0\\n' ;;\n\
+           *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+         esac\n\
+         done\n",
+    )
+    .expect("write fake mux");
+    std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let control = ControlMode::start(
+        &TmuxTransport::local(mux.to_string_lossy()),
+        "unused",
+        "unused",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: None,
+            implicit_attach_reply: false,
+            tagged_blocks: false,
+            subscriptions: false,
+            status_poll: None,
+        },
+    )
+    .expect("control client");
+    let list = control
+        .send_command_list(
+            &["display-message -p first", "display-message -p second"],
+            1,
+        )
+        .expect("one reply block for the list");
+    let next = control
+        .send_command("display-message -p next")
+        .expect("next command reply");
+    assert_eq!(list, "first\nsecond");
+    assert_eq!(next, "next");
+}
+
 /// A tmux server on a throwaway socket, killed on drop. Real tmux because what
 /// is pinned is how the server answers a command list — one `%begin`/`%end`
 /// block per command that runs — not the reader's bookkeeping.
@@ -1210,12 +1323,17 @@ impl ThrowawayServer {
     }
 
     fn control(&self) -> ControlMode {
+        self.control_with_flow_control(true)
+    }
+
+    fn control_with_flow_control(&self, flow_control: bool) -> ControlMode {
         ControlMode::start(
             &TmuxTransport::local("tmux"),
             &self.socket,
             Self::SESSION,
             "tests",
             &ControlPolicy {
+                flow_control_command: flow_control.then_some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,
@@ -1224,6 +1342,82 @@ impl ThrowawayServer {
         )
         .expect("control mode starts")
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn flow_control_can_be_skipped_with_tmux_installed() {
+    let Some(server) = ThrowawayServer::start("skip-flow-control") else {
+        return;
+    };
+    let control = server.control_with_flow_control(false);
+    assert_eq!(
+        control
+            .send_command("display-message -p ready")
+            .unwrap()
+            .trim(),
+        "ready"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
+    if !std::process::Command::new("rmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        eprintln!("skipping: rmux is not installed");
+        return;
+    }
+    let socket = format!("thurbox-control-policy-{}", std::process::id());
+    let transport = TmuxTransport::local("rmux");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = TmuxTransport::local("rmux")
+                .tmux_command(&self.0, &["kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(socket.clone());
+    let started = transport
+        .tmux_command(&socket, &["new-session", "-d", "-s", "probe"])
+        .output()
+        .expect("start server");
+    assert!(started.status.success(), "{started:?}");
+    let control = ControlMode::start(
+        &transport,
+        &socket,
+        "probe",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: None,
+            implicit_attach_reply: true,
+            tagged_blocks: true,
+            subscriptions: false,
+            status_poll: None,
+        },
+    )
+    .expect("control connection without flow control");
+    assert_eq!(
+        control
+            .send_command("display-message -p ready")
+            .unwrap()
+            .trim(),
+        "ready"
+    );
+    assert_eq!(
+        control
+            .send_command_list(
+                &["display-message -p first", "display-message -p second"],
+                1,
+            )
+            .expect("one block answers the command list")
+            .trim(),
+        "first\nsecond"
+    );
 }
 
 #[cfg(unix)]
@@ -1265,11 +1459,14 @@ fn a_command_list_is_answered_once_all_its_blocks_are_in() {
     let ctrl = server.control();
 
     let list = ctrl
-        .send_command_list(&[
-            "display-message -p first",
-            "run-shell 'sleep 0.5'",
-            "display-message -p third",
-        ])
+        .send_command_list(
+            &[
+                "display-message -p first",
+                "run-shell 'sleep 0.5'",
+                "display-message -p third",
+            ],
+            3,
+        )
         .expect("the list runs");
     let next = ctrl
         .send_command("display-message -p second")
@@ -1293,11 +1490,14 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
     };
     let ctrl = server.control();
 
-    let failed = ctrl.send_command_list(&[
-        "display-message -p a",
-        "set-window-option nosuchoption on",
-        "display-message -p c",
-    ]);
+    let failed = ctrl.send_command_list(
+        &[
+            "display-message -p a",
+            "set-window-option nosuchoption on",
+            "display-message -p c",
+        ],
+        3,
+    );
     let next = ctrl
         .send_command("display-message -p next")
         .expect("the next command runs");

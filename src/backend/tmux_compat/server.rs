@@ -58,6 +58,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Where it does not, liveness is polled and no pane size is reported.
     const WINDOW_EVENTS: bool;
 
+    /// Whether pane output must be enabled and disabled with `refresh-client
+    /// -A`. Servers that stream attached panes automatically do not take it.
+    const PANE_MONITORING: bool;
+
     /// Whether a command's reply is queued behind the pane output ahead of it
     /// in a tagged block, which is what makes a snapshot exact.
     const SNAPSHOTS: bool;
@@ -65,6 +69,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Whether one invocation takes a `;`-separated command list, so the whole
     /// session config can go in one process (#1243).
     const COMMAND_LISTS: bool;
+
+    /// Whether a semicolon-separated control-mode command list answers with
+    /// one response block rather than one block per command.
+    const COMMAND_LIST_SINGLE_REPLY: bool;
 
     /// Whether a one-shot `new-window -a -t <session>:{end} -P -F` appends the
     /// window last and answers with its pane — what the headless spawn stamps
@@ -99,11 +107,18 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     fn session_config(session: &str) -> Vec<ConfigOption>;
 
     /// A control-mode argument, quoted the way this server's tokenizer reads.
-    fn quote(arg: &str) -> String;
+    /// POSIX quoting is the default; a different tokenizer overrides it.
+    fn quote(arg: &str) -> String {
+        shell_escape(arg)
+    }
 
     /// The `new-window` flags carrying `env` into the window, if the server
     /// honours them; empty where the environment rides in the command itself.
-    fn env_flags(env: &HashMap<String, String>) -> String;
+    fn env_flags(env: &HashMap<String, String>) -> String {
+        env.iter()
+            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+            .collect()
+    }
 
     /// The command a new window runs, as a control-mode `new-window` line
     /// carries it.
@@ -112,10 +127,13 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         window_name: &str,
         command: &str,
         args: &[String],
-        env: &HashMap<String, String>,
+        _env: &HashMap<String, String>,
     ) -> String
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        server.posix_window_command(window_name, command, args)
+    }
 
     /// The environment and program that close a one-shot `new-window`'s argv.
     fn push_window_program(
@@ -123,7 +141,9 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    );
+    ) {
+        push_posix_window_program(cmd, command, args, env);
+    }
 
     /// The one-shot argv that delivers `text` into `target` as one paste.
     fn paste_args(target: &str, text: &str) -> Vec<String>;
@@ -1448,16 +1468,21 @@ impl<M: TmuxCompatible> Server<M> {
         self.ctrl_command_list(&[cmd])
     }
 
-    /// [`Self::ctrl_command`] for a command list, answered once every command
-    /// in it has answered (see `ControlMode::send_command_list`).
+    /// [`Self::ctrl_command`] for a command list, using the adapter's reply
+    /// count (see `ControlMode::send_command_list`).
     fn ctrl_command_list(&self, cmds: &[&str]) -> Result<String> {
-        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds));
+        let blocks = if M::COMMAND_LIST_SINGLE_REPLY {
+            1
+        } else {
+            cmds.len()
+        };
+        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks));
         match result {
             Ok(val) => Ok(val),
             Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
                 self.reconnect_control()?;
-                self.with_control(|ctrl| ctrl.send_command_list(cmds))
+                self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks))
             }
             Err(err) => Err(err),
         }
@@ -1701,10 +1726,12 @@ impl<M: TmuxCompatible> Server<M> {
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
-        self.ctrl_command(&format!(
-            "refresh-client -A '{}:on'",
-            pane_id.replace('\'', "'\\''")
-        ))?;
+        if M::PANE_MONITORING {
+            self.ctrl_command(&format!(
+                "refresh-client -A '{}:on'",
+                pane_id.replace('\'', "'\\''")
+            ))?;
+        }
 
         // Resize to the TUI panel dimensions. force_resize triggers a
         // SIGWINCH, making TUI applications (like claude) repaint at the
@@ -2486,11 +2513,13 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     fn detach(&self, backend_id: &str) -> Result<()> {
         // Disable output monitoring for this pane.
-        if let Err(e) = self.ctrl_command_nowait(&format!(
-            "refresh-client -A '{}:off'",
-            backend_id.replace('\'', "'\\''")
-        )) {
-            warn!("Failed to disable output monitoring during detach: {e}");
+        if M::PANE_MONITORING {
+            if let Err(e) = self.ctrl_command_nowait(&format!(
+                "refresh-client -A '{}:off'",
+                backend_id.replace('\'', "'\\''")
+            )) {
+                warn!("Failed to disable output monitoring during detach: {e}");
+            }
         }
         // Remove the pane sender — the ControlModeReader gets EOF.
         let _ = self.unregister_pane(backend_id);
@@ -3688,8 +3717,10 @@ mod tests {
         const WINDOW_OPTIONS: bool = true;
         const WINDOW_SETTINGS: bool = true;
         const WINDOW_EVENTS: bool = true;
+        const PANE_MONITORING: bool = true;
         const SNAPSHOTS: bool = true;
         const COMMAND_LISTS: bool = true;
+        const COMMAND_LIST_SINGLE_REPLY: bool = false;
         const ONE_SHOT_SPAWN_ANSWERS: bool = true;
         const CONDITIONAL_RESIZE: bool = true;
         const SERVER_SCOPE: &str = "-s";
@@ -3735,6 +3766,7 @@ mod tests {
         }
         fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
             ControlPolicy {
+                flow_control_command: Some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,
@@ -3746,6 +3778,115 @@ mod tests {
         fn hook_signal_command(_: &Server<Self>) -> String {
             "tmux set-option -p @thurbox_state ".to_string()
         }
+    }
+
+    #[cfg(unix)]
+    struct UnmonitoredMux;
+
+    #[cfg(unix)]
+    impl TmuxCompatible for UnmonitoredMux {
+        const MULTIPLEXER: Multiplexer = Multiplexer::Tmux;
+        const WINDOW_OPTIONS: bool = false;
+        const WINDOW_SETTINGS: bool = false;
+        const WINDOW_EVENTS: bool = false;
+        const PANE_MONITORING: bool = false;
+        const SNAPSHOTS: bool = false;
+        const COMMAND_LISTS: bool = false;
+        const COMMAND_LIST_SINGLE_REPLY: bool = false;
+        const ONE_SHOT_SPAWN_ANSWERS: bool = false;
+        const CONDITIONAL_RESIZE: bool = false;
+        const SERVER_SCOPE: &str = "-s";
+        const DISPLAY_FLAGS: &[&str] = &[];
+        const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
+
+        fn check_banner(_: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn session_config(_: &str) -> Vec<ConfigOption> {
+            Vec::new()
+        }
+        fn paste_args(_: &str, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> String {
+            String::new()
+        }
+        fn pane_input(_: &TmuxTransport, _: &str) -> Arc<dyn PaneInput> {
+            Arc::new(TypedKeys)
+        }
+        fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
+            ControlPolicy {
+                flow_control_command: None,
+                implicit_attach_reply: false,
+                tagged_blocks: false,
+                subscriptions: false,
+                status_poll: None,
+            }
+        }
+        const HOOK_STATUS: bool = false;
+        fn hook_signal_command(_: &Server<Self>) -> String {
+            String::new()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unmonitored_pane_streams_output_without_refreshing_on_attach_or_detach() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("unmonitored-mux");
+        std::fs::write(
+            &mux,
+            "#!/bin/sh\nwhile IFS= read -r line; do\n\
+             printf '%s\\n' \"$line\" >> \"$0.log\"\n\
+             case \"$line\" in\n\
+               *'refresh-client -A'*) printf '%%begin 1 1 0\\n%%error 1 1 0\\n' ;;\n\
+               *' ; '*) printf '%%begin 1 1 0\\n%%end 1 1 0\\n%%begin 1 1 0\\n%%end 1 1 0\\n%%output %%1 streamed\\n' ;;\n\
+               *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+             esac\n\
+             done\n",
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let transport = TmuxTransport::local(mux.to_string_lossy());
+        let backend = Server::<UnmonitoredMux>::with_transport(
+            transport.clone(),
+            "unused",
+            "unused",
+            "local:tmux",
+        );
+        let control = ControlMode::start(
+            &transport,
+            "unused",
+            "unused",
+            "tests",
+            &UnmonitoredMux::control_policy(&transport, "unused"),
+        )
+        .expect("control client");
+        *backend.control.lock().unwrap() = Some(control);
+
+        let pane = backend
+            .connect_pane("%1", Some("@1"), 24, 80)
+            .expect("attach without monitoring command");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let mut output = [0; 8];
+            let mut pane_output = pane.output;
+            let _ = tx.send(pane_output.read_exact(&mut output).map(|_| output));
+        });
+        let output = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("streamed output arrived")
+            .expect("streamed output read");
+        reader.join().expect("reader thread");
+        assert_eq!(&output, b"streamed");
+        backend.detach("%1").expect("detach");
+        drop(backend);
+        let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
+        assert!(commands.contains("resize-window"), "{commands}");
+        assert!(!commands.contains("refresh-client -A"), "{commands}");
     }
 
     /// The whole point of the fix: what tmux is handed must not need tmux's own

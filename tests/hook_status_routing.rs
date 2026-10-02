@@ -291,9 +291,9 @@ fn automation_tick_records_each_routes_own_hook_state() {
         ("on-tmux", tmux_host(), &routes.tmux_host, "done"),
         ("on-psmux", psmux_host(), &routes.psmux_host, "idle"),
     ] {
-        let id = seed_row(&db, name, &route.format(), "%0");
+        let id = seed_row(&db, name, &route.format(), "pane-0");
         let pane = backend.open(&format!("tb-{name}"), &id.to_string(), WindowRole::Agent);
-        assert_eq!(pane, "%0");
+        assert_eq!(pane, "pane-0");
         backend.hook(&pane, state);
         rows.push((name, id, state));
     }
@@ -303,9 +303,9 @@ fn automation_tick_records_each_routes_own_hook_state() {
         &db,
         "unserved",
         &Route::remote(Via::Ssh, "probehost", Some(Multiplexer::Herdr)).format(),
-        "%0",
+        "pane-0",
     );
-    let down = seed_row(&db, "down", &down_host().format(), "%0");
+    let down = seed_row(&db, "down", &down_host().format(), "pane-0");
     let pane = routes
         .down
         .open("tb-down", &down.to_string(), WindowRole::Agent);
@@ -349,7 +349,7 @@ fn session_signal_reaches_the_rows_own_backend() {
     let instance = Instance::new(false);
     let db = instance.db();
     let routes = Routes::new();
-    let id = seed_row(&db, "local-probe", &local_probe().format(), "%0");
+    let id = seed_row(&db, "local-probe", &local_probe().format(), "pane-0");
     let pane = routes
         .local
         .open("tb-local-probe", &id.to_string(), WindowRole::Agent);
@@ -398,7 +398,7 @@ fn session_signal_on_a_local_row_builds_no_host_registry() {
     let instance = Instance::new(false);
     let db = instance.db();
     let routes = Routes::new();
-    let id = seed_row(&db, "local-probe", &local_probe().format(), "%0");
+    let id = seed_row(&db, "local-probe", &local_probe().format(), "pane-0");
     let pane = routes
         .local
         .open("tb-local-probe", &id.to_string(), WindowRole::Agent);

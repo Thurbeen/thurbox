@@ -930,6 +930,9 @@ const HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// adapter's answer, measured, never a guess from the binary's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPolicy {
+    /// Command that limits buffered pane output, when this control server
+    /// offers such a facility.
+    pub flow_control_command: Option<&'static str>,
     /// Whether the server answers the `attach-session` carried on argv with a
     /// `%begin`/`%end` block of its own, which
     /// `ControlMode::drain_implicit_attach_response` must consume before any
@@ -1050,8 +1053,9 @@ impl ControlMode {
             child: Mutex::new(child),
         };
 
-        // Enable flow control (pause-after=5 seconds of buffered output).
-        control.send_command("refresh-client -f pause-after=5")?;
+        if let Some(command) = policy.flow_control_command {
+            control.send_command(command)?;
+        }
 
         // Subscribe to the remote-hook status option of every pane of the
         // attached session (tmux pushes `%subscription-changed` on change) —
@@ -1574,23 +1578,22 @@ impl ControlMode {
         Self::send_command_on(&self.stdin, &self.response_queue, cmd, 1)
     }
 
-    /// Send commands as one command list (`a ; b ; c`) and wait for the whole
-    /// list's answer — every command's output, in order, or the first error.
+    /// Send commands as one command list (`a ; b ; c`) and wait for the number
+    /// of reply blocks this server sends for the list.
     ///
     /// One line and not several because tmux runs a list without returning to
     /// its event loop in between (what `birth_options` relies on). Each entry
-    /// must be a single command: one that chains its own `;` answers with more
-    /// blocks than are counted here, and the surplus reaches the next waiter.
-    pub(in crate::backend) fn send_command_list(&self, cmds: &[&str]) -> Result<String> {
+    /// must be a single command: an uncounted extra block reaches the next
+    /// waiter.
+    pub(in crate::backend) fn send_command_list(
+        &self,
+        cmds: &[&str],
+        blocks: usize,
+    ) -> Result<String> {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
         }
-        Self::send_command_on(
-            &self.stdin,
-            &self.response_queue,
-            &cmds.join(" ; "),
-            cmds.len(),
-        )
+        Self::send_command_on(&self.stdin, &self.response_queue, &cmds.join(" ; "), blocks)
     }
 
     /// [`Self::send_command`] without `&self`, so background threads holding

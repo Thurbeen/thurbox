@@ -61,6 +61,7 @@ impl TmuxCompatible for Psmux {
 
     /// psmux sends no `%window-close` and no `%layout-change`.
     const WINDOW_EVENTS: bool = false;
+    const PANE_MONITORING: bool = true;
 
     /// Nothing has verified that a psmux reply queues behind the pane output
     /// ahead of it, and its blocks are framed the old way
@@ -70,6 +71,7 @@ impl TmuxCompatible for Psmux {
     /// Not verified to take a `;` list as one invocation: each option is set
     /// on its own.
     const COMMAND_LISTS: bool = false;
+    const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
     /// psmux's `new-window -P -F` support is unverified against the documented
     /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path
@@ -185,6 +187,7 @@ impl TmuxCompatible for Psmux {
     /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
+            flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: false,
             tagged_blocks: false,
             subscriptions: false,
