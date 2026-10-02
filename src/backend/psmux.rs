@@ -738,11 +738,9 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    #[test]
-    fn psmux_retries_a_failed_cold_session_bootstrap() {
+    fn cold_start_backend(root: &tempfile::TempDir, scenario: &str) -> PsmuxBackend {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = tempfile::tempdir().expect("tempdir");
         let mux = root.path().join("psmux-probe");
         let session = root.path().join("session");
         let attempts = root.path().join("attempts");
@@ -750,40 +748,101 @@ mod tests {
             "#!/bin/sh\n\
              session='{}'\n\
              attempts='{}'\n\
+             scenario='{}'\n\
              [ \"$1\" = -L ] && shift 2\n\
              case \"$1\" in\n\
                -V) echo 'psmux 3.3.8' ;;\n\
                has-session) test -f \"$session\" ;;\n\
                new-session)\n\
-                 if [ ! -f \"$attempts\" ]; then\n\
-                   echo first > \"$attempts\"\n\
+                 count=0\n\
+                 [ -f \"$attempts\" ] && count=$(wc -l < \"$attempts\")\n\
+                 echo attempt >> \"$attempts\"\n\
+                 if [ \"$scenario\" = always_refused ] || \
+                    {{ [ \"$scenario\" = refused_once ] && [ \"$count\" -eq 0 ]; }}; then\n\
                    echo \"psmux: failed to create session 'thurbox'\" >&2\n\
                    exit 1\n\
                  fi\n\
-                 echo second >> \"$attempts\"\n\
+                 if [ \"$scenario\" = vanished_once ] && [ \"$count\" -eq 0 ]; then\n\
+                   exit 0\n\
+                 fi\n\
                  touch \"$session\" ;;\n\
-               set-option) test -f \"$session\" ;;\n\
+               set-option)\n\
+                 if [ ! -f \"$session\" ]; then\n\
+                   echo 'psmux: no server running' >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 if [ \"$scenario\" = live_option_failure ]; then\n\
+                   echo 'invalid option' >&2\n\
+                   exit 1\n\
+                 fi ;;\n\
                *) exit 2 ;;\n\
              esac\n",
             session.display(),
-            attempts.display()
+            attempts.display(),
+            scenario
         );
         std::fs::write(&mux, script).expect("write fake psmux");
         std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-        let backend = PsmuxBackend::with_transport(
+        PsmuxBackend::with_transport(
             TmuxTransport::local(mux.to_string_lossy()),
             "private-socket",
             "thurbox",
             "local:psmux",
-        );
+        )
+    }
+
+    #[cfg(unix)]
+    fn attempt_count(root: &tempfile::TempDir) -> usize {
+        std::fs::read_to_string(root.path().join("attempts"))
+            .expect("new-session was attempted")
+            .lines()
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_a_failed_cold_session_bootstrap() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "refused_once");
 
         backend
             .ensure_session_configured()
             .expect("cold psmux session recovers");
-        assert_eq!(
-            std::fs::read_to_string(attempts).unwrap(),
-            "first\nsecond\n"
-        );
+        assert_eq!(attempt_count(&root), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_when_a_successful_create_left_no_server() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "vanished_once");
+
+        backend
+            .ensure_session_configured()
+            .expect("cold psmux session recovers");
+        assert_eq!(attempt_count(&root), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_does_not_retry_an_option_error_on_a_live_session() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "live_option_failure");
+
+        let error = backend.ensure_session_configured().unwrap_err().to_string();
+        assert!(error.contains("invalid option"), "{error}");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_stops_after_three_failed_cold_bootstraps() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "always_refused");
+
+        let error = backend.ensure_session_configured().unwrap_err().to_string();
+        assert!(error.contains("Failed to create tmux session"), "{error}");
+        assert_eq!(attempt_count(&root), 3);
     }
 
     #[test]
