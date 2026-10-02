@@ -432,7 +432,7 @@ same trait, not a branch in a consumer.
 
 - *the attach/render half*: `check_available`, `ensure_ready`, `spawn`,
   `adopt`, `discover`, `resize`, `claim_size`, `is_dead`, `kill`, `detach`,
-  plus snapshots and title seeding;
+  plus snapshots and state seeding (title and mouse modes);
 - *the headless lifecycle* (ADR-29): `create_window`, `locate`,
   `rename_windows`, `stamp_window`, `window_panes`, `set_pane_retention`;
 - *pane I/O by pane id* (ADR-30): `send_text`, `send_key`, `capture`,
@@ -650,6 +650,18 @@ capture: a mux that answers it differently (psmux is unverified
 here) must lose the activity line, never the scrollback. The
 attention notification (OSC 9/777) is deliberately **not**
 restored — it is an event, not state.
+
+The same query reads the pane's **mouse modes**
+(`#{mouse_standard_flag}`, `#{mouse_button_flag}`, `#{mouse_all_flag}`,
+`#{mouse_any_flag}`, `#{mouse_sgr_flag}`, `#{mouse_utf8_flag}`) and
+replays them as DECSETs ahead of the title (`mouse_seed_bytes`).
+Whether a wheel tick is forwarded to the app is read off thurbox's own
+parser, and an app turns tracking on once, at startup — a repaint
+redraws its cells, not its modes. Without the replay, a Codex adopted
+by a later interface could not be scrolled at all: its alternate screen
+keeps no scrollback for thurbox to scroll locally instead. A flag a
+server does not know expands to nothing and reads as off; when only
+`mouse_any_flag` is on, `?1000` is replayed, which is all the wheel needs.
 
 **Rejected**:
 

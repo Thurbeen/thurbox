@@ -3314,6 +3314,31 @@ fn the_wheel_reaches_a_fullscreen_app_that_checks_tmux_mouse_mode() {
 }
 
 #[test]
+fn the_wheel_still_reaches_a_fullscreen_app_after_a_restart() {
+    // An app turns mouse tracking on once, at startup — Codex does — and
+    // never again: a repaint redraws its cells, not its modes. An interface
+    // started after that adopts the pane mid-stream, so whether a wheel tick
+    // is forwarded must come from the mode tmux holds for the pane, not from
+    // bytes this process never read. `?1003` is the mode Codex asks for.
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"stty -echo -icanon min 1 time 0; printf '\\033[?1049h\\033[?1003h\\033[?1006hALT-CODEX\\n'; cat -v\r");
+    tui.wait_until("the mouse-tracking alternate screen", |frame| {
+        frame.contains("ALT-CODEX") && !frame.contains("stty -echo")
+    });
+    assert!(tui.quit().success());
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("ALT-CODEX");
+    tui.wait_until_quiet();
+    let at = tui.find("ALT-CODEX");
+    tui.wheel(at, true, 1);
+    tui.wait_for("[<64;");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn the_wheel_scrolls_the_companion_shell_too() {
     // The shell is a second surface over the same primitive, and it was the
     // half that never honoured a scroll offset: the pane refused to hold one

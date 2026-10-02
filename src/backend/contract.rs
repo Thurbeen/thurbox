@@ -527,12 +527,13 @@ pub trait SessionBackend: Send + Sync {
         anyhow::bail!("this backend cannot snapshot a pane")
     }
 
-    /// The pane's current title replayed as terminal bytes, or nothing — the
-    /// part of [`Self::capture_history`] that is not history, for an adopt
-    /// that captures no history ([`Session::adopt_dormant`](crate::backend::Session::adopt_dormant)). An agent's title
-    /// is its activity line, and one set before the interface attached exists
+    /// The pane's current title and mouse modes replayed as terminal bytes, or
+    /// nothing — the part of [`Self::capture_history`] that is not history, for
+    /// an adopt that captures no history ([`Session::adopt_dormant`](crate::backend::Session::adopt_dormant)). An agent's title
+    /// is its activity line, and its mouse modes decide whether the wheel
+    /// reaches it; both were set before the interface attached and exist
     /// nowhere else. Default: nothing.
-    fn title_seed(&self, _backend_id: &str) -> Vec<u8> {
+    fn state_seed(&self, _backend_id: &str) -> Vec<u8> {
         Vec::new()
     }
 
