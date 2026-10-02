@@ -720,7 +720,6 @@ return {
     { key = "tab", action = SCOPE, desc = "search everything / text / names", group = "Search" },
     { key = "esc", action = CANCEL, desc = "close and put back", group = "Search" },
   },
-
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
     local search = load()
@@ -826,7 +825,29 @@ return {
     return true
   end,
 
-  on_action = function(action)
+  on_action = function(action, args)
+    if action == OPEN and type(args) == "table" and args.query ~= nil then
+      local requested = args.query
+      if type(requested) ~= "string" then
+        return false
+      end
+      local search = load()
+      if not panels.shown(NAME) then
+        search.snapshot = {
+          selected = store.selected,
+          sessions_shown = panels.shown("sessions"),
+        }
+        search.revealed = nil
+        panels.show(NAME)
+      end
+      textinput.set(search.field, requested)
+      search.cursor = 1
+      search.previewed = nil
+      store[QUERY] = requested
+      save(search)
+      command("focus", { text = NAME })
+      return true
+    end
     if action == OPEN then
       -- A second press closes it, as every other panel key does. Cancelling
       -- rather than keeping, since nothing was chosen.

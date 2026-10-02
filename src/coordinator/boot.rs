@@ -228,7 +228,18 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let themes = Themes::load(snapshots_db().as_ref());
     startup.theme_activate_ms = phase.elapsed().as_millis() as u64;
 
+    let control = match thurbox::ui_control::Server::start() {
+        Ok(control) => Some(control),
+        Err(error) => {
+            tracing::warn!("local UI control unavailable: {error}");
+            startup_notices.push(format!("local UI control unavailable: {error}"));
+            None
+        }
+    };
     let mut app = App {
+        control,
+        control_revision: 0,
+        control_observed: None,
         host,
         sources: thurbox::kernel::bundled::sources(&ui_dir),
         watcher: Watcher::new(&ui_dir)?,
@@ -302,6 +313,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         layout_error: None,
         floor: None,
         status: None,
+        startup_notices: startup_notices.into(),
+        startup_notice_due: None,
         reported_failures: std::collections::HashSet::new(),
         tracked_commands: std::collections::HashMap::new(),
         band_targets: Vec::new(),
@@ -354,8 +367,11 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
     // Non-empty only on a profile's first wire-up or on a failure, so this is a
     // real signal rather than noise on every launch.
-    if let Some(notice) = startup_notices.first() {
-        app.toast(notice.clone());
+    if let Some(notice) = app.startup_notices.pop_front() {
+        app.toast(notice);
+        if !app.startup_notices.is_empty() {
+            app.startup_notice_due = Some(Instant::now() + crate::STATUS_TTL);
+        }
     }
 
     let terminal = ratatui::init();

@@ -34,6 +34,7 @@ use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
+use thurbox::ui_control::Server as UiControlServer;
 
 /// How long the loop blocks waiting for input.
 ///
@@ -242,6 +243,10 @@ struct TrackedCommand {
 }
 
 struct App {
+    /// The private endpoint owned by this running interface.
+    control: Option<UiControlServer>,
+    control_revision: u64,
+    control_observed: Option<(Option<String>, Option<String>, Option<String>)>,
     host: LuaHost,
     /// The directory the interface was loaded from. Held because every command
     /// about a plugin file names a path relative to it.
@@ -482,6 +487,10 @@ struct App {
     /// field is reset by every successful arrangement — which is once a frame —
     /// so a message sharing it was gone before it could be read.
     status: Option<(String, Level, Instant)>,
+    /// Boot can produce several notices; the one-line band shows each in turn.
+    startup_notices: std::collections::VecDeque<String>,
+    /// Independent of `status`, since other reports must not defer boot warnings.
+    startup_notice_due: Option<Instant>,
     /// Commands whose failure has already been reported, so the window in which
     /// a failure lingers for the panes does not re-raise it every poll.
     reported_failures: std::collections::HashSet<u64>,

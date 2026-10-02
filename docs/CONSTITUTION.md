@@ -76,7 +76,7 @@ kernel               → session, storage, sync, paths, session_ops, git,
                         themes_config, version_check},
                         backend::{contract, identity, pane, registry}, usage]
 cli                  → session, storage, session_ops, sync, paths,
-                       notifications
+                       notifications, ui_control
                        [path-only: agent::{agent_config, extension_config,
                         hooks_config, host_config, preflight, self_update,
                         settings_config, themes_config, version_check},
@@ -85,10 +85,12 @@ notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
+ui_control           → paths
 shell                → session                 (a host entry → its launcher)
 coordinator          → agent::{input, settings_config},
                        backend::{output_wake, wiring}, clipboard,
-                       kernel, paths, session, session_ops, shell, storage
+                       kernel, paths, session, session_ops, shell, storage,
+                       ui_control
 ```
 
 `agent` holds coding-agent definitions and their config and never touches

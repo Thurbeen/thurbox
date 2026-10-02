@@ -29,6 +29,7 @@
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -649,6 +650,356 @@ fn the_search_strip_opens_with_focus_in_it() {
     tui.send(ESC);
     tui.wait_gone("Search zq");
     assert!(tui.quit().success());
+}
+
+#[test]
+fn a_saved_search_shortcut_opens_from_the_agent_pane() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"bindings":{"search.open":"ctrl+a"}}"#,
+    )
+    .expect("saved shortcut");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x01");
+    tui.wait_for("Search");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn an_unavailable_control_socket_does_not_abort_the_tui() {
+    let profile = Profile::new();
+    let long_data = profile.path("data").join("x".repeat(100));
+    std::fs::create_dir_all(&long_data).expect("long data path");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+    });
+    tui.wait_for("interface from");
+    tui.wait_for("No sessions yet");
+    let mut saw_control_notice = false;
+    let mut saw_other_status = false;
+    for _ in 0..16 {
+        tui.send(b"\x1a");
+        std::thread::sleep(Duration::from_millis(500));
+        let frame = tui.frame();
+        saw_control_notice |= frame.contains("local UI control unavailable");
+        saw_other_status |= frame.contains("nothing to undo");
+    }
+    assert!(saw_other_status, "status traffic did not reach the TUI");
+    assert!(
+        saw_control_notice,
+        "other status messages hid the control failure"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_queued_startup_notice_waits_for_an_active_error() {
+    let interface = interface_plus(
+        "91_error.lua",
+        r#"return {
+  name = "error_probe",
+  slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  keys = {
+    { key = "ctrl+g", action = "error_probe.say", desc = "say error", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "error_probe.say" then
+      command("message", { text = "active error probe", level = "error" })
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let long_data = profile.path("data").join("x".repeat(100));
+    std::fs::create_dir_all(&long_data).expect("long data path");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("interface from");
+    tui.send(b"\x07");
+    tui.wait_for("active error probe");
+    for tick in 0..70 {
+        if tick % 10 == 0 {
+            tui.send(b"\x07");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !tui.frame().contains("local UI control unavailable"),
+            "startup notice replaced an active error"
+        );
+    }
+    tui.wait_for("local UI control unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn stale_discovery_entries_do_not_hide_a_live_tui() {
+    let profile = Profile::new();
+    let directory = profile.path("data/ui-control");
+    std::fs::create_dir(&directory).expect("control directory");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+        .expect("private directory");
+    let stale_record = |index: u128| {
+        let id = uuid::Uuid::from_u128(index + 1).to_string();
+        let endpoint = directory.join(format!("{id}.sock"));
+        let record = serde_json::json!({
+            "id": id,
+            "pid": 0,
+            "started_at_unix_ms": 0,
+            "label": "stale",
+            "terminal": null,
+            "endpoint": endpoint,
+        });
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, record.to_string()).expect("stale record");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("private record");
+    };
+    for index in 0..2048 {
+        stale_record(index);
+    }
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("list");
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(value["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .expect("control directory")
+            .count(),
+        2,
+        "dead records must be pruned after discovery"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_focus_refuses_a_tui_without_an_agent_pane() {
+    let Some((profile, mut first)) = shell_session() else {
+        return;
+    };
+    let agent = profile.path("config/ui/plugins/20_agent.lua");
+    std::fs::write(
+        profile.path("config/ui.json"),
+        serde_json::json!({"disabled": [agent]}).to_string(),
+    )
+    .expect("disable agent pane");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("probe");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let sessions = cmd
+        .args(["--json", "session", "list"])
+        .output()
+        .expect("sessions");
+    let rows: serde_json::Value = serde_json::from_slice(&sessions.stdout).expect("JSON");
+    let session = rows[0]["id"].as_str().expect("session id");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let instances = cmd
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("instances");
+    let listed: serde_json::Value = serde_json::from_slice(&instances.stdout).expect("JSON");
+    let target = listed["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["pid"] == tui.child.id())
+        .and_then(|entry| entry["id"].as_str())
+        .expect("target instance");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args([
+            "--json",
+            "ui",
+            "--instance",
+            target,
+            "action",
+            "session.focus",
+            "--session",
+            session,
+        ])
+        .output()
+        .expect("focus request");
+    assert!(
+        !output.status.success(),
+        "focus must refuse a missing agent pane"
+    );
+    assert!(tui.quit().success());
+    assert!(first.quit().success());
+}
+
+#[test]
+fn local_ui_control_targets_one_of_two_live_instances() {
+    let Some((profile, mut first)) = shell_session() else {
+        return;
+    };
+    let mut second = Tui::spawn(&profile, 40, 120);
+    second.wait_for("probe");
+    let cli = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json"]).args(args).output().expect("run cli");
+        (
+            output.status,
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
+        )
+    };
+    let deadline = Instant::now() + WAIT;
+    let ids = loop {
+        let (status, value) = cli(&["ui", "instances"]);
+        if status.success() {
+            let entries = value["instances"].as_array().expect("instances array");
+            if entries.len() == 2 {
+                let id_for = |pid| {
+                    entries
+                        .iter()
+                        .find(|row| row["pid"] == pid)
+                        .and_then(|row| row["id"].as_str())
+                        .expect("instance PID")
+                        .to_owned()
+                };
+                break vec![id_for(first.child.id()), id_for(second.child.id())];
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "two live instances were not discovered"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    let (status, ambiguous) = cli(&["ui", "state"]);
+    assert!(!status.success());
+    assert!(ambiguous["error"].to_string().contains("ambiguous"));
+    let directory = profile.path("data/ui-control");
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for id in &ids {
+        let socket = directory.join(format!("{id}.sock"));
+        assert_eq!(
+            std::fs::metadata(socket).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let (status, absent) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        "00000000-0000-0000-0000-000000000000",
+    ]);
+    assert!(!status.success());
+    assert!(absent["error"]
+        .to_string()
+        .contains("not in this interface"));
+    let (status, invalid) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        "not-a-uuid",
+    ]);
+    assert!(!status.success());
+    assert!(invalid["error"].to_string().contains("must be a UUID"));
+
+    let (status, receipt) = cli(&[
+        "ui",
+        "--instance",
+        &ids[0],
+        "action",
+        "search.open",
+        "--query",
+        "one",
+    ]);
+    assert!(status.success());
+    assert_eq!(receipt["instance_id"], ids[0]);
+    assert!(receipt["request_id"].as_str().is_some());
+    assert_eq!(receipt["result"]["ok"], true);
+    assert_eq!(receipt["revision"], receipt["result"]["state"]["revision"]);
+    first.wait_for("Search one");
+    assert!(!second.frame().contains("Search one"));
+    let (status, state) = cli(&["ui", "--instance", &ids[0], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "one");
+    assert_eq!(state["focused_pane"], "search");
+
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "search.open",
+        "--query",
+        "two",
+    ]);
+    assert!(status.success());
+    second.wait_for("Search two");
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "two");
+    let revision = state["revision"].clone();
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "search.open",
+        "--query",
+        "two",
+    ]);
+    assert!(status.success());
+    second.wait_for("Search two");
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "two");
+    assert_eq!(state["revision"], revision);
+
+    let (status, sessions) = cli(&["session", "list"]);
+    assert!(status.success());
+    let session = sessions[0]["id"].as_str().expect("session id");
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        session,
+    ]);
+    assert!(status.success());
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["selected_session"], session);
+    assert_eq!(state["focused_pane"], "agent");
+    let (status, first_state) = cli(&["ui", "--instance", &ids[0], "state"]);
+    assert!(status.success());
+    assert_eq!(first_state["search_query"], "one");
+
+    assert!(second.quit().success());
+    let (status, stale) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(!status.success());
+    assert!(stale["error"].to_string().contains("instance"));
+    assert!(first.quit().success());
 }
 
 #[test]

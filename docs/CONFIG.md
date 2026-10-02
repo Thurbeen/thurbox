@@ -1163,6 +1163,7 @@ User-set (read by thurbox):
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
+| `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
 
 Set **by** thurbox into every spawned agent process (not user-set;
@@ -1306,6 +1307,41 @@ The name of the instance sizing a window is the window option `@thurbox_sizer`
 (`tmux -L <socket> show-options -w -t <pane> @thurbox_sizer`). Why it works
 this way, and what it costs, is ADR-27 in `docs/ARCHITECTURE.md`. On a Windows
 host (psmux) the last instance to paint a pane still sizes it.
+
+## Local UI control
+
+Every running TUI advertises a random instance ID under its data profile's
+`ui-control/` directory. Run `thurbox-cli ui instances --json` to list reachable
+screens with their PID, local/SSH label and terminal hint.
+`thurbox-cli ui --instance <id> state --json` reports the focused pane,
+selected session ID, search query and state revision from that screen. A command
+without `--instance` uses the sole reachable screen, or refuses with an
+ambiguity error listing IDs when several are running. `THURBOX_UI_INSTANCE`
+selects a default for scripts. Closed or crashed screens cannot be targeted;
+stale discovery records are removed when discovered.
+
+The first two actions are:
+
+```sh
+thurbox-cli ui --instance <id> action session.focus --session <session-uuid> --json
+thurbox-cli ui --instance <id> action search.open --query 'error handling' --json
+```
+
+`session.focus` requires a session visible to the target TUI and a focusable
+agent pane. `search.open`
+opens the strip and sets its query; calling it again replaces the query without
+closing the strip. The reply comes from the target's event loop after it applies
+or refuses the action. The older `session focus` command still uses its shared
+notification request and does not select a TUI instance.
+
+The control channel is a Unix socket in a user-owned `0700` directory with a
+peer UID check, or a local Windows named pipe with a current-user ACL and remote
+clients rejected. Requests are length-framed JSON, limited to 16 KiB and a
+bounded queue; each client has a two-second deadline. The interface does not
+listen on TCP. A CLI on another machine must be run on the TUI's host.
+If the local endpoint cannot start, the TUI still runs and shows a notice after
+other startup notices;
+`ui instances` will not list it.
 
 ## Versioning
 

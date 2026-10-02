@@ -113,6 +113,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 crossterm_winapi = "0.9"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [[bin]]
 name = "thurbox-cli"

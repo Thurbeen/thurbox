@@ -39,7 +39,7 @@ Sleep 2500ms
 # Get OFF the terminal before opening search, and do it by NAMING a pane rather
 # than by stepping the focus ring.
 #
-# Two traps meet here. `search.open` really is `Ctrl+/`, which is deliberately not a
+# Two traps meet here. `search.open` is `Ctrl+/`, which is deliberately not a
 # bare `Ctrl+<letter>` so it reaches search even from a focused agent — but these
 # recordings rebind it to `Ctrl+A`, which IS one, so from a focused terminal it is
 # passed through to the agent's PTY and search never opens. And `Ctrl+H` (focus

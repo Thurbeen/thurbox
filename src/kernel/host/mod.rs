@@ -1065,6 +1065,17 @@ impl LuaHost {
     /// is what lets it be rebound, listed in help, and conflict-checked. Raw
     /// `on_key` stays for panes that need every keystroke (the terminal).
     pub fn on_action(&self, index: usize, action: &str) -> Result<bool, PluginError> {
+        self.on_action_with_args(index, action, &[])
+    }
+
+    /// Pass a validated, typed argument table to a plugin action. Existing
+    /// one-argument Lua handlers ignore the second argument.
+    pub fn on_action_with_args(
+        &self,
+        index: usize,
+        action: &str,
+        args: &[(&str, &str)],
+    ) -> Result<bool, PluginError> {
         let Some(plugin) = self.plugins.get(index) else {
             return Ok(false);
         };
@@ -1084,7 +1095,37 @@ impl LuaHost {
         let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
-        let handled: Result<bool, mlua::Error> = handler.call(action.to_string());
+        let handled: Result<bool, mlua::Error> = if args.is_empty() {
+            handler.call(action.to_string())
+        } else {
+            let data = self.lua.create_table().map_err(|e| fail(clean_error(&e)))?;
+            for (key, value) in args {
+                data.set(*key, *value).map_err(|e| fail(clean_error(&e)))?;
+            }
+            let arguments = self.lua.create_table().map_err(|e| fail(clean_error(&e)))?;
+            let metatable = self.lua.create_table().map_err(|e| fail(clean_error(&e)))?;
+            metatable
+                .set("__index", data)
+                .map_err(|e| fail(clean_error(&e)))?;
+            let deny = self
+                .lua
+                .create_function(|_, (_table, _key, _value): (Value, Value, Value)| {
+                    Err::<(), _>(mlua::Error::RuntimeError(
+                        "action arguments are read-only".into(),
+                    ))
+                })
+                .map_err(|e| fail(clean_error(&e)))?;
+            metatable
+                .set("__newindex", deny)
+                .map_err(|e| fail(clean_error(&e)))?;
+            metatable
+                .set("__metatable", false)
+                .map_err(|e| fail(clean_error(&e)))?;
+            arguments
+                .set_metatable(Some(metatable))
+                .map_err(|e| fail(clean_error(&e)))?;
+            handler.call((action.to_string(), arguments))
+        };
         drop(guard);
         self.hook_finished(plugin, start, Hook::Action, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
@@ -1300,10 +1341,9 @@ impl LuaHost {
 
     /// A string a plugin left in the shared `store`, if it put one there.
     ///
-    /// The loop needs exactly one of these — `store.selected`, the session the
-    /// list has selected — to know which session focus just left. Reading the
-    /// store rather than tracking it kernel-side keeps the selection owned by the
-    /// pane that moves it, which is what makes the session list a plugin.
+    /// Selection and search query belong to their plugins. Reading the store
+    /// keeps the instance-scoped UI state projection aligned with what those
+    /// plugins actually show.
     pub fn shared_string(&self, key: &str) -> Option<String> {
         match self.store.borrow().get(key) {
             Some(Persisted::Str(text)) => Some(text.clone()),
@@ -1326,9 +1366,8 @@ impl LuaHost {
     /// Put a string into the shared `store`, for a request that arrives from
     /// outside any plugin.
     ///
-    /// The one caller is a focus request landing from another process — a clicked
-    /// notification, or `thurbox-cli session focus`. It is written into the store
-    /// rather than applied directly because the *selection* belongs to the
+    /// Focus requests and instance-scoped UI actions use this path. A request
+    /// is written into the store rather than applied directly because selection belongs to the
     /// session list, which republishes it every frame; anything the kernel set
     /// behind its back would be overwritten immediately.
     /// Bumps the state version exactly as the Lua `__newindex` path does —

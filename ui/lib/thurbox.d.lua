@@ -307,7 +307,7 @@
 ---@field render? fun(ctx: thurbox.Ctx): thurbox.Root
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
 ---@field on_key? fun(key: thurbox.Key): boolean
----@field on_action? fun(action: string): boolean
+---@field on_action? fun(action: string, args?: table<string, string>): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
 ---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
 ---@field on_outside? fun(hit: thurbox.Hit): boolean A float's: a press of either button that missed it while it held the pointer. `hit.id` is nil.

@@ -512,7 +512,14 @@ becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` was
 taken deliberately from the chords held for v1's panes (`tests/keymap.rs`),
 and the creation flow's folder import moved to `Alt+P` for it.
 
+`on_action(action, args)` accepts a read-only table of typed arguments for
+instance-scoped UI control. Existing one-argument handlers still work. The
+first external actions are `session.focus {session_id}` and
+`search.open {query}`; the coordinator validates them and applies them on the
+event loop. The local transport lives in `ui_control`, outside the session
+backend, and `thurbox-cli ui` selects the target interface explicitly when
+more than one is reachable.
+
 - `docs/KERNEL.md` — the kernel's shape, its five rules, and the traps
 - `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
   lists the mistakes that are invisible until runtime
-

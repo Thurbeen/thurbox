@@ -122,8 +122,9 @@ impl App {
 
     /// Select a session and put the input focus on the pane that shows it.
     ///
-    /// Only for a request made *now*: a clicked notification, or
-    /// `thurbox-cli session focus`. A session this instance just created is
+    /// Only for a request made *now*: a clicked notification,
+    /// `thurbox-cli session focus`, or an instance-scoped UI action.
+    /// A session this instance just created is
     /// deliberately not one — creation finishes on a worker seconds after the
     /// wizard closed, so steering the view then lands at a moment the user did
     /// not choose, and taking the selection back after every one of them made

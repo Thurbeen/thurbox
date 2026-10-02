@@ -1,5 +1,5 @@
 //! Thurbox CLI binary — scriptable access to the same state the TUI shows.
-//! Every subcommand works without the TUI running.
+//! Session commands work headlessly; `ui` targets a running TUI instance.
 //!
 //! This entrypoint owns the parts of the AXI contract (`axi/1.0-2026-07`) that
 //! are about the *process* rather than about any one command: a failure that
