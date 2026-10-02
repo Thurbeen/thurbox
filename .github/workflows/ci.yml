@@ -56,8 +56,13 @@ jobs:
               # green. The `lua` filter below lists the same two roots.
               - 'ui/**'
               - 'examples/**'
-              # Hook payload tests read these files from the checked-out tree.
-              - 'extensions/**'
+              # Hook payloads and the UI skill are embedded and tested. The
+              # hooks README is prose, so it only needs the Markdown job.
+              - 'extensions/hooks/**.json'
+              - 'extensions/hooks/**.toml'
+              - 'extensions/hooks/**.js'
+              - 'extensions/hooks/**.ts'
+              - 'extensions/ui-skill/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.config/nextest.toml'
