@@ -717,6 +717,17 @@ WSL needs no credentials at all.
   TUI. Choosing a row's backend is only a registry lookup
   (`session_ops::windows::backend_for`, ADR-29); the blocking
   `ensure_ready` runs on the spawn worker, never on the UI thread (ADR-P12).
+- **`wsl.exe` never shares the interface's terminal** (`shell::wsl_exe`):
+  `CREATE_NO_WINDOW` on Windows, a session of its own (`setsid`) on Unix.
+  A `wsl.exe` child takes its parent console's keyboard input even with
+  stdin, stdout and stderr all redirected, and relays it into the distro.
+  The control-mode connection is such a child for as long as a WSL
+  session is attached, so on native Windows the interface went on
+  painting while every key went to the distro instead. Measured on
+  Windows 11: a console reader received 0 of 8 keys beside `wsl.exe -d
+  <distro> sleep 40`, and 8 of 8 with the flag; with a session attached,
+  release 2.41.7 never opened the palette while this build opened it in
+  ~230 ms. Not applied to `ssh`, which was not measured.
 - **Auto-discovery**: WSL distros appear with zero config; an explicit
   `kind = "wsl"` entry of the same name wins (for overrides like
   `worktrees_dir`). `discover_wsl_hosts` decodes `wsl.exe`'s UTF-16LE

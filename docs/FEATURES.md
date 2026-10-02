@@ -697,11 +697,9 @@ is reached with `wsl.exe -d <distro>` (no credentials, no network);
 `ssh` does, so the *same* tmux control-mode protocol, POSIX quoting,
 and worktree layout apply — only the launch prefix differs (multi-word
 `sh -c` scripts go through `wsl.exe --exec`, which hands argv over
-verbatim; see `shell::wsl_command`). `wsl.exe` is always started
-off the interface's terminal (`CREATE_NO_WINDOW` on Windows): it
-reads its parent console's keyboard even with every stdio handle
-redirected, so an attached WSL session used to leave the interface
-painting but deaf to keys. So off-local
+verbatim; see `shell::wsl_command`). `wsl.exe` is started off the
+interface's terminal, or an attached WSL session takes the keyboard —
+ADR-13. So off-local
 sessions get identical persistence, multi-instance sharing, and
 restore-on-startup as local ones; the worktree and agent process live
 on the remote host / inside the distro (a WSL distro's worktrees stay
