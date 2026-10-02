@@ -2117,17 +2117,22 @@ every other instance shows that pane's screen as it is. The window names its
 sizer in a window option, `@thurbox_sizer`, and a paint's resize
 (`tmux_compat::Server::resize`) is honoured only for a window that is this instance's to
 size: one nobody names, one it already names, or any window while it is the only
-client attached. Input is what hands the size over — a keystroke, paste or
-forwarded click into a pane that is not at this instance's size claims it
-outright (`claim_size`), which is tmux's own `window-size latest` with typing as
-the activity. Every instance's vt100 grid follows the pane's **real** size, read
-from `%layout-change` and delivered to the pane's reader in the same channel as
-its output (`PaneEvent`), so the size changes between the last byte written for
-the old one and the first written for the new. An instance whose rect differs
-from the grid paints the bottom rows of a taller grid and blank margins around a
-smaller one, and says on its bottom row that another thurbox is sizing the pane
-and that typing takes it. When the other instance goes, the one left takes its
-own size back once, unprompted.
+client attached. Input and focus are what hand the size over — a keystroke,
+paste or forwarded click into a pane that is not at this instance's size claims
+it outright (`claim_size`), which is tmux's own `window-size latest` with typing
+as the activity, and so does the pane **gaining** the focus here
+(`Terminals::focus`), whether by a focus key, a click or a session switch. Only
+the gain counts: a pane that keeps the focus while another instance takes it
+stays that instance's, or two instances focused on one pane would trade it every
+frame. Before focus counted, a session focused after another instance had sized
+it stayed at that size until the first keystroke. Every instance's vt100 grid
+follows the pane's **real** size, read from `%layout-change` and delivered to
+the pane's reader in the same channel as its output (`PaneEvent`), so the size
+changes between the last byte written for the old one and the first written for
+the new. An instance whose rect differs from the grid paints the bottom rows of
+a taller grid and blank margins around a smaller one, and says on its bottom row
+that another thurbox is sizing the pane and that typing takes it. When the other
+instance goes, the one left takes its own size back once, unprompted.
 
 The decision is **tmux's**, in the command list that carries the resize, so it
 costs no round trip and two instances cannot both win it: a `set-option -F`

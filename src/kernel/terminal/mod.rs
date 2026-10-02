@@ -553,6 +553,9 @@ pub struct Terminals {
     /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
     app_copy_tokens: u64,
+    /// The surface [`Self::focus`] last handed its size, and the pane behind
+    /// it — the edge it acts on.
+    size_focus: Option<(String, String)>,
 }
 
 impl Terminals {
@@ -603,6 +606,7 @@ impl Terminals {
             },
             app_copy_focus: None,
             app_copy_tokens: 0,
+            size_focus: None,
         }
     }
 
@@ -1338,6 +1342,50 @@ impl Terminals {
             .as_ref()
             .map(|copy| copy.take())
             .unwrap_or_default()
+    }
+
+    /// Hand the focused surface its pane's size, once per focus gained.
+    ///
+    /// On a pane several instances show, a paint resizes only a pane that is
+    /// this instance's to size, and input is what hands the size over
+    /// (`WiredPane::send_input`). Focus says the same thing input does — the
+    /// user is at this instance — so a pane focused here takes the size of the
+    /// rect it was just painted into, and is not left at another instance's
+    /// size until the first keystroke. Called after the paint, so that rect is
+    /// this frame's.
+    ///
+    /// On the edge only: keeping the focus is not gaining it, or two instances
+    /// focused on one pane would take it from each other every frame. A pane
+    /// replaced under the focused surface is a new pane gaining it. `None`
+    /// (focus on a pane with no terminal, or on a modal) clears the edge, so
+    /// coming back is focusing again. A pane already at this size costs an
+    /// atomic comparison and sends nothing, and one nobody else shares was
+    /// already sized by its paint.
+    pub fn focus(&mut self, surface: Option<&str>) {
+        let Some(surface) = surface else {
+            self.size_focus = None;
+            return;
+        };
+        let wired = match self.program_key(surface) {
+            Some(key) => self.programs.get(key).map(|slot| &*slot.pane),
+            None => self.pane(surface).and_then(|pane| pane.wired()),
+        };
+        // A surface with no pane yet — focused before it attached — is asked
+        // again next time rather than marked as handed its size.
+        let Some(wired) = wired else {
+            return;
+        };
+        // Keyed on the pane as well as the surface: a restart replaces the pane
+        // under a name that keeps the focus, and the new pane has never had it.
+        if self
+            .size_focus
+            .as_ref()
+            .is_some_and(|(held, pane)| held == surface && pane == wired.backend_id())
+        {
+            return;
+        }
+        wired.claim_size();
+        self.size_focus = Some((surface.to_string(), wired.backend_id().to_string()));
     }
 
     /// Where a surface was painted, and the parser it is showing.

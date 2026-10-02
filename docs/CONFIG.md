@@ -1300,8 +1300,8 @@ or a lead over ssh and one locally — show the same sessions, and a pane can be
 only one size. There is **no setting** for this: the instance you type into
 sizes the pane, and the others show its screen as it is, with blank margins or
 cropped to its bottom rows, and say so on the pane's bottom row (`120×41 · sized
-by another thurbox · type here to resize`). Typing into a pane there hands the
-size over; when the sizing instance goes, the one left takes its own size back.
+by another thurbox · type here to resize`). Focusing a pane there, or typing into
+it, hands the size over; when the sizing instance goes, the one left takes its own size back.
 The name of the instance sizing a window is the window option `@thurbox_sizer`
 (`tmux -L <socket> show-options -w -t <pane> @thurbox_sizer`). Why it works
 this way, and what it costs, is ADR-27 in `docs/ARCHITECTURE.md`. On a Windows
