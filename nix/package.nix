@@ -48,21 +48,9 @@ rustPlatform.buildRustPackage {
     "thurbox-cli"
   ];
 
-  # The library's and binaries' unit tests, under nextest like CI: they share
-  # process-global state (a host's learned socket, the host-CLI fakes), so
-  # under plain `cargo test` one test's leftovers fail another. The integration
-  # tests under tests/ drive a real terminal, which the build sandbox does not
-  # provide; CI runs them.
-  useNextest = true;
-  cargoTestFlags = [
-    "--lib"
-    "--bins"
-  ];
-  checkType = "debug";
-  nativeCheckInputs = [
-    git
-    tmux
-  ];
+  # CI's Nextest job covers the tests; compiling them again here takes longer
+  # than the release build and does not change the package output.
+  doCheck = false;
 
   nativeBuildInputs = [ makeWrapper ];
 
