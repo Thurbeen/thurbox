@@ -1115,6 +1115,28 @@ fn expression_built_clicks_do_not_report_a_partial_action_name() {
 }
 
 #[test]
+fn commented_literal_click_actions_are_recognized() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "local ACTION = 'notes.open' -- button action\n\
+         return { name = 'notes', slot = 'center',\n\
+         keys = { { key = 'f7', action = 'notes.open', desc = 'open' } },\n\
+         on_action = function() return true end,\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:' .. ACTION } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
+    assert!(
+        !warnings.contains("constructed click action ACTION cannot be advertised"),
+        "{warnings}"
+    );
+}
+
+#[test]
 fn a_plugin_cannot_claim_the_kernel_owner_name() {
     let home = tempfile::tempdir().expect("tempdir");
     let ui = at(home.path());
