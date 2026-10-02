@@ -1316,6 +1316,13 @@ end
 
 return {
   name = "new_session",
+  ui_state = function()
+    local flow = load()
+    if not flow then
+      return { open = false }
+    end
+    return { open = true, step = flow.step, selection = flow.cursor or 1 }
+  end,
   -- A slot the arrangement never places: this pane only ever floats, and a slot
   -- it could also occupy would make it an alternative to the terminal.
   slot = "float",

@@ -120,6 +120,9 @@ pub struct PaletteModal {
 }
 
 impl PaletteModal {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
     pub fn hits(&self) -> &Hits {
         &self.hits
     }

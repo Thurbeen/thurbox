@@ -146,6 +146,9 @@ pub struct HelpModal {
 }
 
 impl HelpModal {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
     pub fn capturing(&self) -> bool {
         self.capturing
     }

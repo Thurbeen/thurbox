@@ -313,6 +313,7 @@
 ---@field on_outside? fun(hit: thurbox.Hit): boolean A float's: a press of either button that missed it while it held the pointer. `hit.id` is nil.
 ---@field on_scroll? fun(wheel: thurbox.Wheel): boolean
 ---@field on_event? fun(name: string, payload: table<string, any>)
+---@field ui_state? fun(): table<string, string|number|boolean> Bounded public projection for `ui state`; omit private values.
 
 --- What a pane asks of its slot, in the same vocabulary a node uses.
 ---@class (exact) thurbox.Size

@@ -54,6 +54,12 @@ misread, and both are worth knowing before you conclude a path is wrong:
 `thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
 every other config path, which is the quickest way to see which set is in play.
 
+Plugins may declare `ui_state = function() return { open = state.open == true,
+selection = state.cursor or 1 } end`. The local `thurbox-cli ui state` snapshot
+calls it on the TUI loop and includes at most 16 scalar fields per plugin, with
+short string keys and values. It is a public projection: return only state a
+local controller needs, never terminal text, credentials, or the whole `store`.
+
 **Editing the interface from some other session.** The interface directory is a
 config path of yours, so a coding agent working in an unrelated repository has no
 reason to know it exists. thurbox handles that for you: the built-in **ui-skill**

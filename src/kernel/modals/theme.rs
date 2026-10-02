@@ -148,6 +148,9 @@ pub struct ThemeModal {
 }
 
 impl ThemeModal {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
     /// Whether keystrokes are being typed into the filter rather than driving
     /// the list.
     pub fn filtering(&self) -> bool {

@@ -83,6 +83,7 @@ impl App {
             self.sync_terminals_and_agents();
             self.serve_worker_stores();
             self.apply_external_requests();
+            self.refresh_control_state(false);
             self.serve_ui_control();
             // After everything above has published and before the paint, so a
             // handler sees this iteration's state and its writes land in the

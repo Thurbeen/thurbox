@@ -1314,11 +1314,26 @@ Every running TUI advertises a random instance ID under its data profile's
 `ui-control/` directory. Run `thurbox-cli ui instances --json` to list reachable
 screens with their PID, local/SSH label and terminal hint.
 `thurbox-cli ui --instance <id> state --json` reports the focused pane,
-selected session ID, search query and state revision from that screen. A command
+selected session ID, arranged slots with rects and visible panes, panel state, kernel modal and its
+selection, open plugin floats, active search query and result selection, and
+the action catalog revision. Plugin-owned details are limited to each plugin's
+optional `ui_state()` projection of small scalar values; the Lua store and
+terminal contents are never copied into this snapshot. `plugin_state` keys
+projections by plugin file path, so two panes with the same display name remain
+distinct. If a combined snapshot exceeds the local reply limit, the command
+returns an explicit `state_too_large` error. A command
 without `--instance` uses the sole reachable screen, or refuses with an
 ambiguity error listing IDs when several are running. `THURBOX_UI_INSTANCE`
 selects a default for scripts. Closed or crashed screens cannot be targeted;
 stale discovery records are removed when discovered.
+
+`thurbox-cli ui --instance <id> watch --json` writes an initial snapshot and
+then JSON lines for changes to focus, layout, overlays, selection, search, and
+action outcomes. `--since <revision>` resumes after a known revision. The
+per-instance buffer holds 256 deltas; an expired or future cursor yields a
+`resync_required` response containing a fresh snapshot. `--once` returns one batch as
+a JSON document for polling callers. This stream is UI state only;
+`thurbox-cli watch` continues to stream durable session events.
 
 The first two actions are:
 
@@ -1336,7 +1351,8 @@ notification request and does not select a TUI instance.
 
 The control channel is a Unix socket in a user-owned `0700` directory with a
 peer UID check, or a local Windows named pipe with a current-user ACL and remote
-clients rejected. Requests are length-framed JSON, limited to 16 KiB and a
+clients rejected. Requests are length-framed JSON, limited to 16 KiB requests
+and 256 KiB replies, with a
 bounded queue; each client has a two-second deadline. The interface does not
 listen on TCP. A CLI on another machine must be run on the TUI's host.
 If the local endpoint cannot start, the TUI still runs and shows a notice after

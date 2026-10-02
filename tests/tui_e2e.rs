@@ -972,7 +972,21 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
     assert!(status.success());
     assert_eq!(state["search_query"], "two");
-    assert_eq!(state["revision"], revision);
+    assert!(state["revision"].as_u64().unwrap() > revision.as_u64().unwrap());
+    let since = revision.as_u64().unwrap().to_string();
+    let (status, outcome) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(status.success());
+    assert!(outcome["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "action.completed" && event["value"]["action"] == "search.open"
+    }));
 
     let (status, sessions) = cli(&["session", "list"]);
     assert!(status.success());
@@ -1000,6 +1014,365 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     assert!(!status.success());
     assert!(stale["error"].to_string().contains("instance"));
     assert!(first.quit().success());
+}
+
+#[test]
+fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
+    let profile = Profile::new();
+    let mut first = Tui::spawn(&profile, 40, 120);
+    let mut second = Tui::spawn(&profile, 40, 120);
+    first.wait_for("No sessions yet");
+    second.wait_for("No sessions yet");
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json"]).args(args).output().expect("run cli");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("JSON")
+    };
+    let instances = cli(&["ui", "instances"]);
+    let entries = instances["instances"].as_array().expect("instances");
+    let id_for = |pid| {
+        entries
+            .iter()
+            .find(|row| row["pid"] == pid)
+            .and_then(|row| row["id"].as_str())
+            .expect("instance id")
+            .to_owned()
+    };
+    let first_id = id_for(first.child.id());
+    let second_id = id_for(second.child.id());
+    let initial = cli(&["ui", "--instance", &first_id, "state"]);
+    assert_eq!(initial["modal"], serde_json::Value::Null);
+    assert!(initial["slots"].is_array());
+    assert_eq!(
+        initial["search"]["selected_result"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        initial["plugin_state"]["plugins/65_search.lua"]["open"],
+        false
+    );
+
+    let mut watch_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut watch_cmd);
+    let mut watcher = watch_cmd
+        .args(["--json", "ui", "--instance", &first_id, "watch"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("watch stream");
+    let stdout = watcher.stdout.take().expect("watch stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            if sender.send(line.expect("watch line")).is_err() {
+                break;
+            }
+        }
+    });
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&receiver.recv_timeout(WAIT).expect("initial watch snapshot"))
+            .expect("snapshot JSON");
+    assert_eq!(snapshot["kind"], "snapshot");
+
+    first.send(F1);
+    first.wait_for("Keybindings");
+    let state = cli(&["ui", "--instance", &first_id, "state"]);
+    assert_eq!(state["modal"]["kind"], "help");
+    let selection = state["modal"]["selection"]
+        .as_u64()
+        .expect("modal selection");
+    assert!(state["revision"].as_u64().unwrap() > initial["revision"].as_u64().unwrap());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let Ok(line) = receiver.recv_timeout(Duration::from_millis(200)) else {
+            assert!(Instant::now() < deadline, "modal event missing from stream");
+            continue;
+        };
+        let event: serde_json::Value = serde_json::from_str(&line).expect("event JSON");
+        if event["kind"] == "overlay.opened" && event["value"]["field"] == "modal" {
+            assert_eq!(event["value"]["value"]["kind"], "help");
+            break;
+        }
+        assert!(Instant::now() < deadline, "modal event missing from stream");
+    }
+    first.send(b"\x1b[B");
+    let selection_deadline = Instant::now() + WAIT;
+    let moved = loop {
+        let moved = cli(&["ui", "--instance", &first_id, "state"]);
+        if moved["modal"]["selection"].as_u64() != Some(selection) {
+            break moved;
+        }
+        assert!(
+            Instant::now() < selection_deadline,
+            "modal selection did not move"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    assert!(moved["revision"].as_u64().unwrap() > state["revision"].as_u64().unwrap());
+    let selection_since = state["revision"].as_u64().unwrap().to_string();
+    let selection_events = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        &selection_since,
+        "--once",
+    ]);
+    assert!(selection_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["kind"] == "overlay.changed"
+                && event["value"]["field"] == "modal"
+                && event["value"]["value"]["selection"] == moved["modal"]["selection"]
+        }));
+    let other = cli(&["ui", "--instance", &second_id, "state"]);
+    assert_eq!(other["modal"], serde_json::Value::Null);
+    let since = initial["revision"].as_u64().unwrap().to_string();
+    let events = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(events["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "overlay.opened"
+            && event["value"]["field"] == "modal"
+            && event["value"]["value"]["kind"] == "help"
+    }));
+    let other_events = cli(&[
+        "ui",
+        "--instance",
+        &second_id,
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(!other_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["kind"] == "overlay.opened"
+                && event["value"]["field"] == "modal"
+                && event["value"]["value"]["kind"] == "help"
+        }));
+    let resync = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        "0",
+        "--once",
+    ]);
+    assert_eq!(resync["kind"], "resync_required");
+    assert_eq!(resync["state"]["modal"]["kind"], "help");
+    assert!(first.quit().success());
+    assert!(second.quit().success());
+    let _ = watcher.kill();
+    let _ = watcher.wait();
+}
+
+#[test]
+fn ui_state_reads_plugin_local_changes_without_store_writes() {
+    let interface = interface_plus(
+        "91_counter.lua",
+        r#"local count = 0
+return {
+  name = "counter",
+  slot = "sessions",
+  render = function()
+    count = count + 1
+    return { type = "text", text = "" }
+  end,
+  ui_state = function() return { count = count } end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    let state = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON")
+    };
+    let first = state();
+    std::thread::sleep(Duration::from_millis(700));
+    let second = state();
+    assert!(
+        second["plugin_state"]["plugins/91_counter.lua"]["count"]
+            .as_u64()
+            .unwrap()
+            > first["plugin_state"]["plugins/91_counter.lua"]["count"]
+                .as_u64()
+                .unwrap()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_state_reports_the_focused_switch_pane_after_it_is_drawn() {
+    let interface = interface_plus(
+        "21_alt.lua",
+        r#"return {
+  name = "alternate",
+  slot = "center",
+  focusable = true,
+  render = function() return { type = "text", text = "ALT PANE" } end,
+  keys = {
+    { key = "ctrl+b", action = "alternate.focus", desc = "focus alternate", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "alternate.focus" then
+      command("focus", { text = "alternate" })
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    let state = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON")
+    };
+    tui.send(b"\x02");
+    let deadline = Instant::now() + WAIT;
+    let after = loop {
+        let current = state();
+        if current["focused_pane"] == "alternate" {
+            break current;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "alternate pane did not take focus"
+        );
+    };
+    assert_eq!(after["focused_pane"], "alternate");
+    let center = after["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|slot| slot["slot"] == "center")
+        .expect("center slot");
+    assert_eq!(
+        center["visible_pane_ids"],
+        serde_json::json!(["plugins/21_alt.lua"])
+    );
+    tui.wait_for("ALT PANE");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_watch_exits_cleanly_when_its_reader_closes() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let mut watcher = cmd
+        .args(["--json", "ui", "watch"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("watch stream");
+    let stdout = watcher.stdout.take().expect("watch stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    use std::io::BufRead;
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("snapshot line");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&first).unwrap()["kind"],
+        "snapshot"
+    );
+    drop(reader);
+    tui.send(F1);
+    tui.wait_for("Keybindings");
+    let deadline = Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = watcher.try_wait().expect("watch exit") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watch did not stop after a closed pipe"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    assert!(
+        status.success(),
+        "closed reader is a normal end to the stream"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_state_reports_an_explicit_error_when_the_snapshot_exceeds_the_reply_limit() {
+    let interface = interface_plus(
+        "90_bulk_00.lua",
+        r#"return {
+  name = "bulk00", slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  ui_state = function()
+    local result = {}
+    for i = 1, 16 do result["key" .. i] = string.rep("x", 256) end
+    return result
+  end,
+}"#,
+    );
+    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
+        .expect("bulk plugin");
+    for index in 1..70 {
+        std::fs::write(
+            interface
+                .path()
+                .join(format!("plugins/90_bulk_{index:02}.lua")),
+            source.replace("bulk00", &format!("bulk{index:02}")),
+        )
+        .expect("bulk plugin");
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No active sessions");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+    assert!(!output.status.success(), "large state must be rejected");
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        message.contains("UI state exceeds local reply limit"),
+        "{message}"
+    );
+    assert!(tui.quit().success());
 }
 
 #[test]

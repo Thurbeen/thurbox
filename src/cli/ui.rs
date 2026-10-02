@@ -2,10 +2,53 @@
 
 use clap::Subcommand;
 use serde_json::{json, Value};
+use std::io::{ErrorKind, Write};
 
 use super::output::CommandOutput;
 use super::{CommandError, EXIT_AMBIGUOUS};
 use crate::ui_control::{self, Instance, Request};
+
+pub fn stream(chosen: Option<String>, mut since: Option<u64>) -> Result<(), CommandError> {
+    let instance = target(chosen)?;
+    let mut stdout = std::io::stdout().lock();
+    loop {
+        let reply = ui_control::send(&instance, &Request::Watch { since }).map_err(|e| {
+            CommandError::from(format!("UI instance {} is unavailable: {e}", instance.id))
+        })?;
+        let result = reply.result;
+        if result.get("ok") == Some(&Value::Bool(false)) {
+            return Err(result["error"]["message"]
+                .as_str()
+                .unwrap_or("UI watch failed")
+                .to_string()
+                .into());
+        }
+        match result["kind"].as_str() {
+            Some("delta") => {
+                for event in result["events"].as_array().into_iter().flatten() {
+                    if !write_stream_line(&mut stdout, event)? {
+                        return Ok(());
+                    }
+                }
+            }
+            _ => {
+                if !write_stream_line(&mut stdout, &result)? {
+                    return Ok(());
+                }
+            }
+        }
+        since = result["revision"].as_u64().or(Some(reply.revision));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn write_stream_line(out: &mut impl Write, value: &Value) -> Result<bool, CommandError> {
+    match writeln!(out, "{value}").and_then(|()| out.flush()) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(false),
+        Err(error) => Err(error.to_string().into()),
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -13,6 +56,15 @@ pub enum Action {
     Instances,
     /// Read focus, selection and search state from the selected instance.
     State,
+    /// Stream instance-scoped UI changes as JSON lines.
+    Watch {
+        /// Resume after this revision; an expired cursor yields a resync snapshot.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Return one batch, useful for polling clients.
+        #[arg(long)]
+        once: bool,
+    },
     /// Apply one typed action and wait for its acknowledgment.
     #[command(name = "action")]
     Apply {
@@ -27,7 +79,7 @@ pub enum Action {
     },
 }
 
-fn target(chosen: Option<String>) -> Result<Instance, CommandError> {
+pub(super) fn target(chosen: Option<String>) -> Result<Instance, CommandError> {
     let instances = ui_control::instances().map_err(CommandError::from)?;
     let chosen = chosen.or_else(|| {
         std::env::var("THURBOX_UI_INSTANCE")
@@ -86,6 +138,7 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
     let request = match action {
         Action::Instances => unreachable!(),
         Action::State => Request::State,
+        Action::Watch { since, .. } => Request::Watch { since },
         Action::Apply {
             name,
             session,
@@ -119,6 +172,7 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
     }
     let output = match request {
         Request::State => reply.result,
+        Request::Watch { .. } => reply.result,
         Request::Action { .. } => {
             json!({"instance_id": reply.instance_id, "request_id": reply.request_id, "revision": reply.revision, "result": reply.result})
         }

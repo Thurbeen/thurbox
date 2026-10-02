@@ -185,6 +185,9 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
     let capabilities = read_capabilities(&def, &file)?;
     let events = read_events(&def, &file)?;
     let commands = read_commands(&def, &name)?;
+    let _: Option<mlua::Function> = def
+        .get("ui_state")
+        .map_err(|e| format!("{file}.ui_state: {e}"))?;
 
     // A decorator transforms another pane's tree and draws nothing of its own,
     // so requiring `render` of one would mean writing a stub that returns
