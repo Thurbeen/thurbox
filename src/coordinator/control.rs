@@ -1,7 +1,8 @@
 //! Apply local control requests on the event loop that owns App and Lua.
 
 use serde_json::{json, Value};
-use thurbox::ui_control::{Reply, Request};
+use thurbox::kernel::registry::ActionDescriptor;
+use thurbox::ui_control::{InputOperation, Reply, Request};
 
 use crate::App;
 
@@ -235,6 +236,9 @@ impl App {
                 Request::Ping => json!({"ok": true}),
                 Request::State => self.control_state(),
                 Request::Watch { since } => self.control_watch(since),
+                Request::Actions => {
+                    json!({"schema_version": 1, "actions": self.live_catalog()})
+                }
                 Request::Action { name, args } => {
                     match self.control_action(&name, &args) {
                         Ok(()) => {
@@ -252,6 +256,15 @@ impl App {
                         }
                     }
                 }
+                Request::Input { target, input } => match self.control_input(&target, input) {
+                    Ok(()) => {
+                        self.note_input();
+                        json!({"ok": true, "state": self.control_state()})
+                    }
+                    Err((code, message)) => {
+                        json!({"ok": false, "error": {"code": code, "message": message}})
+                    }
+                },
             };
             let revision = result["revision"].as_u64().unwrap_or(self.control_revision);
             let mut reply = Reply {
@@ -291,14 +304,51 @@ impl App {
         let object = args
             .as_object()
             .ok_or(("invalid_arguments", "arguments must be an object".into()))?;
-        match name {
-            "session.focus" => {
-                if object.len() != 1 {
+        let descriptor = self
+            .live_catalog()
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .ok_or(("unknown_action", "unknown UI action".into()))?;
+        if !descriptor.available {
+            return Err(("unavailable", "action is unavailable".into()));
+        }
+        if descriptor.destructive {
+            return Err((
+                "confirmation_required",
+                "this action requires on-screen confirmation".into(),
+            ));
+        }
+        for key in object.keys() {
+            if descriptor.argument(key).is_none() {
+                return Err(("invalid_arguments", format!("unexpected argument {key}")));
+            }
+        }
+        for argument in &descriptor.arguments {
+            if argument.required && !object.contains_key(argument.name.as_str()) {
+                return Err((
+                    "invalid_arguments",
+                    format!("{} is required", argument.name),
+                ));
+            }
+            if let Some(value) = object.get(argument.name.as_str()) {
+                if !value.is_string() {
                     return Err((
                         "invalid_arguments",
-                        "session.focus needs only session_id".into(),
+                        format!("{} must be a string", argument.name),
                     ));
                 }
+                if argument.kind == "uuid"
+                    && uuid::Uuid::parse_str(value.as_str().unwrap_or_default()).is_err()
+                {
+                    return Err((
+                        "invalid_arguments",
+                        format!("{} must be a UUID", argument.name),
+                    ));
+                }
+            }
+        }
+        match name {
+            "session.focus" => {
                 let id = object
                     .get("session_id")
                     .and_then(Value::as_str)
@@ -323,14 +373,8 @@ impl App {
                 self.focus_on_session(id);
                 Ok(())
             }
-            "search.open" => {
-                if object.len() != 1 {
-                    return Err(("invalid_arguments", "search.open needs only query".into()));
-                }
-                let query = object
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .ok_or(("invalid_arguments", "query must be a string".into()))?;
+            "search.open" if descriptor.owner == "search" => {
+                let query = object.get("query").and_then(Value::as_str).unwrap_or("");
                 if query.len() > 4096 {
                     return Err(("invalid_arguments", "query is too long".into()));
                 }
@@ -355,7 +399,156 @@ impl App {
                 }
                 Ok(())
             }
-            _ => Err(("unknown_action", "unknown UI action".into())),
+            _ if descriptor.owner == "kernel" => {
+                if self.run_kernel_action(name) {
+                    Ok(())
+                } else {
+                    Err(("unavailable", "kernel action is unavailable".into()))
+                }
+            }
+            _ => {
+                let index = self
+                    .host
+                    .index_of(&descriptor.owner)
+                    .ok_or(("unavailable", "action owner is not loaded".into()))?;
+                let handled = self
+                    .host
+                    .on_action_with_args(
+                        index,
+                        name,
+                        &object
+                            .iter()
+                            .map(|(key, value)| (key.as_str(), value.as_str().unwrap_or_default()))
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(|error| ("action_failed", error.to_string()))?;
+                if handled {
+                    Ok(())
+                } else {
+                    Err(("unavailable", "plugin declined the action".into()))
+                }
+            }
         }
+    }
+
+    fn live_catalog(&self) -> Vec<ActionDescriptor> {
+        self.registry
+            .action_catalog()
+            .into_iter()
+            .map(|mut descriptor| {
+                descriptor.available = match descriptor.owner.as_str() {
+                    "kernel" if descriptor.name == "kernel.perf_hud" => {
+                        self.config.features().perf_hud
+                    }
+                    "kernel" if descriptor.name == "session.focus" => self
+                        .host
+                        .index_of("agent")
+                        .is_some_and(|index| self.host.focusable().contains(&index)),
+                    "kernel" => true,
+                    owner => self
+                        .host
+                        .index_of(owner)
+                        .is_some_and(|index| self.host.action_handler_present(index)),
+                };
+                descriptor
+            })
+            .collect()
+    }
+
+    fn control_input(
+        &mut self,
+        target: &str,
+        input: InputOperation,
+    ) -> Result<(), (&'static str, String)> {
+        if target == "modal" {
+            if !self.modals.is_open() {
+                return Err(("unavailable", "no modal is open".into()));
+            }
+            match input {
+                InputOperation::Key { chord } => {
+                    let key = super::key_event_from_chord(&chord)
+                        .ok_or(("invalid_arguments", "invalid key chord".into()))?;
+                    self.dispatch_modal_key(&key);
+                }
+                InputOperation::Text { text } => {
+                    if text.len() > 4096 {
+                        return Err(("invalid_arguments", "text is too long".into()));
+                    }
+                    self.on_paste(text);
+                }
+                InputOperation::Scroll { up } => {
+                    let key = crossterm::event::KeyEvent::new(
+                        if up {
+                            crossterm::event::KeyCode::Up
+                        } else {
+                            crossterm::event::KeyCode::Down
+                        },
+                        crossterm::event::KeyModifiers::NONE,
+                    );
+                    self.dispatch_modal_key(&key);
+                }
+            }
+            return Ok(());
+        }
+        if self.modals.is_open() {
+            return Err(("unavailable", "a modal owns input now".into()));
+        }
+        let index = self
+            .host
+            .index_of(target)
+            .ok_or(("unavailable", "plugin is not loaded".into()))?;
+        if self.host.plugins[index].session_input && !matches!(input, InputOperation::Scroll { .. })
+        {
+            return Err((
+                "unavailable",
+                "session terminals require an addressed session input operation".into(),
+            ));
+        }
+        let active = if let Some(grabbed) = self.grabbed {
+            grabbed == index
+        } else {
+            self.host.focusable().get(self.focus) == Some(&index)
+        };
+        if !active {
+            return Err(("unavailable", "plugin does not own input now".into()));
+        }
+        match input {
+            InputOperation::Key { chord } => {
+                let key = super::key_event_from_chord(&chord)
+                    .ok_or(("invalid_arguments", "invalid key chord".into()))?;
+                self.dispatch_key_to(index, &key);
+            }
+            InputOperation::Text { text } => {
+                if text.len() > 4096 {
+                    return Err(("invalid_arguments", "text is too long".into()));
+                }
+                if self.grabbed != Some(index) && !self.focused_typing {
+                    return Err(("unavailable", "plugin has no active text field".into()));
+                }
+                self.on_paste(text);
+            }
+            InputOperation::Scroll { up } => {
+                let scroll = thurbox::kernel::host::Scroll { up, x: 0, y: 0 };
+                let handled = self
+                    .host
+                    .on_scroll(index, &scroll)
+                    .map_err(|e| ("action_failed", e.to_string()))?;
+                if !handled {
+                    if self.host.plugins[index].session_input {
+                        return Err(("unavailable", "terminal pane declined the scroll".into()));
+                    }
+                    let key = crossterm::event::KeyEvent::new(
+                        if up {
+                            crossterm::event::KeyCode::Up
+                        } else {
+                            crossterm::event::KeyCode::Down
+                        },
+                        crossterm::event::KeyModifiers::NONE,
+                    );
+                    self.dispatch_key_to(index, &key);
+                }
+            }
+        }
+        Ok(())
     }
 }

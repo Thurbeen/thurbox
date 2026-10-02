@@ -269,6 +269,19 @@
 ---@field action string
 ---@field desc? string
 
+---@class (exact) thurbox.ActionArgument
+---@field name string
+---@field kind "string"|"uuid"
+---@field required? boolean
+
+---@class (exact) thurbox.ActionDecl
+---@field name string
+---@field desc? string
+---@field scope? "global"|"plugin"
+---@field effect? "read"|"ui-write"|"kernel-write"
+---@field destructive? boolean
+---@field args? thurbox.ActionArgument[]
+
 --- An entry in the action band.
 ---@class (exact) thurbox.Pill
 ---@field action string
@@ -302,6 +315,7 @@
 ---@field pills? thurbox.Pill[]
 ---@field settings? thurbox.SettingDecl[]
 ---@field commands? thurbox.CommandDecl[]
+---@field actions? thurbox.ActionDecl[]
 ---@field events? thurbox.Event[]
 ---@field capabilities? ("run"|"program")[]
 ---@field render? fun(ctx: thurbox.Ctx): thurbox.Root

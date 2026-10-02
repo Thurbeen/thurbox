@@ -844,6 +844,141 @@ fn session_focus_refuses_a_tui_without_an_agent_pane() {
 }
 
 #[test]
+fn search_cancel_has_the_same_effect_by_key_and_local_action() {
+    let profile = Profile::new();
+    let mut headless = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut headless);
+    let schema = headless
+        .args(["--json", "schema"])
+        .output()
+        .expect("headless schema");
+    assert!(schema.status.success());
+    let schema: serde_json::Value = serde_json::from_slice(&schema.stdout).expect("schema JSON");
+    assert_eq!(schema["ui_status"], "no_running_ui");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let cli = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command
+            .args(["--json", "ui"])
+            .args(args)
+            .output()
+            .expect("UI CLI");
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!(
+                    "JSON from {args:?}: {error}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            });
+        (output.status, value)
+    };
+    let (status, instances) = cli(&["instances"]);
+    assert!(status.success());
+    let instance = instances["instances"][0]["id"].as_str().expect("instance");
+    let (status, catalog) = cli(&["--instance", instance, "actions"]);
+    assert!(status.success());
+    assert!(catalog["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == "search.cancel"));
+    let mut schema_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut schema_cmd);
+    let schema_output = schema_cmd
+        .args(["--json", "schema", "--instance", instance])
+        .output()
+        .expect("CLI schema");
+    assert!(schema_output.status.success());
+    let schema: serde_json::Value =
+        serde_json::from_slice(&schema_output.stdout).expect("schema JSON");
+    assert_eq!(schema["ui_actions"], catalog["actions"]);
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(ESC);
+    tui.wait_gone("Search ");
+    let (status, by_key) = cli(&["--instance", instance, "state"]);
+    assert!(status.success());
+
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    let (status, _) = cli(&["--instance", instance, "action", "search.cancel"]);
+    assert!(
+        status.success(),
+        "declared search.cancel must be externally callable"
+    );
+    tui.wait_gone("Search ");
+    let (status, by_api) = cli(&["--instance", instance, "state"]);
+    assert!(status.success());
+    assert_eq!(by_api["search_query"], by_key["search_query"]);
+    assert_eq!(by_api["focused_pane"], by_key["focused_pane"]);
+    let (status, _) = cli(&[
+        "--instance",
+        instance,
+        "action",
+        "search.open",
+        "--query",
+        "",
+    ]);
+    assert!(status.success());
+    tui.wait_for("Search");
+    let (status, refused) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "sessions",
+        "--input-text",
+        "wrong target",
+    ]);
+    assert!(
+        !status.success(),
+        "addressed text cannot reach another pane: {refused}"
+    );
+    let (status, _) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "search",
+        "--input-text",
+        "hello",
+    ]);
+    assert!(status.success());
+    let (status, state) = cli(&["--instance", instance, "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "hello");
+    let (status, _) = cli(&["--instance", instance, "action", "new_session.open"]);
+    assert!(status.success());
+    let (status, refused) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "search",
+        "--input-text",
+        "wrong target",
+    ]);
+    assert!(!status.success(), "a float owns typed input: {refused}");
+    let (status, _) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "new_session",
+        "--key",
+        "esc",
+    ]);
+    assert!(status.success());
+    let (status, _) = cli(&["--instance", instance, "input", "search", "--key", "esc"]);
+    assert!(status.success());
+    let (status, _) = cli(&["--instance", instance, "action", "help.open"]);
+    assert!(status.success());
+    tui.wait_for("Keybindings");
+    let (status, _) = cli(&["--instance", instance, "input", "modal", "--key", "esc"]);
+    assert!(status.success());
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn local_ui_control_targets_one_of_two_live_instances() {
     let Some((profile, mut first)) = shell_session() else {
         return;

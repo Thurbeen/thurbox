@@ -375,9 +375,36 @@ fn check() -> Result<CommandOutput, String> {
     // make `check` unusable as a gate; saying nothing leaves the one install that
     // cannot demonstrate itself completely silent.
     let mut warnings = Vec::new();
+    let sources = crate::kernel::bundled::sources(&dir);
     for (index, plugin) in host.plugins.iter().enumerate() {
         if let Some(reason) = host.undiscoverable(index) {
             warnings.push(json!({ "file": plugin.path, "warning": reason }));
+        }
+        for binding in &plugin.bindings {
+            if crate::kernel::registry::protected_action(&binding.action) {
+                warnings.push(json!({
+                    "file": plugin.path,
+                    "warning": format!("{} is reserved for the kernel", binding.action),
+                    "action": binding.action,
+                }));
+            }
+        }
+        if matches!(
+            sources.get(&plugin.path),
+            Some(crate::kernel::bundled::Source::Bundled)
+        ) {
+            continue;
+        }
+        for handler in host.raw_gesture_handlers(index) {
+            // Key and wheel handlers have explicit addressed input operations.
+            if handler == "on_key" || handler == "on_scroll" {
+                continue;
+            }
+            warnings.push(json!({
+                "file": plugin.path,
+                "warning": format!("{handler} handles gestures that are not advertised as catalog actions; declare semantic actions or addressed input equivalents"),
+                "handler": handler,
+            }));
         }
     }
     // The other declaration with no symptom on screen. A pill whose action no
@@ -387,6 +414,92 @@ fn check() -> Result<CommandOutput, String> {
     // Reported rather than failed: the pane still loads and still draws, and what
     // is missing is one button.
     let registry = declared(&host);
+    let catalog = registry.action_catalog();
+    for plugin in &host.plugins {
+        for action in plugin
+            .bindings
+            .iter()
+            .map(|entry| entry.action.as_str())
+            .chain(plugin.commands.iter().map(|entry| entry.action.as_str()))
+        {
+            if let Some(owner) = catalog
+                .iter()
+                .find(|entry| entry.name == action)
+                .map(|entry| entry.owner.as_str())
+            {
+                if owner != plugin.name {
+                    warnings.push(json!({
+                        "file": plugin.path,
+                        "warning": format!("{action} is owned by {owner}; this declaration cannot be advertised"),
+                        "action": action,
+                    }));
+                }
+            }
+        }
+    }
+    let advertised: std::collections::BTreeSet<&str> =
+        catalog.iter().map(|entry| entry.name.as_str()).collect();
+    let menu = regex::Regex::new(r#"label\s*=\s*"[^"]+"\s*,\s*action\s*=\s*"([a-z][a-z0-9_.]*)""#)
+        .expect("menu pattern");
+    let clicked = regex::Regex::new(r#"action:([a-z][a-z0-9_.]*)"#).expect("click pattern");
+    let concatenated =
+        regex::Regex::new(r#"role\s*=\s*['"]action:['"]\s*\.\.\s*([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("concatenated click pattern");
+    let quoted = regex::Regex::new(r#"['"]([^'"]+)['"]"#).expect("string pattern");
+    let literal_values =
+        regex::Regex::new(r#"^\s*['"][^'"]+['"](?:\s*,\s*['"][^'"]+['"])*\s*(?:--.*)?$"#)
+            .expect("literal assignments");
+    for plugin in &host.plugins {
+        let Ok(source) = std::fs::read_to_string(dir.join(&plugin.path)) else {
+            continue;
+        };
+        let mut constants = std::collections::BTreeMap::new();
+        for line in source.lines() {
+            let Some((names, values)) = line
+                .trim()
+                .strip_prefix("local ")
+                .and_then(|s| s.split_once('='))
+            else {
+                continue;
+            };
+            if !literal_values.is_match(values) {
+                continue;
+            }
+            let names: Vec<_> = names.split(',').map(str::trim).collect();
+            let values: Vec<_> = quoted
+                .captures_iter(values)
+                .map(|row| row[1].to_string())
+                .collect();
+            if names.len() == values.len() {
+                constants.extend(names.into_iter().zip(values));
+            }
+        }
+        let mut used: Vec<String> = menu
+            .captures_iter(&source)
+            .chain(clicked.captures_iter(&source))
+            .map(|hit| hit[1].to_string())
+            .collect();
+        for hit in concatenated.captures_iter(&source) {
+            let variable = &hit[1];
+            if let Some(name) = constants.get(variable) {
+                used.push(name.clone());
+            } else {
+                warnings.push(json!({
+                    "file": plugin.path,
+                    "warning": format!("constructed click action {variable} cannot be advertised; declare a constant action name"),
+                }));
+            }
+        }
+        for name in used {
+            if name.contains('.') && !advertised.contains(name.as_str()) {
+                warnings.push(json!({
+                    "file": plugin.path,
+                    "warning": format!("{name} is used by a menu or clickable node but has no catalog action"),
+                    "action": name,
+                }));
+            }
+        }
+    }
     let mut dropped = Vec::new();
     for plugin in &host.plugins {
         for (pill, reason) in crate::kernel::bands::dropped(&plugin.pills, &registry) {

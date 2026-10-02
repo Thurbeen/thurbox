@@ -34,7 +34,9 @@ thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
 ```
 
-Subcommands: `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
+Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
+`schema` (CLI command tree plus that instance's live UI action catalog),
+`agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
 [`--if-missing`]/rename/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
@@ -884,4 +886,3 @@ close it), and `task run` sends or spawns. Triggering advances `Todo → InProgr
 
 > A pane is owed, and the shape a plugin would take is the same one
 > `10_sessions.lua` uses: read the snapshot, return a tree, send a command.
-

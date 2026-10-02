@@ -752,6 +752,25 @@ and `store.selected`, never on focus). A command and a key for one action are
 one row; a user may later bind a chord to a command from `F1`, at which point it
 is a key like any other.
 
+The running interface publishes these declarations through `thurbox-cli ui
+actions` and `thurbox-cli schema`. A plugin action keeps its existing
+`on_action(action)` callback; a typed invocation may pass a read-only second
+argument table. Declare argument and effect metadata alongside keys when an
+action takes input:
+
+```lua
+actions = { { name = "mine.search", effect = "ui-write", args = {
+  { name = "query", kind = "string" },
+} } },
+```
+
+Supported argument kinds are `string` and `uuid`; `required = true` refuses
+an omitted argument. Action IDs reserved by the kernel cannot be claimed by a
+plugin. `thurbox-cli plugin check` warns about raw `on_click` handlers and
+menu or click action names missing from the catalog. Key and scroll handlers
+remain available through addressed `ui input` for the active pane; give
+repeatable controls a declared semantic action.
+
 ## Clicks: give the node an identity
 
 The kernel hit-tests the tree it just painted, so a node becomes a click target

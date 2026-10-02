@@ -27,6 +27,22 @@ fn checkout_ui() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui")
 }
 
+#[test]
+fn shipped_menu_and_click_actions_are_in_the_catalog() {
+    let home = tempfile::tempdir().expect("tempdir");
+    at(home.path());
+    std::env::set_var("THURBOX_UI_DIR", checkout_ui());
+    let report = json(Action::Check);
+    assert_eq!(report["ok"], true, "{report}");
+    for warning in report["warnings"].as_array().expect("warnings") {
+        let message = warning["warning"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("used by a menu or clickable node but has no catalog action"),
+            "{warning}"
+        );
+    }
+}
+
 // ── where do I write ───────────────────────────────────────────────────────
 
 #[test]
@@ -160,6 +176,12 @@ fn a_new_plugin_loads_before_it_is_edited() {
     // The proof that matters: the kernel accepts it.
     let checked = json(Action::Check);
     assert_eq!(checked["ok"], true, "{checked}");
+    assert!(
+        !checked["warnings"]
+            .to_string()
+            .contains("no catalog action"),
+        "shipped menu and clickable actions must be catalogued: {checked}"
+    );
     let loaded: Vec<&str> = checked["loaded"]
         .as_array()
         .expect("loaded")
@@ -1016,6 +1038,122 @@ fn a_plugin_taking_a_kernel_chord_is_reported_against_the_kernel() {
     assert!(
         warnings.contains("kernel"),
         "the claim with no file behind it is named for its owner: {warnings}"
+    );
+}
+
+#[test]
+fn raw_gestures_are_reported_and_kernel_action_names_are_rejected() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "return { name = 'notes', slot = 'center',\n\
+         keys = { { key = 'f7', action = 'kernel.quit', desc = 'spoof' } },\n\
+         on_key = function() return true end,\n\
+         on_scroll = function() return true end,\n\
+         on_click = function() return true end,\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:notes.unknown' } end }",
+    ).expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
+    assert!(warnings.contains("kernel.quit is reserved"), "{warnings}");
+    assert!(warnings.contains("on_click handles gestures"), "{warnings}");
+    assert!(!warnings.contains("on_key handles gestures"), "{warnings}");
+    assert!(
+        !warnings.contains("on_scroll handles gestures"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("notes.unknown is used by a menu or clickable node"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn constructed_click_actions_are_checked_against_the_catalog() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "local MISSING = 'notes.unknown'\n\
+         return { name = 'notes', slot = 'center',\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:' .. MISSING } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
+    assert!(
+        warnings.contains("notes.unknown is used by a menu or clickable node"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn expression_built_clicks_do_not_report_a_partial_action_name() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "local SUFFIX = 'open'\n\
+         local ACTION = 'notes.' .. SUFFIX\n\
+         return { name = 'notes', slot = 'center',\n\
+         keys = { { key = 'f7', action = 'notes.open', desc = 'open' } },\n\
+         on_action = function() return true end,\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:' .. ACTION } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
+    assert!(!warnings.contains("notes. is used by"), "{warnings}");
+    assert!(
+        warnings.contains("constructed click action ACTION cannot be advertised"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn commented_literal_click_actions_are_recognized() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "local ACTION = 'notes.open' -- button action\n\
+         return { name = 'notes', slot = 'center',\n\
+         keys = { { key = 'f7', action = 'notes.open', desc = 'open' } },\n\
+         on_action = function() return true end,\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:' .. ACTION } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
+    assert!(
+        !warnings.contains("constructed click action ACTION cannot be advertised"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn a_plugin_cannot_claim_the_kernel_owner_name() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_kernel.lua"),
+        "return { name = 'kernel', slot = 'center',\n\
+         keys = { { key = 'f7', action = 'mine.open', desc = 'open' } },\n\
+         on_action = function() return true end,\n\
+         render = function() return { type = 'text', text = 'unsafe owner' } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    assert_eq!(output.json["ok"], false, "{output:?}");
+    assert!(
+        output.json.to_string().contains("kernel is reserved"),
+        "{output:?}"
     );
 }
 

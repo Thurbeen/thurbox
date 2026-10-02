@@ -58,8 +58,26 @@ fn started_at_unix_ms() -> u128 {
 pub enum Request {
     Ping,
     State,
-    Watch { since: Option<u64> },
-    Action { name: String, args: Value },
+    Watch {
+        since: Option<u64>,
+    },
+    Actions,
+    Action {
+        name: String,
+        args: Value,
+    },
+    Input {
+        target: String,
+        input: InputOperation,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InputOperation {
+    Key { chord: String },
+    Text { text: String },
+    Scroll { up: bool },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

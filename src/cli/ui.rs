@@ -1,12 +1,13 @@
 //! Instance-scoped commands for a running local interface.
 
+use clap::CommandFactory;
 use clap::Subcommand;
 use serde_json::{json, Value};
 use std::io::{ErrorKind, Write};
 
 use super::output::CommandOutput;
 use super::{CommandError, EXIT_AMBIGUOUS};
-use crate::ui_control::{self, Instance, Request};
+use crate::ui_control::{self, InputOperation, Instance, Request};
 
 pub fn stream(chosen: Option<String>, mut since: Option<u64>) -> Result<(), CommandError> {
     let instance = target(chosen)?;
@@ -65,10 +66,23 @@ pub enum Action {
         #[arg(long)]
         once: bool,
     },
+    /// Describe actions accepted by this running interface.
+    Actions,
+    /// Send addressed key, text, or scroll input to an active modal or plugin.
+    Input {
+        /// `modal` or the name of the active plugin.
+        target: String,
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long = "input-text")]
+        text: Option<String>,
+        #[arg(long)]
+        scroll: Option<String>,
+    },
     /// Apply one typed action and wait for its acknowledgment.
     #[command(name = "action")]
     Apply {
-        /// `session.focus` or `search.open`.
+        /// A stable name from `ui actions`.
         name: String,
         /// Session UUID for `session.focus`.
         #[arg(long)]
@@ -76,6 +90,9 @@ pub enum Action {
         /// Query to set for `search.open`.
         #[arg(long)]
         query: Option<String>,
+        /// Typed action argument as NAME=VALUE; repeat for multiple arguments.
+        #[arg(long = "arg")]
+        arguments: Vec<String>,
     },
 }
 
@@ -139,25 +156,61 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
         Action::Instances => unreachable!(),
         Action::State => Request::State,
         Action::Watch { since, .. } => Request::Watch { since },
+        Action::Actions => Request::Actions,
+        Action::Input {
+            target,
+            key,
+            text,
+            scroll,
+        } => {
+            if usize::from(key.is_some())
+                + usize::from(text.is_some())
+                + usize::from(scroll.is_some())
+                != 1
+            {
+                return Err("choose exactly one of --key, --input-text or --scroll".into());
+            }
+            let input = if let Some(chord) = key {
+                InputOperation::Key { chord }
+            } else if let Some(text) = text {
+                InputOperation::Text { text }
+            } else {
+                InputOperation::Scroll {
+                    up: match scroll.as_deref() {
+                        Some("up") => true,
+                        Some("down") => false,
+                        _ => return Err("--scroll must be up or down".into()),
+                    },
+                }
+            };
+            Request::Input { target, input }
+        }
         Action::Apply {
             name,
             session,
             query,
+            arguments,
         } => {
-            let args: Value = match name.as_str() {
-                "session.focus" if session.is_some() && query.is_none() => {
-                    json!({"session_id": session.unwrap()})
+            let mut args = serde_json::Map::new();
+            if let Some(session) = session {
+                args.insert("session_id".into(), Value::String(session));
+            }
+            if let Some(query) = query {
+                args.insert("query".into(), Value::String(query));
+            }
+            for argument in arguments {
+                let (key, value) = argument
+                    .split_once('=')
+                    .ok_or_else(|| CommandError::from("--arg needs NAME=VALUE"))?;
+                if key.is_empty()
+                    || args
+                        .insert(key.into(), Value::String(value.into()))
+                        .is_some()
+                {
+                    return Err("duplicate or empty action argument".into());
                 }
-                "search.open" if query.is_some() && session.is_none() => {
-                    json!({"query": query.unwrap()})
-                }
-                "session.focus" | "search.open" => {
-                    return Err("action arguments do not match its schema"
-                        .to_string()
-                        .into())
-                }
-                _ => return Err(format!("unknown UI action {name}").into()),
-            };
+            }
+            let args = Value::Object(args);
             Request::Action { name, args }
         }
     };
@@ -171,9 +224,8 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
         return Err(message.to_string().into());
     }
     let output = match request {
-        Request::State => reply.result,
-        Request::Watch { .. } => reply.result,
-        Request::Action { .. } => {
+        Request::State | Request::Watch { .. } | Request::Actions => reply.result,
+        Request::Action { .. } | Request::Input { .. } => {
             json!({"instance_id": reply.instance_id, "request_id": reply.request_id, "revision": reply.revision, "result": reply.result})
         }
         Request::Ping => unreachable!(),
@@ -182,4 +234,45 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
         output.clone(),
         serde_json::to_string_pretty(&output).unwrap_or_default(),
     ))
+}
+
+pub fn schema(instance: Option<String>) -> Result<CommandOutput, CommandError> {
+    let actions = if instance.is_none()
+        && ui_control::instances()
+            .map_err(CommandError::from)?
+            .is_empty()
+    {
+        json!({"schema_version": 1, "actions": [], "status": "no_running_ui"})
+    } else {
+        run(instance, Action::Actions)?.json
+    };
+    let commands = super::Cli::command()
+        .get_subcommands()
+        .map(command_schema)
+        .collect::<Vec<_>>();
+    let schema = json!({
+        "schema_version": actions["schema_version"],
+        "commands": commands,
+        "ui_actions": actions["actions"],
+        "ui_status": actions.get("status").cloned().unwrap_or_else(|| json!("live")),
+    });
+    Ok(CommandOutput::new(
+        schema.clone(),
+        serde_json::to_string_pretty(&schema).unwrap_or_default(),
+    ))
+}
+
+fn command_schema(command: &clap::Command) -> Value {
+    json!({
+        "name": command.get_name(),
+        "description": command.get_about().map(ToString::to_string),
+        "arguments": command.get_arguments().map(|argument| json!({
+            "name": argument.get_id().as_str(),
+            "long": argument.get_long(),
+            "short": argument.get_short().map(|ch| ch.to_string()),
+            "required": argument.is_required_set(),
+            "values": argument.get_value_names().map(|names| names.iter().map(ToString::to_string).collect::<Vec<_>>()),
+        })).collect::<Vec<_>>(),
+        "subcommands": command.get_subcommands().map(command_schema).collect::<Vec<_>>(),
+    })
 }
