@@ -20,12 +20,19 @@ impl App {
             return;
         }
         let state_version = self.host.ui_state_version();
+        let modal_marker = (
+            self.modals.kind(),
+            self.modals.selection(),
+            self.modals.palette_query().map(str::to_owned),
+        );
         if self.control_observed.is_some()
             && !self.input_dirty
             && self.control_state_version == state_version
             && self.control_registry_version == self.registry.version()
             && self.control_placed == self.last_placed
             && self.control_floats == self.drawn_floats
+            && self.control_focus == self.focus
+            && self.control_modal == modal_marker
         {
             return;
         }
@@ -33,6 +40,8 @@ impl App {
         self.control_registry_version = self.registry.version();
         self.control_placed.clone_from(&self.last_placed);
         self.control_floats.clone_from(&self.drawn_floats);
+        self.control_focus = self.focus;
+        self.control_modal = modal_marker;
         let focused_plugin = self
             .host
             .focusable()

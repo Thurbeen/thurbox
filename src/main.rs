@@ -252,6 +252,12 @@ struct App {
     control_registry_version: u64,
     control_placed: Vec<thurbox::kernel::layout::SlotRect>,
     control_floats: std::collections::HashSet<usize>,
+    control_focus: usize,
+    control_modal: (
+        Option<thurbox::kernel::modals::ModalKind>,
+        Option<usize>,
+        Option<String>,
+    ),
     host: LuaHost,
     /// The directory the interface was loaded from. Held because every command
     /// about a plugin file names a path relative to it.

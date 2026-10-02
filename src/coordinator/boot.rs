@@ -245,6 +245,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         control_registry_version: 0,
         control_placed: Vec::new(),
         control_floats: std::collections::HashSet::new(),
+        control_focus: 0,
+        control_modal: (None, None, None),
         host,
         sources: thurbox::kernel::bundled::sources(&ui_dir),
         watcher: Watcher::new(&ui_dir)?,
