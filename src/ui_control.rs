@@ -693,8 +693,7 @@ mod windows {
             };
             if uuid::Uuid::parse_str(&instance.id).is_err()
                 || path != dir.join(format!("{}.json", instance.id))
-                || instance.endpoint
-                    != PathBuf::from(format!(r"\\.\pipe\thurbox-ui-{}", instance.id))
+                || instance.endpoint != format!(r"\\.\pipe\thurbox-ui-{}", instance.id)
             {
                 let _ = fs::remove_file(&path);
                 continue;
