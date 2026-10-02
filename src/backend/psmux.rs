@@ -185,6 +185,7 @@ impl TmuxCompatible for Psmux {
     /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
+            flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: false,
             tagged_blocks: false,
             subscriptions: false,
@@ -840,6 +841,10 @@ mod tests {
         );
         for transport in [TmuxTransport::local("psmux"), ssh] {
             let policy = Psmux::control_policy(&transport, "thurbox");
+            assert_eq!(
+                policy.flow_control_command,
+                Some("refresh-client -f pause-after=5")
+            );
             assert!(!policy.implicit_attach_reply);
             assert!(!policy.tagged_blocks);
             assert!(!policy.subscriptions);

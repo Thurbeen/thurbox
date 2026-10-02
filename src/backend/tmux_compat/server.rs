@@ -3689,6 +3689,7 @@ mod tests {
         }
         fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
             ControlPolicy {
+                flow_control_command: Some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,

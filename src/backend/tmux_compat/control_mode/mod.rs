@@ -930,6 +930,9 @@ const HOOK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// adapter's answer, measured, never a guess from the binary's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPolicy {
+    /// Command that limits buffered pane output, when this control server
+    /// offers such a facility.
+    pub flow_control_command: Option<&'static str>,
     /// Whether the server answers the `attach-session` carried on argv with a
     /// `%begin`/`%end` block of its own, which
     /// `ControlMode::drain_implicit_attach_response` must consume before any
@@ -1050,8 +1053,9 @@ impl ControlMode {
             child: Mutex::new(child),
         };
 
-        // Enable flow control (pause-after=5 seconds of buffered output).
-        control.send_command("refresh-client -f pause-after=5")?;
+        if let Some(command) = policy.flow_control_command {
+            control.send_command(command)?;
+        }
 
         // Subscribe to the remote-hook status option of every pane of the
         // attached session (tmux pushes `%subscription-changed` on change) —

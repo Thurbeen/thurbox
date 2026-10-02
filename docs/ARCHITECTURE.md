@@ -427,6 +427,10 @@ enforces (`consumers_reach_no_concrete_backend`). The adapters today are
 (ADR-31), each reached locally or on a host over a `TmuxTransport` (ADR-13).
 A multiplexer that does not speak the tmux protocol is a new adapter behind the
 same trait, not a branch in a consumer.
+The tmux-compatible connection takes its optional flow-control setup command
+from each adapter's `ControlPolicy`; a backend without that facility leaves it
+absent. The shared lifecycle asks for outcomes through `SessionBackend` and
+does not send control-mode commands.
 
 **Trait methods**, by job (the list itself is `src/backend/contract.rs`):
 
@@ -441,9 +445,10 @@ same trait, not a branch in a consumer.
   `record_hook_state`, `hook_states`, `take_hook_state_events`,
   `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
 
-A `backend_id` crossing the trait is the multiplexer's **pane id** (`%N`), not a
-backend's name: the column predates the contract and keeps its name as public
-JSON. The backend a row belongs to is its route, `backend_type` (ADR-28).
+A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
+tmux's `%N`), not a backend's name: the column predates the contract and keeps
+its name as public JSON. The backend a row belongs to is its route,
+`backend_type` (ADR-28).
 
 **Vocabulary.** Each word names one thing, and a name built from it says which:
 

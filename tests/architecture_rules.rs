@@ -753,6 +753,74 @@ const ADAPTERS: &[&str] = &["backend::tmux", "backend::psmux"];
 /// helper either may use, which uses neither.
 const PROTOCOL_HELPER: &str = "backend::tmux_compat";
 
+#[test]
+fn control_setup_does_not_require_tmux_flow_control() {
+    let source = include_str!("../src/backend/tmux_compat/control_mode/mod.rs");
+    assert!(
+        !source.contains("control.send_command(\"refresh-client -f pause-after=5\")"),
+        "control setup must let each adapter choose whether it enables flow control"
+    );
+}
+
+#[test]
+fn generic_backend_consumers_issue_no_tmux_commands() {
+    const COMMANDS: &[&str] = &[
+        "refresh-client",
+        "send-keys",
+        "capture-pane",
+        "list-panes",
+        "list-windows",
+        "new-window",
+        "kill-window",
+        "%output",
+        "#{pane_",
+        "#{window_",
+    ];
+    fn visit(dir: &std::path::Path, commands: &[&str]) {
+        if dir.is_file() {
+            let source = std::fs::read_to_string(dir).expect("source file");
+            for (line, text) in source.lines().enumerate() {
+                let text = text.trim_start();
+                if text.starts_with("//") {
+                    continue;
+                }
+                for command in commands {
+                    assert!(
+                        !text.contains(command),
+                        "{}:{} issues tmux protocol {command}",
+                        dir.display(),
+                        line + 1
+                    );
+                }
+            }
+            return;
+        }
+        for entry in std::fs::read_dir(dir).expect("source directory") {
+            let path = entry.expect("source entry").path();
+            if path.is_dir() {
+                visit(&path, commands);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            visit(&path, commands);
+        }
+    }
+    for root in [
+        "src/session_ops",
+        "src/kernel",
+        "src/cli",
+        "src/coordinator",
+        "src/backend/contract.rs",
+        "src/backend/pane.rs",
+        "src/backend/registry.rs",
+        "src/backend/wiring.rs",
+    ] {
+        visit(std::path::Path::new(root), COMMANDS);
+    }
+}
+
 fn in_protocol_helper(node: &str) -> bool {
     node == PROTOCOL_HELPER || node.starts_with(&format!("{PROTOCOL_HELPER}::"))
 }

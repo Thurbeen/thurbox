@@ -1216,6 +1216,7 @@ impl ThrowawayServer {
             Self::SESSION,
             "tests",
             &ControlPolicy {
+                flow_control_command: Some("refresh-client -f pause-after=5"),
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,

@@ -170,6 +170,7 @@ impl TmuxCompatible for Tmux {
 
     fn control_policy(_transport: &TmuxTransport, _session: &str) -> ControlPolicy {
         ControlPolicy {
+            flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: true,
             tagged_blocks: true,
             subscriptions: true,

@@ -23,7 +23,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use clap::Parser;
-use thurbox::backend::WindowRole;
+use thurbox::backend::{SessionBackend, WindowRole};
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
@@ -290,6 +290,17 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
     );
     instance.assert_tmux_untouched("create");
     let created = agent_window(&probe, id, "create");
+    assert!(
+        created.pane.starts_with("pane-"),
+        "the lifecycle must accept a pane ID outside tmux's % grammar"
+    );
+    probe
+        .send_text(&created.pane, "hello", false)
+        .expect("input");
+    assert_eq!(
+        probe.capture(&created.pane, 1, false).expect("capture"),
+        "hello"
+    );
     assert_eq!(created.name, "tb-probe");
     assert_eq!(
         row.backend_id, created.pane,
