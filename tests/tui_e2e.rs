@@ -4658,7 +4658,7 @@ fn scripted_agent_session(script: impl FnOnce(&Path) -> String) -> Option<(Profi
 /// `then`, and stay alive.
 fn after_redraw(profile_root: &Path, then: &str) -> String {
     format!(
-        "while [ ! -e {root}/redraw ]; do sleep 0.05; done\n{then}\nexec sleep 1000\n",
+        "while [ ! -e '{root}/redraw' ]; do sleep 0.05; done\n{then}\nexec sleep 1000\n",
         root = profile_root.display()
     )
 }

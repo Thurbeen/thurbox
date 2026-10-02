@@ -490,9 +490,11 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
 
     press(&host, "down");
     assert_eq!(selected(&host).as_deref(), Some("aaa"));
+    // The first hit was revealed the moment the answer selected it, so
+    // stepping off it puts that terminal back as well.
     assert_eq!(
         host.shared_string("terminal.reveal").as_deref(),
-        Some("aaa 40 7")
+        Some("-ccc;aaa 40 7")
     );
     assert!(host.drain_commands().contains(&Command::Action {
         owner: "plugins/65_search.lua".into(),
@@ -513,6 +515,52 @@ fn stepping_onto_a_text_hit_scrolls_its_terminal_to_the_line() {
         host.shared_string("terminal.reveal").as_deref(),
         Some("-ccc")
     );
+}
+
+#[test]
+fn the_selected_text_hit_is_revealed_without_a_key_and_followed_when_it_moves() {
+    // Typing lands the cursor on the first result, and that result is shown —
+    // the session AND the line — with no key pressed. And a hit is a position:
+    // once its agent prints, the re-run search hands the same result back
+    // further up, and the preview follows it there rather than leaving the
+    // terminal at the offset where the line used to be.
+    let host = host();
+    open(&host);
+    type_query(&host, "ENOSPC");
+    render_answered(
+        &host,
+        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
+    );
+    assert_eq!(selected(&host).as_deref(), Some("ccc"));
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("ccc 120 7")
+    );
+    assert!(host.drain_commands().contains(&Command::Action {
+        owner: "plugins/65_search.lua".into(),
+        action: "terminal.reveal".into(),
+    }));
+
+    // The same answer again is not a new place: nothing is re-sent, so a
+    // frame does not fight a terminal the user scrolled by hand.
+    render_answered(
+        &host,
+        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 120)])),
+    );
+    assert!(host.drain_commands().is_empty());
+
+    render_answered(
+        &host,
+        Some(&answer("ENOSPC", &[("ccc", "error: ENOSPC", 127)])),
+    );
+    assert_eq!(
+        host.shared_string("terminal.reveal").as_deref(),
+        Some("ccc 127 7")
+    );
+    assert!(host.drain_commands().contains(&Command::Action {
+        owner: "plugins/65_search.lua".into(),
+        action: "terminal.reveal".into(),
+    }));
 }
 
 #[test]
