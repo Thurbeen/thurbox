@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 const MAX_REQUEST: usize = 16 * 1024;
@@ -108,12 +108,17 @@ pub fn directory() -> Result<PathBuf, String> {
 
 #[cfg(unix)]
 mod unix {
-    use super::*;
+    use super::{
+        directory, label, started_at_unix_ms, terminal_hint, Instance, Pending, Reply, Request,
+        Server, WireRequest, MAX_REQUEST, WAIT,
+    };
     use std::fs;
     use std::io::{Read, Write};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{self, SyncSender};
     use std::sync::Arc;
 
     fn secure_directory() -> Result<PathBuf, String> {
@@ -361,10 +366,15 @@ pub use unix::{instances, send};
 
 #[cfg(windows)]
 mod windows {
-    use super::*;
+    use super::{
+        directory, label, started_at_unix_ms, terminal_hint, Instance, Pending, Reply, Request,
+        Server, WireRequest, MAX_REQUEST, WAIT,
+    };
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
+    use std::sync::mpsc::{self, SyncSender};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
