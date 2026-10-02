@@ -477,7 +477,13 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     .await;
 
     // The other instance is typed into while this one keeps the focus. Keeping
-    // it is not gaining it, so the pane stays where that input put it.
+    // it is not gaining it, so the pane stays where that input put it. Typed
+    // once it has heard the pane moved: a claim compares the pane's size as it
+    // last heard it, and one that still has its own size sends nothing.
+    until("the other instance to hear the pane moved", || {
+        grid_size(&there) == here_rect
+    })
+    .await;
     there.send_input(Vec::new()).expect("input there");
     until("the other instance's claim to reach the pane", || {
         pane_size(&server, &id) == there_rect
