@@ -466,7 +466,10 @@ fn a_flow_left_on_the_retired_multiplexer_step_resumes_at_the_repositories() {
         dir.path(),
     );
     let pane = dir.path().join("plugins/70_new_session.lua");
-    let current = std::fs::read_to_string(&pane).expect("read pane");
+    // A Windows checkout's line endings are CRLF, which the needle below is not.
+    let current = std::fs::read_to_string(&pane)
+        .expect("read pane")
+        .replace("\r\n", "\n");
     let opens_on_repos = "        flow.step = \"repo\"\n      end\n      save(flow)";
     assert!(current.contains(opens_on_repos), "the open path moved");
     let older = current.replacen(
