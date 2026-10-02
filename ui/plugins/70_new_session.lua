@@ -111,7 +111,13 @@ end
 -- on every read, so a nested field mutated in place would not persist.
 
 local function load()
-  return state.flow
+  local flow = state.flow
+  -- An older interface asked for a multiplexer after the host, and its flow
+  -- outlives a reload; the step it was on is now the repositories.
+  if flow and flow.step == "multiplexer" then
+    flow.step = "repo"
+  end
+  return flow
 end
 
 --- Assigned once the repo step's row model exists below. Declared here because

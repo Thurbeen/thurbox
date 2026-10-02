@@ -441,6 +441,53 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
     assert!(!screen.contains("Multiplexer"), "{screen}");
 }
 
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("mkdir");
+    for entry in std::fs::read_dir(from).expect("read_dir") {
+        let entry = entry.expect("entry");
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name())).expect("copy");
+        }
+    }
+}
+
+#[test]
+fn a_flow_left_on_the_retired_multiplexer_step_resumes_at_the_repositories() {
+    // An interface that still asked for a multiplexer can leave a flow saved on
+    // that step, and a plugin's state outlives a reload. Drawn as nothing it
+    // knows, it fell through to the agent screen while Enter still went to the
+    // repository step's handler.
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        dir.path(),
+    );
+    let pane = dir.path().join("plugins/70_new_session.lua");
+    let current = std::fs::read_to_string(&pane).expect("read pane");
+    let opens_on_repos = "        flow.step = \"repo\"\n      end\n      save(flow)";
+    assert!(current.contains(opens_on_repos), "the open path moved");
+    let older = current.replacen(
+        opens_on_repos,
+        "        flow.step = \"multiplexer\"\n      end\n      save(flow)",
+        1,
+    );
+    std::fs::write(&pane, older).expect("write older pane");
+    let mut host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let world = World::default();
+    press(&host, &world, "ctrl+n");
+
+    std::fs::write(&pane, current).expect("restore pane");
+    host.reload();
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(!screen.contains("Coding Agent"), "{screen}");
+}
+
 #[test]
 fn opening_with_hosts_asks_where_to_run_first() {
     let host = host();

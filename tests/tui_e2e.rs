@@ -1638,15 +1638,21 @@ fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
 #[test]
 fn the_tui_create_flow_never_asks_which_multiplexer() {
     // The multiplexer is the platform's (tmux, or psmux on native Windows) or
-    // whatever settings name — never a question on screen. With no hosts the
-    // flow's first question is the repositories.
+    // whatever settings name — never a question on screen. Under WSL sibling
+    // distros are discovered with no hosts.toml, so "Run On" may come first;
+    // `local` is its first row.
     let profile = Profile::new();
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
+    let asked = |frame: &str| frame.contains("Select Repos") || frame.contains("Multiplexer");
     tui.wait_until("the new-session flow to be up", |frame| {
-        frame.contains("Select Repos") || frame.contains("Multiplexer")
+        asked(frame) || frame.contains("Run On")
     });
+    if !asked(&tui.frame()) {
+        tui.send(b"\r");
+        tui.wait_until("the step after Run On", asked);
+    }
     let frame = tui.frame();
     assert!(
         frame.contains("Select Repos") && !frame.contains("Multiplexer"),
