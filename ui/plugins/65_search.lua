@@ -19,10 +19,11 @@
 --     two later. The query is left in `store` under `want_content` once it has
 --     stood still, and the answer arrives as `thurbox.search`.
 --
--- Moving the selection PREVIEWS: the session list's cursor moves to the result,
--- and for a text hit the agent pane scrolls back to the line, while focus stays
--- here. `esc` puts back what you were looking at; `enter` keeps the jump and
--- lands you in the terminal, on the line.
+-- Selecting a result PREVIEWS it, whether an arrow or a query put the cursor
+-- there: the session list's cursor moves to the result, and for a text hit the
+-- agent pane scrolls back to the line and marks it, while focus stays here.
+-- `esc` puts back what you were looking at; `enter` keeps the jump and lands
+-- you in the terminal, on the line.
 --
 -- The query language is `lib.fuzzy.query`'s: words (all must match, any order),
 -- "quoted phrases", /regex/ (text only), `in:<session>` and `repo:<repo>`
@@ -90,10 +91,11 @@ local function load()
     -- What the interface looked like when search opened, so cancelling can put
     -- it back. v1 captures the same things in its `SearchSnapshot`.
     snapshot = state.snapshot,
-    -- The result this pane last pointed the list at. Kept because the result set
-    -- can change without a keystroke: terminal hits arrive a frame after the
-    -- query settles, and a preview that only followed the arrows would stay on
-    -- whatever was under the cursor before they appeared.
+    -- Where this pane last pointed the list and the terminal: `place_of` the
+    -- result. Kept because the result set can change without a keystroke:
+    -- terminal hits arrive a frame after the query settles, and a hit's place
+    -- moves whenever its agent prints or repaints, so a preview that only
+    -- followed the arrows would stay on wherever the line USED to be.
     previewed = state.previewed,
     -- The terminal a preview scrolled back, so the next preview or a cancel can
     -- put it back at the bottom. One at a time: a preview is a look, not a trail
@@ -320,13 +322,34 @@ local function reveal(requests)
   command("action", { text = REVEAL })
 end
 
+--- Where a result points: its id and, for a text hit, the position the
+--- terminal is scrolled and marked at. A re-run search hands back the same hit
+--- under the same id at a new position once the agent has printed or
+--- repainted, and that is a new place to show.
+local function place_of(row)
+  if not row then
+    return nil
+  end
+  local hit = row.hit
+  if not hit then
+    return row.id
+  end
+  return row.id
+    .. " "
+    .. surface_of(hit)
+    .. " "
+    .. math.floor(hit.scroll or 0)
+    .. " "
+    .. math.floor(hit.row or 0)
+end
+
 --- Point the owning pane at a result, without leaving the strip.
 ---
 --- The session list follows a `store` selection it did not write itself, so
 --- writing one moves its cursor while focus stays here. A text hit also scrolls
---- the terminal to the line when `scroll` is set — the keys do, a render does
---- not, because a render must not command the agent pane on every frame a hit
---- list moves under the cursor.
+--- the terminal to the line when `scroll` is set. Callers send it once per
+--- `place_of` a result, never once per frame: the agent pane reads it as a
+--- scroll by hand would be read.
 local function preview(search, row, scroll)
   if not row then
     return
@@ -649,7 +672,7 @@ local function step_cursor(step)
   local rows = results(search.scope)
   search.cursor = widgets.clamp(search.cursor + step, #rows)
   local row = rows[search.cursor]
-  search.previewed = row and row.id or nil
+  search.previewed = place_of(row)
   preview(search, row, true)
   save(search)
 end
@@ -713,13 +736,20 @@ return {
       store[MATCHES] = matches
     end
 
-    -- Point the list at whatever is under the cursor now. Only when the answer
-    -- CHANGED: a frame that previews the row it previewed last time would fight
-    -- the list for its own cursor.
+    -- Show whatever is under the cursor now — the session AND the line — so a
+    -- result is revealed the moment it is the selected one, not on the next
+    -- key. Only when its place CHANGED: a frame that previews the place it
+    -- previewed last time would fight the list for its own cursor. A hit whose
+    -- agent printed since is a changed place, which is what keeps the mark on
+    -- the line rather than on the row the line was on (Enter re-sends the
+    -- fresh place too, so the two cannot disagree).
+    -- Nothing selected forgets the place, so a result that comes back once a
+    -- query edit is undone is shown again rather than taken as already shown.
     local current = rows[search.cursor]
-    if current and current.id ~= search.previewed then
-      preview(search, current, false)
-      search.previewed = current.id
+    local place = place_of(current)
+    if place ~= search.previewed then
+      preview(search, current, true)
+      search.previewed = place
     end
     save(search)
 
@@ -822,7 +852,7 @@ return {
       -- above is what makes that safe to do before anything was chosen.
       local first = results(search.scope)[1]
       preview(search, first, false)
-      search.previewed = first and first.id or nil
+      search.previewed = place_of(first)
       save(search)
       command("focus", { text = NAME })
       return true

@@ -4613,3 +4613,264 @@ fn a_pasted_end_marker_cannot_submit_a_line() {
     );
     assert!(tui.quit().success());
 }
+
+/// A session whose agent is `script`, run by `sh` — an agent-like pane that
+/// prints a transcript, then waits for the test to touch `<profile>/redraw`
+/// before changing what it shows, the way a working agent prints or a TUI
+/// repaints while somebody is looking at a search result in it.
+fn scripted_agent_session(script: impl FnOnce(&Path) -> String) -> Option<(Profile, Tui)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    let path = profile.root.path().join("agent.sh");
+    std::fs::write(&path, script(profile.root.path())).expect("write agent script");
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        format!(
+            "default = \"scripted\"\n\n[[agents]]\nname = \"scripted\"\ncommand = \"sh\"\nargs = [{:?}]\n",
+            path.to_str().expect("utf-8 path")
+        ),
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "scripted",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("NO_COLOR", "1");
+    });
+    tui.wait_for("probe");
+    tui.wait_for("tb-ready");
+    Some((profile, tui))
+}
+
+/// The tail every scripted agent ends with: wait for the test's go, run
+/// `then`, and stay alive.
+fn after_redraw(profile_root: &Path, then: &str) -> String {
+    format!(
+        "while [ ! -e '{root}/redraw' ]; do sleep 0.05; done\n{then}\nexec sleep 1000\n",
+        root = profile_root.display()
+    )
+}
+
+/// The agent pane's left border column: where its top corner sits beside the
+/// session list's.
+fn agent_border(tui: &Tui) -> u16 {
+    let top = tui.row(1);
+    top.chars()
+        .enumerate()
+        .skip(1)
+        .find(|(_, c)| matches!(c, '╭' | '┏'))
+        .map(|(x, _)| x as u16)
+        .unwrap_or_else(|| tui.give_up("the agent pane's top border"))
+}
+
+/// The rows of the agent pane: those whose border column is drawn and whose
+/// left neighbour is the session list's border — which rules out the search
+/// strip's rows, which repeat the same text further down.
+fn agent_rows(tui: &Tui) -> Vec<(u16, String)> {
+    let x = usize::from(agent_border(tui));
+    let rows = tui.screen.lock().unwrap().screen().size().0;
+    (2..rows)
+        .map(|y| (y, tui.row(y)))
+        .filter(|(_, row)| {
+            let mut chars = row.chars().skip(x - 1);
+            chars.next() == Some('│') && matches!(chars.next(), Some('│' | '┃'))
+        })
+        .collect()
+}
+
+/// The agent pane's rows the kernel has marked — reversed from the first cell
+/// inside the border.
+fn marked_rows(tui: &Tui) -> Vec<u16> {
+    let x = agent_border(tui) + 1;
+    agent_rows(tui)
+        .into_iter()
+        .map(|(y, _)| y)
+        .filter(|&y| tui.inverse_at(y, x))
+        .collect()
+}
+
+/// Whether the agent pane shows `needle`, and the one row it marks is the row
+/// `needle` is on.
+fn marks_exactly(tui: &Tui, needle: &str) -> bool {
+    let on = agent_rows(tui)
+        .into_iter()
+        .find(|(_, row)| row.contains(needle))
+        .map(|(y, _)| y);
+    on.is_some() && marked_rows(tui) == on.into_iter().collect::<Vec<_>>()
+}
+
+/// Wait for `marks_exactly`, failing with the rows that were marked instead.
+fn wait_for_mark_on(tui: &Tui, needle: &str, what: &str) {
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        if marks_exactly(tui, needle) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    let lines: Vec<String> = marked_rows(tui).into_iter().map(|y| tui.row(y)).collect();
+    tui.give_up(&format!(
+        "{what}: the row holding {needle:?} to be the one marked; marked instead: {lines:#?}"
+    ));
+}
+
+#[test]
+fn a_search_result_is_revealed_as_soon_as_it_is_the_selected_one() {
+    // Typing a query lands the cursor on its first result, and the session
+    // list already follows it — but the terminal stayed where it was until an
+    // arrow key or Enter, so the "preview" showed the right session at the
+    // wrong place. The selected result is revealed the moment it is selected,
+    // without a key, and Enter stays what lands the focus in it.
+    let Some((_profile, mut tui)) = scripted_agent_session(|_| {
+        "seq 1 200; echo tb-\"\"findme; seq 1 300; echo tb-ready\nexec sleep 1000\n".into()
+    }) else {
+        return;
+    };
+    tui.wait_gone("tb-findme");
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"tb-findme");
+    tui.wait_until("a result row for the scrolled-away line", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("probe") && line.contains('↑') && line.contains("tb-findme"))
+    });
+    wait_for_mark_on(&tui, "tb-findme", "the selected result, before any key");
+    assert!(
+        tui.frame().contains("Search"),
+        "the strip must still be open"
+    );
+
+    tui.send(b"\r");
+    tui.wait_until("the terminal to take focus", |frame| {
+        !frame.contains("Search")
+    });
+    wait_for_mark_on(&tui, "tb-findme", "the opened result");
+    assert!(tui.quit().success());
+}
+
+/// What the search strip's status line says it searched: the `in N lines` of
+/// it, so a test can tell a fresh answer from the one before it.
+fn searched_lines(frame: &str) -> Option<String> {
+    frame.lines().find_map(|line| {
+        let at = line.find(" lines of ")?;
+        let from = line[..at].rfind(" in ")? + " in ".len();
+        Some(line[from..at].to_string())
+    })
+}
+
+#[test]
+fn the_search_mark_stays_on_a_wrapped_scrollback_line_while_the_agent_prints() {
+    // The bug as reported: in an agent session the strip marked the wrong
+    // rows, yet Enter landed on the right one. A hit is a position — how far
+    // back its line is — and a working agent keeps printing under it, so the
+    // position goes stale. The kernel re-runs the search and the answer
+    // moves, but the strip only told the terminal where to scroll on a key,
+    // so the view kept the old offset and the mark sat on whatever had moved
+    // under it; Enter re-sent the fresh position and so landed correctly.
+    // The line is a wrapped one with the match on its second row, in the
+    // scrollback.
+    let Some((profile, mut tui)) = scripted_agent_session(|root| {
+        format!(
+            "seq 1 200\nprintf '%0100d tb-wrapped\\n' 0\nseq 1 300\necho tb-ready\n{}",
+            after_redraw(root, "seq 1 7")
+        )
+    }) else {
+        return;
+    };
+    tui.wait_gone("tb-wrapped");
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"tb-wrapped");
+    // The result row's snippet is cut to the strip's width, so it is the
+    // count that says the line was found.
+    tui.wait_until("a result for the wrapped line", |frame| {
+        frame.contains("text 1 in")
+            && frame
+                .lines()
+                .any(|l| l.contains("probe") && l.contains('↑'))
+    });
+    // Revealed by a key, so this holds whether or not selecting a result
+    // reveals it by itself.
+    tui.send(b"\x1b[B");
+    wait_for_mark_on(&tui, "tb-wrapped", "the previewed result");
+
+    let before = searched_lines(&tui.frame());
+    std::fs::write(profile.root.path().join("redraw"), "").expect("signal the agent");
+    tui.wait_until(
+        "the search to re-run over what the agent printed",
+        |frame| searched_lines(frame).is_some_and(|now| Some(&now) != before.as_ref()),
+    );
+    wait_for_mark_on(
+        &tui,
+        "tb-wrapped",
+        "the previewed result after the agent printed",
+    );
+
+    tui.send(b"\r");
+    tui.wait_until("the terminal to take focus", |frame| {
+        !frame.contains("Search")
+    });
+    wait_for_mark_on(&tui, "tb-wrapped", "the opened result");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_search_mark_follows_a_redraw_on_the_alternate_screen() {
+    // Codex and Claude draw on the alternate screen, which has no scrollback:
+    // a hit there is a screen row, and the program repaints it wherever it
+    // likes. A repaint that moves the line moves the hit, and the mark has to
+    // move with it rather than stay on the row the line used to be on.
+    let Some((profile, mut tui)) = scripted_agent_session(|root| {
+        format!(
+            "printf '\\033[?1049h\\033[H\\033[2J'\n\
+             for i in 1 2 3 4 5; do echo \"header $i\"; done\n\
+             echo 'tb-alt v1'\necho tb-ready\n{}",
+            after_redraw(
+                root,
+                "printf '\\033[H\\033[2J\\n\\n\\n\\n'\n\
+                 for i in 1 2 3 4 5; do echo \"header $i\"; done\n\
+                 echo 'tb-alt v2'\necho tb-ready"
+            )
+        )
+    }) else {
+        return;
+    };
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"tb-alt");
+    tui.wait_until("a result row for the on-screen line", |frame| {
+        frame.lines().any(|line| {
+            line.contains("probe") && line.contains("on screen") && line.contains("tb-alt v1")
+        })
+    });
+    tui.send(b"\x1b[B");
+    wait_for_mark_on(&tui, "tb-alt v1", "the previewed result");
+
+    std::fs::write(profile.root.path().join("redraw"), "").expect("signal the agent");
+    tui.wait_until("the search to find the repainted line", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("probe") && line.contains("tb-alt v2"))
+    });
+    wait_for_mark_on(&tui, "tb-alt v2", "the previewed result after the repaint");
+
+    tui.send(b"\r");
+    tui.wait_until("the terminal to take focus", |frame| {
+        !frame.contains("Search")
+    });
+    wait_for_mark_on(&tui, "tb-alt v2", "the opened result");
+    assert!(tui.quit().success());
+}

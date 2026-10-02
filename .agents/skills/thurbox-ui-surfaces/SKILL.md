@@ -213,9 +213,13 @@ hold, **scrollback included**, matched by the kernel on a worker).
   (`THURBOX_BENCH_CHECK=1` fails over budget), `tests/search.rs` pins the
   memo, and `scripts/dev/perf-run.sh --search Q [--typing]` measures the whole
   binary with the strip open.
-- **Preview and land**: moving onto a text hit scrolls its terminal back while
-  focus stays in the strip; `enter`/click opens it scrolled to the line with the
-  row marked (`surface.mark`). The strip asks the agent pane to do this — it writes
+- **Preview and land**: whichever text hit is selected — by an arrow, or by a
+  query landing the cursor on it — scrolls its terminal back with the row marked
+  (`surface.mark`) while focus stays in the strip; `enter`/click opens it there.
+  The strip re-reveals whenever the selected result's *place* (id, surface,
+  offset, row) changes, because a re-run search hands back the same hit id at a
+  new position once its agent prints or repaints, and a mark left at the old
+  offset sits on the wrong row. The strip asks the agent pane to do this — it writes
   `"<surface> <offset> <row>"` (`;`-separated, `-<surface>` resets) to
   `store["terminal.reveal"]` and runs `command("action", {text = "terminal.reveal"})`,
   which reaches `20_agent.lua` because a chord-less palette command now routes to
