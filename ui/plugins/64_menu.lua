@@ -84,6 +84,13 @@ end
 
 return {
   name = "menu",
+  ui_state = function()
+    local menu = pending()
+    if not menu then
+      return { open = false }
+    end
+    return { open = true, selection = current(menu) or 0 }
+  end,
   -- A slot the arrangement never places: this only ever floats.
   slot = "float",
   order = 64,

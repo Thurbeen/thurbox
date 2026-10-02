@@ -1351,6 +1351,41 @@ impl LuaHost {
         }
     }
 
+    /// Small, explicitly declared UI projections; no shared or private store is exposed.
+    pub fn ui_states(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut states = std::collections::BTreeMap::new();
+        for plugin in &self.plugins {
+            let Ok(Some(project)) = plugin.def.get::<Option<Function>>("ui_state") else {
+                continue;
+            };
+            self.enter(plugin);
+            let guard = load::Budget::arm(&self.lua);
+            let result: mlua::Result<Table> = project.call(());
+            drop(guard);
+            self.enter_nothing();
+            let Ok(table) = result else { continue };
+            let mut fields = serde_json::Map::new();
+            for entry in table.pairs::<String, Value>().take(17) {
+                let Ok((key, value)) = entry else { break };
+                if fields.len() == 16 || key.len() > 64 {
+                    break;
+                }
+                let value = match value {
+                    Value::Boolean(v) => serde_json::Value::Bool(v),
+                    Value::Integer(v) => serde_json::json!(v),
+                    Value::Number(v) if v.is_finite() => serde_json::json!(v),
+                    Value::String(v) if v.as_bytes().len() <= 256 => {
+                        serde_json::Value::String(v.to_string_lossy().to_string())
+                    }
+                    _ => continue,
+                };
+                fields.insert(key, value);
+            }
+            states.insert(plugin.name.clone(), serde_json::Value::Object(fields));
+        }
+        states
+    }
+
     /// Read a boolean out of the shared `store`.
     ///
     /// The panel flags live there (`panels.<name>`) because the arrangement has

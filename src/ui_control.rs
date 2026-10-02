@@ -57,6 +57,7 @@ fn started_at_unix_ms() -> u128 {
 pub enum Request {
     Ping,
     State,
+    Watch { since: Option<u64> },
     Action { name: String, args: Value },
 }
 

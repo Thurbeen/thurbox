@@ -972,7 +972,21 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
     assert!(status.success());
     assert_eq!(state["search_query"], "two");
-    assert_eq!(state["revision"], revision);
+    assert!(state["revision"].as_u64().unwrap() > revision.as_u64().unwrap());
+    let since = revision.as_u64().unwrap().to_string();
+    let (status, outcome) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(status.success());
+    assert!(outcome["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "action.completed" && event["value"]["action"] == "search.open"
+    }));
 
     let (status, sessions) = cli(&["session", "list"]);
     assert!(status.success());
@@ -1000,6 +1014,149 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     assert!(!status.success());
     assert!(stale["error"].to_string().contains("instance"));
     assert!(first.quit().success());
+}
+
+#[test]
+fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
+    let profile = Profile::new();
+    let mut first = Tui::spawn(&profile, 40, 120);
+    let mut second = Tui::spawn(&profile, 40, 120);
+    first.wait_for("No sessions yet");
+    second.wait_for("No sessions yet");
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json"]).args(args).output().expect("run cli");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("JSON")
+    };
+    let instances = cli(&["ui", "instances"]);
+    let entries = instances["instances"].as_array().expect("instances");
+    let id_for = |pid| {
+        entries
+            .iter()
+            .find(|row| row["pid"] == pid)
+            .and_then(|row| row["id"].as_str())
+            .expect("instance id")
+            .to_owned()
+    };
+    let first_id = id_for(first.child.id());
+    let second_id = id_for(second.child.id());
+    let initial = cli(&["ui", "--instance", &first_id, "state"]);
+    assert_eq!(initial["modal"], serde_json::Value::Null);
+    assert!(initial["slots"].is_array());
+
+    let mut watch_cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut watch_cmd);
+    let mut watcher = watch_cmd
+        .args(["--json", "ui", "--instance", &first_id, "watch"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("watch stream");
+    let stdout = watcher.stdout.take().expect("watch stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            if sender.send(line.expect("watch line")).is_err() {
+                break;
+            }
+        }
+    });
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&receiver.recv_timeout(WAIT).expect("initial watch snapshot"))
+            .expect("snapshot JSON");
+    assert_eq!(snapshot["kind"], "snapshot");
+
+    first.send(F1);
+    first.wait_for("Keybindings");
+    let state = cli(&["ui", "--instance", &first_id, "state"]);
+    assert_eq!(state["modal"]["kind"], "help");
+    let selection = state["modal"]["selection"]
+        .as_u64()
+        .expect("modal selection");
+    assert!(state["revision"].as_u64().unwrap() > initial["revision"].as_u64().unwrap());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let Ok(line) = receiver.recv_timeout(Duration::from_millis(200)) else {
+            assert!(Instant::now() < deadline, "modal event missing from stream");
+            continue;
+        };
+        let event: serde_json::Value = serde_json::from_str(&line).expect("event JSON");
+        if event["kind"] == "overlay.opened" && event["value"]["field"] == "modal" {
+            assert_eq!(event["value"]["value"]["kind"], "help");
+            break;
+        }
+        assert!(Instant::now() < deadline, "modal event missing from stream");
+    }
+    first.send(b"\x1b[B");
+    let selection_deadline = Instant::now() + WAIT;
+    let moved = loop {
+        let moved = cli(&["ui", "--instance", &first_id, "state"]);
+        if moved["modal"]["selection"].as_u64() != Some(selection) {
+            break moved;
+        }
+        assert!(
+            Instant::now() < selection_deadline,
+            "modal selection did not move"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    assert!(moved["revision"].as_u64().unwrap() > state["revision"].as_u64().unwrap());
+    let other = cli(&["ui", "--instance", &second_id, "state"]);
+    assert_eq!(other["modal"], serde_json::Value::Null);
+    let since = initial["revision"].as_u64().unwrap().to_string();
+    let events = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(events["events"].as_array().unwrap().iter().any(|event| {
+        event["kind"] == "overlay.opened"
+            && event["value"]["field"] == "modal"
+            && event["value"]["value"]["kind"] == "help"
+    }));
+    let other_events = cli(&[
+        "ui",
+        "--instance",
+        &second_id,
+        "watch",
+        "--since",
+        &since,
+        "--once",
+    ]);
+    assert!(!other_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["kind"] == "overlay.opened"
+                && event["value"]["field"] == "modal"
+                && event["value"]["value"]["kind"] == "help"
+        }));
+    let resync = cli(&[
+        "ui",
+        "--instance",
+        &first_id,
+        "watch",
+        "--since",
+        "0",
+        "--once",
+    ]);
+    assert_eq!(resync["kind"], "resync_required");
+    assert_eq!(resync["state"]["modal"]["kind"], "help");
+    assert!(first.quit().success());
+    assert!(second.quit().success());
+    let _ = watcher.kill();
+    let _ = watcher.wait();
 }
 
 #[test]

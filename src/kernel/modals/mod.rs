@@ -202,6 +202,15 @@ pub struct Modals {
 }
 
 impl Modals {
+    pub fn selection(&self) -> Option<usize> {
+        match &self.open {
+            Some(Open::Help(modal)) => Some(modal.selected()),
+            Some(Open::Settings(modal)) => Some(modal.selected()),
+            Some(Open::Theme(modal)) => Some(modal.selected()),
+            Some(Open::Palette(modal)) => Some(modal.selected()),
+            None => None,
+        }
+    }
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }

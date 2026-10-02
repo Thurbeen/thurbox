@@ -246,7 +246,8 @@ struct App {
     /// The private endpoint owned by this running interface.
     control: Option<UiControlServer>,
     control_revision: u64,
-    control_observed: Option<(Option<String>, Option<String>, Option<String>)>,
+    control_observed: Option<serde_json::Value>,
+    control_events: std::collections::VecDeque<serde_json::Value>,
     host: LuaHost,
     /// The directory the interface was loaded from. Held because every command
     /// about a plugin file names a path relative to it.

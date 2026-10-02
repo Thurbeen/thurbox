@@ -240,6 +240,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         control,
         control_revision: 0,
         control_observed: None,
+        control_events: std::collections::VecDeque::new(),
         host,
         sources: thurbox::kernel::bundled::sources(&ui_dir),
         watcher: Watcher::new(&ui_dir)?,

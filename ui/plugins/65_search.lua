@@ -679,6 +679,9 @@ end
 
 return {
   name = NAME,
+  ui_state = function()
+    return { selected_result = state.cursor or 1, scope = state.scope or "all" }
+  end,
   slot = NAME,
   order = 65,
   -- Deliberately NOT `pure`. This render writes to `store` — the

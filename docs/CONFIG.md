@@ -1314,11 +1314,23 @@ Every running TUI advertises a random instance ID under its data profile's
 `ui-control/` directory. Run `thurbox-cli ui instances --json` to list reachable
 screens with their PID, local/SSH label and terminal hint.
 `thurbox-cli ui --instance <id> state --json` reports the focused pane,
-selected session ID, search query and state revision from that screen. A command
+selected session ID, arranged slots with rects and visible panes, panel state, kernel modal and its
+selection, open plugin floats, active search query and result selection, and
+the action catalog revision. Plugin-owned details are limited to each plugin's
+optional `ui_state()` projection of small scalar values; the Lua store and
+terminal contents are never copied into this snapshot. A command
 without `--instance` uses the sole reachable screen, or refuses with an
 ambiguity error listing IDs when several are running. `THURBOX_UI_INSTANCE`
 selects a default for scripts. Closed or crashed screens cannot be targeted;
 stale discovery records are removed when discovered.
+
+`thurbox-cli ui --instance <id> watch --json` writes an initial snapshot and
+then JSON lines for changes to focus, layout, overlays, selection, search, and
+action outcomes. `--since <revision>` resumes after a known revision. The
+per-instance buffer holds 256 deltas; an expired or future cursor yields a
+`resync_required` response containing a fresh snapshot. `--once` returns one batch as
+a JSON document for polling callers. This stream is UI state only;
+`thurbox-cli watch` continues to stream durable session events.
 
 The first two actions are:
 

@@ -438,6 +438,9 @@ pub struct SettingsModal {
 }
 
 impl SettingsModal {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
     /// Whether a keystroke is being typed into a value rather than driving the
     /// list — the modal's own capture, and why `j` types a `j` here.
     pub fn editing(&self) -> bool {

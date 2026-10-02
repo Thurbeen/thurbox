@@ -37,6 +37,9 @@ end
 
 return {
   name = "confirm",
+  ui_state = function()
+    return { open = pending() ~= nil }
+  end,
   -- A slot the arrangement never places: this only ever floats.
   slot = "float",
   order = 60,

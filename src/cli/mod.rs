@@ -456,6 +456,14 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
         watch::run(db, backends, args, format)?;
         return Ok(Outcome::Ok);
     }
+    if let Some(Command::Ui {
+        instance,
+        action: ui::Action::Watch { since, once: false },
+    }) = cli.command
+    {
+        ui::stream(instance, since)?;
+        return Ok(Outcome::Ok);
+    }
 
     let mut output: CommandOutput = match cli.command {
         // No subcommand: live state, not a usage dump (AXI principle 8).
