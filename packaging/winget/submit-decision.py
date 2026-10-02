@@ -5,8 +5,10 @@ Usage: submit-decision.py decide --throttle-days N [--now ISO8601] [PRS_JSON]
        submit-decision.py after-sync --ahead N --exit-code N [OUTPUT_FILE]
        submit-decision.py after-submit --exit-code N [OUTPUT_FILE]
 
-`decide` reads `gh pr list --json number,state,createdAt,title` output (stdin by
-default) and prints `{"should_submit": bool, "reason": str}`. Two things stop a
+`decide` reads `gh pr list --json number,state,createdAt,title,files` output
+(stdin by default) and prints `{"should_submit": bool, "reason": str}`. A PR
+whose `files` touch nothing under the package's manifest directory is ignored:
+the list comes from a title search, and any author can match a title. Two things stop a
 submission: a thurbox PR still **open** on winget-pkgs (submitting on top of it
 is what accumulates the backlog its moderators complain about — wingetcreate has
 no "update the pending PR" mode), and a last submission younger than
@@ -66,7 +68,21 @@ def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+# Where winget-pkgs keeps this package. The PR list is found by a title search,
+# which any PR can match; one that changes nothing here is not a queue entry
+# for thurbox.
+MANIFEST_DIR = "manifests/t/Thurbeen/thurbox/"
+
+
+def touches_manifest(pr) -> bool:
+    """True when the PR changes the package's manifests, or did not list its files."""
+    if "files" not in pr:
+        return True
+    return any(str(f.get("path", "")).startswith(MANIFEST_DIR) for f in pr["files"] or [])
+
+
 def decide(prs, throttle_days: int, now: datetime) -> dict:
+    prs = [p for p in prs if touches_manifest(p)]
     open_prs = [p for p in prs if str(p.get("state", "")).upper() == "OPEN"]
     if open_prs:
         newest = max(open_prs, key=lambda p: parse_iso(p["createdAt"]))

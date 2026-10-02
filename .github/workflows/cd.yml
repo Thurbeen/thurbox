@@ -713,7 +713,9 @@ jobs:
       # thurbox PR on winget-pkgs (any state, any author). It skips green when
       # one is still open, and when the newest is younger than THROTTLE_DAYS.
       # Any author, because a community auto-updater opens thurbox PRs there
-      # too, and its open PR is the same moderation-queue entry as ours. The
+      # too, and its open PR is the same moderation-queue entry as ours; any PR
+      # matching the title search but changing no thurbox manifest is ignored,
+      # so a stray one cannot hold the channel shut. The
       # rules and their edge cases are covered by packaging/winget/winget.bats —
       # the reason this is a script and not inline PowerShell.
       - name: Decide whether to submit
@@ -729,7 +731,7 @@ jobs:
           try {
             $prs = gh pr list --repo microsoft/winget-pkgs `
               --search "Thurbeen.thurbox in:title" --state all `
-              --json number,state,createdAt,title --limit 100
+              --json number,state,createdAt,title,files --limit 100
             if ($LASTEXITCODE -ne 0) { throw "gh pr list exited $LASTEXITCODE" }
             $decision = $prs |
               python packaging/winget/submit-decision.py decide --throttle-days $env:THROTTLE_DAYS |
@@ -796,76 +798,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
-        run: |
-          $ErrorActionPreference = "Continue"
-          $account = (gh api user --jq .login | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $account) {
-            Write-Host "::warning title=winget fork sync skipped::could not resolve the WINGET_TOKEN account; leaving the fork to wingetcreate."
-            exit 0
-          }
-          # A workflow command ends at the first newline, so gh's output is
-          # escaped the way the runner unescapes it before it goes in one.
-          function Escape-Annotation([string]$text) {
-            $text.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
-          }
-          $fork = "$account/winget-pkgs"
-          $branch = (gh repo view $fork --json defaultBranchRef --jq .defaultBranchRef.name | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $branch) {
-            Write-Host "No $fork yet — wingetcreate forks on first submit."
-            exit 0
-          }
-          $out = gh repo sync $fork --source microsoft/winget-pkgs 2>&1 | Out-String
-          $syncExit = $LASTEXITCODE
-          Write-Host $out
-          # Commits on the fork's default branch that upstream lacks: 0 means it
-          # can always fast-forward, -1 that the compare itself failed.
-          $ahead = 0
-          if ($syncExit -ne 0) {
-            $ahead = (gh api "repos/microsoft/winget-pkgs/compare/$($branch)...$($account):winget-pkgs:$($branch)" --jq .ahead_by | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0 -or $ahead -notmatch '^\d+$') { $ahead = -1 }
-          }
-          $verdict = $out |
-            python packaging/winget/submit-decision.py after-sync --ahead $ahead --exit-code $syncExit |
-            ConvertFrom-Json
-          if ($null -eq $verdict) {
-            Write-Error "could not classify the fork sync (gh repo sync exited $syncExit)."
-            exit 1
-          }
-          if ($verdict.action -eq "done") {
-            Write-Host "Synced $fork from microsoft/winget-pkgs."
-            exit 0
-          }
-          if ($verdict.action -eq "fail") {
-            Write-Host "::error title=winget fork sync failed::could not sync $fork with microsoft/winget-pkgs: $($verdict.reason). gh said: $(Escape-Annotation $out)"
-            "winget fork sync **failed**: $($verdict.reason)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            exit 1
-          }
-          $head = (gh api "repos/$fork/branches/$branch" --jq .commit.sha | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
-            Write-Host "::error title=winget fork sync failed::$fork has diverged ($($verdict.reason)) but its head could not be read, so it is not reset."
-            exit 1
-          }
-          $backup = "sync-backup-$($head.Substring(0, 12))"
-          gh api -X POST "repos/$fork/git/refs" -f "ref=refs/heads/$backup" -f "sha=$head" | Out-Null
-          $backedUp = $LASTEXITCODE -eq 0
-          if (-not $backedUp) {
-            # Already there from an earlier run whose reset then failed: the
-            # head is just as kept, so the reset may go ahead.
-            $kept = (gh api "repos/$fork/git/ref/heads/$backup" --jq .object.sha | Out-String).Trim()
-            $backedUp = $LASTEXITCODE -eq 0 -and $kept -eq $head
-          }
-          if (-not $backedUp) {
-            Write-Host "::error title=winget fork sync failed::$fork has diverged ($($verdict.reason)) but its head could not be backed up to $backup, so it is not reset."
-            exit 1
-          }
-          Write-Host "::warning title=winget fork reset::$fork diverged ($($verdict.reason)); its old head is kept on branch $backup and $branch is reset to microsoft/winget-pkgs."
-          $out = gh repo sync $fork --source microsoft/winget-pkgs --force 2>&1 | Out-String
-          $syncExit = $LASTEXITCODE
-          Write-Host $out
-          if ($syncExit -ne 0) {
-            Write-Host "::error title=winget fork sync failed::could not reset $fork to microsoft/winget-pkgs. gh said: $(Escape-Annotation $out)"
-            exit 1
-          }
+        run: ./packaging/winget/sync-fork.ps1; exit $LASTEXITCODE
 
       # `submit` validates the bumped manifests and opens a PR against
       # microsoft/winget-pkgs from the fork synced above. Works for both the

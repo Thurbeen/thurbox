@@ -78,7 +78,8 @@ The `publish-winget` job in
    (uppercased, as winget-pkgs expects) plus the locale `ReleaseNotesUrl` from
    those checksums,
 3. downloads `wingetcreate` (`https://aka.ms/wingetcreate/latest`),
-4. syncs the token account's `winget-pkgs` fork from upstream (below),
+4. syncs the token account's `winget-pkgs` fork from upstream
+   ([`sync-fork.ps1`](sync-fork.ps1), below),
 5. `wingetcreate submit`s the manifest set, which validates it and opens a PR
    against [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs),
    then
@@ -101,13 +102,16 @@ Homebrew templates.
 > [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
 > The rule that prevents that is **one thurbox PR in flight**, not a monthly
 > window: the job lists every thurbox PR on winget-pkgs (`gh pr list`, any
-> state, **any author**) and hands them to [`submit-decision.py`](submit-decision.py), which
+> state, **any author**, with each PR's changed files) and hands them to
+> [`submit-decision.py`](submit-decision.py), which
 > **skips the submission and exits green** with a `::warning::` while one is
 > still open — `wingetcreate` cannot update a pending PR, so a second one would
 > only lengthen the queue. Any author, because since 2026-08 a community
 > auto-updater opens most thurbox PRs there itself, and its open PR is the same
 > queue entry as ours: v2.41.8 tried to stack on its open #445600 while the
-> query asked only for the token's own PRs. The next release retries; the binary itself always
+> query asked only for the token's own PRs. A PR that matches the title search
+> but changes nothing under `manifests/t/Thurbeen/thurbox/` is ignored, so a
+> stray one cannot hold the channel shut. The next release retries; the binary itself always
 > ships immediately via GitHub Releases (and Homebrew/AUR), so only the winget
 > channel lags.
 >
@@ -158,8 +162,10 @@ Homebrew templates.
 > `bump-manifests.py` against a recorded `checksums.txt` and pins every
 > submit/skip and deferrable/red decision — including that the stale-fork
 > message is *not* treated as deferrable, since the sync step exists to prevent
-> it — and every fork-sync verdict. The Windows-only halves (`wingetcreate`,
-> `gh repo sync` against a real diverged fork) are not covered.
+> it — and every fork-sync verdict. It also runs `sync-fork.ps1` itself under
+> `pwsh` against a fake `gh`, covering the backup-then-reset path (skipped where
+> `pwsh` is absent, except on CI). `wingetcreate` and a real fork are not
+> covered.
 >
 > **Review (winget-pkgs side, not CI).** microsoft/winget-pkgs runs automated
 > validation (manifest schema, installer hash, a sandbox install/uninstall

@@ -46,6 +46,24 @@ decide() { # <throttle-days> <prs-json>
   echo "$output" | jq -e '.reason | test("#445600")'
 }
 
+# The title search is all that finds these PRs, and anyone can open a PR on
+# winget-pkgs whose title says Thurbeen.thurbox. Only one that changes the
+# package's own manifests is a queue entry for it.
+@test "decide: an open PR that touches no thurbox manifest does not block" {
+  prs='[{"number":7,"state":"OPEN","createdAt":"2026-09-09T11:00:00Z","title":"Thurbeen.thurbox is great","files":[{"path":"manifests/s/Some/Other/1.0/Some.Other.yaml"}]},
+        {"number":8,"state":"MERGED","createdAt":"2026-09-01T12:00:00Z","title":"Thurbeen.thurbox version 2.19.0","files":[{"path":"manifests/t/Thurbeen/thurbox/2.19.0/Thurbeen.thurbox.yaml"}]}]'
+  run decide 0 "$prs"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r .should_submit)" = "true" ]
+  echo "$output" | jq -e '.reason | test("8.0 days ago")'
+}
+
+@test "decide: an open PR that does touch a thurbox manifest blocks" {
+  prs='[{"number":9,"state":"OPEN","createdAt":"2026-09-09T11:00:00Z","title":"Update version: Thurbeen.thurbox version 2.41.7","files":[{"path":"manifests/t/Thurbeen/thurbox/2.41.7/Thurbeen.thurbox.installer.yaml"}]}]'
+  run decide 0 "$prs"
+  [ "$(echo "$output" | jq -r .should_submit)" = "false" ]
+}
+
 @test "decide: an open PR blocks even when the throttle window has elapsed" {
   prs='[{"number":1,"state":"OPEN","createdAt":"2026-01-01T12:00:00Z","title":"New version: Thurbeen.thurbox version 2.0.0"}]'
   run decide 30 "$prs"
@@ -200,6 +218,96 @@ after_sync() { # <ahead-by> <exit-code> <sync output>
 @test "after-sync: an unknown divergence is not reset" {
   run after_sync -1 1 "HTTP 409: There are merge conflicts"
   [ "$(echo "$output" | jq -r .action)" = "fail" ]
+}
+
+# sync-fork.ps1, the release job's fork-sync step, run under PowerShell against
+# a fake `gh` that answers from FAKE_* variables and logs every call, so the
+# reset path — backup branch, then `--force` — is exercised without a fork.
+# CI's runner ships pwsh; a machine without it skips, CI does not.
+sync_fork() {
+  if ! command -v pwsh >/dev/null; then
+    [ -z "${CI:-}" ] || { echo "pwsh is missing on CI" >&2; return 1; }
+    skip "pwsh is not installed"
+  fi
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  cat > "${bin}/gh" <<'GH'
+#!/usr/bin/env bash
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  "api user --jq .login") echo the-account ;;
+  "repo view the-account/winget-pkgs "*) echo "${FAKE_FORK_BRANCH:-master}" ;;
+  "repo view microsoft/winget-pkgs "*) echo "${FAKE_UPSTREAM_BRANCH:-master}" ;;
+  "repo sync "*"--force"*)
+    [ "${FAKE_FORCE:-ok}" = ok ] && echo "✓ reset" || { echo "HTTP 422: reset refused" >&2; exit 1; } ;;
+  "repo sync "*)
+    case "${FAKE_SYNC:-ok}" in
+      ok) echo "✓ Synced" ;;
+      scope) printf '%s\n%s\n' 'Upstream commits contain workflow changes, which require the `workflow` scope or permission to merge.' 'To request it, run: gh auth refresh -s workflow' >&2; exit 1 ;;
+      *) echo "HTTP 409: There are merge conflicts" >&2; exit 1 ;;
+    esac ;;
+  "api repos/microsoft/winget-pkgs/compare/"*) echo "${FAKE_AHEAD:-0}" ;;
+  "api repos/the-account/winget-pkgs/branches/"*) echo 0123456789abcdef0123456789abcdef01234567 ;;
+  "api -X POST "*)
+    [ "${FAKE_POST:-ok}" = ok ] && echo '{}' || { echo "HTTP 422: Reference already exists" >&2; exit 1; } ;;
+  "api repos/the-account/winget-pkgs/git/ref/heads/"*) echo "${FAKE_KEPT:-}" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 99 ;;
+esac
+GH
+  printf '#!/bin/sh\nexec python3 "$@"\n' > "${bin}/python"
+  chmod +x "${bin}/gh" "${bin}/python"
+  export GH_LOG="${BATS_TEST_TMPDIR}/gh.log" GITHUB_STEP_SUMMARY="${BATS_TEST_TMPDIR}/summary.md"
+  : > "$GH_LOG"
+  PATH="${bin}:${PATH}" run pwsh -NoProfile -NonInteractive -command ". '${DIR}/sync-fork.ps1'"
+}
+
+@test "sync-fork: a clean sync exits green and resets nothing" {
+  FAKE_SYNC=ok sync_fork
+  [ "$status" -eq 0 ]
+  ! grep -q -- --force "$GH_LOG"
+}
+
+# Run 36989062882 again, through the real step: red, the fix named in the
+# annotation, and no reset attempted.
+@test "sync-fork: a token without the workflow scope fails red with the fix, without a reset" {
+  FAKE_SYNC=scope FAKE_AHEAD=0 sync_fork
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q '::error title=winget fork sync failed::.*WINGET_TOKEN.*workflow'
+  # The two-line refusal stays one annotation.
+  echo "$output" | grep -q 'merge.%0ATo request it'
+  ! grep -q -- --force "$GH_LOG"
+}
+
+@test "sync-fork: a diverged fork is backed up, then reset" {
+  FAKE_SYNC=conflict FAKE_AHEAD=2 sync_fork
+  [ "$status" -eq 0 ]
+  grep -q 'ref=refs/heads/sync-backup-0123456789ab' "$GH_LOG"
+  [ "$(grep -n 'POST' "$GH_LOG" | cut -d: -f1)" -lt "$(grep -n -- '--force' "$GH_LOG" | cut -d: -f1)" ]
+}
+
+@test "sync-fork: a backup an earlier run left at the same head still allows the reset" {
+  FAKE_SYNC=conflict FAKE_AHEAD=2 FAKE_POST=exists FAKE_KEPT=0123456789abcdef0123456789abcdef01234567 sync_fork
+  [ "$status" -eq 0 ]
+  grep -q -- --force "$GH_LOG"
+}
+
+@test "sync-fork: a backup branch at another commit blocks the reset" {
+  FAKE_SYNC=conflict FAKE_AHEAD=2 FAKE_POST=exists FAKE_KEPT=ffffffffffffffffffffffffffffffffffffffff sync_fork
+  [ "$status" -eq 1 ]
+  ! grep -q -- --force "$GH_LOG"
+}
+
+@test "sync-fork: a failed reset fails red" {
+  FAKE_SYNC=conflict FAKE_AHEAD=2 FAKE_FORCE=fail sync_fork
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q '::error title=winget fork sync failed::could not reset'
+}
+
+# The divergence check asks upstream for its own default branch rather than
+# assuming the fork's name exists there.
+@test "sync-fork: compares against upstream's default branch, not the fork's name for it" {
+  FAKE_SYNC=conflict FAKE_AHEAD=2 FAKE_FORK_BRANCH=main FAKE_UPSTREAM_BRANCH=master sync_fork
+  grep -q 'compare/master...the-account:winget-pkgs:main' "$GH_LOG"
 }
 
 # bump-manifests.py against a recorded release checksums.txt.

@@ -123,14 +123,15 @@ package channels (each gated on its secret, skipped on forks):
   maintainers (30 open PRs at once, flagged in
   [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
   So the decision step hands every thurbox PR (via `gh pr list`, any state, any
-  author — a community auto-updater opens most of them since 2026-08) to
+  author — a community auto-updater opens most of them since 2026-08 — and
+  only those changing `manifests/t/Thurbeen/thurbox/`) to
   `packaging/winget/submit-decision.py decide`, which **skips green** with a
   `::warning::` while one is still **open** — wingetcreate cannot update a
   pending PR, so a second would only lengthen the queue — and also honours
   `THROTTLE_DAYS`, kept as a knob but **defaulted to `0`** (set 30 to restore the
   monthly window).
-  Before `submit`, `gh repo sync <account>/winget-pkgs --source
-  microsoft/winget-pkgs` brings the token account's fork up to date —
+  Before `submit`, `packaging/winget/sync-fork.ps1` runs `gh repo sync
+  <account>/winget-pkgs --source microsoft/winget-pkgs`, which brings the token account's fork up to date —
   wingetcreate's own fast-forward-only auto-sync is what failed v2.19.6.
   A failed sync goes to `submit-decision.py after-sync` with the fork's
   ahead-of-upstream count: a token lacking the `workflow` scope (GitHub then
@@ -147,8 +148,9 @@ package channels (each gated on its secret, skipped on forks):
   channel with nothing. Anything else fails
   the job — but **`continue-on-error` is on the job**, so winget can never redden
   the Release run. (It was on the cleanup step alone before, which is why
-  v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers both
-  decisions and the manifest bump. As second-line cleanup for a PR that still
+  v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers the
+  three decisions, the manifest bump, and `sync-fork.ps1` itself under `pwsh`
+  against a fake `gh`. As second-line cleanup for a PR that still
   stacks (e.g. a manual dispatch), a follow-up `gh pr close` closes every older
   still-open `Thurbeen.thurbox` PR from the token account (wingetcreate's
   `--replace` only supersedes a *published* manifest version, not a pending PR;
