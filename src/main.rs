@@ -487,6 +487,8 @@ struct App {
     /// field is reset by every successful arrangement — which is once a frame —
     /// so a message sharing it was gone before it could be read.
     status: Option<(String, Level, Instant)>,
+    /// Boot can produce several notices; the one-line band shows each in turn.
+    startup_notices: std::collections::VecDeque<String>,
     /// Commands whose failure has already been reported, so the window in which
     /// a failure lingers for the panes does not re-raise it every poll.
     reported_failures: std::collections::HashSet<u64>,

@@ -406,13 +406,35 @@ mod windows {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
     use tokio::sync::Semaphore;
-    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, LocalFree, ERROR_INVALID_PARAMETER, STILL_ACTIVE,
+    };
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{
         SetFileSecurityW, DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
     };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    fn process_exited(pid: u32) -> bool {
+        if pid == 0 {
+            return true;
+        }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return io::Error::last_os_error().raw_os_error()
+                == Some(ERROR_INVALID_PARAMETER as i32);
+        }
+        let mut code = STILL_ACTIVE as u32;
+        let read = unsafe { GetExitCodeProcess(handle, &mut code) };
+        unsafe {
+            CloseHandle(handle);
+        }
+        read != 0 && code != STILL_ACTIVE as u32
+    }
 
     fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
         text.encode_wide().chain(std::iter::once(0)).collect()
@@ -703,6 +725,7 @@ mod windows {
             } else if ClientOptions::new()
                 .open(&instance.endpoint)
                 .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+                && process_exited(instance.pid)
             {
                 let _ = fs::remove_file(&path);
             }

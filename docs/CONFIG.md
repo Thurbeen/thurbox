@@ -1339,7 +1339,8 @@ peer UID check, or a local Windows named pipe with a current-user ACL and remote
 clients rejected. Requests are length-framed JSON, limited to 16 KiB and a
 bounded queue; each client has a two-second deadline. The interface does not
 listen on TCP. A CLI on another machine must be run on the TUI's host.
-If the local endpoint cannot start, the TUI still runs and shows a notice;
+If the local endpoint cannot start, the TUI still runs and shows a notice after
+other startup notices;
 `ui instances` will not list it.
 
 ## Versioning

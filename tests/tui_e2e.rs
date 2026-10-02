@@ -675,6 +675,7 @@ fn an_unavailable_control_socket_does_not_abort_the_tui() {
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_DATA_DIR", &long_data);
     });
+    tui.wait_for("interface from");
     tui.wait_for("No sessions yet");
     tui.wait_for("local UI control unavailable");
     assert!(tui.quit().success());

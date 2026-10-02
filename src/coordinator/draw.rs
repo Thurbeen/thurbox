@@ -428,6 +428,9 @@ impl App {
             .is_some_and(|(_, _, at)| at.elapsed() >= STATUS_TTL)
         {
             self.status = None;
+            if let Some(notice) = self.startup_notices.pop_front() {
+                self.toast(notice);
+            }
             self.changed_this_frame = true;
         }
 

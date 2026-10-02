@@ -232,7 +232,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         Ok(control) => Some(control),
         Err(error) => {
             tracing::warn!("local UI control unavailable: {error}");
-            startup_notices.insert(0, format!("local UI control unavailable: {error}"));
+            startup_notices.push(format!("local UI control unavailable: {error}"));
             None
         }
     };
@@ -313,6 +313,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         layout_error: None,
         floor: None,
         status: None,
+        startup_notices: startup_notices.into(),
         reported_failures: std::collections::HashSet::new(),
         tracked_commands: std::collections::HashMap::new(),
         band_targets: Vec::new(),
@@ -365,8 +366,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     app.startup.ui_build_ms = ui_phase.elapsed().as_millis() as u64;
     // Non-empty only on a profile's first wire-up or on a failure, so this is a
     // real signal rather than noise on every launch.
-    if let Some(notice) = startup_notices.first() {
-        app.toast(notice.clone());
+    if let Some(notice) = app.startup_notices.pop_front() {
+        app.toast(notice);
     }
 
     let terminal = ratatui::init();
