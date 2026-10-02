@@ -85,10 +85,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     const RETRY_NO_SERVER_ERROR: bool = false;
 
     /// Size arguments for the initial placeholder window.
-    const BOOTSTRAP_SIZE_ARGS: &'static [&'static str] = &["-x", "80", "-y", "24"];
+    const BOOTSTRAP_SIZE_ARGS: &[&str] = &["-x", "80", "-y", "24"];
 
     /// Read-only command used to check whether the session answers.
-    const SESSION_PROBE_COMMAND: &'static str = "has-session";
+    const SESSION_PROBE_COMMAND: &str = "has-session";
 
     /// Whether a one-shot `new-window -a -t <session>:{end} -P -F` appends the
     /// window last and answers with its pane — what the headless spawn stamps

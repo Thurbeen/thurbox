@@ -84,11 +84,11 @@ impl TmuxCompatible for Psmux {
 
     /// Supplying `-x/-y` prevents psmux from claiming its warm server. The
     /// placeholder's dimensions do not control agent windows.
-    const BOOTSTRAP_SIZE_ARGS: &'static [&'static str] = &[];
+    const BOOTSTRAP_SIZE_ARGS: &[&str] = &[];
 
     /// `has-session` deletes the port file on a refused connection even when
     /// the server is still starting. `list-windows` leaves it for that server.
-    const SESSION_PROBE_COMMAND: &'static str = "list-windows";
+    const SESSION_PROBE_COMMAND: &str = "list-windows";
 
     /// psmux's `new-window -P -F` support is unverified against the documented
     /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path
