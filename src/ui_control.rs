@@ -326,11 +326,7 @@ mod unix {
     pub fn instances() -> Result<Vec<Instance>, String> {
         let dir = secure_directory()?;
         let mut out = Vec::new();
-        for entry in fs::read_dir(dir)
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .take(128)
-        {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
             if entry.path().extension().map_or(true, |ext| ext != "json") {
                 continue;
             }
@@ -632,11 +628,7 @@ mod windows {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
-        for entry in fs::read_dir(dir)
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .take(128)
-        {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
             if entry.path().extension().map_or(true, |ext| ext != "json") {
                 continue;
             }

@@ -167,9 +167,9 @@ const GLOBAL_CHORDS: [(&str, &str); 24] = [
     ("ctrl+u", "restore.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
-    ("ctrl+/", "search.toggle"),
-    ("ctrl+7", "search.toggle"),
-    ("ctrl+_", "search.toggle"),
+    ("ctrl+/", "search.open"),
+    ("ctrl+7", "search.open"),
+    ("ctrl+_", "search.open"),
     ("ctrl+d", "sessions.delete"),
     ("ctrl+r", "sessions.restart"),
     ("ctrl+f", "sessions.fork"),

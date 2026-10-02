@@ -39,8 +39,7 @@ local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
 local NAME = "search"
-local OPEN = "search.toggle"
-local OPEN_API = "search.open"
+local OPEN = "search.open"
 local NEXT, PREVIOUS = "search.next", "search.previous"
 local PAGE_DOWN, PAGE_UP = "search.page_down", "search.page_up"
 local ACTIVATE, CANCEL = "search.activate", "search.cancel"
@@ -721,10 +720,6 @@ return {
     { key = "tab", action = SCOPE, desc = "search everything / text / names", group = "Search" },
     { key = "esc", action = CANCEL, desc = "close and put back", group = "Search" },
   },
-  commands = {
-    { action = OPEN_API, desc = "open search with a supplied query" },
-  },
-
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
     local search = load()
@@ -831,11 +826,7 @@ return {
   end,
 
   on_action = function(action, args)
-    -- Older keybinding overrides still name search.open and pass no query.
-    if action == OPEN_API and (type(args) ~= "table" or args.query == nil) then
-      action = OPEN
-    end
-    if action == OPEN_API then
+    if action == OPEN and type(args) == "table" and args.query ~= nil then
       local requested = args.query
       if type(requested) ~= "string" then
         return false

@@ -653,6 +653,141 @@ fn the_search_strip_opens_with_focus_in_it() {
 }
 
 #[test]
+fn a_saved_search_shortcut_opens_from_the_agent_pane() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"bindings":{"search.open":"ctrl+a"}}"#,
+    )
+    .expect("saved shortcut");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x01");
+    tui.wait_for("Search");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn an_unavailable_control_socket_does_not_abort_the_tui() {
+    let profile = Profile::new();
+    let long_data = profile.path("data").join("x".repeat(100));
+    std::fs::create_dir_all(&long_data).expect("long data path");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+    });
+    tui.wait_for("No sessions yet");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn stale_discovery_entries_do_not_hide_a_live_tui() {
+    let profile = Profile::new();
+    let directory = profile.path("data/ui-control");
+    std::fs::create_dir(&directory).expect("control directory");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+        .expect("private directory");
+    for index in 0..2048 {
+        std::fs::write(directory.join(format!("stale-{index:03}.json")), b"{}").expect("stale");
+    }
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let active = std::fs::read_dir(&directory)
+        .expect("discovery records")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| uuid::Uuid::parse_str(name).is_ok())
+        })
+        .expect("live record");
+    let mut next = 2048;
+    while std::fs::read_dir(&directory)
+        .expect("discovery entries")
+        .flatten()
+        .take(128)
+        .any(|entry| entry.path() == active)
+    {
+        assert!(
+            next < 8192,
+            "could not place the live record past stale entries"
+        );
+        for index in next..next + 512 {
+            std::fs::write(directory.join(format!("stale-{index:03}.json")), b"{}").expect("stale");
+        }
+        next += 512;
+    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("list");
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(value["instances"].as_array().unwrap().len(), 1);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_focus_refuses_a_tui_without_an_agent_pane() {
+    let Some((profile, mut first)) = shell_session() else {
+        return;
+    };
+    let agent = profile.path("config/ui/plugins/20_agent.lua");
+    std::fs::write(
+        profile.path("config/ui.json"),
+        serde_json::json!({"disabled": [agent]}).to_string(),
+    )
+    .expect("disable agent pane");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("probe");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let sessions = cmd
+        .args(["--json", "session", "list"])
+        .output()
+        .expect("sessions");
+    let rows: serde_json::Value = serde_json::from_slice(&sessions.stdout).expect("JSON");
+    let session = rows[0]["id"].as_str().expect("session id");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let instances = cmd
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("instances");
+    let listed: serde_json::Value = serde_json::from_slice(&instances.stdout).expect("JSON");
+    let target = listed["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["pid"] == tui.child.id())
+        .and_then(|entry| entry["id"].as_str())
+        .expect("target instance");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args([
+            "--json",
+            "ui",
+            "--instance",
+            target,
+            "action",
+            "session.focus",
+            "--session",
+            session,
+        ])
+        .output()
+        .expect("focus request");
+    assert!(
+        !output.status.success(),
+        "focus must refuse a missing agent pane"
+    );
+    assert!(tui.quit().success());
+    assert!(first.quit().success());
+}
+
+#[test]
 fn local_ui_control_targets_one_of_two_live_instances() {
     let Some((profile, mut first)) = shell_session() else {
         return;

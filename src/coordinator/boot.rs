@@ -228,8 +228,16 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let themes = Themes::load(snapshots_db().as_ref());
     startup.theme_activate_ms = phase.elapsed().as_millis() as u64;
 
+    let control = match thurbox::ui_control::Server::start() {
+        Ok(control) => Some(control),
+        Err(error) => {
+            tracing::warn!("local UI control unavailable: {error}");
+            startup_notices.push(format!("local UI control unavailable: {error}"));
+            None
+        }
+    };
     let mut app = App {
-        control: thurbox::ui_control::Server::start().map_err(std::io::Error::other)?,
+        control,
         control_revision: 0,
         control_observed: None,
         host,

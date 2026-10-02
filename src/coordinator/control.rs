@@ -7,7 +7,11 @@ use crate::App;
 
 impl App {
     pub(crate) fn serve_ui_control(&mut self) {
-        while let Ok(pending) = self.control.pending.try_recv() {
+        while let Some(pending) = self
+            .control
+            .as_ref()
+            .and_then(|control| control.pending.try_recv().ok())
+        {
             if std::time::Instant::now() > pending.deadline {
                 continue;
             }
@@ -25,7 +29,13 @@ impl App {
                 },
             };
             let _ = pending.reply.send(Reply {
-                instance_id: self.control.instance.id.clone(),
+                instance_id: self
+                    .control
+                    .as_ref()
+                    .expect("control server")
+                    .instance
+                    .id
+                    .clone(),
                 request_id: pending.request_id,
                 revision: self.control_revision,
                 result,
@@ -48,7 +58,7 @@ impl App {
             self.control_observed = Some(observed);
         }
         json!({
-            "instance_id": self.control.instance.id,
+            "instance_id": self.control.as_ref().expect("control server").instance.id,
             "revision": self.control_revision,
             "focused_pane": pane,
             "selected_session": selected,
@@ -80,6 +90,13 @@ impl App {
                         "session_not_found",
                         "session is not in this interface".into(),
                     ));
+                }
+                let agent = self
+                    .host
+                    .index_of("agent")
+                    .ok_or(("unavailable", "agent pane is not loaded".into()))?;
+                if !self.host.focusable().contains(&agent) {
+                    return Err(("unavailable", "agent pane cannot take focus".into()));
                 }
                 self.host.set_shared_string("selected", id);
                 self.focus_on_session(id);

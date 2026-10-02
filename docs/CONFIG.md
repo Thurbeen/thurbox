@@ -1327,7 +1327,8 @@ thurbox-cli ui --instance <id> action session.focus --session <session-uuid> --j
 thurbox-cli ui --instance <id> action search.open --query 'error handling' --json
 ```
 
-`session.focus` requires a session visible to the target TUI. `search.open`
+`session.focus` requires a session visible to the target TUI and a focusable
+agent pane. `search.open`
 opens the strip and sets its query; calling it again replaces the query without
 closing the strip. The reply comes from the target's event loop after it applies
 or refuses the action. The older `session focus` command still uses its shared
@@ -1338,6 +1339,8 @@ peer UID check, or a local Windows named pipe with a current-user ACL and remote
 clients rejected. Requests are length-framed JSON, limited to 16 KiB and a
 bounded queue; each client has a two-second deadline. The interface does not
 listen on TCP. A CLI on another machine must be run on the TUI's host.
+If the local endpoint cannot start, the TUI still runs and shows a notice;
+`ui instances` will not list it.
 
 ## Versioning
 

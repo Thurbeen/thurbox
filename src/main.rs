@@ -244,7 +244,7 @@ struct TrackedCommand {
 
 struct App {
     /// The private endpoint owned by this running interface.
-    control: UiControlServer,
+    control: Option<UiControlServer>,
     control_revision: u64,
     control_observed: Option<(Option<String>, Option<String>, Option<String>)>,
     host: LuaHost,
