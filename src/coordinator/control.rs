@@ -504,8 +504,11 @@ impl App {
                 "session terminals require an addressed session input operation".into(),
             ));
         }
-        let active =
-            self.grabbed == Some(index) || self.host.focusable().get(self.focus) == Some(&index);
+        let active = if let Some(grabbed) = self.grabbed {
+            grabbed == index
+        } else {
+            self.host.focusable().get(self.focus) == Some(&index)
+        };
         if !active {
             return Err(("unavailable", "plugin does not own input now".into()));
         }

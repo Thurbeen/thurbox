@@ -396,7 +396,8 @@ fn check() -> Result<CommandOutput, String> {
             continue;
         }
         for handler in host.raw_gesture_handlers(index) {
-            if handler == "on_key" && plugin.session_input {
+            // Key and wheel handlers have explicit addressed input operations.
+            if handler == "on_key" || handler == "on_scroll" {
                 continue;
             }
             warnings.push(json!({
@@ -441,15 +442,49 @@ fn check() -> Result<CommandOutput, String> {
     let menu = regex::Regex::new(r#"label\s*=\s*"[^"]+"\s*,\s*action\s*=\s*"([a-z][a-z0-9_.]*)""#)
         .expect("menu pattern");
     let clicked = regex::Regex::new(r#"action:([a-z][a-z0-9_.]*)"#).expect("click pattern");
+    let concatenated =
+        regex::Regex::new(r#"role\s*=\s*['"]action:['"]\s*\.\.\s*([A-Za-z_][A-Za-z0-9_]*)"#)
+            .expect("concatenated click pattern");
+    let quoted = regex::Regex::new(r#"['"]([^'"]+)['"]"#).expect("string pattern");
     for plugin in &host.plugins {
         let Ok(source) = std::fs::read_to_string(dir.join(&plugin.path)) else {
             continue;
         };
-        for name in menu
+        let mut constants = std::collections::BTreeMap::new();
+        for line in source.lines() {
+            let Some((names, values)) = line
+                .trim()
+                .strip_prefix("local ")
+                .and_then(|s| s.split_once('='))
+            else {
+                continue;
+            };
+            let names: Vec<_> = names.split(',').map(str::trim).collect();
+            let values: Vec<_> = quoted
+                .captures_iter(values)
+                .map(|row| row[1].to_string())
+                .collect();
+            if names.len() == values.len() {
+                constants.extend(names.into_iter().zip(values));
+            }
+        }
+        let mut used: Vec<String> = menu
             .captures_iter(&source)
             .chain(clicked.captures_iter(&source))
             .map(|hit| hit[1].to_string())
-        {
+            .collect();
+        for hit in concatenated.captures_iter(&source) {
+            let variable = &hit[1];
+            if let Some(name) = constants.get(variable) {
+                used.push(name.clone());
+            } else {
+                warnings.push(json!({
+                    "file": plugin.path,
+                    "warning": format!("constructed click action {variable} cannot be advertised; declare a constant action name"),
+                }));
+            }
+        }
+        for name in used {
             if name.contains('.') && !advertised.contains(name.as_str()) {
                 warnings.push(json!({
                     "file": plugin.path,

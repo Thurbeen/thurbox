@@ -924,6 +924,18 @@ fn search_cancel_has_the_same_effect_by_key_and_local_action() {
     ]);
     assert!(status.success());
     tui.wait_for("Search");
+    let (status, refused) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "sessions",
+        "--input-text",
+        "wrong target",
+    ]);
+    assert!(
+        !status.success(),
+        "addressed text cannot reach another pane: {refused}"
+    );
     let (status, _) = cli(&[
         "--instance",
         instance,
@@ -936,6 +948,26 @@ fn search_cancel_has_the_same_effect_by_key_and_local_action() {
     let (status, state) = cli(&["--instance", instance, "state"]);
     assert!(status.success());
     assert_eq!(state["search_query"], "hello");
+    let (status, _) = cli(&["--instance", instance, "action", "new_session.open"]);
+    assert!(status.success());
+    let (status, refused) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "search",
+        "--input-text",
+        "wrong target",
+    ]);
+    assert!(!status.success(), "a float owns typed input: {refused}");
+    let (status, _) = cli(&[
+        "--instance",
+        instance,
+        "input",
+        "new_session",
+        "--key",
+        "esc",
+    ]);
+    assert!(status.success());
     let (status, _) = cli(&["--instance", instance, "input", "search", "--key", "esc"]);
     assert!(status.success());
     let (status, _) = cli(&["--instance", instance, "action", "help.open"]);

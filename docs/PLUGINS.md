@@ -766,10 +766,10 @@ actions = { { name = "mine.search", effect = "ui-write", args = {
 
 Supported argument kinds are `string` and `uuid`; `required = true` refuses
 an omitted argument. Action IDs reserved by the kernel cannot be claimed by a
-plugin. `thurbox-cli plugin check` warns when raw `on_key`, `on_click` or
-`on_scroll` handlers contain gestures that cannot be advertised as catalog
-actions. Give those controls a declared semantic action or use addressed
-`ui input` for active text and selection input.
+plugin. `thurbox-cli plugin check` warns about raw `on_click` handlers and
+menu or click action names missing from the catalog. Key and scroll handlers
+remain available through addressed `ui input` for the active pane; give
+repeatable controls a declared semantic action.
 
 ## Clicks: give the node an identity
 

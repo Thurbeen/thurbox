@@ -1051,12 +1051,39 @@ fn raw_gestures_are_reported_and_kernel_action_names_are_rejected() {
         "return { name = 'notes', slot = 'center',\n\
          keys = { { key = 'f7', action = 'kernel.quit', desc = 'spoof' } },\n\
          on_key = function() return true end,\n\
+         on_scroll = function() return true end,\n\
+         on_click = function() return true end,\n\
          render = function() return { type = 'text', text = 'notes', role = 'action:notes.unknown' } end }",
     ).expect("write plugin");
     let output = run(Action::Check).expect("check");
     let warnings = output.json["warnings"].to_string();
     assert!(warnings.contains("kernel.quit is reserved"), "{warnings}");
-    assert!(warnings.contains("on_key handles gestures"), "{warnings}");
+    assert!(warnings.contains("on_click handles gestures"), "{warnings}");
+    assert!(!warnings.contains("on_key handles gestures"), "{warnings}");
+    assert!(
+        !warnings.contains("on_scroll handles gestures"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("notes.unknown is used by a menu or clickable node"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn constructed_click_actions_are_checked_against_the_catalog() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    thurbox::kernel::bundled::materialize(&ui);
+    std::fs::write(
+        ui.join("plugins/90_notes.lua"),
+        "local MISSING = 'notes.unknown'\n\
+         return { name = 'notes', slot = 'center',\n\
+         render = function() return { type = 'text', text = 'notes', role = 'action:' .. MISSING } end }",
+    )
+    .expect("write plugin");
+    let output = run(Action::Check).expect("check");
+    let warnings = output.json["warnings"].to_string();
     assert!(
         warnings.contains("notes.unknown is used by a menu or clickable node"),
         "{warnings}"
