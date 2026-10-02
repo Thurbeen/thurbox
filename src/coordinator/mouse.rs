@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use thurbox::kernel::bands;
 use thurbox::kernel::host::{Click, Scroll};
-use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::node::{ClickVerb, Identity};
 use thurbox::kernel::selection::{PaneBounds, Selection, TermPos};
 
@@ -493,42 +491,25 @@ impl App {
 
     /// Run a declared action, on the plugin that declared it.
     ///
-    /// The registry already maps action → owner, so a pill can name an action
-    /// belonging to a pane it has never heard of — which is exactly what the
-    /// footer does. Falling back to the clicked plugin covers an action a
-    /// plugin handles without declaring a key for it.
-    pub(crate) fn run_clicked_action(&mut self, action: &str, clicked: usize) {
-        // Quit is reserved rather than declared, so it has no binding for the
-        // registry lookup below to resolve: the band carries the entry itself
-        // and the press lands here. The mouse half of `dispatch_reserved`.
-        if action == bands::QUIT_ACTION {
-            self.quit = true;
-            return;
-        }
-        // The footer names these by action, as it names a pane's — so a pill
-        // reaches a modal the same way its chord does.
-        if let Some(kind) = ModalKind::from_action(action) {
-            self.toggle_modal(kind);
-            return;
-        }
-        // A chord-less palette command has an owner too, and it is the only
-        // way one pane can ask another to act on something it cannot bind a
-        // key to — the search strip asking the agent pane to scroll to a hit.
-        let owner = self
+    /// The catalog maps action to owner, so a button may name another pane's
+    /// action without guessing which plugin will handle it.
+    pub(crate) fn run_clicked_action(&mut self, action: &str, _clicked: usize) {
+        let Some(descriptor) = self
             .registry
-            .bindings()
-            .iter()
-            .find(|binding| binding.action == action)
-            .map(|binding| binding.plugin.as_str())
-            .or_else(|| {
-                self.registry
-                    .commands()
-                    .iter()
-                    .find(|command| command.action == action)
-                    .map(|command| command.plugin.as_str())
-            })
-            .and_then(|plugin| self.host.index_of(plugin))
-            .unwrap_or(clicked);
+            .action_catalog()
+            .into_iter()
+            .find(|entry| entry.name == action)
+        else {
+            self.toast(format!("no catalog action named {action:?}"));
+            return;
+        };
+        if descriptor.owner == "kernel" {
+            self.run_kernel_action(action);
+            return;
+        }
+        let Some(owner) = self.host.index_of(&descriptor.owner) else {
+            return;
+        };
         if let Err(e) = self.host.on_action(owner, action) {
             self.errors.push(e);
         }

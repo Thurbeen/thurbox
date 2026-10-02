@@ -2560,5 +2560,11 @@ the ephemeral interface drawing it.
 session there; `search.open` sets a query through the loaded search plugin and
 is idempotent. `ui state` reports focus, selection and query. Lua action handlers
 may receive a read-only typed argument table as a second parameter; existing
-one-parameter handlers continue to work. The broader catalog, UI event stream
-and destructive actions remain separate work.
+one-parameter handlers continue to work. The runtime action catalog combines
+kernel shortcuts with loaded plugin bindings and commands. The same descriptors
+drive the palette, `ui actions`, and `schema`; local action requests validate
+arguments and availability before invoking the owner. Addressed `ui input`
+handles active modal and plugin text, keys and scroll without forwarding terminal
+bytes. Destructive actions refuse external invocation pending a shared
+confirmation service. The UI event stream and full destructive control remain
+separate work.

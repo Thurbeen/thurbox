@@ -18,8 +18,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::chrome::{self, Chrome, Hits, Pill, Replay};
-use super::{ModalKind, OWNER};
-use crate::kernel::registry::{PaletteRow, Registry, QUIT_CHORD};
+use super::ModalKind;
+use crate::kernel::registry::{PaletteRow, Registry};
 
 /// Non-list rows the modal always spends: both borders, the query line, the
 /// footer and one spacer.
@@ -51,28 +51,36 @@ pub enum Outcome {
 
 /// Every row the palette offers, in listing order.
 ///
-/// The registry's rows, minus the palette's own chord (opening it from inside
-/// itself is not an action anyone means), plus the two reserved chords that no
-/// binding backs.
+/// The live catalog supplies rows, including reserved kernel actions. The
+/// palette omits actions that need arguments or would reopen itself.
 pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
-    let mut rows: Vec<PaletteRow> = registry
-        .palette_rows()
+    let mut actions: Vec<_> = registry
+        .action_catalog()
         .into_iter()
-        .filter(|row| row.action != ModalKind::Palette.action())
+        .filter(|action| {
+            action.name != ModalKind::Palette.action()
+                && action.name != "core.quit"
+                && action.name != "session.focus"
+                && action.name != "kernel.focus_previous"
+                && action.name != "kernel.focus_next"
+                && action.name != "kernel.perf_hud"
+                && !action.arguments.iter().any(|argument| argument.required)
+        })
         .collect();
-    rows.push(PaletteRow {
-        plugin: OWNER.to_string(),
-        action: RELOAD_ACTION.to_string(),
-        description: "reload the interface from disk".to_string(),
-        chords: Some("f10".to_string()),
+    actions.sort_by_key(|action| match action.name.as_str() {
+        "kernel.reload" => 1,
+        "kernel.quit" => 2,
+        _ => 0,
     });
-    rows.push(PaletteRow {
-        plugin: OWNER.to_string(),
-        action: QUIT_ACTION.to_string(),
-        description: "quit (sessions keep running)".to_string(),
-        chords: Some(QUIT_CHORD.to_string()),
-    });
-    rows
+    actions
+        .into_iter()
+        .map(|action| PaletteRow {
+            plugin: action.owner,
+            action: action.name,
+            description: action.description,
+            chords: (!action.chords.is_empty()).then(|| action.chords.join(" / ")),
+        })
+        .collect()
 }
 
 /// Subsequence match, case-folded: the query's characters in order, not

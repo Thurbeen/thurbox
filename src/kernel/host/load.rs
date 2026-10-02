@@ -11,7 +11,8 @@ use super::{
 };
 use crate::kernel::node::Size;
 use crate::kernel::registry::{
-    binding_from, Binding, CommandDecl, Pill, Setting, Value as SettingValue,
+    binding_from, ActionArgument, ActionDecl, Binding, CommandDecl, Pill, Scope, Setting,
+    Value as SettingValue,
 };
 
 /// Build a VM with the deliberate stdlib set and the memory ceiling.
@@ -131,6 +132,9 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
                 .map(|(_, rest)| rest.to_string())
                 .unwrap_or_else(|| file.clone())
         });
+    if name == "kernel" {
+        return Err(format!("{file}.name: kernel is reserved"));
+    }
 
     let slot: String = def
         .get::<Option<String>>("slot")
@@ -188,6 +192,7 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
     let _: Option<mlua::Function> = def
         .get("ui_state")
         .map_err(|e| format!("{file}.ui_state: {e}"))?;
+    let actions = read_actions(&def, &name)?;
 
     // A decorator transforms another pane's tree and draws nothing of its own,
     // so requiring `render` of one would mean writing a stub that returns
@@ -216,8 +221,105 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
         capabilities,
         events,
         commands,
+        actions,
         def,
     })
+}
+
+fn read_actions(def: &Table, plugin: &str) -> Result<Vec<ActionDecl>, String> {
+    let raw: Option<Table> = def
+        .get("actions")
+        .map_err(|e| format!("{plugin}.actions: {e}"))?;
+    let Some(list) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (index, row) in list.sequence_values::<Table>().enumerate() {
+        let row = row.map_err(|e| format!("{plugin}.actions[{}]: {e}", index + 1))?;
+        let name: String = row
+            .get("name")
+            .map_err(|e| format!("{plugin}.actions[{}].name: {e}", index + 1))?;
+        if name.is_empty()
+            || crate::kernel::registry::protected_action(&name)
+            || out.iter().any(|entry: &ActionDecl| entry.name == name)
+        {
+            return Err(format!(
+                "{plugin}.actions[{}]: invalid or kernel-owned name",
+                index + 1
+            ));
+        }
+        let effect: String = row
+            .get::<Option<String>>("effect")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "ui-write".into());
+        if !matches!(effect.as_str(), "read" | "ui-write" | "kernel-write") {
+            return Err(format!(
+                "{plugin}.actions[{}]: unknown effect {effect}",
+                index + 1
+            ));
+        }
+        let scope = match row
+            .get::<Option<String>>("scope")
+            .map_err(|e| e.to_string())?
+            .as_deref()
+        {
+            Some("global") => Scope::Global,
+            Some("plugin") | None => Scope::Plugin,
+            Some(other) => {
+                return Err(format!(
+                    "{plugin}.actions[{}]: unknown scope {other}",
+                    index + 1
+                ))
+            }
+        };
+        let mut arguments = Vec::new();
+        if let Some(args) = row
+            .get::<Option<Table>>("args")
+            .map_err(|e| e.to_string())?
+        {
+            for (position, argument) in args.sequence_values::<Table>().enumerate() {
+                let argument = argument.map_err(|e| e.to_string())?;
+                let arg_name: String = argument.get("name").map_err(|e| e.to_string())?;
+                let kind: String = argument.get("kind").map_err(|e| e.to_string())?;
+                if arg_name.is_empty()
+                    || !matches!(kind.as_str(), "string" | "uuid")
+                    || arguments
+                        .iter()
+                        .any(|arg: &ActionArgument| arg.name == arg_name)
+                {
+                    return Err(format!(
+                        "{plugin}.actions[{}].args[{}]: invalid argument",
+                        index + 1,
+                        position + 1
+                    ));
+                }
+                arguments.push(ActionArgument {
+                    name: arg_name,
+                    kind,
+                    required: argument
+                        .get::<Option<bool>>("required")
+                        .map_err(|e| e.to_string())?
+                        .unwrap_or(false),
+                });
+            }
+        }
+        out.push(ActionDecl {
+            plugin: plugin.into(),
+            name,
+            description: row
+                .get::<Option<String>>("desc")
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default(),
+            scope,
+            arguments,
+            effect,
+            destructive: row
+                .get::<Option<bool>>("destructive")
+                .map_err(|e| e.to_string())?
+                .unwrap_or(false),
+        });
+    }
+    Ok(out)
 }
 
 /// Read `events = { "session.status", … }` off a declaration.

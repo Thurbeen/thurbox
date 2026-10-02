@@ -116,6 +116,57 @@ fn host() -> LuaHost {
     host
 }
 
+#[test]
+fn shipped_operator_actions_have_catalog_descriptors_and_handlers() {
+    let host = host();
+    let mut registry = Registry::default();
+    thurbox::kernel::declare_interface(&mut registry, &host);
+    let catalog = registry.action_catalog();
+    let by_name = |name: &str| catalog.iter().find(|entry| entry.name == name);
+    for binding in registry.bindings() {
+        let descriptor = by_name(&binding.action)
+            .unwrap_or_else(|| panic!("missing key action {}", binding.action));
+        assert_eq!(
+            descriptor.owner, binding.plugin,
+            "{} changed owner",
+            binding.action
+        );
+    }
+    for command in registry.commands() {
+        let descriptor = by_name(&command.action)
+            .unwrap_or_else(|| panic!("missing palette action {}", command.action));
+        assert_eq!(descriptor.owner, command.plugin);
+    }
+    for pill in registry.pills() {
+        assert!(
+            by_name(&pill.action).is_some(),
+            "missing button action {}",
+            pill.action
+        );
+    }
+    for (_, name, _) in thurbox::kernel::registry::RESERVED_ACTIONS {
+        assert!(by_name(name).is_some(), "missing reserved action {name}");
+    }
+    for descriptor in &catalog {
+        if descriptor.owner != "kernel" {
+            let index = host
+                .index_of(&descriptor.owner)
+                .expect("action owner loaded");
+            assert!(
+                host.action_handler_present(index),
+                "{} has no on_action handler",
+                descriptor.name
+            );
+        }
+    }
+    for declaration in host.action_declarations() {
+        let descriptor = by_name(&declaration.name)
+            .unwrap_or_else(|| panic!("missing declared action {}", declaration.name));
+        assert_eq!(descriptor.owner, declaration.plugin);
+        assert_eq!(descriptor.arguments, declaration.arguments);
+    }
+}
+
 fn row(name: &str, repo: &str, status: &str) -> SessionRow {
     SessionRow {
         id: format!("{name}-0000-0000-0000-000000000000"),

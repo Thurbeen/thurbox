@@ -296,6 +296,12 @@ pub enum Command {
         #[command(subcommand)]
         action: ui::Action,
     },
+    /// Describe CLI commands and the selected interface's live actions.
+    Schema {
+        /// Select a particular running interface.
+        #[arg(long)]
+        instance: Option<String>,
+    },
     /// Whether this machine has what a session needs: the multiplexer, each
     /// registered agent's command, and the launcher for every configured host.
     ///
@@ -535,6 +541,7 @@ fn dispatch(
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action)?,
         Command::Ui { instance, action } => ui::run(instance, action)?,
+        Command::Schema { instance } => ui::schema(instance)?,
         // Reads the machine, not the database: what is installed is not
         // something thurbox recorded.
         Command::Doctor => doctor::run()?,

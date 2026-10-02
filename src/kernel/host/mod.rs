@@ -30,7 +30,7 @@ use super::convert;
 use super::events::{Event, Field};
 use super::layout::{Region, SlotMode};
 use super::node::{Node, Size};
-use super::registry::{Binding, CommandDecl, Pill, Registry, Setting};
+use super::registry::{ActionDecl, Binding, CommandDecl, Pill, Registry, Setting};
 use super::snapshot::Snapshot;
 use super::theme::Themes;
 
@@ -257,6 +257,7 @@ pub struct Plugin {
     pub events: Vec<String>,
     /// Actions this plugin wants reachable without a chord — the palette's rows.
     pub commands: Vec<CommandDecl>,
+    pub actions: Vec<ActionDecl>,
     order: f64,
     def: Table,
 }
@@ -1068,6 +1069,24 @@ impl LuaHost {
         self.on_action_with_args(index, action, &[])
     }
 
+    /// Handler presence is checked without invoking user code. A gesture with
+    /// no action handler cannot be promised through the external catalog.
+    pub fn action_handler_present(&self, index: usize) -> bool {
+        self.plugins.get(index).is_some_and(|plugin| {
+            matches!(plugin.def.get::<Value>("on_action"), Ok(Value::Function(_)))
+        })
+    }
+
+    pub fn raw_gesture_handlers(&self, index: usize) -> Vec<&'static str> {
+        let Some(plugin) = self.plugins.get(index) else {
+            return Vec::new();
+        };
+        ["on_key", "on_click", "on_scroll"]
+            .into_iter()
+            .filter(|name| matches!(plugin.def.get::<Value>(*name), Ok(Value::Function(_))))
+            .collect()
+    }
+
     /// Pass a validated, typed argument table to a plugin action. Existing
     /// one-argument Lua handlers ignore the second argument.
     pub fn on_action_with_args(
@@ -1149,6 +1168,13 @@ impl LuaHost {
         self.plugins
             .iter()
             .flat_map(|plugin| plugin.commands.iter().cloned())
+            .collect()
+    }
+
+    pub fn action_declarations(&self) -> Vec<ActionDecl> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.actions.iter().cloned())
             .collect()
     }
 

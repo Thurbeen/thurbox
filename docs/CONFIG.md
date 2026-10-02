@@ -1335,7 +1335,15 @@ per-instance buffer holds 256 deltas; an expired or future cursor yields a
 a JSON document for polling callers. This stream is UI state only;
 `thurbox-cli watch` continues to stream durable session events.
 
-The first two actions are:
+
+List the target's live actions and their argument types, ownership, effect,
+destructive classification, availability and current chords with
+`thurbox-cli ui --instance <id> actions --json`. `thurbox-cli schema --instance
+<id> --json` includes those same descriptors beside the CLI command tree.
+Both read the running interface, so reloading a plugin updates them together.
+When no TUI is running, `schema` marks its UI portion `no_running_ui` and still
+lists headless CLI commands. With several running TUIs, select one explicitly.
+The two initial typed actions are:
 
 ```sh
 thurbox-cli ui --instance <id> action session.focus --session <session-uuid> --json
@@ -1348,6 +1356,16 @@ opens the strip and sets its query; calling it again replaces the query without
 closing the strip. The reply comes from the target's event loop after it applies
 or refuses the action. The older `session focus` command still uses its shared
 notification request and does not select a TUI instance.
+
+Any non-destructive declared action can be called by its catalog name. Use
+`--arg name=value` for an argument; `--session` and `--query` remain shortcuts
+for the first two actions. Destructive actions return a structured
+`confirmation_required` refusal until shared external confirmation is available.
+For input owned by an active modal or plugin, use addressed operations such as
+`thurbox-cli ui --instance <id> input modal --key esc`,
+`input search --input-text 'term'`, or `input agent --scroll down`. These operations
+refuse an inactive target. Keys and text are refused for session terminals;
+agent terminal bytes stay on the session input path.
 
 The control channel is a Unix socket in a user-owned `0700` directory with a
 peer UID check, or a local Windows named pipe with a current-user ACL and remote

@@ -297,34 +297,35 @@ impl App {
     /// for the same reason.
     pub(crate) fn dispatch_reserved(&mut self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('q') if ctrl => self.quit = true,
-            // F10, not F5: v1 spends F1-F9 and F12 on real UI (F5 is the tasks
-            // panel), so the dev reload takes one of the two keys v1 leaves
-            // free rather than shadowing a pane the user expects.
-            KeyCode::F(10) => self.reload_by_key(),
-            // Tab is NOT a focus key: it belongs to the agent. See RESERVED.
-            // v1 binds focus movement to Ctrl+H/Ctrl+L as well, and refuses to
-            // let a focused terminal keep either: they are how you get *out* of
-            // one, so they cannot be among the chords handed to the agent.
-            KeyCode::Char('h') if ctrl => self.cycle_focus(-1),
-            KeyCode::Char('l') if ctrl => self.cycle_focus(1),
-            // The HUD reports on this loop, so it is the kernel's own key rather
-            // than a plugin's — nothing a plugin does can hide it. v1 spends F12
-            // on the same thing for the same reason.
-            // The one reserved key that is a *feature*: v1 gates the HUD behind
-            // `[features] perf_hud` because opening it also turns on wall-clock
-            // timing collection, which is not free.
-            KeyCode::F(12) if self.config.features().perf_hud => {
+        let action = match key.code {
+            KeyCode::Char('q') if ctrl => "core.quit",
+            KeyCode::F(10) => "kernel.reload",
+            KeyCode::Char('h') if ctrl => "kernel.focus_previous",
+            KeyCode::Char('l') if ctrl => "kernel.focus_next",
+            KeyCode::F(12) => "kernel.perf_hud",
+            _ => return false,
+        };
+        self.run_kernel_action(action)
+    }
+
+    pub(crate) fn run_kernel_action(&mut self, action: &str) -> bool {
+        match action {
+            "core.quit" | "kernel.quit" => self.quit = true,
+            "kernel.reload" => self.reload_by_key(),
+            "kernel.focus_previous" => self.cycle_focus(-1),
+            "kernel.focus_next" => self.cycle_focus(1),
+            "kernel.perf_hud" if self.config.features().perf_hud => {
                 self.hud = !self.hud;
                 self.dirty = true;
             }
-            // Copy and paste are NOT here: they are declared bindings owned by
-            // the kernel (`kernel::clipboard`), so help lists them, the palette
-            // offers them and they can be rebound — including onto `Cmd+C` on a
-            // Mac, where `Ctrl+C` is spent on interrupt. `dispatch_clipboard`,
-            // immediately below this in the order, runs them.
-            _ => return false,
+            "kernel.perf_hud" => return false,
+            _ => {
+                if let Some(kind) = ModalKind::from_action(action) {
+                    self.toggle_modal(kind);
+                } else {
+                    return self.run_clipboard_action(action).unwrap_or(false);
+                }
+            }
         }
         true
     }
@@ -615,6 +616,18 @@ impl App {
     /// the action sees the focus state a key press would have seen.
     pub(crate) fn run_action(&mut self, plugin: &str, action: &str) {
         self.dirty = true;
+        if !self
+            .registry
+            .action_catalog()
+            .iter()
+            .any(|descriptor| descriptor.name == action && descriptor.owner == plugin)
+        {
+            self.report(
+                format!("no catalog action named {action:?} for {plugin:?}"),
+                Level::Error,
+            );
+            return;
+        }
         if plugin == thurbox::kernel::modals::OWNER {
             if let Some(kind) = ModalKind::from_action(action) {
                 self.toggle_modal(kind);

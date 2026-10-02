@@ -1,4 +1,4 @@
-//! Keys and settings, declared by plugins and collected in one place.
+//! Keys, actions and settings, declared by plugins and collected in one place.
 //!
 //! Coherence has to be a property of the API, not a request in
 //! the docs. A plugin declares its keys and settings as *data*, so the kernel
@@ -10,6 +10,7 @@
 //! routes. It renders nothing: help and settings are plugins reading what was
 //! collected.
 
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -209,6 +210,83 @@ pub const QUIT_CHORD: &str = "ctrl+q";
 // Ctrl+H/Ctrl+L, which v1 reserves for exactly this reason.
 pub const RESERVED: [&str; 5] = [QUIT_CHORD, "f10", "ctrl+h", "ctrl+l", "f12"];
 
+/// Kernel shortcuts have stable action names even though no Lua pane owns them.
+pub const RESERVED_ACTIONS: [(&str, &str, &str); 5] = [
+    (QUIT_CHORD, "core.quit", "quit the interface"),
+    ("f10", "kernel.reload", "reload the interface"),
+    ("ctrl+h", "kernel.focus_previous", "focus the previous pane"),
+    ("ctrl+l", "kernel.focus_next", "focus the next pane"),
+    ("f12", "kernel.perf_hud", "toggle the performance HUD"),
+];
+
+pub fn protected_action(name: &str) -> bool {
+    name.starts_with("kernel.")
+        || matches!(
+            name,
+            "core.quit"
+                | "session.focus"
+                | "help.open"
+                | "settings.open"
+                | "themes.open"
+                | "palette.open"
+        )
+        || name == super::clipboard::COPY_ACTION
+        || name == super::clipboard::PASTE_ACTION
+}
+
+fn default_effect(name: &str) -> &'static str {
+    match name {
+        "sessions.delete"
+        | "sessions.force_delete"
+        | "sessions.restart"
+        | "sessions.sync"
+        | "sessions.move_up"
+        | "sessions.move_down"
+        | "sessions.undo"
+        | "restore.restore" => "kernel-write",
+        _ => "ui-write",
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ActionArgument {
+    pub name: String,
+    pub kind: String,
+    pub required: bool,
+}
+
+/// The live UI action contract. All public catalog output is built from these
+/// descriptors, which also gate externally invoked actions.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ActionDescriptor {
+    pub name: String,
+    pub owner: String,
+    pub description: String,
+    pub scope: String,
+    pub arguments: Vec<ActionArgument>,
+    pub effect: String,
+    pub destructive: bool,
+    pub available: bool,
+    pub chords: Vec<String>,
+}
+
+impl ActionDescriptor {
+    pub fn argument(&self, name: &str) -> Option<&ActionArgument> {
+        self.arguments.iter().find(|argument| argument.name == name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDecl {
+    pub plugin: String,
+    pub name: String,
+    pub description: String,
+    pub scope: Scope,
+    pub arguments: Vec<ActionArgument>,
+    pub effect: String,
+    pub destructive: bool,
+}
+
 /// Everything declared, plus what the user changed.
 #[derive(Default)]
 pub struct Registry {
@@ -217,6 +295,7 @@ pub struct Registry {
     pills: Vec<Pill>,
     /// Chord-less commands, declared for the palette.
     commands: Vec<CommandDecl>,
+    action_declarations: Vec<ActionDecl>,
     conflicts: Vec<Conflict>,
     /// Persisted overrides: action → chord.
     binding_overrides: BTreeMap<String, String>,
@@ -375,6 +454,14 @@ impl Registry {
         self.apply_overrides();
         self.conflicts.clear();
         self.detect_conflicts();
+    }
+
+    pub fn declare_action_metadata(&mut self, declarations: Vec<ActionDecl>) {
+        self.mark_changed();
+        self.action_declarations = declarations
+            .into_iter()
+            .filter(|entry| !protected_action(&entry.name))
+            .collect();
     }
 
     fn apply_overrides(&mut self) {
@@ -638,6 +725,154 @@ impl Registry {
     /// Every declared chord-less command, in declaration order.
     pub fn commands(&self) -> &[CommandDecl] {
         &self.commands
+    }
+
+    /// Resolve the action surface from effective bindings and palette rows.
+    /// Reload replaces both source lists before this is called, so a removed
+    /// plugin cannot leave stale catalog entries behind.
+    pub fn action_catalog(&self) -> Vec<ActionDescriptor> {
+        let mut actions = Vec::<ActionDescriptor>::new();
+        for (chord, name, description) in RESERVED_ACTIONS {
+            actions.push(ActionDescriptor {
+                name: name.into(),
+                owner: "kernel".into(),
+                description: description.into(),
+                scope: "global".into(),
+                arguments: Vec::new(),
+                effect: "ui-write".into(),
+                destructive: false,
+                available: true,
+                chords: vec![chord.into()],
+            });
+        }
+        actions.push(ActionDescriptor {
+            name: "kernel.quit".into(),
+            owner: "kernel".into(),
+            description: "quit (sessions keep running)".into(),
+            scope: "global".into(),
+            arguments: Vec::new(),
+            effect: "ui-write".into(),
+            destructive: false,
+            available: true,
+            chords: vec![QUIT_CHORD.into()],
+        });
+        for binding in &self.bindings {
+            if binding.plugin != "kernel" && binding.action.starts_with("kernel.") {
+                continue;
+            }
+            if let Some(existing) = actions
+                .iter_mut()
+                .find(|entry| entry.name == binding.action)
+            {
+                if existing.owner == binding.plugin {
+                    existing.chords.push(binding.chord.clone());
+                }
+                continue;
+            }
+            actions.push(ActionDescriptor {
+                name: binding.action.clone(),
+                owner: binding.plugin.clone(),
+                description: binding.description.clone(),
+                scope: binding.scope.as_str().into(),
+                arguments: Vec::new(),
+                effect: default_effect(&binding.action).into(),
+                destructive: matches!(
+                    binding.action.as_str(),
+                    "sessions.delete"
+                        | "sessions.force_delete"
+                        | "sessions.restart"
+                        | "sessions.sync"
+                ),
+                available: true,
+                chords: vec![binding.chord.clone()],
+            });
+        }
+        for command in &self.commands {
+            if command.plugin != "kernel" && command.action.starts_with("kernel.") {
+                continue;
+            }
+            if let Some(existing) = actions
+                .iter_mut()
+                .find(|entry| entry.name == command.action)
+            {
+                if existing.owner == command.plugin && existing.description.is_empty() {
+                    existing.description = command.description.clone();
+                }
+                continue;
+            }
+            actions.push(ActionDescriptor {
+                name: command.action.clone(),
+                owner: command.plugin.clone(),
+                description: command.description.clone(),
+                scope: "global".into(),
+                arguments: Vec::new(),
+                effect: default_effect(&command.action).into(),
+                destructive: matches!(
+                    command.action.as_str(),
+                    "sessions.delete"
+                        | "sessions.force_delete"
+                        | "sessions.restart"
+                        | "sessions.sync"
+                ),
+                available: true,
+                chords: Vec::new(),
+            });
+        }
+        if let Some(focus) = actions
+            .iter_mut()
+            .find(|entry| entry.name == "session.focus")
+        {
+            focus.arguments.push(ActionArgument {
+                name: "session_id".into(),
+                kind: "uuid".into(),
+                required: true,
+            });
+        } else {
+            actions.push(ActionDescriptor {
+                name: "session.focus".into(),
+                owner: "kernel".into(),
+                description: "focus a session in this interface".into(),
+                scope: "global".into(),
+                arguments: vec![ActionArgument {
+                    name: "session_id".into(),
+                    kind: "uuid".into(),
+                    required: true,
+                }],
+                effect: "ui-write".into(),
+                destructive: false,
+                available: true,
+                chords: Vec::new(),
+            });
+        }
+        for declaration in &self.action_declarations {
+            if let Some(existing) = actions
+                .iter_mut()
+                .find(|entry| entry.name == declaration.name)
+            {
+                if existing.owner != declaration.plugin {
+                    continue;
+                }
+                existing.arguments = declaration.arguments.clone();
+                existing.effect = declaration.effect.clone();
+                existing.destructive |= declaration.destructive;
+                if !declaration.description.is_empty() {
+                    existing.description = declaration.description.clone();
+                }
+            } else {
+                actions.push(ActionDescriptor {
+                    name: declaration.name.clone(),
+                    owner: declaration.plugin.clone(),
+                    description: declaration.description.clone(),
+                    scope: declaration.scope.as_str().into(),
+                    arguments: declaration.arguments.clone(),
+                    effect: declaration.effect.clone(),
+                    destructive: declaration.destructive,
+                    available: true,
+                    chords: Vec::new(),
+                });
+            }
+        }
+        actions
     }
 
     /// Everything the palette lists: one row per action, from the bindings and

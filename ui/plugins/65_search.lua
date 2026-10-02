@@ -697,6 +697,17 @@ return {
   -- instead, but a float would also cover the matches — see the header.
   focusable = true,
 
+  actions = {
+    {
+      name = OPEN,
+      desc = "open search with an optional query",
+      scope = "global",
+      args = {
+        { name = "query", kind = "string" },
+      },
+    },
+  },
+
   keys = {
     -- v1's chord. The kernel folds the three encodings terminals deliver it as
     -- (`ctrl+/`, `ctrl+7`, `ctrl+_`) into this one, so declaring it once is

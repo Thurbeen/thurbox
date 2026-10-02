@@ -50,9 +50,16 @@ pub mod watch;
 /// it exists for.
 pub fn declare_interface(registry: &mut registry::Registry, host: &host::LuaHost) {
     let (mut bindings, settings, mut pills) = host.all_declarations();
+    bindings.retain(|binding| !registry::protected_action(&binding.action));
     bindings.extend(modals::bindings());
     bindings.extend(clipboard::bindings());
     pills.extend(modals::pills());
     registry.declare_all(bindings, settings, pills);
-    registry.declare_commands(host.commands());
+    registry.declare_commands(
+        host.commands()
+            .into_iter()
+            .filter(|command| !registry::protected_action(&command.action))
+            .collect(),
+    );
+    registry.declare_action_metadata(host.action_declarations());
 }
