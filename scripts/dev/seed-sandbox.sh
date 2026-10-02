@@ -57,25 +57,29 @@ share_sessions = false
 TOML
 fi
 
+staged=''
+trap '[ -z "$staged" ] || rm -rf "$staged"' EXIT
 for name in web-app service-api docs-site; do
     repo="$TBX_SANDBOX_ROOT/repos/$name"
-    if [ ! -d "$repo/.git" ]; then
-        mkdir -p "$repo"
-        git -C "$repo" init -q -b main
-        git -C "$repo" config user.name 'Sandbox Example'
-        git -C "$repo" config user.email 'sandbox@example.invalid'
-        printf '# %s\n' "$name" > "$repo/README.md"
-        git -C "$repo" add README.md
-        git -C "$repo" commit -qm 'Initial example'
-        printf 'A second revision.\n' >> "$repo/README.md"
-        git -C "$repo" add README.md
-        git -C "$repo" commit -qm 'Add example content'
-        git -C "$repo" branch feature/demo
+    if [ ! -e "$repo" ]; then
+        staged="$(mktemp -d "$TBX_SANDBOX_ROOT/repos/.$name.XXXXXX")"
+        git -C "$staged" init -q -b main
+        git -C "$staged" config user.name 'Sandbox Example'
+        git -C "$staged" config user.email 'sandbox@example.invalid'
+        printf '# %s\n' "$name" > "$staged/README.md"
+        git -C "$staged" add README.md
+        git -C "$staged" commit -qm 'Initial example'
+        printf 'A second revision.\n' >> "$staged/README.md"
+        git -C "$staged" add README.md
+        git -C "$staged" commit -qm 'Add example content'
+        git -C "$staged" branch feature/demo
         remote="$TBX_SANDBOX_ROOT/remotes/$name.git"
         git init -q --bare "$remote"
-        git -C "$repo" remote add origin "$remote"
-        git -C "$repo" push -q -u origin main
-        printf 'Uncommitted example.\n' >> "$repo/README.md"
+        git -C "$staged" remote add origin "$remote"
+        git -C "$staged" push -q -u origin main
+        printf 'Uncommitted example.\n' >> "$staged/README.md"
+        mv "$staged" "$repo"
+        staged=''
     fi
 done
 
@@ -114,7 +118,13 @@ case "${1:-}" in
     -d) [ "${2:-}" = lab-wsl ] || exit 1; shift 2 ;;
     *) exit 1 ;;
 esac
-[ "${1:-}" = -- ] && shift
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --cd) [ "$#" -ge 2 ] || exit 2; cd "$2" || exit 1; shift 2 ;;
+        -e|--exec|--) shift; break ;;
+        *) break ;;
+    esac
+done
 export HOME="$TBX_SANDBOX_ROOT/mock-home"
 TMUX_TMPDIR="$TMUX_TMPDIR/lab-wsl"
 export TMUX_TMPDIR

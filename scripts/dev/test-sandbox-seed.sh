@@ -12,6 +12,20 @@ export TMUX_TMPDIR="$root/tmux"
 mkdir -p "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR"
 cargo build --quiet --bin thurbox-cli
 
+mkdir -p "$root/fail-bin"
+export REAL_GIT="$(command -v git)"
+cat > "$root/fail-bin/git" <<'SH'
+#!/bin/sh
+case " $* " in *" commit "*) exit 42 ;; esac
+exec "$REAL_GIT" "$@"
+SH
+chmod +x "$root/fail-bin/git"
+if PATH="$root/fail-bin:$PATH" "$(dirname "$0")/seed-sandbox.sh" >/dev/null 2>&1; then
+    echo 'expected the interrupted seed to fail' >&2
+    exit 1
+fi
+[ ! -e "$root/repos/web-app" ] || { echo 'failed seed published a partial repo' >&2; exit 1; }
+
 "$(dirname "$0")/seed-sandbox.sh"
 "$(dirname "$0")/seed-sandbox.sh"
 target/debug/thurbox-cli config validate >/dev/null
@@ -48,6 +62,7 @@ if (root / "mock-bin/ssh").exists():
     wsl = str(root / "mock-bin/wsl.exe")
     assert subprocess.check_output([wsl, "-l", "-q"], env=env) == b"lab-wsl\n"
     assert subprocess.check_output([wsl, "-d", "lab-wsl", "--", "printf", "wsl"], env=env) == b"wsl"
+    assert subprocess.check_output([wsl, "-d", "lab-wsl", "--cd", "/", "-e", "sh", "-c", "printf wsl"], env=env) == b"wsl"
     assert subprocess.check_output([wsl, "-d", "lab-wsl", "--", "sh", "-c", "printf $TMUX_TMPDIR"], env=env) == str(root / "tmux/lab-wsl").encode()
 print("sandbox seed: hosts, repositories, and bookmarks verified")
 PY
