@@ -713,9 +713,9 @@ jobs:
       # thurbox PR on winget-pkgs (any state, any author). It skips green when
       # one is still open, and when the newest is younger than THROTTLE_DAYS.
       # Any author, because a community auto-updater opens thurbox PRs there
-      # too, and its open PR is the same moderation-queue entry as ours. The rules and
-      # their edge cases are covered by packaging/winget/winget.bats — the
-      # reason this is a script and not inline PowerShell.
+      # too, and its open PR is the same moderation-queue entry as ours. The
+      # rules and their edge cases are covered by packaging/winget/winget.bats —
+      # the reason this is a script and not inline PowerShell.
       - name: Decide whether to submit
         id: decide
         if: env.WINGET_TOKEN != ''
@@ -803,6 +803,11 @@ jobs:
             Write-Host "::warning title=winget fork sync skipped::could not resolve the WINGET_TOKEN account; leaving the fork to wingetcreate."
             exit 0
           }
+          # A workflow command ends at the first newline, so gh's output is
+          # escaped the way the runner unescapes it before it goes in one.
+          function Escape-Annotation([string]$text) {
+            $text.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+          }
           $fork = "$account/winget-pkgs"
           $branch = (gh repo view $fork --json defaultBranchRef --jq .defaultBranchRef.name | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or -not $branch) {
@@ -831,7 +836,7 @@ jobs:
             exit 0
           }
           if ($verdict.action -eq "fail") {
-            Write-Host "::error title=winget fork sync failed::could not sync $fork with microsoft/winget-pkgs: $($verdict.reason). gh said: $($out.Trim())"
+            Write-Host "::error title=winget fork sync failed::could not sync $fork with microsoft/winget-pkgs: $($verdict.reason). gh said: $(Escape-Annotation $out)"
             "winget fork sync **failed**: $($verdict.reason)." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             exit 1
           }
@@ -842,7 +847,14 @@ jobs:
           }
           $backup = "sync-backup-$($head.Substring(0, 12))"
           gh api -X POST "repos/$fork/git/refs" -f "ref=refs/heads/$backup" -f "sha=$head" | Out-Null
-          if ($LASTEXITCODE -ne 0) {
+          $backedUp = $LASTEXITCODE -eq 0
+          if (-not $backedUp) {
+            # Already there from an earlier run whose reset then failed: the
+            # head is just as kept, so the reset may go ahead.
+            $kept = (gh api "repos/$fork/git/ref/heads/$backup" --jq .object.sha | Out-String).Trim()
+            $backedUp = $LASTEXITCODE -eq 0 -and $kept -eq $head
+          }
+          if (-not $backedUp) {
             Write-Host "::error title=winget fork sync failed::$fork has diverged ($($verdict.reason)) but its head could not be backed up to $backup, so it is not reset."
             exit 1
           }
@@ -851,7 +863,7 @@ jobs:
           $syncExit = $LASTEXITCODE
           Write-Host $out
           if ($syncExit -ne 0) {
-            Write-Host "::error title=winget fork sync failed::could not reset $fork to microsoft/winget-pkgs. gh said: $($out.Trim())"
+            Write-Host "::error title=winget fork sync failed::could not reset $fork to microsoft/winget-pkgs. gh said: $(Escape-Annotation $out)"
             exit 1
           }
 
@@ -859,8 +871,8 @@ jobs:
       # microsoft/winget-pkgs from the fork synced above. Works for both the
       # first submission and every subsequent version from the same in-repo
       # manifest set. WINGET_TOKEN MUST be a classic PAT (`public_repo` +
-      # `workflow`, see the sync step) — wingetcreate rejects fine-grained tokens as invalid
-      # (microsoft/winget-create#595). The token is passed via
+      # `workflow`, see the sync step) — wingetcreate rejects fine-grained
+      # tokens as invalid (microsoft/winget-create#595). The token is passed via
       # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
       # --token, which wingetcreate warns can leak the token into logs.
       #
