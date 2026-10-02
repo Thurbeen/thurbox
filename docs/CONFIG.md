@@ -1335,7 +1335,6 @@ per-instance buffer holds 256 deltas; an expired or future cursor yields a
 a JSON document for polling callers. This stream is UI state only;
 `thurbox-cli watch` continues to stream durable session events.
 
-
 List the target's live actions and their argument types, ownership, effect,
 destructive classification, availability and current chords with
 `thurbox-cli ui --instance <id> actions --json`. `thurbox-cli schema --instance
