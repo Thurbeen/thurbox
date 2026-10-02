@@ -51,6 +51,7 @@ impl TmuxCompatible for Tmux {
     const PANE_MONITORING: bool = true;
     const SNAPSHOTS: bool = true;
     const COMMAND_LISTS: bool = true;
+    const COMMAND_LIST_SINGLE_REPLY: bool = false;
     const ONE_SHOT_SPAWN_ANSWERS: bool = true;
     const CONDITIONAL_RESIZE: bool = true;
     const SERVER_SCOPE: &str = "-s";

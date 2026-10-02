@@ -71,6 +71,7 @@ impl TmuxCompatible for Psmux {
     /// Not verified to take a `;` list as one invocation: each option is set
     /// on its own.
     const COMMAND_LISTS: bool = false;
+    const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
     /// psmux's `new-window -P -F` support is unverified against the documented
     /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path

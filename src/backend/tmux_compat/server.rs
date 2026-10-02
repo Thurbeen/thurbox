@@ -70,6 +70,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// session config can go in one process (#1243).
     const COMMAND_LISTS: bool;
 
+    /// Whether a semicolon-separated control-mode command list answers with
+    /// one response block rather than one block per command.
+    const COMMAND_LIST_SINGLE_REPLY: bool;
+
     /// Whether a one-shot `new-window -a -t <session>:{end} -P -F` appends the
     /// window last and answers with its pane — what the headless spawn stamps
     /// and retains it by.
@@ -1452,16 +1456,21 @@ impl<M: TmuxCompatible> Server<M> {
         self.ctrl_command_list(&[cmd])
     }
 
-    /// [`Self::ctrl_command`] for a command list, answered once every command
-    /// in it has answered (see `ControlMode::send_command_list`).
+    /// [`Self::ctrl_command`] for a command list, using the adapter's reply
+    /// count (see `ControlMode::send_command_list`).
     fn ctrl_command_list(&self, cmds: &[&str]) -> Result<String> {
-        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds));
+        let blocks = if M::COMMAND_LIST_SINGLE_REPLY {
+            1
+        } else {
+            cmds.len()
+        };
+        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks));
         match result {
             Ok(val) => Ok(val),
             Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
                 self.reconnect_control()?;
-                self.with_control(|ctrl| ctrl.send_command_list(cmds))
+                self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks))
             }
             Err(err) => Err(err),
         }
@@ -3699,6 +3708,7 @@ mod tests {
         const PANE_MONITORING: bool = true;
         const SNAPSHOTS: bool = true;
         const COMMAND_LISTS: bool = true;
+        const COMMAND_LIST_SINGLE_REPLY: bool = false;
         const ONE_SHOT_SPAWN_ANSWERS: bool = true;
         const CONDITIONAL_RESIZE: bool = true;
         const SERVER_SCOPE: &str = "-s";

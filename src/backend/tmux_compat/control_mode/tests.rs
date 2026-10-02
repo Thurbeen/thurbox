@@ -1210,13 +1210,17 @@ impl ThrowawayServer {
     }
 
     fn control(&self) -> ControlMode {
+        self.control_with_flow_control(true)
+    }
+
+    fn control_with_flow_control(&self, flow_control: bool) -> ControlMode {
         ControlMode::start(
             &TmuxTransport::local("tmux"),
             &self.socket,
             Self::SESSION,
             "tests",
             &ControlPolicy {
-                flow_control: true,
+                flow_control,
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,
@@ -1225,6 +1229,22 @@ impl ThrowawayServer {
         )
         .expect("control mode starts")
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn flow_control_can_be_skipped_with_tmux_installed() {
+    let Some(server) = ThrowawayServer::start("skip-flow-control") else {
+        return;
+    };
+    let control = server.control_with_flow_control(false);
+    assert_eq!(
+        control
+            .send_command("display-message -p ready")
+            .unwrap()
+            .trim(),
+        "ready"
+    );
 }
 
 #[cfg(unix)]
@@ -1275,6 +1295,16 @@ fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
             .trim(),
         "ready"
     );
+    assert_eq!(
+        control
+            .send_command_list(
+                &["display-message -p first", "display-message -p second"],
+                1,
+            )
+            .expect("one block answers the command list")
+            .trim(),
+        "first\nsecond"
+    );
 }
 
 #[cfg(unix)]
@@ -1316,11 +1346,14 @@ fn a_command_list_is_answered_once_all_its_blocks_are_in() {
     let ctrl = server.control();
 
     let list = ctrl
-        .send_command_list(&[
-            "display-message -p first",
-            "run-shell 'sleep 0.5'",
-            "display-message -p third",
-        ])
+        .send_command_list(
+            &[
+                "display-message -p first",
+                "run-shell 'sleep 0.5'",
+                "display-message -p third",
+            ],
+            3,
+        )
         .expect("the list runs");
     let next = ctrl
         .send_command("display-message -p second")
@@ -1344,11 +1377,14 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
     };
     let ctrl = server.control();
 
-    let failed = ctrl.send_command_list(&[
-        "display-message -p a",
-        "set-window-option nosuchoption on",
-        "display-message -p c",
-    ]);
+    let failed = ctrl.send_command_list(
+        &[
+            "display-message -p a",
+            "set-window-option nosuchoption on",
+            "display-message -p c",
+        ],
+        3,
+    );
     let next = ctrl
         .send_command("display-message -p next")
         .expect("the next command runs");

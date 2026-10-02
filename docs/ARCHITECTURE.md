@@ -2385,9 +2385,10 @@ quotes, how a window's command and environment reach it, how keystrokes and a
 paste are typed (`PaneInput`), what its control-mode connection may expect
 (`ControlPolicy`), and its version floor. The shared code asks what a server
 can do and never which multiplexer it is. `ControlPolicy::flow_control` gates
-the startup `refresh-client -f` command, and `PANE_MONITORING` gates
-`refresh-client -A` when a server streams attached panes on its own.
-`backend::wiring` builds the
+the startup `refresh-client -f` command, `PANE_MONITORING` gates
+`refresh-client -A` when a server streams attached panes on its own, and
+`COMMAND_LIST_SINGLE_REPLY` selects the number of reply blocks expected for
+one semicolon-separated list. `backend::wiring` builds the
 registry from one table, `(Multiplexer, AdapterFactory)`, where a factory is
 `fn(&BackendSpec) -> Arc<dyn SessionBackend>` and a `BackendSpec` is the
 route, the launcher, the platform and the host. Every adapter is registered
