@@ -17,6 +17,34 @@ case "$THURBOX_CONFIG_DIR:$THURBOX_DATA_DIR" in
     *) echo 'seed-sandbox: config and data must be inside the sandbox' >&2; exit 2 ;;
 esac
 
+# Hold one OS lock through staging, publication, and bookmark writes. A file
+# lock releases even if the seeder is killed; mkdir-based locks do not.
+if [ "${TBX_SEED_LOCKED:-}" != 1 ]; then
+    exec python3 - "$0" "$@" <<'PY'
+import os, pathlib, subprocess, sys, time
+
+lock = pathlib.Path(os.environ['TBX_SANDBOX_ROOT']) / '.seed.lock'
+with lock.open('a+b') as handle:
+    if os.name == 'nt':
+        import msvcrt
+        if lock.stat().st_size == 0:
+            handle.write(b'\0')
+            handle.flush()
+        while True:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                break
+            except OSError:
+                time.sleep(0.1)
+    else:
+        import fcntl
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    env = dict(os.environ, TBX_SEED_LOCKED='1')
+    raise SystemExit(subprocess.call(['bash', sys.argv[1], *sys.argv[2:]], env=env))
+PY
+fi
+
 mkdir -p "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR" \
     "$TBX_SANDBOX_ROOT/repos" "$TBX_SANDBOX_ROOT/remotes"
 hosts="$THURBOX_CONFIG_DIR/hosts.toml"

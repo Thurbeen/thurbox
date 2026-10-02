@@ -30,8 +30,8 @@ fi
 "$(dirname "$0")/seed-sandbox.sh"
 target/debug/thurbox-cli config validate >/dev/null
 
-python3 - "$root" <<'PY'
-import os, pathlib, sqlite3, subprocess, sys
+python3 - "$root" "$(dirname "$0")/seed-sandbox.sh" <<'PY'
+import os, pathlib, shutil, sqlite3, subprocess, sys
 
 root = pathlib.Path(sys.argv[1])
 hosts = (root / "thurbox-config/hosts.toml").read_text()
@@ -64,5 +64,33 @@ if (root / "mock-bin/ssh").exists():
     assert subprocess.check_output([wsl, "-d", "lab-wsl", "--", "printf", "wsl"], env=env) == b"wsl"
     assert subprocess.check_output([wsl, "-d", "lab-wsl", "--cd", "/", "-e", "sh", "-c", "printf wsl"], env=env) == b"wsl"
     assert subprocess.check_output([wsl, "-d", "lab-wsl", "--", "sh", "-c", "printf $TMUX_TMPDIR"], env=env) == str(root / "tmux/lab-wsl").encode()
+
+race = root / "parallel"
+for folder in ("thurbox-config", "thurbox-data", "tmux", "remotes"):
+    (race / folder).mkdir(parents=True)
+for name in ("web-app", "service-api", "docs-site"):
+    subprocess.run([os.environ["REAL_GIT"], "init", "--bare", "-q", str(race / "remotes" / f"{name}.git")], check=True)
+parallel_bin = root / "parallel-bin"
+parallel_bin.mkdir()
+(parallel_bin / "git").write_text('''#!/bin/sh
+case " $* " in *" push "*) exit 0 ;; esac
+exec "$REAL_GIT" "$@"
+''')
+(parallel_bin / "mv").write_text('''#!/bin/sh
+sleep 1
+exec "$REAL_MV" "$@"
+''')
+for binary in ("git", "mv"):
+    (parallel_bin / binary).chmod(0o755)
+race_env = dict(os.environ, TBX_SANDBOX_ROOT=str(race),
+                THURBOX_CONFIG_DIR=str(race / "thurbox-config"),
+                THURBOX_DATA_DIR=str(race / "thurbox-data"),
+                TMUX_TMPDIR=str(race / "tmux"), REAL_MV=shutil.which("mv"),
+                PATH=f"{parallel_bin}:{os.environ['PATH']}")
+processes = [subprocess.Popen([sys.argv[2]], env=race_env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE) for _ in range(2)]
+results = [process.communicate(timeout=60) for process in processes]
+assert all(process.returncode == 0 for process in processes), results
+assert not list((race / "repos/web-app").glob(".web-app.*")), "parallel seed nested a repository"
 print("sandbox seed: hosts, repositories, and bookmarks verified")
 PY
