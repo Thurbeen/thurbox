@@ -449,7 +449,9 @@ mod tests {
             let mut list = vec![0u32; 1024];
             // SAFETY: `list` holds the `count` entries the call may write.
             let n = unsafe { GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) };
-            let n = usize::try_from(n).ok().filter(|n| (1..=list.len()).contains(n))?;
+            let n = usize::try_from(n)
+                .ok()
+                .filter(|n| (1..=list.len()).contains(n))?;
             list.truncate(n);
             Some(list)
         }
