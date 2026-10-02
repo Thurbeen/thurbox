@@ -1868,11 +1868,16 @@ numbers are in `docs/PERFORMANCE.md`.
 
 ### Live preview, open & cancel
 
-Moving through results (`↑`/`↓`, `PageUp`/`PageDown`) **previews** in place: the
-session list's cursor follows, and for a text result the terminal **scrolls back
-to the line** while focus stays in the strip. `Enter` (or a click) opens it:
-the strip closes, focus lands in the terminal, still scrolled to the line, and
-that row is **marked** (drawn reversed) until you scroll or type. `Esc` puts back
+The selected result is **previewed** in place the moment it is selected —
+whether `↑`/`↓`/`PageUp`/`PageDown` moved the cursor or typing landed it on the
+first result: the session list's cursor follows, and for a text result the
+terminal **scrolls back to the line** and **marks** that row (drawn reversed)
+while focus stays in the strip. A hit is a position, and an agent that prints
+or repaints moves it; the re-run search hands the same result back at its new
+position, and the preview follows it there, so the mark stays on the line
+rather than on the row it used to occupy. `Enter` (or a click) opens it: the
+strip closes and focus lands in the terminal, still scrolled to the line and
+marked until you scroll or type. `Esc` puts back
 the selection and scrolls a previewed terminal back to the bottom.
 
 The scroll is a request to the agent pane, not something search does to it: it
