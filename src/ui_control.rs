@@ -221,24 +221,35 @@ mod unix {
             let id = uuid::Uuid::new_v4().to_string();
             let endpoint = dir.join(format!("{id}.sock"));
             let record = dir.join(format!("{id}.json"));
+            let staged = dir.join(format!("{id}.tmp"));
             let listener = UnixListener::bind(&endpoint).map_err(|e| e.to_string())?;
-            fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600))
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)) {
+                let _ = fs::remove_file(&endpoint);
+                return Err(error.to_string());
+            }
             let instance = Instance {
                 id,
                 pid: std::process::id(),
                 started_at_unix_ms: started_at_unix_ms(),
                 label: label(),
                 terminal: terminal_hint(),
-                endpoint,
+                endpoint: endpoint.clone(),
             };
-            fs::write(
-                &record,
-                serde_json::to_vec(&instance).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            fs::set_permissions(&record, fs::Permissions::from_mode(0o600))
+            let published = (|| -> Result<(), String> {
+                fs::write(
+                    &staged,
+                    serde_json::to_vec(&instance).map_err(|e| e.to_string())?,
+                )
                 .map_err(|e| e.to_string())?;
+                fs::set_permissions(&staged, fs::Permissions::from_mode(0o600))
+                    .map_err(|e| e.to_string())?;
+                fs::rename(&staged, &record).map_err(|e| e.to_string())
+            })();
+            if let Err(error) = published {
+                let _ = fs::remove_file(&staged);
+                let _ = fs::remove_file(&endpoint);
+                return Err(error);
+            }
             let (tx, pending) = mpsc::sync_channel(32);
             let alive = Arc::new(AtomicBool::new(true));
             let running = Arc::clone(&alive);
@@ -326,11 +337,16 @@ mod unix {
     pub fn instances() -> Result<Vec<Instance>, String> {
         let dir = secure_directory()?;
         let mut out = Vec::new();
-        for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
-            if entry.path().extension().map_or(true, |ext| ext != "json") {
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().map_or(true, |ext| ext != "json") {
                 continue;
             }
-            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+            let Ok(meta) = fs::symlink_metadata(&path) else {
                 continue;
             };
             if !meta.is_file()
@@ -339,17 +355,32 @@ mod unix {
             {
                 continue;
             }
-            let Ok(bytes) = fs::read(entry.path()) else {
+            let Ok(bytes) = fs::read(&path) else {
                 continue;
             };
             let Ok(instance) = serde_json::from_slice::<Instance>(&bytes) else {
+                let _ = fs::remove_file(&path);
                 continue;
             };
-            if instance.endpoint.parent() != entry.path().parent() {
+            if uuid::Uuid::parse_str(&instance.id).is_err()
+                || path != dir.join(format!("{}.json", instance.id))
+                || instance.endpoint != dir.join(format!("{}.sock", instance.id))
+            {
+                let _ = fs::remove_file(&path);
                 continue;
             }
             if send(&instance, &Request::Ping).is_ok() {
                 out.push(instance);
+            } else if matches!(
+                UnixStream::connect(&instance.endpoint).map(|_| ()),
+                Err(ref error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    )
+            ) {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&instance.endpoint);
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -492,6 +523,7 @@ mod windows {
             let id = uuid::Uuid::new_v4().to_string();
             let endpoint = PathBuf::from(format!(r"\\.\pipe\thurbox-ui-{id}"));
             let record = dir.join(format!("{id}.json"));
+            let staged = dir.join(format!("{id}.tmp"));
             let instance = Instance {
                 id,
                 pid: std::process::id(),
@@ -553,14 +585,29 @@ mod windows {
                     }
                 });
             });
-            ready.recv_timeout(WAIT).map_err(|e| e.to_string())??;
-            fs::write(
-                &record,
-                serde_json::to_vec(&instance).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            if let Err(error) = acl.protect(&record) {
-                let _ = fs::remove_file(&record);
+            match ready.recv_timeout(WAIT) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = shutdown.send(());
+                    return Err(error);
+                }
+                Err(error) => {
+                    let _ = shutdown.send(());
+                    return Err(error.to_string());
+                }
+            }
+            let published = (|| -> Result<(), String> {
+                fs::write(
+                    &staged,
+                    serde_json::to_vec(&instance).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                acl.protect(&staged)?;
+                fs::rename(&staged, &record).map_err(|e| e.to_string())
+            })();
+            if let Err(error) = published {
+                let _ = shutdown.send(());
+                let _ = fs::remove_file(&staged);
                 return Err(error);
             }
             Ok(Self {
@@ -628,18 +675,37 @@ mod windows {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
-        for entry in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
-            if entry.path().extension().map_or(true, |ext| ext != "json") {
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().map_or(true, |ext| ext != "json") {
                 continue;
             }
-            let Ok(bytes) = fs::read(entry.path()) else {
+            let Ok(bytes) = fs::read(&path) else {
                 continue;
             };
             let Ok(instance) = serde_json::from_slice::<Instance>(&bytes) else {
+                let _ = fs::remove_file(&path);
                 continue;
             };
+            if uuid::Uuid::parse_str(&instance.id).is_err()
+                || path != dir.join(format!("{}.json", instance.id))
+                || instance.endpoint
+                    != PathBuf::from(format!(r"\\.\pipe\thurbox-ui-{}", instance.id))
+            {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
             if send(&instance, &Request::Ping).is_ok() {
                 out.push(instance);
+            } else if ClientOptions::new()
+                .open(&instance.endpoint)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                let _ = fs::remove_file(&path);
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));

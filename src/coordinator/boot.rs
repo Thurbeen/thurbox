@@ -232,7 +232,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         Ok(control) => Some(control),
         Err(error) => {
             tracing::warn!("local UI control unavailable: {error}");
-            startup_notices.push(format!("local UI control unavailable: {error}"));
+            startup_notices.insert(0, format!("local UI control unavailable: {error}"));
             None
         }
     };

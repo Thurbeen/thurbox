@@ -676,6 +676,7 @@ fn an_unavailable_control_socket_does_not_abort_the_tui() {
         cmd.env("THURBOX_DATA_DIR", &long_data);
     });
     tui.wait_for("No sessions yet");
+    tui.wait_for("local UI control unavailable");
     assert!(tui.quit().success());
 }
 
@@ -686,8 +687,24 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
     std::fs::create_dir(&directory).expect("control directory");
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
         .expect("private directory");
+    let stale_record = |index: u128| {
+        let id = uuid::Uuid::from_u128(index + 1).to_string();
+        let endpoint = directory.join(format!("{id}.sock"));
+        let record = serde_json::json!({
+            "id": id,
+            "pid": 0,
+            "started_at_unix_ms": 0,
+            "label": "stale",
+            "terminal": null,
+            "endpoint": endpoint,
+        });
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, record.to_string()).expect("stale record");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("private record");
+    };
     for index in 0..2048 {
-        std::fs::write(directory.join(format!("stale-{index:03}.json")), b"{}").expect("stale");
+        stale_record(index);
     }
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
@@ -713,7 +730,7 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
             "could not place the live record past stale entries"
         );
         for index in next..next + 512 {
-            std::fs::write(directory.join(format!("stale-{index:03}.json")), b"{}").expect("stale");
+            stale_record(index);
         }
         next += 512;
     }
@@ -726,6 +743,13 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
     assert_eq!(value["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(&directory)
+            .expect("control directory")
+            .count(),
+        2,
+        "dead records must be pruned after discovery"
+    );
     assert!(tui.quit().success());
 }
 

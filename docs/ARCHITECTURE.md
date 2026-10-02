@@ -2528,6 +2528,8 @@ size, clients, queue depth and wait time, then hands typed requests to the
 coordinator. Only the coordinator reads UI state or invokes Lua, and it replies
 after applying or refusing the request.
 An endpoint failure leaves the interface running with a startup notice.
+Discovery prunes records whose endpoint is gone, keeping repeated scans bounded
+by currently reachable interfaces and the records left since the last scan.
 
 **Why**: several interfaces can display the same database while each owns its
 own focus and search state. The older `session focus` metadata slot is claimed

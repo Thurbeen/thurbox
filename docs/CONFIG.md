@@ -1318,7 +1318,7 @@ selected session ID, search query and state revision from that screen. A command
 without `--instance` uses the sole reachable screen, or refuses with an
 ambiguity error listing IDs when several are running. `THURBOX_UI_INSTANCE`
 selects a default for scripts. Closed or crashed screens cannot be targeted;
-stale discovery records are ignored.
+stale discovery records are removed when discovered.
 
 The first two actions are:
 
