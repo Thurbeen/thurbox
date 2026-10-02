@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 const MAX_REQUEST: usize = 16 * 1024;
+const MAX_REPLY: usize = 256 * 1024;
 const WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +112,7 @@ pub fn directory() -> Result<PathBuf, String> {
 mod unix {
     use super::{
         directory, label, started_at_unix_ms, terminal_hint, Instance, Pending, Reply, Request,
-        Server, WireRequest, MAX_REQUEST, WAIT,
+        Server, WireRequest, MAX_REPLY, MAX_REQUEST, WAIT,
     };
     use std::fs;
     use std::io::{Read, Write};
@@ -169,6 +170,9 @@ mod unix {
 
     fn write_frame(stream: &mut UnixStream, value: &Reply) -> Result<(), String> {
         let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_REPLY {
+            return Err("UI control reply is too large".into());
+        }
         stream
             .write_all(&(bytes.len() as u32).to_be_bytes())
             .map_err(|e| e.to_string())?;
@@ -323,7 +327,7 @@ mod unix {
         let mut len = [0; 4];
         stream.read_exact(&mut len).map_err(|e| e.to_string())?;
         let len = u32::from_be_bytes(len) as usize;
-        if len > MAX_REQUEST {
+        if len > MAX_REPLY {
             return Err("UI control reply is too large".into());
         }
         let mut bytes = vec![0; len];
@@ -396,7 +400,7 @@ pub use unix::{instances, send};
 mod windows {
     use super::{
         directory, label, started_at_unix_ms, terminal_hint, Instance, Pending, Reply, Request,
-        Server, WireRequest, MAX_REQUEST, WAIT,
+        Server, WireRequest, MAX_REPLY, MAX_REQUEST, WAIT,
     };
     use std::fs;
     use std::io;
@@ -530,6 +534,9 @@ mod windows {
                 .map_err(io::Error::other)?
                 .map_err(io::Error::other)?;
             let bytes = serde_json::to_vec(&result).map_err(io::Error::other)?;
+            if bytes.len() > MAX_REPLY {
+                return Err(io::Error::other("UI control reply is too large"));
+            }
             pipe.write_all(&(bytes.len() as u32).to_be_bytes()).await?;
             pipe.write_all(&bytes).await?;
             Ok::<(), io::Error>(())
@@ -673,7 +680,7 @@ mod windows {
                 let mut len = [0; 4];
                 pipe.read_exact(&mut len).await.map_err(|e| e.to_string())?;
                 let len = u32::from_be_bytes(len) as usize;
-                if len > MAX_REQUEST {
+                if len > MAX_REPLY {
                     return Err("UI control reply is too large".into());
                 }
                 let mut bytes = vec![0; len];
