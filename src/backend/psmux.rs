@@ -73,6 +73,23 @@ impl TmuxCompatible for Psmux {
     const COMMAND_LISTS: bool = false;
     const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
+    // A cold psmux server can refuse `new-session` or disappear before the
+    // first `set-option`, even when its `new-session` client exited successfully.
+    const COLD_START_ATTEMPTS: usize = 3;
+
+    /// The server can become reachable well after a failed create client exits.
+    const COLD_START_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+
+    const RETRY_NO_SERVER_ERROR: bool = true;
+
+    /// Supplying `-x/-y` prevents psmux from claiming its warm server. The
+    /// placeholder's dimensions do not control agent windows.
+    const BOOTSTRAP_SIZE_ARGS: &[&str] = &[];
+
+    /// `has-session` deletes the port file on a refused connection even when
+    /// the server is still starting. `list-windows` leaves it for that server.
+    const SESSION_PROBE_COMMAND: &str = "list-windows";
+
     /// psmux's `new-window -P -F` support is unverified against the documented
     /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path
     /// targets the session and finds the window by its name.
@@ -84,6 +101,10 @@ impl TmuxCompatible for Psmux {
     /// psmux 3.3.8 refuses `-s` ("unknown flag -s") and keeps one option table
     /// anyway, so it gets `-g`, which 3.3.7 and 3.3.8 both take.
     const SERVER_SCOPE: &str = "-g";
+
+    /// Without `-t`, psmux may route `set-option -g` to `__default` even when
+    /// the thurbox session is live under the same socket.
+    const SERVER_OPTIONS_NEED_TARGET: bool = true;
 
     /// psmux has no locale sanitizing, and need not know tmux's `-u`.
     const DISPLAY_FLAGS: &[&str] = &[];
@@ -732,6 +753,249 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn cold_start_backend(root: &tempfile::TempDir, scenario: &str) -> PsmuxBackend {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.path().join("psmux-probe");
+        let session = root.path().join("session");
+        let attempts = root.path().join("attempts");
+        let script = format!(
+            "#!/bin/sh\n\
+             session='{}'\n\
+             attempts='{}'\n\
+             scenario='{}'\n\
+             [ \"$1\" = -L ] && shift 2\n\
+             case \"$1\" in\n\
+               -V) echo 'psmux 3.3.8' ;;\n\
+               has-session)\n\
+                 if [ \"$scenario\" = destructive_probe ] && [ -f \"$session\" ]; then\n\
+                   rm \"$session\"\n\
+                   exit 1\n\
+                 fi\n\
+                 test -f \"$session\" ;;\n\
+               list-windows) test -f \"$session\" ;;\n\
+               display-message) echo '3.3.8' ;;\n\
+               new-session)\n\
+                 if [ \"$scenario\" = needs_unsized_bootstrap ]; then\n\
+                   for arg do\n\
+                     if [ \"$arg\" = -x ] || [ \"$arg\" = -y ]; then\n\
+                       echo \"psmux: failed to create session 'thurbox'\" >&2\n\
+                       exit 1\n\
+                     fi\n\
+                   done\n\
+                 fi\n\
+                 count=0\n\
+                 [ -f \"$attempts\" ] && count=$(wc -l < \"$attempts\")\n\
+                 echo attempt >> \"$attempts\"\n\
+                 if [ \"$scenario\" = delayed_after_refusal ]; then\n\
+                   if [ \"$count\" -eq 0 ]; then\n\
+                     (sleep 0.3; touch \"$session\") >/dev/null 2>&1 &\n\
+                   fi\n\
+                   echo \"psmux: failed to create session 'thurbox'\" >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 if [ \"$scenario\" = always_refused ] || \
+                    {{ [ \"$scenario\" = refused_once ] && [ \"$count\" -eq 0 ]; }}; then\n\
+                   echo \"psmux: failed to create session 'thurbox'\" >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 if [ \"$scenario\" = vanished_once ] && [ \"$count\" -eq 0 ]; then\n\
+                   exit 0\n\
+                 fi\n\
+                 touch \"$session\" ;;\n\
+               set-option)\n\
+                 if [ ! -f \"$session\" ]; then\n\
+                   echo 'psmux: no server running' >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 if [ \"$scenario\" = needs_server_target ]; then\n\
+                   global=false; targeted=false; prev=''\n\
+                   for arg do\n\
+                     [ \"$arg\" = -g ] && global=true\n\
+                     [ \"$prev\" = -t ] && [ \"$arg\" = thurbox ] && targeted=true\n\
+                     prev=$arg\n\
+                   done\n\
+                   if [ \"$global\" = true ] && [ \"$targeted\" != true ]; then\n\
+                     echo 'psmux: no server running on session private-socket__default' >&2\n\
+                     exit 1\n\
+                   fi\n\
+                 fi\n\
+                 if [ \"$scenario\" = transient_option_failure ] && \
+                    [ ! -f \"$attempts.option_ready\" ]; then\n\
+                   if [ ! -f \"$attempts.option_started\" ]; then\n\
+                     touch \"$attempts.option_started\"\n\
+                     (sleep 0.5; touch \"$attempts.option_ready\") >/dev/null 2>&1 &\n\
+                   fi\n\
+                   echo 'psmux: no server running on session' >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 if [ \"$scenario\" = live_option_failure ]; then\n\
+                   echo 'invalid option' >&2\n\
+                   exit 1\n\
+                 fi ;;\n\
+               new-window)\n\
+                 if [ \"$scenario\" = transient_window_failure ] && \
+                    [ ! -f \"$attempts.window_ready\" ]; then\n\
+                   if [ ! -f \"$attempts.window_started\" ]; then\n\
+                     touch \"$attempts.window_started\"\n\
+                     (sleep 0.5; touch \"$attempts.window_ready\") >/dev/null 2>&1 &\n\
+                   fi\n\
+                   echo 'psmux: no server running on session' >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 touch \"$attempts.window_created\" ;;\n\
+               *) exit 2 ;;\n\
+             esac\n",
+            session.display(),
+            attempts.display(),
+            scenario
+        );
+        std::fs::write(&mux, script).expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "private-socket",
+            "thurbox",
+            "local:psmux",
+        )
+    }
+
+    #[cfg(unix)]
+    fn attempt_count(root: &tempfile::TempDir) -> usize {
+        std::fs::read_to_string(root.path().join("attempts"))
+            .expect("new-session was attempted")
+            .lines()
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_a_failed_cold_session_bootstrap() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "refused_once");
+
+        backend
+            .ensure_session_configured()
+            .expect("cold psmux session recovers");
+        assert_eq!(attempt_count(&root), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_uses_its_default_initial_window_size() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "needs_unsized_bootstrap");
+
+        backend
+            .ensure_session_configured()
+            .expect("psmux starts without explicit initial size");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_avoids_a_destructive_has_session_probe() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "destructive_probe");
+
+        backend
+            .ensure_session_configured()
+            .expect("bootstrap uses a non-destructive session probe");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_waits_for_a_late_server_after_create_refusals() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "delayed_after_refusal");
+
+        backend
+            .ensure_session_configured()
+            .expect("late server becomes available on the same socket");
+        assert!(attempt_count(&root) <= 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_when_a_successful_create_left_no_server() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "vanished_once");
+
+        backend
+            .ensure_session_configured()
+            .expect("cold psmux session recovers");
+        assert_eq!(attempt_count(&root), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_does_not_retry_an_option_error_on_a_live_session() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "live_option_failure");
+
+        let error = backend.ensure_session_configured().unwrap_err().to_string();
+        assert!(error.contains("invalid option"), "{error}");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_a_transient_option_failure_on_a_live_session() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "transient_option_failure");
+
+        backend
+            .ensure_session_configured()
+            .expect("psmux recovers after a temporary connection failure");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_targets_global_options_at_its_session() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "needs_server_target");
+
+        backend
+            .ensure_session_configured()
+            .expect("global options route to the live psmux session");
+        assert_eq!(attempt_count(&root), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_a_window_refused_during_cold_start() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "transient_window_failure");
+        let env = HashMap::new();
+        let spec = crate::backend::contract::WindowSpec {
+            owner: crate::backend::contract::Owner::new("session-id", "check"),
+            role: crate::backend::contract::WindowRole::Agent,
+            command: "cmd.exe",
+            args: &[],
+            cwd: None,
+            env: &env,
+        };
+
+        backend
+            .create_window(&spec)
+            .expect("window appears after the server answers");
+        assert!(root.path().join("attempts.window_created").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_stops_after_three_failed_cold_bootstraps() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "always_refused");
+
+        let error = backend.ensure_session_configured().unwrap_err().to_string();
+        assert!(error.contains("Failed to create tmux session"), "{error}");
+        assert_eq!(attempt_count(&root), 3);
+    }
 
     #[test]
     fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {

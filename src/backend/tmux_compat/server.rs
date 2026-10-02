@@ -74,6 +74,22 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// one response block rather than one block per command.
     const COMMAND_LIST_SINGLE_REPLY: bool;
 
+    /// Attempts to start a missing session when the server disappears during
+    /// cold bootstrap. A stable server still takes the usual single pass.
+    const COLD_START_ATTEMPTS: usize = 1;
+
+    /// Final wait for a server still coming up after the create client failed.
+    const COLD_START_GRACE: std::time::Duration = std::time::Duration::ZERO;
+
+    /// Retry a transient "no server" reply even when a later probe succeeds.
+    const RETRY_NO_SERVER_ERROR: bool = false;
+
+    /// Size arguments for the initial placeholder window.
+    const BOOTSTRAP_SIZE_ARGS: &[&str] = &["-x", "80", "-y", "24"];
+
+    /// Read-only command used to check whether the session answers.
+    const SESSION_PROBE_COMMAND: &str = "has-session";
+
     /// Whether a one-shot `new-window -a -t <session>:{end} -P -F` appends the
     /// window last and answers with its pane — what the headless spawn stamps
     /// and retains it by.
@@ -86,6 +102,9 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// The `set-option` flag scoping a server-wide option.
     const SERVER_SCOPE: &str;
+
+    /// Whether a server-wide option also needs the session to route its client.
+    const SERVER_OPTIONS_NEED_TARGET: bool = false;
 
     /// The flags that make a `display-message` answer keep its separators
     /// whatever the locale (see `PANE_STATE_UTF8_FLAG`'s reason in the tmux
@@ -738,26 +757,16 @@ impl<M: TmuxCompatible> Server<M> {
     /// the backend agrees its binary may start one. No session config: the
     /// keeper needs none, and every spawn or attach applies it.
     fn ensure_heartbeat_session(&self) -> Result<()> {
-        let exists = || self.run_tmux(&["has-session", "-t", &self.session]).is_ok();
+        let exists = || self.session_exists();
         if exists() {
             return Ok(());
         }
         self.check_available()?;
+        let mut args = vec!["new-session", "-d", "-s", &self.session];
+        args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
         let out = self
             .transport
-            .tmux_command(
-                &self.socket(),
-                &[
-                    "new-session",
-                    "-d",
-                    "-s",
-                    &self.session,
-                    "-x",
-                    "80",
-                    "-y",
-                    "24",
-                ],
-            )
+            .tmux_command(&self.socket(), &args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -805,7 +814,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// One `list-windows`, with an empty answer only when the multiplexer
     /// itself said there is nothing to list.
     ///
-    /// [`discover`](SessionBackend::discover) gates on `has-session` and reads
+    /// [`discover`](SessionBackend::discover) gates on the session probe and reads
     /// its failure as "no windows", which over a transport conflates the two
     /// answers a teardown must never confuse: *the host says it holds nothing*
     /// and *the host did not answer*. A force delete taken while a host was
@@ -1069,7 +1078,8 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// Check if the thurbox tmux session exists.
     fn session_exists(&self) -> bool {
-        self.tmux_run(&["has-session", "-t", &self.session]).is_ok()
+        self.tmux_run(&[M::SESSION_PROBE_COMMAND, "-t", &self.session])
+            .is_ok()
     }
 
     /// Apply server + session config to the tmux session.
@@ -1105,7 +1115,13 @@ impl<M: TmuxCompatible> Server<M> {
     pub(in crate::backend) fn session_config(&self) -> Vec<ConfigOption> {
         let scope = M::SERVER_SCOPE;
         let mut config = Vec::new();
-        let mut set = |args: &[&str], fatal: bool| config.push(ConfigOption::set(args, fatal));
+        let mut set = |args: &[&str], fatal: bool| {
+            let mut command = args.to_vec();
+            if M::SERVER_OPTIONS_NEED_TARGET && args.first() == Some(&scope) {
+                command.splice(1..1, ["-t", &self.session]);
+            }
+            config.push(ConfigOption::set(&command, fatal));
+        };
         // Use a non-login shell so that macOS path_helper (/etc/zprofile)
         // doesn't clobber PATH additions from ~/.zshenv (e.g. cargo, asdf).
         // For a remote backend the local `$SHELL` path may not exist on the
@@ -1162,7 +1178,61 @@ impl<M: TmuxCompatible> Server<M> {
     /// mode) and the headless spawn paths ([`create_local_window`],
     /// [`SessionBackend::ensure_heartbeat`]) that drive tmux via one-shot commands and
     /// must not open a control-mode connection.
-    fn ensure_session_configured(&self) -> Result<()> {
+    pub(in crate::backend) fn ensure_session_configured(&self) -> Result<()> {
+        for attempt in 1..M::COLD_START_ATTEMPTS {
+            match self.ensure_session_configured_once() {
+                Ok(()) => return Ok(()),
+                Err(e) if self.retryable_cold_start_error(&e) => {
+                    debug!(
+                        "{} cold session bootstrap attempt {attempt} lost its server: {e:#}",
+                        self.name
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        match self.ensure_session_configured_once() {
+            Ok(()) => Ok(()),
+            Err(e)
+                if self.retryable_cold_start_error(&e)
+                    && M::COLD_START_GRACE > std::time::Duration::ZERO =>
+            {
+                self.wait_and_configure(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn wait_and_configure(&self, error: anyhow::Error) -> Result<()> {
+        let deadline = std::time::Instant::now() + M::COLD_START_GRACE;
+        let mut last_error = error;
+        loop {
+            if self.session_exists() {
+                match self.apply_session_config() {
+                    Ok(()) => return Ok(()),
+                    Err(e)
+                        if M::RETRY_NO_SERVER_ERROR && mux_answered_absent(&format!("{e:#}")) =>
+                    {
+                        last_error = e;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(last_error);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    fn retryable_cold_start_error(&self, error: &anyhow::Error) -> bool {
+        !crate::agent::preflight::is_missing_dependency(error)
+            && (!self.session_exists()
+                || (M::RETRY_NO_SERVER_ERROR && mux_answered_absent(&format!("{error:#}"))))
+    }
+
+    fn ensure_session_configured_once(&self) -> Result<()> {
         // The common case — the session is there — asked and configured in one
         // process: `has-session` failing stops the list before any option is
         // set, and the path below then says why.
@@ -1183,16 +1253,9 @@ impl<M: TmuxCompatible> Server<M> {
                 self.session,
                 self.socket()
             );
-            if let Err(e) = self.run_tmux(&[
-                "new-session",
-                "-d",
-                "-s",
-                &self.session,
-                "-x",
-                "80",
-                "-y",
-                "24",
-            ]) {
+            let mut args = vec!["new-session", "-d", "-s", &self.session];
+            args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
+            if let Err(e) = self.run_tmux(&args) {
                 // The check above is not a lock, and after a reboot every
                 // session's relaunch runs it at once: one wins and the rest are
                 // told `duplicate session`. Failing them is how a machine came
@@ -1217,27 +1280,30 @@ impl<M: TmuxCompatible> Server<M> {
                 );
             }
             // Cheap defensiveness: poll until the freshly-created session
-            // answers `has-session` before applying options. (The `no server
+            // answers the session probe before applying options. (The `no server
             // running on 'thurbox__thurbox'` failure that originally motivated
             // this on psmux was session *nesting*, now fixed at the root by
             // `strip_mux_nesting_env`; this poll is a harmless belt against any
-            // genuinely-async `new-session -d`, and one `has-session` when the
+            // genuinely-async `new-session -d`, and one session probe when the
             // first probe succeeds — which it does on the normal path, and only
             // when a session had to be created at all.)
-            self.wait_for_session_ready();
+            self.wait_for_session_ready(std::time::Duration::from_secs(5));
         }
         self.apply_session_config()
     }
 
-    /// Poll (up to 5s) until the freshly-created session answers `has-session`.
+    /// Poll until the freshly-created session answers its probe.
     /// Defensive belt against an async `new-session -d`; normally a no-op (the
     /// first probe succeeds). See
     /// [`ensure_session_configured`](Self::ensure_session_configured).
-    fn wait_for_session_ready(&self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
+    fn wait_for_session_ready(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
             if self.session_exists() {
-                return;
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -2160,7 +2226,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             self.known_socket()?;
             return self.discover_answered();
         }
-        // A session `has-session` cannot see is classified by the answered
+        // A session the probe cannot see is classified by the answered
         // listing, which tells a server that holds nothing from one that did
         // not answer — read as empty, the second clears a sweep's backoff and
         // lets a relaunch start a second agent.
@@ -3260,35 +3326,52 @@ impl<M: TmuxCompatible> Server<M> {
         } else {
             format!("{}:", self.session)
         };
-        let mut tmux = self.new_window_command(
-            &window_name,
-            &create_target,
-            spec.command,
-            spec.args,
-            spec.cwd,
-            spec.env,
-        );
         // The stamp rides in the same command list as the creation, like the
         // birth options: two `set-option` processes fewer on every `session
         // create` (#1243). `{end}` still names the new window here, and the pane
         // id it would otherwise be written against is not known until the list
         // returns.
         let stamped = M::WINDOW_OPTIONS;
-        if stamped {
-            for (option, value) in [
-                (WINDOW_SESSION_OPTION, session_id),
-                (WINDOW_ROLE_OPTION, spec.role.as_str()),
-            ] {
-                if !value.is_empty() {
-                    tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
+        let run_new_window = || {
+            let mut tmux = self.new_window_command(
+                &window_name,
+                &create_target,
+                spec.command,
+                spec.args,
+                spec.cwd,
+                spec.env,
+            );
+            if stamped {
+                for (option, value) in [
+                    (WINDOW_SESSION_OPTION, session_id),
+                    (WINDOW_ROLE_OPTION, spec.role.as_str()),
+                ] {
+                    if !value.is_empty() {
+                        tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
+                    }
                 }
             }
+            tmux.output().map_err(|e| {
+                self.transport
+                    .launch_failure("Failed to run tmux new-window for headless spawn", e)
+            })
+        };
+        let mut output = run_new_window()?;
+        let deadline = std::time::Instant::now() + M::COLD_START_GRACE;
+        loop {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success()
+                || !M::RETRY_NO_SERVER_ERROR
+                || !mux_answered_absent(&stderr)
+                || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            // A "no server running" reply did not deliver new-window. A
+            // different error may mean it did create it.
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            output = run_new_window()?;
         }
-
-        let output = tmux.output().map_err(|e| {
-            self.transport
-                .launch_failure("Failed to run tmux new-window for headless spawn", e)
-        })?;
         // A server that does not answer is found by the window name — the only
         // handle that path has either way.
         let pane_id = if M::ONE_SHOT_SPAWN_ANSWERS {
