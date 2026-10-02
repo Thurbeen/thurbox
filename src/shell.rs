@@ -289,11 +289,53 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
 /// `/mnt/c/…` under default automount; there is no universally-valid Windows
 /// pin, and `--cd` would trade this edge case for a hard legacy failure).
 pub fn wsl_command(distro: &str) -> Command {
-    let mut cmd = Command::new("wsl.exe");
+    let mut cmd = wsl_exe();
     cmd.arg("-d").arg(distro);
     #[cfg(unix)]
     cmd.arg("--cd").arg("/");
     cmd
+}
+
+/// `wsl.exe` with no arguments yet, kept off the interface's terminal.
+///
+/// A `wsl.exe` child takes keyboard input from the console it is attached to
+/// even when its stdin, stdout and stderr are all redirected. Measured on
+/// Windows 11: a console reader received 0 of 8 keys while `wsl.exe -d <distro>
+/// sleep 40` ran beside it, and 8 of 8 when the same child was started with
+/// `CREATE_NO_WINDOW`. A control-mode connection is such a child for as long as
+/// a WSL session is attached, so the interface stopped answering the keyboard
+/// the moment one connected. Every `wsl.exe` thurbox starts talks to it over
+/// pipes only, so none of them needs the terminal.
+///
+/// Inside a WSL distro, where interop puts `wsl.exe` on `PATH`, the same child
+/// is started in a session of its own, so it has no controlling terminal to
+/// read either.
+pub fn wsl_exe() -> Command {
+    let mut cmd = Command::new("wsl.exe");
+    off_the_terminal(&mut cmd);
+    cmd
+}
+
+#[cfg(windows)]
+fn off_the_terminal(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    /// The child gets a console of its own, with no window, instead of ours.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(unix)]
+fn off_the_terminal(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setsid` is async-signal-safe, which is all `pre_exec` asks. It
+    // can only fail for a process group leader, which a freshly forked child is
+    // not, so its result is not checked.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]

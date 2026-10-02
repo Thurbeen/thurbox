@@ -80,7 +80,14 @@ in-distro shell like `ssh` does, so the same POSIX quoting
 (`control_mode.rs`) apply — only the one-time process launch differs. (An arg
 *containing whitespace* is preserved as one word, so multi-word `sh -c` scripts
 go through `wsl.exe --exec` instead — see `shell::wsl_command` /
-`git::host_shell_c`.) The local default multiplexer
+`git::host_shell_c`.) Every `wsl.exe` is started **off the interface's
+terminal** (`shell::wsl_exe`: `CREATE_NO_WINDOW` on Windows, `setsid` on Unix):
+a `wsl.exe` child reads its parent console's keyboard input even with all three
+stdio handles redirected, so the control-mode connection of an attached WSL
+session used to take every key — the interface kept painting and answered
+nothing (measured: 0 of 8 keys reached a console reader beside `wsl.exe … sleep`,
+8 of 8 with the flag; pinned by `tui_e2e`'s
+`the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached`). The local default multiplexer
 (`Multiplexer::default_for`) is **`tmux` on Linux/macOS and `psmux` on
 Windows**, but both adapters are registered on every machine and host
 (ADR-31) — psmux is a native-Windows, drop-in tmux clone (ConPTY, no WSL)
