@@ -1774,9 +1774,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// a later interface could not be scrolled at all: its alternate screen
     /// has no scrollback to scroll locally instead. See [`mouse_seed_bytes`].
     ///
-    /// Best-effort by construction: these are niceties and the history beside
-    /// them is not, so a mux that answers this differently (psmux is
-    /// unverified here) loses the line rather than the scrollback.
+    /// Best-effort by construction, and kept apart from the capture: a mux
+    /// that answers this differently (psmux is unverified here) loses the
+    /// activity line and the modes, never the scrollback.
     fn pane_state_seed(&self, pane_id: &str) -> Vec<u8> {
         // One query for all of it: a pane that never had a title set reads
         // back as the host's own short name, which is tmux's default rather
@@ -1791,7 +1791,7 @@ impl<M: TmuxCompatible> Server<M> {
         ]) {
             Ok(out) => out,
             Err(e) => {
-                debug!(pane = %pane_id, "could not read pane title: {e:#}");
+                debug!(pane = %pane_id, "could not read pane state: {e:#}");
                 return Vec::new();
             }
         };
