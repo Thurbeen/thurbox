@@ -65,7 +65,8 @@ pub enum State {
     /// Drawn on the last frame.
     Visible,
     /// Loaded, its slot placed, but another occupant holds it — or its column
-    /// is closed. Normal, and not a fault.
+    /// is closed, or it is an optional pane this arrangement leaves out.
+    /// Normal, and not a fault.
     Hidden,
     /// A float that is loaded and painting nothing at the moment.
     ///
@@ -258,7 +259,9 @@ pub fn rows(
                     // Asked before the slot question, because a float's slot is
                     // beside the point — it is not waiting for a column to open.
                     State::OnDemand
-                } else if placed.contains(&plugin.slot) {
+                } else if placed.contains(&plugin.slot) || plugin.optional {
+                    // An optional pane this arrangement leaves out is waiting
+                    // for a layout that places it, not broken.
                     State::Hidden
                 } else {
                     State::Unplaced

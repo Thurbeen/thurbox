@@ -25,6 +25,19 @@ local KEY = "panels."
 --- this panel starts as".
 local OPEN_AT_START = { sessions = true }
 
+--- Declare where one panel starts, for an arrangement whose default differs.
+---
+--- A preset that starts the list closed (`focus`) or a plugin column open
+--- (`ide`) says so here rather than reading "unset" its own way, so the
+--- panel's toggle and every pane asking `shown` agree with what is on screen —
+--- otherwise a toggle's first press would flip an unset state to the value it
+--- already appeared to have, and change nothing. Held in this module rather
+--- than in `store`: it is a property of the arrangement loaded now, and a
+--- switch of layout rebuilds the VM, so another preset never inherits it.
+function panels.starts(name, open)
+  OPEN_AT_START[name] = open == true
+end
+
 --- Open state of one panel. Unset reads as the panel's start state, which for
 --- everything but the session list is closed — v1's.
 function panels.shown(name)
@@ -60,13 +73,31 @@ function panels.toggle(name)
   return now
 end
 
---- Retired with the layout presets, and kept as a shim (`ui/AGENTS.md`: a
---- name `lib/` published stays). v2.32.0's agent pane asks it whether a shell
---- pane is on screen, and an edited copy of that pane is preserved across
---- upgrades. No arrangement places one any more, so the answer is always no,
---- and the pane keeps its Shell tab.
-function panels.placed(_slot)
-  return false
+--- The filled slots an arrangement does not name — the column an installed
+--- pane brings (a file tree, a queue) — sorted, so they keep their order from
+--- one frame to the next. `known` is the set the arrangement places itself.
+function panels.others(ctx, known)
+  local names = {}
+  if type(ctx.slots) == "table" then
+    for slot, filled in pairs(ctx.slots) do
+      if filled == true and not known[slot] then
+        names[#names + 1] = slot
+      end
+    end
+  end
+  table.sort(names)
+  return names
+end
+
+--- Did the last arrangement put `slot` on screen?
+---
+--- Written by the kernel (`placed.<slot>`) after arranging and before any pane
+--- renders, because only it knows. What it answers is not the toggle above:
+--- a slot can be open and still left out — a narrow screen, or a layout that
+--- never names it. The agent pane asks it about `shell` to decide whether its
+--- own Shell tab is needed.
+function panels.placed(slot)
+  return store["placed." .. slot] == true
 end
 
 return panels

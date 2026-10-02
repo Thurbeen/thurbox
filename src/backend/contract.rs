@@ -89,6 +89,12 @@ impl PaneSize {
     pub(in crate::backend) fn take_released(&self) -> bool {
         self.0.released.load(Ordering::Relaxed) && self.0.released.swap(false, Ordering::Relaxed)
     }
+
+    /// Mark the pane released again, so a retake that failed is tried on a
+    /// later frame rather than given up.
+    pub(in crate::backend) fn retry_released(&self) {
+        self.0.released.store(true, Ordering::Relaxed);
+    }
 }
 
 /// A pane's screen and history as its multiplexer holds them — enough to
@@ -660,6 +666,15 @@ pub trait SessionBackend: Send + Sync {
 
     /// Check if a session's process has exited.
     fn is_dead(&self, backend_id: &str) -> Result<bool>;
+
+    /// Whether a pane is dead *or no longer exists* — `Ok(true)` only on the
+    /// multiplexer's word, `Err` when it could not be asked. Distinct from
+    /// [`Self::is_dead`] because tmux answers that one for a pane it no longer
+    /// has with an empty line, which reads as alive. Called from the interface's
+    /// loop, so an implementation that reaches a remote host bounds the wait.
+    fn pane_gone(&self, backend_id: &str) -> Result<bool> {
+        self.is_dead(backend_id)
+    }
 
     /// Kill a pane and the window it is in — attached or not, so a
     /// teardown needs no interface. Idempotent: a pane already gone is what

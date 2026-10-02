@@ -69,6 +69,7 @@ Describe 'install.ps1 source' {
         @{ Name = 'Install-Archive' }
         @{ Name = 'Invoke-Install' }
         @{ Name = 'Show-Banner' }
+        @{ Name = 'Set-Layout' }
     ) {
         Get-Command -Name $Name -CommandType Function -ErrorAction SilentlyContinue |
             Should -Not -BeNullOrEmpty
@@ -263,5 +264,30 @@ Describe 'Install-Archive' {
         Set-Content -Path $old -Value 'stale' -NoNewline
         Install-Archive -ZipPath $script:Zip -Destination $script:Dest
         Test-Path $old | Should -BeFalse
+    }
+}
+
+Describe 'Set-Layout' {
+    It 'takes the preset from THURBOX_LAYOUT when no -Layout is passed' {
+        $env:THURBOX_LAYOUT = 'split-shell'
+        try {
+            . $script:ScriptPath
+            $Layout | Should -Be 'split-shell'
+        }
+        finally {
+            Remove-Item Env:\THURBOX_LAYOUT -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does nothing when thurbox-cli is not installed there' {
+        $empty = Join-Path ([System.IO.Path]::GetTempPath()) ('thurbox-layout-' + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $empty -Force | Out-Null
+        try {
+            $script:Layout = 'split-shell'
+            { Set-Layout $empty } | Should -Not -Throw
+        }
+        finally {
+            Remove-Item -Recurse -Force $empty -ErrorAction SilentlyContinue
+        }
     }
 }
