@@ -1320,7 +1320,8 @@ the action catalog revision. Plugin-owned details are limited to each plugin's
 optional `ui_state()` projection of small scalar values; the Lua store and
 terminal contents are never copied into this snapshot. `plugin_state` keys
 projections by plugin file path, so two panes with the same display name remain
-distinct. A command
+distinct. If a combined snapshot exceeds the local reply limit, the command
+returns an explicit `state_too_large` error. A command
 without `--instance` uses the sole reachable screen, or refuses with an
 ambiguity error listing IDs when several are running. `THURBOX_UI_INSTANCE`
 selects a default for scripts. Closed or crashed screens cannot be targeted;

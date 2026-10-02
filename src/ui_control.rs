@@ -82,6 +82,13 @@ pub struct Reply {
     pub result: Value,
 }
 
+impl Reply {
+    /// Whether this reply fits the local control transport's frame limit.
+    pub fn exceeds_limit(&self) -> bool {
+        serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_REPLY)
+    }
+}
+
 pub struct Pending {
     pub request_id: String,
     pub request: Request,

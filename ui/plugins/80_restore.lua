@@ -134,7 +134,7 @@ end
 return {
   name = "restore",
   ui_state = function()
-    return { open = is_open(), selection = state.cursor or 1 }
+    return { open = is_open(), selection = state[CURSOR .. ".cursor"] or 1 }
   end,
   -- A slot the arrangement never places: this only ever floats. It is a list of
   -- sessions that are NOT there, so it has no business taking a pane's rect.

@@ -212,6 +212,17 @@ fn the_list_is_closed_until_the_chord_opens_it() {
 }
 
 #[test]
+fn ui_state_tracks_the_restore_lists_selected_row() {
+    let host = host();
+    publish_in(&host, &snapshot());
+    press(&host, "ctrl+u");
+    let path = "plugins/80_restore.lua";
+    assert_eq!(host.ui_states()[path]["selection"], 1);
+    press(&host, "j");
+    assert_eq!(host.ui_states()[path]["selection"], 2);
+}
+
+#[test]
 fn a_row_carries_what_tells_two_deleted_sessions_apart() {
     // v1's row is `name (agent) 3m ago [wt]`. Each piece is the answer to a
     // different question — which agent ran it, whether this is the one deleted a

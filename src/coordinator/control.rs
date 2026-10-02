@@ -15,7 +15,7 @@ impl App {
         }
     }
 
-    pub(crate) fn refresh_control_state(&mut self) {
+    pub(crate) fn refresh_control_state(&mut self, force: bool) {
         if self.control.is_none() {
             return;
         }
@@ -26,6 +26,7 @@ impl App {
             self.modals.palette_query().map(str::to_owned),
         );
         if self.control_observed.is_some()
+            && !force
             && !self.input_dirty
             && self.control_state_version == state_version
             && self.control_registry_version == self.registry.version()
@@ -66,7 +67,16 @@ impl App {
                 let visible_indices: Vec<usize> = match self.host.slot_mode(&placed.slot) {
                     thurbox::kernel::layout::SlotMode::Stack => (0..members.len()).collect(),
                     thurbox::kernel::layout::SlotMode::Switch => {
-                        let selection = self.slot_selection.get(&placed.slot).copied().unwrap_or(0);
+                        let selection = members
+                            .iter()
+                            .position(|index| self.host.focusable().get(self.focus) == Some(index))
+                            .unwrap_or_else(|| {
+                                self.slot_selection
+                                    .get(&placed.slot)
+                                    .copied()
+                                    .unwrap_or(0)
+                                    .min(members.len().saturating_sub(1))
+                            });
                         (selection < members.len())
                             .then_some(selection)
                             .into_iter()
@@ -176,7 +186,7 @@ impl App {
     }
 
     fn control_watch(&mut self, since: Option<u64>) -> Value {
-        self.refresh_control_state();
+        self.refresh_control_state(true);
         let Some(since) = since else {
             return json!({"kind": "snapshot", "revision": self.control_revision, "state": self.control_state(), "events": []});
         };
@@ -229,7 +239,7 @@ impl App {
                     match self.control_action(&name, &args) {
                         Ok(()) => {
                             self.note_input();
-                            self.refresh_control_state();
+                            self.refresh_control_state(true);
                             self.control_event("action.completed", json!({"action": name, "request_id": &pending.request_id, "ok": true}));
                             json!({"ok": true, "state": self.control_state()})
                         }
@@ -244,7 +254,7 @@ impl App {
                 }
             };
             let revision = result["revision"].as_u64().unwrap_or(self.control_revision);
-            let _ = pending.reply.send(Reply {
+            let mut reply = Reply {
                 instance_id: self
                     .control
                     .as_ref()
@@ -255,12 +265,22 @@ impl App {
                 request_id: pending.request_id,
                 revision,
                 result,
-            });
+            };
+            if reply.exceeds_limit() {
+                reply.result = json!({
+                    "ok": false,
+                    "error": {
+                        "code": "state_too_large",
+                        "message": "UI state exceeds local reply limit",
+                    }
+                });
+            }
+            let _ = pending.reply.send(reply);
         }
     }
 
     fn control_state(&mut self) -> Value {
-        self.refresh_control_state();
+        self.refresh_control_state(true);
         let mut state = self.control_observed.clone().unwrap_or_else(|| json!({}));
         state["instance_id"] = json!(self.control.as_ref().expect("control server").instance.id);
         state["revision"] = json!(self.control_revision);

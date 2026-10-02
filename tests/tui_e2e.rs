@@ -1187,6 +1187,195 @@ fn ui_state_and_watch_report_modal_changes_only_for_the_target_instance() {
 }
 
 #[test]
+fn ui_state_reads_plugin_local_changes_without_store_writes() {
+    let interface = interface_plus(
+        "91_counter.lua",
+        r#"local count = 0
+return {
+  name = "counter",
+  slot = "sessions",
+  render = function()
+    count = count + 1
+    return { type = "text", text = "" }
+  end,
+  ui_state = function() return { count = count } end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    let state = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON")
+    };
+    let first = state();
+    std::thread::sleep(Duration::from_millis(700));
+    let second = state();
+    assert!(
+        second["plugin_state"]["plugins/91_counter.lua"]["count"]
+            .as_u64()
+            .unwrap()
+            > first["plugin_state"]["plugins/91_counter.lua"]["count"]
+                .as_u64()
+                .unwrap()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_state_reports_the_focused_switch_pane_after_it_is_drawn() {
+    let interface = interface_plus(
+        "21_alt.lua",
+        r#"return {
+  name = "alternate",
+  slot = "center",
+  focusable = true,
+  render = function() return { type = "text", text = "ALT PANE" } end,
+  keys = {
+    { key = "ctrl+b", action = "alternate.focus", desc = "focus alternate", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "alternate.focus" then
+      command("focus", { text = "alternate" })
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    let state = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON")
+    };
+    tui.send(b"\x02");
+    let deadline = Instant::now() + WAIT;
+    let after = loop {
+        let current = state();
+        if current["focused_pane"] == "alternate" {
+            break current;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "alternate pane did not take focus"
+        );
+    };
+    assert_eq!(after["focused_pane"], "alternate");
+    let center = after["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|slot| slot["slot"] == "center")
+        .expect("center slot");
+    assert_eq!(
+        center["visible_pane_ids"],
+        serde_json::json!(["plugins/21_alt.lua"])
+    );
+    tui.wait_for("ALT PANE");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_watch_exits_cleanly_when_its_reader_closes() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let mut watcher = cmd
+        .args(["--json", "ui", "watch"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("watch stream");
+    let stdout = watcher.stdout.take().expect("watch stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    use std::io::BufRead;
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("snapshot line");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&first).unwrap()["kind"],
+        "snapshot"
+    );
+    drop(reader);
+    tui.send(F1);
+    tui.wait_for("Keybindings");
+    let deadline = Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = watcher.try_wait().expect("watch exit") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watch did not stop after a closed pipe"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    assert!(
+        status.success(),
+        "closed reader is a normal end to the stream"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn ui_state_reports_an_explicit_error_when_the_snapshot_exceeds_the_reply_limit() {
+    let interface = interface_plus(
+        "90_bulk_00.lua",
+        r#"return {
+  name = "bulk00", slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  ui_state = function()
+    local result = {}
+    for i = 1, 16 do result["key" .. i] = string.rep("x", 256) end
+    return result
+  end,
+}"#,
+    );
+    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
+        .expect("bulk plugin");
+    for index in 1..70 {
+        std::fs::write(
+            interface
+                .path()
+                .join(format!("plugins/90_bulk_{index:02}.lua")),
+            source.replace("bulk00", &format!("bulk{index:02}")),
+        )
+        .expect("bulk plugin");
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No active sessions");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+    assert!(!output.status.success(), "large state must be rejected");
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        message.contains("UI state exceeds local reply limit"),
+        "{message}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_paste_lands_in_the_search_strip() {
     // A paste goes where the caret is. It used to go to the terminal behind
     // the strip — or, with no terminal on screen, nowhere — because only a
