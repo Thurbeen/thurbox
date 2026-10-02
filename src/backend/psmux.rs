@@ -73,6 +73,10 @@ impl TmuxCompatible for Psmux {
     const COMMAND_LISTS: bool = false;
     const COMMAND_LIST_SINGLE_REPLY: bool = false;
 
+    // A cold psmux server can refuse `new-session` or disappear before the
+    // first `set-option`, even when its `new-session` client exited successfully.
+    const COLD_START_ATTEMPTS: usize = 3;
+
     /// psmux's `new-window -P -F` support is unverified against the documented
     /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path
     /// targets the session and finds the window by its name.
@@ -732,6 +736,55 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_retries_a_failed_cold_session_bootstrap() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("psmux-probe");
+        let session = root.path().join("session");
+        let attempts = root.path().join("attempts");
+        let script = format!(
+            "#!/bin/sh\n\
+             session='{}'\n\
+             attempts='{}'\n\
+             [ \"$1\" = -L ] && shift 2\n\
+             case \"$1\" in\n\
+               -V) echo 'psmux 3.3.8' ;;\n\
+               has-session) test -f \"$session\" ;;\n\
+               new-session)\n\
+                 if [ ! -f \"$attempts\" ]; then\n\
+                   echo first > \"$attempts\"\n\
+                   echo \"psmux: failed to create session 'thurbox'\" >&2\n\
+                   exit 1\n\
+                 fi\n\
+                 echo second >> \"$attempts\"\n\
+                 touch \"$session\" ;;\n\
+               set-option) test -f \"$session\" ;;\n\
+               *) exit 2 ;;\n\
+             esac\n",
+            session.display(),
+            attempts.display()
+        );
+        std::fs::write(&mux, script).expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let backend = PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "private-socket",
+            "thurbox",
+            "local:psmux",
+        );
+
+        backend
+            .ensure_session_configured()
+            .expect("cold psmux session recovers");
+        assert_eq!(
+            std::fs::read_to_string(attempts).unwrap(),
+            "first\nsecond\n"
+        );
+    }
 
     #[test]
     fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {

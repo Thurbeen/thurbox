@@ -74,6 +74,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// one response block rather than one block per command.
     const COMMAND_LIST_SINGLE_REPLY: bool;
 
+    /// Attempts to start a missing session when the server disappears during
+    /// cold bootstrap. A stable server still takes the usual single pass.
+    const COLD_START_ATTEMPTS: usize = 1;
+
     /// Whether a one-shot `new-window -a -t <session>:{end} -P -F` appends the
     /// window last and answers with its pane — what the headless spawn stamps
     /// and retains it by.
@@ -1162,7 +1166,27 @@ impl<M: TmuxCompatible> Server<M> {
     /// mode) and the headless spawn paths ([`create_local_window`],
     /// [`SessionBackend::ensure_heartbeat`]) that drive tmux via one-shot commands and
     /// must not open a control-mode connection.
-    fn ensure_session_configured(&self) -> Result<()> {
+    pub(in crate::backend) fn ensure_session_configured(&self) -> Result<()> {
+        for attempt in 1..M::COLD_START_ATTEMPTS {
+            match self.ensure_session_configured_once() {
+                Ok(()) => return Ok(()),
+                Err(e)
+                    if !crate::agent::preflight::is_missing_dependency(&e)
+                        && !self.session_exists() =>
+                {
+                    debug!(
+                        "{} cold session bootstrap attempt {attempt} lost its server: {e:#}",
+                        self.name
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.ensure_session_configured_once()
+    }
+
+    fn ensure_session_configured_once(&self) -> Result<()> {
         // The common case — the session is there — asked and configured in one
         // process: `has-session` failing stops the list before any option is
         // set, and the path below then says why.
