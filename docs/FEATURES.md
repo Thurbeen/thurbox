@@ -280,7 +280,8 @@ moved fall back to creation order:
   selected host and `l` unfolds it; clicking its row toggles it. A folded row
   shows `S` for sessions, `W` for working, `I` for idle, and `!` for attention
   beside the host name. Up/down navigation skips the hidden sessions. Searching
-  temporarily reveals them, and the fold choice returns when search closes.
+  temporarily reveals them; Esc restores the fold, while accepting a hit
+  unfolds its host so the selected session stays visible.
   Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
   they survive a restart. The host uses Nerd Font `` when the active theme
   enables Nerd Font glyphs, and `▣` otherwise. SSH, WSL and Windows hosts have
