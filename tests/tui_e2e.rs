@@ -695,6 +695,50 @@ fn an_unavailable_control_socket_does_not_abort_the_tui() {
 }
 
 #[test]
+fn a_queued_startup_notice_waits_for_an_active_error() {
+    let interface = interface_plus(
+        "91_error.lua",
+        r#"return {
+  name = "error_probe",
+  slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  keys = {
+    { key = "ctrl+g", action = "error_probe.say", desc = "say error", scope = "global" },
+  },
+  on_action = function(action)
+    if action == "error_probe.say" then
+      command("message", { text = "active error probe", level = "error" })
+      return true
+    end
+    return false
+  end,
+}"#,
+    );
+    let profile = Profile::new();
+    let long_data = profile.path("data").join("x".repeat(100));
+    std::fs::create_dir_all(&long_data).expect("long data path");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("interface from");
+    tui.send(b"\x07");
+    tui.wait_for("active error probe");
+    for tick in 0..70 {
+        if tick % 10 == 0 {
+            tui.send(b"\x07");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !tui.frame().contains("local UI control unavailable"),
+            "startup notice replaced an active error"
+        );
+    }
+    tui.wait_for("local UI control unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn stale_discovery_entries_do_not_hide_a_live_tui() {
     let profile = Profile::new();
     let directory = profile.path("data/ui-control");

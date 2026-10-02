@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 
-use thurbox::kernel::bands::{Band, BandState};
+use thurbox::kernel::bands::{Band, BandState, Level};
 use thurbox::kernel::host::RenderContext;
 use thurbox::kernel::layout::{resolve, SlotMode};
 use thurbox::kernel::node::{Axis, Identity};
@@ -434,12 +434,21 @@ impl App {
             .startup_notice_due
             .is_some_and(|due| Instant::now() >= due)
         {
-            if let Some(notice) = self.startup_notices.pop_front() {
-                self.toast(notice);
+            // An active error gets its full display interval; ordinary status
+            // traffic cannot keep a boot warning hidden.
+            let active_error = self.status.as_ref().and_then(|(_, level, at)| {
+                (*level == Level::Error && at.elapsed() < STATUS_TTL).then_some(*at + STATUS_TTL)
+            });
+            if let Some(until) = active_error {
+                self.startup_notice_due = Some(until);
+            } else {
+                if let Some(notice) = self.startup_notices.pop_front() {
+                    self.toast(notice);
+                }
+                self.startup_notice_due =
+                    (!self.startup_notices.is_empty()).then(|| Instant::now() + STATUS_TTL);
+                self.changed_this_frame = true;
             }
-            self.startup_notice_due =
-                (!self.startup_notices.is_empty()).then(|| Instant::now() + STATUS_TTL);
-            self.changed_this_frame = true;
         }
 
         // Settled: nothing moved this frame, so stop repainting until
