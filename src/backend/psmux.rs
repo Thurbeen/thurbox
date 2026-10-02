@@ -2,8 +2,8 @@
 //!
 //! psmux is a native-Windows clone of tmux that speaks its command and
 //! control-mode protocol — with the divergences measured against it (ADR-13)
-//! and kept here: its keystrokes go as key-names and `-l` literals (it has no
-//! `send-keys -H`), a paste through its own `send-paste`, a window's command and
+//! and kept here: its keystrokes go as key-names and `-l` literals (compatible
+//! with versions before `send-keys -H`), a paste through its own `send-paste`, a window's command and
 //! environment as one PowerShell token, and its server option scope, version
 //! floor and control-mode framing are its own. What it shares with tmux is
 //! [`Server`]; nothing here is tmux's, and nothing in the shared code asks
@@ -399,16 +399,23 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
 /// Build the psmux-compatible `send-keys` command line(s) for `buf`.
 ///
 /// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
-/// `Escape`, `BSpace`, `C-<letter>`, …) but not tmux's `-H` hex flag. Encode the
-/// exact byte stream with those primitives: contiguous printable/UTF-8 runs go
-/// out as one `-l` literal command, each control byte as its key-name. Because
-/// every key-name injects exactly the byte it stands for, multi-byte sequences
-/// round-trip — an arrow key (`\x1b[A`) becomes `Escape` then literal `[A`,
-/// which the pane's PTY receives back as `\x1b[A`.
+/// `Escape`, `BSpace`, `C-<letter>`, …). Encode the
+/// input with those primitives: contiguous printable/UTF-8 runs go
+/// out as one `-l` literal command, each control byte as its key-name. Navigation
+/// sequences use one named key command: splitting ESC from the rest makes psmux
+/// dispatch a standalone Escape before the arrow sequence reaches the pane.
 pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     let mut cmds = Vec::new();
     let mut literal: Vec<u8> = Vec::new();
-    for &b in buf {
+    let mut i = 0;
+    while i < buf.len() {
+        if let Some((len, name)) = psmux_navigation_key(&buf[i..]) {
+            flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+            cmds.push(format!("send-keys -t {pane_id} {name}\n"));
+            i += len;
+            continue;
+        }
+        let b = buf[i];
         match psmux_key_name(b) {
             Some(name) => {
                 flush_psmux_literal(pane_id, &mut literal, &mut cmds);
@@ -416,9 +423,83 @@ pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
             }
             None => literal.push(b),
         }
+        i += 1;
     }
     flush_psmux_literal(pane_id, &mut literal, &mut cmds);
     cmds
+}
+
+/// Recognize the xterm navigation encodings produced by `key_to_bytes`, plus
+/// SS3 cursor keys when an application has enabled DECCKM. psmux owns the
+/// pane's cursor mode and emits the right form for an unmodified named key.
+fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
+    let prefix = buf.get(..2)?;
+    if prefix != b"\x1b[" && prefix != b"\x1bO" {
+        return None;
+    }
+    let body = &buf[2..];
+    let key = |suffix| match suffix {
+        b'A' => Some("Up"),
+        b'B' => Some("Down"),
+        b'C' => Some("Right"),
+        b'D' => Some("Left"),
+        b'H' => Some("Home"),
+        b'F' => Some("End"),
+        _ => None,
+    };
+    if let Some(&suffix) = body.first() {
+        if let Some(name) = key(suffix) {
+            return Some((3, name.to_string()));
+        }
+    }
+    if prefix[1] != b'[' {
+        return None;
+    }
+    if body.len() >= 2 && body[1] == b'~' {
+        let name = match body[0] {
+            b'5' => "PageUp",
+            b'6' => "PageDown",
+            _ => return None,
+        };
+        return Some((4, name.to_string()));
+    }
+    // The longest supported form has four bytes after CSI (for example 5;5~).
+    let nav = &body[..body.len().min(4)];
+    let semicolon = nav.iter().position(|&b| b == b';')?;
+    let suffix_pos = nav
+        .iter()
+        .position(|&b| matches!(b, b'A'..=b'D' | b'H' | b'F' | b'~'))?;
+    if suffix_pos <= semicolon || suffix_pos != semicolon + 2 {
+        return None;
+    }
+    let modifier = body[semicolon + 1];
+    if !(b'2'..=b'8').contains(&modifier) {
+        return None;
+    }
+    let base = if body[suffix_pos] == b'~' {
+        match &body[..semicolon] {
+            b"5" => "PageUp",
+            b"6" => "PageDown",
+            _ => return None,
+        }
+    } else if &body[..semicolon] == b"1" {
+        key(body[suffix_pos])?
+    } else {
+        return None;
+    };
+    let bits = modifier - b'1';
+    let mut name = String::new();
+    if bits & 4 != 0 {
+        name.push_str("C-");
+    }
+    if bits & 2 != 0 {
+        name.push_str("M-");
+    }
+    if bits & 1 != 0 {
+        name.push_str("S-");
+    }
+    name.push_str(base);
+    Some((suffix_pos + 3, name))
 }
 
 /// Map a control byte to the psmux key-name that injects exactly that byte, or
@@ -875,7 +956,7 @@ mod tests {
 
     // --- psmux send-keys encoding tests ---
     //
-    // Regression: psmux has no `send-keys -H`, so on Windows the hex path
+    // Regression: psmux 3.3.6 has no `send-keys -H`, so on Windows the hex path
     // injected the literal text "62" when the user typed `b` (0x62), and Enter /
     // Backspace did nothing. The psmux encoding must use `-l` literals + key-names.
 
@@ -937,14 +1018,49 @@ mod tests {
     }
 
     #[test]
-    fn psmux_arrow_sequence_splits_escape_then_literal() {
-        // An arrow key arrives as `\x1b[A`; psmux reconstructs the same bytes
-        // from `Escape` + literal `[A`.
+    fn psmux_navigation_sequences_use_one_named_key() {
+        for (bytes, name) in [
+            (&b"\x1b[A"[..], "Up"),
+            (&b"\x1b[B"[..], "Down"),
+            (&b"\x1b[C"[..], "Right"),
+            (&b"\x1b[D"[..], "Left"),
+            (&b"\x1bOA"[..], "Up"),
+            (&b"\x1bOB"[..], "Down"),
+            (&b"\x1bOC"[..], "Right"),
+            (&b"\x1bOD"[..], "Left"),
+            (&b"\x1b[H"[..], "Home"),
+            (&b"\x1b[F"[..], "End"),
+            (&b"\x1b[5~"[..], "PageUp"),
+            (&b"\x1b[6~"[..], "PageDown"),
+            (&b"\x1b[1;5A"[..], "C-Up"),
+            (&b"\x1b[1;2D"[..], "S-Left"),
+            (&b"\x1b[5;5~"[..], "C-PageUp"),
+            (&b"\x1b[6;2~"[..], "S-PageDown"),
+        ] {
+            assert_eq!(
+                psmux_send_keys_commands("%1", bytes),
+                vec![format!("send-keys -t %1 {name}\n")],
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn psmux_navigation_keeps_adjacent_text_and_unrecognized_sequences() {
         assert_eq!(
-            psmux_send_keys_commands("%1", b"\x1b[A"),
+            psmux_send_keys_commands("%1", b"a\x1b[DZ"),
             vec![
-                "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l -N 1 \"[A\"\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"a\"\n",
+                "send-keys -t %1 Left\n",
+                "send-keys -t %1 -l -N 1 \"Z\"\n",
+            ]
+        );
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"\x1b[200~"),
+            vec![
+                "send-keys -t %1 Escape\n",
+                "send-keys -t %1 -l -N 1 \"[200~\"\n"
             ]
         );
     }
