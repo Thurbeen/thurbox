@@ -439,6 +439,9 @@ end
 --- Go to a result: keep the preview, close, and land in the terminal.
 local function activate(search, row)
   preview(search, row, true)
+  -- Closing hides the query before the sessions pane rebuilds. Mark an
+  -- accepted hit so it can uncover a folded host; Esc leaves this unset.
+  store["search.accepted_session"] = row and row.session or nil
   close(search, true)
   -- v1's Enter lands you IN the result: a session result focuses that
   -- session's terminal, not the row you picked it from.

@@ -2797,6 +2797,54 @@ fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
     assert!(reopened.quit().success());
 }
 
+#[test]
+fn activating_a_search_hit_inside_a_folded_host_keeps_that_session_selected() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.wait_for("example-ssh");
+    tui.wait_for("probe");
+    tui.send(b"\x08");
+    tui.send(b"j");
+    tui.send(b"h");
+    tui.wait_until("the host to fold", |frame| {
+        frame.contains("example-ssh") && !frame.contains("probe")
+    });
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"probe");
+    tui.wait_until("the folded child to appear in search", |frame| {
+        frame.contains("probe") && frame.contains("example-ssh")
+    });
+    tui.send(b"\r");
+    tui.wait_gone("Search");
+    let probe_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("database")
+        .get_session_by_name("probe")
+        .expect("read probe")
+        .expect("probe")
+        .id
+        .to_string();
+    tui.wait_until("the accepted remote session to stay selected", |frame| {
+        if !frame.contains("⇅ probe") {
+            return false;
+        }
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd
+            .args(["--json", "ui", "state"])
+            .output()
+            .expect("ui state");
+        output.status.success()
+            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|state| state["selected_session"].as_str().map(str::to_string))
+                .as_deref()
+                == Some(probe_id.as_str())
+    });
+    assert!(tui.quit().success());
+}
+
 /// The same, with the binary's environment adjusted — for the cases where what
 /// is being tested is what thurbox does with the machine it thinks it is on.
 fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {

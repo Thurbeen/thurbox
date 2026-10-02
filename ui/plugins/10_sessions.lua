@@ -547,7 +547,9 @@ local function model()
     -- focus request, so let the saved fold resume when the strip closes.
     state["sessions.follow"] = nil
   end
-  local wanted = store.focus_session
+  local accepted = store["search.accepted_session"]
+  store["search.accepted_session"] = nil
+  local wanted = accepted or store.focus_session
   if not wanted and not search_open and not search_closed then
     wanted = state["sessions.follow"]
     if not wanted and store.selected ~= state["sessions.published"] then

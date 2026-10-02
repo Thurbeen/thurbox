@@ -193,6 +193,26 @@ fn search_preview_does_not_save_an_unfold_before_the_query_is_published() {
 }
 
 #[test]
+fn accepted_search_result_unfolds_its_host_before_the_cursor_settles() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_bool("panels.search", true);
+    host.set_shared_string("search.query", "remote-beta");
+    host.set_shared_string("selected", "remote-b");
+    list_text(&host, &snapshot, &registry);
+    host.set_shared_bool("panels.search", false);
+    host.set_shared_string("search.query", "");
+    host.set_shared_string("search.accepted_session", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("remote-beta"), "{frame}");
+    assert_eq!(host.shared_string("selected").as_deref(), Some("remote-b"));
+}
+
+#[test]
 fn focus_request_reveals_a_child_of_a_folded_host() {
     let host = host();
     let snapshot = hosted();
