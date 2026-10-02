@@ -227,7 +227,9 @@ hold, **scrollback included**, matched by the kernel on a worker).
 - **In-place highlighting**: the strip publishes the ids it found as
   `store["search.matches"]`; the session list dims every other row and lights its
   own name matches through the same grammar.
-- Keys: `ctrl+/` open (global), `up`/`down`, `pageup`/`pagedown`, `enter`, `tab`
+- Keys: `ctrl+/` toggles the strip (global); `thurbox-cli ui action search.open`
+  opens it and sets a query without toggling it closed. `up`/`down`,
+  `pageup`/`pagedown`, `enter`, `tab`
   (everything → text → names), `esc` (puts back selection and scroll). The query
   is a `lib.textinput` field, so it edits like a shell line — `ctrl+a/e/b/f/d/w/u/k`,
   `alt+b/f/d`, `ctrl`/`alt` with the arrows, `backspace` and `delete` (the table in
@@ -272,4 +274,3 @@ So a review plugin has its data layer waiting for it. Two rules from the v1 desi
 still apply if you build one: **1 logical diff row = 1 selectable unit** (wrapping
 expands only *visual* rows; selection and comment anchoring stay logical), and the
 diff types stay in `session` (architecture rule).
-

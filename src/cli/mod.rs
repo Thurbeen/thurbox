@@ -7,7 +7,8 @@
 //!
 //! The CLI is intentionally thin: it parses arguments, calls into
 //! `storage::Database`, `session_ops`, or a session's backend through the
-//! registry it is handed, and prints the result. No TUI, no event loop.
+//! registry it is handed, and prints the result. It hosts no TUI or event loop;
+//! `ui` sends bounded requests to a separately running interface.
 //!
 //! It is also an **AXI** (`axi/1.0-2026-07`, <https://axi.md>) — an interface
 //! shaped for an agent rather than for a person at a keyboard. Four of that
@@ -61,6 +62,7 @@ pub mod session_ref;
 pub mod sessions;
 pub mod tasks;
 pub mod toon;
+pub mod ui;
 pub mod update;
 pub mod version;
 pub mod watch;
@@ -202,6 +204,7 @@ Examples:
   thurbox-cli session list                     every session, with status and branch
   thurbox-cli session create --name fix-ci --repo-path . --worktree-branch fix/ci
   thurbox-cli session capture <id> --lines 50  what an agent's pane is showing
+  thurbox-cli ui instances --json            running local interface IDs
   thurbox-cli agent launch-args claude          what to run so its hooks report
   thurbox-cli message send --to <id> --kind result --body 'done'
   thurbox-cli session list --json | jq         full records for a script
@@ -284,6 +287,14 @@ pub enum Command {
     Plugin {
         #[command(subcommand)]
         action: plugins::Action,
+    },
+    /// Control a running local interface instance.
+    Ui {
+        /// Select a particular interface instance.
+        #[arg(long)]
+        instance: Option<String>,
+        #[command(subcommand)]
+        action: ui::Action,
     },
     /// Whether this machine has what a session needs: the multiplexer, each
     /// registered agent's command, and the launcher for every configured host.
@@ -515,6 +526,7 @@ fn dispatch(
         Command::Runtime { action } => runtime::run(action, backends),
         // The only command that needs no database: a plugin is a file.
         Command::Plugin { action } => plugins::run(action)?,
+        Command::Ui { instance, action } => ui::run(instance, action)?,
         // Reads the machine, not the database: what is installed is not
         // something thurbox recorded.
         Command::Doctor => doctor::run()?,

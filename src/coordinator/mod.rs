@@ -18,6 +18,7 @@
 pub(crate) mod boot;
 pub(crate) mod chrome;
 mod commands;
+mod control;
 mod draw;
 pub(crate) mod editor;
 pub(crate) mod events;
@@ -82,6 +83,7 @@ impl App {
             self.sync_terminals_and_agents();
             self.serve_worker_stores();
             self.apply_external_requests();
+            self.serve_ui_control();
             // After everything above has published and before the paint, so a
             // handler sees this iteration's state and its writes land in the
             // frame about to be painted. A no-op while nothing is queued.

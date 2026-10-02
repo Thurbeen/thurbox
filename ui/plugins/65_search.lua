@@ -39,7 +39,8 @@ local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
 local NAME = "search"
-local OPEN = "search.open"
+local OPEN = "search.toggle"
+local OPEN_API = "search.open"
 local NEXT, PREVIOUS = "search.next", "search.previous"
 local PAGE_DOWN, PAGE_UP = "search.page_down", "search.page_up"
 local ACTIVATE, CANCEL = "search.activate", "search.cancel"
@@ -720,6 +721,9 @@ return {
     { key = "tab", action = SCOPE, desc = "search everything / text / names", group = "Search" },
     { key = "esc", action = CANCEL, desc = "close and put back", group = "Search" },
   },
+  commands = {
+    { action = OPEN_API, desc = "open search with a supplied query" },
+  },
 
   render = function(ctx)
     local width, height = ctx.width or 0, ctx.height or 0
@@ -826,7 +830,33 @@ return {
     return true
   end,
 
-  on_action = function(action)
+  on_action = function(action, args)
+    -- Older keybinding overrides still name search.open and pass no query.
+    if action == OPEN_API and (type(args) ~= "table" or args.query == nil) then
+      action = OPEN
+    end
+    if action == OPEN_API then
+      local requested = args.query
+      if type(requested) ~= "string" then
+        return false
+      end
+      local search = load()
+      if not panels.shown(NAME) then
+        search.snapshot = {
+          selected = store.selected,
+          sessions_shown = panels.shown("sessions"),
+        }
+        search.revealed = nil
+        panels.show(NAME)
+      end
+      textinput.set(search.field, requested)
+      search.cursor = 1
+      search.previewed = nil
+      store[QUERY] = requested
+      save(search)
+      command("focus", { text = NAME })
+      return true
+    end
     if action == OPEN then
       -- A second press closes it, as every other panel key does. Cancelling
       -- rather than keeping, since nothing was chosen.

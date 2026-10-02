@@ -230,7 +230,7 @@ path, top, digest = sys.argv[1], sys.argv[2], sys.argv[3]
 json.dump(
     {
         "bindings": {
-            "search.open": "ctrl+a",
+            "search.toggle": "ctrl+a",
             "settings.open": "ctrl+b",
             "tasks.open": "ctrl+e",
             "top.open": "ctrl+w",

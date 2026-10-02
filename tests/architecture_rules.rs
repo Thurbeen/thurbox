@@ -369,6 +369,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "sync",
             "paths",
             "notifications",
+            "ui_control",
         ],
         // `kernel` for the two subcommands that drive the *interface's* own
         // files — `plugin` (`check` loads the real host: the failures worth
@@ -450,6 +451,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
+    ModuleRules {
+        name: "ui_control",
+        allowed: &["paths"],
+        allowed_path_only: &[],
+    },
     // `session` for the one conversion from a host entry to its launcher
     // (`HostLauncher::for_host`), which every remote command shares.
     ModuleRules {
@@ -482,6 +488,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session_ops",
             "shell",
             "storage",
+            "ui_control",
         ],
         allowed_path_only: &[],
     },

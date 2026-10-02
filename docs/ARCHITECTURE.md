@@ -2517,3 +2517,26 @@ is now governed file by file, so a consumer names the agent config it reads.
 `scripts/dev/e2e/windows-vm.sh` reads the psmux gate from `thurbox-cli runtime
 status --json` (`hook_status`) instead of grepping the source. psmux status
 over a live Windows host is still unproven, and stays off.
+
+## ADR-33: A running interface owns its local control endpoint
+
+**Choice**: each TUI has a random instance ID and a local socket or named pipe,
+separate from the session backend. Discovery is scoped to the data profile and
+probes each endpoint before offering it as a target. With several reachable
+interfaces, a caller must select an ID. The transport worker bounds request
+size, clients, queue depth and wait time, then hands typed requests to the
+coordinator. Only the coordinator reads UI state or invokes Lua, and it replies
+after applying or refusing the request.
+
+**Why**: several interfaces can display the same database while each owns its
+own focus and search state. The older `session focus` metadata slot is claimed
+by one unspecified interface and cannot acknowledge which screen changed.
+Routing through a backend would confuse a session's persistent terminal with
+the ephemeral interface drawing it.
+
+**First slice**: `session.focus` checks the target's snapshot and selects the
+session there; `search.open` sets a query through the loaded search plugin and
+is idempotent. `ui state` reports focus, selection and query. Lua action handlers
+may receive a read-only typed argument table as a second parameter; existing
+one-parameter handlers continue to work. The broader catalog, UI event stream
+and destructive actions remain separate work.

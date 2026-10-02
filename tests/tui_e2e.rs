@@ -29,6 +29,7 @@
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -649,6 +650,165 @@ fn the_search_strip_opens_with_focus_in_it() {
     tui.send(ESC);
     tui.wait_gone("Search zq");
     assert!(tui.quit().success());
+}
+
+#[test]
+fn local_ui_control_targets_one_of_two_live_instances() {
+    let Some((profile, mut first)) = shell_session() else {
+        return;
+    };
+    let mut second = Tui::spawn(&profile, 40, 120);
+    second.wait_for("probe");
+    let cli = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json"]).args(args).output().expect("run cli");
+        (
+            output.status,
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
+        )
+    };
+    let deadline = Instant::now() + WAIT;
+    let ids = loop {
+        let (status, value) = cli(&["ui", "instances"]);
+        if status.success() {
+            let entries = value["instances"].as_array().expect("instances array");
+            if entries.len() == 2 {
+                let id_for = |pid| {
+                    entries
+                        .iter()
+                        .find(|row| row["pid"] == pid)
+                        .and_then(|row| row["id"].as_str())
+                        .expect("instance PID")
+                        .to_owned()
+                };
+                break vec![id_for(first.child.id()), id_for(second.child.id())];
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "two live instances were not discovered"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    let (status, ambiguous) = cli(&["ui", "state"]);
+    assert!(!status.success());
+    assert!(ambiguous["error"].to_string().contains("ambiguous"));
+    let directory = profile.path("data/ui-control");
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for id in &ids {
+        let socket = directory.join(format!("{id}.sock"));
+        assert_eq!(
+            std::fs::metadata(socket).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let (status, absent) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        "00000000-0000-0000-0000-000000000000",
+    ]);
+    assert!(!status.success());
+    assert!(absent["error"]
+        .to_string()
+        .contains("not in this interface"));
+    let (status, invalid) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        "not-a-uuid",
+    ]);
+    assert!(!status.success());
+    assert!(invalid["error"].to_string().contains("must be a UUID"));
+
+    let (status, receipt) = cli(&[
+        "ui",
+        "--instance",
+        &ids[0],
+        "action",
+        "search.open",
+        "--query",
+        "one",
+    ]);
+    assert!(status.success());
+    assert_eq!(receipt["instance_id"], ids[0]);
+    assert!(receipt["request_id"].as_str().is_some());
+    assert_eq!(receipt["result"]["ok"], true);
+    assert_eq!(receipt["revision"], receipt["result"]["state"]["revision"]);
+    first.wait_for("Search one");
+    assert!(!second.frame().contains("Search one"));
+    let (status, state) = cli(&["ui", "--instance", &ids[0], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "one");
+    assert_eq!(state["focused_pane"], "search");
+
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "search.open",
+        "--query",
+        "two",
+    ]);
+    assert!(status.success());
+    second.wait_for("Search two");
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "two");
+    let revision = state["revision"].clone();
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "search.open",
+        "--query",
+        "two",
+    ]);
+    assert!(status.success());
+    second.wait_for("Search two");
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["search_query"], "two");
+    assert_eq!(state["revision"], revision);
+
+    let (status, sessions) = cli(&["session", "list"]);
+    assert!(status.success());
+    let session = sessions[0]["id"].as_str().expect("session id");
+    let (status, _) = cli(&[
+        "ui",
+        "--instance",
+        &ids[1],
+        "action",
+        "session.focus",
+        "--session",
+        session,
+    ]);
+    assert!(status.success());
+    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(status.success());
+    assert_eq!(state["selected_session"], session);
+    assert_eq!(state["focused_pane"], "agent");
+    let (status, first_state) = cli(&["ui", "--instance", &ids[0], "state"]);
+    assert!(status.success());
+    assert_eq!(first_state["search_query"], "one");
+
+    assert!(second.quit().success());
+    let (status, stale) = cli(&["ui", "--instance", &ids[1], "state"]);
+    assert!(!status.success());
+    assert!(stale["error"].to_string().contains("instance"));
+    assert!(first.quit().success());
 }
 
 #[test]

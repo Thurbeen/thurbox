@@ -295,18 +295,19 @@ kernel               session, storage, sync, paths,    [agent::<the config it re
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}, usage]
 cli                  session, storage, session_ops,    [agent::<the config it reads>,
-                     sync, paths, notifications         backend::{contract,instance,
-                                                        registry}, kernel]
+                     sync, paths, notifications,        backend::{contract,instance,
+                     ui_control                          registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
+ui_control           paths
 shell                session (HostLauncher::for_host)
 coordinator          agent::{input,settings_config},   (main's body: the loop,
                      backend::{output_wake,
                      wiring}, clipboard, kernel,        the workers, the chrome)
                      paths, session, session_ops,
-                     shell, storage
+                     shell, storage, ui_control
 ```
 
 Enforcement is an **allowlist** over **resolved** edges: every module under

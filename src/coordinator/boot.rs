@@ -229,6 +229,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     startup.theme_activate_ms = phase.elapsed().as_millis() as u64;
 
     let mut app = App {
+        control: thurbox::ui_control::Server::start().map_err(std::io::Error::other)?,
+        control_revision: 0,
+        control_observed: None,
         host,
         sources: thurbox::kernel::bundled::sources(&ui_dir),
         watcher: Watcher::new(&ui_dir)?,

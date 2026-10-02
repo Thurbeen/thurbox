@@ -34,6 +34,7 @@ use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
+use thurbox::ui_control::Server as UiControlServer;
 
 /// How long the loop blocks waiting for input.
 ///
@@ -242,6 +243,10 @@ struct TrackedCommand {
 }
 
 struct App {
+    /// The private endpoint owned by this running interface.
+    control: UiControlServer,
+    control_revision: u64,
+    control_observed: Option<(Option<String>, Option<String>, Option<String>)>,
     host: LuaHost,
     /// The directory the interface was loaded from. Held because every command
     /// about a plugin file names a path relative to it.
