@@ -488,14 +488,37 @@ local function render_host(flow)
   }, flow)
 end
 
+local function picker_mux_order(options)
+  local ordered = {}
+  local has_rmux = false
+  for _, name in ipairs(options) do
+    if name == "rmux" then
+      has_rmux = true
+    else
+      ordered[#ordered + 1] = name
+    end
+  end
+  if has_rmux then
+    local after = #ordered
+    for index, name in ipairs(ordered) do
+      if name == "tmux" then
+        after = index
+        break
+      end
+    end
+    table.insert(ordered, after + 1, "rmux")
+  end
+  return ordered
+end
+
 local function mux_options(flow)
   if (flow.host or "") == "" then
     local mux = preflight().mux or {}
-    return mux.available or {}, mux.configured or mux.binary
+    return picker_mux_order(mux.available or {}), mux.configured or mux.binary
   end
   for _, host in ipairs(hosts()) do
     if host.backend == flow.host then
-      return host.available_multiplexers or {}, host.multiplexer or "tmux"
+      return picker_mux_order(host.available_multiplexers or {}), host.multiplexer or "tmux"
     end
   end
   return {}, nil

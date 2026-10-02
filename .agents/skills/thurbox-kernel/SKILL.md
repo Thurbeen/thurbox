@@ -419,6 +419,9 @@ in while the user is off installing what was missing. A plugin that ran the
 lookup itself would be running a `PATH` walk per frame, per keystroke or per
 row — the regression the window exists to prevent; `kernel::snapshot::tests::
 the_preflight_answer_is_cached_rather_than_probed_on_every_tick` pins it.
+The local RMUX picker choice uses this same lookup window: `read_mux` omits
+RMUX when its binary is absent. Remote choices stay registered because the
+remote binary cannot be checked from this machine.
 `presence` is three-valued (`present`/`missing`/`unknown`) because a remote
 host's binaries, and a relative `command`'s (resolved from the session's own
 directory), were never looked at, and `unknown` is not `missing` (see

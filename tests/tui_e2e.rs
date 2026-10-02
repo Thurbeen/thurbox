@@ -93,6 +93,13 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
+fn have_rmux() -> bool {
+    Command::new("rmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 /// The isolated profile a scenario runs in: every directory the binary reads
 /// or writes, under one tempdir that goes away with the test — except the
 /// multiplexer's socket directory, which has to be short.
@@ -2506,6 +2513,64 @@ fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
     tui.wait_for("herdr is unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_tui_picker_creates_a_session_on_rmux() {
+    if !have_rmux() {
+        eprintln!("skipping: rmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    struct RmuxCleanup<'a>(&'a Profile);
+    impl Drop for RmuxCleanup<'_> {
+        fn drop(&mut self) {
+            let mut command = Command::new("rmux");
+            self.0.apply(&mut command);
+            let _ = command
+                .args(["-L", self.0.server.socket(), "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = RmuxCleanup(&profile);
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agent");
+    let repo = repo(profile.root.path());
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Multiplexer");
+    tui.wait_for("tmux");
+    tui.wait_for("rmux");
+    tui.send(b"\x1b[B");
+    tui.wait_for("▸ rmux");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    tui.send(b"\t");
+    tui.wait_for("Add Repo Path");
+    tui.send(repo.to_str().expect("utf-8 repo path").as_bytes());
+    tui.send(b"\r");
+    tui.wait_until("the new repository to be selected", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("[x]") && line.contains("/repo"))
+    });
+    tui.send(b"\x1b[Z");
+    tui.send(b"\r");
+    tui.wait_for("Session Name");
+    tui.send(b"rmux-picker\r");
+    tui.wait_for("rmux-picker");
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open profile database");
+    let row = db
+        .get_session_by_name("rmux-picker")
+        .expect("read session")
+        .expect("created session");
+    assert_eq!(row.backend_type, "local:rmux");
     assert!(tui.quit().success());
 }
 

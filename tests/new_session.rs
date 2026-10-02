@@ -480,6 +480,27 @@ fn opening_with_hosts_asks_where_to_run_first() {
 }
 
 #[test]
+fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "Ubuntu".into(),
+        detail: "WSL".into(),
+        backend: "wsl:Ubuntu".into(),
+        multiplexer: None,
+        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+    }];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    let tmux = screen.find("▸ tmux").expect("tmux remains selected");
+    let rmux = screen.find("  rmux").expect("rmux is offered");
+    let psmux = screen.find("  psmux").expect("psmux remains offered");
+    assert!(tmux < rmux && rmux < psmux, "{screen}");
+}
+
+#[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
     let world = World::default();

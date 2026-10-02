@@ -350,6 +350,10 @@ preference. `thurbox-cli session create --multiplexer <name>` overrides either
 for one creation. The TUI asks for a host and then shows the registered
 multiplexers for it. The order is explicit choice, configured host or local
 preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
+The TUI keeps that default selected. Where both are offered, it places `rmux`
+immediately after `tmux`. The local picker offers `rmux` only while its binary
+resolves on `PATH`; a remote host's binaries cannot be checked locally, so its
+registered choices remain visible.
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
