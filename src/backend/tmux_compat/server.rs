@@ -58,6 +58,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Where it does not, liveness is polled and no pane size is reported.
     const WINDOW_EVENTS: bool;
 
+    /// Whether pane output must be enabled and disabled with `refresh-client
+    /// -A`. Servers that stream attached panes automatically do not take it.
+    const PANE_MONITORING: bool;
+
     /// Whether a command's reply is queued behind the pane output ahead of it
     /// in a tagged block, which is what makes a snapshot exact.
     const SNAPSHOTS: bool;
@@ -1701,10 +1705,12 @@ impl<M: TmuxCompatible> Server<M> {
         // Must use send_command (waited) here — a nowait call would leave an
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
-        self.ctrl_command(&format!(
-            "refresh-client -A '{}:on'",
-            pane_id.replace('\'', "'\\''")
-        ))?;
+        if M::PANE_MONITORING {
+            self.ctrl_command(&format!(
+                "refresh-client -A '{}:on'",
+                pane_id.replace('\'', "'\\''")
+            ))?;
+        }
 
         // Resize to the TUI panel dimensions. force_resize triggers a
         // SIGWINCH, making TUI applications (like claude) repaint at the
@@ -2486,11 +2492,13 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     fn detach(&self, backend_id: &str) -> Result<()> {
         // Disable output monitoring for this pane.
-        if let Err(e) = self.ctrl_command_nowait(&format!(
-            "refresh-client -A '{}:off'",
-            backend_id.replace('\'', "'\\''")
-        )) {
-            warn!("Failed to disable output monitoring during detach: {e}");
+        if M::PANE_MONITORING {
+            if let Err(e) = self.ctrl_command_nowait(&format!(
+                "refresh-client -A '{}:off'",
+                backend_id.replace('\'', "'\\''")
+            )) {
+                warn!("Failed to disable output monitoring during detach: {e}");
+            }
         }
         // Remove the pane sender — the ControlModeReader gets EOF.
         let _ = self.unregister_pane(backend_id);
@@ -3688,6 +3696,7 @@ mod tests {
         const WINDOW_OPTIONS: bool = true;
         const WINDOW_SETTINGS: bool = true;
         const WINDOW_EVENTS: bool = true;
+        const PANE_MONITORING: bool = true;
         const SNAPSHOTS: bool = true;
         const COMMAND_LISTS: bool = true;
         const ONE_SHOT_SPAWN_ANSWERS: bool = true;
@@ -3735,6 +3744,7 @@ mod tests {
         }
         fn control_policy(_: &TmuxTransport, _: &str) -> ControlPolicy {
             ControlPolicy {
+                flow_control: true,
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,

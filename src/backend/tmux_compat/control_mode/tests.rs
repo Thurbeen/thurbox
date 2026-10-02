@@ -1216,6 +1216,7 @@ impl ThrowawayServer {
             Self::SESSION,
             "tests",
             &ControlPolicy {
+                flow_control: true,
                 implicit_attach_reply: true,
                 tagged_blocks: true,
                 subscriptions: true,
@@ -1224,6 +1225,56 @@ impl ThrowawayServer {
         )
         .expect("control mode starts")
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
+    if !std::process::Command::new("rmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        eprintln!("skipping: rmux is not installed");
+        return;
+    }
+    let socket = format!("thurbox-control-policy-{}", std::process::id());
+    let transport = TmuxTransport::local("rmux");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = TmuxTransport::local("rmux")
+                .tmux_command(&self.0, &["kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(socket.clone());
+    let started = transport
+        .tmux_command(&socket, &["new-session", "-d", "-s", "probe"])
+        .output()
+        .expect("start server");
+    assert!(started.status.success(), "{started:?}");
+    let control = ControlMode::start(
+        &transport,
+        &socket,
+        "probe",
+        "tests",
+        &ControlPolicy {
+            flow_control: false,
+            implicit_attach_reply: true,
+            tagged_blocks: true,
+            subscriptions: false,
+            status_poll: None,
+        },
+    )
+    .expect("control connection without flow control");
+    assert_eq!(
+        control
+            .send_command("display-message -p ready")
+            .unwrap()
+            .trim(),
+        "ready"
+    );
 }
 
 #[cfg(unix)]

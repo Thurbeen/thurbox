@@ -61,6 +61,7 @@ impl TmuxCompatible for Psmux {
 
     /// psmux sends no `%window-close` and no `%layout-change`.
     const WINDOW_EVENTS: bool = false;
+    const PANE_MONITORING: bool = true;
 
     /// Nothing has verified that a psmux reply queues behind the pane output
     /// ahead of it, and its blocks are framed the old way
@@ -185,6 +186,7 @@ impl TmuxCompatible for Psmux {
     /// local psmux session signals via `thurbox-cli` straight into the DB.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy {
         ControlPolicy {
+            flow_control: true,
             implicit_attach_reply: false,
             tagged_blocks: false,
             subscriptions: false,

@@ -48,6 +48,7 @@ impl TmuxCompatible for Tmux {
     const WINDOW_OPTIONS: bool = true;
     const WINDOW_SETTINGS: bool = true;
     const WINDOW_EVENTS: bool = true;
+    const PANE_MONITORING: bool = true;
     const SNAPSHOTS: bool = true;
     const COMMAND_LISTS: bool = true;
     const ONE_SHOT_SPAWN_ANSWERS: bool = true;
@@ -170,6 +171,7 @@ impl TmuxCompatible for Tmux {
 
     fn control_policy(_transport: &TmuxTransport, _session: &str) -> ControlPolicy {
         ControlPolicy {
+            flow_control: true,
             implicit_attach_reply: true,
             tagged_blocks: true,
             subscriptions: true,
