@@ -446,6 +446,8 @@ fn check() -> Result<CommandOutput, String> {
         regex::Regex::new(r#"role\s*=\s*['"]action:['"]\s*\.\.\s*([A-Za-z_][A-Za-z0-9_]*)"#)
             .expect("concatenated click pattern");
     let quoted = regex::Regex::new(r#"['"]([^'"]+)['"]"#).expect("string pattern");
+    let literal_values = regex::Regex::new(r#"^\s*['"][^'"]+['"](?:\s*,\s*['"][^'"]+['"])*\s*$"#)
+        .expect("literal assignments");
     for plugin in &host.plugins {
         let Ok(source) = std::fs::read_to_string(dir.join(&plugin.path)) else {
             continue;
@@ -459,6 +461,9 @@ fn check() -> Result<CommandOutput, String> {
             else {
                 continue;
             };
+            if !literal_values.is_match(values) {
+                continue;
+            }
             let names: Vec<_> = names.split(',').map(str::trim).collect();
             let values: Vec<_> = quoted
                 .captures_iter(values)
