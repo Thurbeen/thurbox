@@ -50,6 +50,8 @@ own, and teardown kills the socket *by name*.
 scripts/dev/sandbox.sh               # persistent "default" profile, launch the TUI
 scripts/dev/sandbox.sh --fresh       # throwaway env, wiped on exit
 scripts/dev/sandbox.sh --isolate-home    # full hermetic isolation (fresh HOME; agents have no creds)
+scripts/dev/sandbox.sh --empty       # separate unseeded profile
+scripts/dev/sandbox.sh --reset       # wipe and reseed the profile
 scripts/dev/sandbox.sh --shell       # shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list   # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean       # wipe the persistent profile

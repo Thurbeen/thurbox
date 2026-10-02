@@ -14,6 +14,8 @@
 #   scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 #   scripts/dev/sandbox.sh --profile foo   # named persistent profile
 #   scripts/dev/sandbox.sh --isolate-home  # full isolation (fresh HOME; no agent creds)
+#   scripts/dev/sandbox.sh --empty         # launch an unseeded profile
+#   scripts/dev/sandbox.sh --reset         # wipe and reseed the profile
 #   scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions, then launch
 #   scripts/dev/sandbox.sh --demo-big      # …and the large-diff repo as well
 #   scripts/dev/sandbox.sh --shell         # drop into a shell with the sandbox env
@@ -25,8 +27,8 @@
 # settings and the database, because THURBOX_CONFIG_DIR points there — which is
 # what `--fresh` then gives you a clean one of.
 #
-# A bare sandbox has NO repositories and NO sessions, which is the state most
-# bugs are reported against and is worth keeping as the default. `--demo` opts
+# A bare sandbox has mock hosts and repositories but no sessions. `--empty`
+# keeps the previous empty starting point in a separate profile. `--demo` opts
 # into `demo-repo.sh`: a repository with one file of each git status, a session
 # whose branch has changes, and a session whose branch deliberately has none.
 #
@@ -40,7 +42,7 @@
 # survive across runs — its tmux-dev server is left alive on exit. `--clean`
 # (or `cargo clean`) removes it.
 #
-# Requires: cargo, tmux >= 3.2. Build happens before any HOME override so cargo
+# Requires: cargo, tmux >= 3.2, git, Python 3. Build happens before any HOME override so cargo
 # still resolves your real ~/.cargo.
 
 set -euo pipefail
@@ -60,6 +62,8 @@ profile="default"
 isolation="thurbox" # thurbox | full
 demo="" # "" | standard | big
 action="tui"        # tui | shell | cli | clean
+empty=0
+reset=0
 cli_args=()
 
 while [ $# -gt 0 ]; do
@@ -67,6 +71,8 @@ while [ $# -gt 0 ]; do
         --fresh) mode="fresh"; shift ;;
         --profile) profile="${2:?--profile needs a name}"; shift 2 ;;
         --isolate-home) isolation="full"; shift ;;
+        --empty) empty=1; shift ;;
+        --reset) reset=1; shift ;;
         --demo) demo="standard"; shift ;;
         --demo-big) demo="big"; shift ;;
         --shell) action="shell"; shift ;;
@@ -77,12 +83,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+[ "$empty" = "0" ] || profile="empty-$profile"
+
 command -v cargo >/dev/null || die "cargo not found"
 
 if [ "$action" = "clean" ]; then
     log "cleaning sandbox profile '$profile'"
     tbx_sandbox_clean "$profile"
     exit 0
+fi
+
+if [ "$reset" = "1" ]; then
+    [ "$mode" = "persistent" ] || die "--reset requires a persistent profile"
+    tbx_sandbox_clean "$profile"
 fi
 
 # Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo).
@@ -99,6 +112,19 @@ else
 fi
 
 log "sandbox root: $TBX_SANDBOX_ROOT ($mode, $isolation isolation)"
+[ "$TBX_SANDBOX_FRESH" = "1" ] && trap tbx_sandbox_teardown EXIT INT TERM
+
+if [ "$empty" = "0" ]; then
+    if [ "$isolation" = "full" ]; then
+        export THURBOX_CONFIG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
+        export THURBOX_DATA_DIR="$XDG_DATA_HOME/thurbox-dev"
+    fi
+    "$SCRIPT_DIR/seed-sandbox.sh"
+    if [ -d "$TBX_SANDBOX_ROOT/mock-bin" ]; then
+        PATH="$TBX_SANDBOX_ROOT/mock-bin:$PATH"
+        export PATH
+    fi
+fi
 
 # Seeded AFTER the init, so the seeder inherits this sandbox rather than
 # entering one of its own — it checks TBX_SANDBOX_ROOT and skips its own setup.
@@ -126,5 +152,4 @@ run_in_sandbox() {
 # Run as a child (NOT exec): a `fresh` sandbox needs the teardown trap to fire on
 # exit to reap its throwaway dir + tmux server, and `exec` would discard the
 # trap. Persistent sandboxes have nothing to tear down.
-[ "$TBX_SANDBOX_FRESH" = "1" ] && trap tbx_sandbox_teardown EXIT INT TERM
 run_in_sandbox
