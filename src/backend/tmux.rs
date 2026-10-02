@@ -6,8 +6,6 @@
 //! floor. Nothing here is psmux's, and nothing in the shared code asks whether
 //! a server is tmux.
 
-use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -16,9 +14,7 @@ use crate::backend::contract::SessionBackend;
 use crate::backend::tmux_compat::control_mode::{
     hex_send_keys_commands, shell_escape, ControlPolicy, PaneInput,
 };
-use crate::backend::tmux_compat::server::{
-    push_posix_window_program, ConfigOption, Server, TmuxCompatible,
-};
+use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
 use crate::shell::HostLauncher;
@@ -118,37 +114,6 @@ impl TmuxCompatible for Tmux {
             fatal: false,
         });
         config
-    }
-
-    /// tmux's tokenizer reads POSIX quoting, so arguments keep the
-    /// byte-identical single-quote path.
-    fn quote(arg: &str) -> String {
-        shell_escape(arg)
-    }
-
-    fn env_flags(env: &HashMap<String, String>) -> String {
-        env.iter()
-            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
-            .collect()
-    }
-
-    fn window_command(
-        server: &Server<Self>,
-        window_name: &str,
-        command: &str,
-        args: &[String],
-        _env: &HashMap<String, String>,
-    ) -> String {
-        server.posix_window_command(window_name, command, args)
-    }
-
-    fn push_window_program(
-        cmd: &mut Command,
-        command: &str,
-        args: &[String],
-        env: &HashMap<String, String>,
-    ) {
-        push_posix_window_program(cmd, command, args, env);
     }
 
     /// The bracketed-paste-wrapped bytes, taken literally (`send-keys -l`).

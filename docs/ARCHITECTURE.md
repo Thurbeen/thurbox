@@ -2384,7 +2384,9 @@ its server can do (`WINDOW_OPTIONS`, `WINDOW_EVENTS`, `SNAPSHOTS`, …), how it
 quotes, how a window's command and environment reach it, how keystrokes and a
 paste are typed (`PaneInput`), what its control-mode connection may expect
 (`ControlPolicy`), and its version floor. The shared code asks what a server
-can do and never which multiplexer it is. `ControlPolicy::flow_control` gates
+can do and never which multiplexer it is. POSIX quoting, environment flags,
+and window commands have shared trait defaults; adapters with a different
+tokenizer or launch grammar override them. `ControlPolicy::flow_control` gates
 the startup `refresh-client -f` command, `PANE_MONITORING` gates
 `refresh-client -A` when a server streams attached panes on its own, and
 `COMMAND_LIST_SINGLE_REPLY` selects the number of reply blocks expected for

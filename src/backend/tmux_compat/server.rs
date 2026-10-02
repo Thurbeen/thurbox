@@ -107,11 +107,18 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     fn session_config(session: &str) -> Vec<ConfigOption>;
 
     /// A control-mode argument, quoted the way this server's tokenizer reads.
-    fn quote(arg: &str) -> String;
+    /// POSIX quoting is the default; a different tokenizer overrides it.
+    fn quote(arg: &str) -> String {
+        shell_escape(arg)
+    }
 
     /// The `new-window` flags carrying `env` into the window, if the server
     /// honours them; empty where the environment rides in the command itself.
-    fn env_flags(env: &HashMap<String, String>) -> String;
+    fn env_flags(env: &HashMap<String, String>) -> String {
+        env.iter()
+            .map(|(k, v)| format!(" -e {}", shell_escape(&format!("{k}={v}"))))
+            .collect()
+    }
 
     /// The command a new window runs, as a control-mode `new-window` line
     /// carries it.
@@ -120,10 +127,13 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         window_name: &str,
         command: &str,
         args: &[String],
-        env: &HashMap<String, String>,
+        _env: &HashMap<String, String>,
     ) -> String
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        server.posix_window_command(window_name, command, args)
+    }
 
     /// The environment and program that close a one-shot `new-window`'s argv.
     fn push_window_program(
@@ -131,7 +141,9 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    );
+    ) {
+        push_posix_window_program(cmd, command, args, env);
+    }
 
     /// The one-shot argv that delivers `text` into `target` as one paste.
     fn paste_args(target: &str, text: &str) -> Vec<String>;
