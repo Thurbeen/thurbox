@@ -2037,7 +2037,7 @@ change):
 |---|---|---|
 | the reader thread | every byte, in order | unchanged: it still reads and feeds every byte |
 | `output_generation`, `millis_since_output`, `sync_printing`, the stuck-`working` quiescence (hook state), notifications | `last_output_at`, `exited` | atomics, untouched by the parser; unchanged |
-| `sync_meta` (the activity line, notification text) | OSC 0/1/2, BEL, OSC 9/777 | the two-cell parser still runs the `TermSignals` callbacks; a title set before the interface attached is replayed from `#{pane_title}` at attach, as the full adopt does |
+| `sync_meta` (the activity line, notification text) | OSC 0/1/2, BEL, OSC 9/777 | the two-cell parser still runs the `TermSignals` callbacks; a title and mouse modes set before the interface attached are replayed from tmux's pane formats at attach, as the full adopt does |
 | the content search (ADR-P26) | every row of history | reads the pane back from tmux on its worker (below) |
 | `hyperlink_paints`, the link scan, selection, mouse | the visible grid | only painted surfaces, which ask for their grid first |
 | `visible_text` (the Copy command) | the visible grid | a pane with no grid answers "nothing to copy" rather than two blank rows |

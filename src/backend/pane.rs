@@ -1030,7 +1030,7 @@ impl Session {
     }
 
     /// [`Self::adopt`] for a session nobody is looking at: no history is
-    /// captured and no grid is built — only its title is replayed. The parser starts as the two cells
+    /// captured and no grid is built — only its title and mouse modes are replayed. The parser starts as the two cells
     /// [`WiredPane::evict`] leaves, and the grid is fetched on the first
     /// [`WiredPane::restore`] — which, for a session that is never shown, is
     /// never. Only for a backend that
@@ -1044,12 +1044,12 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
     ) -> Result<Self> {
-        // Only the title, not `None`: `None` is the backend capturing the
-        // whole history itself. The title goes through the stream like any
+        // Only the title and modes, not `None`: `None` is the backend capturing
+        // the whole history itself. The seed goes through the stream like any
         // other, so the two cells' callbacks report it and `seed_len` keeps it
         // from reading as output.
         let adopted =
-            backend.adopt(backend_id, rows, cols, Some(backend.title_seed(backend_id)))?;
+            backend.adopt(backend_id, rows, cols, Some(backend.state_seed(backend_id)))?;
         let mut info = SessionInfo::new(name);
         info.backend_id = Some(backend_id.to_string());
         debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session without a grid");

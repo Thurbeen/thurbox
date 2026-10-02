@@ -1730,8 +1730,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// empty scrollback — the forced repaint restores the visible screen but
     /// not the history above it. `-e` keeps colors, `-J` rejoins wrapped lines
     /// so they re-wrap at the adopting panel's width, `-S -<n>` extends the
-    /// capture into history (tmux clamps to what exists). The title rides
-    /// along because the capture cannot carry it — see [`Self::pane_title_seed`].
+    /// capture into history (tmux clamps to what exists). The title and mouse
+    /// modes ride along because the capture cannot carry them — see
+    /// [`Self::pane_state_seed`].
     fn capture_history_seed(&self, pane_id: &str) -> Result<Vec<u8>> {
         let lines = crate::session::settings::global()
             .scrollback_lines
@@ -1750,13 +1751,14 @@ impl<M: TmuxCompatible> Server<M> {
         // Ahead of the history, not after it: the capture ends wherever the
         // pane's last line ended, and appending to a run that stopped mid
         // escape sequence would feed the parser a spliced one.
-        let mut seed = self.pane_title_seed(pane_id);
+        let mut seed = self.pane_state_seed(pane_id);
         seed.extend(history_seed_bytes(output.stdout));
         Ok(seed)
     }
 
-    /// The pane's window title replayed as an OSC 2, or empty when the pane
-    /// has none worth restoring.
+    /// The pane's mouse modes and window title replayed as terminal bytes:
+    /// what an app set before this process read its output, and which neither
+    /// the capture nor a repaint brings back.
     ///
     /// Agents use the window title as their activity line — Claude Code writes
     /// the task it is on — and thurbox reads it off the PTY, so a restart that
@@ -1766,31 +1768,43 @@ impl<M: TmuxCompatible> Server<M> {
     /// title takes (`TermSignals`'s title callback), so nothing downstream
     /// learns a second way of being told.
     ///
-    /// Best-effort by construction: a pane title is a nicety and the history
-    /// beside it is not, so a mux that answers this differently (psmux is
-    /// unverified here) loses the line rather than the scrollback.
-    fn pane_title_seed(&self, pane_id: &str) -> Vec<u8> {
-        // One query for both halves: a pane that never had a title set reads
+    /// The mouse modes are what decide whether a wheel tick is forwarded to
+    /// the app (`forward_wheel` reads them off this parser), and an app turns
+    /// them on once, at startup — Codex does. Without them a Codex adopted by
+    /// a later interface could not be scrolled at all: its alternate screen
+    /// has no scrollback to scroll locally instead. See [`mouse_seed_bytes`].
+    ///
+    /// Best-effort by construction, and kept apart from the capture: a mux
+    /// that answers this differently (psmux is unverified here) loses the
+    /// activity line and the modes, never the scrollback.
+    fn pane_state_seed(&self, pane_id: &str) -> Vec<u8> {
+        // One query for all of it: a pane that never had a title set reads
         // back as the host's own short name, which is tmux's default rather
-        // than anything an agent said.
+        // than anything an agent said. The title is last because it alone may
+        // contain the separator.
         let out = match self.run_tmux(&[
             "display-message",
             "-p",
             "-t",
             pane_id,
-            "#{host_short}|#{pane_title}",
+            MOUSE_FLAGS_FORMAT_THEN_TITLE,
         ]) {
             Ok(out) => out,
             Err(e) => {
-                debug!(pane = %pane_id, "could not read pane title: {e:#}");
+                debug!(pane = %pane_id, "could not read pane state: {e:#}");
                 return Vec::new();
             }
         };
         let line = String::from_utf8_lossy(&out.stdout);
-        let Some((host, title)) = line.lines().next().and_then(|l| l.split_once('|')) else {
+        let Some((flags, rest)) = line.lines().next().and_then(|l| l.split_once('|')) else {
             return Vec::new();
         };
-        title_seed_bytes(host, title)
+        let Some((host, title)) = rest.split_once('|') else {
+            return Vec::new();
+        };
+        let mut seed = mouse_seed_bytes(flags);
+        seed.extend(title_seed_bytes(host, title));
+        seed
     }
 
     /// Resize a pane, forcing a SIGWINCH even if dimensions haven't changed.
@@ -2013,11 +2027,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         self.capture_history_seed(backend_id)
     }
 
-    fn title_seed(&self, backend_id: &str) -> Vec<u8> {
+    fn state_seed(&self, backend_id: &str) -> Vec<u8> {
         if !control_mode::is_valid_pane_id(backend_id) {
             return Vec::new();
         }
-        self.pane_title_seed(backend_id)
+        self.pane_state_seed(backend_id)
     }
 
     /// Only where a reply queues behind the pane output ahead of it, which is
@@ -2831,6 +2845,38 @@ fn heartbeat_loop_command(
             )
         }
     }
+}
+
+/// What [`Server::pane_state_seed`] asks `display-message` for: the six mouse
+/// flags [`mouse_seed_bytes`] reads, comma-separated, then the host and title.
+const MOUSE_FLAGS_FORMAT_THEN_TITLE: &str = "#{mouse_standard_flag},#{mouse_button_flag},\
+     #{mouse_all_flag},#{mouse_any_flag},#{mouse_sgr_flag},#{mouse_utf8_flag}|\
+     #{host_short}|#{pane_title}";
+
+/// The DECSETs that put a parser in the mouse modes tmux reports for a pane,
+/// from the flags in [`MOUSE_FLAGS_FORMAT_THEN_TITLE`] order.
+///
+/// A flag is on only when it reads `1`: a format a server does not know
+/// expands to nothing, which is off. `mouse_any_flag` is set for every
+/// tracking mode, so when it is the only one on — a server that knows it but
+/// not the mode's own flag — plain `?1000` still gets the wheel through.
+fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
+    let on: Vec<bool> = flags.split(',').map(|f| f.trim() == "1").collect();
+    let flag = |i: usize| on.get(i).copied().unwrap_or(false);
+    let mut out = String::new();
+    // The widest mode on wins: a terminal tracks one mode at a time.
+    let tracking = [(2, "1003"), (1, "1002"), (0, "1000"), (3, "1000")]
+        .into_iter()
+        .find_map(|(i, mode)| flag(i).then_some(mode));
+    if let Some(mode) = tracking {
+        out.push_str(&format!("\x1b[?{mode}h"));
+        if flag(4) {
+            out.push_str("\x1b[?1006h");
+        } else if flag(5) {
+            out.push_str("\x1b[?1005h");
+        }
+    }
+    out.into_bytes()
 }
 
 /// The OSC 2 that restores `title` as a pane's window title, or empty when
@@ -4777,6 +4823,44 @@ mod tests {
         // Never infer deadness from anything but the flag itself.
         assert!(!parse_pane_dead("10"));
         assert!(!parse_pane_dead("dead"));
+    }
+
+    // --- mouse_seed_bytes tests (adopt-time mouse-mode restore) ---
+
+    #[test]
+    fn mouse_seed_replays_the_mode_codex_asks_for() {
+        // What tmux reports for a running Codex: `?1003` with SGR encoding.
+        assert_eq!(mouse_seed_bytes("0,0,1,1,1,0"), b"\x1b[?1003h\x1b[?1006h");
+    }
+
+    #[test]
+    fn mouse_seed_is_empty_for_a_pane_with_no_tracking() {
+        assert!(mouse_seed_bytes("0,0,0,0,0,0").is_empty());
+        // An encoding alone tracks nothing, so it is not replayed either.
+        assert!(mouse_seed_bytes("0,0,0,0,1,0").is_empty());
+        assert!(mouse_seed_bytes("").is_empty());
+    }
+
+    #[test]
+    fn mouse_seed_falls_back_to_press_reporting_on_an_unknown_mode_flag() {
+        // A server that leaves a flag's format unexpanded still says some
+        // mode is on; the wheel needs no more than `?1000`.
+        assert_eq!(mouse_seed_bytes(",,,1,1,"), b"\x1b[?1000h\x1b[?1006h");
+    }
+
+    #[test]
+    fn mouse_seed_lands_a_parser_in_the_reported_mode() {
+        let mut parser = vt100::Parser::new(2, 2, 0);
+        parser.process(&mouse_seed_bytes("0,1,0,1,0,1"));
+        let screen = parser.screen();
+        assert_eq!(
+            screen.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::ButtonMotion
+        );
+        assert_eq!(
+            screen.mouse_protocol_encoding(),
+            vt100::MouseProtocolEncoding::Utf8
+        );
     }
 
     // --- title_seed_bytes tests (adopt-time activity-line restore) ---

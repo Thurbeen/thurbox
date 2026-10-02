@@ -144,8 +144,8 @@ const SHELL_SUFFIX: &str = "#shell";
 /// One mouse report, in the encoding the program inside the pane asked for.
 ///
 /// `button` is xterm's Cb before the +32 offset: 0 for the left button, 32 for
-/// a move with it held, 64/65 for the wheel (a press with no release). Two
-/// encodings are emitted, because a program that asks for the mouse at all and
+/// a move with it held, 64/65 for the wheel (a press with no release). Every
+/// encoding is emitted, because a program that asks for the mouse at all and
 /// is handed nothing is a pane the mouse is dead in: the alternate screen it
 /// is almost certainly on keeps no scrollback, so there is no local fallback
 /// to leave it to.
@@ -156,10 +156,10 @@ const SHELL_SUFFIX: &str = "#shell";
 ///   caps a coordinate at 223. Past that there is no legal report to send, so
 ///   `None`: a truncated one would land the event on the wrong cell. A release
 ///   here has no button of its own — the protocol spells every release 3.
-///
-/// `Utf8` (`?1005`) is deliberately not emitted. It is ambiguous by
-/// construction — a receiver cannot tell it from the default encoding without
-/// being told — and no agent asks for it.
+/// * `Utf8` (`?1005`) — the default encoding with each field written as a
+///   UTF-8 character rather than a byte, which lifts the cap to 2015. A pane
+///   attached after its app asked for it is put back in it
+///   (`mouse_seed_bytes`), so it must be answered as well as any other.
 fn mouse_report(
     encoding: vt100::MouseProtocolEncoding,
     button: u32,
@@ -172,19 +172,21 @@ fn mouse_report(
             let end = if press { 'M' } else { 'm' };
             Some(format!("\x1b[<{button};{col};{row}{end}").into_bytes())
         }
-        vt100::MouseProtocolEncoding::Default => {
+        vt100::MouseProtocolEncoding::Default | vt100::MouseProtocolEncoding::Utf8 => {
             let button = if press { button } else { 3 };
-            let cell = |n: u32| u8::try_from(n + 32).ok();
-            Some(vec![
-                0x1b,
-                b'[',
-                b'M',
-                cell(button)?,
-                cell(col)?,
-                cell(row)?,
-            ])
+            let utf8 = encoding == vt100::MouseProtocolEncoding::Utf8;
+            let mut out = b"\x1b[M".to_vec();
+            for n in [button, col, row] {
+                let value = n + 32;
+                if utf8 {
+                    let c = char::from_u32(value).filter(|_| value <= 2047)?;
+                    out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+                } else {
+                    out.push(u8::try_from(value).ok()?);
+                }
+            }
+            Some(out)
         }
-        _ => None,
     }
 }
 
@@ -2598,8 +2600,17 @@ mod tests {
         // the event on the wrong cell.
         assert_eq!(mouse_report(E::Default, 64, 224, 3, true), None);
         assert!(mouse_report(E::Default, 64, 223, 223, true).is_some());
-        // Ambiguous by construction, and asked for by nothing.
-        assert_eq!(mouse_report(E::Utf8, 64, 12, 3, true), None);
+        // `?1005` is the default encoding with each field a UTF-8 character,
+        // so a small coordinate reads the same and a large one takes two bytes
+        // instead of running out at 223.
+        assert_eq!(
+            mouse_report(E::Utf8, 64, 12, 3, true).expect("utf8"),
+            b"\x1b[M`,#"
+        );
+        assert_eq!(
+            mouse_report(E::Utf8, 0, 300, 3, false).expect("utf8"),
+            "\x1b[M#\u{14c}#".as_bytes()
+        );
     }
 
     fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {
