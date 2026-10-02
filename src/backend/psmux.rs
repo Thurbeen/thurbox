@@ -463,8 +463,10 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
         };
         return Some((4, name.to_string()));
     }
-    let semicolon = body.iter().position(|&b| b == b';')?;
-    let suffix_pos = body
+    // The longest supported form has four bytes after CSI (for example 5;5~).
+    let nav = &body[..body.len().min(4)];
+    let semicolon = nav.iter().position(|&b| b == b';')?;
+    let suffix_pos = nav
         .iter()
         .position(|&b| matches!(b, b'A'..=b'D' | b'H' | b'F' | b'~'))?;
     if suffix_pos <= semicolon || suffix_pos != semicolon + 2 {
