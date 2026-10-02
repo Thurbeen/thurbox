@@ -135,9 +135,9 @@ Homebrew templates.
 > - A fork with no commits of its own can always fast-forward, so any other
 >   refusal there fails the job too: a reset could not fix it.
 > - Only a fork that has really diverged is reset (`--force`, the default branch
->   only), and its old head is first kept on a `sync-backup-<sha>` branch, so the
->   reset loses nothing. Submission branches, and the PRs open from them, are
->   never touched.
+>   only), and its old head is first kept on a `sync-backup-<sha>` branch (or
+>   found already kept there by an earlier run), so the reset loses nothing.
+>   Submission branches, and the PRs open from them, are never touched.
 >
 > **When `submit` fails.** A rejection from the channel itself (GitHub rate
 > limit, version already pending) warns and exits green — the same shape as the
