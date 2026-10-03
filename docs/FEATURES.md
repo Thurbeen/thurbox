@@ -54,7 +54,7 @@ Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
 to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
 a click anywhere else closes it.
 
-A right-click off the rows — on the empty space below them, or on a repo header
+A right-click off a session row — on empty space or on a host or repo fold row
 — is about no session, so it opens the column's general menu instead: New
 session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
 offered only when there are sessions and Undo only when there is a delete to
@@ -275,24 +275,26 @@ moved fall back to creation order:
   sessions touching the same set cluster together. Sessions with no repo share a
   `(no repo)` group.
 - With `group_by_host` on (settings → Sessions, on by default), local sessions
-  stay at the top. Each remote host gets a selectable row, even if it is the
-  only host in the list, followed by its repo groups and sessions. `h` folds the
-  selected host and `l` unfolds it; clicking its row toggles it. A folded row
-  shows `S` for sessions, `W` for working, `I` for idle, and `!` for attention
-  beside the host name. Up/down navigation skips the hidden sessions. Searching
+  stay at the top under a `local` host row. Remote hosts follow in their own
+  rows. Every host row can be folded with `h`, unfolded with `l`, or toggled by
+  clicking it. A folded row shows the session and active counts; `!` marks
+  sessions needing attention beside the host name. Up/down navigation skips the hidden sessions. Searching
   temporarily reveals them; Esc restores the fold, while accepting a hit
   unfolds its host so the selected session stays visible.
   Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
   they survive a restart. The host uses Nerd Font `` when the active theme
   enables Nerd Font glyphs, and `▣` otherwise. SSH, WSL and Windows hosts have
   text labels, and a status glyph and theme colour convey reachability.
-  Local-only lists keep their previous shape.
+  A local-only list also has a foldable host row.
+- With `group_by_repo` on, each repo set has a selectable row within its host.
+  Its fold state is independent of the host fold and of the same repo on another
+  host. `h` and `l` act on a selected repo row; clicking toggles it. Search
+  temporarily reveals folded sessions, and accepting a result unfolds its repo.
+  Folded repo identities are saved in `sessions.folded_repos`.
 
-**Why the local rows have no host row.** On a local-only list a local heading
-adds no information. Keeping local rows at the top also preserves the familiar
-starting position when remote sessions arrive. A remote row always needs its
-own heading because that is the fold handle and the place its summary remains
-visible. A creation in flight on a remote host counts for this purpose.
+**Why local has a host row.** Local work can be folded by the same gesture as
+remote work. It stays first, and the cursor initially selects the first session
+instead of the host handle. A creation in flight also gets its host handle.
 
 **Why a second switch and not one choice row.** `none / repo / host / host then
 repo` would read as one decision, and the settings modal cannot render it: a

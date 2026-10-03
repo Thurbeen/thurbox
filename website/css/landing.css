@@ -1055,7 +1055,7 @@ main {
    value below is read off `doom_palette()` in
    src/session/theme_config/palettes.rs, and the structure off the frames
    pinned in tests/frames.rs — the border glyphs, the title in the top edge,
-   the status cluster, the repo separators and the selection band are what the
+   the status cluster, the fold rows and the selection band are what the
    panes actually paint. The four colours the site has no token for are spelled
    out; the rest reference the tokens they already share.
 
@@ -1201,25 +1201,40 @@ main {
   overflow: hidden;
 }
 
-/* A repo group header: a label between two rules, drawn in the muted role. */
+/* Fold handles sit in the same hierarchy as the terminal's list rows. */
+.ui-pane__host {
+  align-items: center;
+  color: var(--text-primary);
+  display: flex;
+  font-size: 0.65rem;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.ui-pane__host::before {
+  color: var(--accent);
+  content: '▾';
+}
+
+.ui-pane__host small {
+  color: var(--tui-muted);
+  font-size: 0.58rem;
+  margin-left: auto;
+}
+
 .ui-pane__group {
   align-items: center;
   color: var(--tui-muted);
   display: flex;
   font-size: 0.62rem;
   gap: 0.3rem;
+  padding-left: 0.6rem;
   white-space: nowrap;
 }
 
 .ui-pane__group::before {
-  content: '──';
-}
-
-.ui-pane__group::after {
-  border-top: 1px solid currentcolor;
-  content: '';
-  flex: 1;
-  opacity: 0.6;
+  color: var(--accent);
+  content: '▾';
 }
 
 /* flex: 0 0 auto, not the default: a row that may shrink is a row that gets

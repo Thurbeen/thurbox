@@ -6,9 +6,8 @@
 -- It is an ORDINARY plugin. The kernel has no session-list concept: it hands
 -- over a snapshot and this decides everything about how the list looks.
 --
--- The session rows retain v1's `── repo ──` rule headers, `└`/`↳`/`⇅`/`⑂`
--- marks, selection bar, status strip and scroll indicators. Remote host rows
--- sit above those groups and own folding and the visible summary.
+-- Session rows retain v1's nesting marks, selection bar, status strip and
+-- scroll indicators. Host and repo rows provide fold handles above them.
 --
 -- The border is an ordinary kernel `frame`, and this file no longer spells it:
 -- `ui.panel` does. It was drawn by hand, out of a cell buffer, for as long as a
@@ -19,7 +18,7 @@
 -- which is what keeps them off the content rows.
 --
 -- What is left here is the DECISIONS — which glyph, which colour role, when to
--- drop a trailing status, what a repo header says — while the window
+-- drop a trailing status, what a repo row says — while the window
 -- arithmetic, the selection bar, the empty state and the focus border are
 -- `lib/ui`'s, shared with every other pane.
 
@@ -34,8 +33,7 @@ local widgets = require("lib.widgets")
 
 -- ── The model, the components and the ordering algebra live in lib/ ─────────
 --
--- `lib.session_model` builds the item list (one selectable unit per row, with
--- the group header glued to its group's first session), `lib.ui` is the
+-- `lib.session_model` builds the item list (one selectable unit per row), `lib.ui` is the
 -- component layer — the panel, the list, the cursor and the row builder, and
 -- with them the window arithmetic, the selection bar and the focus border this
 -- pane used to spell itself — and `lib.order` is the move/sort algebra over the
@@ -313,10 +311,14 @@ end
 
 local function host_line(item, width, selected)
   local counts = item.counts
-  -- Keep attention beside the fold mark: the trailing W/I counts can clip in a
-  -- narrow sidebar, but a folded host must still show that it needs a look.
-  local details = string.format("S%d W%d I%d", counts.total, counts.working, counts.idle)
-  local kind = counts.backend and counts.backend:match("^wsl:") and "WSL" or "ssh"
+  local details = counts.total == 1 and "1 session" or counts.total .. " sessions"
+  if counts.working > 0 then
+    details = details .. " · " .. counts.working .. " active"
+  end
+  local local_host = item.host:sub(1, 1) == "\0"
+  local kind = local_host and "local"
+    or counts.backend and counts.backend:match("^wsl:") and "WSL"
+    or "ssh"
   for _, host in ipairs(thurbox.hosts or {}) do
     if host.name == item.host then
       if host.backend:match("^wsl:") then
@@ -340,13 +342,22 @@ local function host_line(item, width, selected)
   local row = ui.row({ width = width, tone = selected and function()
     return nil
   end or nil })
-  local glyph = thurbox.theme.nerd_font and "" or "▣"
+  local glyph = local_host and "⌂" or thurbox.theme.nerd_font and "" or "▣"
   row:add((item.collapsed and "▸ " or "▾ ") .. reach_glyph .. glyph .. " ", { fg = color })
-  row:add("!" .. counts.attention .. " ", {
-    fg = counts.attention > 0 and theme.role("status_blocked") or theme.muted,
+  row:add(local_host and kind or kind .. " " .. item.host, { fg = theme.text, bold = true })
+  if counts.attention > 0 then
+    row:add("  !" .. counts.attention, { fg = theme.role("status_blocked"), bold = true })
+  end
+  row:trailing(reach == "connected" and details or reach .. " · " .. details, {
+    fg = theme.secondary,
   })
-  row:add(kind .. " " .. item.host, { fg = theme.text, bold = true })
-  row:trailing(details .. " · " .. reach, { fg = color })
+  return row:spans_list()
+end
+
+local function repo_line(item, width)
+  local row = ui.row({ width = width })
+  row:add(item.collapsed and "  ▸ " or "  ▾ ", { fg = theme.accent })
+  row:add(item.repo_label, { fg = theme.secondary, bold = true })
   return row:spans_list()
 end
 
@@ -488,50 +499,74 @@ local CURSOR_OPTS_WITH_REQUEST = {
   request = "focus_session",
 }
 
-local function folded_hosts()
-  local saved = plugin_settings.get("sessions", "folded_hosts", "")
+local function folds(setting)
+  local saved = plugin_settings.get("sessions", setting, "")
   if type(saved) ~= "string" then
     saved = ""
   end
-  if type(state.folded_hosts) == "string" then
-    if state.folded_base == saved then
-      return state.folded_hosts
+  if type(state[setting]) == "string" then
+    if state[setting .. "_base"] == saved then
+      return state[setting]
     end
-    state.folded_base = nil
-    state.folded_hosts = nil
+    state[setting .. "_base"] = nil
+    state[setting] = nil
   end
   return saved
 end
 
-local function escape_host(name)
+local function folded_hosts()
+  return folds("folded_hosts")
+end
+
+local function folded_repos()
+  return folds("folded_repos")
+end
+
+local function escape_fold_key(name)
   return name:gsub("[^%w._-]", function(char)
     return string.format("%%%02X", string.byte(char))
   end)
 end
 
-local function host_is_folded(host)
-  local saved = ";" .. folded_hosts() .. ";"
-  return saved:find(";" .. escape_host(host) .. ";", 1, true) ~= nil
+local function is_folded(setting, name)
+  local saved = ";" .. folds(setting) .. ";"
+  return saved:find(";" .. escape_fold_key(name) .. ";", 1, true) ~= nil
 end
 
-local function set_host_folded(host, folded)
+local function set_folded(setting, name, folded)
   local names = {}
-  for escaped in folded_hosts():gmatch("[^;]+") do
-    local name = escaped:gsub("%%(%x%x)", function(hex)
+  for escaped in folds(setting):gmatch("[^;]+") do
+    local decoded = escaped:gsub("%%(%x%x)", function(hex)
       return string.char(tonumber(hex, 16))
     end)
-    names[name] = true
+    names[decoded] = true
   end
-  names[host] = folded or nil
+  names[name] = folded or nil
   local ordered = {}
-  for name in pairs(names) do
-    ordered[#ordered + 1] = escape_host(name)
+  for key in pairs(names) do
+    ordered[#ordered + 1] = escape_fold_key(key)
   end
   table.sort(ordered)
   local value = table.concat(ordered, ";")
-  state.folded_base = plugin_settings.get("sessions", "folded_hosts", "")
-  state.folded_hosts = value
-  command("set", { text = "sessions.folded_hosts", value = value })
+  state[setting .. "_base"] = plugin_settings.get("sessions", setting, "")
+  state[setting] = value
+  command("set", { text = "sessions." .. setting, value = value })
+end
+
+local function host_is_folded(host)
+  return is_folded("folded_hosts", host)
+end
+
+local function set_host_folded(host, folded)
+  set_folded("folded_hosts", host, folded)
+end
+
+local function repo_is_folded(target)
+  return is_folded("folded_repos", target)
+end
+
+local function set_repo_folded(target, folded)
+  set_folded("folded_repos", target, folded)
 end
 
 local function model()
@@ -557,14 +592,22 @@ local function model()
     end
   end
   if type(wanted) == "string" then
+    local all = session_model.build(sessions(), "", false, true, "")
+    for _, item in ipairs(all) do
+      if item.kind == "session" and item.target == wanted and repo_is_folded(item.repo_target) then
+        set_repo_folded(item.repo_target, false)
+        break
+      end
+    end
     for _, session in ipairs(sessions()) do
-      if session.id == wanted and session.host and host_is_folded(session.host) then
-        set_host_folded(session.host, false)
+      local host = session.host or "\0local"
+      if session.id == wanted and host_is_folded(host) then
+        set_host_folded(host, false)
         break
       end
     end
   end
-  return session_model.build(sessions(), folded_hosts(), searching, true)
+  return session_model.build(sessions(), folded_hosts(), searching, true, folded_repos())
 end
 
 --- Header ownership is a rendering property of the first row in a group, so
@@ -582,11 +625,11 @@ local function persist_order(items)
 end
 
 local function ordering_items()
-  local items = session_model.build(sessions(), "", false, true)
+  local items = session_model.build(sessions(), "", false, true, "")
   local ordered = {}
   local previous_host
   for _, item in ipairs(items) do
-    if item.kind ~= "host" then
+    if item.kind ~= "host" and item.kind ~= "repo" then
       if item.host ~= previous_host and item.header == nil then
         local copy = {}
         for key, value in pairs(item) do
@@ -690,7 +733,7 @@ local function row_menu()
   return menu
 end
 
---- The menu a right press off the rows opens -- empty space or a repo header,
+--- The menu a right press off session rows opens -- empty space or a group row,
 --- neither of which is about a session. Built when it opens, because two of its
 --- entries are offered only when they would do something: an entry that does
 --- nothing is worse than no entry.
@@ -751,16 +794,16 @@ return {
   settings = {
     {
       id = "group_by_repo",
-      desc = "Group sessions under a repo header",
+      desc = "Group sessions under foldable repo rows",
       default = true,
     },
     -- The other grouping axis, and a separate row because the two are
     -- independent: every combination of the pair renders, from one flat list
-    -- to a header naming a machine and its repos. On by default, so a list
-    -- that already separates its machines keeps doing it.
+    -- to host rows with repo rows inside. On by default, including a
+    -- local-only list so local work can be folded.
     {
       id = "group_by_host",
-      desc = "Group sessions by machine when the list spans more than one",
+      desc = "Group sessions under foldable host rows",
       default = true,
     },
     {
@@ -771,6 +814,11 @@ return {
     {
       id = "folded_hosts",
       desc = "Folded hosts (managed by the session list)",
+      default = "",
+    },
+    {
+      id = "folded_repos",
+      desc = "Folded repos (managed by the session list)",
       default = "",
     },
   },
@@ -791,8 +839,8 @@ return {
     { key = "down", action = "sessions.next", desc = "next session", group = "Navigation" },
     { key = "up", action = "sessions.previous", desc = "previous session", group = "Navigation" },
     { key = "g", action = "sessions.first", desc = "first session", group = "Navigation" },
-    { key = "h", action = "sessions.collapse_host", desc = "fold host", group = "Navigation" },
-    { key = "l", action = "sessions.expand_host", desc = "unfold host", group = "Navigation" },
+    { key = "h", action = "sessions.collapse_host", desc = "fold group", group = "Navigation" },
+    { key = "l", action = "sessions.expand_host", desc = "unfold group", group = "Navigation" },
     -- v1's `Enter` on a session row: go to what you selected. The row is already
     -- selected by the time this fires, so opening is only a focus change.
     { key = "enter", action = "sessions.open", desc = "open the session", group = "Navigation" },
@@ -963,20 +1011,21 @@ return {
         -- The pane is a column of its own: it holds its rows apart from the
         -- bottom border however few of them there are.
         pad = true,
-        --- `── label ────────`, muted, full bleed. The header never reflects
-        --- selection: highlighting belongs to the session rows alone.
-        header = function(item)
-          return item.header and ui.rule(item.header, inner_width) or nil
-        end,
         class_of = function(item)
           if item.kind == "host" then
             return "host-row"
+          end
+          if item.kind == "repo" then
+            return "repo-row"
           end
           return item.kind == "pending" and "pending-row" or "session-row"
         end,
         row = function(item, selected)
           if item.kind == "host" then
             return host_line(item, inner_width, selected)
+          end
+          if item.kind == "repo" then
+            return repo_line(item, inner_width)
           end
           if item.kind == "pending" then
             return pending_line(item.command, inner_width, ctx.elapsed)
@@ -1048,24 +1097,23 @@ return {
   -- session, press Ctrl+D" type Ctrl+D into the agent instead. The `focus`
   -- command is applied after the press resolves, so the agent wins.
   --
-  -- A repo header carries no id — it is drawn as its own line and only session
-  -- lines are targets — so a click on one focuses the column and selects
-  -- nothing. v1 folds the header into its group's first hitbox instead; giving
-  -- it an id here would also hand it `role = "row"`, which the search
-  -- decorator matches on, so the divergence is deliberate.
-  -- A host row has its own id and toggles its fold state on one click.
+  -- Host and repo rows have ids and toggle their fold state on one click.
   on_click = function(hit)
     if not hit.id then
       return false
     end
     local items = model()
-    if hit.id:match("^host:") then
+    if hit.id:match("^host:") or hit.id:match("^repo:") then
       local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
       if cursor:select_by_id(hit.id) == nil then
         return false
       end
       local item = cursor:item()
-      set_host_folded(item.host, not item.collapsed)
+      if item.kind == "host" then
+        set_host_folded(item.host, not item.collapsed)
+      else
+        set_repo_folded(item.target, not item.collapsed)
+      end
       return true
     end
     if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
@@ -1087,7 +1135,7 @@ return {
   -- session, so it opens the pane's general menu instead and selects nothing.
   on_context = function(hit)
     local items = model()
-    if not hit.id or hit.id:match("^host:") then
+    if not hit.id or hit.id:match("^host:") or hit.id:match("^repo:") then
       store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = pane_menu(items) }
       return true
     end
@@ -1159,16 +1207,21 @@ return {
     local selected = items[at]
 
     if action == "sessions.collapse_host" or action == "sessions.expand_host" then
-      local host = selected and selected.host
-      if host and host:sub(1, 1) ~= "\0" then
-        if action == "sessions.collapse_host" then
-          cursor:select_by_id("host:" .. host)
+      local folding = action == "sessions.collapse_host"
+      if selected and selected.kind == "repo" then
+        set_repo_folded(selected.target, folding)
+      else
+        local host = selected and selected.host
+        if host then
+          if folding then
+            cursor:select_by_id("host:" .. host)
+          end
+          set_host_folded(host, folding)
         end
-        set_host_folded(host, action == "sessions.collapse_host")
       end
       return true
     end
-    if selected and selected.kind == "host" then
+    if selected and selected.kind ~= "session" then
       id = nil
     end
 

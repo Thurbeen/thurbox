@@ -22,7 +22,7 @@
 //! One thing outside this repository's tests reads these frames: the landing
 //! page's interface mockup (`.ui-lab__screen` in `website/index.html`) is built
 //! to match them - the title in the top border, the status cluster beside it,
-//! the repo headers, the selection band, the agent border's tab run. It depicts
+//! the group rows, the selection band, the agent border's tab run. It depicts
 //! the `doom` preset rather than `default`, because that preset's slots are the
 //! site's own palette. Nothing enforces the match, so a frame that changes on
 //! purpose here is a frame to check there too.
@@ -36,7 +36,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render, PlaceholderSurfaces, ProgramPaint, SurfaceProvider};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
@@ -327,14 +327,14 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━⠇○◆●○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  !2  5 sessions · 1 active ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ○ └ ⑂ fix-osc52-tests                ┃",
             "┃ ◆ ⑂ add-wsl-tests  Blocked           ┃",
             "┃ ● ⑂ perf-cache                       ┃",
-            "┃── website ───────────────────────────┃",
+            "┃  ▾ website                           ┃",
             "┃ ○ ⑂ update-deps                      ┃",
-            "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
@@ -362,15 +362,15 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━⠇●○○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  !1  3 sessions · 1 active ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ● ⑂ perf-cache                       ┃",
-            "┃── website ───────────────────────────┃",
+            "┃  ▾ website                           ┃",
             "┃ ○ ⑂ update-deps                      ┃",
-            "┃▾ ●▣ !0 ssh buildbox  S1 W0 I1 · conn…┃",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●▣ ssh buildbox  1 session          ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
-            "┃                                      ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
@@ -392,11 +392,11 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━⠇●○┓",
-            "┃▾ ●▣ !1 ssh buildbox  S3 W1 I1 · conn…┃",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●▣ ssh buildbox  !1  3 sessions · 1…┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ⠇ ⇅ ⑂ fix-osc52                      ┃",
             "┃ ● ⇅ ⑂ perf-cache                     ┃",
-            "┃── website ───────────────────────────┃",
+            "┃  ▾ website                           ┃",
             "┃ ○ ⇅ ⑂ update-deps                    ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -408,7 +408,7 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
-            "┃▸ ●▣ !1 ssh buildbox  S3 W1 I1 · conn…┃",
+            "┃▸ ●▣ ssh buildbox  !1  3 sessions · 1…┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -429,7 +429,7 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
     // comparing those keys, the refusal that keeps a group on its own machine
     // went with it.
     //
-    // The local rows have no host handle; the remote one called `local` does.
+    // Both rows have host handles, and they must remain distinct.
     let host = host();
     publish(
         &host,
@@ -442,12 +442,12 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━⠇○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  1 session · 1 active      ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
-            "┃▾ ●▣ !0 ssh local  S1 W0 I1 · connect…┃",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●▣ ssh local  1 session             ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
-            "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
@@ -468,15 +468,15 @@ fn the_session_list_windows_more_rows_than_it_has_lines() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━○○○○○○○○○○○○○○○○○○○○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  20 sessions               ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ○ ⑂ session-00                       ┃",
             "┃ ○ ⑂ session-01                       ┃",
             "┃ ○ ⑂ session-02                       ┃",
             "┃ ○ ⑂ session-03                       ┃",
             "┃ ○ ⑂ session-04                       ┃",
             "┃ ○ ⑂ session-05                       ┃",
-            "┃ ○ ⑂ session-06                       ┃",
-            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▼ 13 ┛",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▼ 14 ┛",
         ],
     );
 }
@@ -498,11 +498,11 @@ fn the_session_list_keeps_its_columns_under_double_width_names() {
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━○◆○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  !1  3 sessions            ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ○ ⑂ 修复终端宽度                     ┃",
             "┃ ◆ ⑂ emoji-🚀-name  Blocked           ┃",
             "┃ ○ ⑂ plain-name                       ┃",
-            "┃                                      ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
@@ -530,9 +530,9 @@ fn a_double_width_name_budgets_the_status_by_the_columns_it_takes() {
         &text(&paint(&host, "sessions", 40, 5, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━○┓",
-            "┃── thurbox ───────────────────────────┃",
+            "┃▾ ●⌂ local  1 session                 ┃",
+            "┃  ▾ thurbox                           ┃",
             "┃ ○ ⑂ 修复终端宽度  waiting for your r…┃",
-            "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
@@ -546,14 +546,14 @@ fn the_session_list_truncates_rather_than_overflows_when_narrow() {
         &text(&paint(&host, "sessions", 22, 10, true)),
         &[
             "┏ ▸ Sessions ━━━⠇○◆●○┓",
-            "┃── thurbox ─────────┃",
+            "┃▾ ●⌂ local  !2  5 s…┃",
+            "┃  ▾ thurbox         ┃",
             "┃ ⠇ ⑂ fix-osc52      ┃",
             "┃ ○ └ ⑂ fix-osc52-tes┃",
             "┃ ◆ ⑂ add-wsl-tests  ┃",
             "┃ ● ⑂ perf-cache     ┃",
-            "┃── website ─────────┃",
+            "┃  ▾ website         ┃",
             "┃ ○ ⑂ update-deps    ┃",
-            "┃                    ┃",
             "┗━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
@@ -578,10 +578,10 @@ fn the_selection_is_a_style_and_moves_with_j() {
             style_runs(&after, 3),
         ],
         &[
-            "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨Cyan/Reset/BOLD⟩┃",
-            "⟨Cyan/Reset/BOLD⟩┃⟨Green/Reset/NONE⟩ ○ ⟨DarkGray/Reset/NONE⟩└ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52-tests⟨Reset/Reset/NONE⟩                ⟨Cyan/Reset/BOLD⟩┃",
-            "⟨Cyan/Reset/BOLD⟩┃⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨Cyan/Reset/BOLD⟩┃",
-            "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ○ └ ⑂ fix-osc52-tests                ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩  ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                           ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩  ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                           ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨Cyan/Reset/BOLD⟩┃",
         ],
     );
 }
@@ -1011,4 +1011,104 @@ fn the_agent_pane_paints_a_live_screen_inside_its_border() {
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
+}
+
+// The media recorder paints the real bundled pane and serializes its styled
+// cells. It is ignored by the test gate; scripts/demo/record-session-groups.sh
+// supplies its output path and rasterizes the cast.
+#[test]
+#[ignore]
+fn record_session_groups_demo() {
+    let output = std::env::var("THURBOX_DEMO_CAST").expect("cast output path");
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            row("fix-osc52", "thurbox", "working"),
+            row("update-site", "website", "idle"),
+            remote_row("review-auth", "thurbox", "blocked", "buildbox"),
+            remote_row("perf-cache", "thurbox", "working", "buildbox"),
+            remote_row("ship-docs", "website", "idle", "buildbox"),
+            remote_row("ci-linux", "thurbox", "working", "ci-runner"),
+            remote_row("ci-windows", "infra", "idle", "ci-runner"),
+        ]),
+    );
+
+    let mut cast = String::from("{\"version\":2,\"width\":62,\"height\":18}\n");
+    let mut frame = |time: f64| {
+        let buffer = paint(&host, "sessions", 62, 18, true);
+        let mut screen = String::from("\x1b[?25l\x1b[H\x1b[2J");
+        for y in 0..18 {
+            for x in 0..62 {
+                let cell = &buffer[(x, y)];
+                screen.push_str("\x1b[0m");
+                screen.push_str(&demo_color(cell.fg, false));
+                screen.push_str(&demo_color(cell.bg, true));
+                if cell.modifier.contains(Modifier::BOLD) {
+                    screen.push_str("\x1b[1m");
+                }
+                screen.push_str(cell.symbol());
+            }
+            if y < 17 {
+                screen.push_str("\x1b[0m\r\n");
+            }
+        }
+        cast.push_str(&serde_json::to_string(&(time, "o", screen)).expect("cast event"));
+        cast.push('\n');
+    };
+    frame(0.0);
+    let click = |id: &str| {
+        assert!(host
+            .on_click(
+                index_of(&host, "sessions"),
+                &Click {
+                    id: Some(id.into()),
+                    clicks: 1,
+                    ..Click::default()
+                },
+            )
+            .expect("fold click"));
+    };
+    click("host:buildbox");
+    frame(1.8);
+    click("host:buildbox");
+    frame(3.6);
+    click("repo:buildbox\x01thurbox");
+    frame(5.4);
+    click("repo:buildbox\x01thurbox");
+    frame(7.2);
+    click("host:\0local");
+    frame(9.0);
+    click("host:\0local");
+    frame(10.8);
+    cast.push_str("[12.6,\"o\",\"\"]\n");
+    std::fs::write(output, cast).expect("write cast");
+}
+
+fn demo_color(color: Color, background: bool) -> String {
+    let base = if background { 40 } else { 30 };
+    match color {
+        Color::Reset => format!("\x1b[{}m", if background { 49 } else { 39 }),
+        Color::Black => format!("\x1b[{base}m"),
+        Color::Red => format!("\x1b[{}m", base + 1),
+        Color::Green => format!("\x1b[{}m", base + 2),
+        Color::Yellow => format!("\x1b[{}m", base + 3),
+        Color::Blue => format!("\x1b[{}m", base + 4),
+        Color::Magenta => format!("\x1b[{}m", base + 5),
+        Color::Cyan => format!("\x1b[{}m", base + 6),
+        Color::Gray => format!("\x1b[{}m", base + 7),
+        Color::DarkGray => format!("\x1b[{}m", base + 60),
+        Color::LightRed => format!("\x1b[{}m", base + 61),
+        Color::LightGreen => format!("\x1b[{}m", base + 62),
+        Color::LightYellow => format!("\x1b[{}m", base + 63),
+        Color::LightBlue => format!("\x1b[{}m", base + 64),
+        Color::LightMagenta => format!("\x1b[{}m", base + 65),
+        Color::LightCyan => format!("\x1b[{}m", base + 66),
+        Color::White => format!("\x1b[{}m", base + 67),
+        Color::Indexed(index) => format!("\x1b[{};5;{index}m", if background { 48 } else { 38 }),
+        Color::Rgb(red, green, blue) => format!(
+            "\x1b[{};2;{red};{green};{blue}m",
+            if background { 48 } else { 38 }
+        ),
+    }
 }

@@ -1,16 +1,15 @@
 -- The session list's model: what to draw, before any width is known.
 --
 -- Pure functions over the published snapshot tables — sessions and in-flight
--- commands in, an ordered item list out. A repo header is glued to the first
--- session in its group, as v1 did. The bundled pane opts into selectable host
--- rows so folding can leave a summary behind; preserved panes retain the
+-- commands in, an ordered item list out. The bundled pane opts into selectable
+-- host and repo rows. Preserved panes retain v1's glued repo headers and the
 -- earlier machine-qualified header shape.
 --
 -- Deliberately free of theme and widgets: nothing here is text yet. The one
 -- dependency is `lib.settings`, because whether the list groups by repo is a
 -- knob the model has to answer for every consumer at once.
 --
--- Remote hosts are the outer axis; repo groups remain inside them.
+-- Hosts are the outer axis; repo groups remain inside them.
 
 local plugin_settings = require("lib.settings")
 
@@ -23,8 +22,8 @@ local NO_REPO = "(no repo)"
 --- with a real repo set.
 local FLAT_KEY = "\0flat"
 
---- The grouping key for sessions on this machine. Local rows stay above the
---- remote host rows, without a host heading of their own.
+--- The grouping key for sessions on this machine. Local rows stay above remote
+--- hosts and have their own fold handle.
 ---
 --- The key is `\0`-prefixed, like `FLAT_KEY` and for the same reason: a host
 --- name cannot contain `\0`, so a host somebody actually called `local` is a
@@ -45,30 +44,6 @@ end
 --- vocabulary.
 local function host_of(session)
   return session.host or LOCAL_HOST_KEY
-end
-
---- Does this list contain a remote host?
----
---- A local-only list keeps its old shape. One remote host still gets a row:
---- it is the handle for folding and names where those sessions run.
----
---- A creation in flight counts, and it has to: creating your FIRST session on a
---- host is a list whose rows are all local and whose next row is not. Counting
---- rows alone, the axis stayed off, the machine the creation named was dropped,
---- and the placeholder sat under a header that named no machine until the row
---- landed and the whole list regrouped underneath it.
-local function has_remote(rows, creations)
-  for _, session in ipairs(rows) do
-    if session.host then
-      return true
-    end
-  end
-  for _, item in ipairs(creations) do
-    if item.host then
-      return true
-    end
-  end
-  return false
 end
 
 --- Older preserved panes call `build(rows)` and expect the pre-fold model:
@@ -338,7 +313,7 @@ local function by_host_first(groups)
   return groups
 end
 
---- Current panes show repo headers inside host rows. Preserved panes still
+--- The bundled pane draws repo rows inside host rows. Preserved panes still
 --- receive the earlier machine-qualified header shape.
 local function header_label(group, grouping, by_host, host_rows)
   if by_host and not host_rows then
@@ -405,7 +380,7 @@ end
 local model_cache = {}
 
 --- The rows to draw, in order, before any of them is turned into text.
-function session_model.build(rows, folded, reveal, host_rows)
+function session_model.build(rows, folded, reveal, host_rows, folded_repos)
   -- Memoized: this walks and sorts every row and runs again per render AND per
   -- click/action, so the same inputs must not pay twice. Consumers treat the
   -- returned items as read-only, which is what makes sharing the table safe.
@@ -418,6 +393,7 @@ function session_model.build(rows, folded, reveal, host_rows)
   local host_grouping = host_grouped()
   host_rows = host_rows == true
   folded = folded or ""
+  folded_repos = folded_repos or ""
   if
     model_cache.items ~= nil
     and rawequal(rows, model_cache.rows)
@@ -426,6 +402,7 @@ function session_model.build(rows, folded, reveal, host_rows)
     and host_grouping == model_cache.host_grouping
     and host_rows == model_cache.host_rows
     and folded == model_cache.folded
+    and folded_repos == model_cache.folded_repos
     and reveal == model_cache.reveal
   then
     return model_cache.items
@@ -441,7 +418,7 @@ function session_model.build(rows, folded, reveal, host_rows)
   local all_creating = creations()
   -- With the axis off, every group is built as a local flat/repo group.
   local by_host = host_grouping
-    and (host_rows and has_remote(rows, all_creating) or spans_hosts(rows, all_creating))
+    and (host_rows and (#rows > 0 or #all_creating > 0) or spans_hosts(rows, all_creating))
   local groups = ordered_groups(rows, grouping, by_host)
   local creating, creating_buckets = pending_creations(all_creating, by_host)
 
@@ -587,6 +564,8 @@ function session_model.build(rows, folded, reveal, host_rows)
         -- `lib.order` reads it to refuse a move that would carry a group
         -- past a host boundary.
         host = group.host,
+        repo_label = group.label,
+        repo_target = "repo:" .. group_slot(group.host, group.repo_key),
         target = session.id,
       }
       first = false
@@ -608,6 +587,8 @@ function session_model.build(rows, folded, reveal, host_rows)
         depth = 0,
         header = first and group_header or nil,
         host = group.host,
+        repo_label = group.label,
+        repo_target = "repo:" .. group_slot(group.host, group.repo_key),
         target = false,
       }
       first = false
@@ -624,7 +605,7 @@ function session_model.build(rows, folded, reveal, host_rows)
     end
     local counts = {}
     for _, item in ipairs(items) do
-      if item.host and item.host ~= LOCAL_HOST_KEY then
+      if item.host then
         local host = item.host
         local count = counts[host]
           or {
@@ -664,7 +645,7 @@ function session_model.build(rows, folded, reveal, host_rows)
     local with_hosts, seen = {}, {}
     for _, item in ipairs(items) do
       local host = item.host
-      if host and host ~= LOCAL_HOST_KEY then
+      if host then
         if not seen[host] then
           seen[host] = true
           with_hosts[#with_hosts + 1] = {
@@ -685,12 +666,45 @@ function session_model.build(rows, folded, reveal, host_rows)
     items = with_hosts
   end
 
+  if host_rows and grouping then
+    local collapsed = {}
+    for escaped in folded_repos:gmatch("[^;]+") do
+      collapsed[escaped:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+      end)] =
+        true
+    end
+    local with_repos, seen = {}, {}
+    for _, item in ipairs(items) do
+      local target = item.repo_target
+      if target then
+        if not seen[target] then
+          seen[target] = true
+          with_repos[#with_repos + 1] = {
+            kind = "repo",
+            target = target,
+            host = item.host,
+            repo_label = item.repo_label,
+            collapsed = collapsed[target] == true,
+          }
+        end
+        if not collapsed[target] or reveal then
+          with_repos[#with_repos + 1] = item
+        end
+      else
+        with_repos[#with_repos + 1] = item
+      end
+    end
+    items = with_repos
+  end
+
   model_cache.rows = all_rows
   model_cache.digest = digest
   model_cache.grouping = grouping
   model_cache.host_grouping = host_grouping
   model_cache.host_rows = host_rows
   model_cache.folded = folded
+  model_cache.folded_repos = folded_repos
   model_cache.reveal = reveal
   model_cache.items = items
   return items
