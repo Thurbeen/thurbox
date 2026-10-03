@@ -919,10 +919,10 @@ end,
 closes it. The sessions column opens its own this way.
 
 Give the menu a `target` (the row's id, say) when the entries are about one
-thing: a choice leaves `store["menu.chosen"] = { action, target }` for the
-action's owner to read in `on_action`, since the thing pressed may have moved or
-gone by the time the action lands. The sessions pane re-selects its target that
-way, and refuses when the session is gone.
+thing. The menu passes it as the action's read-only `args.target`; the owner
+can refuse when that row has gone before the action lands. The bundled sessions
+menu sets `target_argument = "session_id"`, so its contributed actions receive
+the session UUID as `args.session_id`.
 
 An entry's `action` has to be one some plugin **declares**, in `keys` or in
 `commands`: that declaration is how `command("action")` finds the pane whose
@@ -962,16 +962,13 @@ appear on a row's menu only, never on the menu for empty space. The check reads
 chord-less rows.
 
 The pane opens the menu with `target` set to the row that was pressed. Read it
-from `store["menu.chosen"].target` in your `on_action`, not from
-`store.selected`, because the cursor may have moved by the time the action
-lands. Clear `store["menu.chosen"]` once you have read it:
+from the action's typed arguments, since the cursor may have moved by the time
+the action lands:
 
 ```lua
-on_action = function(action)
+on_action = function(action, args)
   if action ~= "auto-continue.toggle" then return false end
-  local chosen = store["menu.chosen"]
-  store["menu.chosen"] = nil
-  local session = type(chosen) == "table" and chosen.action == action and chosen.target
+  local session = type(args) == "table" and args.session_id
   session = session or store.selected   -- run from Ctrl+P, not the menu
   -- …act on `session`…
   return true

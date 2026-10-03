@@ -1848,8 +1848,8 @@ both, which is what raising the knob asks for. The first change anywhere in the
 answer puts a session back on the base cadence, so the one an agent is working
 in never leaves it. At
 `git_poll_secs = 0` the session list shows no diffstat at all and every delete
-asks for confirmation — `at_risk` reads the stat, and a state that could not be
-read is a reason to ask rather than an assumption of clean, which is the
+asks for confirmation — `at_risk` reads the stat to describe the risk, and a state that could not be
+read is reported rather than assumed clean, which is the
 existing contract for a remote session. That is the trade an operator on a
 scanned machine is asking to make. The demanded diff
 (`kernel::diff`, `DIFF_TTL`) is deliberately untouched: the loop asks for it for

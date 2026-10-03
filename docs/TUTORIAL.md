@@ -200,7 +200,7 @@ The ones worth knowing on day one:
 | `Ctrl+F` | Fork the session — same repo, branch and agent, with the conversation carried over and the source recorded as its parent |
 | `Ctrl+S` | Sync the worktree with its base branch |
 | `Ctrl+E` | Rename the session (with the list focused — in a terminal it is end-of-line) |
-| `Ctrl+D` | Delete the session (`Ctrl+Z` undoes it) |
+| `Ctrl+D` | Confirm deleting the session (`Ctrl+Z` undoes it) |
 | `Ctrl+U` | Restore a deleted session |
 | `Ctrl+Y` / `F4` | Theme picker (36 palettes) |
 | `Ctrl+,` / `F6` | Settings — `]` for the Interface tab |
@@ -208,7 +208,7 @@ The ones worth knowing on day one:
 | `Ctrl+Q` | Quit, leaving every agent running |
 
 With the mouse, a click on a session **selects** it and leaves the keyboard in
-the list, so `Ctrl+D` then deletes the one you pointed at; a **double-click**
+the list, so `Ctrl+D` asks about the one you pointed at; a **double-click**
 opens it, moving the keyboard into its agent pane like `Enter`. The badge at the
 bottom-left always names the pane that has the keyboard.
 

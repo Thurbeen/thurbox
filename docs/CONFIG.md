@@ -638,8 +638,8 @@ Defender / Intune on macOS, or Defender for Endpoint on Windows, scans every
 process as it is created**, which turns a poll into an antivirus workload. At
 `0` nothing is statted, so the session list shows no diffstat and **a delete
 always asks for confirmation** — the confirmation reads a session's git state to
-decide whether there is anything to lose, and "could not be read" is a reason to
-ask rather than an assumption that the checkout is clean. It is the same prompt
+describe what may be lost, and "could not be read" is reported rather than
+treated as clean. It is the same prompt
 a remote session already gets. `thurbox-cli` is unaffected. Read once at
 startup, so a change applies on the next launch.
 
@@ -675,7 +675,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | `automations` | `true` | TUI schedule firing + heartbeat arming (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
-| `soft_delete` | `true` | TUI `Ctrl+D` soft-deletes (Ctrl+Z undo); off = hard delete after a confirmation prompt |
+| `soft_delete` | `true` | TUI `Ctrl+D` asks, then soft-deletes (Ctrl+Z undo); off = hard delete after the same confirmation prompt |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
@@ -708,6 +708,8 @@ rather than created, in which case nothing was lost and the restore
 stands (which re-spawns it fresh). This flag governs the TUI only:
 `thurbox-cli session delete` always soft-deletes unless you pass
 `--force`, regardless of the setting.
+With `soft_delete = true`, the TUI also asks before the reversible delete and
+records the `Ctrl+Z` undo target only after the answer is yes.
 
 `version_check` (on by default for 1.0) enables the update check — it
 makes a network call. On launch the TUI reads a cached result
@@ -1358,13 +1360,37 @@ notification request and does not select a TUI instance.
 
 Any non-destructive declared action can be called by its catalog name. Use
 `--arg name=value` for an argument; `--session` and `--query` remain shortcuts
-for the first two actions. Destructive actions return a structured
-`confirmation_required` refusal until shared external confirmation is available.
+for the first two actions. A destructive action needs an explicit session UUID.
+Its first request exits with a structured `confirmation_required` result and an
+opaque `result.error.ticket`; it changes nothing. Run `thurbox-cli ui --instance
+<id> confirm <ticket> --json` as a separate step. A ticket expires after 30
+seconds, works once for the same local peer and instance, and is refused if
+the action catalog or target changes. A confirmation queues the normal session
+operation; its later success or failure is reported through the ordinary TUI
+command status. An addressed destructive key cannot bypass this step.
 For input owned by an active modal or plugin, use addressed operations such as
 `thurbox-cli ui --instance <id> input modal --key esc`,
 `input search --input-text 'term'`, or `input agent --scroll down`. These operations
 refuse an inactive target. Keys and text are refused for session terminals;
 agent terminal bytes stay on the session input path.
+
+The local control audit lives at `ui-control/audit.jsonl` in the data profile.
+It is owner-only and bounded to roughly 1 MiB. It records time, instance,
+peer, action ID, target session ID, outcome and request ID for external action
+attempts and decisions. It omits arguments such as search queries, addressed
+input, terminal text and secrets. If audit storage is unavailable, destructive
+control refuses before dispatch.
+
+The `ui actions` descriptor schema is versioned separately from the CLI. For
+schema version 1, bundled action names, argument names and meanings remain
+stable; new optional fields and new actions can appear. Clients should ignore
+unknown fields and rediscover the live catalog after `catalog_revision` moves.
+Plugin-owned actions and `plugin_state` projections are governed by their
+plugins and may disappear on reload. `ui state` exposes the active search query,
+so scripts should treat its output and the event stream as private even though
+terminal contents are omitted. No `ui capture` command is provided: visible
+terminal cells can contain credentials or private prompts, and bounded output
+alone would not make a useful redaction boundary.
 
 The control channel is a Unix socket in a user-owned `0700` directory with a
 peer UID check, or a local Windows named pipe with a current-user ACL and remote
