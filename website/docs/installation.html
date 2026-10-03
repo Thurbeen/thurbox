@@ -64,15 +64,34 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
           </p>
 
+          <h3 id="rmux">Optional RMUX backend</h3>
+          <p>
+            <a href="https://github.com/Helvesec/rmux">RMUX</a> is a Rust terminal
+            multiplexer with a tmux-compatible command interface. Thurbox requires
+            RMUX 0.10.0 or newer. Install it separately on the session machine;
+            <code>cargo install rmux --locked</code> is one upstream option.
+            Follow the <a href="https://github.com/Helvesec/rmux/tree/v0.10.0#installation">upstream installation guide</a>
+            for packages and archive layout, then check <code>rmux -V</code>.
+          </p>
+          <p>
+            Press <kbd>Ctrl</kbd>+<kbd>N</kbd> and choose RMUX immediately after tmux
+            in the multiplexer picker. Locally it appears when <code>rmux</code>
+            resolves on <code>PATH</code>. It was tested with thurbox on Linux;
+            macOS, real SSH, WSL execution and native Windows integration remain
+            unverified. Defaults stay tmux on POSIX and psmux on native Windows.
+            See <a href="configuration.html#multiplexers">multiplexer configuration</a>
+            and the <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#multiplexer-requirements-and-rmux-setup">verified version table and troubleshooting</a>.
+          </p>
+
           <h3>Windows (PowerShell)</h3>
           <div class="info-box">
             <p>
-              <strong>Windows uses psmux, not tmux.</strong>
-              Every Windows route needs
+              <strong>Native Windows defaults to psmux.</strong>
+              Install
               <a href="https://github.com/psmux/psmux">psmux</a>, a drop-in tmux
               clone on ConPTY that speaks the same control-mode protocol,
               installed separately. (A WSL distro is a remote host and runs tmux
-              inside the distro.) psmux is the newer of the two and a bit less
+              inside the distro by default; RMUX is opt-in.) psmux is a bit less
               stable, so please report anything you hit.
             </p>
           </div>
@@ -336,7 +355,7 @@ cargo build --release</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.7</strong> on Windows)</td>
+                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.7</strong> on Windows, or opt-in <strong>RMUX >= 0.10.0</strong>)</td>
                 <td>Yes</td>
                 <td>Session backend</td>
               </tr>

@@ -422,7 +422,7 @@ regardless of which backend is active.
 session through the trait and the registry that holds one backend per route
 (ADR-29), never through an adapter, which `tests/architecture_rules.rs`
 enforces (`consumers_reach_no_concrete_backend`). The adapters today are
-`TmuxBackend` and `PsmuxBackend`, peers over the shared tmux-protocol server
+`TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`, peers over the shared tmux-protocol server
 (ADR-31), each reached locally or on a host over a `TmuxTransport` (ADR-13).
 A multiplexer that does not speak the tmux protocol is a new adapter behind the
 same trait, not a branch in a consumer.
@@ -2395,8 +2395,8 @@ against a target it cannot resolve — is no answer.
 
 ## ADR-31: tmux and psmux are peer adapters over one tmux-protocol server
 
-**Choice**: `backend::tmux` and `backend::psmux` are two adapters, and neither
-names the other. What both speak — the tmux command grammar, control mode, the
+**Choice**: `backend::tmux`, `backend::psmux`, and `backend::rmux` are peer adapters; none
+names another. What both speak — the tmux command grammar, control mode, the
 session config, discovery, the headless spawn — is
 `backend::tmux_compat::server::Server<M>`, generic over a `TmuxCompatible`
 multiplexer `M`; each adapter is its multiplexer's answers to that trait: what
@@ -2467,7 +2467,13 @@ one reply into the three parts of a pane snapshot; detached resizes reserve one
 reply too. RMUX polls pane liveness and remote hook options because its control
 stream does not complete a killed pane's reader and refuses `refresh-client -B`.
 Local creation, TUI attachment, and TUI-open pane deletion have been driven
-live; SSH, WSL, and native Windows remain unverified.
+live on Linux with RMUX 0.10.0; macOS, SSH, WSL, and native Windows remain
+unverified. `Rmux::check_banner` rejects versions below 0.10.0; the server
+reports a tmux compatibility version, so it cannot supply the RMUX floor.
+The [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0)
+changed the daemon wire protocol from 5 to 8 and rejects 0.9.x daemons.
+See [CONFIG.md](CONFIG.md#multiplexer-requirements-and-rmux-setup) for
+installation, selection, and the verified version table.
 
 ## ADR-32: Hook status and the heartbeat are the route's backend's
 

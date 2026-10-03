@@ -41,6 +41,10 @@ You'll also need, from your package manager: `tmux >= 3.2`, `shellcheck`,
 runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 `just fmt`'s website half exits 127 on a fresh checkout.
 
+For opt-in RMUX sessions, install RMUX >= 0.10.0 separately; the dev flake
+provides tmux. [CONFIG.md](CONFIG.md#multiplexer-requirements-and-rmux-setup)
+records version evidence and RMUX platform limits.
+
 ## 2. Everyday tasks — `just`
 
 `just` (in the dev shell) is the task entrypoint — run `just` for the list:

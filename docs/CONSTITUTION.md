@@ -194,7 +194,7 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 Coding-agent sessions run via a `SessionBackend` trait, one backend per route
 in the registry (ADR-29). The default is the platform's multiplexer run
 locally (`tmux -L thurbox`; `psmux` on native Windows). Each adapter —
-`TmuxBackend`, `PsmuxBackend`, peers over one tmux-protocol server (ADR-31) —
+`TmuxBackend`, `PsmuxBackend`, `RmuxBackend`, peers over one tmux-protocol server (ADR-31) —
 runs over a transport, local, SSH or WSL, so a session can live on another
 host with no adapter of its own for that (ADR-13). The multiplexer provides
 truly persistent sessions that survive crashes/restarts.

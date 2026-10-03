@@ -32,6 +32,26 @@ breadcrumb: 'Configuration'
             </p>
           </div>
 
+          <h2 id="multiplexers">Multiplexer selection</h2>
+          <p>
+            Adapters are available for tmux (minimum 3.2), psmux (minimum 3.3.7),
+            and opt-in <a href="installation.html#rmux">RMUX (minimum 0.10.0)</a>.
+            Set top-level <code>multiplexer = "rmux"</code> in
+            <code>settings.toml</code> for new local sessions, or on a
+            <code>[[hosts]]</code> entry for that SSH host or WSL distro.
+            Install the binary on the session machine; for WSL it belongs inside
+            the distro. An explicit picker choice or
+            <code>session create --multiplexer rmux</code> overrides the preference.
+            Existing sessions keep their recorded routes.
+          </p>
+          <p>
+            RMUX integration was tested locally on Linux with 0.10.0; macOS,
+            real SSH, WSL and native Windows execution remain unverified.
+            The adapter skips unsupported flow control and pane monitoring,
+            treats command lists as one reply, and polls remote hook options.
+            See the <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#multiplexer-requirements-and-rmux-setup">source and release evidence, platform table, and troubleshooting</a>.
+          </p>
+
           <h2 id="files">
             Files at a glance
             <a href="#files" class="heading-anchor">#</a>

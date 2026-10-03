@@ -37,7 +37,8 @@ Homebrew, AUR, Nix, winget and Chocolatey are on the
 
 You also need:
 
-- **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) on native Windows) —
+- **tmux ≥ 3.2** (or [psmux ≥ 3.3.7](https://github.com/psmux/psmux) on native Windows, or
+  opt-in [RMUX ≥ 0.10.0](CONFIG.md#multiplexer-requirements-and-rmux-setup)) —
   it is what keeps your agents alive when thurbox is closed
 - **git**
 - **at least one coding-agent CLI** — `claude`, `codex`, `agy`, `opencode`,

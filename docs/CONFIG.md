@@ -282,7 +282,7 @@ configured hosts, error shown.
 | `socket` | no | `thurbox` | host `tmux -L` socket |
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
-| `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Use `psmux` for a native Windows SSH host |
+| `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 | `path_prepend` | no | `[]` | directories put first on the agent's `PATH` on the host, absolute or `~/`-rooted (`~` = the host's `$HOME`) — for what the host's login shell cannot report |
@@ -319,11 +319,12 @@ session still recorded there stays recorded there). Name a **new** entry
 after the distro it reaches and there is nothing to warn about; renaming
 an **existing** one moves no row, and leaves its recorded sessions
 behind under a name no host registers.
-For both kinds, tmux, git, the agent,
+For both kinds, the multiplexer, git, the agent,
 and worktrees all run **on the host / inside the distro** at native
 paths (a WSL distro's worktrees live in its own Linux filesystem, not on
-`/mnt/c`); the distro needs `tmux` >= 3.2 and `git`. Host changes
-require a restart (the registry is read once and each host's `$HOME` is
+`/mnt/c`); the distro needs its selected multiplexer (`tmux` >= 3.2 by default,
+or opt-in RMUX >= 0.10.0) and `git`. Host changes require a restart
+(the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
 
 ### Host platform
@@ -407,14 +408,95 @@ checkout or killing a local window of the same name; a delete without
 registers its own routes; it must read them on restart, restore, delete,
 input, capture, and fork.
 
-RMUX is opt-in and never changes the platform defaults. The adapter was tested
-on Linux with [RMUX 0.10.0](https://github.com/Helvesec/rmux/releases/tag/v0.10.0),
-which must be on the server machine's `PATH`. Set `multiplexer = "rmux"` in
-`settings.toml` for new local sessions, set it on a `hosts.toml` entry for new
-sessions on that host, or pass `--multiplexer rmux` to `session create` for one
-session. Existing tmux and psmux rows retain their recorded routes when a
-preference changes. Real SSH, WSL, and native Windows RMUX paths have not been
-verified.
+### Multiplexer requirements and RMUX setup
+
+Use the latest stable release of the selected multiplexer. These are the
+minimums enforced by the adapters, checked against upstream on 2026-10-03;
+no runtime floor changed in this documentation update.
+
+| Multiplexer | Minimum | Code enforcing it | Upstream evidence |
+| --- | --- | --- | --- |
+| [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
+| [psmux](https://github.com/psmux/psmux) | 3.3.7 | [`MIN_PSMUX_VERSION` and `check_psmux_version`](../src/backend/psmux.rs) | [3.3.7 release](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
+| [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
+
+For tmux, the limiting features are `refresh-client -f pause-after=5`,
+`refresh-client -A` (pane monitoring/resume), and `refresh-client -B`
+(format subscriptions), added in 3.2. Control mode arrived in 1.8;
+`send-keys -H` and pane options in 3.0; `set-clipboard external` in 2.6;
+`resize-window` in 2.9. These are recorded in the same upstream changelog.
+The mouse-state seed in
+[`pane_state_seed`](../src/backend/tmux_compat/server.rs) uses six
+`#{mouse_*_flag}` formats: all are present in upstream
+[3.2 format.c](https://github.com/tmux/tmux/blob/3.2/format.c).
+The changelog records the SGR/UTF-8 mouse formats in 3.0; the source confirms
+the floor rather than assuming a newer requirement from the current manual.
+Unknown flags expand empty and the seed falls back to press reporting when
+only `mouse_any_flag` is set. `extended-keys-format` needs 3.5 but is optional:
+its rejection is tolerated on 3.2–3.4. See ADR-12 for the control setup.
+
+psmux's floor is its own release version, not a claim of tmux feature parity.
+Older releases can spawn dead panes after console attach/detach; 3.3.7 fixes
+that. The adapter checks both the client banner and the running server's
+`#{version}`. RMUX checks its `rmux -V` banner instead: its `#{version}` is
+the tmux compatibility version, not the RMUX release.
+
+Recorded integration evidence is tmux 3.2/3.2a and 3.5a/3.7c (ADR-12),
+psmux 3.3.8 on Windows 11 (ADR-13), and RMUX 0.10.0 on Linux
+([#1322](https://github.com/Thurbeen/thurbox/pull/1322)). This is historical
+evidence, not a claim that every platform was retested for this doc change.
+The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,
+psmux 3.3.8, and RMUX 0.10.0.
+
+RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
+It is opt-in and never changes the platform defaults. Install it separately
+on the machine running the sessions, following its
+[installation guide](https://github.com/Helvesec/rmux/tree/v0.10.0#installation).
+For example, `cargo install rmux --locked` installs the latest published
+crate; check `rmux -V` afterwards. Release archives need their complete
+package layout: on Unix run the archive's `./install.sh --prefix ~/.local`,
+and keep its `bin/` and `libexec/`; do not copy just the executable.
+
+Press **Ctrl+N**, choose the host if prompted, then choose **RMUX** immediately
+after tmux in the multiplexer picker. Locally RMUX appears only when `rmux`
+resolves on `PATH`; host choices remain visible without a remote binary probe.
+To make it the default for new local sessions, set this top-level value in
+`settings.toml`:
+
+```toml
+multiplexer = "rmux"
+```
+
+For an SSH host, add `multiplexer = "rmux"` to its `[[hosts]]` entry. For WSL,
+add a configured `kind = "wsl"` entry matching the discovered distro and set
+that same preference; install RMUX inside the distro. An explicit
+`thurbox-cli session create --multiplexer rmux` overrides the preference
+(add the usual session name, repository and agent arguments).
+Existing tmux and psmux rows retain their recorded routes.
+
+| RMUX placement | Thurbox integration evidence |
+| --- | --- |
+| Local Linux | Live creation, TUI attachment, input and pane-deletion/relaunch in #1322 |
+| Local macOS | Upstream ships macOS binaries; thurbox integration unverified |
+| SSH host | Adapter and route construction covered; real-host execution unverified |
+| WSL distro | Picker and route construction covered; distro execution unverified |
+| Native Windows | Upstream ships Windows binaries; thurbox integration unverified, so keep the psmux default |
+
+RMUX 0.10.0 rejects `pause-after`, `refresh-client -A`, and subscriptions
+(`refresh-client -B`). Thurbox omits those commands, uses one reply block for
+command lists, and polls pane liveness and remote hook options. Output buffering
+therefore relies on RMUX rather than tmux's pause/resume mechanism. See
+[ADR-31](ARCHITECTURE.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server)
+and [#1320](https://github.com/Thurbeen/thurbox/pull/1320).
+
+If RMUX is absent from the local picker, check `rmux -V` in the environment
+that launches thurbox. For a host, check it on that host or inside the WSL
+distro. A version rejection needs an upgrade on the session machine.
+RMUX 0.9.x daemons cannot talk to a 0.10.0 client: stop the old server before
+upgrading, using `rmux -L <socket> kill-server` for each affected socket.
+This stops its sessions; finish or save the agents' work first. A change of
+preference does not convert existing sessions, so use the recorded route's
+multiplexer when attaching manually or stopping a server.
 
 A socket learned from a host's own CLI (`version --json`'s `tmux_socket`) is
 kept per **host**, not per route: it is the address of the thurbox instance
@@ -565,7 +647,7 @@ this, uncomment what you want to change, and restart:
 
 ```toml
 config_version = 1
-multiplexer = "tmux"     # use "psmux" on native Windows
+multiplexer = "tmux"     # use "psmux" on native Windows; "rmux" is opt-in
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
