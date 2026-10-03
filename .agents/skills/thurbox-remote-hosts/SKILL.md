@@ -66,13 +66,13 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
 field's default is in the comments above and in `docs/CONFIG.md`.
 
-How it works: each tmux-protocol adapter — `TmuxBackend` and `PsmuxBackend`,
-both `tmux_compat::Server<M>` — runs over a transport-neutral
+How it works: each tmux-protocol adapter — `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`,
+all `tmux_compat::Server<M>` — runs over a transport-neutral
 `backend::tmux_compat::transport::TmuxTransport` (an optional
 `shell::HostLauncher` plus the multiplexer binary — the launcher never adds
 `-L`). The local backend launches `<mux> -L thurbox …`; an SSH backend launches
 `ssh <dest> <mux> -L <host socket> …` (the host's socket, ADR-12); a **WSL
-backend launches `wsl.exe -d <distro> tmux -L <host socket> …`**
+backend launches `wsl.exe -d <distro> <mux> -L <host socket> …`**
 (`HostLauncher::Wsl`). Every remote command builds its
 launcher with the one conversion `HostLauncher::for_host`. `wsl.exe` forwards whitespace-free tokens to the
 in-distro shell like `ssh` does, so the same POSIX quoting
@@ -89,14 +89,18 @@ nothing (measured: 0 of 8 keys reached a console reader beside `wsl.exe … slee
 8 of 8 with the flag; pinned by `tui_e2e`'s
 `the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached`). The local default multiplexer
 (`Multiplexer::default_for`) is **`tmux` on Linux/macOS and `psmux` on
-Windows**, but both adapters are registered on every machine and host
+Windows**, but all three adapters are registered on every machine and host
 (ADR-31) — psmux is a native-Windows, drop-in tmux clone (ConPTY, no WSL)
 speaking the **same control-mode wire protocol** and pane-id (`%N`) / `-L`
 socket model, so the shared server (`backend::tmux_compat::server::Server<M>`)
-is generic over the multiplexer and `backend::tmux` / `backend::psmux` are
+is generic over the multiplexer and `backend::tmux` / `backend::psmux` / `backend::rmux` are
 peer adapters answering `TmuxCompatible` (a remote SSH host can also pin
-`multiplexer = "psmux"`); a WSL distro runs `tmux` inside the distro. The
-control-mode protocol is byte-identical over either transport/binary, with
+`multiplexer = "psmux"`); a WSL distro runs its selected multiplexer inside the distro (tmux by default).
+RMUX >= 0.10.0 is opt-in, tested locally on Linux; real SSH, WSL, macOS and
+native Windows integration remain unverified. Installation, selection, version
+evidence and protocol limits live in `docs/CONFIG.md` → *Multiplexer requirements
+and RMUX setup*. The
+tmux control-mode protocol is identical over SSH and WSL, with
 **psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
 adapter, never a branch on the binary's name; spawning needs psmux ≥ 3.3.7,
 asked of the server by `check_psmux_version` — ADR-13 has why) — older psmux lacks `send-keys -H`, and psmux does not join

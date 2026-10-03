@@ -10,8 +10,8 @@ breadcrumb: 'Comparison'
             Lots of tools now &ldquo;run coding agents in parallel, each in its own git
             worktree.&rdquo; They mostly differ on what&rsquo;s underneath: whether the session
             backend is
-            <strong>real tmux</strong>
-            or a re-implemented multiplexer, whether the UI is a terminal
+            <strong>an external multiplexer</strong>
+            or one built into the agent tool, whether the UI is a terminal
             <strong>TUI</strong>
             or an Electron/native app, whether they launch the
             <strong>unmodified vendor CLI</strong>
@@ -37,7 +37,7 @@ breadcrumb: 'Comparison'
               <tr>
                 <td><strong>Thurbox</strong></td>
                 <td>TUI</td>
-                <td><strong>Real tmux</strong> (+ psmux on Windows)</td>
+                <td><strong>Real multiplexers</strong> (tmux, psmux on Windows, opt-in <a href="installation.html#rmux">RMUX</a>)</td>
                 <td>
                   <strong>Any CLI</strong>
                   &mdash; data in
@@ -144,9 +144,11 @@ breadcrumb: 'Comparison'
           <p>Some of these are shared &mdash; the combination is the point.</p>
           <ul>
             <li>
-              <strong>Real tmux for running sessions.</strong>
+              <strong>External multiplexers for running sessions.</strong>
               Agents survive closing or crashing the Thurbox interface; reattach from a terminal
-              with <code>tmux -L thurbox attach</code>. In the
+              with <code>tmux -L thurbox attach</code> for the default POSIX backend.
+              Native Windows defaults to psmux;
+              <a href="installation.html#rmux">RMUX</a> is opt-in. In the
               <a href="performance.html">stand-in benchmark</a>, all three hosts kept agents
               running after a client crash. After a full shutdown and restart, only Thurbox reran
               the recorded stand-in commands. Herdr can resume agents it recognizes, which that

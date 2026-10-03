@@ -272,6 +272,17 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             </li>
           </ul>
 
+          <h3>Multiplexer adapters</h3>
+          <p>
+            <code>TmuxBackend</code>, <code>PsmuxBackend</code> and
+            <code>RmuxBackend</code> are peer adapters over one tmux-protocol server,
+            registered for local, SSH and WSL routes. RMUX is opt-in; its 0.10.0
+            policy omits <code>pause-after</code>, <code>refresh-client -A</code>
+            and <code>refresh-client -B</code>, reads one reply for command lists,
+            and polls liveness and remote hook options. Linux integration was
+            exercised; other RMUX platforms and transports remain unverified.
+            See <a href="configuration.html#multiplexers">selection and version evidence</a>.
+          </p>
           <h3>tmux details</h3>
           <p>
             Control mode (
@@ -477,5 +488,5 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
               <code>~/.local/share/thurbox/thurbox.log</code>
             </li>
             <li>Panic hook restores terminal before printing</li>
-            <li>Requires tmux >= 3.2</li>
+            <li>Requires tmux >= 3.2, psmux >= 3.3.7, or opt-in RMUX >= 0.10.0</li>
           </ul>

@@ -14,8 +14,8 @@
 
 - **Several coding agents at once**, side by side in one terminal — Claude Code, Codex,
   Antigravity, opencode, aider, or any CLI you describe yourself.
-- **A tmux session behind every agent** — they survive crashes, restarts and reboots, so quit
-  thurbox and every agent keeps working.
+- **A persistent multiplexer session behind every agent** — they survive crashes, restarts
+  and reboots, so quit thurbox and every agent keeps working.
 - **One session, several repos** — put any of them on its own git worktree of a shared branch,
   so agents never fight over your checkout.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
@@ -43,6 +43,11 @@ headless one) — with checksum verification and platform auto-detection.
 
 You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) ≥ 3.3.7
 on native Windows), **git**, and at least one coding-agent CLI.
+[RMUX](https://github.com/Helvesec/rmux) **≥ 0.10.0** is an opt-in alternative,
+tested with thurbox on Linux. Install it separately, then select **RMUX**
+after tmux in the new-session picker (**Ctrl+N**); it appears locally when
+`rmux` is on `PATH`. See [multiplexer requirements and setup](docs/CONFIG.md#multiplexer-requirements-and-rmux-setup)
+for verified versions, config defaults, host support, and limits.
 
 **Nix / NixOS:**
 
@@ -61,7 +66,7 @@ and changing the install directory are all on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
 **Uninstall:** removing the binaries is not enough — sessions keep running in
-tmux, and thurbox wires hooks and a skill into your coding agents' own
+the selected multiplexer, and thurbox wires hooks and a skill into your coding agents' own
 directories. Follow the
 [uninstall steps](https://thurbox.thurbeen.eu/docs/installation.html#uninstall).
 

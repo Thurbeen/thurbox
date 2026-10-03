@@ -374,7 +374,8 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
   agent definitions in `~/.config/thurbox/agents.toml`;
   remote SSH hosts in `~/.config/thurbox/hosts.toml`;
   session lifecycle hooks in `~/.config/thurbox/hooks.toml`
-- Requires tmux >= 3.2
+- Requires tmux >= 3.2, psmux >= 3.3.7, or opt-in RMUX >= 0.10.0;
+  version evidence and RMUX host limits are in `docs/CONFIG.md`
 
 ## Design Documentation
 
