@@ -346,7 +346,7 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
 fn the_session_list_groups_by_host_when_sessions_span_machines() {
     // The host is the OUTER axis: every local group first, then each remote
     // host's, and the repo grouping survives inside one. Without it the remote
-    // row sits under `── thurbox ──` between two local sessions and only the
+    // row sits inside the local `thurbox` group and only the
     // `⇅` mark says it is somewhere else.
     let host = host();
     publish(

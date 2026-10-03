@@ -570,6 +570,15 @@ local function set_repo_folded(target, folded)
 end
 
 local function model()
+  -- An empty list leaves the cursor at row one. When its first session arrives,
+  -- that row is now the local host handle; start on the session instead.
+  local has_sessions = #sessions() > 0
+  if has_sessions and not state["sessions.had_session"] then
+    state["sessions.cursor"] = nil
+    state["sessions.selected"] = nil
+  end
+  state["sessions.had_session"] = has_sessions
+
   -- A focus from another pane or the CLI must be able to reach a folded child.
   -- `ui.cursor` consumes the request after this model is built, so uncover its
   -- host first; the setting write also makes the reveal survive that frame.

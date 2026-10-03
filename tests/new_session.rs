@@ -488,6 +488,7 @@ fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
         name: "Ubuntu".into(),
         detail: "WSL".into(),
         backend: "wsl:Ubuntu".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
     }];
@@ -547,6 +548,7 @@ fn ui_state_tracks_host_and_multiplexer_selection() {
         name: "Ubuntu".into(),
         detail: "WSL".into(),
         backend: "wsl:Ubuntu".into(),
+        platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
     }];

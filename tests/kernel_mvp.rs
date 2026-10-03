@@ -1203,6 +1203,7 @@ fn a_group_cannot_be_moved_onto_another_machine() {
     // Onto the second of this machine's two groups, which is the last one
     // before the boundary.
     press_key(&host, "sessions", 'j');
+    press_key(&host, "sessions", 'j');
     host.drain_commands();
 
     // Down from there is the boundary: nothing at all is issued, exactly as at
@@ -1377,12 +1378,10 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
     publish(&host, &snap);
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
 
+    let names: Vec<&str> = snap.sessions.iter().map(|row| row.name.as_str()).collect();
     let first_session_line = screen
         .lines()
-        // Skip the frame: the top border now carries one status dot per
-        // session, so it matches these glyphs too.
-        .filter(|line| !['╭', '╰', '┏', '┗'].iter().any(|c| line.contains(*c)))
-        .find(|line| line.contains('○') || line.contains('◆') || line.contains('●'))
+        .find(|line| names.iter().any(|name| line.contains(name)))
         .unwrap_or_default()
         .to_string();
     assert!(
@@ -1977,7 +1976,7 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(screen.contains("creating"), "{screen}");
 
-    // And it sits under the repo header, not in a limbo of its own.
+    // And it sits under the repo row, not in a limbo of its own.
     let lines: Vec<&str> = screen.lines().collect();
     let header = lines
         .iter()
@@ -1989,7 +1988,7 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
         .expect("pending");
     assert!(
         pending > header,
-        "placeholder should follow its repo header:\n{screen}"
+        "placeholder should follow its repo row:\n{screen}"
     );
 }
 
@@ -2063,7 +2062,7 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
     // host row, even though this machine holds no session of that repo.
     let screen = screen_for(&create("website", None));
     assert!(
-        line_of(&screen, "creating") > line_of(&screen, "── website"),
+        line_of(&screen, "creating") > line_of(&screen, "▾ website"),
         "a creation on this machine draws under this machine:\n{screen}"
     );
     assert!(

@@ -194,6 +194,16 @@ fn a_remote_only_list_opens_on_its_first_session() {
 }
 
 #[test]
+fn first_session_after_an_empty_list_is_selected_below_its_host_row() {
+    let host = host();
+    let registry = registry_for(&host);
+    list_text(&host, &Snapshot::default(), &registry);
+    let snapshot = snapshot();
+    list_text(&host, &snapshot, &registry);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("aaa"));
+}
+
+#[test]
 fn host_actions_fold_and_unfold_children_with_attention_visible() {
     let host = host();
     let snapshot = hosted();

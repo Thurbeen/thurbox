@@ -2737,7 +2737,7 @@ fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
     tui.wait_until("the host to fold", |frame| {
         frame.contains("example-ssh") && !frame.contains("probe")
     });
-    tui.send(b"j");
+    tui.send(b"jjj");
     let local_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
         .expect("database")
         .get_session_by_name("local-row")
@@ -3923,16 +3923,19 @@ fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
     // painted frame. A drag whose every report lands in one input batch has had
     // no paint by its release, so a copy made there would carry the text of the
     // last paint (none) instead of the selection now highlighted.
-    let Some((_profile, mut tui)) = shell_session() else {
+    if !have_tmux() {
         return;
-    };
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let at = tui.find("No sessions yet");
     let mark = tui.raw_len();
-    let at = tui.find("── repo");
-    tui.send(&drag_gesture(at, 6));
+    tui.send(&drag_gesture(at, 15));
     tui.wait_for("copied 1 line(s)");
     let copied = osc52_payload(&tui.raw_since(mark))
         .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
-    assert_eq!(copied, "── repo");
+    assert_eq!(copied, "No sessions yet");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
