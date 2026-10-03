@@ -808,14 +808,14 @@ pane = {
       end
     end
     local host = selected and selected.host
+    local repo = selected and (selected.kind == "repo" and selected.target or selected.repo_target)
     return {
       selected_row = state["sessions.selected"],
       selected_host = host == "\0local" and "local" or host,
       host_is_local = host == "\0local",
       host_collapsed = host and host_is_folded(host) or false,
       folded_host_count = folded_count,
-      repo_collapsed = selected and selected.repo_target and repo_is_folded(selected.repo_target)
-        or false,
+      repo_collapsed = repo and repo_is_folded(repo) or false,
     }
   end,
 

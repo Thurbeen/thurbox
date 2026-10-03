@@ -98,6 +98,23 @@ fn list_text(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) -> String
 }
 
 #[test]
+fn control_projection_reports_a_selected_repo_fold() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "k");
+    press_in(&host, &snapshot, "h");
+    list_text(&host, &snapshot, &registry);
+    let states = host.ui_states();
+    let projected = states
+        .values()
+        .find(|value| value.get("repo_collapsed").is_some())
+        .expect("session projection");
+    assert_eq!(projected["repo_collapsed"], true);
+}
+
+#[test]
 fn addressed_fold_can_target_a_remote_host_named_local() {
     let host = host();
     let mut snapshot = hosted();
