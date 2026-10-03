@@ -270,7 +270,7 @@ moved fall back to creation order:
   for determinism — so moving a session to the top of its group can pull the
   whole group up, but a status change never reshuffles the groups.
 - The group key is the **set of repos a session spans** (order-independent), so
-  a multi-repo session forms its own group with a combined header
+  a multi-repo session forms its own group with a combined repo row
   (`webapp + infra`) rather than being filed arbitrarily under one repo;
   sessions touching the same set cluster together. Sessions with no repo share a
   `(no repo)` group.
