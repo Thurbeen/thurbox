@@ -66,7 +66,7 @@ and changing the install directory are all on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
 **Uninstall:** removing the binaries is not enough — sessions keep running in
-tmux, and thurbox wires hooks and a skill into your coding agents' own
+the selected multiplexer, and thurbox wires hooks and a skill into your coding agents' own
 directories. Follow the
 [uninstall steps](https://thurbox.thurbeen.eu/docs/installation.html#uninstall).
 
