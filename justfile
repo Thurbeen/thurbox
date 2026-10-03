@@ -99,8 +99,8 @@ sandbox *ARGS:
 sandbox-fresh:
     scripts/dev/sandbox.sh --fresh
 
-# A bare `sandbox` deliberately starts empty — the state most bugs are reported
-# against. These opt in: one repository with a file of each git status, a session
+# A bare `sandbox` seeds mock hosts and repos. `--empty` preserves a clean start.
+# These opt in: one repository with a file of each git status, a session
 # whose branch has changes, and one whose branch deliberately has none. Idempotent,
 # so running either again costs a few lookups and changes nothing.
 

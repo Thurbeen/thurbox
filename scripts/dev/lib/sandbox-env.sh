@@ -128,23 +128,35 @@ tbx_sandbox_init_full() {
         "$XDG_CACHE_HOME"
 }
 
-# tbx_sandbox_teardown — kill the sandbox's tmux server (safe: private
+# tbx_sandbox_teardown — kill the sandbox's local and mock-host tmux servers (safe: private
 # TMUX_TMPDIR) and, for a `fresh` sandbox, remove the whole root. Persistent
 # sandboxes are left intact (use tbx_sandbox_clean to wipe them).
 tbx_sandbox_teardown() {
+    for mock_host in build-box slow-box lab-wsl; do
+        if [ -d "$TMUX_TMPDIR/$mock_host" ]; then
+            TMUX_TMPDIR="$TMUX_TMPDIR/$mock_host" tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
+            TMUX_TMPDIR="$TMUX_TMPDIR/$mock_host" tmux -L thurbox kill-server >/dev/null 2>&1 || true
+        fi
+    done
     tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
     if [ "$TBX_SANDBOX_FRESH" = "1" ] && [ -n "$TBX_SANDBOX_ROOT" ]; then
         rm -rf "$TBX_SANDBOX_ROOT"
     fi
 }
 
-# tbx_sandbox_clean [profile] — kill a persistent profile's tmux server and
+# tbx_sandbox_clean [profile] — kill a persistent profile's tmux servers and
 # remove its root + short tmux dir. Default profile "default".
 tbx_sandbox_clean() {
     profile="${1:-default}"
     root="$TBX_REPO_ROOT/target/dev-sandbox/$profile"
     tdir="$(tbx_sandbox_tmux_dir "$profile")"
     if [ -d "$tdir" ]; then
+        for mock_host in build-box slow-box lab-wsl; do
+            if [ -d "$tdir/$mock_host" ]; then
+                TMUX_TMPDIR="$tdir/$mock_host" tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
+                TMUX_TMPDIR="$tdir/$mock_host" tmux -L thurbox kill-server >/dev/null 2>&1 || true
+            fi
+        done
         TMUX_TMPDIR="$tdir" tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
     fi
     rm -rf "$root" "$tdir"

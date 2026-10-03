@@ -110,13 +110,53 @@ scripts/dev/sandbox.sh                 # persistent "default" profile, launch th
 scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 scripts/dev/sandbox.sh --profile foo   # a named persistent profile
 scripts/dev/sandbox.sh --isolate-home  # full hermetic isolation (fresh HOME; agents have NO creds)
+scripts/dev/sandbox.sh --empty         # separate unseeded profile
+scripts/dev/sandbox.sh --reset         # wipe and reseed the selected profile
 scripts/dev/sandbox.sh --shell         # a shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 ```
 
-Or via `just`: `just sandbox`, `just sandbox-fresh`,
+Or via `just`: `just sandbox`, `just sandbox --empty`, `just sandbox --reset`, `just sandbox-fresh`,
 `just sandbox-shell`, `just sandbox-clean [profile]`.
+
+`just sandbox` seeds three local repositories under `<sandbox>/repos/`:
+`web-app`, `service-api`, and `docs-site`. Each has two commits, a `feature/demo`
+branch, an `origin/main` tracking ref, and an uncommitted README change. They are
+bookmarked in the sandbox database for the new-session picker. The seed is
+idempotent and does not overwrite later edits. `--reset` wipes the profile and
+starts from the fixtures again; `--empty` uses a separate `empty-default`
+profile with no fixtures. No sessions are created automatically.
+
+The sandbox's `hosts.toml` contains these mock hosts:
+
+| Host | Kind | Manual test |
+|---|---|---|
+| `build-box` | SSH, POSIX | Reachable local relay for host picker and grouping |
+| `offline-box` | SSH, POSIX | Unreachable host and error state |
+| `slow-box` | SSH, POSIX | Delayed response and loading state |
+| `lab-wsl` | WSL | WSL host row and picker |
+| `win-desk` | SSH, native Windows | Windows platform and psmux labels; unreachable |
+
+On Linux, sandbox-local `ssh` and `wsl.exe` stubs intercept only these fixture
+names. The reachable SSH and WSL stubs execute commands locally with a sandbox
+home; they are test doubles, not independent machines. The same seed path is
+intended for native Windows, but the POSIX relay stubs are Linux-only, so host
+reachability there depends on real transports. The CI seed check runs on Linux;
+native Windows was not exercised here.
+Each reachable relay uses a separate tmux socket directory beneath the sandbox
+socket root; `--clean`, `--reset`, and fresh teardown reap those servers.
+
+To exercise host grouping in the session list (PR #1328), enter
+`just sandbox --shell` and create two shell sessions using one seeded repository:
+
+```bash
+thurbox-cli session create --name local-example --repo-path "$TBX_SANDBOX_ROOT/repos/web-app" --command sh
+thurbox-cli session create --name remote-example --repo-path "$TBX_SANDBOX_ROOT/repos/web-app" --host build-box --command sh
+```
+
+Then run `just sandbox`; the local and `build-box` sessions give the list two
+host groups. Both sessions live in the isolated profile and `--reset` removes them.
 
 The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
 materialises at `<sandbox>/thurbox-config/ui/` along with agents, settings and the
