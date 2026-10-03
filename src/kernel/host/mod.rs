@@ -1032,6 +1032,36 @@ impl LuaHost {
         // directory still is one: delivery always creates it, so its absence
         // means the interface directory is not one.
         plugins.sort_by(|a, b| a.order.total_cmp(&b.order));
+        let mut actions = std::collections::HashMap::<String, (String, String)>::new();
+        for plugin in &plugins {
+            for action in plugin
+                .bindings
+                .iter()
+                .map(|row| &row.action)
+                .chain(plugin.commands.iter().map(|row| &row.action))
+                .chain(plugin.actions.iter().map(|row| &row.name))
+            {
+                if let Some((owner, path)) =
+                    actions.insert(action.clone(), (plugin.name.clone(), plugin.path.clone()))
+                {
+                    if owner != plugin.name
+                        || (path != plugin.path
+                            && matches!(
+                                action.as_str(),
+                                "sessions.delete"
+                                    | "sessions.force_delete"
+                                    | "sessions.restart"
+                                    | "sessions.sync"
+                            ))
+                    {
+                        return Err(format!(
+                            "action {action} is declared by both {owner} and {}",
+                            plugin.name
+                        ));
+                    }
+                }
+            }
+        }
 
         let layout = load_arrangement(&lua, &self.ui_dir)?;
         Ok((lua, plugins, layout))

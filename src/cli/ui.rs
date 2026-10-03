@@ -68,6 +68,8 @@ pub enum Action {
     },
     /// Describe actions accepted by this running interface.
     Actions,
+    /// Accept one pending destructive action ticket.
+    Confirm { ticket: String },
     /// Send addressed key, text, or scroll input to an active modal or plugin.
     Input {
         /// `modal` or the name of the active plugin.
@@ -157,6 +159,7 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
         Action::State => Request::State,
         Action::Watch { since, .. } => Request::Watch { since },
         Action::Actions => Request::Actions,
+        Action::Confirm { ticket } => Request::Confirm { ticket },
         Action::Input {
             target,
             key,
@@ -217,23 +220,24 @@ pub fn run(instance: Option<String>, action: Action) -> Result<CommandOutput, Co
     let reply = ui_control::send(&instance, &request).map_err(|e| {
         CommandError::from(format!("UI instance {} is unavailable: {e}", instance.id))
     })?;
-    if reply.result.get("ok") == Some(&Value::Bool(false)) {
-        let message = reply.result["error"]["message"]
+    let failure = (reply.result.get("ok") == Some(&Value::Bool(false))).then(|| {
+        reply.result["error"]["message"]
             .as_str()
-            .unwrap_or("UI action refused");
-        return Err(message.to_string().into());
-    }
+            .unwrap_or("UI action refused")
+            .to_owned()
+    });
     let output = match request {
         Request::State | Request::Watch { .. } | Request::Actions => reply.result,
-        Request::Action { .. } | Request::Input { .. } => {
+        Request::Action { .. } | Request::Confirm { .. } | Request::Input { .. } => {
             json!({"instance_id": reply.instance_id, "request_id": reply.request_id, "revision": reply.revision, "result": reply.result})
         }
         Request::Ping => unreachable!(),
     };
-    Ok(CommandOutput::new(
-        output.clone(),
-        serde_json::to_string_pretty(&output).unwrap_or_default(),
-    ))
+    let human = serde_json::to_string_pretty(&output).unwrap_or_default();
+    if let Some(message) = failure {
+        return Ok(CommandOutput::failed(output, human, message));
+    }
+    Ok(CommandOutput::new(output, human))
 }
 
 pub fn schema(instance: Option<String>) -> Result<CommandOutput, CommandError> {

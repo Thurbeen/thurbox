@@ -116,9 +116,12 @@ return {
     if key.key == "y" or key.key == "enter" then
       -- Cleared BEFORE the command is issued: the command lands in a later
       -- snapshot, and a question left up meanwhile would invite a second yes.
-      local kind, options = ask.command, ask.options
+      local kind, options, remember = ask.command, ask.options, ask.remember
       clear()
       if type(kind) == "string" and kind ~= "" then
+        if type(remember) == "table" and type(remember.key) == "string" then
+          store[remember.key] = remember.value
+        end
         command(kind, type(options) == "table" and options or {})
       end
       return true

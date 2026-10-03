@@ -248,6 +248,7 @@ struct App {
     control_revision: u64,
     control_observed: Option<serde_json::Value>,
     control_events: std::collections::VecDeque<serde_json::Value>,
+    control_tickets: std::collections::HashMap<String, PendingConfirmation>,
     control_state_version: u64,
     control_registry_version: u64,
     control_placed: Vec<thurbox::kernel::layout::SlotRect>,
@@ -662,6 +663,18 @@ struct App {
     /// See `coordinator::events`.
     events: coordinator::events::Events,
     quit: bool,
+}
+
+struct PendingConfirmation {
+    action: String,
+    args: serde_json::Value,
+    target: String,
+    backend_id: Option<String>,
+    cwd: Option<PathBuf>,
+    member_dirs: Vec<PathBuf>,
+    registry_version: u64,
+    peer: u32,
+    expires: std::time::Instant,
 }
 
 #[cfg(test)]

@@ -397,24 +397,18 @@ local function at_risk(session)
   return lines
 end
 
---- Delete for good, asking first only when there is something to lose.
+--- Delete for good, always asking before a worktree is removed.
 ---
---- v1's `App::delete_active_session`: it assessed the risk and opened
---- `ConfirmDelete` only for `Some(risk)`, deleting a known-clean session on the
---- keystroke. Asking about nothing trains the answer, which is the opposite of
---- what a confirmation is for.
+--- The risk lines still distinguish known-clean work from work that cannot
+--- be recovered; the policy requires an intentional second step in both cases.
 ---
 --- The question travels through `store`, so the confirm plugin needs to know
 --- nothing about sessions.
 local function delete_for_good(session, question)
   local lines = at_risk(session)
-  if not lines then
-    command("delete", { session = session.id, force = true })
-    return
-  end
   store.confirm = {
     question = question,
-    lines = lines,
+    lines = lines or {},
     command = "delete",
     options = { session = session.id, force = true },
   }
@@ -558,7 +552,7 @@ local function pane_menu(items)
   if live then
     middle[#middle + 1] = { label = "Sort by name", action = "sessions.sort" }
   end
-  if state.deleted then
+  if store["sessions.deleted"] then
     middle[#middle + 1] = { label = "Undo delete", action = "sessions.undo" }
   end
   if #middle > 0 then
@@ -902,7 +896,7 @@ return {
   -- action on the selected session. Focus stays put -- the kernel's rule for a
   -- right press -- and the menu takes every key while it is up anyway. Entries
   -- other plugins contribute (`row_menu`) come last, and read the row from
-  -- `store["menu.chosen"].target`, not the selection. Off the
+  -- the action's session_id argument, not the selection. Off the
   -- rows (empty space, or a header, which carries no id) the press is about no
   -- session, so it opens the pane's general menu instead and selects nothing.
   on_context = function(hit)
@@ -918,11 +912,12 @@ return {
       at = { x = hit.screen_x, y = hit.screen_y },
       items = row_menu(),
       target = hit.id,
+      target_argument = "session_id",
     }
     return true
   end,
 
-  on_action = function(action)
+  on_action = function(action, args)
     -- The two that own no row, handled before the "is there a session" guard:
     -- hiding the column and undoing a delete both work on an empty list.
     if action == "sessions.toggle_panel" then
@@ -932,7 +927,8 @@ return {
       -- v1's Ctrl+Z undoes the delete YOU just did — `App::undo_delete`
       -- restores its own `pending_delete` — rather than reaching for the most
       -- recently deleted row, which may belong to another instance.
-      if not state.deleted then
+      local deleted = store["sessions.deleted"]
+      if not deleted then
         -- Said out loud rather than swallowed. Ctrl+Z is global: it fires
         -- from a focused terminal, and with the column hidden (F9) there is
         -- nothing on screen to tell "there was nothing to undo" from a chord
@@ -940,8 +936,8 @@ return {
         command("message", { text = "nothing to undo" })
         return true
       end
-      command("restore", { session = state.deleted })
-      state.deleted = nil
+      command("restore", { session = deleted })
+      store["sessions.deleted"] = nil
       return true
     end
 
@@ -959,10 +955,9 @@ return {
     -- not whatever row the cursor holds when the action lands: the cursor may
     -- have moved since, or that session gone and the cursor fallen back onto a
     -- neighbour -- which Delete + worktree must never reach in its place.
-    local chosen = store["menu.chosen"]
-    if type(chosen) == "table" and chosen.action == action then
-      store["menu.chosen"] = nil
-      if chosen.target and cursor:select_by_id(chosen.target) == nil then
+    local target = type(args) == "table" and args.session_id or nil
+    if target then
+      if cursor:select_by_id(target) == nil then
         command("message", { text = "that session is gone", level = "error" })
         return true
       end
@@ -990,26 +985,35 @@ return {
     -- appearing in a later snapshot. Nothing here waits for anything.
     elseif action == "sessions.delete" and id then
       if soft_delete() then
-        -- Remembered for Ctrl+Z. Only the soft delete: a force-delete removed the
-        -- worktree, so there is nothing an undo could put back.
-        state.deleted = id
-        command("delete", { session = id })
+        -- The shared confirmation records the undo target only on yes.
+        local session = items[at].session
+        store.confirm = {
+          question = "Delete " .. (session.name or "this session") .. "?",
+          lines = {},
+          command = "delete",
+          options = { session = id },
+          remember = { key = "sessions.deleted", value = id },
+        }
       else
-        -- The switch is off, so this key deletes for real. v1 asks first when
-        -- there is work to lose, because there is no undo to fall back on.
+        -- The switch is off, so this key deletes for good.
         local session = items[at].session
         delete_for_good(session, "Delete " .. (session.name or "this session") .. " for good?")
       end
     elseif action == "sessions.force_delete" and id then
-      -- Destructive, and undone by nothing — but only worth a question when it
-      -- would take work with it.
+      -- Destructive, and undone by nothing. Risk lines explain what can be lost.
       local session = items[at].session
       delete_for_good(
         session,
         "Delete " .. (session.name or "this session") .. " and its worktree?"
       )
     elseif action == "sessions.restart" and id then
-      command("restart", { session = id })
+      local session = items[at].session
+      store.confirm = {
+        question = "Restart " .. (session.name or "this session") .. "?",
+        lines = { "the current agent process will stop" },
+        command = "restart",
+        options = { session = id },
+      }
     elseif action == "sessions.fork" and id then
       -- v1 asked for the name first: `fork_active_session` prepared the spawn and
       -- opened its shared Session Name modal prefilled `<source>-fork`, so the
@@ -1031,7 +1035,13 @@ return {
       -- it is called, and decides nothing about how the new name is asked for.
       store.rename = { session = id, name = items[at].session.name or "" }
     elseif action == "sessions.sync" and id then
-      command("sync", { session = id })
+      local session = items[at].session
+      store.confirm = {
+        question = "Sync " .. (session.name or "this session") .. "?",
+        lines = { "its worktree will be updated" },
+        command = "sync",
+        options = { session = id },
+      }
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })
     -- A move is computed over the RENDERED items and sent whole, so a root row

@@ -28,6 +28,14 @@ use super::registry::Value as SettingValue;
 /// A state change a plugin asked for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Recheck an external confirmation's target on the command worker.
+    Guarded {
+        inner: Box<Command>,
+        session: String,
+        backend_id: Option<String>,
+        cwd: Option<std::path::PathBuf>,
+        member_dirs: Vec<std::path::PathBuf>,
+    },
     /// Soft-delete by default; `force` also tears down the pane and worktrees.
     Delete {
         session: String,
@@ -346,6 +354,13 @@ pub enum Command {
         owner: String,
         action: String,
     },
+    /// A menu action with an explicit row target.
+    ActionTarget {
+        owner: String,
+        action: String,
+        argument: String,
+        value: String,
+    },
     /// Say something in the message band.
     ///
     /// UI-thread applied: the band draws from state the loop holds, and its
@@ -408,6 +423,7 @@ impl Command {
     /// Short stable name, as a plugin wrote it and as it is published back.
     pub fn kind(&self) -> &'static str {
         match self {
+            Command::Guarded { inner, .. } => inner.kind(),
             Command::Delete { .. } => "delete",
             Command::Restore { .. } => "restore",
             Command::Restart { .. } => "restart",
@@ -436,7 +452,7 @@ impl Command {
             Command::Order { .. } => "order",
             Command::Setting { .. } => "set",
             Command::Emit { .. } => "emit",
-            Command::Action { .. } => "action",
+            Command::Action { .. } | Command::ActionTarget { .. } => "action",
             Command::Message { .. } => "message",
         }
     }
@@ -444,6 +460,7 @@ impl Command {
     /// The session this command concerns.
     pub fn session(&self) -> &str {
         match self {
+            Command::Guarded { session, .. } => session,
             Command::Delete { session, .. }
             | Command::Restore { session, .. }
             | Command::Restart { session, .. }
@@ -457,6 +474,8 @@ impl Command {
             | Command::Diff { session }
             | Command::Editor { session }
             | Command::Shell { session } => session,
+            Command::ActionTarget { argument, value, .. } if argument == "session_id" => value,
+            Command::ActionTarget { .. } => "",
             // Names no session yet — that is the point of creating one.
             Command::Create { .. } => "",
             // A dispatch may name one, when it is sending rather than creating.
@@ -510,6 +529,7 @@ impl Command {
                 | Command::Plugin { .. }
                 | Command::Emit { .. }
                 | Command::Action { .. }
+                | Command::ActionTarget { .. }
                 | Command::Message { .. }
         )
     }
@@ -650,10 +670,27 @@ impl Command {
             // no-op with nothing to report.
             return Err("command \"action\" needs an action id in text".to_string());
         };
-        Ok(Command::Action {
-            owner: args.owner,
-            action,
-        })
+        if !args.session.is_empty() {
+            let value = args.session;
+            Ok(Command::ActionTarget {
+                owner: args.owner,
+                action,
+                argument: "session_id".into(),
+                value,
+            })
+        } else if let Some(value) = args.target {
+            Ok(Command::ActionTarget {
+                owner: args.owner,
+                action,
+                argument: "target".into(),
+                value,
+            })
+        } else {
+            Ok(Command::Action {
+                owner: args.owner,
+                action,
+            })
+        }
     }
 
     fn parse_message(args: Args) -> Result<Self, String> {
@@ -894,6 +931,7 @@ impl Command {
 #[derive(Debug, Clone, Default)]
 pub struct Args {
     pub session: String,
+    pub target: Option<String>,
     pub text: Option<String>,
     pub delta: Option<i64>,
     pub force: bool,

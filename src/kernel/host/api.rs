@@ -242,6 +242,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
                 .and_then(|t| t.get::<Option<Vec<String>>>("args").ok().flatten())
                 .unwrap_or_default(),
             session: get_string("session").unwrap_or_default(),
+            target: get_string("target"),
             text: get_string("text"),
             delta: opts
                 .as_ref()

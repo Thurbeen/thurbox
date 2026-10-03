@@ -66,6 +66,9 @@ pub enum Request {
         name: String,
         args: Value,
     },
+    Confirm {
+        ticket: String,
+    },
     Input {
         target: String,
         input: InputOperation,
@@ -110,6 +113,8 @@ impl Reply {
 pub struct Pending {
     pub request_id: String,
     pub request: Request,
+    /// The transport has already authenticated this local peer.
+    pub peer: u32,
     pub reply: mpsc::Sender<Reply>,
     pub deadline: std::time::Instant,
 }
@@ -131,6 +136,37 @@ pub fn directory() -> Result<PathBuf, String> {
     Ok(crate::paths::data_directory()
         .ok_or("cannot resolve the data directory")?
         .join("ui-control"))
+}
+
+/// Persist only control metadata. The caller decides whether a write failure
+/// blocks the action; destructive requests must fail closed.
+pub fn audit(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    let mut file = unix::open_audit()?;
+    #[cfg(windows)]
+    let mut file = windows::open_audit()?;
+    let line = serde_json::json!({
+        "timestamp_ms": started_at_unix_ms(),
+        "instance_id": instance,
+        "peer": peer,
+        "action": action,
+        "target_id": target,
+        "outcome": outcome,
+        "request_id": request_id,
+    });
+    if file.metadata().map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+        file.set_len(0).map_err(|e| e.to_string())?;
+    }
+    use std::io::Write;
+    writeln!(file, "{line}").map_err(|e| e.to_string())?;
+    file.sync_data().map_err(|e| e.to_string())
 }
 
 #[cfg(unix)]
@@ -160,6 +196,23 @@ mod unix {
             return Err("UI control directory must be owned by this user and mode 0700".into());
         }
         Ok(dir)
+    }
+
+    pub(super) fn open_audit() -> Result<fs::File, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = secure_directory()?.join("audit.jsonl");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+            return Err("UI control audit file must be owner-only".into());
+        }
+        Ok(file)
     }
 
     fn peer_ok(stream: &UnixStream) -> bool {
@@ -233,6 +286,7 @@ mod unix {
             .try_send(Pending {
                 request_id: request.request_id,
                 request: request.request,
+                peer: unsafe { libc::geteuid() },
                 reply,
                 deadline: std::time::Instant::now() + WAIT,
             })
@@ -466,6 +520,18 @@ mod windows {
         read != 0 && code != STILL_ACTIVE as u32
     }
 
+    pub(super) fn open_audit() -> Result<fs::File, String> {
+        let path = directory()?.join("audit.jsonl");
+        if !path.exists() {
+            fs::File::create(&path).map_err(|e| e.to_string())?;
+        }
+        OwnerAcl::new()?.protect(&path)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| e.to_string())
+    }
+
     fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
         text.encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -510,6 +576,31 @@ mod windows {
         }
     }
 
+    #[cfg(test)]
+    #[test]
+    fn pipe_security_descriptor_grants_only_owner_and_system() {
+        use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+        let acl = OwnerAcl::new().expect("owner ACL");
+        let mut text = std::ptr::null_mut();
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                acl.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0);
+        let len = unsafe { (0..).find(|&i| *text.add(i) == 0).unwrap() };
+        let descriptor = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+        unsafe { LocalFree(text.cast()) };
+        assert!(descriptor.contains("(A;;GA;;;OW)"), "{descriptor}");
+        assert!(descriptor.contains("(A;;GA;;;SY)"), "{descriptor}");
+        assert!(!descriptor.contains(";;;WD)"), "{descriptor}");
+        assert!(!descriptor.contains(";;;AN)"), "{descriptor}");
+    }
+
     impl Drop for OwnerAcl {
         fn drop(&mut self) {
             unsafe {
@@ -550,6 +641,7 @@ mod windows {
                 .try_send(Pending {
                     request_id: request.request_id,
                     request: request.request,
+                    peer: 0, // The pipe ACL admits only its owner (and local system).
                     reply,
                     deadline: std::time::Instant::now() + WAIT,
                 })

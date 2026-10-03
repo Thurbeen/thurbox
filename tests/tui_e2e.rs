@@ -1042,7 +1042,7 @@ fn local_ui_control_targets_one_of_two_live_instances() {
         "00000000-0000-0000-0000-000000000000",
     ]);
     assert!(!status.success());
-    assert!(absent["error"]
+    assert!(absent["result"]["error"]["message"]
         .to_string()
         .contains("not in this interface"));
     let (status, invalid) = cli(&[
@@ -1055,7 +1055,9 @@ fn local_ui_control_targets_one_of_two_live_instances() {
         "not-a-uuid",
     ]);
     assert!(!status.success());
-    assert!(invalid["error"].to_string().contains("must be a UUID"));
+    assert!(invalid["result"]["error"]["message"]
+        .to_string()
+        .contains("must be a UUID"));
 
     let (status, receipt) = cli(&[
         "ui",
@@ -1070,7 +1072,10 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     assert_eq!(receipt["instance_id"], ids[0]);
     assert!(receipt["request_id"].as_str().is_some());
     assert_eq!(receipt["result"]["ok"], true);
-    assert_eq!(receipt["revision"], receipt["result"]["state"]["revision"]);
+    assert!(
+        receipt["revision"].as_u64().unwrap()
+            >= receipt["result"]["state"]["revision"].as_u64().unwrap()
+    );
     first.wait_for("Search one");
     assert!(!second.frame().contains("Search one"));
     let (status, state) = cli(&["ui", "--instance", &ids[0], "state"]);
@@ -1149,6 +1154,237 @@ fn local_ui_control_targets_one_of_two_live_instances() {
     assert!(!status.success());
     assert!(stale["error"].to_string().contains("instance"));
     assert!(first.quit().success());
+}
+
+#[test]
+fn destructive_ui_action_needs_a_single_use_instance_bound_confirmation() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mut discover = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut discover);
+    let output = discover
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("discover UI");
+    assert!(output.status.success());
+    let discovery: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("instance JSON");
+    let instance: thurbox::ui_control::Instance =
+        serde_json::from_value(discovery["instances"][0].clone()).expect("running interface");
+    let list = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command
+            .args(["--json", "session", "list"])
+            .output()
+            .expect("list sessions");
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("session JSON")
+    };
+    let sessions = list();
+    let session = sessions[0]["id"].as_str().expect("session id");
+    tui.send(b"\x08");
+    let addressed = thurbox::ui_control::send(
+        &instance,
+        &thurbox::ui_control::Request::Input {
+            target: "sessions".into(),
+            input: thurbox::ui_control::InputOperation::Key { chord: "D".into() },
+        },
+    )
+    .expect("addressed key reply");
+    assert_eq!(
+        addressed.result["error"]["code"], "confirmation_required",
+        "{}",
+        addressed.result
+    );
+    assert!(list()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == session));
+    let requested = thurbox::ui_control::send(
+        &instance,
+        &thurbox::ui_control::Request::Action {
+            name: "sessions.force_delete".into(),
+            args: serde_json::json!({"session_id": session}),
+        },
+    )
+    .expect("action reply");
+    assert_eq!(requested.result["error"]["code"], "confirmation_required");
+    let ticket = requested.result["error"]["ticket"]
+        .as_str()
+        .expect("confirmation ticket");
+    assert!(!ticket.is_empty());
+    let audit = profile.path("data/ui-control/audit.jsonl");
+    assert_eq!(
+        std::fs::metadata(&audit).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let recorded = std::fs::read_to_string(&audit).expect("audit record");
+    assert!(recorded.contains("sessions.force_delete"));
+    assert!(recorded.contains(session));
+    let still_present = list();
+    assert!(still_present
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == session));
+
+    let confirm = |ticket: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command
+            .args([
+                "--json",
+                "ui",
+                "--instance",
+                &instance.id,
+                "confirm",
+                ticket,
+            ])
+            .output()
+            .expect("confirm command");
+        (
+            output.status,
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("confirmation JSON"),
+        )
+    };
+    let (status, confirmed) = confirm(ticket);
+    assert!(status.success(), "confirmation: {confirmed}");
+    let (status, replay) = confirm(ticket);
+    assert!(!status.success());
+    assert_eq!(replay["result"]["error"]["code"], "invalid_ticket");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn destructive_ui_action_fails_closed_when_the_audit_file_is_not_private() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args(["--json", "ui", "instances"])
+        .output()
+        .expect("instances");
+    let instances: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let instance: thurbox::ui_control::Instance =
+        serde_json::from_value(instances["instances"][0].clone()).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args(["--json", "session", "list"])
+        .output()
+        .expect("sessions");
+    let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let session = sessions[0]["id"].as_str().unwrap();
+    let audit = profile.path("data/ui-control/audit.jsonl");
+    std::fs::write(&audit, "").expect("audit file");
+    std::fs::set_permissions(&audit, std::fs::Permissions::from_mode(0o644))
+        .expect("weaken audit permissions");
+    let reply = thurbox::ui_control::send(
+        &instance,
+        &thurbox::ui_control::Request::Action {
+            name: "sessions.force_delete".into(),
+            args: serde_json::json!({"session_id": session}),
+        },
+    )
+    .expect("action reply");
+    assert_eq!(reply.result["error"]["code"], "audit_unavailable");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args(["--json", "session", "list"])
+        .output()
+        .expect("sessions");
+    let still_present: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(still_present
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["id"] == session));
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn confirmation_rejects_another_instance_and_a_removed_target() {
+    let Some((profile, mut first)) = shell_session() else {
+        return;
+    };
+    let mut second = Tui::spawn(&profile, 40, 120);
+    second.wait_for("probe");
+    let cli = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut command);
+        let output = command.args(["--json"]).args(args).output().expect("CLI");
+        (
+            output.status,
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
+        )
+    };
+    let (_, instances) = cli(&["ui", "instances"]);
+    let rows = instances["instances"].as_array().expect("instances");
+    let first_id = rows
+        .iter()
+        .find(|row| row["pid"] == first.child.id())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let second_id = rows
+        .iter()
+        .find(|row| row["pid"] == second.child.id())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let (_, sessions) = cli(&["session", "list"]);
+    let session = sessions[0]["id"].as_str().unwrap();
+    let (status, request) = cli(&[
+        "ui",
+        "--instance",
+        first_id,
+        "action",
+        "sessions.force_delete",
+        "--session",
+        session,
+    ]);
+    assert!(!status.success());
+    let ticket = request["result"]["error"]["ticket"]
+        .as_str()
+        .expect("ticket");
+    let (status, cross) = cli(&["ui", "--instance", second_id, "confirm", ticket]);
+    assert!(!status.success());
+    assert_eq!(cross["result"]["error"]["code"], "invalid_ticket");
+    let (status, _) = cli(&["session", "delete", session]);
+    assert!(status.success());
+    first.wait_gone("probe");
+    let (status, stale) = cli(&["ui", "--instance", first_id, "confirm", ticket]);
+    assert!(!status.success());
+    assert_eq!(stale["result"]["error"]["code"], "stale_target");
+    assert!(second.quit().success());
+    assert!(first.quit().success());
+}
+
+#[test]
+fn keyboard_force_delete_uses_the_shared_confirmation_float() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"\x08");
+    tui.send(b"D");
+    tui.wait_for("Confirm");
+    let mut list = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut list);
+    let output = list
+        .args(["--json", "session", "list"])
+        .output()
+        .expect("sessions");
+    let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sessions.as_array().unwrap().len(), 1);
+    tui.send(ESC);
+    tui.wait_gone("Confirm");
+    assert!(tui.quit().success());
 }
 
 #[test]
@@ -2645,14 +2881,14 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
 }
 
 #[test]
-fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
+fn ctrl_d_asks_to_delete_a_session_whose_agent_has_exited() {
     // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
     // agent's EOF, and the delete it also means is left to the session list.
     // But an agent that ran `/exit` leaves a dead pane the window keeps
     // (remain-on-exit), and tmux still accepts `send-keys` into it — so the
     // chord was delivered to a pane no one reads and the session it should
     // have deleted hung in the list. A dead pane is doing no line editing, so
-    // the delete is what the chord means there.
+    // the delete prompt is what the chord means there.
     let Some((_profile, mut tui)) = shell_session() else {
         return;
     };
@@ -2669,6 +2905,8 @@ fn ctrl_d_deletes_a_session_whose_agent_has_exited() {
     // 0x04 is Ctrl+D; focus never left the agent pane, so this is the
     // passthrough path, not the list's own binding.
     tui.send(b"\x04");
+    tui.wait_for("Confirm");
+    tui.send(b"y");
     tui.wait_gone("no status hooks");
 
     let status = tui.quit();

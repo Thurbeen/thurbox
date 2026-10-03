@@ -1118,13 +1118,16 @@ fn ctrl_keys_to_commands(host: &LuaHost, plugin: &str, ch: char) -> Vec<Command>
 }
 
 #[test]
-fn deleting_from_the_session_list_issues_a_command() {
+fn deleting_from_the_session_list_asks_before_issuing_a_command() {
     let host = host();
     publish(&host, &sample());
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render");
 
     let issued = ctrl_keys_to_commands(&host, "sessions", 'd');
+    assert!(issued.is_empty());
+    press_key(&host, "confirm", 'y');
+    let issued = host.drain_commands();
     assert_eq!(issued.len(), 1, "{issued:?}");
     assert_eq!(issued[0].kind(), "delete");
     assert!(

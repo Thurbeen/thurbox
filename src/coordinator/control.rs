@@ -1,10 +1,11 @@
 //! Apply local control requests on the event loop that owns App and Lua.
 
 use serde_json::{json, Value};
+use thurbox::kernel::command::Command;
 use thurbox::kernel::registry::ActionDescriptor;
 use thurbox::ui_control::{InputOperation, Reply, Request};
 
-use crate::App;
+use crate::{App, PendingConfirmation};
 
 impl App {
     fn control_event(&mut self, kind: &str, value: Value) {
@@ -240,21 +241,86 @@ impl App {
                     json!({"schema_version": 1, "actions": self.live_catalog()})
                 }
                 Request::Action { name, args } => {
-                    match self.control_action(&name, &args) {
-                        Ok(()) => {
+                    let descriptor = self
+                        .live_catalog()
+                        .into_iter()
+                        .find(|entry| entry.name == name);
+                    let destructive = descriptor.as_ref().is_some_and(|entry| entry.destructive);
+                    let audit_name = descriptor
+                        .as_ref()
+                        .map_or("unknown_action", |_| name.as_str());
+                    let target = args
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                        .map(|id| id.to_string());
+                    let instance = self
+                        .control
+                        .as_ref()
+                        .expect("control server")
+                        .instance
+                        .id
+                        .clone();
+                    let audited = thurbox::ui_control::audit(
+                        &instance,
+                        pending.peer,
+                        audit_name,
+                        target.as_deref(),
+                        "attempted",
+                        &pending.request_id,
+                    );
+                    let attempt = if destructive && audited.is_err() {
+                        Err((
+                            "audit_unavailable",
+                            "cannot record destructive action".into(),
+                        ))
+                    } else if destructive {
+                        self.request_confirmation(&name, &args, pending.peer, &pending.request_id)
+                    } else {
+                        self.control_action(&name, &args)
+                            .map(|()| json!({"ok": true, "state": self.control_state()}))
+                    };
+                    match attempt {
+                        Ok(result) => {
+                            let outcome = if result["ok"] == true {
+                                "completed"
+                            } else {
+                                "confirmation_required"
+                            };
+                            let _ = thurbox::ui_control::audit(
+                                &instance,
+                                pending.peer,
+                                audit_name,
+                                target.as_deref(),
+                                outcome,
+                                &pending.request_id,
+                            );
                             self.note_input();
                             self.refresh_control_state(true);
-                            self.control_event("action.completed", json!({"action": name, "request_id": &pending.request_id, "ok": true}));
-                            json!({"ok": true, "state": self.control_state()})
+                            if result["ok"] == true {
+                                self.control_event("action.completed", json!({"action": name, "request_id": &pending.request_id, "ok": true}));
+                            }
+                            result
                         }
                         Err((code, message)) => {
+                            let _ = thurbox::ui_control::audit(
+                                &instance,
+                                pending.peer,
+                                audit_name,
+                                target.as_deref(),
+                                code,
+                                &pending.request_id,
+                            );
                             self.control_event(
                             "action.refused",
-                            json!({"action": name, "request_id": &pending.request_id, "ok": false, "code": code}),
+                            json!({"action": audit_name, "request_id": &pending.request_id, "ok": false, "code": code}),
                         );
                             json!({"ok": false, "error": {"code": code, "message": message}})
                         }
                     }
+                }
+                Request::Confirm { ticket } => {
+                    self.confirm_control_action(&ticket, pending.peer, &pending.request_id)
                 }
                 Request::Input { target, input } => match self.control_input(&target, input) {
                     Ok(()) => {
@@ -298,6 +364,188 @@ impl App {
         state["instance_id"] = json!(self.control.as_ref().expect("control server").instance.id);
         state["revision"] = json!(self.control_revision);
         state
+    }
+
+    fn request_confirmation(
+        &mut self,
+        name: &str,
+        args: &Value,
+        peer: u32,
+        request_id: &str,
+    ) -> Result<Value, (&'static str, String)> {
+        let descriptor = self
+            .live_catalog()
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .ok_or(("unknown_action", "unknown UI action".into()))?;
+        if !matches!(
+            name,
+            "sessions.delete" | "sessions.force_delete" | "sessions.restart" | "sessions.sync"
+        ) {
+            return Err((
+                "unavailable",
+                "this destructive action has no guarded external executor".into(),
+            ));
+        }
+        if !descriptor.available {
+            return Err(("unavailable", "action is unavailable".into()));
+        }
+        let object = args
+            .as_object()
+            .ok_or(("invalid_arguments", "arguments must be an object".into()))?;
+        if object.len() != 1 || !object.contains_key("session_id") {
+            return Err((
+                "invalid_arguments",
+                "destructive action needs only session_id".into(),
+            ));
+        }
+        let target = object["session_id"]
+            .as_str()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .ok_or(("invalid_arguments", "session_id must be a UUID".into()))?
+            .to_string();
+        let row = self.snapshots.current().session(&target).ok_or((
+            "stale_target",
+            "session is no longer in this interface".into(),
+        ))?;
+        let instance = &self.control.as_ref().expect("control server").instance.id;
+        thurbox::ui_control::audit(
+            instance,
+            peer,
+            name,
+            Some(&target),
+            "confirmation_required",
+            request_id,
+        )
+        .map_err(|_| {
+            (
+                "audit_unavailable",
+                "cannot record destructive action".into(),
+            )
+        })?;
+        self.control_tickets
+            .retain(|_, pending| pending.expires > std::time::Instant::now());
+        if self.control_tickets.len() >= 32 {
+            return Err(("busy", "too many pending confirmations".into()));
+        }
+        let ticket = uuid::Uuid::new_v4().to_string();
+        self.control_tickets.insert(
+            ticket.clone(),
+            PendingConfirmation {
+                action: name.into(),
+                args: json!({"session_id": target}),
+                target,
+                backend_id: row.backend_id.clone(),
+                cwd: row.cwd.clone(),
+                member_dirs: row.member_dirs.clone(),
+                registry_version: self.registry.version(),
+                peer,
+                expires: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            },
+        );
+        Ok(
+            json!({"ok": false, "error": {"code": "confirmation_required", "message": "confirm this destructive action", "ticket": ticket}}),
+        )
+    }
+
+    fn confirm_control_action(&mut self, ticket: &str, peer: u32, request_id: &str) -> Value {
+        let instance = &self.control.as_ref().expect("control server").instance.id;
+        if thurbox::ui_control::audit(instance, peer, "confirm", None, "attempted", request_id)
+            .is_err()
+        {
+            return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
+        }
+        let Some(pending) = self.control_tickets.remove(ticket) else {
+            let _ = thurbox::ui_control::audit(
+                instance,
+                peer,
+                "confirm",
+                None,
+                "invalid_ticket",
+                request_id,
+            );
+            return json!({"ok": false, "error": {"code": "invalid_ticket", "message": "confirmation ticket is invalid"}});
+        };
+        let valid = pending.peer == peer
+            && pending.expires > std::time::Instant::now()
+            && pending.registry_version == self.registry.version()
+            && pending.args == json!({"session_id": pending.target})
+            && self
+                .snapshots
+                .current()
+                .session(&pending.target)
+                .is_some_and(|row| {
+                    row.backend_id == pending.backend_id
+                        && row.cwd == pending.cwd
+                        && row.member_dirs == pending.member_dirs
+                });
+        if !valid {
+            let _ = thurbox::ui_control::audit(
+                instance,
+                peer,
+                &pending.action,
+                Some(&pending.target),
+                "stale_target",
+                request_id,
+            );
+            return json!({"ok": false, "error": {"code": "stale_target", "message": "confirmation target changed"}});
+        }
+        if thurbox::ui_control::audit(
+            instance,
+            peer,
+            &pending.action,
+            Some(&pending.target),
+            "confirmed",
+            request_id,
+        )
+        .is_err()
+        {
+            return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
+        }
+        let result: Result<(), (&'static str, String)> = match pending.action.as_str() {
+            "sessions.force_delete" | "sessions.delete" | "sessions.restart" | "sessions.sync" => {
+                let inner = match pending.action.as_str() {
+                    "sessions.force_delete" => Command::Delete {
+                        session: pending.target.clone(),
+                        force: true,
+                    },
+                    "sessions.delete" => Command::Delete {
+                        session: pending.target.clone(),
+                        force: false,
+                    },
+                    "sessions.restart" => Command::Restart {
+                        session: pending.target.clone(),
+                        if_missing: false,
+                    },
+                    _ => Command::Sync {
+                        session: pending.target.clone(),
+                    },
+                };
+                self.dispatch_tracked(Command::Guarded {
+                    inner: Box::new(inner),
+                    session: pending.target,
+                    backend_id: pending.backend_id,
+                    cwd: pending.cwd,
+                    member_dirs: pending.member_dirs,
+                });
+                Ok(())
+            }
+            _ => Err(("unavailable", "unknown confirmed action".into())),
+        };
+        match result {
+            Ok(()) => {
+                self.note_input();
+                self.refresh_control_state(true);
+                self.control_event(
+                    "action.completed",
+                    json!({"action": pending.action, "request_id": request_id, "ok": true}),
+                );
+                json!({"ok": true, "state": self.control_state()})
+            }
+            Err((code, message)) => {
+                json!({"ok": false, "error": {"code": code, "message": message}})
+            }
+        }
     }
 
     fn control_action(&mut self, name: &str, args: &Value) -> Result<(), (&'static str, String)> {
@@ -436,7 +684,7 @@ impl App {
             .action_catalog()
             .into_iter()
             .map(|mut descriptor| {
-                descriptor.available = match descriptor.owner.as_str() {
+                descriptor.available &= match descriptor.owner.as_str() {
                     "kernel" if descriptor.name == "kernel.perf_hud" => {
                         self.config.features().perf_hud
                     }
@@ -450,6 +698,25 @@ impl App {
                         .index_of(owner)
                         .is_some_and(|index| self.host.action_handler_present(index)),
                 };
+                if descriptor.destructive
+                    && !matches!(
+                        descriptor.name.as_str(),
+                        "sessions.delete"
+                            | "sessions.force_delete"
+                            | "sessions.restart"
+                            | "sessions.sync"
+                    )
+                {
+                    descriptor.available = false;
+                }
+                if descriptor.destructive
+                    && descriptor.owner == "sessions"
+                    && !self.host.index_of("sessions").is_some_and(|index| {
+                        self.host.plugins[index].path == "plugins/10_sessions.lua"
+                    })
+                {
+                    descriptor.available = false;
+                }
                 descriptor
             })
             .collect()
@@ -516,6 +783,31 @@ impl App {
             InputOperation::Key { chord } => {
                 let key = super::key_event_from_chord(&chord)
                     .ok_or(("invalid_arguments", "invalid key chord".into()))?;
+                if target == "confirm"
+                    && matches!(
+                        key.code,
+                        crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('y')
+                    )
+                {
+                    return Err((
+                        "confirmation_required",
+                        "use ui confirm for destructive actions".into(),
+                    ));
+                }
+                if self
+                    .registry
+                    .resolve(&super::to_press(&key), Some(target))
+                    .is_some_and(|binding| {
+                        self.live_catalog()
+                            .iter()
+                            .any(|entry| entry.name == binding.action && entry.destructive)
+                    })
+                {
+                    return Err((
+                        "confirmation_required",
+                        "use ui action and ui confirm for destructive actions".into(),
+                    ));
+                }
                 self.dispatch_key_to(index, &key);
             }
             InputOperation::Text { text } => {

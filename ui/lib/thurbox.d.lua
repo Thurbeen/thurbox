@@ -988,6 +988,8 @@ function require(name) end
 --- handler. The plugin that asked is the fallback owner, stamped by the kernel.
 ---@class (exact) thurbox.cmd.Action
 ---@field text string The action id. `action` is not read.
+---@field session? string Pass this row as the action's `session_id` argument.
+---@field target? string Pass this row as the action's `target` argument.
 
 --- Say something in the message band. The band stays kernel-drawn; this is a
 --- sentence and a severity contributed to it, like a pill or a binding.

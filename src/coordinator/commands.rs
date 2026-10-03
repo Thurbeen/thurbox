@@ -120,6 +120,19 @@ impl App {
                     .unwrap_or(self.focus);
                 self.run_clicked_action(action, asked);
             }
+            Command::ActionTarget {
+                owner,
+                action,
+                argument,
+                value,
+            } => {
+                let asked = self
+                    .host
+                    .name_of_path(owner)
+                    .and_then(|name| self.host.index_of(name))
+                    .unwrap_or(self.focus);
+                self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
+            }
             // The message band is kernel chrome; this is a plugin contributing
             // to it, like a pill or a binding.
             Command::Message { text, level } => self.report(text.clone(), *level),
