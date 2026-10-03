@@ -56,17 +56,19 @@ a click anywhere else closes it.
 
 A right-click off a session row — on empty space or on a repo fold row
 — is about no session, so it opens the column's general menu instead: New
-session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
-offered only when there are sessions and Undo only when there is a delete to
+session, Restore deleted…, Sort by name, Undo delete and Hide panel. Both menus
+also offer Collapse all when a host or repo group is expanded, and Expand all
+when one is folded. These actions save both host and repo folds. Sort is offered
+only when there are visible sessions and Undo only when there is a delete to
 undo: an entry that would do nothing is left out rather than shown dead.
 A right-click on a host row toggles its fold, just like a left-click. The
 general menu remains available on blank space and repo rows.
 
-**Why run the pane's own actions?** Each entry goes back through the same action
-its chord fires, so the menu cannot drift from the keyboard: Delete still asks
-first when there is work to lose, and a rebound chord shows up in the menu. Sort,
-the panel toggle and undo are left out because none of them is about the session
-that was pressed.
+**Why run the pane's own actions?** Each entry uses the same action path as a
+bound chord, so the menu cannot drift from the keyboard: Delete still asks
+first when there is work to lose, and a rebound chord shows up in the menu.
+Sort, the panel toggle and undo are left out of the row menu because none of
+them is about the session that was pressed.
 
 **Why can other plugins add to a row's menu?** A plugin that owns a
 per-session action would otherwise reach it only through `Ctrl+P` or a chord of
