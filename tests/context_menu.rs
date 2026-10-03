@@ -504,7 +504,7 @@ fn the_right_press_selects_the_session_it_landed_on() {
     );
 }
 
-/// Empty space — and a repo header, which carries no id either — is about no
+/// Empty space and a repo fold row are about no
 /// session, so it opens the pane's own menu of general actions.
 #[test]
 fn a_right_press_off_the_rows_opens_the_panes_menu() {

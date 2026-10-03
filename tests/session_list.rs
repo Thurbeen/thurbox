@@ -18,10 +18,10 @@ use ratatui::Terminal;
 
 use thurbox::kernel::command::{Command, InFlight, Phase};
 use thurbox::kernel::events::Event;
-use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render as paint_node, PlaceholderSurfaces};
 use thurbox::kernel::registry::{Registry, Value};
-use thurbox::kernel::snapshot::{GitState, SessionRow, Snapshot};
+use thurbox::kernel::snapshot::{GitState, HostRow, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -67,6 +67,415 @@ fn snapshot() -> Snapshot {
         sessions: vec![row("aaa", "first"), row("bbb", "second")],
         ..Snapshot::default()
     }
+}
+
+fn hosted() -> Snapshot {
+    let mut alpha = row("remote-a", "remote-alpha");
+    alpha.remote_host = Some("example-ssh".into());
+    alpha.backend = "ssh:example-ssh".into();
+    alpha.status = SessionState::Working;
+    let mut beta = row("remote-b", "remote-beta");
+    beta.remote_host = Some("example-ssh".into());
+    beta.backend = "ssh:example-ssh".into();
+    beta.status = SessionState::Blocked;
+    Snapshot {
+        sessions: vec![row("local", "local-session"), alpha, beta],
+        ..Snapshot::default()
+    }
+}
+
+fn list_text(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) -> String {
+    publish_with(host, snapshot, registry);
+    let buffer = paint(host, PLUGIN, 80, 16);
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn remote_sessions_have_a_distinct_host_row() {
+    let host = host();
+    let frame = list_text(&host, &hosted(), &registry_for(&host));
+    assert!(frame.contains("example-ssh"), "{frame}");
+    assert!(frame.contains("remote-alpha"), "{frame}");
+    assert!(frame.contains("remote-beta"), "{frame}");
+    assert!(
+        frame.contains("2 sessions"),
+        "host summary is its own row: {frame}"
+    );
+}
+
+#[test]
+fn repo_row_folds_only_its_own_sessions() {
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[1].repo = Some("website".into());
+    snapshot.sessions[1].repos = vec!["website".into()];
+    let registry = registry_for(&host);
+    let expanded = list_text(&host, &snapshot, &registry);
+    assert!(
+        expanded.contains("thurbox") && expanded.contains("website"),
+        "{expanded}"
+    );
+    press_in(&host, &snapshot, "k");
+    press_in(&host, &snapshot, "h");
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(folded.contains("thurbox"), "{folded}");
+    assert!(!folded.contains("first"), "{folded}");
+    assert!(folded.contains("second"), "{folded}");
+    press_in(&host, &snapshot, "l");
+    assert!(list_text(&host, &snapshot, &registry).contains("first"));
+}
+
+#[test]
+fn local_host_row_folds_without_hiding_remote_hosts() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    let expanded = list_text(&host, &snapshot, &registry);
+    assert!(expanded.contains("local"), "{expanded}");
+    press_in(&host, &snapshot, "k");
+    press_in(&host, &snapshot, "k");
+    press_in(&host, &snapshot, "h");
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(folded.contains("local"), "{folded}");
+    assert!(!folded.contains("local-session"), "{folded}");
+    assert!(folded.contains("example-ssh"), "{folded}");
+    assert!(folded.contains("remote-alpha"), "{folded}");
+}
+
+#[test]
+fn repo_fold_is_scoped_to_host_and_focus_reveals_its_child() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    assert!(host
+        .on_click(
+            host.index_of(PLUGIN).unwrap(),
+            &Click {
+                id: Some("repo:example-ssh\x01thurbox".into()),
+                clicks: 1,
+                ..Click::default()
+            },
+        )
+        .expect("click repo"));
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(folded.contains("local-session"), "{folded}");
+    assert!(!folded.contains("remote-alpha"), "{folded}");
+    assert!(
+        host.drain_commands().iter().any(|command| matches!(
+            command,
+            Command::Setting { key, value: Some(Value::Text(value)) }
+                if key == "sessions.folded_repos" && value.contains("example-ssh")
+        )),
+        "repo fold should be saved"
+    );
+    host.set_shared_string("selected", "remote-a");
+    assert!(list_text(&host, &snapshot, &registry).contains("remote-alpha"));
+}
+
+#[test]
+fn a_remote_only_list_opens_on_its_first_session() {
+    let host = host();
+    let mut snapshot = hosted();
+    snapshot.sessions.remove(0);
+    list_text(&host, &snapshot, &registry_for(&host));
+    assert_eq!(
+        host.shared_string("selected").as_deref(),
+        Some("remote-a"),
+        "the fold handle should not replace the initial agent selection"
+    );
+}
+
+#[test]
+fn first_session_after_an_empty_list_is_selected_below_its_host_row() {
+    let host = host();
+    let registry = registry_for(&host);
+    list_text(&host, &Snapshot::default(), &registry);
+    let snapshot = snapshot();
+    list_text(&host, &snapshot, &registry);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("aaa"));
+}
+
+#[test]
+fn host_actions_fold_and_unfold_children_with_attention_visible() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    assert_eq!(
+        host.shared_string("selected"),
+        None,
+        "a host row does not name an agent session"
+    );
+    press_in(&host, &snapshot, "h");
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(folded.contains("example-ssh"), "{folded}");
+    assert!(folded.contains("1 active"), "{folded}");
+    assert!(folded.contains("!1"), "{folded}");
+    assert!(!folded.contains("remote-alpha"), "{folded}");
+    assert!(!folded.contains("remote-beta"), "{folded}");
+    press_in(&host, &snapshot, "l");
+    let expanded = list_text(&host, &snapshot, &registry);
+    assert!(expanded.contains("remote-alpha"), "{expanded}");
+    assert!(expanded.contains("remote-beta"), "{expanded}");
+}
+
+#[test]
+fn navigation_skips_folded_host_children() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    press_in(&host, &snapshot, "j");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(!frame.contains("remote-alpha"), "{frame}");
+    assert!(!frame.contains("remote-beta"), "{frame}");
+    assert_ne!(host.shared_string("selected").as_deref(), Some("remote-a"));
+    assert_ne!(host.shared_string("selected").as_deref(), Some("remote-b"));
+}
+
+#[test]
+fn a_search_hit_reveals_a_folded_host_child() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_string("search.query", "remote-beta");
+    host.set_shared_string("selected", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("remote-beta"), "{frame}");
+    host.set_shared_string("search.query", "");
+    let closed = list_text(&host, &snapshot, &registry);
+    assert!(!closed.contains("remote-beta"), "{closed}");
+}
+
+#[test]
+fn search_preview_does_not_save_an_unfold_before_the_query_is_published() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_bool("panels.search", true);
+    host.set_shared_string("selected", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(!frame.contains("remote-beta"), "{frame}");
+}
+
+#[test]
+fn accepted_search_result_unfolds_its_host_before_the_cursor_settles() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_bool("panels.search", true);
+    host.set_shared_string("search.query", "remote-beta");
+    host.set_shared_string("selected", "remote-b");
+    list_text(&host, &snapshot, &registry);
+    host.set_shared_bool("panels.search", false);
+    host.set_shared_string("search.query", "");
+    host.set_shared_string("search.accepted_session", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("remote-beta"), "{frame}");
+    assert_eq!(host.shared_string("selected").as_deref(), Some("remote-b"));
+}
+
+#[test]
+fn focus_request_reveals_a_child_of_a_folded_host() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_string("focus_session", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("remote-beta"), "{frame}");
+    assert_eq!(host.shared_string("selected").as_deref(), Some("remote-b"));
+}
+
+#[test]
+fn outside_selection_reveals_a_child_of_a_folded_host() {
+    let host = host();
+    let snapshot = hosted();
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    host.set_shared_string("selected", "remote-b");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("remote-beta"), "{frame}");
+    assert_eq!(host.shared_string("selected").as_deref(), Some("remote-b"));
+}
+
+#[test]
+fn folding_from_a_child_keeps_the_cursor_on_its_host() {
+    let host = host();
+    let mut snapshot = hosted();
+    let mut other = row("other", "other-session");
+    other.remote_host = Some("example-wsl".into());
+    other.backend = "wsl:example-wsl".into();
+    snapshot.sessions.push(other);
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    host.set_shared_string("selected", "remote-a");
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "h");
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(!folded.contains("remote-alpha"), "{folded}");
+    press_in(&host, &snapshot, "l");
+    let expanded = list_text(&host, &snapshot, &registry);
+    assert!(expanded.contains("remote-alpha"), "{expanded}");
+}
+
+#[test]
+fn resetting_saved_folds_after_a_write_unfolds_the_host() {
+    let host = host();
+    let snapshot = hosted();
+    let mut registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    registry
+        .set_setting(
+            PLUGIN,
+            "folded_hosts",
+            Some(Value::Text("example-ssh".into())),
+        )
+        .expect("saved fold");
+    let folded = list_text(&host, &snapshot, &registry);
+    assert!(!folded.contains("remote-alpha"), "{folded}");
+    registry
+        .set_setting(PLUGIN, "folded_hosts", Some(Value::Text(String::new())))
+        .expect("reset fold");
+    let reset = list_text(&host, &snapshot, &registry);
+    assert!(reset.contains("remote-alpha"), "{reset}");
+}
+
+#[test]
+fn host_fold_state_is_saved_as_a_plugin_setting() {
+    let host = host();
+    let snapshot = hosted();
+    list_text(&host, &snapshot, &registry_for(&host));
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    assert!(
+        host.drain_commands().iter().any(|command| matches!(
+            command,
+            Command::Setting { key, value: Some(Value::Text(value)) }
+                if key == "sessions.folded_hosts" && value.contains("example-ssh")
+        )),
+        "folding must persist the host name"
+    );
+}
+
+#[test]
+fn clicking_one_host_folds_only_its_own_children() {
+    let host = host();
+    let mut snapshot = hosted();
+    let mut other = row("other-session", "other-session");
+    other.remote_host = Some("example-wsl".into());
+    other.backend = "wsl:example-wsl".into();
+    snapshot.sessions.push(other);
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    let click = Click {
+        id: Some("host:example-ssh".into()),
+        clicks: 1,
+        ..Click::default()
+    };
+    assert!(host
+        .on_click(host.index_of(PLUGIN).unwrap(), &click)
+        .expect("click host"));
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(!frame.contains("remote-alpha"), "{frame}");
+    assert!(!frame.contains("remote-beta"), "{frame}");
+    assert!(frame.contains("other-session"), "{frame}");
+
+    let second = Click {
+        id: Some("host:example-wsl".into()),
+        clicks: 1,
+        ..Click::default()
+    };
+    assert!(host
+        .on_click(host.index_of(PLUGIN).unwrap(), &second)
+        .expect("click second host"));
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(!frame.contains("remote-alpha"), "{frame}");
+    assert!(!frame.contains("other-session"), "{frame}");
+    assert!(
+        host.drain_commands().iter().any(|command| matches!(
+            command,
+            Command::Setting { key, value: Some(Value::Text(value)) }
+                if key == "sessions.folded_hosts"
+                    && value.contains("example-ssh")
+                    && value.contains("example-wsl")
+        )),
+        "both host names must be saved independently"
+    );
+}
+
+#[test]
+fn host_kind_uses_transport_and_platform_independently() {
+    let host = host();
+    let mut snapshot = hosted();
+    snapshot.sessions[1].remote_host = Some("win-example".into());
+    snapshot.sessions[1].backend = "ssh:win-example:tmux".into();
+    snapshot.sessions[2].remote_host = Some("wsl-example".into());
+    snapshot.sessions[2].backend = "wsl:wsl-example".into();
+    snapshot.hosts = vec![
+        HostRow {
+            name: "win-example".into(),
+            detail: "Windows".into(),
+            backend: "ssh:win-example".into(),
+            platform: "windows".into(),
+            multiplexer: Some("tmux".into()),
+            available_multiplexers: vec!["tmux".into()],
+        },
+        HostRow {
+            name: "wsl-example".into(),
+            detail: "WSL".into(),
+            backend: "wsl:wsl-example".into(),
+            platform: "posix".into(),
+            multiplexer: Some("tmux".into()),
+            available_multiplexers: vec!["tmux".into()],
+        },
+    ];
+    let frame = list_text(&host, &snapshot, &registry_for(&host));
+    assert!(frame.contains("Windows win-example"), "{frame}");
+    assert!(frame.contains("WSL wsl-example"), "{frame}");
+}
+
+#[test]
+fn an_unreachable_host_keeps_its_attention_visible_when_folded() {
+    let host = host();
+    let mut snapshot = hosted();
+    snapshot.sessions[1].status = SessionState::Unreachable;
+    snapshot.sessions[2].status = SessionState::Unreachable;
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    press_in(&host, &snapshot, "j");
+    press_in(&host, &snapshot, "h");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(frame.contains("⊘▣"), "{frame}");
+    assert!(frame.contains("!2"), "{frame}");
+    assert!(frame.contains("unreachable"), "{frame}");
+    assert!(!frame.contains("remote-alpha"), "{frame}");
 }
 
 fn publish_in(host: &LuaHost, snapshot: &Snapshot) {

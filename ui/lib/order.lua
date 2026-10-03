@@ -1,6 +1,6 @@
--- Manual-order algebra over the session list's rendered items.
+-- Manual-order algebra over the session list's ordered session items.
 --
--- A move is computed over the RENDERED items and sent as an explicit order.
+-- A move is computed over the session model's full order and sent explicitly.
 -- The kernel cannot compute it: only the pane knows the repo grouping and the
 -- parent/child nesting, and therefore what a move actually swaps — a root row
 -- drags its whole subtree, a root row at its group's edge moves the WHOLE
@@ -8,8 +8,9 @@
 -- among its siblings only. Ported from v1's `move_in_order` and
 -- `sort_alphabetically_within_groups`.
 --
--- Pure functions over the item list `session_model.build` returns: an item
--- carries `depth` (nesting), `header` (only on a group's first row), `host`
+-- Pure functions over the session items `session_model.build` returns, after
+-- the pane removes fold handles and restores host boundaries as headers. An
+-- item carries `depth` (nesting), `header` (on a group's first row), `host`
 -- (only while the host axis is on) and, for a session, `session.name`. Nothing
 -- here reads the snapshot or the theme.
 
@@ -29,10 +30,10 @@ end
 --- Start of the group containing `at`: the nearest row at or above it that
 --- carries a header.
 ---
---- Only the first row of a group carries one, and with `group_by_repo` off
---- nothing does -- so the answer there is row 1: the whole list is one group. It
---- used to be nil, which made `root_ranges` give up and every root move a silent
---- no-op for anyone who had turned grouping off.
+--- Only the first row of a group carries one. With `group_by_repo` off, the pane
+--- still marks host boundaries when grouping by host, but a flat local list has
+--- no header; row 1 is its group start. This used to be nil, which made
+--- `root_ranges` give up and every root move a silent no-op in a flat list.
 local function group_start(items, at)
   for index = at, 1, -1 do
     if items[index].header then

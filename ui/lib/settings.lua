@@ -3,7 +3,7 @@
 -- A plugin declares settings as data:
 --
 --   settings = {
---     { id = "group_by_repo", desc = "Group sessions under a repo header", default = true },
+--     { id = "group_by_repo", desc = "Group sessions under foldable repo rows", default = true },
 --   },
 --
 -- and the kernel collects every plugin's declarations into one registry, which

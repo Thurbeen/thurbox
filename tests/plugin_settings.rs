@@ -186,14 +186,14 @@ fn the_bundled_plugins_declare_settings_at_all() {
 #[test]
 fn a_declared_setting_actually_changes_what_is_drawn() {
     // Declaring is half of it. Flipping `sessions.group_by_repo` must remove the
-    // repo headers, or the row in the modal is a lie.
+    // repo rows, or the row in the modal is a lie.
     let host = host();
     let mut registry = registry_for(&host);
 
     let grouped = session_list(&host, &registry);
     assert!(
         grouped.contains("thurbox") && grouped.contains("website"),
-        "expected repo headers by default:\n{grouped}"
+        "expected repo rows by default:\n{grouped}"
     );
 
     registry
@@ -314,27 +314,21 @@ fn host_grouping_is_the_operators_choice() {
 }
 
 #[test]
-fn one_machine_draws_no_host_header_whatever_the_setting_says() {
-    // Grouping into a single group is noise, which is the axis's own gate and
-    // not the knob's: the knob decides whether the gate is asked at all. On,
-    // off, and never touched must therefore all render the same list here.
+fn local_host_row_follows_the_host_grouping_setting() {
+    // The local row is useful even on a single machine: it is the fold handle.
     let host = host();
     let mut registry = registry_for(&host);
     let one_machine = || vec![row("one", "thurbox"), row("two", "website")];
 
     let untouched = session_list_of(&host, &registry, one_machine());
-    for value in [Value::Bool(true), Value::Bool(false)] {
-        registry
-            .set_setting("sessions", "group_by_host", Some(value.clone()))
-            .expect("set");
-        let drawn = session_list_of(&host, &registry, one_machine());
-        assert!(
-            !drawn.contains("local"),
-            "one machine needs no header naming it, with the knob {value:?}:\n{drawn}"
-        );
-        assert_eq!(
-            drawn, untouched,
-            "and the whole list is what it was before the knob existed"
-        );
-    }
+    assert!(untouched.contains("local"), "{untouched}");
+    registry
+        .set_setting("sessions", "group_by_host", Some(Value::Bool(true)))
+        .expect("set");
+    assert_eq!(session_list_of(&host, &registry, one_machine()), untouched);
+    registry
+        .set_setting("sessions", "group_by_host", Some(Value::Bool(false)))
+        .expect("set");
+    let flat = session_list_of(&host, &registry, one_machine());
+    assert!(!flat.contains("local"), "{flat}");
 }

@@ -452,6 +452,7 @@
 ---@field name string
 ---@field detail string
 ---@field backend string
+---@field platform "posix"|"windows"
 ---@field multiplexer? string
 ---@field available_multiplexers string[]
 
@@ -701,6 +702,7 @@
 ---@class (exact) thurbox.ThemeSnapshot
 ---@field name string
 ---@field roles table<thurbox.Role, thurbox.Color>
+---@field nerd_font boolean
 ---@field choices thurbox.ThemeChoice[]
 
 ---@class (exact) thurbox.RegistryKey
@@ -890,6 +892,7 @@ function require(name) end
 ---@field text string A `plugin.setting` key.
 ---@field flag? boolean
 ---@field number? number
+---@field value? string A text setting's value.
 ---@field reset? boolean Put the setting back to its default.
 
 ---@class (exact) thurbox.cmd.Task

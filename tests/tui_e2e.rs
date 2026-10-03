@@ -2690,6 +2690,161 @@ fn shell_session() -> Option<(Profile, Tui)> {
     shell_session_with(|_| {})
 }
 
+/// A local shell beside a stored SSH session, with no live remote connection.
+/// The session list is the subject; no test needs to attach to the remote pane.
+fn hosted_session_list() -> Option<(Profile, Tui)> {
+    shell_session_prepared(
+        |profile| {
+            let second = profile.path("second");
+            std::fs::create_dir_all(&second).expect("second root");
+            let local_repo = repo(&second);
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "local-row",
+                "--repo-path",
+                local_repo.to_str().expect("utf-8 path"),
+                "--agent",
+                "shell",
+            ]);
+            std::fs::write(
+                profile.path("config/hosts.toml"),
+                "[[hosts]]\nname = \"example-ssh\"\ndestination = \"invalid.example\"\n",
+            )
+            .expect("hosts");
+            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+            db.execute(
+                "UPDATE sessions SET backend_type = 'ssh:example-ssh' WHERE name = 'probe'",
+                [],
+            )
+            .expect("put probe on host");
+        },
+        |_| {},
+    )
+}
+
+#[test]
+fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.wait_for("example-ssh");
+    tui.wait_for("probe");
+    tui.send(b"\x08"); // Ctrl+H focuses the session list.
+    tui.send(b"j");
+    tui.send(b"h");
+    tui.wait_until("the host to fold", |frame| {
+        frame.contains("example-ssh") && !frame.contains("probe")
+    });
+    tui.send(b"jjj");
+    let local_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("database")
+        .get_session_by_name("local-row")
+        .expect("read local session")
+        .expect("local session")
+        .id
+        .to_string();
+    tui.wait_until("navigation to skip the folded child", |_| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd
+            .args(["--json", "ui", "state"])
+            .output()
+            .expect("ui state");
+        output.status.success()
+            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|state| state["selected_session"].as_str().map(str::to_string))
+                .as_deref()
+                == Some(local_id.as_str())
+    });
+    assert!(
+        !tui.frame().contains("probe"),
+        "navigation should skip folded children:\n{}",
+        tui.frame()
+    );
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"probe");
+    tui.wait_until("the search hit inside the folded host", |frame| {
+        frame.contains("probe") && frame.contains("example-ssh")
+    });
+    tui.send(ESC);
+    tui.wait_gone("Search");
+    tui.wait_until("the host to fold again after search", |frame| {
+        frame.contains("example-ssh") && !frame.contains("probe")
+    });
+    assert!(tui.quit().success());
+
+    let mut reopened = Tui::spawn(&profile, 40, 120);
+    reopened.wait_for("example-ssh");
+    assert!(
+        !reopened.frame().contains("probe"),
+        "fold state should survive restart:\n{}",
+        reopened.frame()
+    );
+    reopened.send(b"\x08");
+    reopened.send(b"j");
+    reopened.send(b"l");
+    reopened.wait_for("probe");
+    reopened.press(0, reopened.find("example-ssh"));
+    reopened.wait_until("a mouse press to fold the host", |frame| {
+        frame.contains("example-ssh") && !frame.contains("probe")
+    });
+    reopened.press(0, reopened.find("example-ssh"));
+    reopened.wait_for("probe");
+    assert!(reopened.quit().success());
+}
+
+#[test]
+fn activating_a_search_hit_inside_a_folded_host_keeps_that_session_selected() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.wait_for("example-ssh");
+    tui.wait_for("probe");
+    tui.send(b"\x08");
+    tui.send(b"j");
+    tui.send(b"h");
+    tui.wait_until("the host to fold", |frame| {
+        frame.contains("example-ssh") && !frame.contains("probe")
+    });
+    tui.send(CTRL_SLASH);
+    tui.wait_for("Search");
+    tui.send(b"probe");
+    tui.wait_until("the folded child to appear in search", |frame| {
+        frame.contains("probe") && frame.contains("example-ssh")
+    });
+    tui.send(b"\r");
+    tui.wait_gone("Search");
+    let probe_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("database")
+        .get_session_by_name("probe")
+        .expect("read probe")
+        .expect("probe")
+        .id
+        .to_string();
+    tui.wait_until("the accepted remote session to stay selected", |frame| {
+        if !frame.contains("⇅ probe") {
+            return false;
+        }
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd
+            .args(["--json", "ui", "state"])
+            .output()
+            .expect("ui state");
+        output.status.success()
+            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|state| state["selected_session"].as_str().map(str::to_string))
+                .as_deref()
+                == Some(probe_id.as_str())
+    });
+    assert!(tui.quit().success());
+}
+
 /// The same, with the binary's environment adjusted — for the cases where what
 /// is being tested is what thurbox does with the machine it thinks it is on.
 fn shell_session_with(adjust: impl FnOnce(&mut Command)) -> Option<(Profile, Tui)> {
@@ -3768,16 +3923,19 @@ fn a_drag_over_a_pane_with_no_grid_copies_what_it_finished_on() {
     // painted frame. A drag whose every report lands in one input batch has had
     // no paint by its release, so a copy made there would carry the text of the
     // last paint (none) instead of the selection now highlighted.
-    let Some((_profile, mut tui)) = shell_session() else {
+    if !have_tmux() {
         return;
-    };
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    let at = tui.find("No sessions yet");
     let mark = tui.raw_len();
-    let at = tui.find("── repo");
-    tui.send(&drag_gesture(at, 6));
+    tui.send(&drag_gesture(at, 15));
     tui.wait_for("copied 1 line(s)");
     let copied = osc52_payload(&tui.raw_since(mark))
         .unwrap_or_else(|| tui.give_up("an OSC 52 sequence after the release"));
-    assert_eq!(copied, "── repo");
+    assert_eq!(copied, "No sessions yet");
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");

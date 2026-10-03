@@ -278,15 +278,14 @@ impl Default for MuxRow {
 
 /// A machine a session can be created on.
 ///
-/// Three fields rather than a name, because the flow needs all three and they
-/// are not derivable from one another: the name identifies it, the detail is
-/// what tells two apart on screen (`me@devbox`, `WSL`), and the backend is what
-/// the create command and the bookmark scope are keyed by (`ssh:devbox`).
+/// The flow uses the name, detail and backend separately; the session list
+/// also needs the host's platform, independent of its transport and mux.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostRow {
     pub name: String,
     pub detail: String,
     pub backend: String,
+    pub platform: String,
     pub multiplexer: Option<String>,
     pub available_multiplexers: Vec<String>,
 }
@@ -1778,6 +1777,7 @@ fn read_hosts(served: &std::collections::HashSet<crate::session::Route>) -> Vec<
             name: host.name.clone(),
             detail: host.picker_detail(),
             backend: host.backend_name(),
+            platform: host.platform().name().to_string(),
             multiplexer: host.multiplexer.clone(),
             available_multiplexers: crate::session::Multiplexer::ALL
                 .into_iter()

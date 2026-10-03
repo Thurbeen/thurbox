@@ -1203,6 +1203,7 @@ fn a_group_cannot_be_moved_onto_another_machine() {
     // Onto the second of this machine's two groups, which is the last one
     // before the boundary.
     press_key(&host, "sessions", 'j');
+    press_key(&host, "sessions", 'j');
     host.drain_commands();
 
     // Down from there is the boundary: nothing at all is issued, exactly as at
@@ -1377,12 +1378,10 @@ fn the_manual_order_is_published_so_a_reorder_is_visible() {
     publish(&host, &snap);
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
 
+    let names: Vec<&str> = snap.sessions.iter().map(|row| row.name.as_str()).collect();
     let first_session_line = screen
         .lines()
-        // Skip the frame: the top border now carries one status dot per
-        // session, so it matches these glyphs too.
-        .filter(|line| !['╭', '╰', '┏', '┗'].iter().any(|c| line.contains(*c)))
-        .find(|line| line.contains('○') || line.contains('◆') || line.contains('●'))
+        .find(|line| names.iter().any(|name| line.contains(name)))
         .unwrap_or_default()
         .to_string();
     assert!(
@@ -1977,7 +1976,7 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(screen.contains("creating"), "{screen}");
 
-    // And it sits under the repo header, not in a limbo of its own.
+    // And it sits under the repo row, not in a limbo of its own.
     let lines: Vec<&str> = screen.lines().collect();
     let header = lines
         .iter()
@@ -1989,7 +1988,7 @@ fn a_pending_creation_draws_in_the_repo_it_will_land_in() {
         .expect("pending");
     assert!(
         pending > header,
-        "placeholder should follow its repo header:\n{screen}"
+        "placeholder should follow its repo row:\n{screen}"
     );
 }
 
@@ -2050,25 +2049,24 @@ fn a_pending_creation_draws_on_the_machine_it_was_asked_for() {
         "a backend name is not a machine the list can group by:\n{screen}"
     );
     assert_eq!(
-        screen.matches("buildbox · website").count(),
+        screen.matches("buildbox").count(),
         1,
-        "the creation joins the host's own group rather than building a \
-         second one beside it:\n{screen}"
+        "the creation joins the existing host row:\n{screen}"
     );
     assert!(
-        line_of(&screen, "creating") > line_of(&screen, "buildbox · website"),
+        line_of(&screen, "creating") > line_of(&screen, "buildbox"),
         "and draws inside it:\n{screen}"
     );
 
-    // The same repo, asked for here: a `local · website` group is built for it
-    // even though this machine holds no session of that repo.
+    // The same repo, asked for here: a local website group is built above the
+    // host row, even though this machine holds no session of that repo.
     let screen = screen_for(&create("website", None));
     assert!(
-        line_of(&screen, "creating") > line_of(&screen, "local · website"),
+        line_of(&screen, "creating") > line_of(&screen, "▾ website"),
         "a creation on this machine draws under this machine:\n{screen}"
     );
     assert!(
-        line_of(&screen, "creating") < line_of(&screen, "buildbox · website"),
+        line_of(&screen, "creating") < line_of(&screen, "buildbox"),
         "and not under the host that happens to hold that repo:\n{screen}"
     );
 }
@@ -2108,8 +2106,8 @@ fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
 
     let screen = paint(&host, index_of(&host, "sessions"), 46, 14).join("\n");
     assert!(
-        screen.contains("local · thurbox"),
-        "the existing row's machine is named:\n{screen}"
+        screen.contains("fix-osc52"),
+        "the local row remains:\n{screen}"
     );
     let creating = screen
         .lines()
@@ -2117,8 +2115,8 @@ fn creating_the_first_session_on_a_host_names_the_machine_straight_away() {
         .unwrap_or_else(|| panic!("no placeholder in:\n{screen}"));
     let header = screen
         .lines()
-        .position(|l| l.contains("buildbox · thurbox"))
-        .unwrap_or_else(|| panic!("no group for the machine asked for in:\n{screen}"));
+        .position(|l| l.contains("buildbox"))
+        .unwrap_or_else(|| panic!("no host row for the machine asked for in:\n{screen}"));
     assert!(
         creating > header,
         "the placeholder names the machine it is being created on:\n{screen}"

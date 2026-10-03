@@ -207,8 +207,12 @@ function Cursor:_settle()
   local target = self:id()
   state[self.prefix .. ".selected"] = target
   if self.steer then
-    store[self.steer] = target
-    state[self.prefix .. ".published"] = target
+    local published = target
+    if self.publish then
+      published = self.publish(self:item())
+    end
+    store[self.steer] = published
+    state[self.prefix .. ".published"] = published
   end
 end
 
@@ -337,6 +341,10 @@ end
 ---             the list is the reason this is not simply a write: publishing
 ---             every frame would otherwise undo the write a frame later, so a
 ---             value this cursor did not publish is followed instead.
+---   publish — optional projection from the selected item to the value on
+---             `steer`, for lists with selectable headings that name no session
+---   initial — first row number when no cursor state exists, or a function of
+---             `items` returning it
 ---   request — a `store` key carrying a one-shot "go to this row" (a clicked OS
 ---             notification, `thurbox-cli session focus`). Consumed here,
 ---             because a plain `store` write would be overwritten by the next
@@ -346,12 +354,17 @@ end
 ---@param opts table?
 function ui.cursor(key, items, opts)
   opts = opts or {}
+  local initial = opts.initial
+  if type(initial) == "function" then
+    initial = initial(items)
+  end
   local self = setmetatable({
     prefix = key,
     items = items,
     key_of = opts.id,
     steer = opts.steer,
-    index = state[key .. ".cursor"] or 1,
+    publish = opts.publish,
+    index = state[key .. ".cursor"] or initial or 1,
   }, Cursor)
 
   if opts.request and store[opts.request] then

@@ -380,11 +380,10 @@ scheduler.
 
 > **Amended.** The decision below is about the *data model* and still
 > holds: there is no project entity, and storage migration v16 dropped
-> its tables. What the list *renders* has since gained two groupings that
-> own no rows — sessions are grouped under a repo header, and a forked
-> session nests under its parent within that group. Both are computed
-> from a session's own `cwd`/`parent_session_id` rather than from a
-> record above it, so no navigation level and no creation step came back.
+> its tables. The list now renders selectable host and repo fold rows, with
+> forked sessions nested within each repo group. These are view rows derived
+> from host config and each session's `cwd`/`parent_session_id`; they add no
+> project entity or creation step to the data model.
 > The list itself is now `ui/plugins/10_sessions.lua`, not Rust (ADR-23).
 
 **Choice**: The sidebar is a single flat list of sessions. There
