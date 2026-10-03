@@ -70,9 +70,16 @@ other session on that host shares. The signal is `has_exited()`, and what it
 means has narrowed: it now says the pane's stream ended. On a remote backend
 that is either the host/SSH connection going or that pane's own window closing —
 `remain-on-exit=on` keeps a clean agent exit from ending the stream, but a
-window closed for any other reason ends it too. `drop_lost_panes` still reads it
-as host loss and clears the readied-backend cache for every backend on that
-host; telling the two apart is open. This composes
+window closed for any other reason ends it too. `drop_lost_panes` clears the
+readied-backend cache on either, but records **no** failure: an ended stream
+says nothing about whether the host can be reached — thurbox replaces its own
+connection when a command times out, which ends every pane on it — so the next
+attach is made at once, and only *its* failure makes the row `unreachable`.
+Recording "host unreachable" here held that attach off for
+`ATTACH_RETRY_INTERVAL` and showed a reachable host as unreachable for twenty
+seconds after every dropped connection (`tests/tui_e2e.rs` pins both halves:
+a dropped connection to a reachable host, and one that refuses new ones).
+Telling a closed window from a lost connection is still open. This composes
 with the fail-fast SSH hardening (`crate::shell::SSH_HARDENING_OPTS` =
 `BatchMode=yes` + `ConnectTimeout` + `ServerAlive*`; plus
 `SSH_MULTIPLEX_OPTS` — `ControlMaster=auto` with a socket under `~/.ssh` —

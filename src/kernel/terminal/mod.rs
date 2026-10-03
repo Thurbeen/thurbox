@@ -834,8 +834,15 @@ impl Terminals {
                 // The backend has to be readied again before the next attach can
                 // adopt anything: the connection this session died with is the
                 // one every other session on that host shares.
+                //
+                // No failure is recorded. A connection ending says nothing about
+                // whether the host can be reached — thurbox replaces its own on a
+                // timed-out command, and a blip can be over before it is seen —
+                // and recording one held the attach off for
+                // `ATTACH_RETRY_INTERVAL`, showing a reachable host as
+                // unreachable. The attach that follows asks the host, and its
+                // failure is the verdict.
                 self.ready.borrow_mut().clear();
-                self.fail(&id, pane, "host unreachable".to_string());
             } else {
                 // Locally the pane is simply gone. Recorded against the pane that
                 // died, so the retry rule treats a *different* candidate — the
