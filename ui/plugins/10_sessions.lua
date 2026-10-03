@@ -693,7 +693,27 @@ local function declared(action)
   return false
 end
 
---- A row's menu: `SESSION_MENU`, then what other plugins left in
+local function fold_menu_entries()
+  local expanded, collapsed = false, false
+  for _, item in ipairs(session_model.build(sessions(), "", false, true, "")) do
+    if item.kind == "host" or item.kind == "repo" then
+      local folded = item.kind == "host" and host_is_folded(item.host)
+        or item.kind == "repo" and repo_is_folded(item.target)
+      collapsed = collapsed or folded
+      expanded = expanded or not folded
+    end
+  end
+  local entries = {}
+  if expanded then
+    entries[#entries + 1] = { label = "Collapse all", action = "sessions.collapse_all" }
+  end
+  if collapsed then
+    entries[#entries + 1] = { label = "Expand all", action = "sessions.expand_all" }
+  end
+  return entries
+end
+
+--- A row's menu: session and fold actions, then what other plugins left in
 --- `store["sessions.menu_extra"]` -- a table from each contributor's own name
 --- to its list of entries and "sep" rules, so two contributors never overwrite
 --- each other. Contributors are taken in name order, each after a rule; an
@@ -701,9 +721,21 @@ end
 --- with nothing to separate. A label that is not a string is dropped. Built when the menu opens, so it follows a plugin
 --- that was added, removed or rebound since.
 local function row_menu()
+  ---@type (table|string)[]
+  local base = {}
+  for _, entry in ipairs(SESSION_MENU) do
+    base[#base + 1] = entry
+  end
+  local fold_entries = fold_menu_entries()
+  if #fold_entries > 0 then
+    base[#base + 1] = "sep"
+    for _, entry in ipairs(fold_entries) do
+      base[#base + 1] = entry
+    end
+  end
   local extra = store["sessions.menu_extra"]
   if type(extra) ~= "table" then
-    return SESSION_MENU
+    return base
   end
   local owners = {}
   for owner, entries in pairs(extra) do
@@ -712,12 +744,12 @@ local function row_menu()
     end
   end
   if #owners == 0 then
-    return SESSION_MENU
+    return base
   end
   table.sort(owners)
   ---@type (table|string)[]
   local menu = {}
-  for i, entry in ipairs(SESSION_MENU) do
+  for i, entry in ipairs(base) do
     menu[i] = entry
   end
   for _, owner in ipairs(owners) do
@@ -769,6 +801,9 @@ local function pane_menu(items)
   local middle = {}
   if live then
     middle[#middle + 1] = { label = "Sort by name", action = "sessions.sort" }
+  end
+  for _, entry in ipairs(fold_menu_entries()) do
+    middle[#middle + 1] = entry
   end
   if store["sessions.deleted"] then
     middle[#middle + 1] = { label = "Undo delete", action = "sessions.undo" }
