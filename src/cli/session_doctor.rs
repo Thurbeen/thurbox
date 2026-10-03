@@ -551,8 +551,23 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
         .home()?;
         return Some(std::path::PathBuf::from(home).join(file));
     }
-    let file = crate::session::relocate_agent_dir(file, |name| std::env::var(name).ok());
+    // Where the install put it, which is where the agent was pointed when it
+    // ran — this process's own `CODEX_HOME` and friends need not agree. Only a
+    // hooks extension that was never installed falls back to them.
+    let file = installed_hook_file(file).unwrap_or_else(|| {
+        crate::session::relocate_agent_dir(file, |name| std::env::var(name).ok())
+    });
     Some(crate::paths::expand_tilde(&file))
+}
+
+/// `file`, the bundled hooks manifest's default path, as the installed hooks
+/// manifest recorded it (see [`crate::session::ExtensionDef::installed_path`]).
+fn installed_hook_file(file: &str) -> Option<String> {
+    let name = crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME;
+    let bundled: crate::session::ExtensionDef =
+        toml::from_str(crate::session_ops::builtin_hooks::MANIFEST).ok()?;
+    let installed = crate::agent::extension_config::load_manifest(name)?;
+    installed.installed_path(&bundled, file).map(str::to_owned)
 }
 
 /// What a hook running in this session's pane would resolve `thurbox-cli` to.
@@ -733,25 +748,6 @@ mod tests {
         let report = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&report, "cli"), Level::Fail);
         assert_eq!(report.verdict, Level::Fail);
-    }
-
-    /// A codex whose `CODEX_HOME` moved its config dir reads its hooks from
-    /// there, so that is the file the payload check has to find — not the
-    /// default `~/.codex/hooks.json` the agent never opens.
-    #[test]
-    fn the_payload_check_reads_the_config_dir_the_agent_reads() {
-        let home = tempfile::tempdir().unwrap();
-        let moved = tempfile::tempdir().unwrap();
-        std::fs::write(
-            moved.path().join("hooks.json"),
-            "thurbox-cli session signal --state done || true",
-        )
-        .unwrap();
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("CODEX_HOME", moved.path());
-        let hook = Assessment::from_hooks(&registry(), "codex", None, None, None, 0);
-        let report = diagnose_agent(&row("s", "codex", "local-tmux"), &hook, true, Some("/x"));
-        assert_eq!(level_of(&report, "payload"), Level::Ok);
     }
 
     #[test]

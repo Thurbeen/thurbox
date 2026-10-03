@@ -78,8 +78,8 @@ pub fn install_extension(
 
     // Record the previously-installed version (if any) before we overwrite the
     // discovery manifest, so an install-over-existing / update can report a move.
-    let previous_version =
-        crate::agent::extension_config::load_manifest(&def.name).and_then(|prev| prev.version);
+    let previous = crate::agent::extension_config::load_manifest(&def.name);
+    let previous_version = previous.as_ref().and_then(|prev| prev.version.clone());
 
     // Home precedence: `--home` > a manifest-pinned `home` > the derived default
     // under the config dir (`<extensions_dir>/<name>`). Official manifests omit
@@ -183,10 +183,40 @@ pub fn install_extension(
     let resolved = def
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
+    if let Some(previous) = &previous {
+        remove_abandoned_payload(previous, &resolved)?;
+    }
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = activate_extension(db, &resolved)?;
 
     Ok(report)
+}
+
+/// Take our payload out of every path `previous` wrote that `next` no longer
+/// names. The manifest about to be written replaces `previous`, and uninstall
+/// only reads that one — so a hook left at a path it dropped would outlive the
+/// extension. This is how an agent whose config dir moved (`CODEX_HOME` set,
+/// changed or unset, see [`ExtensionDef::with_agent_dirs`]) stops carrying a
+/// hook in the dir it used to read.
+fn remove_abandoned_payload(previous: &ExtensionDef, next: &ExtensionDef) -> Result<(), String> {
+    for f in &previous.external_files {
+        if !next.external_files.iter().any(|n| n.path == f.path) {
+            remove_owned_external_file(f);
+        }
+    }
+    for m in &previous.config_merges {
+        if !next.config_merges.iter().any(|n| n.path == m.path) {
+            revert_config_merge(m)?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete an external file unless the user has edited it (no managed marker).
+/// Returns whether it was removed.
+fn remove_owned_external_file(f: &crate::session::ExternalFile) -> bool {
+    let dest = crate::agent::extension_config::expand_tilde(&f.path);
+    dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok()
 }
 
 /// Fetch and parse an extension manifest for [`install_extension`], turning a
@@ -704,8 +734,7 @@ pub fn uninstall_extension(
 
     // Remove external hook files we still own (those carrying our managed marker).
     for f in &def.external_files {
-        let dest = crate::agent::extension_config::expand_tilde(&f.path);
-        if dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok() {
+        if remove_owned_external_file(f) {
             report.external_files_removed.push(f.path.clone());
         }
     }

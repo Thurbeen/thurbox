@@ -366,6 +366,33 @@ impl ExtensionDef {
         self
     }
 
+    /// Where this installed manifest put the payload `bundled` declares at
+    /// `default_path`, matched by its `source` — the one name relocation never
+    /// changes. Read back rather than recomputed because the dir is whatever
+    /// the *installing* process's environment said, which a later reader's
+    /// need not repeat. `None` when either manifest has no such entry.
+    pub fn installed_path(&self, bundled: &ExtensionDef, default_path: &str) -> Option<&str> {
+        let (source, _) = bundled
+            .outside_paths()
+            .find(|(_, path)| *path == default_path)?;
+        self.outside_paths()
+            .find(|(s, _)| *s == source)
+            .map(|(_, path)| path)
+    }
+
+    /// Every external file and config merge, as `(source, destination)`.
+    fn outside_paths(&self) -> impl Iterator<Item = (&str, &str)> {
+        let files = self
+            .external_files
+            .iter()
+            .map(|f| (f.source_path(), f.path.as_str()));
+        let merges = self
+            .config_merges
+            .iter()
+            .map(|m| (m.source_path(), m.path.as_str()));
+        files.chain(merges)
+    }
+
     /// Whether the manifest declares no runtime resources (nothing to ensure).
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty() && self.automations.is_empty()
@@ -565,6 +592,42 @@ mod tests {
         assert_eq!(
             relocate_agent_dir("~/.codex/hooks.json", empty),
             "~/.codex/hooks.json"
+        );
+    }
+
+    /// The doctor finds a payload where the install put it, not where its own
+    /// environment would: `bundled` names the default, the installed manifest
+    /// the moved one, and `source` ties the two. `omp` shares pi's file name
+    /// under a different dir, so a match on the tail alone would pick it.
+    #[test]
+    fn an_installed_path_is_found_by_source_not_by_the_readers_environment() {
+        let bundled: ExtensionDef = toml::from_str(
+            "name = \"hooks\"\n\
+             [[external_files]]\npath = \"~/.pi/agent/extensions/thurbox-status.ts\"\nsource = \"pi-status.ts\"\n\
+             [[external_files]]\npath = \"~/.omp/agent/extensions/thurbox-status.ts\"\nsource = \"omp-status.ts\"\n\
+             [[config_merges]]\npath = \"~/.codex/hooks.json\"\nsource = \"codex-hooks.json\"\n",
+        )
+        .unwrap();
+        let installed = bundled.clone().with_agent_dirs(|name| match name {
+            "CODEX_HOME" => Some("/alt/codex".into()),
+            "PI_CODING_AGENT_DIR" => Some("/alt/pi".into()),
+            _ => None,
+        });
+        assert_eq!(
+            installed.installed_path(&bundled, "~/.codex/hooks.json"),
+            Some("/alt/codex/hooks.json")
+        );
+        assert_eq!(
+            installed.installed_path(&bundled, "~/.pi/agent/extensions/thurbox-status.ts"),
+            Some("/alt/pi/extensions/thurbox-status.ts")
+        );
+        assert_eq!(
+            installed.installed_path(&bundled, "~/.omp/agent/extensions/thurbox-status.ts"),
+            Some("~/.omp/agent/extensions/thurbox-status.ts")
+        );
+        assert_eq!(
+            installed.installed_path(&bundled, "~/.vibe/hooks.toml"),
+            None
         );
     }
 

@@ -1224,3 +1224,61 @@ fn hooks_follow_an_agents_relocated_config_dir() {
         );
     }
 }
+
+/// Moving an agent's config dir between ticks takes thurbox's hooks out of the
+/// old one. Uninstall only reads the manifest the last install wrote, so a hook
+/// left behind in the dir the agent used to read would outlive the extension —
+/// and fire again the moment the variable is unset.
+#[cfg(unix)]
+#[test]
+fn hooks_leave_the_config_dir_an_agent_moved_away_from() {
+    let root = tempfile::tempdir().expect("tempdir");
+    for sub in ["home", "config", "data"] {
+        std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
+    }
+    let before = root.path().join("before");
+    let after = root.path().join("after");
+    let dirs = |base: &Path| {
+        let dirs = [base.join("codex"), base.join("pi"), base.join("copilot")];
+        for dir in &dirs {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+        dirs
+    };
+    let [codex_a, pi_a, copilot_a] = dirs(&before);
+    let [codex_b, pi_b, copilot_b] = dirs(&after);
+
+    let tick = |codex: &Path, pi: &Path, copilot: &Path| {
+        tick_with_home(
+            root.path(),
+            &[
+                ("CODEX_HOME", codex),
+                ("PI_CODING_AGENT_DIR", pi),
+                ("COPILOT_HOME", copilot),
+            ],
+        );
+    };
+    tick(&codex_a, &pi_a, &copilot_a);
+    let codex_hooks = codex_a.join("hooks.json");
+    assert!(
+        std::fs::read_to_string(&codex_hooks)
+            .unwrap()
+            .contains("session signal"),
+        "the first tick wires the first dir"
+    );
+    tick(&codex_b, &pi_b, &copilot_b);
+
+    assert!(
+        !std::fs::read_to_string(&codex_hooks)
+            .unwrap_or_default()
+            .contains("session signal"),
+        "codex's old hooks.json still carries thurbox's hooks"
+    );
+    for stale in [
+        pi_a.join("extensions/thurbox-status.ts"),
+        copilot_a.join("hooks/thurbox-status.json"),
+    ] {
+        assert!(!stale.exists(), "{} was left behind", stale.display());
+    }
+    assert!(codex_b.join("hooks.json").is_file());
+}
