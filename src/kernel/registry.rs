@@ -872,6 +872,43 @@ impl Registry {
                 });
             }
         }
+        for action in &mut actions {
+            if action.owner == "sessions"
+                && matches!(
+                    action.name.as_str(),
+                    "sessions.open"
+                        | "sessions.rename"
+                        | "sessions.fork"
+                        | "sessions.editor"
+                        | "sessions.delete"
+                        | "sessions.force_delete"
+                        | "sessions.restart"
+                        | "sessions.sync"
+                )
+                && action.argument("session_id").is_none()
+            {
+                action.arguments.push(ActionArgument {
+                    name: "session_id".into(),
+                    kind: "uuid".into(),
+                    required: false,
+                });
+            }
+            if matches!(
+                action.name.as_str(),
+                "sessions.delete" | "sessions.force_delete" | "sessions.restart" | "sessions.sync"
+            ) {
+                action.destructive = true;
+                action.effect = "kernel-write".into();
+                action.arguments = vec![ActionArgument {
+                    name: "session_id".into(),
+                    kind: "uuid".into(),
+                    required: true,
+                }];
+                if action.owner != "sessions" {
+                    action.available = false;
+                }
+            }
+        }
         actions
     }
 

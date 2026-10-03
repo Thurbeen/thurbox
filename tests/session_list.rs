@@ -627,28 +627,17 @@ fn confirm_tree(host: &LuaHost, snapshot: &Snapshot) -> String {
 }
 
 #[test]
-fn force_deleting_a_clean_session_does_not_ask() {
-    // v1's rule, in `App::delete_active_session`: `assess_delete_risk` returning
-    // `Some(risk)` opened `ConfirmDelete`, `None` deleted on the keystroke. v2
-    // asked every time, which is how the answer to a question stops being a
-    // decision.
+fn force_deleting_a_clean_session_still_asks() {
     let host = host();
     let mut snapshot = snapshot();
     snapshot.sessions[0].git = Some(clean());
     render_in(&host, &snapshot);
     press_in(&host, &snapshot, "D");
 
-    assert_eq!(
-        host.drain_commands(),
-        vec![Command::Delete {
-            session: "aaa".into(),
-            force: true,
-        }],
-        "a known-clean session is torn down on the keystroke"
-    );
+    assert!(host.drain_commands().is_empty());
     assert!(
-        !confirm_tree(&host, &snapshot).contains("Confirm"),
-        "and no question was put: a worktree directory alone is not work at risk"
+        confirm_tree(&host, &snapshot).contains("Confirm"),
+        "force deletion requires a second choice even when work is clean"
     );
 }
 
@@ -733,13 +722,7 @@ fn a_state_that_could_not_be_read_asks_rather_than_assume_clean() {
 }
 
 #[test]
-fn force_deleting_a_merged_branch_does_not_ask() {
-    // The regression this fixes. A squash-merged branch keeps its commits
-    // forever — they are not ancestors of the default branch, so the ahead
-    // count never falls back to zero once the remote branch is gone. Counting
-    // them as "not pushed anywhere else" asks about work that is already on
-    // `origin/main`, which is every finished session, which is how the answer
-    // to the question stops being a decision.
+fn force_deleting_a_merged_branch_asks_without_claiming_lost_commits() {
     let host = host();
     let mut snapshot = snapshot();
     snapshot.sessions[0].git = Some(GitState {
@@ -751,14 +734,10 @@ fn force_deleting_a_merged_branch_does_not_ask() {
     render_in(&host, &snapshot);
     press_in(&host, &snapshot, "D");
 
-    assert_eq!(
-        host.drain_commands(),
-        vec![Command::Delete {
-            session: "aaa".into(),
-            force: true,
-        }],
-        "the work is on the default branch: there is nothing to lose"
-    );
+    assert!(host.drain_commands().is_empty());
+    let question = confirm_tree(&host, &snapshot);
+    assert!(question.contains("Confirm"));
+    assert!(!question.contains("not pushed anywhere else"), "{question}");
 }
 
 #[test]

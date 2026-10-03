@@ -494,6 +494,15 @@ impl App {
     /// The catalog maps action to owner, so a button may name another pane's
     /// action without guessing which plugin will handle it.
     pub(crate) fn run_clicked_action(&mut self, action: &str, _clicked: usize) {
+        self.run_clicked_action_with_args(action, _clicked, &[]);
+    }
+
+    pub(crate) fn run_clicked_action_with_args(
+        &mut self,
+        action: &str,
+        _clicked: usize,
+        args: &[(&str, &str)],
+    ) {
         let Some(descriptor) = self
             .registry
             .action_catalog()
@@ -510,7 +519,7 @@ impl App {
         let Some(owner) = self.host.index_of(&descriptor.owner) else {
             return;
         };
-        if let Err(e) = self.host.on_action(owner, action) {
+        if let Err(e) = self.host.on_action_with_args(owner, action, args) {
             self.errors.push(e);
         }
     }

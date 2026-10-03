@@ -309,7 +309,13 @@ fn the_session_chords_issue_the_commands_v1_runs() {
         ("ctrl+o", "editor"),
     ] {
         fire(&host, chord);
-        let issued = host.drain_commands();
+        let mut issued = host.drain_commands();
+        if chord != "ctrl+o" {
+            assert!(issued.is_empty(), "{chord} must ask first");
+            host.on_key(index_of(&host, "confirm"), &press("y"))
+                .expect("confirm");
+            issued = host.drain_commands();
+        }
         assert_eq!(issued.len(), 1, "{chord} issued {issued:?}");
         assert_eq!(issued[0].kind(), kind, "{chord}");
         assert_eq!(issued[0].session(), snapshot.sessions[0].id, "{chord}");
@@ -385,6 +391,9 @@ fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
     assert_eq!(issued[0].kind(), "message");
 
     fire(&host, "ctrl+d");
+    assert!(host.drain_commands().is_empty());
+    host.on_key(index_of(&host, "confirm"), &press("y"))
+        .expect("confirm");
     host.drain_commands();
     fire(&host, "ctrl+z");
     let issued = host.drain_commands();
@@ -596,8 +605,11 @@ fn a_bare_d_deletes_nothing_in_the_session_list() {
         "and the pane must not delete on it either"
     );
 
-    // The chord that does still deletes.
+    // The chord that does asks before deleting.
     fire(&host, "ctrl+d");
+    assert!(host.drain_commands().is_empty());
+    host.on_key(index_of(&host, "confirm"), &press("y"))
+        .expect("confirm");
     let issued = host.drain_commands();
     assert_eq!(issued.len(), 1, "{issued:?}");
     assert_eq!(issued[0].kind(), "delete");

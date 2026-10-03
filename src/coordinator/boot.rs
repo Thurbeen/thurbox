@@ -241,6 +241,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         control_revision: 0,
         control_observed: None,
         control_events: std::collections::VecDeque::new(),
+        control_tickets: std::collections::HashMap::new(),
         control_state_version: 0,
         control_registry_version: 0,
         control_placed: Vec::new(),

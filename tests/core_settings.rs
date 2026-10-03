@@ -415,19 +415,21 @@ fn with_soft_delete(on: bool) -> Settings {
 }
 
 #[test]
-fn deleting_with_soft_delete_on_is_reversible_and_asks_nothing() {
+fn deleting_with_soft_delete_on_asks_and_remains_reversible() {
     let host = host();
     let settings = with_soft_delete(true);
     publish_with(&host, &settings);
     press(&host, "sessions", "ctrl+d");
 
+    assert!(host.drain_commands().is_empty());
+    assert!(confirmation(&host, &settings).is_some());
+    press(&host, "confirm", "y");
     assert_eq!(
         host.drain_commands(),
         vec![thurbox::kernel::command::Command::Delete {
             session: "11111111-1111-1111-1111-111111111111".into(),
             force: false,
         }],
-        "a soft delete goes straight through — Ctrl+Z is the safety net"
     );
     assert!(confirmation(&host, &settings).is_none());
 }

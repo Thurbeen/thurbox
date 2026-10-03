@@ -72,7 +72,7 @@ its own. It leaves its entries in `store["sessions.menu_extra"]` under its own
 name, and they follow the pane's own entries after a rule. An entry whose
 action nothing declares is dropped, the same rule that keeps Sort and Undo out
 when they would do nothing. Its owner reads the pressed row from
-`store["menu.chosen"].target`, so it acts on the row that was clicked even if
+the action's `args.session_id`, so it acts on the row that was clicked even if
 the cursor moved. The contract is *Adding entries to the sessions menu* in
 `docs/PLUGINS.md`.
 
@@ -1923,7 +1923,7 @@ Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
 `shell_pane`, `mouse`, `notifications`, `soft_delete` — all default
 `true`. `soft_delete` is the odd one out: it is not a pane gate but a
-behaviour switch for the TUI `Ctrl+D` delete (soft-delete with a
+behaviour switch for the TUI `Ctrl+D` delete (confirmation-gated soft-delete with a
 `Ctrl+Z` undo window when on; a confirmation-gated hard delete when
 off — see *Explicit close vs quit*). Two flags reach the network and
 were opt-in before 1.0 — now both default on:
@@ -2414,14 +2414,14 @@ branch name) is saved in the database and reconstructed on restore.
 - **`Ctrl+Q` (Quit)**: Detaches from all sessions (tmux panes keep
   running), saves metadata. Sessions resume on next launch with
   terminal content preserved.
-- **`Ctrl+D` (Delete)**: Soft-deletes the session — its tmux pane
+- **`Ctrl+D` (Delete)**: Asks for confirmation, then soft-deletes the session — its tmux pane
   is killed and its worktree (if any) is removed. The database
   row is retained with `deleted_at` set so the deletion can be
   undone with `Ctrl+Z` (most recent) or restored from the
   `Ctrl+U` list. This is governed by `[features] soft_delete`
   (default `true`): set it `false` and `Ctrl+D` becomes a **hard
-  delete** — the full teardown with no `Ctrl+Z` undo, so it is gated
-  behind a confirmation modal (`Modal::ConfirmDeleteSession`) instead.
+  delete** — the full teardown with no `Ctrl+Z` undo. The shared
+  confirmation float describes the work at risk for that case.
   The flag never affects `thurbox-cli session delete`, which stays soft
   unless `--force`. A teardown only removes worktrees **thurbox created**
   (`created_by_thurbox`, schema v42): a session that *opened* a worktree the

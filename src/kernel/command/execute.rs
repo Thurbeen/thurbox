@@ -25,6 +25,43 @@ pub(super) fn execute(
     if command.applied_on_ui_thread() {
         return Err("applied on the UI thread, not dispatched".to_string());
     }
+    if let Command::Guarded {
+        inner,
+        session,
+        backend_id,
+        cwd,
+        member_dirs,
+    } = command
+    {
+        let session_id: SessionId = session.parse().map_err(|_| "invalid confirmation target")?;
+        let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
+        let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
+        let row = db
+            .get_session_by_id(session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("confirmation target changed")?;
+        let actual_backend = (!row.backend_id.is_empty()).then_some(row.backend_id.as_str());
+        let mut actual_members: Vec<std::path::PathBuf> = if row.worktrees.is_empty() {
+            row.cwd.iter().cloned().collect()
+        } else {
+            row.worktrees
+                .iter()
+                .map(|wt| wt.worktree_path.clone())
+                .collect()
+        };
+        for dir in &row.additional_dirs {
+            if !row.worktrees.iter().any(|wt| wt.worktree_path == *dir) {
+                actual_members.push(dir.clone());
+            }
+        }
+        if actual_backend != backend_id.as_deref()
+            || row.cwd != *cwd
+            || actual_members != *member_dirs
+        {
+            return Err("confirmation target changed".into());
+        }
+        return execute(inner, backends, id, progress);
+    }
 
     // Creation names a repository rather than a session, so it runs before the
     // id is parsed — there is nothing to parse yet.
@@ -195,6 +232,7 @@ pub(super) fn execute(
         // is a compile error here rather than a silent no-op.
         // Handled above, before the session id is parsed.
         Command::Create { .. }
+        | Command::Guarded { .. }
         | Command::Bookmark { .. }
         | Command::Configure { .. }
         | Command::Task { .. }
@@ -212,6 +250,7 @@ pub(super) fn execute(
         | Command::Focus { .. }
         | Command::Emit { .. }
         | Command::Action { .. }
+        | Command::ActionTarget { .. }
         | Command::Message { .. }
         | Command::Plugin { .. } => unreachable!("applied on the UI thread"),
     }

@@ -52,7 +52,8 @@ pub enum Outcome {
 /// Every row the palette offers, in listing order.
 ///
 /// The live catalog supplies rows, including reserved kernel actions. The
-/// palette omits actions that need arguments or would reopen itself.
+/// palette omits actions that need caller-supplied arguments or would reopen
+/// itself. The sessions pane supplies the selected session to its own actions.
 pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
     let mut actions: Vec<_> = registry
         .action_catalog()
@@ -64,7 +65,10 @@ pub fn rows(registry: &Registry) -> Vec<PaletteRow> {
                 && action.name != "kernel.focus_previous"
                 && action.name != "kernel.focus_next"
                 && action.name != "kernel.perf_hud"
-                && !action.arguments.iter().any(|argument| argument.required)
+                && !action.arguments.iter().any(|argument| {
+                    argument.required
+                        && !(action.owner == "sessions" && argument.name == "session_id")
+                })
         })
         .collect();
     actions.sort_by_key(|action| match action.name.as_str() {

@@ -222,7 +222,7 @@ fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
 fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -> mlua::Result<()> {
-    let command = lua.create_function(move |_, (kind, opts): (String, Option<Table>)| {
+    let command = lua.create_function(move |lua, (kind, opts): (String, Option<Table>)| {
         let opts = opts;
         let get_string = |key: &str| -> Option<String> {
             opts.as_ref()
@@ -242,6 +242,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
                 .and_then(|t| t.get::<Option<Vec<String>>>("args").ok().flatten())
                 .unwrap_or_default(),
             session: get_string("session").unwrap_or_default(),
+            target: get_string("target"),
             text: get_string("text"),
             delta: opts
                 .as_ref()
@@ -333,6 +334,20 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
         };
 
         let parsed = Command::parse(&kind, args).map_err(mlua::Error::runtime)?;
+        // Edited confirmation panes forward `options` but may not know the new
+        // top-level handoff. Store the undo target when the command is actually
+        // issued, so cancelling an old float cannot create a phantom undo.
+        if matches!(&parsed, Command::Delete { force: false, .. }) {
+            if let Some(remember) = opts
+                .as_ref()
+                .and_then(|table| table.get::<Option<Table>>("remember").ok().flatten())
+            {
+                let key: String = remember.get("key")?;
+                let value: String = remember.get("value")?;
+                let store: Table = lua.globals().get("store")?;
+                store.set(key, value)?;
+            }
+        }
         queue.borrow_mut().push(parsed);
         Ok(())
     })?;

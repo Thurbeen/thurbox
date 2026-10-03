@@ -198,7 +198,7 @@ fn actions(host: &LuaHost) -> Vec<String> {
     host.drain_commands()
         .into_iter()
         .filter_map(|command| match command {
-            Command::Action { action, .. } => Some(action),
+            Command::Action { action, .. } | Command::ActionTarget { action, .. } => Some(action),
             _ => None,
         })
         .collect()
@@ -488,7 +488,11 @@ fn the_right_press_selects_the_session_it_landed_on() {
     host.on_key(menu, &key("enter")).expect("key");
     assert_eq!(actions(&host), ["sessions.rename"]);
     assert!(host
-        .on_action(index_of(&host, "sessions"), "sessions.rename")
+        .on_action_with_args(
+            index_of(&host, "sessions"),
+            "sessions.rename",
+            &[("session_id", &beta)]
+        )
         .expect("action"));
     let rename = host
         .render(index_of(&host, "rename"), ctx())
@@ -551,6 +555,9 @@ fn undo_delete_is_offered_once_a_session_was_deleted() {
     let host = sessions_host();
     let sessions = index_of(&host, "sessions");
     host.on_action(sessions, "sessions.delete").expect("delete");
+    host.drain_commands();
+    host.on_key(index_of(&host, "confirm"), &key("y"))
+        .expect("confirm delete");
     host.drain_commands();
     host.on_context(sessions, &right_press_at(9, 20, None))
         .expect("context");
@@ -672,7 +679,7 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     host.on_key(menu, &key("enter")).expect("key");
     assert_eq!(actions(&host), ["sessions.force_delete"]);
     // What the coordinator does with that command.
-    host.on_action(sessions, "sessions.force_delete")
+    host.on_action_with_args(sessions, "sessions.force_delete", &[("session_id", &beta)])
         .expect("action");
     let issued = host.drain_commands();
     assert!(
@@ -688,6 +695,113 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     );
 }
 
+#[test]
+fn a_clean_force_delete_still_asks_before_removing_the_worktree() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    let mut snapshot = two_sessions();
+    snapshot.sessions[1].git = Some(thurbox::kernel::snapshot::GitState {
+        files_changed: 0,
+        insertions: 0,
+        deletions: 0,
+        untracked: 0,
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+        merged: Some(true),
+    });
+    publish(&host, &snapshot);
+    host.on_action_with_args(sessions, "sessions.force_delete", &[("session_id", &beta)])
+        .expect("force delete action");
+    assert!(!host
+        .drain_commands()
+        .iter()
+        .any(|command| command.kind() == "delete"));
+    assert!(host
+        .render(index_of(&host, "confirm"), ctx())
+        .expect("confirmation")
+        .float
+        .is_some());
+}
+
+#[test]
+fn session_actions_classified_destructive_ask_on_a_key_or_click() {
+    for action in ["sessions.delete", "sessions.restart", "sessions.sync"] {
+        let host = sessions_host();
+        let beta = two_sessions().sessions[1].id.clone();
+        host.on_action_with_args(
+            index_of(&host, "sessions"),
+            action,
+            &[("session_id", &beta)],
+        )
+        .expect("session action");
+        assert!(
+            !host
+                .drain_commands()
+                .iter()
+                .any(|command| matches!(command.kind(), "delete" | "restart" | "sync")),
+            "{action} ran before confirmation"
+        );
+        assert!(
+            host.render(index_of(&host, "confirm"), ctx())
+                .expect("confirmation")
+                .float
+                .is_some(),
+            "{action} did not ask"
+        );
+    }
+}
+
+#[test]
+fn a_replacement_can_keep_the_bundled_sessions_owner_name() {
+    let home = tempfile::tempdir().expect("interface dir");
+    std::fs::create_dir_all(home.path().join("plugins")).expect("plugins");
+    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+        "return { name = 'sessions', render = function() return { type = 'text', text = '' } end }\n")
+        .expect("impostor");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(
+        host.error.is_none(),
+        "replacement pane must load: {:?}",
+        host.error
+    );
+}
+
+#[test]
+fn a_plugin_cannot_shadow_the_bundled_delete_action() {
+    let home = tempfile::tempdir().expect("interface dir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
+    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+        "return { name = 'impostor', keys = { { key = 'x', action = 'sessions.force_delete' } }, render = function() return { type = 'text', text = '' } end }\n")
+        .expect("impostor");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host
+        .error
+        .as_ref()
+        .is_some_and(|error| error.to_string().contains("declared by both")));
+}
+
+#[test]
+fn a_second_sessions_pane_cannot_shadow_the_bundled_delete_action() {
+    let home = tempfile::tempdir().expect("interface dir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
+    std::fs::write(home.path().join("plugins/00_impostor.lua"),
+        "return { name = 'sessions', keys = { { key = 'x', action = 'sessions.force_delete' } }, render = function() return { type = 'text', text = '' } end }\n")
+        .expect("impostor");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host
+        .error
+        .as_ref()
+        .is_some_and(|error| error.to_string().contains("declared by both")));
+}
+
 /// And while the pressed session is still there, its entry acts on it even if
 /// the cursor has moved since.
 #[test]
@@ -701,10 +815,16 @@ fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
         .expect("key");
     host.on_key(index_of(&host, "menu"), &key("enter"))
         .expect("key");
-    assert_eq!(actions(&host), ["sessions.rename"]);
+    let issued = host.drain_commands();
+    assert!(
+        matches!(issued.as_slice(), [Command::ActionTarget { action, argument, value, .. }]
+        if action == "sessions.rename" && argument == "session_id" && value == &beta),
+        "{issued:?}"
+    );
     // The cursor moves before the action lands.
     host.on_action(sessions, "sessions.first").expect("action");
-    host.on_action(sessions, "sessions.rename").expect("action");
+    host.on_action_with_args(sessions, "sessions.rename", &[("session_id", &beta)])
+        .expect("action");
     let rename = host
         .render(index_of(&host, "rename"), ctx())
         .expect("render");
@@ -712,6 +832,86 @@ fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
         format!("{:?}", rename.node).contains("beta"),
         "renames beta, the row pressed"
     );
+}
+
+#[test]
+fn a_preserved_menu_can_pass_its_target_to_the_updated_sessions_pane() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
+        .expect("context");
+    host.on_key(index_of(&host, "menu"), &key("down"))
+        .expect("key");
+    host.on_key(index_of(&host, "menu"), &key("enter"))
+        .expect("key");
+    host.drain_commands();
+    host.on_action(sessions, "sessions.first")
+        .expect("move cursor");
+    host.on_action(sessions, "sessions.rename")
+        .expect("old menu's argument-free action");
+    let rename = host.render(index_of(&host, "rename"), ctx()).unwrap();
+    assert!(format!("{:?}", rename.node).contains("beta"));
+}
+
+#[test]
+fn a_preserved_confirmation_pane_keeps_soft_delete_undo() {
+    let home = tempfile::tempdir().expect("interface dir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
+    std::fs::write(
+        home.path().join("plugins/60_confirm.lua"),
+        r#"return {
+          name = 'confirm', slot = 'float', floats = true,
+          render = function() return { type = 'text', text = '' } end,
+          on_key = function(key)
+            local ask = store.confirm
+            if key.key == 'esc' and ask then
+              store.confirm = nil
+              return true
+            end
+            if key.key == 'y' and ask then
+              store.confirm = nil
+              command(ask.command, ask.options)
+              return true
+            end
+            return false
+          end,
+        }"#,
+    )
+    .expect("old confirm");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &two_sessions());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    host.on_action(index_of(&host, "sessions"), "sessions.delete")
+        .expect("delete action");
+    assert!(host.drain_commands().is_empty());
+    host.on_key(index_of(&host, "confirm"), &key("esc"))
+        .expect("cancel");
+    host.on_action(index_of(&host, "sessions"), "sessions.undo")
+        .expect("undo after cancel");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Message { .. }]
+    ));
+    host.on_action(index_of(&host, "sessions"), "sessions.delete")
+        .expect("delete action");
+    host.on_key(index_of(&host, "confirm"), &key("y"))
+        .expect("answer");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Delete { force: false, .. }]
+    ));
+    host.on_action(index_of(&host, "sessions"), "sessions.undo")
+        .expect("undo");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Restore { .. }]
+    ));
 }
 
 /// A creation in flight draws a placeholder row, but a placeholder is not a
@@ -772,7 +972,7 @@ return {
   render = function()
     return { type = "text", text = "" }
   end,
-  on_action = function(action)
+  on_action = function(action, args)
     if action == "extra.mislabel" then
       local extra = store["sessions.menu_extra"] or {}
       extra.mislabelled = { { label = { "not text" }, action = "extra.toggle" } }
@@ -781,9 +981,7 @@ return {
     elseif action ~= "extra.toggle" then
       return false
     end
-    local chosen = store["menu.chosen"]
-    store["menu.chosen"] = nil
-    command("message", { text = "toggled " .. tostring(chosen and chosen.target) })
+    command("message", { text = "toggled " .. tostring(args and args.session_id) })
     return true
   end,
 }
@@ -859,7 +1057,11 @@ fn a_contributed_entry_runs_on_the_session_pressed_not_the_selection() {
     host.on_action(sessions, "sessions.first").expect("action");
     host.drain_commands();
     assert!(host
-        .on_action(index_of(&host, "extra"), "extra.toggle")
+        .on_action_with_args(
+            index_of(&host, "extra"),
+            "extra.toggle",
+            &[("session_id", &beta)]
+        )
         .expect("action"));
     assert_eq!(messages(&host), [format!("toggled {beta}")]);
 }

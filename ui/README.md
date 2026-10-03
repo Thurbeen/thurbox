@@ -336,7 +336,7 @@ store["sessions.menu_extra"] = extra
 
 The sessions column appends them to a row's menu. An entry whose action no
 plugin declares (in `keys` or `commands`) is dropped. Your `on_action` reads the
-pressed row from `store["menu.chosen"].target`. The full contract is in
+pressed row from the action's `args.session_id`. The full contract is in
 `docs/PLUGINS.md` → *The right button*.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted

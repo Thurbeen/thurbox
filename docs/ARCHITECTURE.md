@@ -2565,6 +2565,9 @@ kernel shortcuts with loaded plugin bindings and commands. The same descriptors
 drive the palette, `ui actions`, and `schema`; local action requests validate
 arguments and availability before invoking the owner. Addressed `ui input`
 handles active modal and plugin text, keys and scroll without forwarding terminal
-bytes. Destructive actions refuse external invocation pending a shared
-confirmation service. The UI event stream and full destructive control remain
-separate work.
+bytes. Destructive external actions receive one-use, instance-bound tickets;
+the second request revalidates the target and records an owner-only audit
+decision before dispatch. The receipt and action event report acceptance;
+the worker's command status reports its eventual outcome. Menu choices pass
+their row target as a typed argument to the owning
+action. No visible terminal capture is part of this API.

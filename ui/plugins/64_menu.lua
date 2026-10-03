@@ -17,9 +17,9 @@
 -- action runs, so an action that opens a float of its own (rename, fork,
 -- confirm) is never drawn under a menu that is still up.
 --
--- A choice also leaves `store["menu.chosen"] = { action, target }` for the
--- action's owner to read: an action carries no argument, and the thing the menu
--- was opened on may have moved or gone by the time it lands.
+-- The target travels as a typed argument (`target` by default, or
+-- `session_id` for the bundled sessions menu). The old store handoff stays
+-- until edited copies of either pane have had a chance to migrate.
 
 local hover = require("lib.hover")
 local theme = require("lib.theme")
@@ -69,7 +69,11 @@ local function run(menu, i)
   store.menu = nil
   if choosable(item) then
     store["menu.chosen"] = { action = item.action, target = menu.target }
-    command("action", { text = item.action })
+    if menu.target_argument == "session_id" then
+      command("action", { text = item.action, session = menu.target })
+    else
+      command("action", { text = item.action, target = menu.target })
+    end
   end
 end
 

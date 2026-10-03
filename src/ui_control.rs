@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const MAX_REQUEST: usize = 16 * 1024;
@@ -66,6 +67,9 @@ pub enum Request {
         name: String,
         args: Value,
     },
+    Confirm {
+        ticket: String,
+    },
     Input {
         target: String,
         input: InputOperation,
@@ -110,6 +114,8 @@ impl Reply {
 pub struct Pending {
     pub request_id: String,
     pub request: Request,
+    /// The transport has already authenticated this local peer.
+    pub peer: u32,
     pub reply: mpsc::Sender<Reply>,
     pub deadline: std::time::Instant,
 }
@@ -133,6 +139,129 @@ pub fn directory() -> Result<PathBuf, String> {
         .join("ui-control"))
 }
 
+struct AuditJob {
+    instance: String,
+    peer: u32,
+    action: String,
+    target: Option<String>,
+    outcome: String,
+    request_id: String,
+    reply: Option<mpsc::Sender<Result<(), String>>>,
+}
+
+static AUDIT_WORKER: OnceLock<Result<SyncSender<AuditJob>, String>> = OnceLock::new();
+
+fn audit_worker() -> Result<SyncSender<AuditJob>, String> {
+    AUDIT_WORKER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::sync_channel::<AuditJob>(64);
+            std::thread::Builder::new()
+                .name("thurbox-ui-audit".into())
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        let result = write_audit(
+                            &job.instance,
+                            job.peer,
+                            &job.action,
+                            job.target.as_deref(),
+                            &job.outcome,
+                            &job.request_id,
+                        );
+                        if let Some(reply) = job.reply {
+                            let _ = reply.send(result);
+                        }
+                    }
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(tx)
+        })
+        .clone()
+}
+
+/// Record an action before a destructive command or ticket can be issued.
+/// The bounded wait keeps a slow audit device from freezing the interface.
+pub fn audit(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) -> Result<(), String> {
+    let (reply, result) = mpsc::channel();
+    audit_worker()?
+        .try_send(AuditJob {
+            instance: instance.into(),
+            peer,
+            action: action.into(),
+            target: target.map(str::to_owned),
+            outcome: outcome.into(),
+            request_id: request_id.into(),
+            reply: Some(reply),
+        })
+        .map_err(|error| error.to_string())?;
+    result
+        .recv_timeout(Duration::from_millis(100))
+        .map_err(|error| error.to_string())?
+}
+
+/// Non-destructive telemetry never holds up a user action.
+pub fn audit_best_effort(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) {
+    if let Ok(worker) = audit_worker() {
+        let _ = worker.try_send(AuditJob {
+            instance: instance.into(),
+            peer,
+            action: action.into(),
+            target: target.map(str::to_owned),
+            outcome: outcome.into(),
+            request_id: request_id.into(),
+            reply: None,
+        });
+    }
+}
+
+/// Persist only metadata; query text, input, and terminal content never enter
+/// the worker's job.
+fn write_audit(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    let file = unix::open_audit()?;
+    #[cfg(windows)]
+    let file = windows::open_audit()?;
+    #[cfg(unix)]
+    let _lock = unix::lock_audit(&file)?;
+    #[cfg(windows)]
+    let _lock = windows::lock_audit(&file)?;
+    let line = serde_json::json!({
+        "timestamp_ms": started_at_unix_ms(),
+        "instance_id": instance,
+        "peer": peer,
+        "action": action,
+        "target_id": target,
+        "outcome": outcome,
+        "request_id": request_id,
+    });
+    if file.metadata().map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+        file.set_len(0).map_err(|e| e.to_string())?;
+    }
+    use std::io::Write;
+    writeln!(&file, "{line}").map_err(|e| e.to_string())?;
+    file.sync_data().map_err(|e| e.to_string())
+}
+
 #[cfg(unix)]
 mod unix {
     use super::{
@@ -141,6 +270,7 @@ mod unix {
     };
     use std::fs;
     use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
@@ -160,6 +290,56 @@ mod unix {
             return Err("UI control directory must be owned by this user and mode 0700".into());
         }
         Ok(dir)
+    }
+
+    pub(super) fn open_audit() -> Result<fs::File, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = secure_directory()?.join("audit.jsonl");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+            return Err("UI control audit file must be owner-only".into());
+        }
+        Ok(file)
+    }
+
+    pub(super) struct AuditLock<'a>(&'a fs::File);
+
+    pub(super) fn lock_audit(file: &fs::File) -> Result<AuditLock<'_>, String> {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(AuditLock(file))
+    }
+
+    impl Drop for AuditLock<'_> {
+        fn drop(&mut self) {
+            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn audit_rollover_lock_is_exclusive_across_file_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let first = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let second = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let held = lock_audit(&first).unwrap();
+        assert!(lock_audit(&second).is_err());
+        drop(held);
+        assert!(lock_audit(&second).is_ok());
     }
 
     fn peer_ok(stream: &UnixStream) -> bool {
@@ -233,6 +413,7 @@ mod unix {
             .try_send(Pending {
                 request_id: request.request_id,
                 request: request.request,
+                peer: unsafe { libc::geteuid() },
                 reply,
                 deadline: std::time::Instant::now() + WAIT,
             })
@@ -430,6 +611,7 @@ mod windows {
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::PathBuf;
     use std::sync::mpsc::{self, SyncSender};
     use std::sync::Arc;
@@ -445,6 +627,7 @@ mod windows {
     use windows_sys::Win32::Security::{
         SetFileSecurityW, DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
     };
+    use windows_sys::Win32::Storage::FileSystem::{LockFile, UnlockFile};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -464,6 +647,59 @@ mod windows {
             CloseHandle(handle);
         }
         read != 0 && code != STILL_ACTIVE as u32
+    }
+
+    pub(super) fn open_audit() -> Result<fs::File, String> {
+        let path = directory()?.join("audit.jsonl");
+        if !path.exists() {
+            fs::File::create(&path).map_err(|e| e.to_string())?;
+        }
+        OwnerAcl::new()?.protect(&path)?;
+        // LockFile requires GENERIC_READ or GENERIC_WRITE; append alone grants
+        // only FILE_APPEND_DATA on Windows.
+        fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) struct AuditLock<'a>(&'a fs::File);
+
+    pub(super) fn lock_audit(file: &fs::File) -> Result<AuditLock<'_>, String> {
+        let locked = unsafe { LockFile(file.as_raw_handle(), 0, 0, u32::MAX, u32::MAX) };
+        if locked == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(AuditLock(file))
+    }
+
+    impl Drop for AuditLock<'_> {
+        fn drop(&mut self) {
+            unsafe { UnlockFile(self.0.as_raw_handle(), 0, 0, u32::MAX, u32::MAX) };
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn audit_rollover_lock_is_exclusive_across_file_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let first = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let second = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let held = lock_audit(&first).unwrap();
+        assert!(lock_audit(&second).is_err());
+        drop(held);
+        assert!(lock_audit(&second).is_ok());
     }
 
     fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
@@ -510,6 +746,31 @@ mod windows {
         }
     }
 
+    #[cfg(test)]
+    #[test]
+    fn pipe_security_descriptor_grants_only_owner_and_system() {
+        use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+        let acl = OwnerAcl::new().expect("owner ACL");
+        let mut text = std::ptr::null_mut();
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                acl.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0);
+        let len = unsafe { (0..).find(|&i| *text.add(i) == 0).unwrap() };
+        let descriptor = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+        unsafe { LocalFree(text.cast()) };
+        assert!(descriptor.contains("(A;;GA;;;OW)"), "{descriptor}");
+        assert!(descriptor.contains("(A;;GA;;;SY)"), "{descriptor}");
+        assert!(!descriptor.contains(";;;WD)"), "{descriptor}");
+        assert!(!descriptor.contains(";;;AN)"), "{descriptor}");
+    }
+
     impl Drop for OwnerAcl {
         fn drop(&mut self) {
             unsafe {
@@ -550,6 +811,7 @@ mod windows {
                 .try_send(Pending {
                     request_id: request.request_id,
                     request: request.request,
+                    peer: 0, // The pipe ACL admits only its owner (and local system).
                     reply,
                     deadline: std::time::Instant::now() + WAIT,
                 })
