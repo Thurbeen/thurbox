@@ -2724,6 +2724,221 @@ fn hosted_session_list() -> Option<(Profile, Tui)> {
     )
 }
 
+fn selected_session(profile: &Profile) -> Option<String> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args(["--json", "ui", "state"])
+        .output()
+        .expect("ui state");
+    assert!(output.status.success());
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
+    state["selected_session"].as_str().map(str::to_owned)
+}
+
+fn select_expanded_host(tui: &mut Tui) {
+    tui.press(0, tui.find("example-ssh"));
+    tui.wait_gone("probe");
+    tui.send(b"l");
+    tui.wait_for("probe");
+}
+
+#[test]
+fn session_host_left_arrow_collapses_expanded_host() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    select_expanded_host(&mut tui);
+    tui.send(b"\x1b[D");
+    tui.wait_gone("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_right_arrow_expands_collapsed_host() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.press(0, tui.find("example-ssh"));
+    tui.wait_gone("probe");
+    tui.send(b"\x1b[C");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_left_arrow_moves_to_parent_before_collapsing() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.press(0, tui.find("probe"));
+    tui.send(b"\x1b[D");
+    tui.wait_until("host selection with child still visible", |frame| {
+        frame.contains("probe") && selected_session(&profile).is_none()
+    });
+    tui.send(b"\x1b[D");
+    tui.wait_gone("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_right_arrow_moves_to_first_session() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    let id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("database")
+        .get_session_by_name("probe")
+        .expect("read")
+        .expect("probe")
+        .id
+        .to_string();
+    select_expanded_host(&mut tui);
+    tui.send(b"\x1b[C");
+    tui.wait_until("first session selected", |_| {
+        selected_session(&profile).as_deref() == Some(&id)
+    });
+    tui.send(b"\x1b[C");
+    tui.send(b"r");
+    tui.wait_for("Restart probe?");
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_right_click_toggles_without_opening_menu() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.press(2, tui.find("example-ssh"));
+    tui.wait_gone("probe");
+    assert!(!tui.frame().contains("Restore deleted"));
+    tui.press(2, tui.find("example-ssh"));
+    tui.wait_for("probe");
+    assert!(!tui.frame().contains("Restore deleted"));
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_arrows_reach_focused_agent_pane() {
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"stty -echo -icanon min 1 time 0; printf '\\033[2J\\033[HARROW-READY\\n'; cat -v\r");
+    tui.wait_until("raw agent reader", |frame| {
+        frame.contains("ARROW-READY") && !frame.contains("stty -echo")
+    });
+    tui.send(b"\x1b[D\x1b[C");
+    tui.wait_for("^[[D^[[C");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_enter_toggles_the_selected_host() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    select_expanded_host(&mut tui);
+    tui.send(b"\r");
+    tui.wait_gone("probe");
+    tui.send(b"\r");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_double_click_toggles_once() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    let point = tui.find("example-ssh");
+    tui.press(0, point);
+    tui.press(0, point);
+    tui.wait_gone("probe");
+    tui.send(b"r");
+    tui.send(F1);
+    tui.wait_for("Keybindings");
+    assert!(!tui.frame().contains("probe"));
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_bulk_keys_and_boundary_navigation_skip_folded_children() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.send(b"\x08H");
+    tui.wait_gone("probe");
+    tui.wait_gone("local-row");
+    tui.send(b"\x1b[H\x1b[6~\r\x1b[C");
+    tui.wait_for("probe");
+    assert!(!tui.frame().contains("local-row"));
+    tui.send(b"H\x1b[F\x1b[5~\r\x1b[C");
+    tui.wait_for("local-row");
+    assert!(!tui.frame().contains("probe"));
+    tui.send(b"L");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_jump_keys_visit_host_handles() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.press(0, tui.find("◌ local-row"));
+    tui.send(b"]h");
+    tui.wait_gone("probe");
+    tui.send(b"[h");
+    tui.wait_gone("local-row");
+    tui.send(b"L");
+    tui.wait_for("local-row");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_host_control_api_addresses_folds_and_reports_state() {
+    let Some((profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    profile.cli(&[
+        "ui",
+        "action",
+        "sessions.collapse_host",
+        "--arg",
+        "host=example-ssh",
+    ]);
+    tui.wait_gone("probe");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args(["--json", "ui", "state"])
+        .output()
+        .expect("ui state");
+    assert!(output.status.success());
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
+    let pane = state["plugin_state"]
+        .as_object()
+        .expect("plugin state")
+        .values()
+        .find(|pane| pane.get("selected_host").is_some())
+        .expect("session fold projection");
+    assert_eq!(pane["selected_host"], "example-ssh");
+    assert_eq!(pane["host_collapsed"], true);
+    assert_eq!(pane["folded_host_count"], 1);
+    profile.cli(&[
+        "ui",
+        "action",
+        "sessions.expand_host",
+        "--arg",
+        "host=example-ssh",
+    ]);
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
 #[test]
 fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
     let Some((profile, mut tui)) = hosted_session_list() else {
@@ -2792,6 +3007,7 @@ fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
     reopened.wait_until("a mouse press to fold the host", |frame| {
         frame.contains("example-ssh") && !frame.contains("probe")
     });
+    std::thread::sleep(Duration::from_millis(500));
     reopened.press(0, reopened.find("example-ssh"));
     reopened.wait_for("probe");
     assert!(reopened.quit().success());
