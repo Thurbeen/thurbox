@@ -655,7 +655,10 @@ mod windows {
             fs::File::create(&path).map_err(|e| e.to_string())?;
         }
         OwnerAcl::new()?.protect(&path)?;
+        // LockFile requires GENERIC_READ or GENERIC_WRITE; append alone grants
+        // only FILE_APPEND_DATA on Windows.
         fs::OpenOptions::new()
+            .read(true)
             .append(true)
             .open(path)
             .map_err(|e| e.to_string())
@@ -684,10 +687,15 @@ mod windows {
         let path = dir.path().join("audit.jsonl");
         let first = fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&path)
             .unwrap();
-        let second = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let second = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
         let held = lock_audit(&first).unwrap();
         assert!(lock_audit(&second).is_err());
         drop(held);
