@@ -54,11 +54,13 @@ Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
 to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
 a click anywhere else closes it.
 
-A right-click off a session row — on empty space or on a host or repo fold row
+A right-click off a session row — on empty space or on a repo fold row
 — is about no session, so it opens the column's general menu instead: New
 session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
 offered only when there are sessions and Undo only when there is a delete to
 undo: an entry that would do nothing is left out rather than shown dead.
+A right-click on a host row toggles its fold, just like a left-click. The
+general menu remains available on blank space and repo rows.
 
 **Why run the pane's own actions?** Each entry goes back through the same action
 its chord fires, so the menu cannot drift from the keyboard: Delete still asks
@@ -277,7 +279,8 @@ moved fall back to creation order:
 - With `group_by_host` on (settings → Sessions, on by default), local sessions
   stay at the top under a `local` host row. Remote hosts follow in their own
   rows. Every host row can be folded with `h`, unfolded with `l`, or toggled by
-  clicking it. A folded row shows the session and active counts; `!` marks
+  clicking it with either mouse button or pressing Enter. A double-click
+  toggles once. A folded row shows the session and active counts; `!` marks
   sessions needing attention beside the host name. Up/down navigation skips the hidden sessions. Searching
   temporarily reveals them; Esc restores the fold, while accepting a hit
   unfolds its host so the selected session stays visible.
@@ -919,6 +922,15 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Enter` / click | Global search | Open the result, scrolled to the line | |
 | `Esc` | Global search | Close search and put back what was on screen | |
 | `Enter` | Session list | Focus terminal | |
+| `Enter` / click / right-click | Host row | Toggle fold (double-click toggles once) | |
+| `Left` | Session list | Select a session's host; on a host row, fold it | Tree navigation |
+| `Right` | Host row | Unfold it; if expanded, select its first session | Tree navigation |
+| `h` / `l` | Session list | Fold / unfold the selected host or repo | |
+| `H` / `L` | Session list | Fold / unfold all host and repo groups | |
+| `Home` / `g`, `End` / `G` | Session list | First / last visible row | Skip folded children |
+| `PgUp` / `PgDn` | Session list | Previous / next page of visible rows | Skip folded children |
+| `[` / `]` | Session list | Previous / next host row (wraps) | |
+| `n` | Session list | Next session needing attention, revealing its host and repo | |
 | `j` / `Down` | Repo picker | Next repo | |
 | `k` / `Up` | Repo picker | Previous repo | |
 | `Space` | Repo picker | Toggle repo selection | |
@@ -947,6 +959,18 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | All other keys | Focused terminal | Forwarded to PTY (snaps to bottom if scrolled) | |
 
 ### Customizing shortcuts
+
+The session-list keys are scoped to that pane. Left and Right remain terminal
+input while an agent pane has focus. Their navigation actions call the same
+`sessions.collapse_host` and `sessions.expand_host` actions as `h` and `l`.
+Those fold actions, and `sessions.toggle_host`, accept an optional `host`
+argument through `thurbox-cli ui action`; omit it to act on the selected row,
+or pass `--arg host=` for the local group. A host named `local` still means the
+remote host of that name.
+`ui state` projects the session pane's selected row and host, whether its host
+and repo are collapsed, and the saved folded-host count under `plugin_state`.
+Notification focus, accepted search results, attention navigation and a created
+session selected by `focus_new_session` reveal the host and repo they target.
 
 Nearly every shortcut can be remapped, including copy/paste, file-viewer
 navigation, session-list navigation, and terminal scroll. The F1 panel doubles
