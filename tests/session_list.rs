@@ -98,6 +98,41 @@ fn list_text(host: &LuaHost, snapshot: &Snapshot, registry: &Registry) -> String
 }
 
 #[test]
+fn reordering_visible_sessions_preserves_a_folded_hosts_sessions() {
+    let host = host();
+    let mut snapshot = hosted();
+    snapshot
+        .sessions
+        .insert(1, row("local-second", "local-second"));
+    let registry = registry_for(&host);
+    list_text(&host, &snapshot, &registry);
+    let index = host.index_of(PLUGIN).unwrap();
+    host.on_click(
+        index,
+        &Click {
+            id: Some("host:example-ssh".into()),
+            ..Click::default()
+        },
+    )
+    .unwrap();
+    assert!(!list_text(&host, &snapshot, &registry).contains("remote-alpha"));
+    host.on_click(
+        index,
+        &Click {
+            id: Some("local".into()),
+            ..Click::default()
+        },
+    )
+    .unwrap();
+    host.drain_commands();
+    press_in(&host, &snapshot, "J");
+    assert!(host.drain_commands().iter().any(|command| matches!(
+        command,
+        Command::Order { list } if list == &vec!["local-second".to_string(), "local".to_string(), "remote-a".to_string(), "remote-b".to_string()]
+    )));
+}
+
+#[test]
 fn control_projection_reports_a_selected_repo_fold() {
     let host = host();
     let snapshot = hosted();

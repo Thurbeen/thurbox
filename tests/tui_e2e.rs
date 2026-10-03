@@ -2903,6 +2903,40 @@ fn session_host_control_api_addresses_folds_and_reports_state() {
     let Some((profile, mut tui)) = hosted_session_list() else {
         return;
     };
+    let mut catalog = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut catalog);
+    let output = catalog
+        .args(["--json", "ui", "actions"])
+        .output()
+        .expect("action catalog");
+    assert!(output.status.success());
+    let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).expect("catalog JSON");
+    let actions = catalog["actions"].as_array().expect("actions");
+    for name in [
+        "sessions.collapse_host",
+        "sessions.expand_host",
+        "sessions.toggle_host",
+        "sessions.parent_host",
+        "sessions.first_child",
+        "sessions.collapse_all",
+        "sessions.expand_all",
+        "sessions.next_host",
+        "sessions.previous_host",
+        "sessions.next_attention",
+        "sessions.first",
+        "sessions.last",
+        "sessions.page_up",
+        "sessions.page_down",
+    ] {
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| action["name"] == name)
+                .count(),
+            1,
+            "catalog should declare {name} once"
+        );
+    }
     profile.cli(&[
         "ui",
         "action",
