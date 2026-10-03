@@ -922,7 +922,14 @@ Give the menu a `target` (the row's id, say) when the entries are about one
 thing. The menu passes it as the action's read-only `args.target`; the owner
 can refuse when that row has gone before the action lands. The bundled sessions
 menu sets `target_argument = "session_id"`, so its contributed actions receive
-the session UUID as `args.session_id`.
+the session UUID as `args.session_id`. The bundled menu also leaves the older
+`store["menu.chosen"]` handoff until edited copies of either bundled pane have
+been migrated; new handlers should use the typed argument.
+
+For a soft delete passed through a confirmation pane, `command("delete")` can
+take `remember = { key = "sessions.deleted", value = id }` inside its options.
+The store write happens when the command is issued, so a preserved older
+confirmation pane retains undo without creating an undo target on cancel.
 
 An entry's `action` has to be one some plugin **declares**, in `keys` or in
 `commands`: that declaration is how `command("action")` finds the pane whose

@@ -1379,7 +1379,9 @@ It is owner-only and bounded to roughly 1 MiB. It records time, instance,
 peer, action ID, target session ID, outcome and request ID for external action
 attempts and decisions. It omits arguments such as search queries, addressed
 input, terminal text and secrets. If audit storage is unavailable, destructive
-control refuses before dispatch.
+control refuses before dispatch. A bounded worker queue writes the records;
+destructive requests wait for its result with a short deadline. A file lock
+keeps rollover and append together across running instances.
 
 The `ui actions` descriptor schema is versioned separately from the CLI. For
 schema version 1, bundled action names, argument names and meanings remain
