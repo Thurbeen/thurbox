@@ -262,7 +262,9 @@ drops it.
 An agent whose config dir is moved by its own variable is wired where it
 actually reads: `CODEX_HOME` for codex, `PI_CODING_AGENT_DIR` for pi (it names
 `~/.pi/agent` itself) and `COPILOT_HOME` for copilot, as set in the environment
-thurbox runs in (`session::AGENT_DIR_OVERRIDES`).
+thurbox runs in (`session::AGENT_DIR_OVERRIDES`). Change or unset that variable
+and the next install or heartbeat tick moves the hooks: thurbox's entries leave
+the old dir (a hook you wrote there yourself stays) and land in the new one.
 
 | Agent | On-disk location | How it's applied |
 |-------|------------------|------------------|

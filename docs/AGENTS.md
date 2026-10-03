@@ -151,9 +151,12 @@ embedded hook assets live in
 A config-dir path in the manifest (`~/.codex/…`, `~/.pi/agent/…`,
 `~/.copilot/…`) is the agent's *default*: when the variable that agent itself
 reads to move its dir is set (`CODEX_HOME`, `PI_CODING_AGENT_DIR`,
-`COPILOT_HOME`), install and `session doctor` use that dir instead
+`COPILOT_HOME`), install uses that dir instead
 (`session::AGENT_DIR_OVERRIDES`). A new pair belongs there only once checked
 against the agent's own resolver — a wrong one moves the hook out of reach.
+The installed manifest records the dir used: a later install that resolves a
+different one takes thurbox's entries out of the old dir, and `session doctor`
+checks the recorded path rather than its own environment's.
 
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
