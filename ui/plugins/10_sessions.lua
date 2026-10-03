@@ -745,8 +745,8 @@ local function row_menu()
   return menu
 end
 
---- The menu a right press off session rows opens -- empty space or a group row,
---- neither of which is about a session. Built when it opens, because two of its
+--- The menu a right press on empty space opens: it is about no session, and a
+--- group row is a fold handle instead. Built when it opens, because two of its
 --- entries are offered only when they would do something: an entry that does
 --- nothing is worse than no entry.
 local function pane_menu(items)
@@ -832,7 +832,7 @@ pane = {
     },
     {
       name = "sessions.toggle_host",
-      desc = "toggle host fold",
+      desc = "toggle host or repo fold",
       args = { { name = "host", kind = "string" } },
     },
   },
@@ -911,13 +911,13 @@ pane = {
     {
       key = "left",
       action = "sessions.parent_host",
-      desc = "select host or fold it",
+      desc = "fold group or select its parent",
       group = "Navigation",
     },
     {
       key = "right",
       action = "sessions.first_child",
-      desc = "unfold host or select first session",
+      desc = "unfold group or select its first child",
       group = "Navigation",
     },
     -- v1's `Enter` on a session row: go to what you selected. The row is already
@@ -1184,19 +1184,13 @@ pane = {
     end
     local items = model()
     if hit.id:match("^host:") or hit.id:match("^repo:") then
-      local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
-      if cursor:select_by_id(hit.id) == nil then
+      if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
         return false
       end
-      local item = cursor:item()
-      if item.kind == "host" then
-        -- The first press already toggled; treating its second as another
-        -- toggle would make a double-click undo itself.
-        if hit.clicks ~= 2 then
-          pane.on_action("sessions.toggle_host")
-        end
-      else
-        set_repo_folded(item.target, not item.collapsed)
+      -- The first press already toggled; treating its second as another
+      -- toggle would make a double-click undo itself.
+      if hit.clicks ~= 2 then
+        pane.on_action("sessions.toggle_host")
       end
       return true
     end
@@ -1214,18 +1208,18 @@ pane = {
   -- action on the selected session. Focus stays put -- the kernel's rule for a
   -- right press -- and the menu takes every key while it is up anyway. Entries
   -- other plugins contribute (`row_menu`) come last, and read the row from
-  -- the action's session_id argument, not the selection. Off the session
-  -- rows (empty space or a repo row) the press opens the pane's general menu.
-  -- Host rows are fold handles for either mouse button.
+  -- the action's session_id argument, not the selection. On empty space the
+  -- press opens the pane's general menu. Host and repo rows are fold handles
+  -- for either mouse button.
   on_context = function(hit)
     local items = model()
-    if hit.id and hit.id:match("^host:") then
+    if hit.id and (hit.id:match("^host:") or hit.id:match("^repo:")) then
       if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
         return false
       end
       return pane.on_action("sessions.toggle_host")
     end
-    if not hit.id or hit.id:match("^repo:") then
+    if not hit.id then
       store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = pane_menu(items) }
       return true
     end
@@ -1306,33 +1300,43 @@ pane = {
     local id = cursor:id()
     local selected = items[at]
 
+    -- A file tree's arrows, one level at a time: host, then repo, then
+    -- session. Either group level is absent while its axis is off, so a step
+    -- out that finds no repo row goes on to the host row.
+    local group = selected and (selected.kind == "host" or selected.kind == "repo")
     if action == "sessions.parent_host" then
-      if selected and selected.kind == "host" then
+      if group and not selected.collapsed then
         return pane.on_action("sessions.collapse_host")
-      elseif selected and selected.kind == "session" and selected.host then
-        cursor:select_by_id("host:" .. selected.host)
+      elseif selected and selected.kind ~= "host" then
+        local repo = selected.kind ~= "repo" and selected.repo_target
+        if not (repo and cursor:select_by_id(repo)) and selected.host then
+          cursor:select_by_id("host:" .. selected.host)
+        end
       end
       return true
     elseif action == "sessions.first_child" then
-      if not selected or selected.kind ~= "host" then
+      if not group then
         return true
       end
       if selected.collapsed then
         return pane.on_action("sessions.expand_host")
       end
-      local all = session_model.build(sessions(), "", false, true, "")
-      for _, item in ipairs(all) do
-        if item.kind == "session" and item.host == selected.host then
-          cursor:follow(item.target)
-          store.selected = item.target
-          break
-        end
+      -- Expanded, so the row below is its first child.
+      local child = items[at + 1]
+      if
+        child
+        and (
+          selected.kind == "host" and child.host == selected.host
+          or child.repo_target == selected.target
+        )
+      then
+        cursor:select(at + 1)
       end
       return true
     end
 
     if action == "sessions.toggle_host" then
-      if selected and selected.kind == "host" then
+      if group then
         return pane.on_action(
           selected.collapsed and "sessions.expand_host" or "sessions.collapse_host"
         )
@@ -1426,7 +1430,7 @@ pane = {
       -- here, exactly as v1's Enter moves focus to the terminal.
       if id then
         command("focus", { text = "agent" })
-      elseif selected and selected.kind == "host" then
+      elseif group then
         return pane.on_action("sessions.toggle_host")
       end
     elseif action == "sessions.next" then
