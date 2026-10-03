@@ -859,7 +859,9 @@ fn run_create(
         resume_session_id: resume,
         ..Default::default()
     };
-    let res = match crate::session_ops::spawn_session_headless(db, backends, req) {
+    let spawned = super::action::ensure_hooks_wired_for(db, backends, &req)
+        .and_then(|()| crate::session_ops::spawn_session_headless(db, backends, req));
+    let res = match spawned {
         Ok(res) => res,
         // `replace` tore the old session down first, so a spawn that
         // fails here would otherwise leave the caller with neither
@@ -972,6 +974,7 @@ fn run_restart(
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
+    super::action::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
@@ -1175,6 +1178,7 @@ fn run_start(
     session: String,
 ) -> Result<CommandOutput, CommandError> {
     let target = resolve(db, &session)?;
+    super::action::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::start_session_headless(db, backends, target.id)?;
     let mut human = format!("Started '{}' ({})", target.name, target.id);
     push_hook_failures(&mut human, &report.hook_failures);
@@ -1196,6 +1200,7 @@ fn run_fork(
     name: Option<String>,
 ) -> Result<CommandOutput, CommandError> {
     let source = resolve(db, &session)?;
+    super::action::ensure_hooks_wired(db, backends);
     let res = crate::session_ops::fork_session_headless(
         db,
         backends,

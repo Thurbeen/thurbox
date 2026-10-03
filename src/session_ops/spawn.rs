@@ -489,7 +489,7 @@ pub fn spawn_session_headless_with_progress(
 }
 
 /// Refuse a request that cannot be spawned, before anything is resolved.
-fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String> {
+pub fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String> {
     crate::paths::validate_safe_name(&req.name)?;
     if req.resume_session_id.is_some() && req.command.as_deref().is_some_and(|c| !c.is_empty()) {
         return Err(
