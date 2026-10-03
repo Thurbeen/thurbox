@@ -834,6 +834,86 @@ fn a_menu_entry_acts_on_the_pressed_session_after_the_cursor_moved() {
     );
 }
 
+#[test]
+fn a_preserved_menu_can_pass_its_target_to_the_updated_sessions_pane() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    let beta = two_sessions().sessions[1].id.clone();
+    host.on_context(sessions, &right_press_at(7, 4, Some(&beta)))
+        .expect("context");
+    host.on_key(index_of(&host, "menu"), &key("down"))
+        .expect("key");
+    host.on_key(index_of(&host, "menu"), &key("enter"))
+        .expect("key");
+    host.drain_commands();
+    host.on_action(sessions, "sessions.first")
+        .expect("move cursor");
+    host.on_action(sessions, "sessions.rename")
+        .expect("old menu's argument-free action");
+    let rename = host.render(index_of(&host, "rename"), ctx()).unwrap();
+    assert!(format!("{:?}", rename.node).contains("beta"));
+}
+
+#[test]
+fn a_preserved_confirmation_pane_keeps_soft_delete_undo() {
+    let home = tempfile::tempdir().expect("interface dir");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui");
+    copy_dir(&source.join("lib"), &home.path().join("lib"));
+    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
+    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
+    std::fs::write(
+        home.path().join("plugins/60_confirm.lua"),
+        r#"return {
+          name = 'confirm', slot = 'float', floats = true,
+          render = function() return { type = 'text', text = '' } end,
+          on_key = function(key)
+            local ask = store.confirm
+            if key.key == 'esc' and ask then
+              store.confirm = nil
+              return true
+            end
+            if key.key == 'y' and ask then
+              store.confirm = nil
+              command(ask.command, ask.options)
+              return true
+            end
+            return false
+          end,
+        }"#,
+    )
+    .expect("old confirm");
+    let host = LuaHost::new(home.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host, &two_sessions());
+    host.render(index_of(&host, "sessions"), ctx())
+        .expect("render");
+    host.on_action(index_of(&host, "sessions"), "sessions.delete")
+        .expect("delete action");
+    assert!(host.drain_commands().is_empty());
+    host.on_key(index_of(&host, "confirm"), &key("esc"))
+        .expect("cancel");
+    host.on_action(index_of(&host, "sessions"), "sessions.undo")
+        .expect("undo after cancel");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Message { .. }]
+    ));
+    host.on_action(index_of(&host, "sessions"), "sessions.delete")
+        .expect("delete action");
+    host.on_key(index_of(&host, "confirm"), &key("y"))
+        .expect("answer");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Delete { force: false, .. }]
+    ));
+    host.on_action(index_of(&host, "sessions"), "sessions.undo")
+        .expect("undo");
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Restore { .. }]
+    ));
+}
+
 /// A creation in flight draws a placeholder row, but a placeholder is not a
 /// session: there is still nothing to sort.
 #[test]

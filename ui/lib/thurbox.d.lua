@@ -957,6 +957,11 @@ function require(name) end
 ---@class (exact) thurbox.cmd.Delete
 ---@field session string
 ---@field force? boolean Skip the undo window.
+---@field remember? thurbox.cmd.Remember Store an undo target only when the soft delete is issued.
+
+---@class (exact) thurbox.cmd.Remember
+---@field key string
+---@field value string
 
 ---@class (exact) thurbox.cmd.Restore
 ---@field session string

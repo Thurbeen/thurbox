@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const MAX_REQUEST: usize = 16 * 1024;
@@ -138,8 +139,47 @@ pub fn directory() -> Result<PathBuf, String> {
         .join("ui-control"))
 }
 
-/// Persist only control metadata. The caller decides whether a write failure
-/// blocks the action; destructive requests must fail closed.
+struct AuditJob {
+    instance: String,
+    peer: u32,
+    action: String,
+    target: Option<String>,
+    outcome: String,
+    request_id: String,
+    reply: Option<mpsc::Sender<Result<(), String>>>,
+}
+
+static AUDIT_WORKER: OnceLock<Result<SyncSender<AuditJob>, String>> = OnceLock::new();
+
+fn audit_worker() -> Result<SyncSender<AuditJob>, String> {
+    AUDIT_WORKER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::sync_channel::<AuditJob>(64);
+            std::thread::Builder::new()
+                .name("thurbox-ui-audit".into())
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        let result = write_audit(
+                            &job.instance,
+                            job.peer,
+                            &job.action,
+                            job.target.as_deref(),
+                            &job.outcome,
+                            &job.request_id,
+                        );
+                        if let Some(reply) = job.reply {
+                            let _ = reply.send(result);
+                        }
+                    }
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(tx)
+        })
+        .clone()
+}
+
+/// Record an action before a destructive command or ticket can be issued.
+/// The bounded wait keeps a slow audit device from freezing the interface.
 pub fn audit(
     instance: &str,
     peer: u32,
@@ -148,10 +188,63 @@ pub fn audit(
     outcome: &str,
     request_id: &str,
 ) -> Result<(), String> {
+    let (reply, result) = mpsc::channel();
+    audit_worker()?
+        .try_send(AuditJob {
+            instance: instance.into(),
+            peer,
+            action: action.into(),
+            target: target.map(str::to_owned),
+            outcome: outcome.into(),
+            request_id: request_id.into(),
+            reply: Some(reply),
+        })
+        .map_err(|error| error.to_string())?;
+    result
+        .recv_timeout(Duration::from_millis(100))
+        .map_err(|error| error.to_string())?
+}
+
+/// Non-destructive telemetry never holds up a user action.
+pub fn audit_best_effort(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) {
+    if let Ok(worker) = audit_worker() {
+        let _ = worker.try_send(AuditJob {
+            instance: instance.into(),
+            peer,
+            action: action.into(),
+            target: target.map(str::to_owned),
+            outcome: outcome.into(),
+            request_id: request_id.into(),
+            reply: None,
+        });
+    }
+}
+
+/// Persist only metadata; query text, input, and terminal content never enter
+/// the worker's job.
+fn write_audit(
+    instance: &str,
+    peer: u32,
+    action: &str,
+    target: Option<&str>,
+    outcome: &str,
+    request_id: &str,
+) -> Result<(), String> {
     #[cfg(unix)]
-    let mut file = unix::open_audit()?;
+    let file = unix::open_audit()?;
     #[cfg(windows)]
-    let mut file = windows::open_audit()?;
+    let file = windows::open_audit()?;
+    #[cfg(unix)]
+    let _lock = unix::lock_audit(&file)?;
+    #[cfg(windows)]
+    let _lock = windows::lock_audit(&file)?;
     let line = serde_json::json!({
         "timestamp_ms": started_at_unix_ms(),
         "instance_id": instance,
@@ -165,7 +258,7 @@ pub fn audit(
         file.set_len(0).map_err(|e| e.to_string())?;
     }
     use std::io::Write;
-    writeln!(file, "{line}").map_err(|e| e.to_string())?;
+    writeln!(&file, "{line}").map_err(|e| e.to_string())?;
     file.sync_data().map_err(|e| e.to_string())
 }
 
@@ -177,6 +270,7 @@ mod unix {
     };
     use std::fs;
     use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
@@ -213,6 +307,39 @@ mod unix {
             return Err("UI control audit file must be owner-only".into());
         }
         Ok(file)
+    }
+
+    pub(super) struct AuditLock<'a>(&'a fs::File);
+
+    pub(super) fn lock_audit(file: &fs::File) -> Result<AuditLock<'_>, String> {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(AuditLock(file))
+    }
+
+    impl Drop for AuditLock<'_> {
+        fn drop(&mut self) {
+            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn audit_rollover_lock_is_exclusive_across_file_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let first = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let second = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let held = lock_audit(&first).unwrap();
+        assert!(lock_audit(&second).is_err());
+        drop(held);
+        assert!(lock_audit(&second).is_ok());
     }
 
     fn peer_ok(stream: &UnixStream) -> bool {
@@ -484,6 +611,7 @@ mod windows {
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::PathBuf;
     use std::sync::mpsc::{self, SyncSender};
     use std::sync::Arc;
@@ -499,6 +627,7 @@ mod windows {
     use windows_sys::Win32::Security::{
         SetFileSecurityW, DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
     };
+    use windows_sys::Win32::Storage::FileSystem::{LockFile, UnlockFile};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -530,6 +659,39 @@ mod windows {
             .append(true)
             .open(path)
             .map_err(|e| e.to_string())
+    }
+
+    pub(super) struct AuditLock<'a>(&'a fs::File);
+
+    pub(super) fn lock_audit(file: &fs::File) -> Result<AuditLock<'_>, String> {
+        let locked = unsafe { LockFile(file.as_raw_handle(), 0, 0, u32::MAX, u32::MAX) };
+        if locked == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(AuditLock(file))
+    }
+
+    impl Drop for AuditLock<'_> {
+        fn drop(&mut self) {
+            unsafe { UnlockFile(self.0.as_raw_handle(), 0, 0, u32::MAX, u32::MAX) };
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn audit_rollover_lock_is_exclusive_across_file_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let first = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let second = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let held = lock_audit(&first).unwrap();
+        assert!(lock_audit(&second).is_err());
+        drop(held);
+        assert!(lock_audit(&second).is_ok());
     }
 
     fn wide(text: &std::ffi::OsStr) -> Vec<u16> {

@@ -261,14 +261,26 @@ impl App {
                         .instance
                         .id
                         .clone();
-                    let audited = thurbox::ui_control::audit(
-                        &instance,
-                        pending.peer,
-                        audit_name,
-                        target.as_deref(),
-                        "attempted",
-                        &pending.request_id,
-                    );
+                    let audited = if destructive {
+                        thurbox::ui_control::audit(
+                            &instance,
+                            pending.peer,
+                            audit_name,
+                            target.as_deref(),
+                            "attempted",
+                            &pending.request_id,
+                        )
+                    } else {
+                        thurbox::ui_control::audit_best_effort(
+                            &instance,
+                            pending.peer,
+                            audit_name,
+                            target.as_deref(),
+                            "attempted",
+                            &pending.request_id,
+                        );
+                        Ok(())
+                    };
                     let attempt = if destructive && audited.is_err() {
                         Err((
                             "audit_unavailable",
@@ -287,14 +299,16 @@ impl App {
                             } else {
                                 "confirmation_required"
                             };
-                            let _ = thurbox::ui_control::audit(
-                                &instance,
-                                pending.peer,
-                                audit_name,
-                                target.as_deref(),
-                                outcome,
-                                &pending.request_id,
-                            );
+                            if !destructive {
+                                thurbox::ui_control::audit_best_effort(
+                                    &instance,
+                                    pending.peer,
+                                    audit_name,
+                                    target.as_deref(),
+                                    outcome,
+                                    &pending.request_id,
+                                );
+                            }
                             self.note_input();
                             self.refresh_control_state(true);
                             if result["ok"] == true {
@@ -303,7 +317,7 @@ impl App {
                             result
                         }
                         Err((code, message)) => {
-                            let _ = thurbox::ui_control::audit(
+                            thurbox::ui_control::audit_best_effort(
                                 &instance,
                                 pending.peer,
                                 audit_name,
@@ -456,7 +470,7 @@ impl App {
             return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
         }
         let Some(pending) = self.control_tickets.remove(ticket) else {
-            let _ = thurbox::ui_control::audit(
+            thurbox::ui_control::audit_best_effort(
                 instance,
                 peer,
                 "confirm",
@@ -480,7 +494,7 @@ impl App {
                         && row.member_dirs == pending.member_dirs
                 });
         if !valid {
-            let _ = thurbox::ui_control::audit(
+            thurbox::ui_control::audit_best_effort(
                 instance,
                 peer,
                 &pending.action,
@@ -811,6 +825,12 @@ impl App {
                 self.dispatch_key_to(index, &key);
             }
             InputOperation::Text { text } => {
+                if target == "confirm" {
+                    return Err((
+                        "confirmation_required",
+                        "use ui confirm for destructive actions".into(),
+                    ));
+                }
                 if text.len() > 4096 {
                     return Err(("invalid_arguments", "text is too long".into()));
                 }

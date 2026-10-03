@@ -18,8 +18,8 @@
 -- confirm) is never drawn under a menu that is still up.
 --
 -- The target travels as a typed argument (`target` by default, or
--- `session_id` for the bundled sessions menu), so a moved selection cannot
--- redirect an action.
+-- `session_id` for the bundled sessions menu). The old store handoff stays
+-- until edited copies of either pane have had a chance to migrate.
 
 local hover = require("lib.hover")
 local theme = require("lib.theme")
@@ -68,6 +68,7 @@ local function run(menu, i)
   local item = menu.items[i]
   store.menu = nil
   if choosable(item) then
+    store["menu.chosen"] = { action = item.action, target = menu.target }
     if menu.target_argument == "session_id" then
       command("action", { text = item.action, session = menu.target })
     else

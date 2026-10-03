@@ -1224,6 +1224,14 @@ fn destructive_ui_action_needs_a_single_use_instance_bound_confirmation() {
     let recorded = std::fs::read_to_string(&audit).expect("audit record");
     assert!(recorded.contains("sessions.force_delete"));
     assert!(recorded.contains(session));
+    assert_eq!(
+        recorded
+            .lines()
+            .filter(|line| line.contains("\"outcome\":\"confirmation_required\""))
+            .count(),
+        1,
+        "the decision is recorded once"
+    );
     let still_present = list();
     assert!(still_present
         .as_array()
@@ -1255,6 +1263,38 @@ fn destructive_ui_action_needs_a_single_use_instance_bound_confirmation() {
     let (status, replay) = confirm(ticket);
     assert!(!status.success());
     assert_eq!(replay["result"]["error"]["code"], "invalid_ticket");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn addressed_text_cannot_answer_a_destructive_confirmation() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args(["--json", "ui", "instances"])
+        .output()
+        .unwrap();
+    let instances: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let instance: thurbox::ui_control::Instance =
+        serde_json::from_value(instances["instances"][0].clone()).unwrap();
+    tui.send(b"\x08");
+    tui.send(b"D");
+    tui.wait_for("Confirm");
+    let reply = thurbox::ui_control::send(
+        &instance,
+        &thurbox::ui_control::Request::Input {
+            target: "confirm".into(),
+            input: thurbox::ui_control::InputOperation::Text { text: "y".into() },
+        },
+    )
+    .expect("addressed text reply");
+    assert_eq!(reply.result["error"]["code"], "confirmation_required");
+    tui.wait_for("Confirm");
+    tui.send(ESC);
+    tui.wait_gone("Confirm");
     assert!(tui.quit().success());
 }
 

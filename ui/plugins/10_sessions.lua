@@ -956,6 +956,11 @@ return {
     -- have moved since, or that session gone and the cursor fallen back onto a
     -- neighbour -- which Delete + worktree must never reach in its place.
     local target = type(args) == "table" and args.session_id or nil
+    local chosen = store["menu.chosen"]
+    if type(chosen) == "table" and chosen.action == action then
+      store["menu.chosen"] = nil
+      target = target or chosen.target
+    end
     if target then
       if cursor:select_by_id(target) == nil then
         command("message", { text = "that session is gone", level = "error" })
@@ -991,8 +996,10 @@ return {
           question = "Delete " .. (session.name or "this session") .. "?",
           lines = {},
           command = "delete",
-          options = { session = id },
-          remember = { key = "sessions.deleted", value = id },
+          options = {
+            session = id,
+            remember = { key = "sessions.deleted", value = id },
+          },
         }
       else
         -- The switch is off, so this key deletes for good.
