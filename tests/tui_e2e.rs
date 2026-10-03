@@ -2871,6 +2871,28 @@ fn session_host_double_click_toggles_once() {
 }
 
 #[test]
+fn session_context_menus_reuse_bulk_fold_actions() {
+    let Some((_profile, mut tui)) = hosted_session_list() else {
+        return;
+    };
+    tui.press(2, tui.find("◌ local-row"));
+    tui.wait_for("Delete + worktree");
+    tui.wait_for("Collapse all");
+    tui.press(0, tui.find("Collapse all"));
+    tui.wait_gone("Collapse all");
+    tui.wait_gone("local-row");
+    tui.wait_gone("probe");
+
+    tui.press(2, (3, 20));
+    tui.wait_for("Expand all");
+    tui.press(0, tui.find("Expand all"));
+    tui.wait_gone("Expand all");
+    tui.wait_for("local-row");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn session_host_bulk_keys_and_boundary_navigation_skip_folded_children() {
     let Some((_profile, mut tui)) = hosted_session_list() else {
         return;
