@@ -1,0 +1,202 @@
+---
+layout: docs.njk
+title: 'Remote setup — Thurbox Docs'
+description: 'Run Thurbox sessions on Linux SSH hosts, through bastions and cloud tunnels, or in WSL.'
+currentPage: 'remote-setup'
+breadcrumb: 'Remote setup'
+---
+<h1>Run a session on another machine</h1>
+<p>
+  Thurbox stays on your computer. The agent, repository, and tmux window run on the selected host.
+  Start with a plain Linux SSH host; the other routes only change how OpenSSH reaches it.
+</p>
+<nav aria-label="Choose a remote environment">
+  <ul>
+    <li><a href="#plain-ssh">Plain Linux SSH</a></li>
+    <li><a href="#bastion">SSH bastion</a></li>
+    <li><a href="#aws">AWS Systems Manager</a></li>
+    <li><a href="#gcp">Google Cloud IAP</a></li>
+    <li><a href="#azure">Azure Bastion</a></li>
+    <li><a href="#wsl">WSL</a></li>
+  </ul>
+</nav>
+<p>
+  The cloud commands were checked against the linked provider documentation, but were not executed
+  against cloud accounts. Supply your own identity, network access, permissions, and SSH key.
+  Thurbox does not manage cloud credentials or IAM. An isolated container check created, listed,
+  and inspected a remote tmux session with <code>share_sessions = false</code>. Its shared-host
+  CLI check could not run because that container's libc is older than the local binary requires.
+</p>
+
+<h2 id="plain-ssh">Plain Linux SSH</h2>
+<ol>
+  <li>
+    Install Thurbox, <code>thurbox-cli</code>, and OpenSSH on your computer. On the Linux host,
+    run <code>sshd</code> and install Git, tmux 3.2 or newer, your coding agent, and its
+    credentials. Clone the repository on the host. Use its absolute path in Thurbox.
+  </li>
+  <li>
+    Add a local <code>~/.ssh/config</code> alias, substituting your hostname and user:
+    <pre data-title="~/.ssh/config"><code>Host devbox
+    HostName devbox.example.com
+    User remote-user
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes</code></pre>
+    Run <code>ssh devbox 'printf ready'</code>; it should print <code>ready</code> without a
+    password prompt. Verify the host key through your normal SSH process.
+    Then check the remote prerequisites and command path:
+    <pre><code>ssh devbox 'git --version &amp;&amp; tmux -V &amp;&amp; command -v codex &amp;&amp; git -C /srv/project rev-parse --is-inside-work-tree &gt;/dev/null'</code></pre>
+    Replace <code>codex</code> and <code>/srv/project</code> with your agent and the host's
+    absolute repository path. If the agent is absent from the remote command PATH, see
+    <a href="configuration.html#hosts-toml">path_prepend in the host configuration</a>.
+  </li>
+  <li>
+    Add this to local <code>~/.config/thurbox/hosts.toml</code> and restart Thurbox:
+    <pre data-title="hosts.toml"><code>[[hosts]]
+name = "devbox"
+destination = "devbox"</code></pre>
+    The name is what <code>--host</code> takes. By default, <code>share_sessions = true</code>:
+    the host's database records the session, so other Thurbox instances using that host can see
+    it. Thurbox provisions a compatible host CLI when missing. Set it to <code>false</code> if
+    this local instance should own those records. See the
+    <a href="configuration.html#hosts-toml">full field reference</a>.
+  </li>
+  <li>
+    Create a session, then inspect it:
+    <pre><code>thurbox-cli session create --name remote-work --host devbox \
+  --repo-path /srv/project --agent codex
+thurbox-cli session list</code></pre>
+    Use your configured agent; <code>--agent shell</code> is useful for a first transport
+    check. In the TUI, press <kbd>Ctrl</kbd>+<kbd>N</kbd>, choose <strong>devbox</strong> in
+    the host picker, then choose a remote repository and agent. Remote sessions show a
+    <code>☁</code> marker.
+  </li>
+</ol>
+<p>
+  The host's tmux window keeps running after a local Thurbox restart. Check with
+  <code>thurbox-cli session list</code>; use
+  <code>thurbox-cli session sync --host devbox</code> to refresh sessions created on the host.
+  For a connection failure, try <code>ssh -v devbox true</code>. If SSH succeeds, check the
+  remote Git, tmux, agent, repository path and credentials. If the host cannot run the provisioned
+  CLI, set <code>share_sessions = false</code> and restart Thurbox; this local instance then
+  owns the session records.
+</p>
+
+<h2>Other OpenSSH routes</h2>
+<p>
+  Each route changes the SSH alias and <code>hosts.toml</code> destination. It still needs the
+  <a href="#plain-ssh">same Linux host prerequisites</a>. Restart Thurbox after editing
+  <code>hosts.toml</code>; run each SSH check before its Thurbox create command.
+</p>
+
+<h3 id="bastion">SSH bastion</h3>
+<p>
+  You need SSH access to the jump host and private host, with network access between them.
+  OpenSSH documents <a href="https://man.openbsd.org/ssh_config#ProxyJump">ProxyJump</a>.
+</p>
+<pre data-title="~/.ssh/config"><code>Host jump
+    HostName jump.example.com
+    User jump-user
+
+Host private-dev
+    HostName private-dev.internal.example.com
+    User remote-user
+    ProxyJump jump</code></pre>
+<pre data-title="hosts.toml"><code>[[hosts]]
+name = "private-dev"
+destination = "private-dev"</code></pre>
+<pre><code>ssh private-dev 'printf ready'
+thurbox-cli session create --name remote-work --host private-dev --repo-path /srv/project --agent codex
+thurbox-cli session list</code></pre>
+
+<h3 id="aws">AWS Systems Manager</h3>
+<p>
+  The operator must enable an EC2 managed node with running SSH and compatible SSM Agent,
+  Session Manager endpoints and <code>ssm:StartSession</code> permission for
+  <code>AWS-StartSSHSession</code>. Install AWS CLI and its Session Manager plugin locally,
+  authenticate with your organization's AWS profile, and supply an SSH key accepted by the instance.
+  Follow the <a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-getting-started-enable-ssh-connections.html">AWS SSH guide</a>
+  and <a href="https://docs.aws.amazon.com/cli/latest/reference/ssm/start-session.html">CLI options</a>.
+  <strong>Session Manager command logging is unavailable for SSH sessions:</strong> it sees an
+  encrypted tunnel. Replace the instance ID, Linux user, <code>PROFILE_NAME</code>, and
+  <code>REGION</code> below.
+</p>
+<pre data-title="~/.ssh/config"><code>Host aws-dev
+    HostName i-EXAMPLE
+    User ec2-user
+    IdentityFile ~/.ssh/ec2_key
+    ProxyCommand sh -c "aws ssm start-session --profile PROFILE_NAME --region REGION --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'"</code></pre>
+<pre data-title="hosts.toml"><code>[[hosts]]
+name = "aws-dev"
+destination = "aws-dev"</code></pre>
+<pre><code>ssh aws-dev 'printf ready'
+thurbox-cli session create --name remote-work --host aws-dev --repo-path /srv/project --agent codex
+thurbox-cli session list</code></pre>
+<p>Proxy syntax: AWS documentation checked; cloud connection not executed here.</p>
+
+<h3 id="gcp">Google Cloud IAP</h3>
+<p>
+  The operator must allow IAP TCP forwarding to SSH, grant IAP and VM login permissions, and
+  configure SSH keys or OS Login. Install and authenticate <code>gcloud</code> locally.
+  Google's <a href="https://docs.cloud.google.com/compute/docs/connect/ssh-using-iap">OpenSSH instructions</a>
+  first establish the key, then use <code>start-iap-tunnel --listen-on-stdin</code>.
+  Replace the uppercase placeholders.
+</p>
+<pre><code>gcloud compute ssh VM_NAME --project=PROJECT_ID --zone=ZONE --tunnel-through-iap</code></pre>
+<pre data-title="~/.ssh/config"><code>Host gcp-dev
+    HostName VM_NAME
+    User VM_USER
+    IdentityFile ~/.ssh/google_compute_engine
+    ProxyCommand gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=PROJECT_ID --zone=ZONE --verbosity=warning</code></pre>
+<pre data-title="hosts.toml"><code>[[hosts]]
+name = "gcp-dev"
+destination = "gcp-dev"</code></pre>
+<pre><code>ssh gcp-dev 'printf ready'
+thurbox-cli session create --name remote-work --host gcp-dev --repo-path /srv/project --agent codex
+thurbox-cli session list</code></pre>
+<p>Commands: Google documentation checked; project connection not executed here.</p>
+
+<h3 id="azure">Azure Bastion</h3>
+<p>
+  The operator must deploy Bastion Standard or Premium with native client support, grant the
+  required Reader roles, and allow Bastion to reach VM SSH. Install and sign in to Azure CLI
+  with the Bastion extension and select the correct subscription. Microsoft's
+  <a href="https://learn.microsoft.com/en-us/azure/bastion/native-client">prerequisites</a>
+  and <a href="https://learn.microsoft.com/en-us/azure/bastion/connect-vm-native-client-linux#connect-to-a-vm---tunnel-command">Linux tunnel steps</a>
+  give the command below. Replace all uppercase placeholders and leave the tunnel running in
+  another terminal while Thurbox uses it.
+</p>
+<pre><code>az login
+az account set --subscription SUBSCRIPTION_ID
+az network bastion tunnel --name BASTION_NAME --resource-group RESOURCE_GROUP \
+  --target-resource-id VM_RESOURCE_ID --resource-port 22 --port 2222</code></pre>
+<pre data-title="~/.ssh/config"><code>Host azure-dev
+    HostName 127.0.0.1
+    Port 2222
+    User VM_USER
+    IdentityFile ~/.ssh/azure_vm_key
+    HostKeyAlias azure-dev-vm</code></pre>
+<pre data-title="hosts.toml"><code>[[hosts]]
+name = "azure-dev"
+destination = "azure-dev"</code></pre>
+<pre><code>ssh azure-dev 'printf ready'
+thurbox-cli session create --name remote-work --host azure-dev --repo-path /srv/project --agent codex
+thurbox-cli session list</code></pre>
+<p>
+  Tunnel syntax: Microsoft documentation checked; subscription connection not executed here.
+  Verify the VM's SSH host key through your normal process.
+</p>
+
+<h2 id="wsl">WSL</h2>
+<p>
+  On Windows, Thurbox discovers other WSL distros automatically; no SSH server or
+  <code>hosts.toml</code> entry is needed. Install Git, tmux, and your agent inside the distro,
+  with the repository on its Linux filesystem. Press <kbd>Ctrl</kbd>+<kbd>N</kbd> and select
+  the distro, or use <code>--host DISTRO_NAME</code>. The distro Thurbox itself runs in is
+  local; sibling distros appear as remote options. See
+  <a href="configuration.html#hosts-toml">host configuration</a>.
+</p>
+<p>
+  These playbooks use the shipped tmux SSH/WSL backend. Optional RMUX and Herdr remote support
+  remains future work.
+</p>

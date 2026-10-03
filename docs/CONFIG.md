@@ -266,6 +266,10 @@ checklist for **adding a new built-in**, see
 
 ## hosts.toml
 
+For a first remote session, follow [Remote setup](REMOTE-SETUP.md): a plain
+Linux SSH walkthrough plus bastion, AWS, Google Cloud, Azure, and WSL routes.
+This section is the field reference.
+
 Declares off-local hosts — **remote SSH machines** and **local WSL
 distros**. Each `[[hosts]]` entry registers a session backend named
 `ssh:<name>` (default kind) or `wsl:<name>`. Seeded fully commented-out

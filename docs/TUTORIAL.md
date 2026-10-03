@@ -268,7 +268,8 @@ and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
   and [docs/ORCHESTRATION.md](ORCHESTRATION.md).
 - **Work on another machine** — declare an SSH host or a WSL distro in
   `~/.config/thurbox/hosts.toml` and sessions run there while the TUI stays
-  local ([docs/CONFIG.md](CONFIG.md)).
+  local. Start with [remote setup](REMOTE-SETUP.md); use
+  [docs/CONFIG.md](CONFIG.md#hoststoml) for the field reference.
 - **Configure it** — [docs/CONFIG.md](CONFIG.md) is every config file, env var
   and setting in one place; [docs/FEATURES.md](FEATURES.md) is why each one
   behaves the way it does.
