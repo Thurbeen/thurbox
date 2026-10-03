@@ -1430,7 +1430,7 @@ pane = {
       -- here, exactly as v1's Enter moves focus to the terminal.
       if id then
         command("focus", { text = "agent" })
-      elseif selected and (selected.kind == "host" or selected.kind == "repo") then
+      elseif group then
         return pane.on_action("sessions.toggle_host")
       end
     elseif action == "sessions.next" then
