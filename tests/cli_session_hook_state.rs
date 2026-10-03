@@ -1266,14 +1266,22 @@ fn hooks_leave_the_config_dir_an_agent_moved_away_from() {
             .contains("session signal"),
         "the first tick wires the first dir"
     );
+    // A hook of the user's own beside ours, wired to the same command the
+    // README invites them to use. It is theirs, so moving the dir leaves it.
+    let mine = "thurbox-cli session signal --state blocked  # mine";
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(&codex_hooks).unwrap()).unwrap();
+    doc["hooks"]["Notification"] =
+        serde_json::json!([{ "hooks": [{ "type": "command", "command": mine }] }]);
+    std::fs::write(&codex_hooks, doc.to_string()).unwrap();
     tick(&codex_b, &pi_b, &copilot_b);
 
+    let left = std::fs::read_to_string(&codex_hooks).unwrap();
     assert!(
-        !std::fs::read_to_string(&codex_hooks)
-            .unwrap_or_default()
-            .contains("session signal"),
-        "codex's old hooks.json still carries thurbox's hooks"
+        !left.contains("managed by thurbox"),
+        "codex's old hooks.json still carries thurbox's hooks: {left}"
     );
+    assert!(left.contains(mine), "the user's own hook was taken: {left}");
     for stale in [
         pi_a.join("extensions/thurbox-status.ts"),
         copilot_a.join("hooks/thurbox-status.json"),

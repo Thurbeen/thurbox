@@ -206,7 +206,7 @@ fn remove_abandoned_payload(previous: &ExtensionDef, next: &ExtensionDef) -> Res
     }
     for m in &previous.config_merges {
         if !next.config_merges.iter().any(|n| n.path == m.path) {
-            revert_config_merge(m)?;
+            revert_config_merge(m, false)?;
         }
     }
     Ok(())
@@ -512,7 +512,12 @@ fn merged_config(
 /// Reverse an [`install_config_merge`]: prune our marked hook entries out of the
 /// agent's config file, leaving the user's own settings intact. A missing file
 /// is a no-op. Returns whether the path was touched.
-fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> {
+///
+/// `legacy` also prunes JSON entries by the `session signal` command, which
+/// catches pre-stamp ones and a hook the user wrote themselves alike. Only
+/// uninstall asks for it; an install dropping a path it moved away from does
+/// not, because the user's hook there must still be there if they move back.
+fn revert_config_merge(m: &crate::session::ConfigMerge, legacy: bool) -> Result<bool, String> {
     let dest = crate::agent::extension_config::expand_tilde(&m.path);
     if !dest.exists() {
         return Ok(false);
@@ -529,7 +534,9 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
                 // and takes a hook the user wired to `session signal`
                 // themselves with it, as it always has.
                 crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
-                crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                if legacy {
+                    crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                }
                 serde_json::to_string_pretty(&doc)
                     .map_err(|e| format!("serialize {}: {e}", dest.display()))
             }
@@ -742,7 +749,7 @@ pub fn uninstall_extension(
     // Prune our merged hook entries out of agents' own config files, leaving the
     // user's other settings intact.
     for m in &def.config_merges {
-        if revert_config_merge(m)? {
+        if revert_config_merge(m, true)? {
             report.config_merges_reverted.push(m.path.clone());
         }
     }
