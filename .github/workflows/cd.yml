@@ -661,8 +661,10 @@ jobs:
   # Submit the winget manifests to microsoft/winget-pkgs.
   # Runs after `publish` so the release zip + checksums.txt exist. wingetcreate
   # is Windows-only, so this runs on windows-latest. Requires the WINGET_TOKEN
-  # secret (a classic PAT with `public_repo` scope that can fork/PR against
-  # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
+  # secret (a classic PAT with the `public_repo` and `workflow` scopes that can
+  # fork/PR against microsoft/winget-pkgs — `workflow` because syncing the fork
+  # moves it across upstream workflow changes); skipped automatically if unset
+  # (e.g. on forks).
   # New versions go through winget-pkgs PR review before going live.
   #
   # Cadence — the same shape as `publish-chocolatey`: attempt on every release,
@@ -707,11 +709,15 @@ jobs:
         with:
           ref: ${{ needs.check-release.outputs.version }}
 
-      # Ask packaging/winget/submit-decision.py whether to submit, from our own
-      # thurbox PRs on winget-pkgs (any state). It skips green when one is still
-      # open, and when the newest is younger than THROTTLE_DAYS. The rules and
-      # their edge cases are covered by packaging/winget/winget.bats — the
-      # reason this is a script and not inline PowerShell.
+      # Ask packaging/winget/submit-decision.py whether to submit, from every
+      # thurbox PR on winget-pkgs (any state, any author). It skips green when
+      # one is still open, and when the newest is younger than THROTTLE_DAYS.
+      # Any author, because a community auto-updater opens thurbox PRs there
+      # too, and its open PR is the same moderation-queue entry as ours; any PR
+      # matching the title search but changing no thurbox manifest is ignored,
+      # so a stray one cannot hold the channel shut. The
+      # rules and their edge cases are covered by packaging/winget/winget.bats —
+      # the reason this is a script and not inline PowerShell.
       - name: Decide whether to submit
         id: decide
         if: env.WINGET_TOKEN != ''
@@ -723,9 +729,9 @@ jobs:
           $shouldSubmit = $true
           $reason = ""
           try {
-            $prs = gh pr list --repo microsoft/winget-pkgs --author "@me" `
+            $prs = gh pr list --repo microsoft/winget-pkgs `
               --search "Thurbeen.thurbox in:title" --state all `
-              --json number,state,createdAt,title --limit 100
+              --json number,state,createdAt,title,files --limit 100
             if ($LASTEXITCODE -ne 0) { throw "gh pr list exited $LASTEXITCODE" }
             $decision = $prs |
               python packaging/winget/submit-decision.py decide --throttle-days $env:THROTTLE_DAYS |
@@ -777,53 +783,29 @@ jobs:
 
       # `wingetcreate submit` pushes the manifest branch to the token account's
       # fork of winget-pkgs, and its own auto-sync of that fork is fast-forward
-      # only. winget-pkgs merges hundreds of PRs a day, so a fork touched once a
-      # month is thousands of commits behind and the sync gives up with "The
-      # forked repository could not be synced with the upstream commits" — which
-      # is what failed v2.19.6. Sync it here instead, falling back to a hard
-      # reset when the default branch has diverged: this fork is a submission
-      # staging area, nothing of ours lives on its default branch, and each
-      # submission gets its own branch, so a reset cannot destroy work or an
-      # open PR.
+      # only, so a stale fork fails the submit ("The forked repository could not
+      # be synced with the upstream commits", v2.19.6). Sync it here, where the
+      # real refusal can be read: GitHub will not move the fork across upstream
+      # `.github/workflows` changes for a token without the `workflow` scope,
+      # and winget-pkgs makes such changes (every release from 2026-09-10 to
+      # v2.41.8 died on it, behind a generic error). `after-sync` turns the
+      # refusal into an operator fix, and reserves a reset of the default
+      # branch for a fork that has really diverged — and then backs its head
+      # up to a branch first, so the reset can lose nothing. Only the default
+      # branch is ever touched; submission branches and their PRs are not.
       - name: Sync the winget-pkgs fork
         if: env.WINGET_TOKEN != '' && steps.decide.outputs.should_submit == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
-        run: |
-          $ErrorActionPreference = "Continue"
-          $account = (gh api user --jq .login | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $account) {
-            Write-Host "::warning title=winget fork sync skipped::could not resolve the WINGET_TOKEN account; leaving the fork to wingetcreate."
-            exit 0
-          }
-          $fork = "$account/winget-pkgs"
-          gh repo view $fork --json name | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "No $fork yet — wingetcreate forks on first submit."
-            exit 0
-          }
-          $out = gh repo sync $fork --source microsoft/winget-pkgs 2>&1 | Out-String
-          Write-Host $out
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Synced $fork from microsoft/winget-pkgs."
-            exit 0
-          }
-          # Not fast-forwardable: --force hard-resets the fork's default branch
-          # to upstream's, which is the only way back for a fork this far behind.
-          Write-Host "::warning title=winget fork hard-reset::$fork could not be fast-forwarded; resetting its default branch to microsoft/winget-pkgs."
-          gh repo sync $fork --source microsoft/winget-pkgs --force
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "could not sync $fork with microsoft/winget-pkgs — wingetcreate submit would fail on a stale fork."
-            exit 1
-          }
+        run: ./packaging/winget/sync-fork.ps1; exit $LASTEXITCODE
 
       # `submit` validates the bumped manifests and opens a PR against
       # microsoft/winget-pkgs from the fork synced above. Works for both the
       # first submission and every subsequent version from the same in-repo
-      # manifest set. WINGET_TOKEN MUST be a classic PAT with the `public_repo`
-      # scope — wingetcreate rejects fine-grained tokens as invalid
-      # (microsoft/winget-create#595). The token is passed via
+      # manifest set. WINGET_TOKEN MUST be a classic PAT (`public_repo` +
+      # `workflow`, see the sync step) — wingetcreate rejects fine-grained
+      # tokens as invalid (microsoft/winget-create#595). The token is passed via
       # WINGET_CREATE_GITHUB_TOKEN (Microsoft's recommended CI path) instead of
       # --token, which wingetcreate warns can leak the token into logs.
       #

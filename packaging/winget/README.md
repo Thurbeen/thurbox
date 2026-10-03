@@ -78,7 +78,8 @@ The `publish-winget` job in
    (uppercased, as winget-pkgs expects) plus the locale `ReleaseNotesUrl` from
    those checksums,
 3. downloads `wingetcreate` (`https://aka.ms/wingetcreate/latest`),
-4. syncs the token account's `winget-pkgs` fork from upstream (below),
+4. syncs the token account's `winget-pkgs` fork from upstream
+   ([`sync-fork.ps1`](sync-fork.ps1), below),
 5. `wingetcreate submit`s the manifest set, which validates it and opens a PR
    against [`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs),
    then
@@ -86,8 +87,10 @@ The `publish-winget` job in
    keeping only the one just opened (second-line cleanup).
 
 The job needs a `WINGET_TOKEN` secret — a classic PAT with the `public_repo`
-scope on the account that owns a fork of `microsoft/winget-pkgs` (wingetcreate
-pushes the manifest branch to that fork and opens the PR). The job is skipped
+and `workflow` scopes on the account that owns a fork of `microsoft/winget-pkgs`
+(wingetcreate pushes the manifest branch to that fork and opens the PR;
+`workflow` is what lets the fork sync below move it across upstream's own
+`.github/workflows` changes). The job is skipped
 where the secret is absent (e.g. on forks). The committed template files are not
 modified by CI — they stay as last-known-good, exactly like the Chocolatey /
 Homebrew templates.
@@ -98,11 +101,17 @@ Homebrew templates.
 > maintainers under stale version-bump PRs (30 open at once, flagged in
 > [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
 > The rule that prevents that is **one thurbox PR in flight**, not a monthly
-> window: the job lists our own thurbox PRs on winget-pkgs (`gh pr list`, any
-> state) and hands them to [`submit-decision.py`](submit-decision.py), which
+> window: the job lists every thurbox PR on winget-pkgs (`gh pr list`, any
+> state, **any author**, with each PR's changed files) and hands them to
+> [`submit-decision.py`](submit-decision.py), which
 > **skips the submission and exits green** with a `::warning::` while one is
 > still open — `wingetcreate` cannot update a pending PR, so a second one would
-> only lengthen the queue. The next release retries; the binary itself always
+> only lengthen the queue. Any author, because since 2026-08 a community
+> auto-updater opens most thurbox PRs there itself, and its open PR is the same
+> queue entry as ours: v2.41.8 tried to stack on its open #445600 while the
+> query asked only for the token's own PRs. A PR that matches the title search
+> but changes nothing under `manifests/t/Thurbeen/thurbox/` is ignored, so a
+> stray one cannot hold the channel shut. The next release retries; the binary itself always
 > ships immediately via GitHub Releases (and Homebrew/AUR), so only the winget
 > channel lags.
 >
@@ -117,11 +126,22 @@ Homebrew templates.
 > rarely falls thousands of commits behind and the submit dies with *"The forked
 > repository could not be synced with the upstream commits"* — which is what
 > failed v2.19.6. The job therefore runs `gh repo sync <account>/winget-pkgs
-> --source microsoft/winget-pkgs` first, retrying with `--force` (a hard reset of
-> the fork's default branch) when it cannot fast-forward. That is safe here
-> because the fork is a submission staging area: nothing of ours lives on its
-> default branch and every submission gets its own branch, so a reset destroys
-> neither work nor an open PR.
+> --source microsoft/winget-pkgs` first and hands a failure to
+> `submit-decision.py after-sync`, with the count of commits the fork's default
+> branch has that upstream lacks:
+>
+> - GitHub refuses to move the fork across upstream `.github/workflows` changes
+>   for a token without the `workflow` scope, and winget-pkgs makes such
+>   changes. That refusal fails the job with an `::error::` naming the token fix
+>   — it is what failed every release from 2026-09-10 to v2.41.8, when the step
+>   still retried with `--force` (which hits the same check) and printed only a
+>   generic error.
+> - A fork with no commits of its own can always fast-forward, so any other
+>   refusal there fails the job too: a reset could not fix it.
+> - Only a fork that has really diverged is reset (`--force`, the default branch
+>   only), and its old head is first kept on a `sync-backup-<sha>` branch (or
+>   found already kept there by an earlier run), so the reset loses nothing.
+>   Submission branches, and the PRs open from them, are never touched.
 >
 > **When `submit` fails.** A rejection from the channel itself (GitHub rate
 > limit, version already pending) warns and exits green — the same shape as the
@@ -142,8 +162,10 @@ Homebrew templates.
 > `bump-manifests.py` against a recorded `checksums.txt` and pins every
 > submit/skip and deferrable/red decision — including that the stale-fork
 > message is *not* treated as deferrable, since the sync step exists to prevent
-> it. The Windows-only halves (`wingetcreate`, `gh repo sync` against a real
-> diverged fork) are not covered.
+> it — and every fork-sync verdict. It also runs `sync-fork.ps1` itself under
+> `pwsh` against a fake `gh`, covering the backup-then-reset path (skipped where
+> `pwsh` is absent, except on CI). `wingetcreate` and a real fork are not
+> covered.
 >
 > **Review (winget-pkgs side, not CI).** microsoft/winget-pkgs runs automated
 > validation (manifest schema, installer hash, a sandbox install/uninstall

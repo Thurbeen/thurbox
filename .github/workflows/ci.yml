@@ -400,9 +400,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install bats-core
         run: sudo apt-get update && sudo apt-get install -y bats
-      # The release job's winget steps are Windows-only, but the two scripts
-      # they call are plain Python, so their decisions are checkable here
-      # without cutting a release.
+      # The release job's winget steps are Windows-only, but the scripts they
+      # call are plain Python plus sync-fork.ps1, which runs under the pwsh this
+      # runner ships, so they are checkable here without cutting a release.
       - name: Run winget packaging tests
         run: bats packaging/winget/winget.bats
 

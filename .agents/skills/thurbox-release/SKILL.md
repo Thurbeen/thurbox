@@ -114,27 +114,32 @@ package channels (each gated on its secret, skipped on forks):
   `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,
   reading the release `checksums.txt`), then `wingetcreate submit`s the set as a
   PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
-  `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
-  `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
+  `WINGET_TOKEN` secret (a classic PAT with `public_repo` + `workflow`, owning
+  a fork of `microsoft/winget-pkgs`). New versions go through winget-pkgs PR
   validation + review.
   **Attempts every release** (Chocolatey's shape), paced by the queue rather
   than a calendar: winget-pkgs is *manually moderated* — each `submit` opens a PR
   a human must review, and thurbox's per-`feat`/`fix`/`perf` cadence buried the
   maintainers (30 open PRs at once, flagged in
   [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
-  So the decision step hands our own thurbox PRs (via `gh pr list`, any state) to
+  So the decision step hands every thurbox PR (via `gh pr list`, any state, any
+  author — a community auto-updater opens most of them since 2026-08 — and
+  only those changing `manifests/t/Thurbeen/thurbox/`) to
   `packaging/winget/submit-decision.py decide`, which **skips green** with a
   `::warning::` while one is still **open** — wingetcreate cannot update a
   pending PR, so a second would only lengthen the queue — and also honours
   `THROTTLE_DAYS`, kept as a knob but **defaulted to `0`** (set 30 to restore the
   monthly window).
-  Before `submit`, `gh repo sync <account>/winget-pkgs --source
-  microsoft/winget-pkgs` brings the token account's fork up to date, retrying
-  with `--force` (hard reset of its default branch) when it has diverged —
-  wingetcreate's own fast-forward-only auto-sync is what failed v2.19.6 on a
-  fork 48 days behind a repo that merges hundreds of PRs a day. The fork is a
-  submission staging area (each submission gets its own branch), so a reset
-  destroys neither work nor an open PR.
+  Before `submit`, `packaging/winget/sync-fork.ps1` runs `gh repo sync
+  <account>/winget-pkgs --source microsoft/winget-pkgs`, which brings the token account's fork up to date —
+  wingetcreate's own fast-forward-only auto-sync is what failed v2.19.6.
+  A failed sync goes to `submit-decision.py after-sync` with the fork's
+  ahead-of-upstream count: a token lacking the `workflow` scope (GitHub then
+  refuses to move the fork across upstream `.github/workflows` changes; this
+  failed every release from 2026-09-10 to v2.41.8) fails red with the fix in an
+  `::error::`; a fork with nothing of its own fails red (a reset cannot help);
+  only a really diverged fork is reset with `--force`, after its head is kept on
+  a `sync-backup-<sha>` branch. Only the default branch is ever touched.
   A `submit` rejected *by the channel* (rate limit, version already pending)
   warns and exits green via `submit-decision.py after-submit`, which also reports
   whether a PR was **opened** — the flag the close-superseded-PRs step is gated
@@ -143,8 +148,9 @@ package channels (each gated on its secret, skipped on forks):
   channel with nothing. Anything else fails
   the job — but **`continue-on-error` is on the job**, so winget can never redden
   the Release run. (It was on the cleanup step alone before, which is why
-  v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers both
-  decisions and the manifest bump. As second-line cleanup for a PR that still
+  v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers the
+  three decisions, the manifest bump, and `sync-fork.ps1` itself under `pwsh`
+  against a fake `gh`. As second-line cleanup for a PR that still
   stacks (e.g. a manual dispatch), a follow-up `gh pr close` closes every older
   still-open `Thurbeen.thurbox` PR from the token account (wingetcreate's
   `--replace` only supersedes a *published* manifest version, not a pending PR;
