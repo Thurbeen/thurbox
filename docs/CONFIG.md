@@ -432,8 +432,9 @@ The mouse-state seed in
 The changelog records the SGR/UTF-8 mouse formats in 3.0; the source confirms
 the floor rather than assuming a newer requirement from the current manual.
 Unknown flags expand empty and the seed falls back to press reporting when
-only `mouse_any_flag` is set. `extended-keys-format` needs 3.5 but is optional:
-its rejection is tolerated on 3.2–3.4. See ADR-12 for the control setup.
+only `mouse_any_flag` is set. `extended-keys-format` arrived in
+[3.5](https://github.com/tmux/tmux/blob/3.5/CHANGES) but is optional: its
+rejection is tolerated on 3.2–3.4. See ADR-12 for the control setup.
 
 psmux's floor is its own release version, not a claim of tmux feature parity.
 Older releases can spawn dead panes after console attach/detach; 3.3.7 fixes
