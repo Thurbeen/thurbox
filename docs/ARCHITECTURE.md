@@ -2396,7 +2396,7 @@ against a target it cannot resolve — is no answer.
 ## ADR-31: tmux and psmux are peer adapters over one tmux-protocol server
 
 **Choice**: `backend::tmux`, `backend::psmux`, and `backend::rmux` are peer adapters; none
-names another. What both speak — the tmux command grammar, control mode, the
+names another. What all three speak — the tmux command grammar, control mode, the
 session config, discovery, the headless spawn — is
 `backend::tmux_compat::server::Server<M>`, generic over a `TmuxCompatible`
 multiplexer `M`; each adapter is its multiplexer's answers to that trait: what
