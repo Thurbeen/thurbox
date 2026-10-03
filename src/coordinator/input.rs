@@ -847,6 +847,9 @@ impl App {
                 }
             }
             self.last_keystroke = Some(Instant::now());
+            // Whatever the pane prints from here on answers this key, not the
+            // last one.
+            self.echo_tail = None;
             if let Some(echo) = echo {
                 self.echo.push_back(echo);
                 self.arm_echo_wake();

@@ -5648,12 +5648,23 @@ fn type_and_see_echoes(tui: &mut Tui, keys: usize) {
     }
 }
 
-/// The loop's `(echoes, echo_frames)` counters, once its published perf
-/// snapshot has counted at least `at_least` echoes — or as they stand when it
-/// gives up. Published every few seconds while `THURBOX_PERF_LOG` is set.
-fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
+/// The loop's echo counters from its published perf snapshot.
+#[derive(Debug, Default, Clone, Copy)]
+struct EchoCounts {
+    /// Keys whose first answer was painted with no floor.
+    echoes: u64,
+    /// Floor-free frames that redrew only the pane, first answers and tails.
+    frames: u64,
+    /// Floor-free frames owed to a pane's output after its key's first answer.
+    tails: u64,
+}
+
+/// The loop's echo counters once its published perf snapshot satisfies
+/// `done` — or as they stand when it gives up. Published every few seconds
+/// while `THURBOX_PERF_LOG` is set.
+fn echo_counters(profile: &Profile, done: impl Fn(&EchoCounts) -> bool) -> EchoCounts {
     let deadline = Instant::now() + WAIT;
-    let mut seen = (0, 0);
+    let mut seen = EchoCounts::default();
     while Instant::now() < deadline {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         profile.apply(&mut cmd);
@@ -5663,8 +5674,12 @@ fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
             .expect("thurbox-cli perf");
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
             let counter = |name: &str| json["counters"][name].as_u64().unwrap_or(0);
-            seen = (counter("echoes"), counter("echo_frames"));
-            if seen.0 >= at_least {
+            seen = EchoCounts {
+                echoes: counter("echoes"),
+                frames: counter("echo_frames"),
+                tails: counter("echo_tails"),
+            };
+            if done(&seen) {
                 break;
             }
         }
@@ -5716,6 +5731,10 @@ fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(P
 /// Keys typed in the two scenarios below.
 const ECHO_KEYS: u64 = 20;
 
+/// The most floor-free frames one key's pane can get after its first answer
+/// (`ECHO_TAIL_FRAMES`).
+const ECHO_TAIL_FRAMES: u64 = 4;
+
 /// What both scenarios assert: every key's echo was painted with no frame
 /// floor, and all but the first as a frame that redrew only the pane — the
 /// first key after a pause has no kept frame to redraw over (see
@@ -5723,16 +5742,17 @@ const ECHO_KEYS: u64 = 20;
 ///
 /// Asserted on the loop's counters rather than on the clock (ADR-P5): the
 /// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
-/// and this pins that nothing puts it back on a floor.
+/// and this pins that nothing puts it back on a floor. First answers only: a
+/// tail frame (ADR-P29) must never stand in for a key's missed echo.
 fn assert_every_echo_painted_at_once(profile: &Profile) {
-    let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
+    let EchoCounts { echoes, frames, .. } = echo_counters(profile, |c| c.echoes >= ECHO_KEYS);
     assert_eq!(
         echoes, ECHO_KEYS,
-        "every keystroke's echo is painted with no floor ({echo_frames} of them as echo frames)"
+        "every keystroke's echo is painted with no floor ({frames} echo frames)"
     );
     assert!(
-        echo_frames >= ECHO_KEYS - 1,
-        "{echo_frames} of {echoes} echoes were painted by redrawing only the pane"
+        frames >= ECHO_KEYS - 1,
+        "{frames} of {echoes} echoes were painted by redrawing only the pane"
     );
 }
 
@@ -5765,14 +5785,17 @@ fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
         frame.contains(&last)
     });
     let expected = ECHO_KEYS + BATCHED_KEYS;
-    let (echoes, echo_frames) = echo_counters(&profile, expected);
+    let EchoCounts { echoes, frames, .. } = echo_counters(&profile, |c| c.echoes >= expected);
+    // Counted apart from tail frames: the second key's echo lands inside the
+    // first key's tail, which would otherwise paint it floor-free anyway and
+    // hide a dropped wait.
     assert_eq!(echoes, expected, "every batched key retained its echo wait");
     // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
     // so the batch's first echo may need a full frame; its second must reuse
     // that frame.
     assert!(
-        echo_frames >= expected - 2,
-        "{echo_frames} of {echoes} batched echoes redrew only the pane"
+        frames >= expected - 2,
+        "{frames} of {echoes} batched echoes redrew only the pane"
     );
     assert!(tui.quit().success());
 }
@@ -5802,6 +5825,153 @@ fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
     };
     type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
     assert_every_echo_painted_at_once(&profile);
+    assert!(tui.quit().success());
+}
+
+/// A stand-in for an agent that redraws the way Codex does: on each key, a
+/// synchronized frame that only moves the cursor, then 20 ms later the glyph,
+/// as three separate writes inside a second synchronized update.
+///
+/// tmux forwards each write as its own output line, so the cursor-only frame is
+/// the first output after the key and the glyph is not. The 15 ms before the
+/// glyph is longer than the loop's input poll, which pins the race that stalled
+/// real keys: a frame is painted between the chunks, and a glyph not treated as
+/// the key's answer then waits out the output floor from that frame.
+const SPLIT_ECHO: &str = "printf 'ready> '; while IFS= read -rs -n1 c; do \
+     printf '\\e[?2026h\\e[9G\\e[?25h\\e[?2026l'; sleep 0.02; \
+     printf '\\e[?2026h\\e[?25l'; sleep 0.015; \
+     printf '\\r[%s]' \"$c\"; sleep 0.002; \
+     printf '\\e[?25h\\e[?2026l'; done";
+
+#[test]
+fn a_glyph_that_follows_a_cursor_only_frame_is_painted_as_the_keys_echo() {
+    // Treating the first chunk after a key as the whole echo spent the key's
+    // floor-free frame on a frame that showed nothing, and the glyph was
+    // painted on the output floor: 8–35 % of Codex keys took ~65 ms under
+    // thurbox against ~25 ms under raw tmux. Each key's pane stays owed until
+    // the echo window closes, so the glyph gets a floor-free frame of its own.
+    let Some((profile, mut tui)) = echo_session(SPLIT_ECHO, |_, _| {}) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    // After each key's first answer (the cursor-only frame), two tail frames:
+    // the hide-cursor chunk, and a second that can only be owed once the glyph
+    // has arrived (15 ms after the chunk before it, so the two are not one
+    // frame). One would pass with the glyph still on the floor. Without the
+    // fix there are none, whatever the timing.
+    let counts = echo_counters(&profile, |c| c.tails >= 2 * ECHO_KEYS);
+    assert_eq!(
+        counts.echoes, ECHO_KEYS,
+        "every key's first answer: {counts:?}"
+    );
+    assert!(
+        counts.tails >= 2 * ECHO_KEYS,
+        "{} tail frames for {ECHO_KEYS} keys: the glyph after a cursor-only frame was \
+         left to the output floor ({counts:?})",
+        counts.tails
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_pane_printing_while_you_type_into_it_is_not_painted_per_chunk() {
+    // The pane typed into rewrites a status line every couple of
+    // milliseconds. Its output after each key is owed floor-free frames, but
+    // only a few per key (`ECHO_TAIL_FRAMES`, 4): per chunk, it would be
+    // painted at the poll rate for the whole echo window. The printer is a
+    // process of its own, so the key is read by a plain blocking `read`. A
+    // stand-in that polled with `read -t` between status lines now and then
+    // never echoed a key on CI, and the timeout was a race of its own.
+    const TYPED_AND_BUSY: &str = "printf 'ready> '; \
+         (while :; do printf '\\e7\\e[3;1Hbusy %05d\\e8' $RANDOM; sleep 0.002; done) & \
+         while IFS= read -rs -n1 c; do printf '\\r[%s]' \"$c\"; done";
+    let Some((profile, mut tui)) = echo_session(TYPED_AND_BUSY, |_, _| {}) else {
+        return;
+    };
+    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
+    // A snapshot published after the last key: they come every five seconds.
+    std::thread::sleep(Duration::from_secs(6));
+    let counts = echo_counters(&profile, |c| c.echoes >= ECHO_KEYS);
+    assert!(
+        counts.tails <= ECHO_KEYS * ECHO_TAIL_FRAMES,
+        "{} tail frames for {ECHO_KEYS} keys into a printing pane (bounded at 4 a key): \
+         {counts:?}",
+        counts.tails
+    );
+    assert!(tui.quit().success());
+}
+
+/// The published perf snapshot's `(captured_at, frames, echo_frames)`, or
+/// `None` while there is none.
+fn frame_counters(profile: &Profile) -> Option<(u64, u64, u64)> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let out = cmd.args(["perf", "--json"]).output().ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let counter = |name: &str| json["counters"][name].as_u64();
+    Some((
+        json["captured_at"].as_u64()?,
+        counter("frames")?,
+        counter("echo_frames")?,
+    ))
+}
+
+#[test]
+fn typing_into_a_printing_pane_does_not_starve_the_rest_of_the_screen() {
+    // An echo frame repaints only the typed pane and restarts the frame floor.
+    // A pane that prints every ~12 ms while keys arrive every ~45 ms keeps its
+    // echo frames under the 16 ms floor apart, so without a bound nothing else
+    // on screen — the list, the bands, another visible pane — would be
+    // painted until the typing stopped. Full frames must keep coming at
+    // about the output floor while it lasts.
+    const TICKING: &str = "printf 'ready> '; while :; do \
+         if IFS= read -rs -n1 -t 0.012 c; then printf '\\r[%s]' \"$c\"; fi; \
+         printf '\\e[3;1Htick %05d\\e[1;8H' $RANDOM; done";
+    let Some((profile, mut tui)) = echo_session(TICKING, |_, _| {}) else {
+        return;
+    };
+    let typing = Duration::from_secs(13);
+    let snapshots = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut seen: Vec<(u64, u64, u64)> = Vec::new();
+            let until = Instant::now() + typing;
+            while Instant::now() < until {
+                if let Some(snap) = frame_counters(&profile) {
+                    if seen.last().map_or(true, |last| last.0 != snap.0) {
+                        seen.push(snap);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            seen
+        });
+        let until = Instant::now() + typing;
+        let mut i = 0u8;
+        while Instant::now() < until {
+            tui.send(&[b'a' + i % 26]);
+            i = i.wrapping_add(1);
+            std::thread::sleep(Duration::from_millis(45));
+        }
+        watcher.join().expect("snapshot watcher")
+    });
+    // The first snapshot seen may predate the typing; the ones after it were
+    // all published while keys were arriving.
+    let during = &snapshots[1.min(snapshots.len())..];
+    let (Some(first), Some(last)) = (during.first(), during.last()) else {
+        panic!("no perf snapshot was published while typing: {snapshots:?}");
+    };
+    assert!(
+        last.0 > first.0,
+        "only one perf snapshot published while typing: {snapshots:?}"
+    );
+    let full = |snap: &(u64, u64, u64)| snap.1 - snap.2;
+    let per_second = (full(last) - full(first)) as f64 / (last.0 - first.0) as f64;
+    assert!(
+        per_second >= 10.0,
+        "{per_second:.1} full frames a second while typing into a printing pane \
+         (the output floor allows 30): echo frames starved the rest of the screen \
+         ({snapshots:?})"
+    );
     assert!(tui.quit().success());
 }
 
