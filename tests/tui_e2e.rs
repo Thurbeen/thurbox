@@ -3224,12 +3224,18 @@ fn session_repo_left_arrow_walks_from_session_to_repo_to_host() {
     tui.press(0, tui.find("probe"));
     tui.send(b"\x1b[D");
     wait_selected(&tui, &profile, PROBE_REPO);
-    assert!(tui.frame().contains("probe"), "selecting the repo folds nothing");
+    assert!(
+        tui.frame().contains("probe"),
+        "selecting the repo folds nothing"
+    );
     tui.send(b"\x1b[D");
     tui.wait_gone("probe");
     tui.send(b"\x1b[D");
     wait_selected(&tui, &profile, LOCAL_HOST);
-    assert!(tui.frame().contains("sibling"), "selecting the host folds nothing");
+    assert!(
+        tui.frame().contains("sibling"),
+        "selecting the host folds nothing"
+    );
     tui.send(b"\x1b[D");
     tui.wait_gone("sibling");
     assert!(tui.quit().success());
