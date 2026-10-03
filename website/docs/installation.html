@@ -497,13 +497,20 @@ cargo build --release</code></pre>
 
           <h3 id="uninstall-stop">1. Stop sessions</h3>
           <p>
-            Quit the TUI, then stop the tmux server Thurbox runs on. It holds every agent session
-            and the automation heartbeat, so nothing Thurbox started survives it.
+            Quit the TUI, then stop each multiplexer server Thurbox used. The command below
+            stops the default POSIX tmux server, including its agent sessions and heartbeat.
             <strong>Destructive:</strong>
             this ends every running agent session, and any unsaved agent conversation with it.
           </p>
           <pre data-wrap><code class="language-bash">thurbox-cli version --json      # note tmux_socket and data_dir
 tmux -L thurbox kill-server     # stops every session and the heartbeat</code></pre>
+          <p>
+            For RMUX sessions run <code>rmux -L &lt;socket&gt; kill-server</code>;
+            for psmux use <code>psmux -L &lt;socket&gt; kill-server</code>.
+            Use the actual socket reported above. If sessions used more than one
+            multiplexer, stop each server separately; stopping tmux leaves RMUX
+            sessions running. Remote servers must be stopped on their hosts.
+          </p>
 
           <h3 id="uninstall-other-tools">2. Remove what Thurbox added to other tools</h3>
           <p>

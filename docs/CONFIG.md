@@ -341,7 +341,7 @@ An entry that does not set `platform` keeps the meaning it always had:
 `multiplexer = "psmux"` is Windows, anything else POSIX. A WSL distro is POSIX
 whatever its entry says. What a multiplexer can do is not the platform's to
 say either: whether thurbox polls a backend for dead panes is whether that
-multiplexer reports a closed window (tmux does, psmux does not).
+multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
 
 ### Multiplexer choice and existing sessions
 
