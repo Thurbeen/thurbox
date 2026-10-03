@@ -2667,7 +2667,13 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repository with one commit — the least a session's cwd can be.
 fn repo(under: &Path) -> PathBuf {
-    let dir = under.join("repo");
+    named_repo(under, "repo")
+}
+
+/// [`repo`], under a directory name of the caller's choosing — which is the
+/// label its repo row shows.
+fn named_repo(under: &Path, name: &str) -> PathBuf {
+    let dir = under.join(name);
     std::fs::create_dir_all(&dir).expect("mkdir");
     git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.email", "t@example.com"]);
@@ -2794,7 +2800,8 @@ fn session_host_right_arrow_moves_to_first_session() {
         .id
         .to_string();
     select_expanded_host(&mut tui);
-    tui.send(b"\x1b[C");
+    // Host, then its repo row, then the repo's first session.
+    tui.send(b"\x1b[C\x1b[C");
     tui.wait_until("first session selected", |_| {
         selected_session(&profile).as_deref() == Some(&id)
     });
@@ -2871,10 +2878,10 @@ fn session_host_bulk_keys_and_boundary_navigation_skip_folded_children() {
     tui.send(b"\x08H");
     tui.wait_gone("probe");
     tui.wait_gone("local-row");
-    tui.send(b"\x1b[H\x1b[6~\r\x1b[C");
+    tui.send(b"\x1b[H\x1b[6~\r\x1b[C\x1b[C");
     tui.wait_for("probe");
     assert!(!tui.frame().contains("local-row"));
-    tui.send(b"H\x1b[F\x1b[5~\r\x1b[C");
+    tui.send(b"H\x1b[F\x1b[5~\r\x1b[C\x1b[C");
     tui.wait_for("local-row");
     assert!(!tui.frame().contains("probe"));
     tui.send(b"L");
@@ -3092,6 +3099,233 @@ fn activating_a_search_hit_inside_a_folded_host_keeps_that_session_selected() {
                 .as_deref()
                 == Some(probe_id.as_str())
     });
+    assert!(tui.quit().success());
+}
+
+/// `probe` in `repo` beside `sibling` in `other-repo`, both local: the local
+/// host row holds two repo rows, each holding one session. `prepare` runs
+/// before the binary starts, for a scenario that changes a setting.
+fn nested_repo_list_with(prepare: impl FnOnce(&Profile)) -> Option<(Profile, Tui)> {
+    let found = shell_session_prepared(
+        |profile| {
+            let second = profile.path("second");
+            std::fs::create_dir_all(&second).expect("second root");
+            let other = named_repo(&second, "other-repo");
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "sibling",
+                "--repo-path",
+                other.to_str().expect("utf-8 path"),
+                "--agent",
+                "shell",
+            ]);
+            prepare(profile);
+        },
+        |_| {},
+    );
+    if let Some((_, tui)) = &found {
+        tui.wait_for("sibling");
+    }
+    found
+}
+
+fn nested_repo_list() -> Option<(Profile, Tui)> {
+    nested_repo_list_with(|_| {})
+}
+
+const PROBE_REPO: &str = "repo:\0local\u{1}repo";
+const LOCAL_HOST: &str = "host:\0local";
+
+/// The row the session list's cursor is on — a session id, or the target of
+/// a host or repo row, which `selected_session` never reports.
+fn selected_row(profile: &Profile) -> Option<String> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd
+        .args(["--json", "ui", "state"])
+        .output()
+        .expect("ui state");
+    assert!(output.status.success());
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
+    state["plugin_state"]
+        .as_object()?
+        .values()
+        .find(|pane| pane.get("folded_host_count").is_some())?["selected_row"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn wait_selected(tui: &Tui, profile: &Profile, row: &str) {
+    tui.wait_until(&format!("{row:?} to be selected"), |_| {
+        selected_row(profile).as_deref() == Some(row)
+    });
+}
+
+fn session_id(profile: &Profile, name: &str) -> String {
+    thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("database")
+        .get_session_by_name(name)
+        .expect("read")
+        .expect("session")
+        .id
+        .to_string()
+}
+
+/// A click folds a repo row and selects it; `l` unfolds it again.
+fn select_expanded_repo(tui: &mut Tui) {
+    tui.press(0, tui.find("▾ repo"));
+    tui.wait_gone("probe");
+    tui.send(b"l");
+    tui.wait_for("probe");
+}
+
+#[test]
+fn session_repo_left_arrow_collapses_expanded_repo() {
+    let Some((profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    select_expanded_repo(&mut tui);
+    tui.send(b"\x1b[D");
+    tui.wait_gone("probe");
+    assert!(tui.frame().contains("sibling"), "only the repo folds");
+    wait_selected(&tui, &profile, PROBE_REPO);
+    assert!(tui.quit().success());
+
+    let mut reopened = Tui::spawn(&profile, 40, 120);
+    reopened.wait_for("sibling");
+    assert!(
+        !reopened.frame().contains("probe"),
+        "the repo fold should survive a restart:\n{}",
+        reopened.frame()
+    );
+    assert!(reopened.quit().success());
+}
+
+#[test]
+fn session_repo_right_arrow_expands_collapsed_repo() {
+    let Some((profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    tui.press(0, tui.find("▾ repo"));
+    tui.wait_gone("probe");
+    tui.send(b"\x1b[C");
+    tui.wait_for("probe");
+    wait_selected(&tui, &profile, PROBE_REPO);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_left_arrow_walks_from_session_to_repo_to_host() {
+    let Some((profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    tui.press(0, tui.find("probe"));
+    tui.send(b"\x1b[D");
+    wait_selected(&tui, &profile, PROBE_REPO);
+    assert!(tui.frame().contains("probe"), "selecting the repo folds nothing");
+    tui.send(b"\x1b[D");
+    tui.wait_gone("probe");
+    tui.send(b"\x1b[D");
+    wait_selected(&tui, &profile, LOCAL_HOST);
+    assert!(tui.frame().contains("sibling"), "selecting the host folds nothing");
+    tui.send(b"\x1b[D");
+    tui.wait_gone("sibling");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_right_arrow_walks_from_host_to_repo_to_session() {
+    let Some((profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    let sibling = session_id(&profile, "sibling");
+    tui.press(0, tui.find("⌂ local"));
+    tui.wait_gone("sibling");
+    tui.send(b"\x1b[C");
+    tui.wait_for("sibling");
+    // `other-repo` is the host's first repo row.
+    tui.send(b"\x1b[C");
+    wait_selected(&tui, &profile, "repo:\0local\u{1}other-repo");
+    tui.press(0, tui.find("▾ other-repo"));
+    tui.wait_gone("sibling");
+    tui.send(b"\x1b[C");
+    tui.wait_for("sibling");
+    tui.send(b"\x1b[C");
+    wait_selected(&tui, &profile, &sibling);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_arrows_without_host_rows() {
+    let Some((profile, mut tui)) = nested_repo_list_with(|profile| {
+        std::fs::write(
+            profile.path("config/ui.json"),
+            r#"{"settings":{"sessions.group_by_host":false}}"#,
+        )
+        .expect("ui.json");
+    }) else {
+        return;
+    };
+    let repo = "repo:\u{1}repo";
+    let probe = session_id(&profile, "probe");
+    tui.press(0, tui.find("probe"));
+    tui.send(b"\x1b[D");
+    wait_selected(&tui, &profile, repo);
+    tui.send(b"\x1b[D");
+    tui.wait_gone("probe");
+    // Nothing above a repo row: Left there stays put.
+    tui.send(b"\x1b[D");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(selected_row(&profile).as_deref(), Some(repo));
+    tui.send(b"\x1b[C");
+    tui.wait_for("probe");
+    tui.send(b"\x1b[C");
+    wait_selected(&tui, &profile, &probe);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_enter_toggles_the_selected_repo() {
+    let Some((_profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    select_expanded_repo(&mut tui);
+    tui.send(b"\r");
+    tui.wait_gone("probe");
+    tui.send(b"\r");
+    tui.wait_for("probe");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_double_click_toggles_once() {
+    let Some((_profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    let point = tui.find("▾ repo");
+    tui.press(0, point);
+    tui.press(0, point);
+    tui.wait_gone("probe");
+    tui.send(F1);
+    tui.wait_for("Keybindings");
+    assert!(!tui.frame().contains("probe"));
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn session_repo_right_click_toggles_without_opening_menu() {
+    let Some((_profile, mut tui)) = nested_repo_list() else {
+        return;
+    };
+    tui.press(2, tui.find("▾ repo"));
+    tui.wait_gone("probe");
+    assert!(!tui.frame().contains("Restore deleted"));
+    tui.press(2, tui.find("▸ repo"));
+    tui.wait_for("probe");
+    assert!(!tui.frame().contains("Restore deleted"));
     assert!(tui.quit().success());
 }
 

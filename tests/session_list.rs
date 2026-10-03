@@ -171,7 +171,7 @@ fn addressed_fold_can_target_a_remote_host_named_local() {
 }
 
 #[test]
-fn right_arrow_reveals_first_session_even_when_its_repo_is_folded() {
+fn right_arrow_steps_through_a_folded_repo_one_level_at_a_time() {
     let host = host();
     let snapshot = hosted();
     let registry = registry_for(&host);
@@ -197,9 +197,17 @@ fn right_arrow_reveals_first_session_even_when_its_repo_is_folded() {
     list_text(&host, &snapshot, &registry);
     press_in(&host, &snapshot, "l");
     list_text(&host, &snapshot, &registry);
+    // The host's first child is its folded repo row: Right selects it, the
+    // next Right unfolds it, and only the third reaches the session.
+    press_in(&host, &snapshot, "right");
+    let frame = list_text(&host, &snapshot, &registry);
+    assert!(!frame.contains("remote-alpha"), "{frame}");
     press_in(&host, &snapshot, "right");
     let frame = list_text(&host, &snapshot, &registry);
     assert!(frame.contains("remote-alpha"), "{frame}");
+    assert_ne!(host.shared_string("selected").as_deref(), Some("remote-a"));
+    press_in(&host, &snapshot, "right");
+    list_text(&host, &snapshot, &registry);
     assert_eq!(host.shared_string("selected").as_deref(), Some("remote-a"));
 }
 
