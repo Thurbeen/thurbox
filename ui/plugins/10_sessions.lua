@@ -533,6 +533,12 @@ local function is_folded(setting, name)
   return saved:find(";" .. escape_fold_key(name) .. ";", 1, true) ~= nil
 end
 
+local function save_folds(setting, value)
+  state[setting .. "_base"] = plugin_settings.get("sessions", setting, "")
+  state[setting] = value
+  command("set", { text = "sessions." .. setting, value = value })
+end
+
 local function set_folded(setting, name, folded)
   local names = {}
   for escaped in folds(setting):gmatch("[^;]+") do
@@ -547,10 +553,7 @@ local function set_folded(setting, name, folded)
     ordered[#ordered + 1] = escape_fold_key(key)
   end
   table.sort(ordered)
-  local value = table.concat(ordered, ";")
-  state[setting .. "_base"] = plugin_settings.get("sessions", setting, "")
-  state[setting] = value
-  command("set", { text = "sessions." .. setting, value = value })
+  save_folds(setting, table.concat(ordered, ";"))
 end
 
 local function host_is_folded(host)
@@ -781,7 +784,8 @@ local function pane_menu(items)
   return menu
 end
 
-return {
+local pane
+pane = {
   name = "sessions",
   slot = "sessions",
   order = 10,
@@ -793,6 +797,45 @@ return {
   -- `theme.spinner_frame` advances the spinner at — but only while something is
   -- actually animating, so an idle list settles instead of re-rendering.
   pure = true,
+
+  ui_state = function()
+    local _, folded_count = folded_hosts():gsub("[^;]+", "")
+    local selected
+    for _, item in ipairs(session_model.build(sessions(), "", false, true, "")) do
+      if item.target == state["sessions.selected"] then
+        selected = item
+        break
+      end
+    end
+    local host = selected and selected.host
+    local repo = selected and (selected.kind == "repo" and selected.target or selected.repo_target)
+    return {
+      selected_row = state["sessions.selected"],
+      selected_host = host == "\0local" and "local" or host,
+      host_is_local = host == "\0local",
+      host_collapsed = host and host_is_folded(host) or false,
+      folded_host_count = folded_count,
+      repo_collapsed = repo and repo_is_folded(repo) or false,
+    }
+  end,
+
+  actions = {
+    {
+      name = "sessions.collapse_host",
+      desc = "fold group",
+      args = { { name = "host", kind = "string" } },
+    },
+    {
+      name = "sessions.expand_host",
+      desc = "unfold group",
+      args = { { name = "host", kind = "string" } },
+    },
+    {
+      name = "sessions.toggle_host",
+      desc = "toggle host fold",
+      args = { { name = "host", kind = "string" } },
+    },
+  },
 
   -- Declared as DATA, not just handled. That is what lets the kernel list these
   -- in help, detect a clash with another plugin, and let you rebind them —
@@ -848,8 +891,35 @@ return {
     { key = "down", action = "sessions.next", desc = "next session", group = "Navigation" },
     { key = "up", action = "sessions.previous", desc = "previous session", group = "Navigation" },
     { key = "g", action = "sessions.first", desc = "first session", group = "Navigation" },
+    { key = "home", action = "sessions.first", desc = "first row", group = "Navigation" },
+    { key = "end", action = "sessions.last", desc = "last row", group = "Navigation" },
+    { key = "G", action = "sessions.last", desc = "last row", group = "Navigation" },
+    { key = "pageup", action = "sessions.page_up", desc = "previous page", group = "Navigation" },
+    { key = "pagedown", action = "sessions.page_down", desc = "next page", group = "Navigation" },
+    { key = "[", action = "sessions.previous_host", desc = "previous host", group = "Navigation" },
+    { key = "]", action = "sessions.next_host", desc = "next host", group = "Navigation" },
+    {
+      key = "n",
+      action = "sessions.next_attention",
+      desc = "next session needing attention",
+      group = "Navigation",
+    },
+    { key = "H", action = "sessions.collapse_all", desc = "fold all groups", group = "Navigation" },
+    { key = "L", action = "sessions.expand_all", desc = "unfold all groups", group = "Navigation" },
     { key = "h", action = "sessions.collapse_host", desc = "fold group", group = "Navigation" },
     { key = "l", action = "sessions.expand_host", desc = "unfold group", group = "Navigation" },
+    {
+      key = "left",
+      action = "sessions.parent_host",
+      desc = "select host or fold it",
+      group = "Navigation",
+    },
+    {
+      key = "right",
+      action = "sessions.first_child",
+      desc = "unfold host or select first session",
+      group = "Navigation",
+    },
     -- v1's `Enter` on a session row: go to what you selected. The row is already
     -- selected by the time this fires, so opening is only a focus change.
     { key = "enter", action = "sessions.open", desc = "open the session", group = "Navigation" },
@@ -998,6 +1068,7 @@ return {
     -- (issue #1211). A comment stating the intent instead of the code is what
     -- let that survive: the bug was reported, not noticed here.
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS_WITH_REQUEST)
+    state["sessions.page_size"] = math.max(1, height - 2)
 
     return ui.panel({
       title = "Sessions",
@@ -1119,7 +1190,11 @@ return {
       end
       local item = cursor:item()
       if item.kind == "host" then
-        set_host_folded(item.host, not item.collapsed)
+        -- The first press already toggled; treating its second as another
+        -- toggle would make a double-click undo itself.
+        if hit.clicks ~= 2 then
+          pane.on_action("sessions.toggle_host")
+        end
       else
         set_repo_folded(item.target, not item.collapsed)
       end
@@ -1140,11 +1215,17 @@ return {
   -- right press -- and the menu takes every key while it is up anyway. Entries
   -- other plugins contribute (`row_menu`) come last, and read the row from
   -- the action's session_id argument, not the selection. Off the session
-  -- rows (empty space or a group row) the press is about no
-  -- session, so it opens the pane's general menu instead and selects nothing.
+  -- rows (empty space or a repo row) the press opens the pane's general menu.
+  -- Host rows are fold handles for either mouse button.
   on_context = function(hit)
     local items = model()
-    if not hit.id or hit.id:match("^host:") or hit.id:match("^repo:") then
+    if hit.id and hit.id:match("^host:") then
+      if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
+        return false
+      end
+      return pane.on_action("sessions.toggle_host")
+    end
+    if not hit.id or hit.id:match("^repo:") then
       store.menu = { at = { x = hit.screen_x, y = hit.screen_y }, items = pane_menu(items) }
       return true
     end
@@ -1194,6 +1275,16 @@ return {
     -- before the agent pane does.
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS)
 
+    local requested_host = type(args) == "table" and args.host or nil
+    if requested_host then
+      -- The local group's sentinel cannot be supplied on a command line.
+      local host = requested_host == "" and "\0local" or requested_host
+      if cursor:select_by_id("host:" .. host) == nil then
+        command("message", { text = "that host has no group", level = "error" })
+        return true
+      end
+    end
+
     -- An entry of the right-press menu is about the session it was opened on,
     -- not whatever row the cursor holds when the action lands: the cursor may
     -- have moved since, or that session gone and the cursor fallen back onto a
@@ -1214,6 +1305,100 @@ return {
     local at = cursor.index
     local id = cursor:id()
     local selected = items[at]
+
+    if action == "sessions.parent_host" then
+      if selected and selected.kind == "host" then
+        return pane.on_action("sessions.collapse_host")
+      elseif selected and selected.kind == "session" and selected.host then
+        cursor:select_by_id("host:" .. selected.host)
+      end
+      return true
+    elseif action == "sessions.first_child" then
+      if not selected or selected.kind ~= "host" then
+        return true
+      end
+      if selected.collapsed then
+        return pane.on_action("sessions.expand_host")
+      end
+      local all = session_model.build(sessions(), "", false, true, "")
+      for _, item in ipairs(all) do
+        if item.kind == "session" and item.host == selected.host then
+          cursor:follow(item.target)
+          store.selected = item.target
+          break
+        end
+      end
+      return true
+    end
+
+    if action == "sessions.toggle_host" then
+      if selected and selected.kind == "host" then
+        return pane.on_action(
+          selected.collapsed and "sessions.expand_host" or "sessions.collapse_host"
+        )
+      end
+      return false
+    end
+
+    if action == "sessions.collapse_all" or action == "sessions.expand_all" then
+      local folding = action == "sessions.collapse_all"
+      local hosts, repos = {}, {}
+      local all = session_model.build(sessions(), "", false, true, "")
+      if folding then
+        for _, item in ipairs(all) do
+          if item.kind == "host" then
+            hosts[#hosts + 1] = escape_fold_key(item.host)
+          elseif item.kind == "repo" then
+            repos[#repos + 1] = escape_fold_key(item.target)
+          end
+        end
+        cursor:select(1)
+      end
+      table.sort(hosts)
+      table.sort(repos)
+      save_folds("folded_hosts", table.concat(hosts, ";"))
+      save_folds("folded_repos", table.concat(repos, ";"))
+      return true
+    end
+
+    if action == "sessions.next_host" or action == "sessions.previous_host" then
+      local step = action == "sessions.next_host" and 1 or -1
+      for offset = 1, #items do
+        local index = (at - 1 + offset * step) % #items + 1
+        if items[index].kind == "host" then
+          cursor:select(index)
+          break
+        end
+      end
+      return true
+    end
+
+    if action == "sessions.next_attention" then
+      local all = session_model.build(sessions(), "", false, true, "")
+      local start = 0
+      for index, item in ipairs(all) do
+        if item.target == cursor:id() then
+          start = index
+          break
+        end
+      end
+      for offset = 1, #all do
+        local item = all[(start + offset - 1) % #all + 1]
+        local status = item.session and item.session.status
+        if
+          status == "blocked"
+          or status == "done"
+          or status == "error"
+          or status == "unreachable"
+        then
+          cursor:follow(item.target)
+          store.selected = item.target
+          return true
+        end
+      end
+      command("message", { text = "no sessions need attention" })
+      return true
+    end
 
     if action == "sessions.collapse_host" or action == "sessions.expand_host" then
       local folding = action == "sessions.collapse_host"
@@ -1241,6 +1426,8 @@ return {
       -- here, exactly as v1's Enter moves focus to the terminal.
       if id then
         command("focus", { text = "agent" })
+      elseif selected and selected.kind == "host" then
+        return pane.on_action("sessions.toggle_host")
       end
     elseif action == "sessions.next" then
       cursor:move(1)
@@ -1248,6 +1435,11 @@ return {
       cursor:move(-1)
     elseif action == "sessions.first" then
       cursor:select(1)
+    elseif action == "sessions.last" then
+      cursor:select(#items)
+    elseif action == "sessions.page_up" or action == "sessions.page_down" then
+      local step = action == "sessions.page_down" and 1 or -1
+      cursor:select(math.max(1, math.min(#items, at + step * (state["sessions.page_size"] or 1))))
 
     -- Every state change below is a COMMAND: accepted instantly, its effect
     -- appearing in a later snapshot. Nothing here waits for anything.
@@ -1355,3 +1547,5 @@ return {
     return true
   end,
 }
+
+return pane
