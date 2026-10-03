@@ -480,6 +480,115 @@ fn opening_with_hosts_asks_where_to_run_first() {
 }
 
 #[test]
+fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "Ubuntu".into(),
+        detail: "WSL".into(),
+        backend: "wsl:Ubuntu".into(),
+        multiplexer: None,
+        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+    }];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    let tmux = screen.find("▸ tmux").expect("tmux remains selected");
+    let rmux = screen.find("  rmux").expect("rmux is offered");
+    let psmux = screen.find("  psmux").expect("psmux remains offered");
+    assert!(tmux < rmux && rmux < psmux, "{screen}");
+}
+
+#[test]
+fn an_unavailable_configured_rmux_requires_an_explicit_backend_choice() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.configured = Some("rmux".into());
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("rmux is unavailable"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Multiplexer"));
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_picker_refresh_keeps_the_chosen_backend() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    assert!(drawn(&host, &world).contains("▸ psmux"));
+    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into(), "rmux".into()];
+    assert!(drawn(&host, &world).contains("▸ psmux"));
+    press(&host, &world, "enter");
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    assert!(matches!(
+        issued.as_slice(),
+        [Command::Create { multiplexer: Some(mux), .. }] if mux == "psmux"
+    ));
+}
+
+#[test]
+fn ui_state_tracks_host_and_multiplexer_selection() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![HostRow {
+        name: "Ubuntu".into(),
+        detail: "WSL".into(),
+        backend: "wsl:Ubuntu".into(),
+        multiplexer: None,
+        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+    }];
+    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "host");
+    assert_eq!(state()["selection"], 2);
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "multiplexer");
+    assert_eq!(state()["selection"], 2);
+}
+
+#[test]
+fn ui_state_tracks_branch_and_agent_selection() {
+    let host = host();
+    let mut world = World::default();
+    world.repos.set_branches_for_test(
+        "",
+        "/src/thurbox",
+        Branches::Ready(vec!["origin/main".into(), "main".into()]),
+    );
+    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "alt+w");
+    press(&host, &world, "enter");
+    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
+    publish(&host, &world);
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "branch");
+    assert_eq!(state()["selection"], 2);
+    press(&host, &world, "enter");
+    type_text(&host, &world, "review-selection");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    assert_eq!(state()["step"], "agent");
+    assert_eq!(state()["selection"], 2);
+}
+
+#[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
     let world = World::default();

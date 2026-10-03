@@ -242,20 +242,19 @@ const HOST_ON_TMUX: &str = "[[hosts]]\n\
      destination = \"e2e@box.invalid\"\n\
      share_sessions = false\n";
 
-/// A row naming a multiplexer nothing here implements is refused by name. The
-/// tmux adapter is not an rmux implementation, and running tmux (the host's
-/// preference) or `rmux` through the tmux command grammar would both pretend
-/// it were.
+/// A row naming a multiplexer nothing here implements is refused by name.
+/// Running the host's preferred tmux through another route would pretend to
+/// serve a backend that is not registered.
 #[test]
 fn a_row_on_an_unimplemented_multiplexer_drives_no_binary() {
     let env = Env::new(HOST_ON_TMUX);
-    let id = env.row("r", "ssh:box:rmux");
+    let id = env.row("r", "ssh:box:herdr");
 
     env.cli(&["session", "delete", &id.to_string(), "--force"]);
     assert_eq!(
         env.driven(),
         BTreeSet::new(),
-        "an rmux row was driven with {:?}",
+        "a Herdr row was driven with {:?}",
         env.ssh_calls()
     );
     let row = env
@@ -411,7 +410,7 @@ fn a_legacy_tmux_row_holds_its_name_on_the_local_server() {
 fn an_undrivable_rows_checkout_outlives_its_window() {
     let env = Env::new(HOST_ON_TMUX);
     let id = SessionId::default();
-    let mut row = session(id, "r", "ssh:box:rmux");
+    let mut row = session(id, "r", "ssh:box:herdr");
     row.worktrees = vec![thurbox::sync::SharedWorktree {
         repo_path: PathBuf::from("/srv/repo"),
         worktree_path: PathBuf::from("/srv/worktrees/r"),
@@ -433,7 +432,7 @@ fn an_undrivable_rows_checkout_outlives_its_window() {
 #[test]
 fn a_row_on_an_unimplemented_multiplexer_is_not_marked_stopped() {
     let env = Env::new(HOST_ON_TMUX);
-    let id = env.row("r", "ssh:box:rmux");
+    let id = env.row("r", "ssh:box:herdr");
 
     let out = env.cli(&["session", "stop", &id.to_string()]);
     assert!(!out.status.success(), "stop claimed success");
@@ -478,13 +477,12 @@ fn a_created_session_is_launched_with_the_multiplexer_its_route_names() {
     );
 }
 
-/// This machine runs its platform default and nothing else, so a local row
-/// naming another multiplexer is refused by `stop` too, rather than parked
-/// while a window on some other server runs on.
+/// An unimplemented local multiplexer is refused by `stop`, rather than
+/// parked while a window on some other server runs on.
 #[test]
-fn a_local_row_on_another_multiplexer_is_not_marked_stopped() {
+fn an_unimplemented_local_row_is_not_marked_stopped() {
     let env = Env::new("");
-    let id = env.row("r", "local:rmux");
+    let id = env.row("r", "local:herdr");
 
     let out = env.cli(&["session", "stop", &id.to_string()]);
     assert!(!out.status.success(), "stop claimed success");
@@ -606,18 +604,18 @@ impl Env {
     }
 }
 
-/// A local row naming a multiplexer this machine does not run lives on a
-/// server nothing here drives, so a force-delete fails closed: it neither
+/// A local row naming an unimplemented multiplexer lives on a server nothing
+/// here drives, so a force-delete fails closed: it neither
 /// removes the checkout its agent may still be working in, nor kills the
 /// same-named window of another session on the local server, nor marks the
 /// row force-deleted as though its teardown had happened.
 #[test]
-fn force_deleting_a_local_row_on_another_multiplexer_fails_closed() {
+fn force_deleting_an_unimplemented_local_row_fails_closed() {
     if !have("git") || !have("tmux") {
         eprintln!("skipping: needs git and tmux");
         return;
     }
-    for backend in ["local:rmux", "local-rmux"] {
+    for backend in ["local:herdr", "local-herdr"] {
         let env = Env::new("");
         let checkout = env.checkout("r");
         env.unstamped_namesake("r");
@@ -653,12 +651,12 @@ fn force_deleting_a_local_row_on_another_multiplexer_fails_closed() {
 /// nothing here drives, so the local window a name resolves to is somebody
 /// else's, and the reap kills nothing.
 #[test]
-fn reaping_a_local_row_on_another_multiplexer_kills_no_local_window() {
+fn reaping_an_unimplemented_local_row_kills_no_local_window() {
     if !have("tmux") {
         eprintln!("skipping: needs tmux");
         return;
     }
-    for backend in ["local:rmux", "local-rmux"] {
+    for backend in ["local:herdr", "local-herdr"] {
         let env = Env::new("");
         env.unstamped_namesake("r");
         let id = SessionId::default();

@@ -11,7 +11,7 @@
 //! else can.
 //!
 //! Registered under a route no adapter serves (`local:rmux`, `ssh:<h>:rmux`),
-//! it is what a future RMUX or Herdr adapter would be to `session_ops`.
+//! it models what an adapter is to `session_ops` without starting a process.
 
 #![allow(dead_code)]
 

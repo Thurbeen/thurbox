@@ -488,14 +488,37 @@ local function render_host(flow)
   }, flow)
 end
 
+local function picker_mux_order(options)
+  local ordered = {}
+  local has_rmux = false
+  for _, name in ipairs(options) do
+    if name == "rmux" then
+      has_rmux = true
+    else
+      ordered[#ordered + 1] = name
+    end
+  end
+  if has_rmux then
+    local after = #ordered
+    for index, name in ipairs(ordered) do
+      if name == "tmux" then
+        after = index
+        break
+      end
+    end
+    table.insert(ordered, after + 1, "rmux")
+  end
+  return ordered
+end
+
 local function mux_options(flow)
   if (flow.host or "") == "" then
     local mux = preflight().mux or {}
-    return mux.available or {}, mux.configured or mux.binary
+    return picker_mux_order(mux.available or {}), mux.configured or mux.binary
   end
   for _, host in ipairs(hosts()) do
     if host.backend == flow.host then
-      return host.available_multiplexers or {}, host.multiplexer or "tmux"
+      return picker_mux_order(host.available_multiplexers or {}), host.multiplexer or "tmux"
     end
   end
   return {}, nil
@@ -503,16 +526,21 @@ end
 
 local function choose_mux(flow)
   local options, configured = mux_options(flow)
-  flow.mux_index = 1
-  for index, name in ipairs(options) do
-    if name == configured then
-      flow.mux_index = index
+  flow.mux_name = configured and configured ~= "default" and configured or options[1]
+end
+
+local function mux_index(options, name)
+  for index, option in ipairs(options) do
+    if option == name then
+      return index
     end
   end
+  return 0
 end
 
 local function render_mux(flow)
   local options, configured = mux_options(flow)
+  local index = mux_index(options, flow.mux_name)
   local warning
   if configured and configured ~= "default" then
     local found = false
@@ -523,13 +551,16 @@ local function render_mux(flow)
       warning = configured .. " is unavailable for this host"
     end
   end
+  if not warning and flow.mux_name and index == 0 then
+    warning = flow.mux_name .. " is unavailable for this host"
+  end
   local height = math.max(1, #options)
-  local rows = #options > 0 and selector_rows(options, flow.mux_index, height)
+  local rows = #options > 0 and selector_rows(options, index, height)
     or { { type = "text", len = 1, text = "  No registered multiplexer is available" } }
   return frame("Multiplexer", height + 4, {
     { type = "box", len = height, children = rows },
     { type = "text", len = 1, text = warning or "" },
-    modal.footer({ { "j/k", "navigate" } }, #options > 0 and "Select" or nil),
+    modal.footer({ { "j/k", "navigate" } }, index > 0 and "Select" or nil),
   }, flow)
 end
 
@@ -1222,7 +1253,7 @@ local function commit(flow)
     worktree_path = open and open.path or nil,
     agent = agent,
     host = (flow.host ~= "" and flow.host) or nil,
-    multiplexer = (mux_options(flow))[flow.mux_index],
+    multiplexer = flow.mux_name,
     extras = flow.extras or {},
   })
   save(nil)
@@ -1302,7 +1333,8 @@ local function move_selection(flow, step)
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
   elseif flow.step == "multiplexer" then
     local options = mux_options(flow)
-    flow.mux_index = widgets.clamp((flow.mux_index or 1) + step, #options)
+    local index = widgets.clamp(mux_index(options, flow.mux_name) + step, #options)
+    flow.mux_name = options[index]
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "branch" then
@@ -1321,7 +1353,19 @@ return {
     if not flow then
       return { open = false }
     end
-    return { open = true, step = flow.step, selection = flow.cursor or 1 }
+    local selection = flow.cursor or 1
+    if flow.step == "host" then
+      selection = flow.host_index
+    elseif flow.step == "multiplexer" then
+      selection = mux_index(mux_options(flow), flow.mux_name)
+    elseif flow.step == "branch" then
+      selection = flow.branch_index
+    elseif flow.step == "agent" then
+      selection = flow.agent_index
+    elseif flow.step == "new_folder" then
+      selection = flow.folder_index
+    end
+    return { open = true, step = flow.step, selection = selection }
   end,
   -- A slot the arrangement never places: this pane only ever floats, and a slot
   -- it could also occupy would make it an alternative to the terminal.
@@ -1695,7 +1739,7 @@ return {
     end
 
     if flow.step == "multiplexer" then
-      if name == "enter" and #mux_options(flow) > 0 then
+      if name == "enter" and mux_index(mux_options(flow), flow.mux_name) > 0 then
         flow.step = "repo"
         save(flow)
         ask(flow)
@@ -2000,6 +2044,12 @@ return {
     end
     if flow.step == "host" then
       flow.host_index = index
+    elseif flow.step == "multiplexer" then
+      local options = mux_options(flow)
+      if not options[index] then
+        return false
+      end
+      flow.mux_name = options[index]
     elseif flow.step == "branch" then
       flow.branch_index = index
     elseif flow.step == "agent" then

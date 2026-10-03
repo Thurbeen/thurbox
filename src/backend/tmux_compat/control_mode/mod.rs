@@ -88,9 +88,35 @@ pub fn snapshot_commands(pane_id: &str, history: usize, styled: bool) -> Vec<Str
     ]
 }
 
-/// Read the answer to [`snapshot_commands`], one entry per `%begin`/`%end`
-/// block. `None` for anything that is not that answer.
+/// Boundaries let a one-block reply retain the three snapshot parts.
+fn snapshot_commands_one_block(pane_id: &str, history: usize, styled: bool) -> Vec<String> {
+    let mut commands = snapshot_commands(pane_id, history, styled);
+    let marker = format!("__thurbox_snapshot_{}__", uuid::Uuid::new_v4().simple());
+    commands.insert(1, format!("display-message -p '{marker}normal__'"));
+    commands.insert(3, format!("display-message -p '{marker}alternate__'"));
+    commands
+}
+
+/// Read a snapshot from three reply blocks or one boundary-marked block.
+/// `None` for anything that is not that answer.
 pub fn parse_snapshot(mut blocks: Vec<Vec<String>>) -> Option<PaneSnapshot> {
+    if blocks.len() == 1 {
+        let lines = blocks.pop()?;
+        let normal = lines.iter().position(|line| {
+            line.starts_with("__thurbox_snapshot_") && line.ends_with("__normal__")
+        })?;
+        let marker = lines[normal].strip_suffix("normal__")?;
+        let alternate_marker = format!("{marker}alternate__");
+        let alternate = lines.iter().position(|line| line == &alternate_marker)?;
+        if normal != 1 || alternate <= normal {
+            return None;
+        }
+        blocks = vec![
+            lines[..normal].to_vec(),
+            lines[normal + 1..alternate].to_vec(),
+            lines[alternate + 1..].to_vec(),
+        ];
+    }
     if blocks.len() != 3 {
         return None;
     }
@@ -902,6 +928,7 @@ pub(in crate::backend) struct ControlMode {
     /// (`send_command_within`): the place is what keeps the queue aligned with
     /// the wire, not the caller's interest in what comes back.
     response_queue: ResponseQueue,
+    command_list_single_reply: bool,
     /// `(pane_id, state)` pairs from `%subscription-changed` notifications
     /// (remote hook status — see [`REMOTE_HOOK_STATE_OPTION`]),
     /// pushed by the reader thread and drained by the app tick via
@@ -942,6 +969,8 @@ pub struct ControlPolicy {
     /// can hold any line a pane showed. Where it does not, any `%end` ends the
     /// block, as before tags were read.
     pub tagged_blocks: bool,
+    /// Whether a command list answers with one block rather than one per command.
+    pub command_list_single_reply: bool,
     /// Whether the server pushes format subscriptions (`refresh-client -B`):
     /// the remote-hook status and which client sizes each pane.
     pub subscriptions: bool,
@@ -1047,6 +1076,7 @@ impl ControlMode {
             pane_windows,
             pane_sizes,
             response_queue,
+            command_list_single_reply: policy.command_list_single_reply,
             sub_events,
             alive,
             reader_handle: Mutex::new(Some(reader_handle)),
@@ -1714,12 +1744,20 @@ impl ControlMode {
     /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
     /// the byte it describes, for that pane's reader to take up in order.
     pub(in crate::backend) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
-        let cmds = snapshot_commands(pane_id, history, true);
+        let cmds = if self.command_list_single_reply {
+            snapshot_commands_one_block(pane_id, history, true)
+        } else {
+            snapshot_commands(pane_id, history, true)
+        };
         Self::enqueue_command_on(
             &self.stdin,
             &self.response_queue,
             &cmds.join(" ; "),
-            cmds.len(),
+            if self.command_list_single_reply {
+                1
+            } else {
+                cmds.len()
+            },
             Some(pane_id.to_string()),
         )
         .map(drop)
@@ -1736,10 +1774,18 @@ impl ControlMode {
         pane_id: &str,
         history: usize,
     ) -> Result<PendingSnapshot> {
-        let cmds = snapshot_commands(pane_id, history, false);
+        let cmds = if self.command_list_single_reply {
+            snapshot_commands_one_block(pane_id, history, false)
+        } else {
+            snapshot_commands(pane_id, history, false)
+        };
         let cmd = cmds.join(" ; ");
-        let rx =
-            Self::enqueue_command_on(&self.stdin, &self.response_queue, &cmd, cmds.len(), None)?;
+        let blocks = if self.command_list_single_reply {
+            1
+        } else {
+            cmds.len()
+        };
+        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, &cmd, blocks, None)?;
         Ok(PendingSnapshot {
             rx,
             cmd,

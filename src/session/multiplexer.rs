@@ -27,6 +27,15 @@ impl Multiplexer {
         }
     }
 
+    /// An optional local picker choice whose binary must be present before it
+    /// is offered. Established choices keep their existing picker behavior.
+    pub const fn local_picker_binary(self) -> Option<&'static str> {
+        match self {
+            Self::Rmux => Some("rmux"),
+            _ => None,
+        }
+    }
+
     pub fn parse(name: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()

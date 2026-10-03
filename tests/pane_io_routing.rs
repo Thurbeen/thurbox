@@ -5,7 +5,7 @@
 //! command modules in-process with the registry the binary would build handed
 //! in, the kernel's command bus, and the snapshot store's pane probe. The
 //! registry carries an in-memory backend for `local:rmux` and
-//! `ssh:probehost:rmux`, routes no adapter in this build serves. The probe
+//! `ssh:probehost:rmux`, overriding the real adapter to record each call. The probe
 //! never runs a process and never speaks the tmux command grammar, so text
 //! that shows on its screen can only have got there through the trait, and a
 //! private tmux server that stays empty proves nothing went the old way.

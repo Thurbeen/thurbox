@@ -1746,7 +1746,13 @@ fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow
     let presence = crate::agent::preflight::look_up(binary);
     let available = crate::session::Multiplexer::ALL
         .into_iter()
-        .filter(|mux| served.contains(&crate::session::Route::local(Some(*mux))))
+        .filter(|mux| {
+            served.contains(&crate::session::Route::local(Some(*mux)))
+                && mux.local_picker_binary().map_or(true, |binary| {
+                    crate::agent::preflight::look_up(binary)
+                        == crate::agent::preflight::Presence::Present
+                })
+        })
         .map(|mux| mux.name().to_string())
         .collect();
     MuxRow {
@@ -2077,6 +2083,32 @@ mod tests {
                 crate::agent::preflight::Presence::Present,
                 "the answer moved inside the TTL, so something probed on the tick"
             );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_local_picker_offers_rmux_only_when_its_binary_is_found() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let served = [
+            crate::session::Route::local(Some(crate::session::Multiplexer::Tmux)),
+            crate::session::Route::local(Some(crate::session::Multiplexer::Psmux)),
+            crate::session::Route::local(Some(crate::session::Multiplexer::Rmux)),
+        ]
+        .into_iter()
+        .collect();
+        crate::paths::with_path(dir.path(), || {
+            let missing = read_mux(&served);
+            assert_eq!(missing.available, vec!["tmux", "psmux"]);
+
+            let binary = dir.path().join("rmux");
+            std::fs::write(&binary, "#!/bin/sh\n").expect("write rmux stand-in");
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod");
+            let present = read_mux(&served);
+            assert_eq!(present.available, vec!["tmux", "psmux", "rmux"]);
         });
     }
 

@@ -399,15 +399,20 @@ session. Each step has a sensible default and can be skipped when
 not applicable.
 
 1. **Host picker** — choose where the session runs: `local`, or any
-   remote SSH host defined in `hosts.toml`. Skipped entirely when no
+   SSH or WSL host defined in `hosts.toml`. Skipped entirely when no
    remote hosts are configured (preserving the local-only flow). For
    a remote host the repo picker shows the repos previously used *on
    that host* (bookmarks are host-scoped, schema v39) and every remote
    filesystem touch — the path browser's listings, Enter validation,
    `Alt+P` parent scans and their periodic re-scan — runs on a worker,
-   never blocking the UI on an ssh round trip; the worktree + tmux
-   window are created on that host over SSH.
-2. **Repo picker** — fuzzy-searchable list of bookmarked repo
+   never blocking the UI on a host round trip; the worktree and multiplexer
+   window are created on that host through its configured transport.
+2. **Multiplexer picker** — choose a backend offered on that host. The
+   configured choice or platform default stays selected. An unavailable
+   configured choice requires an explicit replacement selection. RMUX sits next
+   to tmux; locally it appears only when `rmux` resolves on `PATH`. A choice
+   stays tied to its backend name when the available list refreshes.
+3. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is
    still selectable as a plain member and rendered with a dim
@@ -451,16 +456,16 @@ not applicable.
    with the same TTL as the branch list; the main checkout, bare repos,
    detached heads and prunable registrations are dropped, since no
    session can be started on them. `Enter` on one **opens** it: no
-   `git worktree add` runs, and steps 3–5 below are skipped entirely
+   `git worktree add` runs, and steps 4–6 below are skipped entirely
    (the branch is the one already checked out there, and the session is
    named after the worktree *directory* — an agent that cuts
    `.worktrees/dynamic-tooltips` on branch
    `feat/dynamic-tooltips-15307729713678226529` gives you a session
    called `dynamic-tooltips`, not the suffix).
-3. **Base branch selector** — worktree mode only.
-4. **Session name** — free text identifier shown in the sidebar.
-5. **New branch name** — worktree mode only.
-6. **Agent picker** — choose which coding agent runs in this
+4. **Base branch selector** — worktree mode only.
+5. **Session name** — free text identifier shown in the sidebar.
+6. **New branch name** — worktree mode only.
+7. **Agent picker** — choose which coding agent runs in this
    session. Skipped when only one agent is defined in
    `agents.toml`. An agent whose `command` resolves nowhere on `PATH`
    is marked `⚠ not installed` on its own row, so the cost of the

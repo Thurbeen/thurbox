@@ -36,6 +36,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use thurbox::backend::tmux_compat::server::TmuxCompatible;
+
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -91,6 +93,17 @@ fn have_tmux() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn have_rmux() -> bool {
+    Command::new("rmux").arg("-V").output().is_ok_and(|output| {
+        output.status.success()
+            && thurbox::backend::rmux::Rmux::check_banner(
+                &String::from_utf8_lossy(&output.stdout),
+                "test",
+            )
+            .is_ok()
+    })
 }
 
 /// The isolated profile a scenario runs in: every directory the binary reads
@@ -1787,6 +1800,75 @@ fn ui_state_reports_an_explicit_error_when_the_snapshot_exceeds_the_reply_limit(
 }
 
 #[test]
+fn ui_watch_keeps_action_outcomes_behind_a_large_state_delta() {
+    let interface = interface_plus(
+        "90_bulk_00.lua",
+        r#"local generation = 0
+return {
+  name = "bulk00", slot = "sessions",
+  render = function() return { type = "text", text = "" } end,
+  ui_state = function()
+    generation = generation + 1
+    local result = {}
+    for i = 1, 16 do result["key" .. i] = string.rep("x", 250) .. generation end
+    return result
+  end,
+}"#,
+    );
+    let source = std::fs::read_to_string(interface.path().join("plugins/90_bulk_00.lua"))
+        .expect("bulk plugin");
+    for index in 1..4 {
+        std::fs::write(
+            interface
+                .path()
+                .join(format!("plugins/90_bulk_{index:02}.lua")),
+            source.replace("bulk00", &format!("bulk{index:02}")),
+        )
+        .expect("bulk plugin");
+    }
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No active sessions");
+    let cli = |args: &[&str]| -> serde_json::Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd
+            .args(["--json", "ui"])
+            .args(args)
+            .output()
+            .expect("ui cli");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("JSON")
+    };
+    let initial = cli(&["state"]);
+    let initial_revision = initial["revision"].as_u64().expect("initial revision");
+    cli(&["action", "search.open", "--query", "bulk-review"]);
+    tui.wait_for("Search bulk-review");
+    let mut since = initial_revision;
+    let mut found_action = false;
+    for _ in 0..8 {
+        let revision = since.to_string();
+        let batch = cli(&["watch", "--since", &revision, "--once"]);
+        assert_eq!(batch["kind"], "delta", "watch lost events: {batch}");
+        found_action |= batch["events"].as_array().unwrap().iter().any(|event| {
+            event["kind"] == "action.completed" && event["value"]["action"] == "search.open"
+        });
+        since = batch["revision"].as_u64().expect("batch revision");
+        if found_action {
+            break;
+        }
+    }
+    assert!(found_action, "watch omitted the action outcome");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_paste_lands_in_the_search_strip() {
     // A paste goes where the caret is. It used to go to the terminal behind
     // the strip — or, with no terminal on screen, nowhere — because only a
@@ -2782,6 +2864,90 @@ fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
     tui.wait_for("herdr is unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_tui_picker_creates_a_session_on_rmux() {
+    if !have_rmux() {
+        eprintln!("skipping: rmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    struct RmuxCleanup<'a>(&'a Profile);
+    impl Drop for RmuxCleanup<'_> {
+        fn drop(&mut self) {
+            let mut command = Command::new("rmux");
+            self.0.apply(&mut command);
+            let _ = command
+                .args(["-L", self.0.server.socket(), "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = RmuxCleanup(&profile);
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agent");
+    let repo = repo(profile.root.path());
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Multiplexer");
+    tui.wait_for("tmux");
+    tui.wait_for("rmux");
+    tui.send(b"\x1b[B");
+    tui.wait_for("▸ rmux");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    tui.send(b"\t");
+    tui.wait_for("Add Repo Path");
+    tui.send(repo.to_str().expect("utf-8 repo path").as_bytes());
+    tui.send(b"\r");
+    tui.wait_until("the new repository to be selected", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("[x]") && line.contains("/repo"))
+    });
+    tui.send(b"\x1b[Z");
+    tui.send(b"\r");
+    tui.wait_for("Session Name");
+    tui.send(b"rmux-picker\r");
+    tui.wait_for("rmux-picker");
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .expect("open profile database");
+    let row = db
+        .get_session_by_name("rmux-picker")
+        .expect("read session")
+        .expect("created session");
+    assert_eq!(row.backend_type, "local:rmux");
+    tui.wait_for("$ ");
+    let old_pane = row.backend_id;
+    let mut kill = Command::new("rmux");
+    profile.apply(&mut kill);
+    let killed = kill
+        .args(["-L", profile.server.socket(), "kill-pane", "-t", &old_pane])
+        .output()
+        .expect("kill RMUX pane while TUI is open");
+    assert!(killed.status.success(), "{killed:?}");
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline
+        && db
+            .get_session_by_name("rmux-picker")
+            .expect("read session during relaunch")
+            .is_some_and(|row| row.backend_id == old_pane)
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let relaunched = db
+        .get_session_by_name("rmux-picker")
+        .expect("read relaunched session")
+        .expect("same session row");
+    assert_ne!(relaunched.backend_id, old_pane);
+    tui.wait_for("$ ");
+    tui.send(b"echo rmux-relaunched-live\r");
+    tui.wait_for("rmux-relaunched-live");
     assert!(tui.quit().success());
 }
 

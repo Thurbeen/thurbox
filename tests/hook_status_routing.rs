@@ -4,7 +4,7 @@
 //! Every pathway runs through the real entry points — `cli`'s command modules
 //! in-process, with the registry the binary would build handed in. The
 //! registry carries an in-memory backend for each route a row here is on: a
-//! local and a remote one no adapter in this build serves (`rmux`), and
+//! local and a remote RMUX route whose real adapter is overridden, and
 //! recorded stand-ins for the tmux and psmux routes of two hosts, so each
 //! multiplexer's route is owned by the backend registered for it rather than
 //! by a guess from its name or the host's OS. The stand-ins never run a

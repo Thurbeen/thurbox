@@ -31,8 +31,11 @@ pub type AdapterFactory = fn(&BackendSpec) -> Arc<dyn SessionBackend>;
 /// One adapter per multiplexer: the only list of them. Adding one is a module
 /// and a row here; a route naming a multiplexer with no row is refused by name
 /// rather than driven through another's grammar.
-const ADAPTERS: &[(Multiplexer, AdapterFactory)] =
-    &[(Multiplexer::Tmux, tmux), (Multiplexer::Psmux, psmux)];
+const ADAPTERS: &[(Multiplexer, AdapterFactory)] = &[
+    (Multiplexer::Tmux, tmux),
+    (Multiplexer::Psmux, psmux),
+    (Multiplexer::Rmux, rmux),
+];
 
 fn tmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
     match (&spec.host, &spec.launcher) {
@@ -49,6 +52,15 @@ fn psmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
             crate::backend::psmux::on_host(host, launcher.clone(), spec.platform)
         }
         _ => crate::backend::psmux::local(),
+    }
+}
+
+fn rmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
+    match (&spec.host, &spec.launcher) {
+        (Some(host), Some(launcher)) => {
+            crate::backend::rmux::on_host(host, launcher.clone(), spec.platform)
+        }
+        _ => crate::backend::rmux::local(),
     }
 }
 
@@ -171,9 +183,11 @@ mod tests {
         for host in &hosts.hosts {
             let meant = hosts.qualify(&host.route(None));
             assert!(registry.supports(&meant), "{}", meant.format());
-            for mux in [Multiplexer::Rmux, Multiplexer::Herdr] {
-                assert!(!registry.supports(&host.route(Some(mux))), "{}", host.name);
-            }
+            assert!(
+                !registry.supports(&host.route(Some(Multiplexer::Herdr))),
+                "{}",
+                host.name
+            );
         }
         assert_eq!(
             hosts.qualify(&hosts.hosts[1].route(None)).mux,
@@ -203,7 +217,7 @@ mod tests {
         for platform in Platform::ALL {
             simulate_local(platform, || {
                 let registry = for_hosts(&hosts(&[("plain", None), ("win", Some("psmux"))]));
-                for mux in [Multiplexer::Tmux, Multiplexer::Psmux] {
+                for mux in [Multiplexer::Tmux, Multiplexer::Psmux, Multiplexer::Rmux] {
                     assert!(
                         registry.supports(&Route::local(Some(mux))),
                         "{} on a {} machine has an adapter and is not registered",
@@ -211,7 +225,7 @@ mod tests {
                         platform.name()
                     );
                 }
-                for mux in [Multiplexer::Tmux, Multiplexer::Psmux] {
+                for mux in [Multiplexer::Tmux, Multiplexer::Psmux, Multiplexer::Rmux] {
                     for host in ["plain", "win"] {
                         assert!(
                             registry.supports(&Route::remote(Via::Ssh, host, Some(mux))),
@@ -236,8 +250,8 @@ mod tests {
     }
 
     /// The selection matrix: a probe adapter registered for each of
-    /// [`Multiplexer::ALL`] — the RMUX and Herdr ones included, which no
-    /// adapter here implements — on this machine, an ssh host and a WSL
+    /// [`Multiplexer::ALL`] — Herdr included, which no adapter here implements
+    /// — on this machine, an ssh host and a WSL
     /// distro, from a POSIX and a Windows thurbox, and on a POSIX and a Windows
     /// ssh host. Each route reaches the adapter registered for its own
     /// multiplexer, whatever the host prefers; the spec it is built from names
@@ -422,7 +436,7 @@ mod tests {
     fn only_implemented_multiplexers_are_served() {
         assert!(implements(Multiplexer::Tmux));
         assert!(implements(Multiplexer::Psmux));
-        assert!(!implements(Multiplexer::Rmux));
+        assert!(implements(Multiplexer::Rmux));
         assert!(!implements(Multiplexer::Herdr));
     }
 }

@@ -219,6 +219,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "backend::registry",
             "backend::tmux",
             "backend::psmux",
+            "backend::rmux",
         ],
         allowed_path_only: &[],
     },
@@ -232,7 +233,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     // A tmux-protocol server as a session backend, generic over the
-    // multiplexer: everything the two adapters share, asking each what its
+    // multiplexer: everything the adapters share, asking each what its
     // server can do and never which it is.
     ModuleRules {
         name: "backend::tmux_compat::server",
@@ -271,7 +272,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["shell", "agent::preflight"],
         allowed_path_only: &[],
     },
-    // The two adapters, peers: each reaches the protocol helper and never the
+    // The adapters are peers: each reaches the protocol helper and never the
     // other; nothing reaches either but the factory.
     ModuleRules {
         name: "backend::tmux",
@@ -292,6 +293,18 @@ const MODULE_RULES: &[ModuleRules] = &[
             "shell",
             "backend::contract",
             "backend::instance",
+            "backend::tmux_compat::control_mode",
+            "backend::tmux_compat::server",
+            "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "backend::rmux",
+        allowed: &[
+            "session",
+            "shell",
+            "backend::contract",
             "backend::tmux_compat::control_mode",
             "backend::tmux_compat::server",
             "backend::tmux_compat::transport",
@@ -754,7 +767,7 @@ const FACTORY: &str = "backend::wiring";
 
 /// The concrete adapters. Each is reached only through [`FACTORY`], and each
 /// serves one multiplexer of its own.
-const ADAPTERS: &[&str] = &["backend::tmux", "backend::psmux"];
+const ADAPTERS: &[&str] = &["backend::tmux", "backend::psmux", "backend::rmux"];
 
 /// The tmux command and control-mode protocol both adapters above speak: a
 /// helper either may use, which uses neither.

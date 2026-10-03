@@ -211,6 +211,7 @@ impl TmuxCompatible for Psmux {
             flow_control_command: Some("refresh-client -f pause-after=5"),
             implicit_attach_reply: false,
             tagged_blocks: false,
+            command_list_single_reply: Self::COMMAND_LIST_SINGLE_REPLY,
             subscriptions: false,
             status_poll: (transport.is_remote() && Self::HOOK_STATUS)
                 .then(|| hook_poll_command(session)),
@@ -478,6 +479,8 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     }
     if body.len() >= 2 && body[1] == b'~' {
         let name = match body[0] {
+            b'2' => "Insert",
+            b'3' => "Delete",
             b'5' => "PageUp",
             b'6' => "PageDown",
             _ => return None,
@@ -499,6 +502,8 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     }
     let base = if body[suffix_pos] == b'~' {
         match &body[..semicolon] {
+            b"2" => "Insert",
+            b"3" => "Delete",
             b"5" => "PageUp",
             b"6" => "PageDown",
             _ => return None,

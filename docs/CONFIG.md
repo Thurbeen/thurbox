@@ -350,6 +350,12 @@ preference. `thurbox-cli session create --multiplexer <name>` overrides either
 for one creation. The TUI asks for a host and then shows the registered
 multiplexers for it. The order is explicit choice, configured host or local
 preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
+The TUI keeps that default selected. Where both are offered, it places `rmux`
+immediately after `tmux`. The local picker offers `rmux` only while its binary
+resolves on `PATH`; a remote host's binaries cannot be checked locally, so its
+registered choices remain visible.
+If a configured choice is unavailable, the TUI requires an explicit selection
+of another offered multiplexer before continuing.
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
@@ -389,10 +395,10 @@ route. `hosts.toml` ignores such an entry with a warning, and
 `config validate` fails naming it.
 
 Which multiplexers work is what is **registered**, never the OS: every
-multiplexer an adapter implements (`tmux` and `psmux` today) is registered for
+multiplexer an adapter implements (`tmux`, `psmux`, and `rmux`) is registered for
 this machine and for every host, whatever either's platform or preference — a
 binary that is not installed is reported by name when a session first needs
-it. A route naming a multiplexer no adapter implements (`rmux`, `herdr` today)
+it. A route naming a multiplexer no adapter implements (`herdr` today)
 is refused by name, and is neither created nor driven with another binary. A
 force-delete or reap of a local row on a multiplexer this machine does not run
 refuses rather than removing a
@@ -400,6 +406,15 @@ checkout or killing a local window of the same name; a delete without
 `--force` still works and leaves it restorable. An adapter for another multiplexer
 registers its own routes; it must read them on restart, restore, delete,
 input, capture, and fork.
+
+RMUX is opt-in and never changes the platform defaults. The adapter was tested
+on Linux with [RMUX 0.10.0](https://github.com/Helvesec/rmux/releases/tag/v0.10.0),
+which must be on the server machine's `PATH`. Set `multiplexer = "rmux"` in
+`settings.toml` for new local sessions, set it on a `hosts.toml` entry for new
+sessions on that host, or pass `--multiplexer rmux` to `session create` for one
+session. Existing tmux and psmux rows retain their recorded routes when a
+preference changes. Real SSH, WSL, and native Windows RMUX paths have not been
+verified.
 
 A socket learned from a host's own CLI (`version --json`'s `tmux_socket`) is
 kept per **host**, not per route: it is the address of the thurbox instance
@@ -412,9 +427,8 @@ agent, and worktree once. An exited pane still held by the server remains
 visible for inspection. A backend that is unreachable or has not verified the
 window cannot authorize a relaunch. A session intentionally parked with
 `session stop` stays stopped. A deleted companion shell is forgotten without
-relaunching the agent. RMUX and Herdr adapters must prove this with real
-TUI-open pane-deletion tests, including a backend whose stream does not close
-when its pane is deleted.
+relaunching the agent. RMUX's local headless and TUI-open pane-deletion paths
+have live tests; Herdr remains unverified.
 
 ## hooks.toml
 
