@@ -566,7 +566,23 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
         .home()?;
         return Some(std::path::PathBuf::from(home).join(file));
     }
-    Some(crate::paths::expand_tilde(file))
+    // Where the install put it, which is where the agent was pointed when it
+    // ran — this process's own `CODEX_HOME` and friends need not agree. Only a
+    // hooks extension that was never installed falls back to them.
+    let file = installed_hook_file(file).unwrap_or_else(|| {
+        crate::session::relocate_agent_dir(file, |name| std::env::var(name).ok())
+    });
+    Some(crate::paths::expand_tilde(&file))
+}
+
+/// `file`, the bundled hooks manifest's default path, as the installed hooks
+/// manifest recorded it (see [`crate::session::ExtensionDef::installed_path`]).
+fn installed_hook_file(file: &str) -> Option<String> {
+    let name = crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME;
+    let bundled: crate::session::ExtensionDef =
+        toml::from_str(crate::session_ops::builtin_hooks::MANIFEST).ok()?;
+    let installed = crate::agent::extension_config::load_manifest(name)?;
+    installed.installed_path(&bundled, file).map(str::to_owned)
 }
 
 /// What a hook running in this session's pane would resolve `thurbox-cli` to.

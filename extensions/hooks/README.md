@@ -249,13 +249,22 @@ thurbox-cli session reports-as <ref> kimi     # or --clear to take it back
 
 ## Where the config lives
 
-The wiring is applied **only to agents thurbox launches** — it never edits your
-own global agent config (e.g. your personal `~/.claude/settings.json`). For
-claude the managed hooks file is passed with `--settings`, which claude **merges
-on top of** your own settings: inside a thurbox session both your hooks and
-thurbox's fire, while a plain `claude` outside thurbox sees only your own. The
-other agents are wired by a reversible merge into — or a managed file dropped in
-— their own config dir.
+Only claude is wired **per launch**: the managed hooks file is passed with
+`--settings`, which claude **merges on top of** your own settings, so inside a
+thurbox session both your hooks and thurbox's fire while a plain `claude`
+outside thurbox sees only your own — your `~/.claude/settings.json` is never
+edited. aider likewise gets a launch flag. Every other agent has no launch-time
+hook flag, so it is wired **globally**, by a reversible merge into — or a
+managed file dropped in — its own config dir. Those hooks also fire for that
+agent outside thurbox, where `session signal` finds no session and `|| true`
+drops it.
+
+An agent whose config dir is moved by its own variable is wired where it
+actually reads: `CODEX_HOME` for codex, `PI_CODING_AGENT_DIR` for pi (it names
+`~/.pi/agent` itself) and `COPILOT_HOME` for copilot, as set in the environment
+thurbox runs in (`session::AGENT_DIR_OVERRIDES`). Change or unset that variable
+and the next install or heartbeat tick moves the hooks: thurbox's entries leave
+the old dir (a hook you wrote there yourself stays) and land in the new one.
 
 | Agent | On-disk location | How it's applied |
 |-------|------------------|------------------|

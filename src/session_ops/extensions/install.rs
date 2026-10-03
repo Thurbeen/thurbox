@@ -72,14 +72,15 @@ pub fn install_extension(
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
     let (def, warnings) = load_manifest_for_install(target, &source)?;
+    let def = def.with_agent_dirs(|name| std::env::var(name).ok());
     for w in &warnings {
         tracing::warn!("{w}");
     }
 
     // Record the previously-installed version (if any) before we overwrite the
     // discovery manifest, so an install-over-existing / update can report a move.
-    let previous_version =
-        crate::agent::extension_config::load_manifest(&def.name).and_then(|prev| prev.version);
+    let previous = crate::agent::extension_config::load_manifest(&def.name);
+    let previous_version = previous.as_ref().and_then(|prev| prev.version.clone());
 
     // Home precedence: `--home` > a manifest-pinned `home` > the derived default
     // under the config dir (`<extensions_dir>/<name>`). Official manifests omit
@@ -183,10 +184,40 @@ pub fn install_extension(
     let resolved = def
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
+    if let Some(previous) = &previous {
+        remove_abandoned_payload(previous, &resolved)?;
+    }
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = activate_extension(db, backends, &resolved)?;
 
     Ok(report)
+}
+
+/// Take our payload out of every path `previous` wrote that `next` no longer
+/// names. The manifest about to be written replaces `previous`, and uninstall
+/// only reads that one — so a hook left at a path it dropped would outlive the
+/// extension. This is how an agent whose config dir moved (`CODEX_HOME` set,
+/// changed or unset, see [`ExtensionDef::with_agent_dirs`]) stops carrying a
+/// hook in the dir it used to read.
+fn remove_abandoned_payload(previous: &ExtensionDef, next: &ExtensionDef) -> Result<(), String> {
+    for f in &previous.external_files {
+        if !next.external_files.iter().any(|n| n.path == f.path) {
+            remove_owned_external_file(f);
+        }
+    }
+    for m in &previous.config_merges {
+        if !next.config_merges.iter().any(|n| n.path == m.path) {
+            revert_config_merge(m, false)?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete an external file unless the user has edited it (no managed marker).
+/// Returns whether it was removed.
+fn remove_owned_external_file(f: &crate::session::ExternalFile) -> bool {
+    let dest = crate::agent::extension_config::expand_tilde(&f.path);
+    dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok()
 }
 
 /// Fetch and parse an extension manifest for [`install_extension`], turning a
@@ -482,7 +513,12 @@ fn merged_config(
 /// Reverse an [`install_config_merge`]: prune our marked hook entries out of the
 /// agent's config file, leaving the user's own settings intact. A missing file
 /// is a no-op. Returns whether the path was touched.
-fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> {
+///
+/// `legacy` also prunes JSON entries by the `session signal` command, which
+/// catches pre-stamp ones and a hook the user wrote themselves alike. Only
+/// uninstall asks for it; an install dropping a path it moved away from does
+/// not, because the user's hook there must still be there if they move back.
+fn revert_config_merge(m: &crate::session::ConfigMerge, legacy: bool) -> Result<bool, String> {
     let dest = crate::agent::extension_config::expand_tilde(&m.path);
     if !dest.exists() {
         return Ok(false);
@@ -499,7 +535,9 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
                 // and takes a hook the user wired to `session signal`
                 // themselves with it, as it always has.
                 crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
-                crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                if legacy {
+                    crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
+                }
                 serde_json::to_string_pretty(&doc)
                     .map_err(|e| format!("serialize {}: {e}", dest.display()))
             }
@@ -712,8 +750,7 @@ pub fn uninstall_extension(
 
     // Remove external hook files we still own (those carrying our managed marker).
     for f in &def.external_files {
-        let dest = crate::agent::extension_config::expand_tilde(&f.path);
-        if dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok() {
+        if remove_owned_external_file(f) {
             report.external_files_removed.push(f.path.clone());
         }
     }
@@ -721,7 +758,7 @@ pub fn uninstall_extension(
     // Prune our merged hook entries out of agents' own config files, leaving the
     // user's other settings intact.
     for m in &def.config_merges {
-        if revert_config_merge(m)? {
+        if revert_config_merge(m, true)? {
             report.config_merges_reverted.push(m.path.clone());
         }
     }

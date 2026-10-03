@@ -21,8 +21,8 @@ pub use automation::{
     AutomationSchedule, ExtraRepo, SchedulePreset,
 };
 pub use extension_def::{
-    AgentPatch, ConfigMerge, ConfigMergeFormat, ExtensionAutomation, ExtensionDef, ExtensionFile,
-    ExtensionSession, ExtensionSymlink, ExternalFile,
+    relocate_agent_dir, AgentPatch, ConfigMerge, ConfigMergeFormat, ExtensionAutomation,
+    ExtensionDef, ExtensionFile, ExtensionSession, ExtensionSymlink, ExternalFile,
 };
 pub use hook_def::{
     HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,

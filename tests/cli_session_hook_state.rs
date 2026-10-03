@@ -1174,3 +1174,153 @@ fn a_pane_thurbox_did_not_hand_a_path_is_unverifiable_not_healthy() {
     // has no hooks payload installed — so the level is what carries it.)
     assert_ne!(cli["level"], Value::String("fail".into()), "{cli}");
 }
+
+#[cfg(unix)]
+fn tick_with_home(root: &Path, env: &[(&str, &Path)]) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    cmd.args(["automation", "tick", "--json"])
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("XDG_DATA_HOME", root.join("home/.local/share"));
+    // Scrubbed as a namespace: `cargo test` runs inside a live thurbox session
+    // on a developer machine, and an inherited var would point this at it.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("THURBOX_") {
+            cmd.env_remove(&key);
+        }
+    }
+    for var in ["CODEX_HOME", "PI_CODING_AGENT_DIR", "COPILOT_HOME"] {
+        cmd.env_remove(var);
+    }
+    cmd.env("THURBOX_CONFIG_DIR", root.join("config"))
+        .env("THURBOX_DATA_DIR", root.join("data"));
+    // The tick polls pane options, so it gets a server of its own to find.
+    let server = TmuxServer::private("thurbox-hook-config-dirs");
+    server.scope(&mut cmd);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().expect("run thurbox-cli automation tick");
+    assert!(
+        out.status.success(),
+        "tick failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The status hooks land in the config dir each agent actually reads.
+///
+/// An agent whose config dir was moved by its own environment variable
+/// (`CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) never looks in the
+/// default one. The built-in hooks extension used to write only there — or,
+/// when the default dir did not exist, skip the agent as not installed — so a
+/// relocated agent reported nothing, silently. Run through the real binary with
+/// its own `HOME`, so no developer config is ever touched.
+#[cfg(unix)]
+#[test]
+fn hooks_follow_an_agents_relocated_config_dir() {
+    let root = tempfile::tempdir().expect("tempdir");
+    for sub in ["home", "config", "data"] {
+        std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
+    }
+    let codex = root.path().join("elsewhere/codex");
+    let pi = root.path().join("elsewhere/pi-agent");
+    let copilot = root.path().join("elsewhere/copilot");
+    for dir in [&codex, &pi, &copilot] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+
+    tick_with_home(
+        root.path(),
+        &[
+            ("CODEX_HOME", &codex),
+            ("PI_CODING_AGENT_DIR", &pi),
+            ("COPILOT_HOME", &copilot),
+        ],
+    );
+
+    for wired in [
+        codex.join("hooks.json"),
+        pi.join("extensions/thurbox-status.ts"),
+        copilot.join("hooks/thurbox-status.json"),
+    ] {
+        assert!(
+            wired.is_file(),
+            "{} was not written, so that agent reports nothing",
+            wired.display()
+        );
+    }
+    // And nothing was created where the relocated agents no longer look.
+    for default in [".codex", ".pi", ".copilot"] {
+        assert!(
+            !root.path().join("home").join(default).exists(),
+            "~/{default} was created for an agent that reads elsewhere"
+        );
+    }
+}
+
+/// Moving an agent's config dir between ticks takes thurbox's hooks out of the
+/// old one. Uninstall only reads the manifest the last install wrote, so a hook
+/// left behind in the dir the agent used to read would outlive the extension —
+/// and fire again the moment the variable is unset.
+#[cfg(unix)]
+#[test]
+fn hooks_leave_the_config_dir_an_agent_moved_away_from() {
+    let root = tempfile::tempdir().expect("tempdir");
+    for sub in ["home", "config", "data"] {
+        std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
+    }
+    let before = root.path().join("before");
+    let after = root.path().join("after");
+    let dirs = |base: &Path| {
+        let dirs = [base.join("codex"), base.join("pi"), base.join("copilot")];
+        for dir in &dirs {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+        dirs
+    };
+    let [codex_a, pi_a, copilot_a] = dirs(&before);
+    let [codex_b, pi_b, copilot_b] = dirs(&after);
+
+    let tick = |codex: &Path, pi: &Path, copilot: &Path| {
+        tick_with_home(
+            root.path(),
+            &[
+                ("CODEX_HOME", codex),
+                ("PI_CODING_AGENT_DIR", pi),
+                ("COPILOT_HOME", copilot),
+            ],
+        );
+    };
+    tick(&codex_a, &pi_a, &copilot_a);
+    let codex_hooks = codex_a.join("hooks.json");
+    assert!(
+        std::fs::read_to_string(&codex_hooks)
+            .unwrap()
+            .contains("session signal"),
+        "the first tick wires the first dir"
+    );
+    // A hook of the user's own beside ours, wired to the same command the
+    // README invites them to use. It is theirs, so moving the dir leaves it.
+    let mine = "thurbox-cli session signal --state blocked  # mine";
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(&codex_hooks).unwrap()).unwrap();
+    doc["hooks"]["Notification"] =
+        serde_json::json!([{ "hooks": [{ "type": "command", "command": mine }] }]);
+    std::fs::write(&codex_hooks, doc.to_string()).unwrap();
+    tick(&codex_b, &pi_b, &copilot_b);
+
+    let left = std::fs::read_to_string(&codex_hooks).unwrap();
+    assert!(
+        !left.contains("managed by thurbox"),
+        "codex's old hooks.json still carries thurbox's hooks: {left}"
+    );
+    assert!(left.contains(mine), "the user's own hook was taken: {left}");
+    for stale in [
+        pi_a.join("extensions/thurbox-status.ts"),
+        copilot_a.join("hooks/thurbox-status.json"),
+    ] {
+        assert!(!stale.exists(), "{} was left behind", stale.display());
+    }
+    assert!(codex_b.join("hooks.json").is_file());
+}
