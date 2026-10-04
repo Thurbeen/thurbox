@@ -1,6 +1,6 @@
 ---
 name: thurbox-demo-media
-description: Generating thurbox's demo media: the VHS tapes driven by scripts/demo/record.sh (currently stale, recorded against v1), the asciinema-based doom easter-egg recorder, and the tutorial screenshot recorder whose stills and prose must change together. Use when re-recording or editing demo GIFs/MP4s, the website media, or the tutorial screenshots.
+description: Generating thurbox's demo media: the hero demo recorder (scripts/demo/record-hero.sh, asciinema + a stand-in ssh for the remote host), the VHS tapes driven by scripts/demo/record.sh (currently stale, recorded against v1), the asciinema-based doom easter-egg recorder, and the tutorial screenshot recorder whose stills and prose must change together. Use when re-recording or editing demo GIFs/MP4s, the website media, or the tutorial screenshots.
 ---
 
 # Thurbox demo videos and screenshots
@@ -9,11 +9,28 @@ description: Generating thurbox's demo media: the VHS tapes driven by scripts/de
 
 ## Demo Video
 
+**The hero demo is its own recorder.** `scripts/demo/record-hero.sh` writes
+`media/thurbox-demo.{gif,mp4}` (the README GIF, the website's first video) and
+`website/assets/thurbox-demo-poster.webp` in one run. It is not a tape: thurbox
+runs under asciinema inside a private tmux server, `tmux send-keys` presses the
+real chords, and the context menu is opened by sending the SGR mouse report of a
+right press, which VHS cannot do. The remote host `devbox` is declared in the
+sandbox's `hosts.toml` and reached through a **stand-in `ssh`** on PATH that runs
+the command on this machine under devbox's own HOME and tmux socket directory —
+the same stand-in `tests/backend_routes.rs` uses, so everything past the `ssh`
+binary is the real remote path and nobody needs a second machine to rerun it.
+Every socket it creates has a name only it uses (`thurbox-hero*`), never
+`thurbox`, because its teardown kills them by name. agg needs a Nerd Font and
+Noto Sans Symbols 2 in `FONT_DIR` (the header says why only the first is named).
+The README GIF is a second agg pass at a smaller font, not an ffmpeg re-encode,
+which turned agg's change-only frames into ~66 MB of full frames.
+
 > **The VHS recordings are stale.** Every clip a tape produces was recorded against
 > v1 and shows panes the interface no longer has — code review, the file viewer, the
 > tasks and automations panels. The tapes themselves drive v1 chords, so they need
-> rewriting before re-recording is worth doing. Until then the website and README
-> advertise an interface that is gone. This is the most visible inaccuracy left.
+> rewriting before re-recording is worth doing. Until then the website's feature
+> clips and the README's session-creation and interface GIFs show an interface
+> that is gone.
 > `doom-easter-egg.mp4` is the exception: it is not a tape, and it was re-recorded
 > against v2 when Doom became a plugin (below).
 
@@ -47,7 +64,9 @@ is shared by every dev build, so without a private socket directory the cleanup
 `kill-server` would tear down dev sessions you have running.
 
 `.github/workflows/pages.yml` copies the mp4s into `website/assets/` at deploy time
-and `README.md` embeds the gifs, so regenerating them propagates everywhere.
+and `README.md` embeds the gifs, so regenerating them propagates everywhere. A
+clip whose dimensions change also changes the `width`/`height` on its `<video>`
+in `website/`, or the page reflows when it decodes.
 
 **The website's `iddqd` easter egg is a separate recording.**
 `scripts/demo/record-doom.sh` writes `media/doom-easter-egg.mp4` plus its

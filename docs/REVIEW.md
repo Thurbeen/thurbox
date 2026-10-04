@@ -30,8 +30,9 @@ slash matches by basename at any depth.
   — only the unreviewable part of `website/assets`: the tutorial stills that
   `scripts/demo/record-tutorial.sh` copies from `media/tutorial/`, the
   `ui-review` skill's captures, and the committed poster frames, which are
-  rasters carrying no reviewable diff (only the doom one has a producer in the
-  tree; the rest were committed by hand). Everything else there — `favicon.svg`,
+  rasters carrying no reviewable diff (only the doom and hero ones have a
+  producer in the tree, `record-doom.sh` and `record-hero.sh`; the rest were
+  committed by hand). Everything else there — `favicon.svg`,
   `logo*.svg`, `og-image.*`, the fonts — is hand-authored source and stays under
   review; an SVG is text and can carry a script element or an external
   reference.
