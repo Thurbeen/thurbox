@@ -523,6 +523,7 @@ fn a_right_press_off_the_rows_opens_the_panes_menu() {
         "New session",
         "Restore deleted",
         "Sort by name",
+        "Collapse all",
         "Hide panel",
     ] {
         assert!(text.contains(label), "{label} missing:\n{text}");
@@ -537,6 +538,130 @@ fn a_right_press_off_the_rows_opens_the_panes_menu() {
         !text.contains("Undo delete"),
         "nothing to undo yet:\n{text}"
     );
+}
+
+fn choose_menu_entry(host: &LuaHost, label: &str) -> String {
+    let text = menu_text(host).expect("menu is open");
+    let index = text
+        .lines()
+        .position(|line| line.contains(label))
+        .unwrap_or_else(|| panic!("{label} missing from menu:\n{text}"));
+    host.on_click(
+        index_of(host, "menu"),
+        &Click {
+            id: Some(format!("menu-{index}")),
+            role: Some("row".into()),
+            clicks: 1,
+            ..Click::default()
+        },
+    )
+    .expect("choose entry");
+    actions(host).pop().expect("menu issued an action")
+}
+
+#[test]
+fn right_click_folds_and_unfolds_every_host_and_repo() {
+    let mut snapshot = two_sessions();
+    let mut remote = row("gamma", "infra");
+    remote.backend = "ssh:buildbox".into();
+    remote.remote_host = Some("buildbox".into());
+    snapshot.sessions.push(remote);
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"));
+    publish(&host, &snapshot);
+    let sessions = index_of(&host, "sessions");
+    host.render(sessions, ctx()).expect("render");
+
+    let alpha = &snapshot.sessions[0].id;
+    host.on_context(sessions, &right_press_at(7, 4, Some(alpha)))
+        .expect("session menu");
+    let action = choose_menu_entry(&host, "Collapse all");
+    assert_eq!(action, "sessions.collapse_all");
+    host.on_action(sessions, &action).expect("collapse all");
+    let settings: Vec<_> = host
+        .drain_commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Setting { key, value } => Some((key, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(settings.len(), 2, "host and repo folds must both be saved");
+    let saved = |key: &str| {
+        settings
+            .iter()
+            .find(|(name, _)| name == key)
+            .and_then(|(_, value)| match value {
+                Some(thurbox::kernel::registry::Value::Text(value)) => Some(value.as_str()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {key} in {settings:?}"))
+    };
+    let hosts = saved("sessions.folded_hosts");
+    assert!(
+        hosts.contains("%00local") && hosts.contains("buildbox"),
+        "{hosts}"
+    );
+    let repos = saved("sessions.folded_repos");
+    for repo in ["thurbox", "website", "infra"] {
+        assert!(repos.contains(repo), "{repo} missing from {repos}");
+    }
+    let folded = format!(
+        "{:?}",
+        host.render(sessions, ctx()).expect("folded render").node
+    );
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(!folded.contains(name), "{name} stayed visible: {folded}");
+    }
+
+    host.on_context(sessions, &right_press_at(9, 20, None))
+        .expect("pane menu");
+    assert!(
+        !menu_text(&host).expect("menu").contains("Collapse all"),
+        "nothing remains expanded"
+    );
+    let action = choose_menu_entry(&host, "Expand all");
+    assert_eq!(action, "sessions.expand_all");
+    host.on_action(sessions, &action).expect("expand all");
+    let cleared: Vec<_> = host
+        .drain_commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Setting { key, value } => Some((key, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cleared.len(), 2);
+    assert!(cleared.iter().all(|(_, value)| matches!(
+        value,
+        Some(thurbox::kernel::registry::Value::Text(text)) if text.is_empty()
+    )));
+    let expanded = format!(
+        "{:?}",
+        host.render(sessions, ctx()).expect("expanded render").node
+    );
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(expanded.contains(name), "{name} stayed hidden: {expanded}");
+    }
+}
+
+#[test]
+fn a_partly_folded_list_offers_both_bulk_actions() {
+    let host = sessions_host();
+    let sessions = index_of(&host, "sessions");
+    host.on_click(
+        sessions,
+        &Click {
+            id: Some("host:\0local".into()),
+            clicks: 1,
+            ..Click::default()
+        },
+    )
+    .expect("fold local host");
+    host.on_context(sessions, &right_press_at(9, 20, None))
+        .expect("pane menu");
+    let text = menu_text(&host).expect("menu");
+    assert!(text.contains("Collapse all"), "{text}");
+    assert!(text.contains("Expand all"), "{text}");
 }
 
 #[test]
@@ -577,6 +702,8 @@ fn an_empty_list_offers_no_sort() {
     let text = menu_text(&host).expect("drawn");
     assert!(text.contains("New session"), "{text}");
     assert!(!text.contains("Sort by name"), "nothing to sort:\n{text}");
+    assert!(!text.contains("Collapse all"), "nothing to fold:\n{text}");
+    assert!(!text.contains("Expand all"), "nothing to unfold:\n{text}");
 }
 
 #[test]
@@ -671,13 +798,10 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     );
     host.render(sessions, ctx()).expect("render");
 
-    // Delete + worktree is the last entry.
-    let menu = index_of(&host, "menu");
-    for _ in 0..12 {
-        host.on_key(menu, &key("down")).expect("key");
-    }
-    host.on_key(menu, &key("enter")).expect("key");
-    assert_eq!(actions(&host), ["sessions.force_delete"]);
+    assert_eq!(
+        choose_menu_entry(&host, "Delete + worktree"),
+        "sessions.force_delete"
+    );
     // What the coordinator does with that command.
     host.on_action_with_args(sessions, "sessions.force_delete", &[("session_id", &beta)])
         .expect("action");
