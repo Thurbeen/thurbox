@@ -64,6 +64,12 @@ BOOT_SECS="${BOOT_SECS:-12}"
 POSTER_AT="${POSTER_AT:-4}"
 # Short and fixed: AF_UNIX socket paths are length-limited, and HOME is under it.
 SBX="${SBX:-/tmp/thurbox-hero}"
+# Every run starts with `rm -rf "$SBX"`, so an SBX pointed at a directory this
+# script did not make (`SBX=~`) must be refused rather than emptied.
+if [ -e "$SBX" ] && [ ! -e "$SBX/.thurbox-hero" ]; then
+    echo "error: $SBX exists and is not a sandbox this script made; refusing to wipe it" >&2
+    exit 1
+fi
 
 for bin in cargo git tmux sqlite3 python3 node asciinema agg ffmpeg; do
     command -v "$bin" >/dev/null 2>&1 || {
@@ -131,9 +137,13 @@ cleanup() {
     done
 }
 KEEP_SANDBOX= cleanup  # a kept sandbox is for inspecting the last run, not reusing it
-trap cleanup EXIT INT TERM
+# A trapped signal resumes the script once its handler returns, so INT and TERM
+# exit (which runs the EXIT trap) instead of tearing down and carrying on.
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 mkdir -p "$TMUX_TMPDIR" "$HOME" "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR" \
     "$DEVBOX_HOME" "$SBX/bin"
+touch "$SBX/.thurbox-hero"
 
 # --- devbox: the stand-in ssh ----------------------------------------------------
 cat > "$SBX/bin/ssh" <<SH
