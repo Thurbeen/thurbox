@@ -1,16 +1,17 @@
 #!/usr/bin/env sh
 # Regenerate ALL Thurbox demo media in one pass, using REAL coding-agent CLIs.
 #
-# This single script records every video pair under media/:
+# This single script records every feature clip under media/:
 #
-#   * thurbox-demo.{gif,mp4}            (agents.tape          — the hero demo)
 #   * thurbox-interface.{gif,mp4}       (interface.tape       — panes are files)
-#   * thurbox-file-manager.{gif,mp4}    (file-manager.tape)
-#   * thurbox-info-panel.{gif,mp4}      (info-panel.tape)
 #   * thurbox-theme.{gif,mp4}           (theme.tape)
 #   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
 #   * thurbox-fork.{gif,mp4}            (fork.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
+#
+# The hero demo (thurbox-demo.*) is not a tape: scripts/demo/record-hero.sh
+# records it, because it needs a right press and a remote host, neither of
+# which VHS can drive.
 #
 # Every clip drives the actual `claude`, `opencode`, `codex` and `antigravity` CLIs —
 # one per thurbox session — to showcase real multi-agent orchestration. No prompt
@@ -43,11 +44,9 @@
 
 set -eu
 
-# Tapes to record (stems of scripts/demo/<stem>.tape), hero first. `agents` is
-# the combined hero demo (media/thurbox-demo.*); the rest are per-feature
-# clips (`search`
-# -> search-demo.*, others -> thurbox-<stem>.*).
-ALL_TAPES="agents interface theme session-creation fork search"
+# Tapes to record (stems of scripts/demo/<stem>.tape): `search` ->
+# search-demo.*, others -> thurbox-<stem>.*.
+ALL_TAPES="interface theme session-creation fork search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
@@ -191,7 +190,7 @@ trap cleanup EXIT INT TERM
 #
 # The two example panes are rebound for the same reason: they declare F5 and F7.
 #
-# --- The example plugins, so the main clip shows them ------------------------
+# --- The example plugins, so the clips show them ----------------------------
 # `examples/` is not bundled, and the demo it forms is the clearest thing
 # thurbox has to show: two panes nobody shipped, stacked beside the agent by an
 # arrangement anybody can copy. Installed here so the recording is of the real
@@ -261,8 +260,7 @@ PYUI
 #   * It is self-demonstrating — the tool built with the tool.
 #
 # COPIED, not symlinked, and never the live checkout: the recording must not be
-# able to mutate your working tree (the review clip commits into a worktree of
-# this repo), and a fixed file list keeps successive recordings visually stable
+# able to mutate your working tree, and a fixed file list keeps successive recordings visually stable
 # even as the real repo moves on.
 DEMO_REPO="$DEMO_HOME/thurbox"
 mkdir -p "$DEMO_REPO"
@@ -310,9 +308,6 @@ git init -q "$DEMO_REPO"
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo add -A
 git -C "$DEMO_REPO" -c user.email=demo@thurbox -c user.name=demo \
     commit -q -m "chore: import thurbox tree"
-# The branch the initial commit landed on (master or main, per the host's git
-# config) — used as the code-review demo's worktree base.
-DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
 # --- A parent folder of several repos, for the "import as parent" demo --------
 # Lives under $HOME so the session-creation tape can type `~/projects` and have
@@ -461,84 +456,6 @@ for a in $AGENTS; do
         --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
 done
 
-# --- Code-review demo: a worktree session with a real committed diff ---------
-# The review view diffs <base>..HEAD of a session's worktree, so any tape that
-# opens the code-review view needs a session whose branch actually has changes.
-# Both the dedicated `code-review` clip and the hero `agents` demo (which now
-# showcases the review feature) use it. Create it LAST so restore leaves it
-# selected on launch (finish_adopted_session makes the last-restored session
-# active), on a worktree off the sample repo, then commit a small multi-file
-# change into that worktree so the Branch target shows a colourful diff. Gated on
-# those two tapes so the remaining clips stay fast / unchanged.
-# shellcheck disable=SC2086 # $TAPES is a space-separated list, split on purpose
-if printf '%s ' $TAPES | grep -Eq '(^| )(code-review|agents)( |$)'; then
-    echo "==> Seeding a worktree review session with a committed diff"
-    review_agent=$(printf '%s\n' $AGENTS | head -n1)
-    "$CLI_BIN" session create --name "harden-posix-quote" \
-        --repo-path "$DEMO_REPO" \
-        --agent "$review_agent" --worktree-branch "fix/posix-quote-newline" \
-        --base-branch "$DEMO_BASE_BRANCH" >/dev/null
-    # Resolve the worktree path thurbox created for the review branch.
-    REVIEW_WT=$(git -C "$DEMO_REPO" worktree list --porcelain \
-        | awk '/^worktree /{p=substr($0,10)}
-               $0=="branch refs/heads/fix/posix-quote-newline"{print p}')
-    if [ -n "$REVIEW_WT" ] && [ -f "$REVIEW_WT/src/shell.rs" ]; then
-        # A REAL, self-explanatory change: `posix_quote`'s own doc comment says it
-        # does not strip newlines and pushes that onto callers, so making it reject
-        # them (plus a test) reads as a genuine follow-up fix rather than demo
-        # filler. It also produces a diff that demonstrates the review view well —
-        # a modified function body, a new doc line, and a new test block, so the
-        # unified/side-by-side layouts and the syntax highlighting all have
-        # something to show. Applied with `patch`-free python so the edit is exact
-        # and fails loudly if the vendored file ever drifts.
-        # Raw strings (r""") so the Rust source's own backslashes need no
-        # re-escaping here: the heredoc is quoted, so python sees these bytes
-        # exactly as written.
-        python3 - "$REVIEW_WT/src/shell.rs" <<'PY'
-import sys
-path = sys.argv[1]
-src = open(path).read()
-anchor = r"""    if !s.is_empty() && s.chars().all(is_safe_shell_char) {"""
-guard = r"""    debug_assert!(
-        !s.contains('\n'),
-        "posix_quote received a newline; quote line-delimited input first"
-    );
-"""
-helper = r"""
-/// Whether `s` is safe to hand to [`posix_quote`] as a single shell word.
-///
-/// A newline would be re-split by a line-delimited protocol before the remote
-/// shell ever sees the quoting, so callers must reject it up front.
-pub fn is_quotable_word(s: &str) -> bool {
-    !s.contains('\n')
-}
-"""
-if anchor not in src:
-    sys.exit("posix_quote body not found - vendored src/shell.rs drifted")
-# Insert the guard at the top of posix_quote's body...
-src = src.replace(anchor, guard + anchor, 1)
-# ...and the new helper right after that function's closing brace.
-end = src.index(anchor)
-close = src.index("\n}\n", end) + len("\n}\n")
-src = src[:close] + helper + src[close:]
-open(path, "w").write(src)
-PY
-        cat >> "$REVIEW_WT/tests/architecture_rules.rs" <<'EOF'
-
-#[test]
-fn posix_quote_rejects_newlines() {
-    // A newline survives quoting and would be re-split by tmux control mode,
-    // so callers must screen it out before quoting.
-    assert!(thurbox::shell::is_quotable_word("feat/add-panel"));
-    assert!(!thurbox::shell::is_quotable_word("two\nlines"));
-}
-EOF
-        git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo add -A
-        git -C "$REVIEW_WT" -c user.email=demo@thurbox -c user.name=demo \
-            commit -q -m "fix(shell): reject newlines in posix_quote"
-    fi
-fi
-
 # --- Pre-seed a few tasks + an automation -----------------------------------
 # Unconditional, because the demo interface installed above puts the tasks pane
 # on screen in EVERY clip. It used to be gated on the `tasks` and `search` tapes,
@@ -646,7 +563,6 @@ done
 echo "==> Done. Updated media/ for tape(s):$([ "$TAPES" = "$ALL_TAPES" ] && echo " all" || echo " $TAPES")"
 for tape in $TAPES; do
     case "$tape" in
-        agents)      echo "    thurbox-demo.{gif,mp4}" ;;
         automations) echo "    automations-demo.{gif,mp4}" ;;
         tasks)       echo "    tasks-demo.{gif,mp4}" ;;
         search)      echo "    search-demo.{gif,mp4}" ;;

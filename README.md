@@ -16,6 +16,8 @@
   Antigravity, opencode, aider, or any CLI you describe yourself.
 - **A persistent multiplexer session behind every agent** — they survive crashes, restarts
   and reboots, so quit thurbox and every agent keeps working.
+- **Agents on other machines too** — sessions on a remote host over SSH, or in a WSL
+  distro, sit in the same list under their own host, beside the ones running here.
 - **One session, several repos** — put any of them on its own git worktree of a shared branch,
   so agents never fight over your checkout.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
