@@ -54,13 +54,13 @@ Move up, Move down, Delete, and Delete + worktree, each showing the chord bound
 to it. `j`/`k` or the arrows move, `enter` or a click runs the entry, and `esc` or
 a click anywhere else closes it.
 
-A right-click off a session row — on empty space or on a repo fold row
-— is about no session, so it opens the column's general menu instead: New
+A right-click on empty space is about no session, so it opens the column's
+general menu instead: New
 session, Restore deleted…, Sort by name, Undo delete and Hide panel. Sort is
 offered only when there are sessions and Undo only when there is a delete to
 undo: an entry that would do nothing is left out rather than shown dead.
-A right-click on a host row toggles its fold, just like a left-click. The
-general menu remains available on blank space and repo rows.
+A right-click on a host or repo row toggles its fold, just like a left-click.
+The general menu remains available on blank space.
 
 **Why run the pane's own actions?** Each entry goes back through the same action
 its chord fires, so the menu cannot drift from the keyboard: Delete still asks
@@ -291,7 +291,8 @@ moved fall back to creation order:
   A local-only list also has a foldable host row.
 - With `group_by_repo` on, each repo set has a selectable row within its host.
   Its fold state is independent of the host fold and of the same repo on another
-  host. `h` and `l` act on a selected repo row; clicking toggles it. Search
+  host. `h` and `l` act on a selected repo row; Enter, a click (a double-click
+  toggles once) and a right-click toggle it. Search
   temporarily reveals folded sessions, and accepting a result unfolds its repo.
   Folded repo identities are saved in `sessions.folded_repos`.
 
@@ -922,9 +923,9 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Enter` / click | Global search | Open the result, scrolled to the line | |
 | `Esc` | Global search | Close search and put back what was on screen | |
 | `Enter` | Session list | Focus terminal | |
-| `Enter` / click / right-click | Host row | Toggle fold (double-click toggles once) | |
-| `Left` | Session list | Select a session's host; on a host row, fold it | Tree navigation |
-| `Right` | Host row | Unfold it; if expanded, select its first session | Tree navigation |
+| `Enter` / click / right-click | Host or repo row | Toggle fold (double-click toggles once) | |
+| `Left` | Session list | Fold an expanded host or repo row; otherwise select the row's parent (session → repo → host) | Tree navigation |
+| `Right` | Host or repo row | Unfold it; if expanded, select its first child (host → repo → session) | Tree navigation |
 | `h` / `l` | Session list | Fold / unfold the selected host or repo | |
 | `H` / `L` | Session list | Fold / unfold all host and repo groups | |
 | `Home` / `g`, `End` / `G` | Session list | First / last visible row | Skip folded children |
