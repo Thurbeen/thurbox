@@ -5512,46 +5512,73 @@ fn repo_picker_fixture(profile: &Profile) {
     }
 }
 
-#[test]
-fn repo_picker_accepts_directory_kinds_and_path_spellings() {
+fn repo_picker_accepts_directory_path_spellings(directory: &str) {
     let mut refused = Vec::new();
-    for directory in ["plain", "repo", "repo/subdir", "bare", "worktree", "link"] {
-        for (absolute, slash) in [(false, false), (false, true), (true, false), (true, true)] {
-            let profile = Profile::new();
-            repo_picker_fixture(&profile);
-            let path = if absolute {
-                profile
-                    .path(&format!("home/{directory}"))
-                    .display()
-                    .to_string()
-            } else {
-                format!("~/{directory}")
-            };
-            let path = format!("{path}{}", if slash { "/" } else { "" });
-            let mut tui = open_repo_picker(&profile);
-            tui.send(format!("\t{path}").as_bytes());
-            tui.wait_until_quiet();
-            tui.send(b"\r");
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !repo_picker_selected(&tui.frame(), directory) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            let accepted = repo_picker_selected(&tui.frame(), directory);
-            eprintln!("{directory}: absolute={absolute}, slash={slash}, typed Enter: {accepted}");
-            if !accepted {
-                refused.push(format!(
-                    "{directory}, absolute={absolute}, slash={slash}: {}",
-                    tui.frame()
-                ));
-            }
-            assert!(tui.quit().success());
+    for (absolute, slash) in [(false, false), (false, true), (true, false), (true, true)] {
+        let profile = Profile::new();
+        repo_picker_fixture(&profile);
+        let path = if absolute {
+            profile
+                .path(&format!("home/{directory}"))
+                .display()
+                .to_string()
+        } else {
+            format!("~/{directory}")
+        };
+        let path = format!("{path}{}", if slash { "/" } else { "" });
+        let mut tui = open_repo_picker(&profile);
+        tui.send(format!("\t{path}").as_bytes());
+        tui.wait_until_quiet();
+        tui.send(b"\r");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !repo_picker_selected(&tui.frame(), directory) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(40));
         }
+        let accepted = repo_picker_selected(&tui.frame(), directory);
+        eprintln!("{directory}: absolute={absolute}, slash={slash}, typed Enter: {accepted}");
+        if !accepted {
+            refused.push(format!(
+                "{directory}, absolute={absolute}, slash={slash}: {}",
+                tui.frame()
+            ));
+        }
+        assert!(tui.quit().success());
     }
     assert!(
         refused.is_empty(),
         "refused directories:\n{}",
         refused.join("\n")
     );
+}
+
+#[test]
+fn repo_picker_accepts_plain_directory_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("plain");
+}
+
+#[test]
+fn repo_picker_accepts_git_root_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("repo");
+}
+
+#[test]
+fn repo_picker_accepts_repo_subdirectory_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("repo/subdir");
+}
+
+#[test]
+fn repo_picker_accepts_bare_repo_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("bare");
+}
+
+#[test]
+fn repo_picker_accepts_worktree_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("worktree");
+}
+
+#[test]
+fn repo_picker_accepts_symlinked_directory_path_spellings() {
+    repo_picker_accepts_directory_path_spellings("link");
 }
 
 #[test]
