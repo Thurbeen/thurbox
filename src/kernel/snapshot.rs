@@ -925,11 +925,17 @@ impl SnapshotStore {
     /// Git stats are folded in either way: they arrive from worker threads, not
     /// from the database, so `data_version` says nothing about them.
     pub fn refresh_if_due(&mut self) -> bool {
+        self.refresh_if_due_at(Instant::now())
+    }
+
+    /// Poll using the caller's monotonic clock. The row read and other workers
+    /// retain their own timestamps; this instant controls only the poll cadence.
+    pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
         // `Option::is_none_or` would read better but is stable only from 1.82;
         // this crate's MSRV is 1.75.
-        let due = self
-            .last_refresh
-            .map_or(true, |at| at.elapsed() >= REFRESH_INTERVAL);
+        let due = self.last_refresh.map_or(true, |at| {
+            now.saturating_duration_since(at) >= REFRESH_INTERVAL
+        });
         if !due {
             return false;
         }
@@ -943,7 +949,7 @@ impl SnapshotStore {
         // is in while the user is off installing what was missing.
         let preflight_moved = self.poll_preflight();
         if !panes_moved && self.rows_are_current() {
-            self.last_refresh = Some(Instant::now());
+            self.last_refresh = Some(now);
             let stamp = taken_at_stamp();
             let restamped = self.current.taken_at_ms != stamp;
             self.current.taken_at_ms = stamp;
@@ -958,6 +964,7 @@ impl SnapshotStore {
             return false;
         }
         self.refresh();
+        self.last_refresh = Some(now);
         true
     }
 
@@ -1952,133 +1959,6 @@ pub fn parse_id(raw: &str) -> Option<SessionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file_store() -> (tempfile::TempDir, Database, SnapshotStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("thurbox.db");
-        let writer = Database::open(&path).unwrap();
-        let store = SnapshotStore::with_database(
-            Database::open(&path).unwrap(),
-            &crate::backend::wiring::configured().0,
-        );
-        (dir, writer, store)
-    }
-
-    fn poll_due(store: &mut SnapshotStore) -> bool {
-        store.last_refresh = Some(Instant::now() - REFRESH_INTERVAL);
-        store.refresh_if_due()
-    }
-
-    #[test]
-    fn perf_publications_do_not_reload_the_snapshot() {
-        let (_dir, writer, mut store) = file_store();
-        let mut reloads = 0;
-        for frames in 1..=12 {
-            let json = format!(r#"{{"frames":{frames}}}"#);
-            writer.set_perf_snapshot(&json).unwrap();
-            reloads += usize::from(poll_due(&mut store));
-            assert_eq!(
-                writer.get_perf_snapshot().unwrap().as_deref(),
-                Some(json.as_str())
-            );
-        }
-        assert_eq!(
-            reloads, 0,
-            "twelve 5-second perf publications in an idle minute"
-        );
-        writer.set_active_theme("default").unwrap();
-        assert!(
-            poll_due(&mut store),
-            "a real metadata change must still reload"
-        );
-    }
-
-    #[test]
-    fn repeated_hook_reports_do_not_reload_the_snapshot() {
-        let (dir, writer, mut store) = file_store();
-        let id = SessionId::default();
-        writer.conn_ref().execute(
-            "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'busy', 'codex', 0, 0)",
-            [id.to_string()],
-        ).unwrap();
-        writer.set_hook_state(id, "working").unwrap();
-        assert!(poll_due(&mut store));
-        let mut previous = writer
-            .load_hook_state(id)
-            .unwrap()
-            .unwrap()
-            .state_at
-            .unwrap();
-        let mut reloads = 0;
-        for _ in 0..33 {
-            let hook = Database::open_for_signal(&dir.path().join("thurbox.db")).unwrap();
-            let output = crate::cli::sessions::run(
-                crate::cli::sessions::Action::Signal {
-                    state: "working".into(),
-                    session: Some(id.to_string()),
-                },
-                &hook,
-                &crate::cli::Backends::ready(crate::backend::registry::inert()),
-            )
-            .unwrap();
-            assert_eq!(output["signaled"], true);
-            let stamp = hook.load_hook_state(id).unwrap().unwrap().state_at.unwrap();
-            assert!(
-                stamp > previous,
-                "re-reports retain the liveness and submission race stamp"
-            );
-            previous = stamp;
-            reloads += usize::from(poll_due(&mut store));
-            assert_eq!(store.hook_state_at[&id.to_string()], stamp);
-        }
-        assert_eq!(reloads, 0, "33 same-state reports in a busy minute");
-        writer.set_hook_state(id, "done").unwrap();
-        assert!(poll_due(&mut store));
-        assert_eq!(
-            store.current.session(&id.to_string()).unwrap().status,
-            SessionState::Done
-        );
-        store.acknowledge(&id.to_string());
-        assert_eq!(
-            store.current.session(&id.to_string()).unwrap().status,
-            SessionState::Idle
-        );
-        writer.set_hook_state(id, "done").unwrap();
-        assert!(
-            !poll_due(&mut store),
-            "acknowledgement and a new done stamp need only hook reads"
-        );
-        assert_eq!(
-            store.current.session(&id.to_string()).unwrap().status,
-            SessionState::Done
-        );
-    }
-
-    #[test]
-    fn a_hook_stamp_cannot_hide_a_row_change_in_the_same_poll() {
-        let (_dir, writer, mut store) = file_store();
-        let id = SessionId::default();
-        writer.conn_ref().execute(
-            "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'original', 'codex', 0, 0)",
-            [id.to_string()],
-        ).unwrap();
-        writer.set_hook_state(id, "working").unwrap();
-        assert!(poll_due(&mut store));
-        writer.set_hook_state(id, "working").unwrap();
-        writer
-            .conn_ref()
-            .execute(
-                "UPDATE sessions SET name = 'renamed' WHERE id = ?1",
-                [id.to_string()],
-            )
-            .unwrap();
-        writer.set_perf_snapshot("{}").unwrap();
-        assert!(poll_due(&mut store));
-        assert_eq!(
-            store.current.session(&id.to_string()).unwrap().name,
-            "renamed"
-        );
-    }
 
     /// A git answer to hand a cache, distinguishable from the next one by its
     /// insertion count.

@@ -1056,10 +1056,12 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
             }
         }
     }
-    conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS snapshot_hook_stamp AFTER UPDATE ON sessions \
-         WHEN OLD.hook_state_at IS NOT NEW.hook_state_at OR OLD.seen_at IS NOT NEW.seen_at BEGIN \
-         UPDATE snapshot_versions SET hooks_version = hooks_version + 1 WHERE singleton = 1; END;",
-    )?;
+    if table_exists(conn, "sessions")? {
+        conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS snapshot_hook_stamp AFTER UPDATE ON sessions \
+             WHEN OLD.hook_state_at IS NOT NEW.hook_state_at OR OLD.seen_at IS NOT NEW.seen_at BEGIN \
+             UPDATE snapshot_versions SET hooks_version = hooks_version + 1 WHERE singleton = 1; END;",
+        )?;
+    }
     tx.commit()
 }
