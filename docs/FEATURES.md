@@ -288,8 +288,10 @@ moved fall back to creation order:
   unfolds its host so the selected session stays visible.
   Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
   they survive a restart. The host uses Nerd Font `` when the active theme
-  enables Nerd Font glyphs, and `▣` otherwise. SSH, WSL and Windows hosts have
-  text labels, and a status glyph and theme colour convey reachability.
+  enables Nerd Font glyphs, and `▣` otherwise. Text labels name the transport:
+  `local`, `ssh` or `WSL`. SSH hosts use the same label and glyph on Windows
+  and POSIX; platform is omitted to keep narrow sidebars compact. A status
+  glyph and theme colour convey reachability.
   A local-only list also has a foldable host row.
 - With `group_by_repo` on, each repo set has a selectable row within its host.
   Its fold state is independent of the host fold and of the same repo on another
