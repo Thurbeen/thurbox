@@ -300,6 +300,13 @@ moved fall back to creation order:
   temporarily reveals folded sessions, and accepting a result unfolds its repo.
   Folded repo identities are saved in `sessions.folded_repos`.
 
+**Why groups are not indented.** Host rows, repo rows and sessions put their
+marker (fold arrow or status dot) in the same column. When rows were indented
+by level, the repo row sat further right than its own sessions, so the nesting
+read backwards. A host row is set apart by a rule that runs up to its
+right-aligned counts. When the panel is too narrow for the rule, the counts
+trail the label as on any other row.
+
 **Why local has a host row.** Local work can be folded by the same gesture as
 remote work. It stays first, and the cursor initially selects the first session
 instead of the host handle. A creation in flight also gets its host handle.
