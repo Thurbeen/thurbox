@@ -568,6 +568,9 @@ impl App {
             .host
             .shared_string("selected")
             .or_else(|| self.focused_session.clone());
+        if self.diffs.retain_selected(wanted.as_deref()) {
+            self.note_data_change();
+        }
         if let Some(id) = wanted {
             if let Some(row) = self.snapshots.current().session(&id) {
                 if let Some(cwd) = row.cwd.clone() {
@@ -627,7 +630,7 @@ impl App {
             self.metrics.sample(self.metric_subjects());
         }
         if self.metrics.poll() {
-            self.note_data_change();
+            self.dirty = true;
         }
     }
 
@@ -668,10 +671,9 @@ impl App {
         // resizes its own pane to its real rect when it paints.
         let (cols, rows) = self.screen_size;
         self.terminals.sync(self.snapshots.current(), rows, cols);
-        // New agent output, noticed the way v1 notices it: one lock-free sum
-        // of atomics per iteration, marking the screen dirty. Without this a
-        // printing agent is drawn only when the 250ms floor comes round.
-        let output_gen = self.terminals.output_generation();
+        // Only painted surfaces owe output frames. Hidden panes keep parsing,
+        // and their metadata still travels through the snapshot and meta gates.
+        let output_gen = self.terminals.visible_output_generation();
         if output_gen != self.last_output_gen {
             self.last_output_gen = output_gen;
             self.last_activity = Instant::now();

@@ -1997,42 +1997,49 @@ impl Terminals {
         self.pane(surface)?.output_seq_cell()
     }
 
-    /// A cheap signature of every live pane's output so far.
-    ///
-    /// **The redraw signal for the loop**, and the reason it exists rather than
-    /// the per-surface stamp below: a frame is only painted when something marked
-    /// the screen dirty, and nothing marked it dirty when an agent printed. The
-    /// per-surface check runs *inside* the paint, so it could say a frame had
-    /// changed but never cause one — leaving output to appear at the 250ms floor
-    /// instead of at once. v1 sums its panes' output stamps in its loop the same
-    /// way (`App::detect_output_redraw`).
-    ///
-    /// Shell panes are included: a shell is a surface you watch too, and its
-    /// output has exactly the same claim on a repaint.
-    ///
-    /// Summed from each pane's output sequence rather than its millisecond
-    /// stamp: the stamp could not move for a second chunk inside the same
-    /// millisecond, so a frame painted between the two left the second one
-    /// undrawn until something else printed.
+    /// Output generation of every attached pane, including hidden search sources.
     pub fn output_generation(&self) -> u64 {
-        // The sequence moves when a grid is rebuilt too, so a pane shown again
-        // gets the frame that shows it.
         let sessions = self.live.values().fold(0u64, |acc, live| {
-            let shell = live
-                .session
-                .shell_pane
-                .as_ref()
-                .map(|pane| pane.output_seq())
-                .unwrap_or(0);
-            acc.wrapping_add(live.session.output_seq())
-                .wrapping_add(shell)
+            acc.wrapping_add(live.session.output_seq()).wrapping_add(
+                live.session
+                    .shell_pane
+                    .as_ref()
+                    .map_or(0, |pane| pane.output_seq()),
+            )
         });
-        // A plugin's program is summed in too, or a frame would only be painted at
-        // the forced-redraw floor while it produced output — which for a full-screen program is
-        // the difference between playable and not.
         self.programs.values().fold(sessions, |acc, slot| {
             acc.wrapping_add(slot.pane.output_seq())
         })
+    }
+
+    /// Redraw generation of the surfaces painted in the last frame.
+    ///
+    /// Hidden panes still parse output, but their cells cannot change the
+    /// screen. A newly shown surface restores its grid through the normal
+    /// paint path; input and layout changes already owe that first frame.
+    pub fn visible_output_generation(&self) -> u64 {
+        let sessions = self.live.values().fold(0u64, |acc, live| {
+            let agent = if live.agent.on_screen() {
+                live.session.output_seq()
+            } else {
+                0
+            };
+            let shell = if live.shell.on_screen() {
+                live.session
+                    .shell_pane
+                    .as_ref()
+                    .map_or(0, |pane| pane.output_seq())
+            } else {
+                0
+            };
+            acc.wrapping_add(agent).wrapping_add(shell)
+        });
+        self.programs
+            .values()
+            .filter(|slot| slot.painted.on_screen())
+            .fold(sessions, |acc, slot| {
+                acc.wrapping_add(slot.pane.output_seq())
+            })
     }
 
     /// Milliseconds since a session last produced output, if attached.

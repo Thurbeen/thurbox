@@ -494,6 +494,10 @@ pub struct Epoch {
     /// to prevent — so the fact travels in a group of its own that costs one
     /// small table.
     pub printing: u64,
+    /// The published wall clock; only its readers invalidate on a tick.
+    pub taken_at: u64,
+    /// `Metrics::version`; only its readers invalidate on a sample.
+    pub metrics: u64,
 }
 
 /// The versions one group is built from, compared exactly.
@@ -557,21 +561,29 @@ struct CachedTree {
     rendered: Rendered,
     /// Whether the render that produced `rendered` read `ctx.elapsed`.
     reads_clock: bool,
+    reads_sample: u8,
 }
 
 impl CachedTree {
     /// Whether this tree answers for `want`.
     ///
-    /// The animation clock is compared only for a tree that read it. Masked on
+    /// Volatile inputs are compared only for a tree that read them. Masked on
     /// *both* sides rather than skipped on one, so the comparison stays a plain
     /// equality and cannot drift as `TreeKey` grows.
     fn answers(&self, want: &TreeKey) -> bool {
-        if self.reads_clock {
-            return self.key == *want;
-        }
         let (mut mine, mut theirs) = (self.key, *want);
-        mine.0.animation = 0;
-        theirs.0.animation = 0;
+        if !self.reads_clock {
+            mine.0.animation = 0;
+            theirs.0.animation = 0;
+        }
+        if self.reads_sample & api::READ_TAKEN_AT == 0 {
+            mine.0.taken_at = 0;
+            theirs.0.taken_at = 0;
+        }
+        if self.reads_sample & api::READ_METRICS == 0 {
+            mine.0.metrics = 0;
+            theirs.0.metrics = 0;
+        }
         mine == theirs
     }
 }
@@ -597,6 +609,8 @@ impl Epoch {
             data: n,
             animation: n,
             printing: n,
+            taken_at: n,
+            metrics: n,
         }
     }
 }
@@ -757,6 +771,7 @@ pub struct LuaHost {
     /// know.
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
+    sample_read: Rc<std::cell::Cell<u8>>,
     /// Published groups, each with the epoch it was built at.
     ///
     /// The outer `thurbox` table is still assembled fresh every frame from
@@ -886,6 +901,7 @@ impl LuaHost {
             trees: RefCell::new(HashMap::new()),
             clock: Rc::new(std::cell::Cell::new(0.0)),
             clock_read: Rc::new(std::cell::Cell::new(false)),
+            sample_read: Rc::new(std::cell::Cell::new(0)),
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
@@ -967,6 +983,7 @@ impl LuaHost {
             self.state_version.clone(),
             self.clock.clone(),
             self.clock_read.clone(),
+            self.sample_read.clone(),
             self.store_writes.clone(),
         )
         .map_err(|e| e.to_string())?;
@@ -1493,14 +1510,14 @@ impl LuaHost {
     /// it in the same batch must read the finished text — but rerunning the
     /// whole republish per drag report is the expensive path (terminal sync,
     /// links, search, trust, inventory), and none of that moved. This patches
-    /// the one scalar in place, exactly as a full publish writes it (`raw_set`,
+    /// the one scalar in place, through the published table proxy (`set`,
     /// so no `state_version` bump — a pure pane reading `selection` is
     /// deliberately not invalidated, matching the field's last-painted
     /// contract). A no-op before the first publish, when the global is still
     /// absent.
     pub fn set_published_selection(&self, selection: &str) {
         if let Ok(table) = self.lua.globals().get::<Table>("thurbox") {
-            let _ = table.raw_set("selection", selection);
+            let _ = table.set("selection", selection);
         }
     }
 
@@ -1974,6 +1991,7 @@ impl LuaHost {
         // below, so that reading it is observable. See `CachedTree`.
         self.clock.set(ctx.elapsed);
         self.clock_read.set(false);
+        self.sample_read.set(0);
         api::attach_clock(&self.lua, &table).map_err(|e| fail(e.to_string()))?;
         table
             .set("frame", ctx.frame)
@@ -2010,6 +2028,7 @@ impl LuaHost {
                         // the flag and the tree can never describe different
                         // versions of the pane.
                         reads_clock: self.clock_read.get(),
+                        reads_sample: self.sample_read.get(),
                     },
                 );
             }

@@ -934,14 +934,13 @@ impl SnapshotStore {
         if !panes_moved && self.rows_are_current() {
             self.last_refresh = Some(Instant::now());
             let stamp = taken_at_stamp();
-            let restamped = self.current.taken_at_ms != stamp;
             self.current.taken_at_ms = stamp;
             // Git stats landing rewrite rows here, so this branch changes more
             // than the timestamp — the unconditional bump it replaced covered both,
             // and dropping it without asking would have published a session's
             // new counts only on the next unrelated refresh.
             let git_moved = self.attach_git_stats();
-            if restamped || git_moved || preflight_moved {
+            if git_moved || preflight_moved {
                 self.mark_changed();
             }
             return false;
@@ -2564,6 +2563,22 @@ mod tests {
             published.detected_agent, None,
             "a pane verdict cached before a hook onset seen through another \
              connection must not publish once the row reports for itself"
+        );
+    }
+    #[test]
+    fn idle_clock_does_not_invalidate_snapshot_rows() {
+        let database = Database::open_in_memory().unwrap();
+        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        store.refresh();
+        let version = store.version();
+        store.current.taken_at_ms = 0;
+        store.last_refresh = Some(Instant::now() - REFRESH_INTERVAL);
+        store.refresh_if_due();
+        assert!(store.current.taken_at_ms > 0);
+        assert_eq!(
+            store.version(),
+            version,
+            "the clock alone invalidated every snapshot reader"
         );
     }
 }

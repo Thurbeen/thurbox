@@ -94,6 +94,7 @@ pub struct Subject {
 
 /// Everything the info panel reads, and the workers that keep it current.
 pub struct Metrics {
+    version: u64,
     system: SystemMetrics,
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
@@ -114,6 +115,7 @@ impl Metrics {
         let (tx, rx) = channel();
         let (usage_tx, usage_rx) = channel();
         Self {
+            version: 0,
             system: SystemMetrics::default(),
             resources: HashMap::new(),
             agents: HashMap::new(),
@@ -126,6 +128,11 @@ impl Metrics {
             usage_tx,
             usage_rx,
         }
+    }
+
+    /// Serial of the latest accepted sample, independent of other workers.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn system(&self) -> SystemMetrics {
@@ -290,6 +297,9 @@ impl Metrics {
         while let Ok((key, usage)) = self.usage_rx.try_recv() {
             self.usage.insert(key, usage);
             changed = true;
+        }
+        if changed {
+            self.version = self.version.wrapping_add(1);
         }
         changed
     }

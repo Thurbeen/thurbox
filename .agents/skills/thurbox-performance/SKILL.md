@@ -39,8 +39,9 @@ only that surface repainted (`paint_echo_frame`) — rapid keys queue successive
 output sequences rather than replacing one pending wait; one such frame per
 key, and declined whenever anything is drawn over the panes. What marks the screen dirty:
 any input, a resize, a reload, a worker result, and **new agent output** —
-`Terminals::output_generation` is summed each iteration, which is what stops a
-printing agent being drawn at 4 fps. It sums each pane's `output_seq`, bumped
+`Terminals::visible_output_generation` sums only the surfaces painted last
+frame, so visible output is responsive while hidden output owes no frame.
+The all-pane `output_generation` still invalidates content search (ADR-P29). It sums each pane's `output_seq`, bumped
 after the parse, never the millisecond `last_output_at`: that stamp was stored
 before the parse and cannot tell two chunks in one millisecond apart. What does **not**: background housekeeping.
 A command answering `Command::is_housekeeping()` (the 5-second deleted-session
@@ -123,7 +124,7 @@ painted frame and **once per input batch**, not once per event: a held-down key
 otherwise paid for it per repeat. Within it **every** group is **gated on a
 change-signal** (`SnapshotStore::version`, `Themes`/`Registry::version`,
 `Terminals::meta_version`/`failed_version`, and the loop's `data_epoch` — which
-moves on every worker result and command transition and deliberately never on
+moves on worker results other than metrics and on command transitions, never on
 agent output, so a streaming turn reuses `diffs`, `links`, `content`,
 `commands` and `metrics` whole; the parameterised reads pair the epoch with a
 digest of the question, which is also what gives their tables the stable
@@ -153,6 +154,13 @@ instead. Detected rather than declared on purpose: a declaration defaulting to
 itself slows its input poll to `IDLE_TICK` once nothing has happened for
 `QUIESCENT_AFTER` — free, because `event::poll` returns the instant an event
 arrives, so only things that never wake the thread are delayed.
+
+The wall clock and metrics sample have their own epoch fields (ADR-P29).
+Reads of `thurbox.taken_at_ms` and `thurbox.metrics` are observed, so only pure
+trees that read them invalidate on those ticks; raw reads and iteration remain
+available. Diff publication uses `DiffStore::version`, and a byte-identical
+recompute renews the TTL without republishing. Only the selected answer is held;
+request serials discard workers for a selection or request that was retired.
 
 The reads in `republish` that touch a screen or the
 disk carry the age above (ADR-P14): link extraction is keyed on that session's

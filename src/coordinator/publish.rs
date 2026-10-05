@@ -91,6 +91,8 @@ impl App {
                 data: self.data_epoch,
                 animation: self.animation_tick,
                 printing: self.terminals.printing_version(),
+                taken_at: self.snapshots.current().taken_at_ms as u64,
+                metrics: self.metrics.version(),
             },
             snapshot: self.snapshots.current(),
             attach_errors: &attach_errors,

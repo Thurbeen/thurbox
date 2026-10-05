@@ -83,6 +83,7 @@ SCROLLBACK=""
 # to keep typing it (erase, retype) for the whole window. Empty = search closed.
 SEARCH=""
 TYPING=0
+FOCUS_LAST=0
 # Prebuilt binaries to measure instead of building this checkout -- how an
 # older release is measured with the same harness.
 PREBUILT=""
@@ -98,6 +99,7 @@ usage: perf-run.sh [options]
   -u N        a URL every N printed lines (default 12; 0 = never)
   -w N        mark N sessions `working`, so the animation clock runs (default 0);
               a non-printing one animates a progress line, as a real agent does
+  --focus-last  select the last session (quiet when -p is smaller than -n)
   --idle      nothing prints — measures the settled floor
   --debug     measure the dev profile instead of release
   --no-perf-log  run without THURBOX_PERF_LOG (CPU only, no percentiles) --
@@ -127,6 +129,7 @@ while [ $# -gt 0 ]; do
         --typing) TYPING=1; shift ;;
         --bin-dir) PREBUILT="$2"; shift 2 ;;
         --idle) PRINTING=0; shift ;;
+        --focus-last) FOCUS_LAST=1; shift ;;
         --debug) PROFILE=dev; shift ;;
         --no-perf-log) PERF_LOG=0; shift ;;
         --json) JSON=1; shift ;;
@@ -359,6 +362,11 @@ done
 for id in $WORKING_IDS; do
     THURBOX_SESSION="$id" thurbox-cli session signal --state working >/dev/null
 done
+
+if [ "$FOCUS_LAST" = "1" ]; then
+    last_id="$(echo "$created" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+    thurbox-cli session focus "$last_id" >/dev/null
+fi
 
 # Settle: adopting a pane, taking the first snapshot and painting the first
 # frame are startup, not steady state. Measuring across them would report the

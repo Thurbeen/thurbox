@@ -30,9 +30,8 @@ fn a_snapshot_refresh_moves_the_version() {
 
 #[test]
 fn every_refresh_moves_it_again() {
-    // `taken_at_ms` is published and rendered as "5s ago", so even a refresh
-    // that finds identical rows has changed something a plugin reads. A
-    // version that only moved on *row* changes would freeze that label.
+    // An explicit refresh replaces the rows. The clock-only idle path has
+    // its own signal, tested separately below and in the snapshot tests.
     let db = Database::open_in_memory().expect("db");
     let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
 
@@ -1226,4 +1225,128 @@ fn the_bundled_centre_pane_is_not_re_rendered_by_the_clock() {
         settled,
         "the session list was served a cached tree across the tick its spinner moves on"
     );
+}
+
+#[test]
+fn an_unrelated_worker_result_keeps_the_diff_table() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("plugins")).unwrap();
+    std::fs::write(
+        dir.path().join("plugins/10_probe.lua"),
+        r#"local last
+    return { name = "probe", slot = "center", render = function()
+        local same = last == nil or rawequal(last, thurbox.diffs)
+        last = thurbox.diffs
+        return { text = tostring(same) }
+    end }"#,
+    )
+    .unwrap();
+    let host = LuaHost::new(dir.path());
+    let themes = Themes::load(None);
+    let mut epoch = Epoch::default();
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(probe(&host).contains("true"));
+    epoch.data += 1;
+    publish_at(&host, epoch, &Snapshot::default(), &themes);
+    assert!(
+        probe(&host).contains("true"),
+        "an unrelated result rebuilt the diff table"
+    );
+}
+
+#[test]
+fn idle_samples_only_rebuild_their_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("plugins")).unwrap();
+    for (name, expression) in [
+        ("static", "'unchanged'"),
+        ("clock", "tostring(thurbox.taken_at_ms)"),
+        ("metrics", "tostring(thurbox.metrics.system.cpu_percent)"),
+    ] {
+        std::fs::write(dir.path().join(format!("plugins/{name}.lua")), format!(
+            "local calls = 0; return {{name = '{name}', slot = '{name}', pure = true, render = function() calls = calls + 1; return {{text = tostring(calls) .. ':' .. {expression}}} end}}"
+        )).unwrap();
+    }
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    let themes = Themes::load(None);
+    let mut snapshot = Snapshot::default();
+    let mut epoch = Epoch::default();
+    for second in 0..=60 {
+        snapshot.taken_at_ms = second * 1000;
+        epoch.taken_at = second as u64;
+        epoch.metrics = second as u64;
+        publish_at(&host, epoch, &snapshot, &themes);
+        for _ in 0..4 {
+            for name in ["static", "clock", "metrics"] {
+                tree_of(&host, name);
+            }
+        }
+    }
+    let static_tree = tree_of(&host, "static");
+    let clock_tree = tree_of(&host, "clock");
+    let metrics_tree = tree_of(&host, "metrics");
+    eprintln!("idle minute: static={static_tree}, clock={clock_tree}, metrics={metrics_tree}");
+    assert!(
+        static_tree.contains("\"1:unchanged\""),
+        "idle samples rebuilt a pane that reads neither"
+    );
+    assert!(
+        clock_tree.contains("61:60000"),
+        "the clock reader must stay live"
+    );
+    assert!(
+        metrics_tree.contains("61:"),
+        "the metrics reader must stay live"
+    );
+}
+
+#[test]
+fn selecting_another_session_releases_the_previous_diff() {
+    let mut diffs = thurbox::kernel::diff::DiffStore::new();
+    diffs.set_for_test("old", thurbox::kernel::diff::Diff::Failed("held".into()));
+    diffs.request("new", "/no/such/repo".into(), None, "local-tmux");
+    assert!(
+        diffs.get("old").is_none(),
+        "a previous selection's diff is still retained"
+    );
+    assert!(
+        diffs.get("new").is_some(),
+        "the new selection must be published as pending"
+    );
+}
+
+#[test]
+fn observed_publication_preserves_raw_reads_and_iteration() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("plugins")).unwrap();
+    std::fs::write(dir.path().join("plugins/10_probe.lua"), r#"return {name = "probe", slot = "center", render = function()
+        local fields = {}
+        for key, value in pairs(thurbox) do fields[key] = value end
+        local next_fields = {}
+        local key, value = next(thurbox)
+        while key do
+            next_fields[key] = value
+            key, value = next(thurbox, key)
+        end
+        local a = rawget(thurbox, "taken_at_ms") == 1234 and fields.taken_at_ms == 1234 and next_fields.taken_at_ms == 1234
+        local b = rawequal(rawget(thurbox, "metrics"), thurbox.metrics) and rawequal(fields.metrics, thurbox.metrics)
+        rawset(thurbox, "custom", "kept")
+        local c = thurbox.custom == "kept" and rawget(thurbox, "custom") == "kept"
+        local plain = { value = 7 }
+        local d = rawget(plain, "value") == 7 and rawset(plain, "value", 8) == plain and plain.value == 8
+        return {text = tostring(a and b and c and d)}
+    end}"#).unwrap();
+    let host = LuaHost::new(dir.path());
+    let themes = Themes::load(None);
+    publish_at(
+        &host,
+        Epoch::default(),
+        &Snapshot {
+            taken_at_ms: 1234,
+            ..Default::default()
+        },
+        &themes,
+    );
+    assert!(probe(&host).contains("true"));
 }
