@@ -819,6 +819,127 @@ fn settings_renders_what_the_bundled_plugins_declare() {
     assert!(screen.contains(&first.id), "{screen}");
 }
 
+/// The settings modal drawn over a screen already full of `#`, so a cell the
+/// modal fails to paint shows up as one.
+fn settings_over_noise(registry: &Registry, width: u16, height: u16) -> Vec<String> {
+    use ratatui::widgets::Paragraph;
+
+    let themes = Themes::load(None);
+    let mut modals = Modals::default();
+    modals.toggle(ModalKind::Settings);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let noise = "#".repeat(usize::from(width) * usize::from(height));
+            frame.render_widget(
+                Paragraph::new(noise).wrap(ratatui::widgets::Wrap { trim: false }),
+                frame.area(),
+            );
+            modals.render(
+                frame,
+                frame.area(),
+                registry,
+                &themes,
+                &Default::default(),
+                Files {
+                    rows: &[],
+                    dir: "ui",
+                },
+            );
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// The text between a modal line's two side borders, or `None` for a line the
+/// modal does not span.
+fn inside_borders(line: &str) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let left = chars.iter().position(|c| *c == '│')?;
+    let right = chars.iter().rposition(|c| *c == '│')?;
+    (right > left).then(|| chars[left + 1..right].iter().collect())
+}
+
+/// Regression: the value column was sized to the widest value of all, so one
+/// long text value — the session list's `folded_repos`, a few hundred
+/// characters once a handful of repos are folded — pushed every other row's
+/// value past the modal's edge and left each description a lone `…`.
+#[test]
+fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
+    let host = host();
+    let (bindings, mut settings) = host.declarations();
+    let long = (0..12)
+        .map(|n| format!("repo%3Ahost-{n}%01project-{n}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    for setting in &mut settings {
+        if setting.id == "folded_repos" {
+            setting.value = Value::Text(long.clone());
+        }
+    }
+    let mut registry = Registry::default();
+    registry.declare(bindings, settings);
+
+    for width in [80, 160] {
+        let screen = settings_over_noise(&registry, width, 60);
+        let joined = screen.join("\n");
+        let row = |id: &str| -> String {
+            screen
+                .iter()
+                .find(|line| line.contains(&format!(" {id} ")))
+                .and_then(|line| inside_borders(line))
+                .unwrap_or_else(|| panic!("no `{id}` row at {width} columns:\n{joined}"))
+        };
+
+        for id in ["features.soft_delete", "features.mouse", "group_by_repo"] {
+            let line = row(id);
+            let value = line.trim_end();
+            assert!(
+                value.ends_with(" on") || value.ends_with(" off"),
+                "`{id}` shows no value at {width} columns: {line:?}\n{joined}"
+            );
+        }
+        let scrollback = row("scrollback_lines");
+        assert!(
+            scrollback.contains('‹') && scrollback.trim_end().ends_with('›'),
+            "the stepper is cut off at {width} columns: {scrollback:?}\n{joined}"
+        );
+        // Descriptions get the room the value column no longer takes.
+        assert!(
+            row("features.mouse").contains("mouse"),
+            "no description at {width} columns\n{joined}"
+        );
+
+        let folded = row("folded_repos");
+        assert!(
+            folded.trim_end().ends_with('…'),
+            "the long value is not truncated in its column at {width} columns: \
+             {folded:?}\n{joined}"
+        );
+        assert!(
+            folded.contains("Folded repos"),
+            "the long value ate its own description at {width} columns: {folded:?}"
+        );
+
+        // The modal clears every cell it covers: no `#` between its borders.
+        for line in &screen {
+            if let Some(inner) = inside_borders(line) {
+                assert!(
+                    !inner.contains('#'),
+                    "background shows through at {width} columns: {line:?}\n{joined}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
