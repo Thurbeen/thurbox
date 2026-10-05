@@ -327,7 +327,7 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━⠇○◆●○┓",
-            "┃ ▾ ●⌂ local  !2  5 sessions · 1 active┃",
+            "┃ ▾ ●⌂ local  !2 ─────────── 5 sessions┃",
             "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ○ └ ⑂ fix-osc52-tests                ┃",
@@ -362,7 +362,7 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━⠇●○○┓",
-            "┃ ▾ ●⌂ local  !1  3 sessions · 1 active┃",
+            "┃ ▾ ●⌂ local  !1 ─────────── 3 sessions┃",
             "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ● ⑂ perf-cache                       ┃",
@@ -392,7 +392,7 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━⠇●○┓",
-            "┃ ▾ ●▣ ssh buildbox  !1  3 sessions · …┃",
+            "┃ ▾ ●▣ ssh buildbox  !1 ──── 3 sessions┃",
             "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⇅ ⑂ fix-osc52                      ┃",
             "┃ ● ⇅ ⑂ perf-cache                     ┃",
@@ -408,7 +408,7 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
-            "┃ ▸ ●▣ ssh buildbox  !1  3 sessions · …┃",
+            "┃ ▸ ●▣ ssh buildbox  !1 ──── 3 sessions┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -582,6 +582,41 @@ fn the_selection_is_a_style_and_moves_with_j() {
     "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨Cyan/Reset/BOLD⟩┃",
     "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩ ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                            ⟨Cyan/Reset/BOLD⟩┃",
     "⟨Cyan/Reset/BOLD⟩┃⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨Cyan/Reset/BOLD⟩┃",
+        ],
+    );
+}
+
+#[test]
+fn a_host_row_with_no_room_for_its_rule_keeps_the_session_total_whole() {
+    // One column short of a rule: the fallback trails the short note, which
+    // fits exactly, rather than truncating the long one.
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            remote_row("a", "thurbox", "working", "abcdefghijklmnop"),
+            remote_row("b", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("c", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("d", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("e", "thurbox", "idle", "abcdefghijklmnop"),
+        ]),
+    );
+    let frame = text(&paint(&host, "sessions", 40, 10, true));
+    assert_eq!(frame[1], "┃ ▾ ●▣ ssh abcdefghijklmnop  5 sessions┃", "{frame:#?}");
+}
+
+#[test]
+fn a_selected_host_row_is_one_bar_rule_included() {
+    // The rule names a muted foreground. Under the bar it must yield like every
+    // other span on the row, or it punches a dim hole in the selection.
+    let host = host();
+    publish(&host, &sample());
+    press(&host, "sessions", 'k');
+    press(&host, "sessions", 'k');
+    assert_frame(
+        &[style_runs(&paint(&host, "sessions", 40, 12, true), 1)],
+        &[
+    "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ▾ ●⌂ local  !2 ─────────── 5 sessions⟨Cyan/Reset/BOLD⟩┃",
         ],
     );
 }

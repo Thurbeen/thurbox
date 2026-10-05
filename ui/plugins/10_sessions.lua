@@ -311,7 +311,8 @@ end
 
 local function host_line(item, width, selected)
   local counts = item.counts
-  local details = counts.total == 1 and "1 session" or counts.total .. " sessions"
+  local total = counts.total == 1 and "1 session" or counts.total .. " sessions"
+  local details = total
   if counts.working > 0 then
     details = details .. " · " .. counts.working .. " active"
   end
@@ -341,24 +342,28 @@ local function host_line(item, width, selected)
     return nil
   end or nil })
   local glyph = local_host and "⌂" or thurbox.theme.nerd_font and "" or "▣"
-  -- Every row's marker shares column 1, so nesting is never read off the
-  -- indent: a host would otherwise sit left of its repos, and their sessions
-  -- left of both. The host tells itself apart by the rule instead.
+  -- Every row's marker shares column 1. Indenting by level put a repo's marker
+  -- right of its own sessions' dots, so the nesting read backwards; the host
+  -- tells itself apart by the rule instead.
   row:add((item.collapsed and " ▸ " or " ▾ ") .. reach_glyph .. glyph .. " ", { fg = color })
   row:add(local_host and kind or kind .. " " .. item.host, { fg = theme.text, bold = true })
   if counts.attention > 0 then
     row:add("  !" .. counts.attention, { fg = theme.role("status_blocked"), bold = true })
   end
   local note = reach == "connected" and details or reach .. " · " .. details
-  -- The rule runs up to a right-aligned note. Too narrow for one, the note
-  -- trails the label instead, as any row's does.
-  local rule = width - row.used - widgets.len(note) - 2
-  if rule < 2 then
-    row:trailing(note, { fg = theme.secondary })
-  else
-    row:add(" " .. string.rep("─", rule) .. " ", { fg = theme.muted })
-    row:add(note, { fg = theme.secondary })
+  local short = reach == "connected" and total or reach .. " · " .. total
+  -- The rule runs up to a right-aligned note, and is what marks a host, so the
+  -- active count goes before it does. With no room for a rule at all, the
+  -- short note trails the label as any row's does.
+  for _, candidate in ipairs({ note, short }) do
+    local rule = width - row.used - widgets.len(candidate) - 2
+    if rule >= 1 then
+      row:add(" " .. string.rep("─", rule) .. " ", { fg = theme.muted })
+      row:add(candidate, { fg = theme.secondary })
+      return row:spans_list()
+    end
   end
+  row:trailing(short, { fg = theme.secondary })
   return row:spans_list()
 end
 

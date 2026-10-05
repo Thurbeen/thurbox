@@ -304,8 +304,12 @@ moved fall back to creation order:
 marker (fold arrow or status dot) in the same column. When rows were indented
 by level, the repo row sat further right than its own sessions, so the nesting
 read backwards. A host row is set apart by a rule that runs up to its
-right-aligned counts. When the panel is too narrow for the rule, the counts
-trail the label as on any other row.
+right-aligned counts. To keep the rule, the row first drops the active count
+and shows only the session total. When even that leaves no room for a rule,
+the total trails the label as on any other row: cut short with `…` when it
+does not fit, and dropped when fewer than four columns are left. Aligning
+costs the host row one column, so a very narrow panel loses its counts sooner
+than before.
 
 **Why local has a host row.** Local work can be folded by the same gesture as
 remote work. It stays first, and the cursor initially selects the first session
