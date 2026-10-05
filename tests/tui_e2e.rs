@@ -7006,3 +7006,98 @@ fn the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached() {
     tui.wait_gone("type to filter commands");
     assert!(tui.quit().success());
 }
+
+/// Lua that throws on every other quarter second of the pane's own clock: the
+/// intermittent failure a pane whose data is half there produces, tick after
+/// tick.
+const FLAKY: &str =
+    "if math.floor((ctx.elapsed or 0) * 4) % 2 == 0 then error('flaky failure') end";
+
+/// A pane that fails intermittently must settle into one state rather than
+/// alternate with every tick — neither a float covering most of the screen
+/// on the frames it renders and gone on the frames it throws, nor a side pane
+/// swapping its content for an error panel and back.
+#[test]
+fn an_intermittently_failing_pane_does_not_flicker() {
+    let profile = Profile::new();
+    let ui = profile.path("config/ui");
+    let report = thurbox::kernel::bundled::materialize(&ui);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    std::fs::write(
+        ui.join("plugins/31_flaky.lua"),
+        format!(
+            "return {{ name = 'flaky', slot = 'flaky', pure = false, render = function(ctx)\n\
+             {FLAKY}\n\
+             return {{ type = 'box', frame = {{ title = 'flaky' }}, children = {{\n\
+               {{ type = 'text', len = 1, text = 'flaky pane ok' }} }} }}\n\
+             end }}\n"
+        ),
+    )
+    .expect("flaky pane");
+    std::fs::write(
+        ui.join("plugins/33_flakyfloat.lua"),
+        format!(
+            "return {{ name = 'flakyfloat', slot = 'float', floats = true, pure = false,\n\
+             render = function(ctx)\n\
+             {FLAKY}\n\
+             return {{ type = 'box', float = {{ width = 60, height = 60 }},\n\
+               frame = {{ title = 'float' }}, children = {{\n\
+               {{ type = 'text', len = 1, text = 'flaky float ok' }} }} }}\n\
+             end }}\n"
+        ),
+    )
+    .expect("flaky float");
+    let layout = ui.join("layout.lua");
+    let arrangement = std::fs::read_to_string(&layout).expect("layout");
+    let center = "    columns[#columns + 1] = { slot = \"center\" }\n";
+    assert!(arrangement.contains(center), "the bundled layout moved");
+    std::fs::write(
+        &layout,
+        arrangement.replacen(
+            center,
+            &format!("{center}    columns[#columns + 1] = {{ slot = \"flaky\", pct = 30 }}\n"),
+            1,
+        ),
+    )
+    .expect("place the flaky pane");
+
+    let mut tui = Tui::spawn(&profile, 40, 140);
+    // A float has no rect to fail in, so its failure is said in the band.
+    tui.wait_for("flakyfloat failed");
+    tui.wait_for("flaky failure");
+    // Long enough for several failing and succeeding quarter seconds each.
+    let frames: Vec<String> = (0..40)
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            tui.frame()
+        })
+        .collect();
+    let float_shown = frames
+        .iter()
+        .filter(|f| f.contains("flaky float ok"))
+        .count();
+    let pane_shown = frames
+        .iter()
+        .filter(|f| f.contains("flaky pane ok"))
+        .count();
+    let summary = || format!("first frame:\n{}", frames[0]);
+    assert_eq!(
+        float_shown,
+        0,
+        "a failing float must not keep taking the screen ({float_shown}/40 frames); {}",
+        summary()
+    );
+    assert_eq!(
+        pane_shown,
+        0,
+        "a failing pane must hold its error, not alternate with its content \
+         ({pane_shown}/40 frames); {}",
+        summary()
+    );
+    assert!(
+        frames.iter().all(|f| f.contains("No sessions yet")),
+        "the session list must stay visible on every frame; {}",
+        summary()
+    );
+    assert!(tui.quit().success());
+}

@@ -127,6 +127,15 @@ const REAP_INTERVAL: Duration = Duration::from_secs(5);
 /// what made v2 feel less responsive than v1.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
+/// How long a plugin that threw keeps drawing as failed after its last throw.
+///
+/// A pane whose data is half there fails on some frames and not others, and
+/// drawing each frame's own outcome alternated its content with its error panel
+/// on every tick — or, for a float, put a modal over most of the screen and took
+/// it away again. Held this long, an intermittent failure reads as one steady
+/// state, and a pane that has really recovered comes back once.
+const FAILURE_HOLD: Duration = Duration::from_secs(5);
+
 /// The floor when the only thing owed a frame is new agent output.
 ///
 /// Typing has to feel instant; watching a log scroll does not, and applying the
@@ -484,6 +493,10 @@ struct App {
     reload_at: Option<Instant>,
     /// Failures from this frame's render calls, one per failing plugin.
     errors: Vec<PluginError>,
+    /// Each plugin that threw within [`FAILURE_HOLD`], by index, with its last
+    /// failure and when it happened. Cleared on reload, since the indices are
+    /// positions in the plugin list a reload replaces.
+    failing: std::collections::HashMap<usize, (PluginError, Instant)>,
     /// A failure from `ui/layout.lua`, cleared by the next arrangement that
     /// works.
     layout_error: Option<String>,
