@@ -965,6 +965,24 @@ the work wasted only after paying for it.
   once per affordance crossed and never per cell, because `thurbox.hover` is
   published and a pure pane that lights what it is under would otherwise be
   served the tree it built before the pointer arrived.
+  `failed_version` counts changes to the published session-to-error map, not
+  failed attempts: repeating the same error refreshes the retry timestamp and
+  candidate pane privately. Otherwise a host that stays offline rebuilds the
+  sessions group and invalidates every pure pane on each retry. New errors,
+  changed messages, successful attaches and removed failures still advance it.
+  The deterministic regression
+  `cargo test --lib repeated_offline_attach_results_reuse_the_interface -- --nocapture`
+  feeds three retry rounds for ten offline rows through sync, publish and an
+  80×24 pure pane: before, 30 invalidations and no reused renders; after, zero
+  invalidations and 30 reused renders. It expires retry timestamps directly,
+  so neither its count nor its recovery checks depend on sleeping.
+  A paired Linux dev-build run adapted `scripts/dev/perf-run.sh` with
+  `--idle -n 23 -d 60 -s 200x50 --json`, adding ten stored rows across two SSH
+  hosts that refused connections. Counting failure-version changes during each
+  60 s idle window gave 30 before and zero after; SSH attempts stayed at 146
+  per window. Process CPU from `/proc` was 4.00% before and 3.78% after; these
+  single samples on shared hardware do not establish a CPU reduction. Retry
+  cadence is unchanged, and this run exercised refusal rather than timeout.
 - **Gated publish**: each `thurbox.*` group names the versions it is built from
   and is rebuilt only when one moves. The outer table is still assembled fresh
   every frame, so a gating mistake can produce a stale *group* but never a torn
