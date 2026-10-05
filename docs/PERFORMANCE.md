@@ -765,9 +765,9 @@ marks the screen dirty:
 - any input, a resize, a reload, a modal or focus change
 - a worker result (`terminals`, `commands`, `diffs`, `metrics`, `repos`, `runs`,
   `updates`)
-- **new agent output** — `Terminals::output_generation` is summed each iteration and
-  compared. This is v1's `detect_output_redraw`, and it is what stops a printing
-  agent being drawn at the 250 ms floor
+- **new visible output** — `Terminals::visible_output_generation` sums the
+  surfaces painted in the last frame. Hidden output still invalidates search
+  content through `output_generation`, but owes no frame (ADR-P29).
 - **a plugin's tree differing from the last one it returned.** `draw` keeps
   `last_trees[index]` and only marks the frame changed when the new tree differs.
   This is what makes an animating plugin work without a plugin-visible animation
@@ -994,9 +994,8 @@ the work wasted only after paying for it.
 review:**
 
 - **`taken_at_ms` is published**, and `widgets.relative_time` renders it, so the
-  snapshot's generation has to move on every refresh — not only when rows
-  change — or "5s ago" freezes. A change-signal is about what is *read*, not
-  about what feels significant.
+  clock has to advance or "5s ago" freezes. ADR-P29 separates that signal
+  from the row generation and scopes it to the panes that read it.
 - **A pure render may read `store`/`state`**, which handlers write. Without that
   in the key, the agent pane's per-session tab survived the keypress that
   changed it. Seven tests failed; the hole was real.
@@ -1220,9 +1219,10 @@ stall as its worst case), and every ssh invocation paid a full handshake.
 were enough:
 
 - **Every published group is gated.** `diffs`, `links`, `content` (`search` since ADR-P26), `commands`
-  and `metrics` key on the data epoch (which moves on every worker result and
+  and `metrics` originally keyed on the data epoch (ADR-P29 gives diffs and
+  metrics their own generations), which moves on every worker result and
   command transition, and deliberately never on agent output — so a streaming
-  turn reuses them all) paired with the snapshot version; the creation flow's
+  turn reuses them all, paired with the snapshot version; the creation flow's
   three parameterised reads pair the epoch with an FNV digest of the question,
   which also gives their tables the stable identity the flow's own memoization
   keys on; the interface inventory keys on a digest of its rows; `hover` reuses
@@ -2250,6 +2250,41 @@ that list rides behind `has-session` in the same process. The window stamps ride
 in `new-window`'s own command list, as its birth options already did. Six
 processes, and `tests/tui_e2e.rs` fails if one create on a running server runs
 more than three of tmux.
+
+## ADR-P29: Hidden output and idle samples owe only their readers a frame
+
+**Choice**: redraw output is summed only over the agent, shell and program
+surfaces painted in the last frame. The all-pane output generation remains the
+content search's signal. A hidden pane still reads bytes, reports activity and
+status, and restores its cells when shown; its output does not keep the loop
+on the output frame floor.
+
+Clock restamps no longer move the snapshot row version. `Epoch::taken_at` and
+`Epoch::metrics` carry the wall clock and sample serial separately. Like
+`ctx.elapsed` (ADR-P21), reads of `thurbox.taken_at_ms` and `thurbox.metrics` are
+observed through a sealed table proxy. A pure tree compares each signal only
+when the render that built it read that input. Raw reads and table iteration
+retain their Lua semantics; iterating the whole snapshot conservatively depends
+on both inputs. Row, status and theme changes still invalidate ordinary readers.
+
+Diff publication uses `DiffStore::version`, which moves only when an answer
+changes, a request first appears, or an answer is removed. A recompute that finds
+the same diff renews its TTL without copying its body into Lua. Only the selected
+session's answer is retained. Request serials reject late workers after a switch
+or an invalidation, including leaving and returning to the same session.
+
+**Why**: output that changed no painted cell held the frame loop busy. Separately,
+a once-a-second clock restamp and metrics sample invalidated every pure pane and
+copied every previously visited diff body. Gating only on the broad data epoch
+made a real change to one input look like a change to every input.
+
+**Guarded** by deterministic generation and reuse assertions in
+`tests/kernel_frame_cost.rs`, the terminal surface harness, and the snapshot and
+diff unit tests. The frame benchmark includes an idle clock/sample case with
+held diffs. `scripts/dev/perf-run.sh --focus-last -n 33 -p 20 -u 0` selects a quiet
+surface while the other sessions print, so the whole-binary comparison measures
+hidden output rather than visible scrolling. Measurements use paired runs at the
+same size, session count and build profile; timing is not a test assertion.
 
 ## Measuring: the bench and the load harness (2026-08-29)
 
