@@ -183,6 +183,28 @@ impl Database {
         })
     }
 
+    /// Open for a short-lived hook write. A current schema needs no migration
+    /// or retention sweep; a new or older database still takes the normal open.
+    pub fn open_for_signal(path: &Path) -> rusqlite::Result<Self> {
+        if path.is_file() {
+            let database = Self::open_existing(path)?;
+            let current = database
+                .conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if current.as_deref() == Some(SCHEMA_VERSION.to_string().as_str())
+                && database.snapshot_versions().is_ok()
+            {
+                return Ok(database);
+            }
+        }
+        Self::open(path)
+    }
+
     /// Get a reference to the underlying connection (for metadata queries).
     pub fn conn_ref(&self) -> &Connection {
         &self.conn
@@ -227,6 +249,42 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signal_open_skips_writes_on_a_current_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let observer = Database::open(&path).unwrap();
+        let before = observer.data_version().unwrap();
+        let hook = Database::open_for_signal(&path).unwrap();
+        assert_eq!(hook.conn_ref().total_changes(), 0);
+        assert_eq!(observer.data_version().unwrap(), before);
+    }
+
+    #[test]
+    fn signal_open_initializes_and_upgrades() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open_for_signal(&path).unwrap();
+        db.conn_ref()
+            .execute(
+                "UPDATE metadata SET value = '48' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        drop(db);
+        let db = Database::open_for_signal(&path).unwrap();
+        let version: String = db
+            .conn_ref()
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        assert!(db.snapshot_versions().is_ok());
+    }
 
     #[test]
     fn open_in_memory() {

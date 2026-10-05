@@ -4,7 +4,7 @@
 //! file plus one row in `mod.rs`'s step table — the ordering contract stays
 //! beside the DDL it migrates toward, and the forty bodies stop burying it.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{
     add_column_if_absent, column_exists, drop_column_if_present, rename_column_if_present,
@@ -970,4 +970,96 @@ pub(super) fn migrate_v47_wsl_loopback_repair_owed(conn: &Connection) -> rusqlit
         [crate::storage::wsl_repair::WSL_LOOPBACK_REPAIR_OWED_KEY],
     )?;
     Ok(())
+}
+
+/// Keep `data_version` as the cheap first gate, but distinguish commits that
+/// only refresh liveness or publish telemetry from changes requiring a rebuild.
+/// The triggers cover every table conservatively, including legacy writers.
+/// Re-asserted after additive migrations so their new columns are covered.
+pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS snapshot_versions (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            rows_version INTEGER NOT NULL,
+            hooks_version INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO snapshot_versions VALUES (1, 0, 0);",
+    )?;
+    let tables = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' \
+         AND name NOT LIKE 'sqlite_%' AND name != 'snapshot_versions'",
+        )?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+    for table in tables {
+        let columns = conn
+            .prepare("SELECT name FROM pragma_table_info(?1)")?
+            .query_map([&table], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let differences = columns
+            .iter()
+            .filter(|column| {
+                table != "sessions" || !matches!(column.as_str(), "hook_state_at" | "seen_at")
+            })
+            .map(|column| {
+                let column = quote(column);
+                format!("OLD.{column} IS NOT NEW.{column}")
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        for (operation, condition) in [
+            (
+                "INSERT",
+                if table == "metadata" {
+                    "NEW.key != 'perf_snapshot'".to_string()
+                } else {
+                    "1".to_string()
+                },
+            ),
+            (
+                "DELETE",
+                if table == "metadata" {
+                    "OLD.key != 'perf_snapshot'".to_string()
+                } else {
+                    "1".to_string()
+                },
+            ),
+            (
+                "UPDATE",
+                if table == "metadata" {
+                    format!("(OLD.key != 'perf_snapshot' OR NEW.key != 'perf_snapshot') AND ({differences})")
+                } else {
+                    format!("({differences})")
+                },
+            ),
+        ] {
+            let name = format!("snapshot_{table}_{operation}");
+            let trigger = quote(&name);
+            let table = quote(&table);
+            let sql = format!(
+                "CREATE TRIGGER {trigger} AFTER {operation} ON {table} \
+                 WHEN {condition} BEGIN \
+                 UPDATE snapshot_versions SET rows_version = rows_version + 1 WHERE singleton = 1; END"
+            );
+            let existing = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [&name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if existing.as_deref() != Some(sql.as_str()) {
+                conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {trigger}; {sql};"))?;
+            }
+        }
+    }
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS snapshot_hook_stamp AFTER UPDATE ON sessions \
+         WHEN OLD.hook_state_at IS NOT NEW.hook_state_at OR OLD.seen_at IS NOT NEW.seen_at BEGIN \
+         UPDATE snapshot_versions SET hooks_version = hooks_version + 1 WHERE singleton = 1; END;",
+    )?;
+    tx.commit()
 }

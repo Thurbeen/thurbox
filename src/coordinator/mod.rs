@@ -369,10 +369,9 @@ impl App {
     /// The reporting half of ADR-P11: the periodic `perf_window` log line and
     /// the JSON snapshot `thurbox-cli perf` reads.
     ///
-    /// Both are gated on timing being active. Publishing especially: each write
-    /// bumps every other thurbox connection's `data_version`, which costs them a
-    /// full shared-state reload on their next poll — an idle default instance
-    /// must never churn that row.
+    /// Both are gated on timing being active. Telemetry goes through the
+    /// snapshot connection and is excluded from other stores' row generations,
+    /// so observing the loop does not cause a snapshot rebuild.
     pub(crate) fn report_perf(&mut self) {
         if !self.perf_timing_active() {
             return;
@@ -447,12 +446,10 @@ impl App {
             self.snapshots.current().sessions.len(),
             &self.host.plugin_report(),
         );
-        if let Some(db) = snapshots_db() {
-            if let Err(e) = db.set_perf_snapshot(&json.to_string()) {
-                // Never worth failing a frame over; the CLI simply reports the
-                // older snapshot, or none.
-                tracing::warn!("could not publish the perf snapshot: {e}");
-            }
+        if let Err(e) = self.snapshots.set_perf_snapshot(&json.to_string()) {
+            // Never worth failing a frame over; the CLI simply reports the
+            // older snapshot, or none.
+            tracing::warn!("could not publish the perf snapshot: {e}");
         }
     }
 

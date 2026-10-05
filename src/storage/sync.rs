@@ -1,6 +1,17 @@
 use super::Database;
 
 impl Database {
+    /// Generations of snapshot inputs and hook liveness, maintained by
+    /// triggers. Perf telemetry changes neither; timestamp-only hooks
+    /// change only the latter.
+    pub fn snapshot_versions(&self) -> rusqlite::Result<(i64, i64)> {
+        self.conn.query_row(
+            "SELECT rows_version, hooks_version FROM snapshot_versions WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    }
+
     /// Read `PRAGMA data_version`. The value changes whenever *another*
     /// connection commits (never for this connection's own writes), so a caller
     /// can cheaply gate a per-tick cache reload on it — this is what

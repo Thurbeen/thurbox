@@ -731,6 +731,7 @@ pub struct SnapshotStore {
     /// `PRAGMA data_version` as of the last successful rebuild. `None` means
     /// "never read", which forces one.
     last_data_version: Option<i64>,
+    last_snapshot_versions: Option<(i64, i64)>,
     /// Remote hook events that named a pane no session claims yet.
     ///
     /// The subscription's first report routinely arrives before the pane has
@@ -805,6 +806,7 @@ impl SnapshotStore {
             },
             last_refresh: None,
             last_data_version: None,
+            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -837,6 +839,7 @@ impl SnapshotStore {
             current: Snapshot::default(),
             last_refresh: None,
             last_data_version: None,
+            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -901,15 +904,23 @@ impl SnapshotStore {
         Some(Ok(warnings))
     }
 
+    /// Publish telemetry through our connection, without invalidating our rows.
+    pub fn set_perf_snapshot(&self, json: &str) -> rusqlite::Result<()> {
+        match &self.database {
+            Some(database) => database.set_perf_snapshot(json),
+            None => Ok(()),
+        }
+    }
+
     /// Rebuild if the refresh interval has elapsed *and* anything committed.
     /// Called from the event loop, never from a plugin.
     ///
     /// The interval alone would re-read five tables (plus the automation run
     /// history) every 400ms forever, on a database nobody wrote to.
     /// `PRAGMA data_version` reads an in-memory counter and moves whenever
-    /// another connection commits — which covers every writer that matters, since
-    /// the command bus holds its own — so an idle thurbox stops querying
-    /// altogether. v1 gates its per-tick session read the same way (ADR-P6).
+    /// another connection commits. The snapshot generations then distinguish
+    /// row changes from hook liveness and perf telemetry, so only row changes
+    /// need the full rebuild (ADR-P6).
     ///
     /// Git stats are folded in either way: they arrive from worker threads, not
     /// from the database, so `data_version` says nothing about them.
@@ -952,9 +963,9 @@ impl SnapshotStore {
 
     /// Whether the stored rows still reflect the database.
     ///
-    /// False before the first successful read, and false as soon as any other
-    /// connection commits. A read failure leaves the recorded version unset, so
-    /// the next call retries rather than trusting stale rows.
+    /// External commits are checked against snapshot generations. Telemetry
+    /// needs no row reads; liveness needs only hook stamps. Read failures keep
+    /// the previous gate so the next poll retries.
     fn rows_are_current(&mut self) -> bool {
         let Some(database) = &self.database else {
             return true;
@@ -962,10 +973,61 @@ impl SnapshotStore {
         let Some(seen) = self.last_data_version else {
             return false;
         };
-        match database.data_version() {
-            Ok(current) => current == seen,
-            Err(_) => false,
+        let Ok(current) = database.data_version() else {
+            return false;
+        };
+        if current == seen {
+            return true;
         }
+        let Ok(versions) = database.snapshot_versions() else {
+            return false;
+        };
+        let Some(previous) = self.last_snapshot_versions else {
+            return false;
+        };
+        if versions.0 != previous.0 {
+            return false;
+        }
+        if versions.1 != previous.1 {
+            let Ok(hooks) = database.load_hook_states() else {
+                return false;
+            };
+            // A real transition can commit between reading the generations and
+            // the stamps. Rebuild rather than patching a different raw state.
+            if self.current.sessions.iter().any(|row| {
+                parse_id(&row.id)
+                    .and_then(|id| hooks.get(&id))
+                    .map_or(true, |hook| hook.state != row.hook_state)
+            }) {
+                return false;
+            }
+            let mut changed = false;
+            for row in &mut self.current.sessions {
+                let Some(hook) = parse_id(&row.id).and_then(|id| hooks.get(&id)) else {
+                    continue;
+                };
+                if let Some(stamp) = hook.state_at {
+                    self.hook_state_at.insert(row.id.clone(), stamp);
+                } else {
+                    self.hook_state_at.remove(&row.id);
+                }
+                // Working/blocked are folded against output each tick. Only
+                // done can change its visible state from a new stamp alone.
+                if !row.stopped && row.hook_state.as_deref() == Some("done") {
+                    let status = derive_state(Some("done"), hook.state_at, hook.seen_at);
+                    if row.status != status {
+                        row.status = status;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.mark_changed();
+            }
+        }
+        self.last_data_version = Some(current);
+        self.last_snapshot_versions = Some(versions);
+        true
     }
 
     /// Take the pane verdicts the workers have answered and ask for the ones
@@ -1444,6 +1506,11 @@ impl SnapshotStore {
             .as_ref()
             .and_then(|database| database.data_version().ok());
 
+        self.last_snapshot_versions = self
+            .database
+            .as_ref()
+            .and_then(|database| database.snapshot_versions().ok());
+
         let Some(database) = &self.database else {
             self.current.taken_at_ms = taken_at_ms;
             self.mark_changed();
@@ -1885,6 +1952,133 @@ pub fn parse_id(raw: &str) -> Option<SessionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_store() -> (tempfile::TempDir, Database, SnapshotStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let writer = Database::open(&path).unwrap();
+        let store = SnapshotStore::with_database(
+            Database::open(&path).unwrap(),
+            &crate::backend::wiring::configured().0,
+        );
+        (dir, writer, store)
+    }
+
+    fn poll_due(store: &mut SnapshotStore) -> bool {
+        store.last_refresh = Some(Instant::now() - REFRESH_INTERVAL);
+        store.refresh_if_due()
+    }
+
+    #[test]
+    fn perf_publications_do_not_reload_the_snapshot() {
+        let (_dir, writer, mut store) = file_store();
+        let mut reloads = 0;
+        for frames in 1..=12 {
+            let json = format!(r#"{{"frames":{frames}}}"#);
+            writer.set_perf_snapshot(&json).unwrap();
+            reloads += usize::from(poll_due(&mut store));
+            assert_eq!(
+                writer.get_perf_snapshot().unwrap().as_deref(),
+                Some(json.as_str())
+            );
+        }
+        assert_eq!(
+            reloads, 0,
+            "twelve 5-second perf publications in an idle minute"
+        );
+        writer.set_active_theme("default").unwrap();
+        assert!(
+            poll_due(&mut store),
+            "a real metadata change must still reload"
+        );
+    }
+
+    #[test]
+    fn repeated_hook_reports_do_not_reload_the_snapshot() {
+        let (dir, writer, mut store) = file_store();
+        let id = SessionId::default();
+        writer.conn_ref().execute(
+            "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'busy', 'codex', 0, 0)",
+            [id.to_string()],
+        ).unwrap();
+        writer.set_hook_state(id, "working").unwrap();
+        assert!(poll_due(&mut store));
+        let mut previous = writer
+            .load_hook_state(id)
+            .unwrap()
+            .unwrap()
+            .state_at
+            .unwrap();
+        let mut reloads = 0;
+        for _ in 0..33 {
+            let hook = Database::open_for_signal(&dir.path().join("thurbox.db")).unwrap();
+            let output = crate::cli::sessions::run(
+                crate::cli::sessions::Action::Signal {
+                    state: "working".into(),
+                    session: Some(id.to_string()),
+                },
+                &hook,
+                &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            )
+            .unwrap();
+            assert_eq!(output["signaled"], true);
+            let stamp = hook.load_hook_state(id).unwrap().unwrap().state_at.unwrap();
+            assert!(
+                stamp > previous,
+                "re-reports retain the liveness and submission race stamp"
+            );
+            previous = stamp;
+            reloads += usize::from(poll_due(&mut store));
+            assert_eq!(store.hook_state_at[&id.to_string()], stamp);
+        }
+        assert_eq!(reloads, 0, "33 same-state reports in a busy minute");
+        writer.set_hook_state(id, "done").unwrap();
+        assert!(poll_due(&mut store));
+        assert_eq!(
+            store.current.session(&id.to_string()).unwrap().status,
+            SessionState::Done
+        );
+        store.acknowledge(&id.to_string());
+        assert_eq!(
+            store.current.session(&id.to_string()).unwrap().status,
+            SessionState::Idle
+        );
+        writer.set_hook_state(id, "done").unwrap();
+        assert!(
+            !poll_due(&mut store),
+            "acknowledgement and a new done stamp need only hook reads"
+        );
+        assert_eq!(
+            store.current.session(&id.to_string()).unwrap().status,
+            SessionState::Done
+        );
+    }
+
+    #[test]
+    fn a_hook_stamp_cannot_hide_a_row_change_in_the_same_poll() {
+        let (_dir, writer, mut store) = file_store();
+        let id = SessionId::default();
+        writer.conn_ref().execute(
+            "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'original', 'codex', 0, 0)",
+            [id.to_string()],
+        ).unwrap();
+        writer.set_hook_state(id, "working").unwrap();
+        assert!(poll_due(&mut store));
+        writer.set_hook_state(id, "working").unwrap();
+        writer
+            .conn_ref()
+            .execute(
+                "UPDATE sessions SET name = 'renamed' WHERE id = ?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        writer.set_perf_snapshot("{}").unwrap();
+        assert!(poll_due(&mut store));
+        assert_eq!(
+            store.current.session(&id.to_string()).unwrap().name,
+            "renamed"
+        );
+    }
 
     /// A git answer to hand a cache, distinguishable from the next one by its
     /// insertion count.
