@@ -327,13 +327,13 @@ fn the_session_list_groups_by_repo_and_nests_a_child_under_its_parent() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━⠇○◆●○┓",
-            "┃▾ ●⌂ local  !2  5 sessions · 1 active ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local  !2 ─────────── 5 sessions┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ○ └ ⑂ fix-osc52-tests                ┃",
             "┃ ◆ ⑂ add-wsl-tests  Blocked           ┃",
             "┃ ● ⑂ perf-cache                       ┃",
-            "┃  ▾ website                           ┃",
+            "┃ ▾ website                            ┃",
             "┃ ○ ⑂ update-deps                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -362,14 +362,14 @@ fn the_session_list_groups_by_host_when_sessions_span_machines() {
         &text(&paint(&host, "sessions", 40, 12, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━⠇●○○┓",
-            "┃▾ ●⌂ local  !1  3 sessions · 1 active ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local  !1 ─────────── 3 sessions┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
             "┃ ● ⑂ perf-cache                       ┃",
-            "┃  ▾ website                           ┃",
+            "┃ ▾ website                            ┃",
             "┃ ○ ⑂ update-deps                      ┃",
-            "┃▾ ●▣ ssh buildbox  1 session          ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●▣ ssh buildbox ───────── 1 session┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
             "┃                                      ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
@@ -392,11 +392,11 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━⠇●○┓",
-            "┃▾ ●▣ ssh buildbox  !1  3 sessions · 1…┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●▣ ssh buildbox  !1 ──── 3 sessions┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⇅ ⑂ fix-osc52                      ┃",
             "┃ ● ⇅ ⑂ perf-cache                     ┃",
-            "┃  ▾ website                           ┃",
+            "┃ ▾ website                            ┃",
             "┃ ○ ⇅ ⑂ update-deps                    ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -408,7 +408,7 @@ fn one_remote_host_has_a_fold_handle_above_its_repo_groups() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
-            "┃▸ ●▣ ssh buildbox  !1  3 sessions · 1…┃",
+            "┃ ▸ ●▣ ssh buildbox  !1 ──── 3 sessions┃",
             "┃                                      ┃",
             "┃                                      ┃",
             "┃                                      ┃",
@@ -442,11 +442,11 @@ fn a_host_named_local_is_a_second_machine_rather_than_this_one() {
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━⠇○┓",
-            "┃▾ ●⌂ local  1 session · 1 active      ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local ───── 1 session · 1 active┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ⠇ ⑂ fix-osc52                        ┃",
-            "┃▾ ●▣ ssh local  1 session             ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●▣ ssh local ──────────── 1 session┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ○ ⇅ ⑂ remote-build                   ┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
@@ -468,8 +468,8 @@ fn the_session_list_windows_more_rows_than_it_has_lines() {
         &text(&paint(&host, "sessions", 40, 10, true)),
         &[
             "┏ ▸ Sessions ━━━━━━○○○○○○○○○○○○○○○○○○○○┓",
-            "┃▾ ●⌂ local  20 sessions               ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local ────────────── 20 sessions┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ○ ⑂ session-00                       ┃",
             "┃ ○ ⑂ session-01                       ┃",
             "┃ ○ ⑂ session-02                       ┃",
@@ -498,8 +498,8 @@ fn the_session_list_keeps_its_columns_under_double_width_names() {
         &text(&paint(&host, "sessions", 40, 8, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━○◆○┓",
-            "┃▾ ●⌂ local  !1  3 sessions            ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local  !1 ─────────── 3 sessions┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ○ ⑂ 修复终端宽度                     ┃",
             "┃ ◆ ⑂ emoji-🚀-name  Blocked           ┃",
             "┃ ○ ⑂ plain-name                       ┃",
@@ -530,8 +530,8 @@ fn a_double_width_name_budgets_the_status_by_the_columns_it_takes() {
         &text(&paint(&host, "sessions", 40, 5, true)),
         &[
             "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━○┓",
-            "┃▾ ●⌂ local  1 session                 ┃",
-            "┃  ▾ thurbox                           ┃",
+            "┃ ▾ ●⌂ local ──────────────── 1 session┃",
+            "┃ ▾ thurbox                            ┃",
             "┃ ○ ⑂ 修复终端宽度  waiting for your r…┃",
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
@@ -546,13 +546,13 @@ fn the_session_list_truncates_rather_than_overflows_when_narrow() {
         &text(&paint(&host, "sessions", 22, 10, true)),
         &[
             "┏ ▸ Sessions ━━━⠇○◆●○┓",
-            "┃▾ ●⌂ local  !2  5 s…┃",
-            "┃  ▾ thurbox         ┃",
+            "┃ ▾ ●⌂ local  !2     ┃",
+            "┃ ▾ thurbox          ┃",
             "┃ ⠇ ⑂ fix-osc52      ┃",
             "┃ ○ └ ⑂ fix-osc52-tes┃",
             "┃ ◆ ⑂ add-wsl-tests  ┃",
             "┃ ● ⑂ perf-cache     ┃",
-            "┃  ▾ website         ┃",
+            "┃ ▾ website          ┃",
             "┃ ○ ⑂ update-deps    ┃",
             "┗━━━━━━━━━━━━━━━━━━━━┛",
         ],
@@ -578,10 +578,48 @@ fn the_selection_is_a_style_and_moves_with_j() {
             style_runs(&after, 3),
         ],
         &[
-    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩  ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                           ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩ ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                            ⟨Cyan/Reset/BOLD⟩┃",
     "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ⠇ ⑂ fix-osc52                        ⟨Cyan/Reset/BOLD⟩┃",
-    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩  ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                           ⟨Cyan/Reset/BOLD⟩┃",
+    "⟨Cyan/Reset/BOLD⟩┃⟨Cyan/Reset/NONE⟩ ▾ ⟨Gray/Reset/BOLD⟩thurbox⟨Reset/Reset/NONE⟩                            ⟨Cyan/Reset/BOLD⟩┃",
     "⟨Cyan/Reset/BOLD⟩┃⟨Yellow/Reset/NONE⟩ ⠇ ⟨Green/Reset/NONE⟩⑂ ⟨White/Reset/NONE⟩fix-osc52⟨Reset/Reset/NONE⟩                        ⟨Cyan/Reset/BOLD⟩┃",
+        ],
+    );
+}
+
+#[test]
+fn a_host_row_with_no_room_for_its_rule_keeps_the_session_total_whole() {
+    // One column short of a rule: the fallback trails the short note, which
+    // fits exactly, rather than truncating the long one.
+    let host = host();
+    publish(
+        &host,
+        &snapshot(vec![
+            remote_row("a", "thurbox", "working", "abcdefghijklmnop"),
+            remote_row("b", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("c", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("d", "thurbox", "idle", "abcdefghijklmnop"),
+            remote_row("e", "thurbox", "idle", "abcdefghijklmnop"),
+        ]),
+    );
+    let frame = text(&paint(&host, "sessions", 40, 10, true));
+    assert_eq!(
+        frame[1], "┃ ▾ ●▣ ssh abcdefghijklmnop  5 sessions┃",
+        "{frame:#?}"
+    );
+}
+
+#[test]
+fn a_selected_host_row_is_one_bar_rule_included() {
+    // The rule names a muted foreground. Under the bar it must yield like every
+    // other span on the row, or it punches a dim hole in the selection.
+    let host = host();
+    publish(&host, &sample());
+    press(&host, "sessions", 'k');
+    press(&host, "sessions", 'k');
+    assert_frame(
+        &[style_runs(&paint(&host, "sessions", 40, 12, true), 1)],
+        &[
+    "⟨Cyan/Reset/BOLD⟩┃⟨White/Indexed(24)/BOLD⟩ ▾ ●⌂ local  !2 ─────────── 5 sessions⟨Cyan/Reset/BOLD⟩┃",
         ],
     );
 }
