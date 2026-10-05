@@ -44,6 +44,12 @@ const MODAL_WIDTH_MAX: u16 = 108;
 /// Columns left to the interface either side, so the modal always reads as a
 /// modal rather than as the whole screen.
 const MODAL_MARGIN: u16 = 8;
+/// The most the value column takes. Every flag, stepper and backend name fits;
+/// a free-text value past it is cut with `…` rather than sizing the column,
+/// because the column is shared — sized to one long value (the session list's
+/// fold state runs to hundreds of characters) it pushed every other row's value
+/// off the modal and starved each description to a lone `…`.
+const VALUE_WIDTH_MAX: usize = 16;
 
 /// How much a `←`/`→` moves a number. v1 steps its scalars by one and clamps
 /// per field; the registry carries no bounds, so the step is all there is.
@@ -883,12 +889,8 @@ impl SettingsModal {
         chrome: Chrome,
     ) -> (Vec<Line<'a>>, Vec<Row>) {
         // The widest value across every row, so the value column aligns —
-        // v1's `value_width`.
-        let value_width = settings
-            .iter()
-            .map(|setting| value_text(&setting.value).chars().count())
-            .max()
-            .unwrap_or(3);
+        // v1's `value_width` — up to the cap a long text value is cut to.
+        let value_width = value_column(settings);
         let id_width = settings
             .iter()
             .map(|setting| setting.id.chars().count())
@@ -1013,7 +1015,7 @@ fn value_text(value: &Value) -> String {
 /// `▸ <id (bold)> <description (dimmed)> … <value right-justified>`.
 ///
 /// The width the rows would like: the widest id, the longest description and the
-/// widest value side by side, plus the frame, the pointer and the gaps between
+/// value column side by side, plus the frame, the pointer and the gaps between
 /// them.
 ///
 /// Mirrors the arithmetic in [`setting_line`] rather than guessing at it, so a row
@@ -1022,13 +1024,24 @@ fn value_text(value: &Value) -> String {
 fn desired_width(settings: &[Setting]) -> u16 {
     let longest = |f: fn(&Setting) -> usize| settings.iter().map(f).max().unwrap_or(0);
     let id = longest(|s| s.id.chars().count());
-    let value = longest(|s| value_text(&s.value).chars().count()).max(3);
+    let value = value_column(settings);
     // The restart mark rides in the description of a restart-only row, so the
     // column has to allow for it or the mark is what pushes a description over
     // the edge.
     let description = longest(|s| s.description.chars().count()) + 2;
     // 2 frame + 2 pointer + id + 1 + description + 1 gap + value.
     u16::try_from(2 + 2 + id + 1 + description + 1 + value).unwrap_or(MODAL_WIDTH_MAX)
+}
+
+/// The value column's width: the widest value, at least 3, at most
+/// [`VALUE_WIDTH_MAX`].
+fn value_column(settings: &[Setting]) -> usize {
+    settings
+        .iter()
+        .map(|setting| value_text(&setting.value).chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(3, VALUE_WIDTH_MAX)
 }
 
 /// v1's `settings_modal::field_line`, minus the restart marker — a v2 setting
@@ -1070,13 +1083,23 @@ fn setting_line<'a>(
     };
 
     let value = match editing {
-        // A block caret, so an open edit is unmistakably where the keys go.
-        Some(buffer) => format!("{buffer}█"),
-        None => value_text(&setting.value),
+        // A block caret, so an open edit is unmistakably where the keys go. The
+        // tail is what shows when the buffer outgrows the column: that is where
+        // the caret is, and an edit is the one place the whole value is reached.
+        Some(buffer) => {
+            let text: Vec<char> = format!("{buffer}█").chars().collect();
+            if text.len() > value_width {
+                let tail = &text[text.len() - (value_width - 1)..];
+                std::iter::once('…').chain(tail.iter().copied()).collect()
+            } else {
+                text.into_iter().collect()
+            }
+        }
+        None => chrome::truncate(&value_text(&setting.value), value_width),
     };
     let id = chrome::pad(&setting.id, id_width);
     let block = 2 + id_width + 1;
-    let right = value.chars().count().max(value_width);
+    let right = value_width;
     let description = chrome::truncate(
         &setting.description,
         width.saturating_sub(block + right + 1),
@@ -1121,6 +1144,31 @@ mod tests {
         assert_eq!(value_text(&Value::Number(30.0)), "‹ 30 ›");
         assert_eq!(value_text(&Value::Bool(true)), "on");
         assert_eq!(value_text(&Value::Text("hi".into())), "hi");
+    }
+
+    /// An edit longer than the value column shows its tail, so the caret stays
+    /// on screen and the row keeps to its width.
+    #[test]
+    fn an_edit_past_the_value_column_keeps_its_caret_in_view() {
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let row = setting("a", "label", Value::Text(String::new()));
+        let buffer = "x".repeat(40) + "end";
+        let line = setting_line(
+            &row,
+            true,
+            Some(&buffer),
+            60,
+            5,
+            VALUE_WIDTH_MAX,
+            Chrome::new(&palette),
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text.chars().count(), 60, "{text:?}");
+        assert!(text.ends_with("…xxxxxxxxxxxend█"), "{text:?}");
     }
 
     /// A keystroke with no modifier.
