@@ -211,8 +211,7 @@ local function ask(flow)
     store.want_branches = nil
   end
 
-  -- Only ever the repo the cursor is resting on: one `git worktree list` per
-  -- highlighted row, not one per remembered repository.
+  -- Read worktrees only for the repository the operator has expanded.
   if flow.step == "repo" and flow.wt_repo then
     store.want_worktrees = (flow.host or "") .. "\0" .. flow.wt_repo
   else
@@ -240,20 +239,18 @@ local function current_row(flow)
   return repo_picker.current(rows_for(flow), flow.cursor)
 end
 
---- Follow the cursor with the "whose worktrees are showing" anchor.
----
---- Deliberately reads the rows built from the *previous* anchor: those are the
---- rows that were on screen when the key was pressed, so the row the cursor is
---- on is the row the reader was looking at. A worktree child leaves the anchor
---- alone — stepping onto one must not collapse the list under the cursor.
+--- Keep an explicit expansion while moving between its repo and child rows.
 track_worktrees = function(flow)
-  if not flow or flow.step ~= "repo" then
+  if not flow or flow.step ~= "repo" or not flow.wt_repo then
     return
   end
   local entry = repo_picker.current(rows_for(flow), flow.cursor)
   local row = entry and entry.row
-  if row and not row.is_parent and not row.is_worktree then
-    flow.wt_repo = row.path
+  if not row or (not row.is_worktree and row.path ~= flow.wt_repo) then
+    flow.wt_repo = nil
+    if row then
+      flow.cursor = repo_picker.index_of(rows_for(flow), row.path) or 1
+    end
   end
 end
 
@@ -919,16 +916,13 @@ local function render_repo(flow)
   elseif dropdown then
     hints = {
       { "↑/↓", "select" },
+      { "tab", "open folder" },
       { "s-tab", "search" },
       { "esc", "close" },
     }
-    -- "open/pick" is two actions, and which one it is depends on the row: a
-    -- repository is committed to memory, a plain directory is descended into.
-    -- No row at all — still listing, or a directory that refused — is no pill,
-    -- rather than one that would do nothing when pressed.
     local shown = browse_entries(flow)
     local entry = shown[widgets.clamp(flow.browse_index, #shown)]
-    primary = entry and (entry.is_git and "Add repo" or "Open") or nil
+    primary = entry and (entry.is_git and "Add repo" or "Add directory") or nil
     cancel = "Close"
   else
     hints = {
@@ -955,6 +949,14 @@ local function render_repo(flow)
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
+  if flow.focus == "search" then
+    children[#children + 1] = {
+      type = "text",
+      len = 1,
+      text = "← close worktrees  → expand worktrees",
+      style = { fg = theme.muted },
+    }
+  end
   children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
   -- The height is the sum of what was actually built, plus the two border rows.
@@ -1502,9 +1504,20 @@ return {
       -- write's: the newest row is then whatever was newest before it, and
       -- ticking that would pick a repository nobody chose.
       local failed = false
-      for id, subject in pairs(bookmark_failures()) do
-        if subject == flow.awaiting_path and not (flow.failures_before or {})[id] then
+      for _, item in ipairs((thurbox and thurbox.commands) or {}) do
+        if
+          item.kind == "bookmark"
+          and item.phase == "failed"
+          and item.subject == flow.awaiting_path
+          and not (flow.failures_before or {})[tostring(item.id)]
+        then
           failed = true
+          flow.message = item.error or ("Could not add directory: " .. flow.awaiting_path)
+          if untouched(flow) or (flow.input.value or "") == "" then
+            textinput.set(flow.input, flow.awaiting_path)
+            flow.prefill = nil
+          end
+          flow.focus = "input"
         end
       end
       local newest = not failed and repo_picker.newest(bookmarks().rows or {})
@@ -1879,14 +1892,13 @@ return {
         flow.focus = "search"
         save(flow)
         return true
-      elseif name == "enter" then
+      elseif name == "enter" or name == "tab" then
         local entry = entries[widgets.clamp(flow.browse_index, #entries)]
         if entry then
           local dir = (browse().dir or "")
           local joined = (dir == "/" and "/" or (dir .. "/")) .. entry.name
-          if entry.is_git then
-            -- Existence and git-ness were just observed, so this is a commit
-            -- rather than a descent.
+          if name == "enter" then
+            -- A session can use any directory; git-ness only governs worktrees.
             command("bookmark", { host = flow.host, repo = joined, action = "add" })
             textinput.clear(flow.input)
             flow.browse = false
@@ -1905,7 +1917,22 @@ return {
     end
 
     if flow.focus == "search" then
-      if name == "tab" then
+      if
+        (name == "left" and flow.wt_repo)
+        or (name == "right" and flow.search.cursor == widgets.chars(flow.search.value or ""))
+      then
+        local entry = current_row(flow)
+        local row = entry and entry.row
+        if name == "left" and flow.wt_repo then
+          flow.cursor = repo_picker.index_of(rows_for(flow), flow.wt_repo) or 1
+          flow.wt_repo = nil
+        elseif name == "right" and row and not row.is_parent and not row.is_worktree then
+          flow.wt_repo = row.path
+        end
+        save(flow)
+        ask(flow)
+        return true
+      elseif name == "tab" then
         enter_path_field(flow)
         save(flow)
         ask(flow)

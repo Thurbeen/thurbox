@@ -422,8 +422,10 @@ not applicable.
    adds new bookmarks: `Tab` accepts the inline autocomplete
    suggestion, or — with nothing to complete — opens a **path
    browser** dropdown listing the typed directory (git repos marked
-   `●git`; `Enter` descends into a plain dir or picks a repo
-   directly, `Esc` closes it, listings are cached per picker).
+   `●git`; `Enter` selects any existing directory, `Tab` opens the
+   highlighted directory, `Esc` closes it, listings are cached per picker).
+   A refused addition shows its reason inside the modal and restores the
+   path for correction. Git is required only when creating a worktree.
    Remote paths expand `~` against the remote home and are verified
    (exists + is-it-git, one round trip, async with a `checking…`
    spinner) on Enter; git-ness is persisted per bookmark (schema
@@ -448,13 +450,15 @@ not applicable.
    mount point is a readable empty directory) and refills when it
    comes back.
 
-   **Worktrees the repo already has** appear as `↳` child rows under
-   whichever repo the cursor is resting on, each showing its directory
-   name and the branch checked out there. They come from
+   **Worktrees the repo already has** start collapsed. In the repo list,
+   `Right` expands the highlighted repo into `↳` child rows, each showing
+   its directory name and checked-out branch. `Left` closes them and returns
+   the cursor to the repo, including from a child row. Moving to another
+   repo also closes the expansion. They come from
    `git worktree list --porcelain` on that repo — so a worktree made
    *outside* thurbox is found wherever it lives (`.worktrees/`, a
    sibling directory, anywhere), not just at thurbox's own derived
-   `<repo-hash>/<branch>` path. One git call per highlighted row, cached
+   `<repo-hash>/<branch>` path. One git call per expanded repo, cached
    with the same TTL as the branch list; the main checkout, bare repos,
    detached heads and prunable registrations are dropped, since no
    session can be started on them. `Enter` on one **opens** it: no

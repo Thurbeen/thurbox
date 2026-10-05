@@ -1217,10 +1217,14 @@ fn the_dropdown_keeps_the_arrows_while_it_is_open() {
 
     press(&host, &world, "down");
     press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("/srv/beta/"),
-        "the arrow moved the dropdown's own selection: {screen}"
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/srv/beta".into(),
+            edit: BookmarkEdit::Add,
+        }],
+        "Enter selects the dropdown row reached by the arrow"
     );
 }
 
@@ -1552,6 +1556,37 @@ fn a_write_that_failed_ticks_nothing_in_its_place() {
 }
 
 #[test]
+fn a_failed_addition_preserves_a_path_edited_while_it_was_running() {
+    let host = host();
+    let mut world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/opt/refused");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 7,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/opt/refused".into()),
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    });
+    type_text(&host, &world, "/opt/newer");
+    world.inflight[0].phase = Phase::Failed;
+    world.inflight[0].error = Some("Path not found: /opt/refused".into());
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("/opt/newer"),
+        "keep the newer input:\n{screen}"
+    );
+    assert!(
+        screen.contains("Path not found: /opt/refused"),
+        "show the refusal:\n{screen}"
+    );
+}
+
+#[test]
 fn an_earlier_failure_does_not_stop_the_next_write_being_ticked() {
     let host = host();
     let mut world = world_listing_src();
@@ -1808,9 +1843,6 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
 
 #[test]
 fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() {
-    // The whole feature in one flow: the repo the cursor is on has a worktree
-    // an agent cut earlier, it shows as a child row, and choosing it asks for
-    // neither a base branch, nor a session name, nor a branch name.
     let host = host();
     let mut world = World::default();
     world.repos.set_worktrees_for_test(
@@ -1823,12 +1855,14 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
     );
     open(&host, &world);
 
-    // The flow asks about whichever repo the cursor is on.
+    assert_eq!(host.shared_string("want_worktrees"), None);
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
+    press(&host, &world, "right");
     assert_eq!(
         host.shared_string("want_worktrees").as_deref(),
         Some("\0/src/thurbox")
     );
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
 
     let screen = drawn(&host, &world);
     assert!(
@@ -1836,7 +1870,12 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
         "the existing worktree is listed under its repo: {screen}"
     );
 
-    // Down onto the child row, then choose it.
+    press(&host, &world, "down");
+    press(&host, &world, "left");
+    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
+    assert_eq!(host.shared_string("want_worktrees"), None);
+    press(&host, &world, "right");
+    assert!(drawn(&host, &world).contains("dynamic-tooltips"));
     press(&host, &world, "down");
     press(&host, &world, "enter");
     press(&host, &world, "enter"); // agent step, default preselected
@@ -1856,6 +1895,44 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
             multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
+    );
+}
+
+#[test]
+fn leaving_expanded_worktrees_keeps_the_cursor_on_the_next_repo() {
+    let host = host();
+    let mut world = world_with(vec![
+        bookmark("/src/alpha", Some(true)),
+        bookmark("/src/beta", Some(true)),
+        bookmark("/src/gamma", Some(true)),
+    ]);
+    world.repos.set_worktrees_for_test(
+        "",
+        "/src/alpha",
+        Worktrees::Ready(vec![
+            ExistingWorktree {
+                path: "/src/first".into(),
+                branch: "first".into(),
+            },
+            ExistingWorktree {
+                path: "/src/second".into(),
+                branch: "second".into(),
+            },
+        ]),
+    );
+    world.wants.worktrees = Some((String::new(), "/src/alpha".into()));
+    open(&host, &world);
+    press(&host, &world, "right");
+    press(&host, &world, "down");
+    press(&host, &world, "down");
+    press(&host, &world, "down");
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("↳"), "the previous repo closes: {screen}");
+    press(&host, &world, "space");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("[x] /src/beta"),
+        "the next repo stays under the cursor: {screen}"
     );
 }
 
@@ -2339,9 +2416,39 @@ fn the_search_pills_name_the_filter_they_act_on() {
 }
 
 #[test]
-fn the_browse_pill_follows_the_row_the_dropdown_is_on() {
-    // "open/pick" is two actions: a repository is remembered, a plain directory
-    // is descended into. And `esc` closes the dropdown, not the flow.
+fn tab_descends_into_the_highlighted_directory_without_adding_it() {
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/srv",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "notes".into(),
+                is_git: false,
+            },
+            BrowseEntry {
+                name: "repo".into(),
+                is_git: true,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/srv".into()));
+    open(&h, &world);
+    press(&h, &world, "tab");
+    type_text(&h, &world, "/srv/");
+    press(&h, &world, "tab");
+    press(&h, &world, "down");
+    press(&h, &world, "tab");
+    assert!(drawn(&h, &world).contains("/srv/repo/"));
+    assert!(
+        h.drain_commands().is_empty(),
+        "browsing never adds a bookmark"
+    );
+}
+
+#[test]
+fn the_browse_pill_offers_to_add_plain_directories_and_repositories() {
     let h = host();
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2364,7 +2471,10 @@ fn the_browse_pill_follows_the_row_the_dropdown_is_on() {
     type_text(&h, &world, "/srv/");
     press(&h, &world, "tab");
     let screen = drawn(&h, &world);
-    assert!(screen.contains("[ Open ]"), "a plain directory: {screen}");
+    assert!(
+        screen.contains("[ Add directory ]"),
+        "a plain directory: {screen}"
+    );
     assert!(screen.contains("[ Close ]"), "{screen}");
     assert!(!screen.contains("[ Cancel ]"), "{screen}");
 
@@ -2411,6 +2521,7 @@ fn an_existing_worktree_row_offers_to_open_it() {
     open(&h, &world);
     world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
     assert!(drawn(&h, &world).contains("[ Next ]"), "on the repo row");
+    press(&h, &world, "right");
     press(&h, &world, "down");
     let screen = drawn(&h, &world);
     assert!(
@@ -2436,6 +2547,7 @@ fn an_existing_worktree_row_offers_to_open_it_directly_with_one_agent() {
     );
     open(&h, &world);
     world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    press(&h, &world, "right");
     press(&h, &world, "down");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Open ]"), "{screen}");
