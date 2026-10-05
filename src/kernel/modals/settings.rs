@@ -1015,7 +1015,7 @@ fn value_text(value: &Value) -> String {
 /// `▸ <id (bold)> <description (dimmed)> … <value right-justified>`.
 ///
 /// The width the rows would like: the widest id, the longest description and the
-/// widest value side by side, plus the frame, the pointer and the gaps between
+/// value column side by side, plus the frame, the pointer and the gaps between
 /// them.
 ///
 /// Mirrors the arithmetic in [`setting_line`] rather than guessing at it, so a row
@@ -1144,6 +1144,31 @@ mod tests {
         assert_eq!(value_text(&Value::Number(30.0)), "‹ 30 ›");
         assert_eq!(value_text(&Value::Bool(true)), "on");
         assert_eq!(value_text(&Value::Text("hi".into())), "hi");
+    }
+
+    /// An edit longer than the value column shows its tail, so the caret stays
+    /// on screen and the row keeps to its width.
+    #[test]
+    fn an_edit_past_the_value_column_keeps_its_caret_in_view() {
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let row = setting("a", "label", Value::Text(String::new()));
+        let buffer = "x".repeat(40) + "end";
+        let line = setting_line(
+            &row,
+            true,
+            Some(&buffer),
+            60,
+            5,
+            VALUE_WIDTH_MAX,
+            Chrome::new(&palette),
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text.chars().count(), 60, "{text:?}");
+        assert!(text.ends_with("…xxxxxxxxxxxend█"), "{text:?}");
     }
 
     /// A keystroke with no modifier.
