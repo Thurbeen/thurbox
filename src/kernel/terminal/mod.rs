@@ -1098,7 +1098,10 @@ impl Terminals {
 
     /// Record why a session has no pane, and what was tried.
     fn fail(&mut self, session: &str, pane: Option<String>, message: String) {
-        self.mark_failures_changed();
+        // Lua reads only the error map; retry bookkeeping is private.
+        if self.failed.get(session).map(|failure| &failure.message) != Some(&message) {
+            self.mark_failures_changed();
+        }
         self.failed.insert(
             session.to_string(),
             Failure {
@@ -2139,7 +2142,7 @@ impl Terminals {
         self.failed_version = self.failed_version.wrapping_add(1);
     }
 
-    /// How many times the set of attach failures has changed.
+    /// How many times the published session-to-error map has changed.
     pub fn failed_version(&self) -> u64 {
         self.failed_version
     }
@@ -2486,6 +2489,146 @@ mod decoupling;
 mod tests {
     use super::*;
     use crate::kernel::snapshot::SessionRow;
+
+    #[test]
+    fn repeated_offline_attach_results_reuse_the_interface() {
+        use crate::kernel::host::{Epoch, LuaHost, Published, RenderContext};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("plugins")).unwrap();
+        std::fs::write(
+            dir.path().join("plugins/probe.lua"),
+            r#"return { name = "probe", slot = "center", pure = true,
+                render = function()
+                    return { text = thurbox.sessions[1].attach_error or "connected" }
+                end }"#,
+        )
+        .unwrap();
+        let host = LuaHost::new(dir.path());
+        assert!(host.error.is_none(), "{:?}", host.error);
+        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        terminals.hosts = Default::default();
+        let snapshot = Snapshot {
+            sessions: (0..10)
+                .map(|i| row(&format!("offline-{i}"), "ssh:offline:tmux", Some("%1")))
+                .collect(),
+            ..Default::default()
+        };
+        let themes = crate::kernel::theme::Themes::load(None);
+        let registry = crate::kernel::registry::Registry::default();
+        let diffs = crate::kernel::diff::DiffStore::new();
+        let repos = crate::kernel::repos::RepoStore::with_hosts(Default::default());
+        let render = |terminals: &Terminals| {
+            host.publish(&Published {
+                epoch: Epoch {
+                    failed: terminals.failed_version(),
+                    ..Default::default()
+                },
+                snapshot: &snapshot,
+                attach_errors: &terminals.failures(),
+                inflight: &[],
+                themes: &themes,
+                registry: &registry,
+                diffs: &diffs,
+                links: &Default::default(),
+                search: None,
+                meta: &Default::default(),
+                metrics: &Default::default(),
+                status_rows: 0,
+                can_open: false,
+                inventory: &[],
+                ui_dir: "ui",
+                settings: &Default::default(),
+                repos: &repos,
+                wants: &Default::default(),
+                focus: None,
+                selection: None,
+                hovered: None,
+                printing: &Default::default(),
+            })
+            .unwrap();
+            format!(
+                "{:?}",
+                host.render(
+                    0,
+                    RenderContext {
+                        width: 80,
+                        height: 24,
+                        focused: false,
+                        elapsed: 0.0,
+                        frame: 0,
+                    }
+                )
+                .unwrap()
+                .node
+            )
+        };
+        let complete = |terminals: &mut Terminals, id: &str, message: &str| {
+            terminals
+                .attached
+                .0
+                .send(Attached {
+                    session: id.into(),
+                    pane: "%1".into(),
+                    backend: "ssh:offline:tmux".into(),
+                    readied: false,
+                    via_name: false,
+                    session_handle: Err(message.into()),
+                })
+                .unwrap();
+            terminals.sync(&snapshot, 24, 80);
+        };
+        for row in &snapshot.sessions {
+            complete(&mut terminals, &row.id, "host unreachable");
+        }
+        assert!(render(&terminals).contains("host unreachable"));
+        let version = terminals.failed_version();
+        let skipped = host.skipped_renders();
+        let reused = host.reused_groups();
+        for _ in 0..3 {
+            for row in &snapshot.sessions {
+                // Expire each retry without sleeping: completed worker results
+                // must refresh the private timer without invalidating Lua.
+                terminals.failed.get_mut(&row.id).unwrap().at -= ATTACH_RETRY_INTERVAL;
+                complete(&mut terminals, &row.id, "host unreachable");
+                assert!(render(&terminals).contains("host unreachable"));
+            }
+        }
+        println!("30 repeated offline results: {} failure invalidations, {} cached renders, {} reused groups",
+            terminals.failed_version() - version, host.skipped_renders() - skipped,
+            host.reused_groups() - reused);
+        assert_eq!(host.skipped_renders() - skipped, 30);
+        assert_eq!(terminals.failed_version(), version);
+
+        complete(&mut terminals, "offline-0", "permission denied");
+        assert!(render(&terminals).contains("permission denied"));
+        assert_eq!(terminals.failed_version(), version + 1);
+        terminals.forget("offline-0");
+        assert!(render(&terminals).contains("connected"));
+        assert_eq!(terminals.failed_version(), version + 2);
+    }
+
+    #[test]
+    fn retry_bookkeeping_is_private_to_the_terminal_store() {
+        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        terminals.fail("a", Some("%1".into()), "host unreachable".into());
+        let version = terminals.failed_version();
+        terminals.failed.get_mut("a").unwrap().at -= ATTACH_RETRY_INTERVAL;
+        let retry_started = std::time::Instant::now();
+        terminals.fail("a", Some("%2".into()), "host unreachable".into());
+        assert_eq!(terminals.failed_version(), version);
+        let failure = &terminals.failed["a"];
+        assert_eq!(failure.pane.as_deref(), Some("%2"));
+        assert!(
+            failure.at >= retry_started,
+            "a retry must restart its cooldown"
+        );
+        terminals.fail("b", Some("%2".into()), "host unreachable".into());
+        assert_eq!(terminals.failed_version(), version + 1);
+        terminals.sync(&Snapshot::default(), 24, 80);
+        assert!(terminals.failures().is_empty());
+        assert_eq!(terminals.failed_version(), version + 2);
+    }
 
     /// A grid taller than its rect shows its bottom rows — where the newest
     /// output and the prompt are — and a selection over them copies those rows.
