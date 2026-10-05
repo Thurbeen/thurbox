@@ -2730,6 +2730,50 @@ fn hosted_session_list() -> Option<(Profile, Tui)> {
     )
 }
 
+#[test]
+fn ssh_host_labels_do_not_depend_on_platform() {
+    let Some((_profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            for name in ["linux-session", "windows-session"] {
+                profile.cli(&[
+                    "session",
+                    "create",
+                    "--name",
+                    name,
+                    "--repo-path",
+                    profile.path("repo").to_str().unwrap(),
+                    "--agent",
+                    "shell",
+                ]);
+            }
+            std::fs::write(
+                profile.path("config/hosts.toml"),
+                "[[hosts]]\nname = \"build-box\"\ndestination = \"invalid.example\"\nplatform = \"posix\"\n\n[[hosts]]\nname = \"win-desk\"\ndestination = \"invalid.example\"\nplatform = \"windows\"\n",
+            ).expect("hosts");
+            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).unwrap();
+            for (name, backend) in [
+                ("linux-session", "ssh:build-box:tmux"),
+                ("windows-session", "ssh:win-desk:psmux"),
+            ] {
+                db.execute(
+                    "UPDATE sessions SET backend_type = ?1 WHERE name = ?2",
+                    [backend, name],
+                )
+                .unwrap();
+            }
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_for("ssh build-box");
+    tui.wait_for("ssh win-desk");
+    tui.press(0, tui.find("ssh win-desk"));
+    tui.wait_gone("windows-session");
+    assert!(tui.frame().contains("ssh win-desk"));
+    assert!(tui.quit().success());
+}
+
 fn selected_session(profile: &Profile) -> Option<String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut cmd);

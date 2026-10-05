@@ -323,8 +323,6 @@ local function host_line(item, width, selected)
     if host.name == item.host then
       if host.backend:match("^wsl:") then
         kind = "WSL"
-      elseif host.platform == "windows" then
-        kind = "Windows"
       end
       break
     end
