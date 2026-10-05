@@ -636,31 +636,52 @@ fn clicking_one_host_folds_only_its_own_children() {
 fn host_kind_uses_transport_and_platform_independently() {
     let host = host();
     let mut snapshot = hosted();
-    snapshot.sessions[1].remote_host = Some("win-example".into());
-    snapshot.sessions[1].backend = "ssh:win-example:tmux".into();
-    snapshot.sessions[2].remote_host = Some("wsl-example".into());
-    snapshot.sessions[2].backend = "wsl:wsl-example".into();
-    snapshot.hosts = vec![
-        HostRow {
-            name: "win-example".into(),
-            detail: "Windows".into(),
-            backend: "ssh:win-example".into(),
-            platform: "windows".into(),
-            multiplexer: Some("tmux".into()),
-            available_multiplexers: vec!["tmux".into()],
-        },
-        HostRow {
-            name: "wsl-example".into(),
-            detail: "WSL".into(),
-            backend: "wsl:wsl-example".into(),
-            platform: "posix".into(),
-            multiplexer: Some("tmux".into()),
-            available_multiplexers: vec!["tmux".into()],
-        },
-    ];
-    let frame = list_text(&host, &snapshot, &registry_for(&host));
-    assert!(frame.contains("Windows win-example"), "{frame}");
-    assert!(frame.contains("WSL wsl-example"), "{frame}");
+    snapshot.sessions[1].remote_host = Some("build-box".into());
+    snapshot.sessions[1].backend = "ssh:build-box:tmux".into();
+    snapshot.sessions[2].remote_host = Some("win-desk".into());
+    snapshot.sessions[2].backend = "ssh:win-desk:psmux".into();
+    let mut wsl = row("wsl-session", "distro-session");
+    wsl.remote_host = Some("dev-distro".into());
+    wsl.backend = "wsl:dev-distro:tmux".into();
+    snapshot.sessions.push(wsl);
+    snapshot.hosts = [
+        ("build-box", "ssh:build-box", "posix"),
+        ("win-desk", "ssh:win-desk", "windows"),
+        ("dev-distro", "wsl:dev-distro", "posix"),
+    ]
+    .into_iter()
+    .map(|(name, backend, platform)| HostRow {
+        name: name.into(),
+        backend: backend.into(),
+        platform: platform.into(),
+        detail: String::new(),
+        multiplexer: None,
+        available_multiplexers: vec![],
+    })
+    .collect();
+    let mut registry = registry_for(&host);
+    for folded in ["", "build-box;win-desk;dev-distro"] {
+        registry
+            .set_setting(PLUGIN, "folded_hosts", Some(Value::Text(folded.into())))
+            .unwrap();
+        let frame = list_text(&host, &snapshot, &registry);
+        println!("{frame}");
+        assert!(frame.contains("⌂ local"), "{frame}");
+        for label in ["▣ ssh build-box", "▣ ssh win-desk", "▣ WSL dev-distro"] {
+            assert!(frame.contains(label), "{frame}");
+        }
+        let buffer = paint(&host, PLUGIN, 24, 16);
+        let narrow = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(narrow.contains("ssh build-box"), "{narrow}");
+        assert!(narrow.contains("ssh win-desk"), "{narrow}");
+    }
 }
 
 #[test]
