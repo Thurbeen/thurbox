@@ -602,7 +602,10 @@ fn a_host_row_with_no_room_for_its_rule_keeps_the_session_total_whole() {
         ]),
     );
     let frame = text(&paint(&host, "sessions", 40, 10, true));
-    assert_eq!(frame[1], "┃ ▾ ●▣ ssh abcdefghijklmnop  5 sessions┃", "{frame:#?}");
+    assert_eq!(
+        frame[1], "┃ ▾ ●▣ ssh abcdefghijklmnop  5 sessions┃",
+        "{frame:#?}"
+    );
 }
 
 #[test]
