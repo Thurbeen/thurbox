@@ -653,11 +653,16 @@ impl App {
         };
         Counters::bump(&self.perf.renders);
         let rendered = self.host.render(index, ctx);
+        // Counted here, before the hold: a clean render the hold answers with
+        // the held failure is not a failure, and counting it would report one
+        // per frame for as long as a recovered pane is held.
+        if rendered.is_err() {
+            Counters::bump(&self.perf.failures);
+        }
         let rendered = match self.hold_failure(index, rendered) {
             Ok(rendered) => rendered,
             Err(e) => {
                 paint::render_error(frame, rect, &e.plugin, &e.message);
-                Counters::bump(&self.perf.failures);
                 self.errors.push(e);
                 // The pane's own rect, though it drew no rows to record. A
                 // press matching no target at all falls through to
