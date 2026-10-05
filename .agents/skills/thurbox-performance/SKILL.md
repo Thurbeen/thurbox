@@ -131,6 +131,8 @@ identity the panes' own `rawequal` memos key on). A group whose inputs did not
 move is not rebuilt; and a pane that declares
 `pure = true` has the tree it last returned reused — a cache hit is a refcount
 bump on an `Rc` tree, and the settle diff short-circuits on pointer identity.
+`failed_version` specifically tracks the published error map: an identical
+attach failure only refreshes its private retry timestamp and candidate pane.
 This is ADR-P16 closed out by ADR-P18, and it all rests on one rule: a signal is bumped **inside** the
 mutation and only when the value actually changed — writing an unchanged value
 counts as no change, which is the difference between the gate saving 27% and
