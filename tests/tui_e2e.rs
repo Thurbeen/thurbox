@@ -5451,6 +5451,208 @@ fn a_bare_move_reaches_a_terminal_that_asked_for_every_motion() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+fn open_repo_picker(profile: &Profile) -> Tui {
+    let mut tui = Tui::spawn(profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Multiplexer");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    tui
+}
+
+fn repo_picker_selected(frame: &str, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap();
+    frame
+        .lines()
+        .any(|line| line.contains("[x]") && line.contains(name))
+}
+
+fn repo_picker_fixture(profile: &Profile) {
+    std::fs::create_dir(profile.path("home/plain")).expect("plain directory");
+    std::fs::create_dir_all(profile.path("home/repo/subdir")).expect("repo directory");
+    std::os::unix::fs::symlink("plain", profile.path("home/link")).expect("symlink");
+    for args in [
+        vec!["init", "-q", "home/repo"],
+        vec!["init", "-q", "--bare", "home/bare"],
+        vec![
+            "-C",
+            "home/repo",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+        vec![
+            "-C",
+            "home/repo",
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked",
+            "../worktree",
+        ],
+    ] {
+        let mut cmd = Command::new("git");
+        profile.apply(&mut cmd);
+        let output = cmd.args(&args).output().expect("git fixture");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn repo_picker_accepts_directory_kinds_and_path_spellings() {
+    let mut refused = Vec::new();
+    for directory in ["plain", "repo", "repo/subdir", "bare", "worktree", "link"] {
+        for (absolute, slash) in [(false, false), (false, true), (true, false), (true, true)] {
+            let profile = Profile::new();
+            repo_picker_fixture(&profile);
+            let path = if absolute {
+                profile
+                    .path(&format!("home/{directory}"))
+                    .display()
+                    .to_string()
+            } else {
+                format!("~/{directory}")
+            };
+            let path = format!("{path}{}", if slash { "/" } else { "" });
+            let mut tui = open_repo_picker(&profile);
+            tui.send(format!("\t{path}").as_bytes());
+            tui.wait_until_quiet();
+            tui.send(b"\r");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !repo_picker_selected(&tui.frame(), directory) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let accepted = repo_picker_selected(&tui.frame(), directory);
+            eprintln!("{directory}: absolute={absolute}, slash={slash}, typed Enter: {accepted}");
+            if !accepted {
+                refused.push(format!(
+                    "{directory}, absolute={absolute}, slash={slash}: {}",
+                    tui.frame()
+                ));
+            }
+            assert!(tui.quit().success());
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "refused directories:\n{}",
+        refused.join("\n")
+    );
+}
+
+#[test]
+fn repo_picker_dropdown_accepts_directory_kinds() {
+    let mut refused = Vec::new();
+    for directory in ["plain", "repo", "repo/subdir", "bare", "worktree", "link"] {
+        let profile = Profile::new();
+        repo_picker_fixture(&profile);
+        let mut tui = open_repo_picker(&profile);
+        tui.send(b"\t");
+        tui.wait_until_quiet();
+        tui.send(b"\t");
+        tui.wait_for("Browse");
+        tui.send(directory.as_bytes());
+        tui.wait_until_quiet();
+        tui.send(b"\r");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !repo_picker_selected(&tui.frame(), directory) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let accepted = repo_picker_selected(&tui.frame(), directory);
+        eprintln!("{directory}, dropdown Enter: {accepted}");
+        if !accepted {
+            refused.push(format!("{directory}: {}", tui.frame()));
+        }
+        assert!(tui.quit().success());
+    }
+    assert!(
+        refused.is_empty(),
+        "refused directories:\n{}",
+        refused.join("\n")
+    );
+}
+
+#[test]
+fn repo_picker_enter_selects_a_plain_directory_from_the_dropdown() {
+    let profile = Profile::new();
+    std::fs::create_dir(profile.path("home/plain")).expect("plain directory");
+    let mut tui = open_repo_picker(&profile);
+    tui.send(b"\t");
+    tui.wait_until_quiet();
+    tui.send(b"\t");
+    tui.wait_for("plain/");
+    tui.send(b"\r");
+    tui.wait_until("the plain directory to be selected", |frame| {
+        repo_picker_selected(frame, "plain")
+    });
+    tui.send(b"\r");
+    tui.wait_gone("Select Repos");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn repo_picker_tab_completion_then_enter_selects_a_directory() {
+    let profile = Profile::new();
+    std::fs::create_dir(profile.path("home/plain")).expect("plain directory");
+    let mut tui = open_repo_picker(&profile);
+    tui.send(b"\t~/pl");
+    tui.wait_until_quiet();
+    tui.send(b"\t");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_until("the completed directory to be selected", |frame| {
+        repo_picker_selected(frame, "plain")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn repo_picker_shows_a_refused_path_inside_the_modal() {
+    let profile = Profile::new();
+    std::fs::write(profile.path("home/file"), "a regular file").expect("file");
+    let mut tui = open_repo_picker(&profile);
+    tui.send(b"\t~/file/");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Path not found:");
+    let frame = tui.frame();
+    let top = frame
+        .lines()
+        .position(|line| line.contains("Select Repos"))
+        .unwrap();
+    let bottom = frame
+        .lines()
+        .position(|line| line.contains("[ Cancel ]"))
+        .unwrap();
+    let refusal = frame
+        .lines()
+        .position(|line| line.contains("Path not found:"))
+        .unwrap();
+    assert!(
+        refusal > top && refusal < bottom,
+        "refusal must be inside the modal:\n{frame}"
+    );
+    assert!(
+        frame.contains("~/file/"),
+        "keep the refused path for correction:\n{frame}"
+    );
+    assert!(tui.quit().success());
+}
+
 /// How soon a hovered affordance must light. Well under the idle frame floor
 /// (250ms), because the failure it catches is a pure pane served its cached
 /// tree until something unrelated moves the epoch: that still lights the

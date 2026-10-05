@@ -1217,10 +1217,14 @@ fn the_dropdown_keeps_the_arrows_while_it_is_open() {
 
     press(&host, &world, "down");
     press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("/srv/beta/"),
-        "the arrow moved the dropdown's own selection: {screen}"
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Bookmark {
+            host: String::new(),
+            path: "/srv/beta".into(),
+            edit: BookmarkEdit::Add,
+        }],
+        "Enter selects the dropdown row reached by the arrow"
     );
 }
 
@@ -1548,6 +1552,37 @@ fn a_write_that_failed_ticks_nothing_in_its_place() {
     assert!(
         !screen.contains("[x]"),
         "no stale tick later either: {screen}"
+    );
+}
+
+#[test]
+fn a_failed_addition_preserves_a_path_edited_while_it_was_running() {
+    let host = host();
+    let mut world = World::default();
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "/opt/refused");
+    press(&host, &world, "enter");
+    world.inflight.push(InFlight {
+        id: 7,
+        kind: "bookmark",
+        session: String::new(),
+        subject: Some("/opt/refused".into()),
+        host: None,
+        phase: Phase::Running,
+        error: None,
+    });
+    type_text(&host, &world, "/opt/newer");
+    world.inflight[0].phase = Phase::Failed;
+    world.inflight[0].error = Some("Path not found: /opt/refused".into());
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("/opt/newer"),
+        "keep the newer input:\n{screen}"
+    );
+    assert!(
+        screen.contains("Path not found: /opt/refused"),
+        "show the refusal:\n{screen}"
     );
 }
 
@@ -2339,9 +2374,39 @@ fn the_search_pills_name_the_filter_they_act_on() {
 }
 
 #[test]
-fn the_browse_pill_follows_the_row_the_dropdown_is_on() {
-    // "open/pick" is two actions: a repository is remembered, a plain directory
-    // is descended into. And `esc` closes the dropdown, not the flow.
+fn tab_descends_into_the_highlighted_directory_without_adding_it() {
+    let h = host();
+    let mut world = World::default();
+    world.repos.set_listing_for_test(
+        "",
+        "/srv",
+        Listing::Ready(vec![
+            BrowseEntry {
+                name: "notes".into(),
+                is_git: false,
+            },
+            BrowseEntry {
+                name: "repo".into(),
+                is_git: true,
+            },
+        ]),
+    );
+    world.wants.browse = Some((String::new(), "/srv".into()));
+    open(&h, &world);
+    press(&h, &world, "tab");
+    type_text(&h, &world, "/srv/");
+    press(&h, &world, "tab");
+    press(&h, &world, "down");
+    press(&h, &world, "tab");
+    assert!(drawn(&h, &world).contains("/srv/repo/"));
+    assert!(
+        h.drain_commands().is_empty(),
+        "browsing never adds a bookmark"
+    );
+}
+
+#[test]
+fn the_browse_pill_offers_to_add_plain_directories_and_repositories() {
     let h = host();
     let mut world = World::default();
     world.repos.set_listing_for_test(
@@ -2364,7 +2429,10 @@ fn the_browse_pill_follows_the_row_the_dropdown_is_on() {
     type_text(&h, &world, "/srv/");
     press(&h, &world, "tab");
     let screen = drawn(&h, &world);
-    assert!(screen.contains("[ Open ]"), "a plain directory: {screen}");
+    assert!(
+        screen.contains("[ Add directory ]"),
+        "a plain directory: {screen}"
+    );
     assert!(screen.contains("[ Close ]"), "{screen}");
     assert!(!screen.contains("[ Cancel ]"), "{screen}");
 

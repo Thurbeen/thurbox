@@ -919,16 +919,13 @@ local function render_repo(flow)
   elseif dropdown then
     hints = {
       { "↑/↓", "select" },
+      { "tab", "open folder" },
       { "s-tab", "search" },
       { "esc", "close" },
     }
-    -- "open/pick" is two actions, and which one it is depends on the row: a
-    -- repository is committed to memory, a plain directory is descended into.
-    -- No row at all — still listing, or a directory that refused — is no pill,
-    -- rather than one that would do nothing when pressed.
     local shown = browse_entries(flow)
     local entry = shown[widgets.clamp(flow.browse_index, #shown)]
-    primary = entry and (entry.is_git and "Add repo" or "Open") or nil
+    primary = entry and (entry.is_git and "Add repo" or "Add directory") or nil
     cancel = "Close"
   else
     hints = {
@@ -1502,9 +1499,20 @@ return {
       -- write's: the newest row is then whatever was newest before it, and
       -- ticking that would pick a repository nobody chose.
       local failed = false
-      for id, subject in pairs(bookmark_failures()) do
-        if subject == flow.awaiting_path and not (flow.failures_before or {})[id] then
+      for _, item in ipairs((thurbox and thurbox.commands) or {}) do
+        if
+          item.kind == "bookmark"
+          and item.phase == "failed"
+          and item.subject == flow.awaiting_path
+          and not (flow.failures_before or {})[tostring(item.id)]
+        then
           failed = true
+          flow.message = item.error or ("Could not add directory: " .. flow.awaiting_path)
+          if untouched(flow) or (flow.input.value or "") == "" then
+            textinput.set(flow.input, flow.awaiting_path)
+            flow.prefill = nil
+          end
+          flow.focus = "input"
         end
       end
       local newest = not failed and repo_picker.newest(bookmarks().rows or {})
@@ -1879,14 +1887,13 @@ return {
         flow.focus = "search"
         save(flow)
         return true
-      elseif name == "enter" then
+      elseif name == "enter" or name == "tab" then
         local entry = entries[widgets.clamp(flow.browse_index, #entries)]
         if entry then
           local dir = (browse().dir or "")
           local joined = (dir == "/" and "/" or (dir .. "/")) .. entry.name
-          if entry.is_git then
-            -- Existence and git-ness were just observed, so this is a commit
-            -- rather than a descent.
+          if name == "enter" then
+            -- A session can use any directory; git-ness only governs worktrees.
             command("bookmark", { host = flow.host, repo = joined, action = "add" })
             textinput.clear(flow.input)
             flow.browse = false

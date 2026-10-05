@@ -422,8 +422,10 @@ not applicable.
    adds new bookmarks: `Tab` accepts the inline autocomplete
    suggestion, or — with nothing to complete — opens a **path
    browser** dropdown listing the typed directory (git repos marked
-   `●git`; `Enter` descends into a plain dir or picks a repo
-   directly, `Esc` closes it, listings are cached per picker).
+   `●git`; `Enter` selects any existing directory, `Tab` opens the
+   highlighted directory, `Esc` closes it, listings are cached per picker).
+   A refused addition shows its reason inside the modal and restores the
+   path for correction. Git is required only when creating a worktree.
    Remote paths expand `~` against the remote home and are verified
    (exists + is-it-git, one round trip, async with a `checking…`
    spinner) on Enter; git-ness is persisted per bookmark (schema
