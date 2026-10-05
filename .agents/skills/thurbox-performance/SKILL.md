@@ -216,6 +216,14 @@ isolated sandbox and reports CPU from `/proc` beside the loop's own
 terminal size and session count, so both pin theirs, and a change is argued with
 a paired before/after rather than two absolute numbers.
 
+**Snapshot polling** (ADR-P6, schema v49): `data_version` is the first gate,
+then trigger-maintained row and hook-liveness generations distinguish a full
+refresh from a stamp-only hook read. Perf publications use the store's own
+connection and move neither generation, including for other TUI instances.
+Same-state hooks retain their monotonic stamp; repeated `done` after acknowledgement
+still becomes visible. Additive migrations re-assert the triggers to cover new
+columns. `session signal` skips migrations and retention when the schema is current.
+
 **Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
 `THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to
 `thurbox.log`; while either is active a JSON snapshot is published for

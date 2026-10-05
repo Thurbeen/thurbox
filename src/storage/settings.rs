@@ -237,9 +237,8 @@ impl Database {
 
     /// Publish the TUI's latest perf snapshot (a JSON blob) for
     /// `thurbox-cli perf` to read. Written only while perf timing is active
-    /// (THURBOX_PERF_LOG or an open perf HUD) — each write bumps other
-    /// connections' `data_version`, so an idle default-config TUI must never
-    /// churn this row.
+    /// (THURBOX_PERF_LOG or an open perf HUD). Other connections see a
+    /// `data_version` change, but telemetry moves no snapshot generation.
     pub fn set_perf_snapshot(&self, json: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2) \

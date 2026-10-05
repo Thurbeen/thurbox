@@ -731,6 +731,7 @@ pub struct SnapshotStore {
     /// `PRAGMA data_version` as of the last successful rebuild. `None` means
     /// "never read", which forces one.
     last_data_version: Option<i64>,
+    last_snapshot_versions: Option<(i64, i64)>,
     /// Remote hook events that named a pane no session claims yet.
     ///
     /// The subscription's first report routinely arrives before the pane has
@@ -805,6 +806,7 @@ impl SnapshotStore {
             },
             last_refresh: None,
             last_data_version: None,
+            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -837,6 +839,7 @@ impl SnapshotStore {
             current: Snapshot::default(),
             last_refresh: None,
             last_data_version: None,
+            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -901,24 +904,38 @@ impl SnapshotStore {
         Some(Ok(warnings))
     }
 
+    /// Publish telemetry through our connection, without invalidating our rows.
+    pub fn set_perf_snapshot(&self, json: &str) -> rusqlite::Result<()> {
+        match &self.database {
+            Some(database) => database.set_perf_snapshot(json),
+            None => Ok(()),
+        }
+    }
+
     /// Rebuild if the refresh interval has elapsed *and* anything committed.
     /// Called from the event loop, never from a plugin.
     ///
     /// The interval alone would re-read five tables (plus the automation run
     /// history) every 400ms forever, on a database nobody wrote to.
     /// `PRAGMA data_version` reads an in-memory counter and moves whenever
-    /// another connection commits — which covers every writer that matters, since
-    /// the command bus holds its own — so an idle thurbox stops querying
-    /// altogether. v1 gates its per-tick session read the same way (ADR-P6).
+    /// another connection commits. The snapshot generations then distinguish
+    /// row changes from hook liveness and perf telemetry, so only row changes
+    /// need the full rebuild (ADR-P6).
     ///
     /// Git stats are folded in either way: they arrive from worker threads, not
     /// from the database, so `data_version` says nothing about them.
     pub fn refresh_if_due(&mut self) -> bool {
+        self.refresh_if_due_at(Instant::now())
+    }
+
+    /// Poll using the caller's monotonic clock. The row read and other workers
+    /// retain their own timestamps; this instant controls only the poll cadence.
+    pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
         // `Option::is_none_or` would read better but is stable only from 1.82;
         // this crate's MSRV is 1.75.
-        let due = self
-            .last_refresh
-            .map_or(true, |at| at.elapsed() >= REFRESH_INTERVAL);
+        let due = self.last_refresh.map_or(true, |at| {
+            now.saturating_duration_since(at) >= REFRESH_INTERVAL
+        });
         if !due {
             return false;
         }
@@ -932,7 +949,7 @@ impl SnapshotStore {
         // is in while the user is off installing what was missing.
         let preflight_moved = self.poll_preflight();
         if !panes_moved && self.rows_are_current() {
-            self.last_refresh = Some(Instant::now());
+            self.last_refresh = Some(now);
             let stamp = taken_at_stamp();
             self.current.taken_at_ms = stamp;
             // Git stats landing rewrite rows here, so this branch changes more
@@ -946,14 +963,15 @@ impl SnapshotStore {
             return false;
         }
         self.refresh();
+        self.last_refresh = Some(now);
         true
     }
 
     /// Whether the stored rows still reflect the database.
     ///
-    /// False before the first successful read, and false as soon as any other
-    /// connection commits. A read failure leaves the recorded version unset, so
-    /// the next call retries rather than trusting stale rows.
+    /// External commits are checked against snapshot generations. Telemetry
+    /// needs no row reads; liveness needs only hook stamps. Read failures keep
+    /// the previous gate so the next poll retries.
     fn rows_are_current(&mut self) -> bool {
         let Some(database) = &self.database else {
             return true;
@@ -961,10 +979,61 @@ impl SnapshotStore {
         let Some(seen) = self.last_data_version else {
             return false;
         };
-        match database.data_version() {
-            Ok(current) => current == seen,
-            Err(_) => false,
+        let Ok(current) = database.data_version() else {
+            return false;
+        };
+        if current == seen {
+            return true;
         }
+        let Ok(versions) = database.snapshot_versions() else {
+            return false;
+        };
+        let Some(previous) = self.last_snapshot_versions else {
+            return false;
+        };
+        if versions.0 != previous.0 {
+            return false;
+        }
+        if versions.1 != previous.1 {
+            let Ok(hooks) = database.load_hook_states() else {
+                return false;
+            };
+            // A real transition can commit between reading the generations and
+            // the stamps. Rebuild rather than patching a different raw state.
+            if self.current.sessions.iter().any(|row| {
+                parse_id(&row.id)
+                    .and_then(|id| hooks.get(&id))
+                    .map_or(true, |hook| hook.state != row.hook_state)
+            }) {
+                return false;
+            }
+            let mut changed = false;
+            for row in &mut self.current.sessions {
+                let Some(hook) = parse_id(&row.id).and_then(|id| hooks.get(&id)) else {
+                    continue;
+                };
+                if let Some(stamp) = hook.state_at {
+                    self.hook_state_at.insert(row.id.clone(), stamp);
+                } else {
+                    self.hook_state_at.remove(&row.id);
+                }
+                // Working/blocked are folded against output each tick. Only
+                // done can change its visible state from a new stamp alone.
+                if !row.stopped && row.hook_state.as_deref() == Some("done") {
+                    let status = derive_state(Some("done"), hook.state_at, hook.seen_at);
+                    if row.status != status {
+                        row.status = status;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.mark_changed();
+            }
+        }
+        self.last_data_version = Some(current);
+        self.last_snapshot_versions = Some(versions);
+        true
     }
 
     /// Take the pane verdicts the workers have answered and ask for the ones
@@ -1442,6 +1511,11 @@ impl SnapshotStore {
             .database
             .as_ref()
             .and_then(|database| database.data_version().ok());
+
+        self.last_snapshot_versions = self
+            .database
+            .as_ref()
+            .and_then(|database| database.snapshot_versions().ok());
 
         let Some(database) = &self.database else {
             self.current.taken_at_ms = taken_at_ms;

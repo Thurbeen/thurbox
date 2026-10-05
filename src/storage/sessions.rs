@@ -1340,9 +1340,8 @@ impl Database {
     }
 
     /// Load the hook-status columns for every active session in one indexed
-    /// scan, keyed by id. The TUI derives statuses from this but reloads only
-    /// when `data_version` moves (see `App::refresh_session_statuses`), so it
-    /// is not run on every tick.
+    /// scan, keyed by id. `SnapshotStore` reads this on a full refresh or a
+    /// hook-liveness generation change, never on an unchanged poll.
     pub fn load_hook_states(&self) -> rusqlite::Result<HashMap<SessionId, HookRow>> {
         // `prepare_cached` keeps the compiled statement across reloads — this is
         // a hot query (the TUI's status refresh), so skipping the re-parse on

@@ -14,8 +14,9 @@ use migrations::{
     migrate_v41_joinable, migrate_v42_worktree_provenance, migrate_v43_session_events,
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
-    migrate_v4_project_mcp_servers, migrate_v5_session_commands, migrate_v6_worktrees_pk,
-    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v5_session_commands,
+    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
+    migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -81,7 +82,9 @@ use rusqlite::Connection;
 /// `delivery_lease` are the lease a sender holds while that send is in flight
 /// (when it was taken, and whose it is), which `claim` honours.
 /// Gaps in the step table are fine (there is no v18 step either).
-pub const SCHEMA_VERSION: u32 = 48;
+/// v49 separates snapshot changes from hook liveness stamps and perf telemetry.
+/// Triggers maintain the generations even for writes from older binaries.
+pub const SCHEMA_VERSION: u32 = 49;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -445,6 +448,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (46, migrate_v46_teardown_owed, Reapply::WhenMissing),
         (47, migrate_v47_wsl_loopback_repair_owed, Reapply::Never),
         (48, migrate_v48_message_delivered_via, Reapply::WhenMissing),
+        (49, migrate_v49_snapshot_versions, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -567,6 +571,36 @@ mod tests {
     use rusqlite::OptionalExtension;
 
     #[test]
+    fn snapshot_triggers_follow_new_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, name, created_at, updated_at) VALUES ('probe', 'probe', 0, 0);
+             ALTER TABLE sessions ADD COLUMN snapshot_probe TEXT;",
+        ).unwrap();
+        initialize(&conn).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT rows_version FROM snapshot_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "UPDATE sessions SET snapshot_probe = 'changed' WHERE id = 'probe'",
+            [],
+        )
+        .unwrap();
+        let after: i64 = conn
+            .query_row("SELECT rows_version FROM snapshot_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            after > before,
+            "new columns must not escape snapshot invalidation"
+        );
+    }
+
+    #[test]
     fn initialize_sets_busy_timeout() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
@@ -621,6 +655,10 @@ mod tests {
     fn a_version_that_claims_a_missing_column_is_repaired_on_open() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
+        // The pre-v49 corruption predates the trigger that now prevents
+        // dropping a column it observes.
+        conn.execute_batch("DROP TRIGGER snapshot_sessions_UPDATE;")
+            .unwrap();
         // Exactly the field shape: the columns gone, the version left saying
         // they are there.
         for column in ["launch_command", "launch_args", "launch_env", "stopped_at"] {

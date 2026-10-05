@@ -303,6 +303,21 @@ next tick), and the restart path's `clear_hook_state` calls
 `thurbox-cli session signal` writes come from another connection and *do* bump
 `data_version`, so they're picked up on the next tick as before.
 
+**The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence.
+Schema v49 adds trigger-maintained row and hook-liveness generations. A commit
+that only publishes perf telemetry moves neither. A same-state hook still
+refreshes the monotonic `hook_state_at` (liveness and the Codex submission race),
+but moves only liveness: the store reads hook columns and updates its cached
+stamps, without reloading sessions, tasks, automations, or claiming focus.
+A repeated `done` after acknowledgement still becomes visible as a new completion.
+Working/blocked continue to fold against output on each tick. State transitions
+and other row changes still take the full refresh. The generations are read
+before the rows, leaving a concurrent commit for the next poll; errors retry.
+Triggers cover legacy writers too and follow additive migrations automatically.
+`session signal` uses
+`Database::open_for_signal`, which skips migrations and retention for a current
+schema and falls back to the full open for a new or older database.
+
 Alongside this, `Database::initialize` (`src/storage/schema.rs`) sets the
 WAL-friendly performance pragmas `synchronous = NORMAL`, `cache_size = -8000`
 (8 MB), `mmap_size = 64 MB`, and `temp_store = MEMORY`.
@@ -578,9 +593,10 @@ only** and never CI-asserted (the counters remain the sole regression gate):
   JSON snapshot (counters + percentiles + slow ops + the startup phases) into
   the SQLite `metadata` table (`perf_snapshot` key, ~every 5–10 s), read by
   **`thurbox-cli perf`** (`--json` for machine output). Publishing is gated on
-  timing being active because each write bumps *other* thurbox connections'
-  `data_version` (a full shared-state reload on their next poll) — an idle,
-  default-config instance must never churn that row.
+  timing being active. In v2 it uses the snapshot store's own connection,
+  avoiding a full database open and its own `data_version` edge. Other stores
+  exclude `perf_snapshot` from their snapshot generations, so they do not
+  rebuild either; the CLI still reads the newest JSON.
 
 **The v2 implementation** (the bullets above name v1 modules that went with
 `src/app`; the design carried over, the file names did not):

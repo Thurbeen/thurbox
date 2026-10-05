@@ -63,7 +63,17 @@ fn main() {
         );
     };
 
-    let db = match thurbox::storage::Database::open(&db_path) {
+    let open = if matches!(
+        &cli.command,
+        Some(cli::Command::Session {
+            action: cli::sessions::Action::Signal { .. }
+        })
+    ) {
+        thurbox::storage::Database::open_for_signal
+    } else {
+        thurbox::storage::Database::open
+    };
+    let db = match open(&db_path) {
         Ok(db) => db,
         Err(e) => fail(
             &format!("cannot open the database at {}: {e}", db_path.display()),
