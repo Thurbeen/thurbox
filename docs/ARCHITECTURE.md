@@ -1130,6 +1130,13 @@ via a shared SQLite database
 handles concurrent access safely. Deletions use soft delete
 (`deleted_at` column).
 
+The v2 snapshot uses `data_version` as its first gate, then schema v49's
+trigger-maintained row and hook-liveness generations. Perf telemetry changes
+neither; a same-state hook updates cached liveness without a full rebuild.
+Triggers conservatively cover other table changes, including older writers.
+Additive migrations re-assert the triggers so new columns remain covered.
+See ADR-P6 and ADR-P11 in `docs/PERFORMANCE.md`.
+
 *This supersedes the original TOML file-based approach. The migration
 to SQLite resolved race conditions where concurrent `save_state()` calls
 could overwrite each other's writes.*
