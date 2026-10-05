@@ -349,6 +349,45 @@ fn main() {
             .collect(),
     ));
 
+    // Model the once-a-second idle clock and metrics sample with diffs held
+    // from earlier selections. No session row or diff body changes.
+    rows.push((
+        "frame: idle clock/sample + diffs".into(),
+        counts
+            .iter()
+            .map(|&n| {
+                let mut snapshot = snapshot(n);
+                let mut world = World::new(&host);
+                for row in &snapshot.sessions {
+                    world.diffs.set_for_test(
+                        &row.id,
+                        thurbox::kernel::diff::Diff::Ready {
+                            files: Vec::new(),
+                            body: vec!["+unchanged diff line".repeat(4); 1000],
+                            truncated: false,
+                            raw_bytes: 80_000,
+                            untracked_omitted: 0,
+                        },
+                    );
+                }
+                host.forget_groups();
+                let mut epoch = Epoch::default();
+                let mut terminal =
+                    Terminal::new(TestBackend::new(WIDTH(), HEIGHT())).expect("term");
+                world.publish(&host, epoch, &snapshot);
+                measure(9, 20, || {
+                    snapshot.taken_at_ms += 1000;
+                    epoch.taken_at += 1;
+                    epoch.metrics += 1;
+                    world.publish(&host, epoch, &snapshot);
+                    let trees = render_panes(&host, &panes, 0);
+                    float_probe(&host, 0);
+                    paint(&mut terminal, &trees);
+                })
+            })
+            .collect(),
+    ));
+
     // A frame after the snapshot moved: the whole publish, every pane run
     // again, and the paint. What a session appearing, a status changing or a
     // branch landing costs.

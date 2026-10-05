@@ -905,3 +905,45 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
         "asked once"
     );
 }
+
+#[tokio::test]
+async fn hidden_output_does_not_owe_a_frame() {
+    use std::sync::atomic::Ordering;
+    let harness = Harness::new(HEIGHT, WIDTH);
+    harness.frame(&one_pane("agent"), WIDTH, HEIGHT);
+    let before = harness.terminals.visible_output_generation();
+    let all_before = harness.terminals.output_generation();
+    harness.print(true, "hidden output");
+    harness
+        .terminals
+        .output_seq_cell(&harness.shell())
+        .unwrap()
+        .fetch_add(1, Ordering::Release);
+    assert_eq!(
+        harness.terminals.visible_output_generation(),
+        before,
+        "hidden shell output must not redraw the agent"
+    );
+    assert_ne!(
+        harness.terminals.output_generation(),
+        all_before,
+        "hidden output still invalidates search content"
+    );
+    harness.frame(&one_pane("shell"), WIDTH, HEIGHT);
+    let before = harness.terminals.visible_output_generation();
+    harness
+        .terminals
+        .output_seq_cell(&harness.shell())
+        .unwrap()
+        .fetch_add(1, Ordering::Release);
+    assert_ne!(
+        harness.terminals.visible_output_generation(),
+        before,
+        "visible output still owes a frame"
+    );
+    assert!(harness
+        .terminals
+        .visible_text(&harness.shell())
+        .unwrap()
+        .contains("hidden output"));
+}

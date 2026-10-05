@@ -28,6 +28,7 @@ pub(super) fn install_api(
     state_version: StateVersion,
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
+    sample_read: Rc<std::cell::Cell<u8>>,
     store_writes: super::WriteCount,
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
@@ -45,8 +46,113 @@ pub(super) fn install_api(
     install_files(lua, roots)?;
     install_run(lua, runs, current_path)?;
     install_clock(lua, clock, clock_read)?;
+    install_sample_reads(lua, sample_read)?;
     install_text(lua)?;
     Ok(())
+}
+
+pub(super) const READ_TAKEN_AT: u8 = 1;
+pub(super) const READ_METRICS: u8 = 2;
+const PUBLISHED_TABLES: &str = "__published_tables";
+
+fn note_sample_read(read: &std::cell::Cell<u8>, key: &Value) {
+    let flag = match key.as_string() {
+        Some(key) if key == "taken_at_ms" => READ_TAKEN_AT,
+        Some(key) if key == "metrics" => READ_METRICS,
+        _ => 0,
+    };
+    read.set(read.get() | flag);
+}
+
+/// Preserve raw reads and iteration of the published table while observing
+/// the volatile inputs. Weak keys let a plugin retain a snapshot without
+/// retaining every later publication in the VM.
+fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Result<()> {
+    let tables = lua.create_table()?;
+    let meta = lua.create_table()?;
+    meta.raw_set("__mode", "k")?;
+    tables.set_metatable(Some(meta))?;
+    lua.set_named_registry_value(PUBLISHED_TABLES, tables.clone())?;
+
+    let original_get: mlua::Function = lua.globals().get("rawget")?;
+    let map = tables.clone();
+    let reads = read.clone();
+    lua.globals().set(
+        "rawget",
+        lua.create_function(move |_, (table, key): (Table, Value)| {
+            if let Some(backing) = map.raw_get::<Option<Table>>(table.clone())? {
+                note_sample_read(&reads, &key);
+                return backing.raw_get::<Value>(key);
+            }
+            original_get.call::<Value>((table, key))
+        })?,
+    )?;
+
+    let original_set: mlua::Function = lua.globals().get("rawset")?;
+    let map = tables.clone();
+    lua.globals().set(
+        "rawset",
+        lua.create_function(move |_, (table, key, value): (Table, Value, Value)| {
+            if let Some(backing) = map.raw_get::<Option<Table>>(table.clone())? {
+                backing.raw_set(key, value)?;
+                return Ok(table);
+            }
+            original_set.call::<Table>((table, key, value))
+        })?,
+    )?;
+
+    let original_next: mlua::Function = lua.globals().get("next")?;
+    lua.globals().set(
+        "next",
+        lua.create_function(move |_, (table, key): (Table, Value)| {
+            let table = if let Some(backing) = tables.raw_get::<Option<Table>>(table.clone())? {
+                read.set(read.get() | READ_TAKEN_AT | READ_METRICS);
+                backing
+            } else {
+                table
+            };
+            original_next.call::<mlua::MultiValue>((table, key))
+        })?,
+    )?;
+    Ok(())
+}
+
+pub(super) fn observe_samples(
+    lua: &Lua,
+    backing: Table,
+    read: Rc<std::cell::Cell<u8>>,
+) -> mlua::Result<Table> {
+    let proxy = lua.create_table()?;
+    let tables: Table = lua.named_registry_value(PUBLISHED_TABLES)?;
+    tables.raw_set(proxy.clone(), backing.clone())?;
+    let meta = lua.create_table()?;
+    let source = backing.clone();
+    let reads = read.clone();
+    meta.raw_set(
+        "__index",
+        lua.create_function(move |_, (_, key): (Table, Value)| {
+            note_sample_read(&reads, &key);
+            source.raw_get::<Value>(key)
+        })?,
+    )?;
+    let source = backing.clone();
+    meta.raw_set(
+        "__newindex",
+        lua.create_function(move |_, (_, key, value): (Table, Value, Value)| {
+            source.raw_set(key, value)
+        })?,
+    )?;
+    let next: mlua::Function = lua.globals().get("next")?;
+    meta.raw_set(
+        "__pairs",
+        lua.create_function(move |_, _: Table| {
+            read.set(read.get() | READ_TAKEN_AT | READ_METRICS);
+            Ok((next.clone(), backing.clone(), Value::Nil))
+        })?,
+    )?;
+    meta.raw_set("__metatable", false)?;
+    proxy.set_metatable(Some(meta))?;
+    Ok(proxy)
 }
 
 /// The registry name of the metatable every render context carries.

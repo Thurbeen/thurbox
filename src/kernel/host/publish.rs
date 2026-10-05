@@ -259,9 +259,10 @@ impl LuaHost {
         // Ready diff can carry up to MAX_DIFF_BYTES of body, published line by
         // line — a Rust String clone plus a Lua string per line, every frame,
         // forever once computed. The store only changes through its worker
-        // landing an answer or an invalidate command, both of which move the
-        // data epoch; the snapshot version covers the session set.
-        let diffs_value = self.group("diffs", [epoch.snapshot, epoch.data, 0, 0], || {
+        // landing a changed answer or an invalidate command. Its own version
+        // keeps unrelated workers from copying the body again; the snapshot
+        // version covers the session set.
+        let diffs_value = self.group("diffs", [epoch.snapshot, diffs.version(), 0, 0], || {
             build_diffs(&self.lua, snapshot, diffs)
         })?;
         set(&table, "diffs", diffs_value)?;
@@ -293,10 +294,10 @@ impl LuaHost {
         // zero when it has not been sampled, so a panel can distinguish "no
         // reading yet" from "nothing spent" — v1's info panel draws the same
         // distinction by omitting the row. A sample can only land through
-        // Metrics::poll, which moves the data epoch, so the tables are owed
+        // Metrics::poll, which moves its own sample serial, so the tables are owed
         // only then — they were rebuilt per frame for readings that move once
         // a second at most.
-        let metrics_value = self.group("metrics", [epoch.snapshot, epoch.data, 0, 0], || {
+        let metrics_value = self.group("metrics", [epoch.snapshot, epoch.metrics, 0, 0], || {
             build_metrics(&self.lua, snapshot, metrics)
         })?;
         set(&table, "metrics", metrics_value)?;
@@ -357,7 +358,9 @@ impl LuaHost {
         )?;
 
         *self.epoch.borrow_mut() = Some(*epoch);
-        set(&self.lua.globals(), "thurbox", table)
+        let observed = super::api::observe_samples(&self.lua, table, self.sample_read.clone())
+            .map_err(|e| e.to_string())?;
+        set(&self.lua.globals(), "thurbox", observed)
     }
 
     /// Publish the settings in force.

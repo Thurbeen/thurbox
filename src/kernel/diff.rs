@@ -62,6 +62,7 @@ pub enum Diff {
 
 struct Computed {
     session: String,
+    request: u64,
     diff: Diff,
 }
 
@@ -85,6 +86,7 @@ const DIFF_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A diff and when it arrived — the age every cache here carries.
 struct Held {
+    request: u64,
     at: std::time::Instant,
     diff: Diff,
     /// A recompute is in flight while `diff` stays published. Replacing a
@@ -112,8 +114,10 @@ impl Held {
     }
 }
 
-/// Computes and caches diffs, one per session.
+/// Computes the selected session's diff, retaining its old answer during refresh.
 pub struct DiffStore {
+    next_request: u64,
+    version: u64,
     diffs: HashMap<String, Held>,
     tx: Sender<Computed>,
     rx: Receiver<Computed>,
@@ -123,10 +127,36 @@ impl DiffStore {
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
+            next_request: 0,
+            version: 0,
             diffs: HashMap::new(),
             tx,
             rx,
         }
+    }
+
+    /// Generation of the published answers; unrelated workers never move it.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn mark_changed(&mut self) {
+        // Generations are unique across stores too: tests and benchmarks may
+        // replace the store while retaining the Lua host's published groups.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.version = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Keep only the selected session's answer. Late workers are discarded
+    /// by their request serial, including a selection that leaves and returns.
+    pub fn retain_selected(&mut self, selected: Option<&str>) -> bool {
+        let before = self.diffs.len();
+        self.diffs.retain(|id, _| Some(id.as_str()) == selected);
+        let changed = before != self.diffs.len();
+        if changed {
+            self.mark_changed();
+        }
+        changed
     }
 
     /// What is known about `session`, if anything has been asked for.
@@ -149,15 +179,25 @@ impl DiffStore {
         base: Option<String>,
         backend: &str,
     ) {
+        self.retain_selected(Some(session));
+        if self.diffs.get(session).is_some_and(|held| !held.stale()) {
+            return;
+        }
+        self.next_request = self.next_request.wrapping_add(1);
+        let request = self.next_request;
         match self.diffs.get_mut(session) {
-            Some(held) if !held.stale() => return,
             // A settled answer past its age: keep publishing it, mark the
             // recompute in flight, and dispatch below.
-            Some(held) => held.refreshing = true,
+            Some(held) => {
+                held.refreshing = true;
+                held.request = request;
+            }
             None => {
+                self.mark_changed();
                 self.diffs.insert(
                     session.to_string(),
                     Held {
+                        request,
                         at: std::time::Instant::now(),
                         diff: Diff::Pending,
                         refreshing: false,
@@ -182,24 +222,35 @@ impl DiffStore {
             } else {
                 compute(&worktree, base.as_deref(), host.as_ref())
             };
-            let _ = tx.send(Computed { session, diff });
+            let _ = tx.send(Computed {
+                session,
+                request,
+                diff,
+            });
         });
     }
 
-    /// Fold finished computations in. Returns true when anything arrived, so
-    /// the caller can repaint.
+    /// Fold current computations in, returning whether a published answer changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
+            if self.diffs.get(&done.session).map(|held| held.request) != Some(done.request) {
+                continue;
+            }
+            let moved = self.get(&done.session) != Some(&done.diff);
             self.diffs.insert(
                 done.session,
                 Held {
+                    request: done.request,
                     at: std::time::Instant::now(),
                     diff: done.diff,
                     refreshing: false,
                 },
             );
-            changed = true;
+            changed |= moved;
+        }
+        if changed {
+            self.mark_changed();
         }
         changed
     }
@@ -207,9 +258,14 @@ impl DiffStore {
     /// Seed a diff directly, so a test can render a known one without git.
     #[doc(hidden)]
     pub fn set_for_test(&mut self, session: &str, diff: Diff) {
+        if self.get(session) == Some(&diff) {
+            return;
+        }
+        self.mark_changed();
         self.diffs.insert(
             session.to_string(),
             Held {
+                request: 0,
                 at: std::time::Instant::now(),
                 diff,
                 refreshing: false,
@@ -221,7 +277,9 @@ impl DiffStore {
     /// immediate route, for a caller that *knows* the worktree changed rather
     /// than waiting out `DIFF_TTL`.
     pub fn invalidate(&mut self, session: &str) {
-        self.diffs.remove(session);
+        if self.diffs.remove(session).is_some() {
+            self.mark_changed();
+        }
     }
 }
 
@@ -445,6 +503,7 @@ mod tests {
     /// waiting out the interval.
     fn held(diff: Diff, age: std::time::Duration) -> Held {
         Held {
+            request: 0,
             at: std::time::Instant::now() - age,
             diff,
             refreshing: false,
@@ -544,6 +603,51 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("the failure never arrived");
+    }
+
+    #[test]
+    fn late_diff_workers_cannot_restore_an_evicted_answer() {
+        let mut store = DiffStore::new();
+        store.set_for_test("current", empty_ready());
+        let version = store.version();
+        store
+            .tx
+            .send(Computed {
+                session: "evicted".into(),
+                request: 1,
+                diff: empty_ready(),
+            })
+            .unwrap();
+        store
+            .tx
+            .send(Computed {
+                session: "current".into(),
+                request: 99,
+                diff: Diff::Failed("obsolete".into()),
+            })
+            .unwrap();
+        assert!(!store.poll());
+        assert!(store.get("evicted").is_none());
+        assert_eq!(store.get("current"), Some(&empty_ready()));
+        assert_eq!(store.version(), version);
+    }
+
+    #[test]
+    fn identical_diff_answers_do_not_republish_the_body() {
+        let mut store = DiffStore::new();
+        store.set_for_test("current", empty_ready());
+        let version = store.version();
+        store
+            .tx
+            .send(Computed {
+                session: "current".into(),
+                request: 0,
+                diff: empty_ready(),
+            })
+            .unwrap();
+        assert!(!store.poll());
+        assert_eq!(store.version(), version);
+        assert!(!store.diffs["current"].refreshing);
     }
 
     /// The property the file list was changed for: **the body is capped and the list
