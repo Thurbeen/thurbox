@@ -211,8 +211,7 @@ local function ask(flow)
     store.want_branches = nil
   end
 
-  -- Only ever the repo the cursor is resting on: one `git worktree list` per
-  -- highlighted row, not one per remembered repository.
+  -- Read worktrees only for the repository the operator has expanded.
   if flow.step == "repo" and flow.wt_repo then
     store.want_worktrees = (flow.host or "") .. "\0" .. flow.wt_repo
   else
@@ -240,20 +239,18 @@ local function current_row(flow)
   return repo_picker.current(rows_for(flow), flow.cursor)
 end
 
---- Follow the cursor with the "whose worktrees are showing" anchor.
----
---- Deliberately reads the rows built from the *previous* anchor: those are the
---- rows that were on screen when the key was pressed, so the row the cursor is
---- on is the row the reader was looking at. A worktree child leaves the anchor
---- alone — stepping onto one must not collapse the list under the cursor.
+--- Keep an explicit expansion while moving between its repo and child rows.
 track_worktrees = function(flow)
-  if not flow or flow.step ~= "repo" then
+  if not flow or flow.step ~= "repo" or not flow.wt_repo then
     return
   end
   local entry = repo_picker.current(rows_for(flow), flow.cursor)
   local row = entry and entry.row
-  if row and not row.is_parent and not row.is_worktree then
-    flow.wt_repo = row.path
+  if not row or (not row.is_worktree and row.path ~= flow.wt_repo) then
+    flow.wt_repo = nil
+    if row then
+      flow.cursor = repo_picker.index_of(rows_for(flow), row.path) or 1
+    end
   end
 end
 
@@ -952,6 +949,14 @@ local function render_repo(flow)
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
+  if flow.focus == "search" then
+    children[#children + 1] = {
+      type = "text",
+      len = 1,
+      text = "← close worktrees  → expand worktrees",
+      style = { fg = theme.muted },
+    }
+  end
   children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
   -- The height is the sum of what was actually built, plus the two border rows.
@@ -1912,7 +1917,22 @@ return {
     end
 
     if flow.focus == "search" then
-      if name == "tab" then
+      if
+        (name == "left" and flow.wt_repo)
+        or (name == "right" and flow.search.cursor == widgets.chars(flow.search.value or ""))
+      then
+        local entry = current_row(flow)
+        local row = entry and entry.row
+        if name == "left" and flow.wt_repo then
+          flow.cursor = repo_picker.index_of(rows_for(flow), flow.wt_repo) or 1
+          flow.wt_repo = nil
+        elseif name == "right" and row and not row.is_parent and not row.is_worktree then
+          flow.wt_repo = row.path
+        end
+        save(flow)
+        ask(flow)
+        return true
+      elseif name == "tab" then
         enter_path_field(flow)
         save(flow)
         ask(flow)

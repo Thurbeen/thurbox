@@ -137,10 +137,9 @@ end
 
 --- Insert a repo's existing worktrees as child rows directly under it.
 ---
---- `expanded` is the repo path whose worktrees are showing (the one the cursor
---- last rested on), and `published` is `thurbox.worktrees` — used only when it
---- answers for that same repo, so a stale answer for the previous one never
---- draws under the current.
+--- `expanded` is the repo path whose worktrees are showing, and `published`
+--- is `thurbox.worktrees` — used only when it answers for that same repo,
+--- so a stale answer for the previous one never draws under the current.
 ---
 --- The children are synthetic rows rather than bookmarks: they carry `branch`
 --- and a `worktree` marker, and `path` is git's own path for the checkout,

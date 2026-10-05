@@ -1843,9 +1843,6 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
 
 #[test]
 fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() {
-    // The whole feature in one flow: the repo the cursor is on has a worktree
-    // an agent cut earlier, it shows as a child row, and choosing it asks for
-    // neither a base branch, nor a session name, nor a branch name.
     let host = host();
     let mut world = World::default();
     world.repos.set_worktrees_for_test(
@@ -1858,12 +1855,14 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
     );
     open(&host, &world);
 
-    // The flow asks about whichever repo the cursor is on.
+    assert_eq!(host.shared_string("want_worktrees"), None);
+    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
+    press(&host, &world, "right");
     assert_eq!(
         host.shared_string("want_worktrees").as_deref(),
         Some("\0/src/thurbox")
     );
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
 
     let screen = drawn(&host, &world);
     assert!(
@@ -1871,7 +1870,12 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
         "the existing worktree is listed under its repo: {screen}"
     );
 
-    // Down onto the child row, then choose it.
+    press(&host, &world, "down");
+    press(&host, &world, "left");
+    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
+    assert_eq!(host.shared_string("want_worktrees"), None);
+    press(&host, &world, "right");
+    assert!(drawn(&host, &world).contains("dynamic-tooltips"));
     press(&host, &world, "down");
     press(&host, &world, "enter");
     press(&host, &world, "enter"); // agent step, default preselected
@@ -1891,6 +1895,44 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
             multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
+    );
+}
+
+#[test]
+fn leaving_expanded_worktrees_keeps_the_cursor_on_the_next_repo() {
+    let host = host();
+    let mut world = world_with(vec![
+        bookmark("/src/alpha", Some(true)),
+        bookmark("/src/beta", Some(true)),
+        bookmark("/src/gamma", Some(true)),
+    ]);
+    world.repos.set_worktrees_for_test(
+        "",
+        "/src/alpha",
+        Worktrees::Ready(vec![
+            ExistingWorktree {
+                path: "/src/first".into(),
+                branch: "first".into(),
+            },
+            ExistingWorktree {
+                path: "/src/second".into(),
+                branch: "second".into(),
+            },
+        ]),
+    );
+    world.wants.worktrees = Some((String::new(), "/src/alpha".into()));
+    open(&host, &world);
+    press(&host, &world, "right");
+    press(&host, &world, "down");
+    press(&host, &world, "down");
+    press(&host, &world, "down");
+    let screen = drawn(&host, &world);
+    assert!(!screen.contains("↳"), "the previous repo closes: {screen}");
+    press(&host, &world, "space");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("[x] /src/beta"),
+        "the next repo stays under the cursor: {screen}"
     );
 }
 
@@ -2479,6 +2521,7 @@ fn an_existing_worktree_row_offers_to_open_it() {
     open(&h, &world);
     world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
     assert!(drawn(&h, &world).contains("[ Next ]"), "on the repo row");
+    press(&h, &world, "right");
     press(&h, &world, "down");
     let screen = drawn(&h, &world);
     assert!(
@@ -2504,6 +2547,7 @@ fn an_existing_worktree_row_offers_to_open_it_directly_with_one_agent() {
     );
     open(&h, &world);
     world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
+    press(&h, &world, "right");
     press(&h, &world, "down");
     let screen = drawn(&h, &world);
     assert!(screen.contains("[ Open ]"), "{screen}");

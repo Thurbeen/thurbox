@@ -450,13 +450,15 @@ not applicable.
    mount point is a readable empty directory) and refills when it
    comes back.
 
-   **Worktrees the repo already has** appear as `↳` child rows under
-   whichever repo the cursor is resting on, each showing its directory
-   name and the branch checked out there. They come from
+   **Worktrees the repo already has** start collapsed. In the repo list,
+   `Right` expands the highlighted repo into `↳` child rows, each showing
+   its directory name and checked-out branch. `Left` closes them and returns
+   the cursor to the repo, including from a child row. Moving to another
+   repo also closes the expansion. They come from
    `git worktree list --porcelain` on that repo — so a worktree made
    *outside* thurbox is found wherever it lives (`.worktrees/`, a
    sibling directory, anywhere), not just at thurbox's own derived
-   `<repo-hash>/<branch>` path. One git call per highlighted row, cached
+   `<repo-hash>/<branch>` path. One git call per expanded repo, cached
    with the same TTL as the branch list; the main checkout, bare repos,
    detached heads and prunable registrations are dropped, since no
    session can be started on them. `Enter` on one **opens** it: no

@@ -5632,6 +5632,30 @@ fn repo_picker_enter_selects_a_plain_directory_from_the_dropdown() {
 }
 
 #[test]
+fn repo_picker_existing_worktrees_are_collapsed_until_right_and_closed_with_left() {
+    let profile = Profile::new();
+    repo_picker_fixture(&profile);
+    let mut tui = open_repo_picker(&profile);
+    tui.send(b"\t~/repo\r");
+    tui.wait_until("the repository to be selected", |frame| {
+        repo_picker_selected(frame, "repo")
+    });
+    tui.wait_until_quiet();
+    assert!(
+        !tui.frame().contains("linked"),
+        "existing worktrees start collapsed: {}",
+        tui.frame()
+    );
+    tui.send(b"\x1b[Z\x1b[C");
+    tui.wait_for("linked");
+    tui.send(b"\x1b[B\x1b[D");
+    tui.wait_gone("linked");
+    tui.send(b"\x1b[C");
+    tui.wait_for("linked");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn repo_picker_tab_completion_then_enter_selects_a_directory() {
     let profile = Profile::new();
     std::fs::create_dir(profile.path("home/plain")).expect("plain directory");
