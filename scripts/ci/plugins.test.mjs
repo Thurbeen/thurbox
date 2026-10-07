@@ -130,6 +130,10 @@ test('site builds every fixture entry, badges, controls and escaped text', async
 test('catalog schema rejects missing fields, unsafe URLs, invalid values and duplicates', async () => {
   const { validatePlugins } = await import('./validate-plugins.mjs');
   assert.deepEqual(validatePlugins(fixture), []);
+  assert.deepEqual(
+    validatePlugins([{ ...fixture[0], repo: 'https://github.com/Thurbeen/fleet' }]),
+    [],
+  );
   for (const field of [
     'name',
     'description',
@@ -147,6 +151,8 @@ test('catalog schema rejects missing fields, unsafe URLs, invalid values and dup
     assert.ok(validatePlugins([entry]).length, field);
   }
   for (const patch of [
+    { repo: 'https://github.com/Thurbeen-other/fleet' },
+    { repo: 'https://github.com/example/fleet' },
     { repo: 'javascript:alert(1)' },
     { repo: 'https://example.com/repo' },
     { repo: 'https://github.com:8443/Thurbeen/thurbox-fixture', badge: 'community' },

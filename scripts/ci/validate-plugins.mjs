@@ -80,7 +80,7 @@ export function validatePlugins(entries) {
     if (
       entry.badge === 'official' &&
       typeof entry.repo === 'string' &&
-      !entry.repo.startsWith('https://github.com/Thurbeen/thurbox-')
+      !entry.repo.startsWith('https://github.com/Thurbeen/')
     )
       fail('official entries must belong to Thurbeen');
   }
