@@ -56,6 +56,24 @@ test('site builds every fixture entry, badges, controls and escaped text', async
       assert.equal(cards[i].getAttribute('data-badge'), entry.badge);
       assert.equal(parse(cards[i].querySelector('pre').innerHTML).textContent, entry.install);
       assert.ok(cards[i].textContent.includes(entry.author));
+      const install = cards[i].querySelector('details.plugin-install');
+      assert.ok(install, 'install command has a keyboard-accessible native reveal');
+      assert.equal(install.hasAttribute('open'), false);
+      assert.equal(install.querySelector('summary').textContent, 'Install command');
+      assert.ok(install.querySelector('pre'));
+      const preview = cards[i].querySelector('.plugin-preview');
+      assert.ok(preview);
+      assert.notEqual(preview.tagName, 'DETAILS');
+      for (let ancestor = preview; ancestor !== cards[i]; ancestor = ancestor.parentNode) {
+        assert.notEqual(ancestor.tagName, 'DETAILS', 'preview is visible before interaction');
+        assert.equal(ancestor.hasAttribute('hidden'), false);
+      }
+      if (entry.media) {
+        assert.equal(preview.querySelector('img').getAttribute('src'), entry.media.url);
+        assert.equal(preview.querySelector('img').getAttribute('loading'), 'lazy');
+      } else {
+        assert.ok(preview.querySelector('.plugin-preview-placeholder'));
+      }
     });
     assert.equal(root.querySelectorAll('#plugin-kind option').length, 6);
     assert.equal(root.querySelectorAll('#plugin-badge option').length, 3);
@@ -167,4 +185,9 @@ test('link validation rejects a missing repository and unreachable media', async
     throw new Error('offline');
   });
   assert.ok(unavailable.length);
+});
+
+test('catalog inherits the website single theme', async () => {
+  const css = await readFile('website/css/plugins.css', 'utf8');
+  assert.doesNotMatch(css, /prefers-color-scheme|:root/);
 });

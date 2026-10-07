@@ -29,16 +29,18 @@ navScrolled: true
       <div class="plugin-badges"><span class="plugin-badge plugin-badge--{{ plugin.badge | escape }}">{{ plugin.badge | capitalize }}</span><span class="plugin-badge">{{ plugin.kind | capitalize }}</span></div>
       <h2><a href="{{ plugin.repo | escape }}">{{ plugin.name | escape }}</a></h2>
       <p>{{ plugin.description | escape }}</p>
+      {% if plugin.media %}
+      <a class="plugin-preview" href="{{ plugin.repo | escape }}#readme"><img src="{{ plugin.media.url | escape }}" alt="{{ plugin.media.alt | escape }}" loading="lazy" decoding="async" /></a>
+      {% else %}
+      <div class="plugin-preview"><div class="plugin-preview-placeholder"><span aria-hidden="true">&gt;_</span>No preview yet<br /><a href="{{ plugin.repo | escape }}#readme">Explore the README</a></div></div>
+      {% endif %}
       <dl class="plugin-meta">
         <div><dt>Author</dt><dd>{{ plugin.author | escape }}</dd></div>
         <div><dt>Platforms</dt><dd>{{ plugin.platforms | join(', ') | escape }}</dd></div>
         {% if plugin.release %}<div><dt>Release</dt><dd>{{ plugin.release | escape }}</dd></div>{% endif %}
         <div><dt>Last update</dt><dd><time datetime="{{ plugin.updated | escape }}">{{ plugin.updated | escape }}</time></dd></div>
       </dl>
-      {% if plugin.media %}
-      <details class="plugin-preview"><summary>Show screenshot / demo</summary><a href="{{ plugin.repo | escape }}#readme"><img src="{{ plugin.media.url | escape }}" alt="{{ plugin.media.alt | escape }}" loading="lazy" /></a></details>
-      {% else %}<p><a href="{{ plugin.repo | escape }}#readme">Preview in README</a></p>{% endif %}
-      <pre data-wrap data-title="Install"><code class="language-bash">{{ plugin.install | escape }}</code></pre>
+      <details class="plugin-install"><summary>Install command</summary><pre data-wrap data-title="Install"><code class="language-bash">{{ plugin.install | escape }}</code></pre></details>
       <p class="plugin-notes">{{ plugin.notes | escape }}</p>
       <a href="{{ plugin.repo | escape }}#readme">Repository &amp; setup →</a>
     </article>

@@ -1,28 +1,3 @@
-/* Scoped to this page: the rest of the website keeps its Doom palette. */
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg-primary: #faf7f2;
-    --bg-secondary: #f1ece4;
-    --bg-card: #fffdf9;
-    --bg-code: #f1ece4;
-    --bg-hover: #e9e0d4;
-    --bg-nav: rgb(250, 247, 242, 0.96);
-    --text-primary: #241c16;
-    --text-secondary: #51463b;
-    --text-muted: #64584c;
-    --border: #c8baaa;
-    --border-light: #e1d5c6;
-    --accent: #b5231b;
-    --green: #246b29;
-    --scanline: transparent;
-    --vignette: none;
-    --glow-red-type: none;
-    --bevel-light: rgb(255, 255, 255, 0.8);
-    --bevel-dark: rgb(36, 28, 22, 0.12);
-    --bevel-frame: #c8baaa;
-  }
-}
-
 .plugin-page {
   padding-top: calc(var(--nav-height) + var(--space-3xl));
   padding-bottom: var(--space-3xl);
@@ -160,17 +135,46 @@
   font-size: 0.9rem;
 }
 
-.plugin-preview summary,
+.plugin-install summary,
 .plugin-submit summary {
   cursor: pointer;
   color: var(--text-primary);
 }
 
+.plugin-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  margin: var(--space-lg) 0;
+  overflow: hidden;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+}
+
 .plugin-preview img {
   display: block;
   width: 100%;
-  height: auto;
-  margin-top: var(--space-md);
+  height: 100%;
+  object-fit: contain;
+}
+
+.plugin-preview-placeholder {
+  padding: var(--space-lg);
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.plugin-preview-placeholder span {
+  display: block;
+  margin-bottom: var(--space-sm);
+  font-size: 2rem;
+  color: var(--accent);
+}
+
+.plugin-install {
+  margin: var(--space-lg) 0;
 }
 
 .plugin-submit {
@@ -184,19 +188,5 @@
   .plugin-grid,
   .plugin-filters {
     grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (prefers-color-scheme: light) {
-  .plugin-page .code-block-header {
-    background: var(--bg-secondary);
-  }
-
-  .plugin-page .code-block-body pre {
-    color: var(--text-primary);
-  }
-
-  .plugin-page .token {
-    color: var(--text-primary);
   }
 }
