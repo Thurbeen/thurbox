@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Thurbox plugin catalog",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "description",
+      "author",
+      "badge",
+      "repo",
+      "kind",
+      "platforms",
+      "updated",
+      "install",
+      "notes"
+    ],
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": {
+        "type": "string",
+        "minLength": 1
+      },
+      "author": {
+        "type": "string",
+        "minLength": 1
+      },
+      "badge": {
+        "enum": ["official", "community"]
+      },
+      "repo": {
+        "type": "string",
+        "pattern": "^https://github\\.com/[\\w.-]+/(?!.*\\.git$)[\\w.-]+$"
+      },
+      "kind": {
+        "enum": ["pane", "extension", "agent", "theme", "other"]
+      },
+      "platforms": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "updated": {
+        "type": "string",
+        "format": "date"
+      },
+      "release": {
+        "type": "string",
+        "minLength": 1
+      },
+      "install": {
+        "type": "string",
+        "minLength": 1
+      },
+      "notes": {
+        "type": "string",
+        "minLength": 1
+      },
+      "media": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "alt"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "pattern": "^https://",
+            "format": "uri"
+          },
+          "alt": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

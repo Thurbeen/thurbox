@@ -1,0 +1,202 @@
+/* Scoped to this page: the rest of the website keeps its Doom palette. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #faf7f2;
+    --bg-secondary: #f1ece4;
+    --bg-card: #fffdf9;
+    --bg-code: #f1ece4;
+    --bg-hover: #e9e0d4;
+    --bg-nav: rgb(250, 247, 242, 0.96);
+    --text-primary: #241c16;
+    --text-secondary: #51463b;
+    --text-muted: #64584c;
+    --border: #c8baaa;
+    --border-light: #e1d5c6;
+    --accent: #b5231b;
+    --green: #246b29;
+    --scanline: transparent;
+    --vignette: none;
+    --glow-red-type: none;
+    --bevel-light: rgb(255, 255, 255, 0.8);
+    --bevel-dark: rgb(36, 28, 22, 0.12);
+    --bevel-frame: #c8baaa;
+  }
+}
+
+.plugin-page {
+  padding-top: calc(var(--nav-height) + var(--space-3xl));
+  padding-bottom: var(--space-3xl);
+}
+
+.plugin-intro {
+  max-width: 760px;
+  margin-bottom: var(--space-xl);
+}
+
+.plugin-intro p,
+.plugin-submit p {
+  margin: var(--space-md) 0;
+}
+
+.plugin-eyebrow {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.plugin-notice {
+  padding: var(--space-lg);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-secondary);
+  margin-bottom: var(--space-xl);
+}
+
+.plugin-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: var(--space-md);
+  align-items: end;
+}
+
+.plugin-filters[hidden],
+.plugin-card[hidden],
+#plugin-empty[hidden] {
+  display: none;
+}
+
+.plugin-filters label {
+  display: block;
+  margin-bottom: var(--space-xs);
+  font-family: var(--font-mono);
+}
+
+.plugin-filters input,
+.plugin-filters select,
+.plugin-filters button {
+  width: 100%;
+  min-width: 0;
+  padding: 0.7rem;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+}
+
+.plugin-page :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+#plugin-count {
+  margin: var(--space-lg) 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xl);
+  align-items: start;
+}
+
+.plugin-card {
+  min-width: 0;
+  padding: var(--space-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--bevel);
+  overflow-wrap: anywhere;
+}
+
+.plugin-card h2 {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  text-transform: none;
+  letter-spacing: normal;
+  text-shadow: none;
+  margin: var(--space-md) 0;
+}
+
+.plugin-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.plugin-badge {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.plugin-badge--official {
+  color: var(--accent);
+}
+
+.plugin-badge--community {
+  color: var(--green);
+}
+
+.plugin-meta {
+  margin: var(--space-lg) 0;
+}
+
+.plugin-meta > div {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: var(--space-sm);
+  margin: var(--space-sm) 0;
+}
+
+.plugin-meta dt,
+.plugin-notes {
+  color: var(--text-secondary);
+}
+
+.plugin-notes {
+  margin-bottom: var(--space-md);
+  font-size: 0.9rem;
+}
+
+.plugin-preview summary,
+.plugin-submit summary {
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.plugin-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: var(--space-md);
+}
+
+.plugin-submit {
+  max-width: 850px;
+  margin-top: var(--space-3xl);
+  padding-top: var(--space-xl);
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .plugin-grid,
+  .plugin-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  .plugin-page .code-block-header {
+    background: var(--bg-secondary);
+  }
+
+  .plugin-page .code-block-body pre {
+    color: var(--text-primary);
+  }
+
+  .plugin-page .token {
+    color: var(--text-primary);
+  }
+}

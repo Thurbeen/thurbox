@@ -1,0 +1,56 @@
+---
+layout: base.njk
+title: Plugins — Thurbox
+description: Official and community panes, extensions and other add-ons for Thurbox.
+extraCss: [plugins.css]
+activeNav: plugins
+footer: true
+navScrolled: true
+---
+<div class="container plugin-page">
+  <header class="plugin-intro">
+    <p class="plugin-eyebrow">Extend your workspace</p>
+    <h1>Plugins</h1>
+    <p>Make Thurbox yours. Browse official and community add-ons, then follow each repository’s README for setup.</p>
+    <p><a href="#submit-plugin">Submit a plugin</a> · <a href="./docs/interface.html">Plugin guide</a></p>
+  </header>
+  <p class="plugin-notice">Official means maintained by Thurbeen. Community entries are reviewed submissions, with support provided by their authors. Platform notes describe the repositories’ setup, not a compatibility guarantee. Check capability grants and pane conflicts before installing.</p>
+  <form class="plugin-filters" id="plugin-filters" hidden role="search" aria-label="Filter plugins">
+    <div><label for="plugin-search">Search plugins</label><input id="plugin-search" type="search" placeholder="Name, author or description" /></div>
+    <div><label for="plugin-kind">Kind</label><select id="plugin-kind"><option value="">All kinds</option><option value="pane">Pane</option><option value="extension">Extension</option><option value="agent">Agent</option><option value="theme">Theme</option><option value="other">Other</option></select></div>
+    <div><label for="plugin-badge">Maintainer</label><select id="plugin-badge"><option value="">All maintainers</option><option value="official">Official</option><option value="community">Community</option></select></div>
+    <button type="reset">Reset</button>
+  </form>
+  <p id="plugin-count" role="status" aria-live="polite" aria-atomic="true">{{ plugins | length }} plugins</p>
+  <noscript><p>All plugins are listed below. Enable JavaScript to search and filter.</p></noscript>
+  <div class="plugin-grid">
+    {% for plugin in plugins %}
+    <article class="plugin-card" data-plugin data-kind="{{ plugin.kind | escape }}" data-badge="{{ plugin.badge | escape }}">
+      <div class="plugin-badges"><span class="plugin-badge plugin-badge--{{ plugin.badge | escape }}">{{ plugin.badge | capitalize }}</span><span class="plugin-badge">{{ plugin.kind | capitalize }}</span></div>
+      <h2><a href="{{ plugin.repo | escape }}">{{ plugin.name | escape }}</a></h2>
+      <p>{{ plugin.description | escape }}</p>
+      <dl class="plugin-meta">
+        <div><dt>Author</dt><dd>{{ plugin.author | escape }}</dd></div>
+        <div><dt>Platforms</dt><dd>{{ plugin.platforms | join(', ') | escape }}</dd></div>
+        {% if plugin.release %}<div><dt>Release</dt><dd>{{ plugin.release | escape }}</dd></div>{% endif %}
+        <div><dt>Last update</dt><dd><time datetime="{{ plugin.updated | escape }}">{{ plugin.updated | escape }}</time></dd></div>
+      </dl>
+      {% if plugin.media %}
+      <details class="plugin-preview"><summary>Show screenshot / demo</summary><a href="{{ plugin.repo | escape }}#readme"><img src="{{ plugin.media.url | escape }}" alt="{{ plugin.media.alt | escape }}" loading="lazy" /></a></details>
+      {% else %}<p><a href="{{ plugin.repo | escape }}#readme">Preview in README</a></p>{% endif %}
+      <pre data-wrap data-title="Install"><code class="language-bash">{{ plugin.install | escape }}</code></pre>
+      <p class="plugin-notes">{{ plugin.notes | escape }}</p>
+      <a href="{{ plugin.repo | escape }}#readme">Repository &amp; setup →</a>
+    </article>
+    {% endfor %}
+  </div>
+  <p id="plugin-empty" hidden>No plugins match these filters. Try another search or reset the filters.</p>
+  <section class="plugin-submit" id="submit-plugin" aria-labelledby="submit-heading">
+    <h2 id="submit-heading">Share your plugin</h2>
+    <p>Add the <code>thurbox-plugin</code> GitHub topic to your repository, then open a PR adding one entry to <a href="https://github.com/Thurbeen/thurbox/blob/main/website/_data/plugins.json">plugins.json</a>. Include supported platforms, setup notes and a screenshot or GIF when available.</p>
+    <p>The <a href="https://github.com/Thurbeen/thurbox/blob/main/CONTRIBUTING.md#plugin-catalog">submission template and schema</a> describe the required fields and checks. Maintainers review entries before they appear here; a topic alone does not publish a listing.</p>
+    <p>This catalog uses checked-in metadata; “Last update” is the recorded repository push date. Updates arrive through reviewed PRs. Media is linked directly from the author’s repository.</p>
+    <details><summary>Official repositories outside this catalog</summary><p><a href="https://github.com/Thurbeen/thurbox-plugin-orchestrator">thurbox-plugin-orchestrator</a> is archived and targets the earlier admin plugin model. <a href="https://github.com/Thurbeen/thurbox-discord">thurbox-discord</a> manages the community Discord server; it is not a Thurbox add-on.</p></details>
+  </section>
+</div>
+<script src="./js/plugins.js"></script>
