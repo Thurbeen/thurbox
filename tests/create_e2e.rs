@@ -488,6 +488,17 @@ fn shipped_soft_delete_default_is_off() {
 
 #[cfg(unix)]
 fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool) {
+    delete_probe_with_format(settings, flags, undoable, extension, "--pretty");
+}
+
+#[cfg(unix)]
+fn delete_probe_with_format(
+    settings: &str,
+    flags: &[&str],
+    undoable: bool,
+    extension: bool,
+    format: &str,
+) {
     if !have_tmux() {
         return;
     }
@@ -498,7 +509,7 @@ fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool)
     let db = on_disk_db();
     let cli = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-            .arg("--json")
+            .arg(format)
             .args(args)
             .output()
             .unwrap();
@@ -526,6 +537,10 @@ fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool)
     ]);
     let id: thurbox::session::SessionId = created["id"].as_str().unwrap().parse().unwrap();
     let row = db.get_session_by_id(id).unwrap().unwrap();
+    let peer = thurbox::storage::Database::open_in_memory().unwrap();
+    let mut mirrored = row.clone();
+    mirrored.backend_type = "ssh:delete-peer".into();
+    peer.upsert_session(&mirrored).unwrap();
     let wt = row.worktrees[0].worktree_path.clone();
     assert!(wt.exists());
     let target = Command::new("tmux")
@@ -599,6 +614,18 @@ fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool)
         let deleted = cli(&args);
         assert_eq!(deleted["forced"], !undoable);
     }
+    if undoable {
+        peer.soft_delete_session(id).unwrap();
+    } else {
+        peer.force_delete_session(id).unwrap();
+    }
+    assert_eq!(
+        peer.get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .force_deleted,
+        !undoable
+    );
     assert!(db.get_session_by_id(id).unwrap().is_none());
     let tombstone = db.get_deleted_session_by_id(id).unwrap().unwrap();
     assert_eq!(tombstone.force_deleted, !undoable);
@@ -630,6 +657,8 @@ fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool)
     .is_empty());
     if undoable {
         cli(&["session", "restore", created["id"].as_str().unwrap()]);
+        peer.restore_session(id).unwrap();
+        assert!(peer.get_session_by_id(id).unwrap().is_some());
         assert!(db.get_session_by_id(id).unwrap().is_some());
         assert!(wt.exists());
     } else {
@@ -658,6 +687,25 @@ fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool)
 #[cfg(unix)]
 fn default_config_delete_is_immediate_and_has_nothing_to_reap() {
     delete_probe("", &[], false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn legacy_flagless_peer_delete_on_new_host_remains_restorable_on_both_sides() {
+    delete_probe_with_format("", &[], true, false, "--json");
+}
+
+#[test]
+#[cfg(unix)]
+fn new_peer_explicit_modes_override_the_new_hosts_setting() {
+    delete_probe_with_format("", &["--soft"], true, false, "--json");
+    delete_probe_with_format(
+        "[features]\nsoft_delete = true\n",
+        &["--force"],
+        false,
+        false,
+        "--json",
+    );
 }
 
 #[test]

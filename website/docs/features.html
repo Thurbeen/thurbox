@@ -1691,6 +1691,8 @@ thurbox-cli message inbox --for lead --claim</code></pre>
           <h3>How session delete is handled</h3>
           <p>
             <code>session delete &lt;uuid&gt;</code> tears down immediately by default in every build.
+            Flagless <code>--json</code> deletes stay soft for legacy sharing compatibility; JSON
+            scripts must pass <code>--force</code> for immediate teardown.
             Set <code>[features] soft_delete = true</code> or pass <code>--soft</code> for an undoable
             delete that only marks the database row deleted. With that opt-in, its tmux windows &mdash; the agent's
             and the companion shell's &mdash; come down once the 10-second undo window closes: a

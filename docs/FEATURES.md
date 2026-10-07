@@ -2465,7 +2465,9 @@ branch name) is saved in the database and reconstructed on restore.
   `Ctrl+Z` undoes this interface's most recent soft delete; `Ctrl+U` lists
   tombstones for restore, including best-effort recovery after hard deletion.
   `thurbox-cli session delete` uses the same preference, with `--soft` and
-  `--force` overrides. A teardown only removes worktrees **thurbox created**
+  `--force` overrides. Flagless `--json` deletes stay soft for legacy sharing
+  compatibility; JSON scripts use `--force` for immediate teardown. A teardown
+  only removes worktrees **thurbox created**
   (`created_by_thurbox`, schema v42): a session that *opened* a worktree the
   user already had leaves that directory exactly where it was and reports it
   as kept, because `git worktree remove --force` would take any uncommitted

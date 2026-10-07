@@ -188,6 +188,8 @@ pub enum Action {
     /// and disables send automations immediately. Set `[features] soft_delete`
     /// = true or pass --soft to keep windows and worktrees for undo instead.
     /// --force always tears down immediately, regardless of the setting.
+    /// With --json, a flagless delete stays soft for legacy sharing peers;
+    /// JSON callers must pass --force for immediate teardown.
     Delete {
         /// Session UUID.
         uuid: String,

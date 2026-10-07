@@ -807,7 +807,19 @@ stands (which re-spawns it fresh). Tombstones remain for multi-instance sync
 and remote cleanup retries; this is not a lossless undo. The CLI reads the
 same setting on each call: `--soft` explicitly opts into the undo window,
 while `--force` always tears down immediately. These flags are mutually exclusive.
-Users who never set the flag now get immediate teardown; an explicit
+For mixed-version session sharing, new peers always send the selected mode:
+`--force` for hard deletion, `--soft` for peers advertising `soft_delete_choice`.
+Older hosts do not understand `--soft`, so the new peer uses their existing
+flagless soft-delete request instead. An old peer's flagless `--json` delete
+remains soft on an upgraded host, preserving both the peer's undo and the host's
+windows/worktrees. That request carries no caller marker and is identical to a
+local JSON command: **local flagless `--json` deletes also remain soft**.
+JSON scripts must pass `--force` for immediate cleanup or `--soft` for undo.
+Plain local CLI and TUI deletes still follow `soft_delete`, defaulting to hard.
+The capability bit selects flags understood by the receiver; major/schema
+compatibility alone does not identify the caller or its intended deletion mode.
+Users who never set the flag now get immediate teardown for plain CLI/TUI
+deletes; an explicit
 `[features] soft_delete = true` keeps the previous undoable behavior.
 `extension deactivate` follows the same preference for its sessions.
 Task and automation deletion have no undo window; their storage bookkeeping

@@ -534,6 +534,8 @@ there is no wiring here to be broken, and failing it made bare `session doctor`
 session shape thurbox advertises for drivers.
 
 `session delete <uuid>` tears down immediately by default in every build.
+A flagless `--json` delete stays soft for legacy sharing compatibility; JSON
+scripts must pass `--force` for immediate teardown or `--soft` for undo.
 `[features] soft_delete = true` or CLI `--soft` opts into an undoable delete;
 `--force` always tears down immediately. The two flags conflict. A soft delete
 marks only the DB row, and `session restore` revives it. The windows are torn down once the

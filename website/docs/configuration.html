@@ -863,6 +863,8 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
                   TUI <code>Ctrl+D</code> and <code>thurbox-cli session delete</code> tear down
                   immediately by default in every build. Set <code>true</code> to keep the undo
                   window. CLI <code>--soft</code> and <code>--force</code> override the setting.
+                  Flagless <code>--json</code> deletes stay soft for legacy sharing peers; JSON
+                  scripts must pass <code>--force</code> for immediate teardown.
                 </td>
               </tr>
               <tr>
