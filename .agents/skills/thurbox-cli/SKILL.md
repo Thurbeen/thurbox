@@ -533,8 +533,12 @@ there is no wiring here to be broken, and failing it made bare `session doctor`
 (which diagnoses every active session) fail the whole machine over the exact
 session shape thurbox advertises for drivers.
 
-`session delete <uuid>` **soft-deletes** by default — only the DB row is marked
-deleted, and `session restore` revives it. The windows are torn down once the
+`session delete <uuid>` tears down immediately by default in every build.
+A flagless `--json` delete stays soft for legacy sharing compatibility; JSON
+scripts must pass `--force` for immediate teardown or `--soft` for undo.
+`[features] soft_delete = true` or CLI `--soft` opts into an undoable delete;
+`--force` always tears down immediately. The two flags conflict. A soft delete
+marks only the DB row, and `session restore` revives it. The windows are torn down once the
 undo window closes (`UNDO_WINDOW`, 10s) by the one sweep,
 `session_ops::reap_overdue_soft_deletes` — driven by the TUI's loop on a slow
 cadence (`REAP_INTERVAL`, as background housekeeping the bus keeps no in-flight
@@ -556,7 +560,7 @@ its host is also written onto the row (`remote_teardown_owed`, schema v46's
 `session_ops::retry_owed_remote_teardowns` on the next tick or `Command::Reap`
 once that host answers — the same two drivers as the reap, and the reason
 force-deleting against a machine that is down is allowed to keep working. The
-row is always marked deleted last, in one write — a force delete stamps
+row is marked deleted before teardown, in one write — a force delete stamps
 `deleted_at` and `force_deleted` together rather than soft-deleting first, so a
 watcher of `session_events` never sees an intermediate state that reads as
 restorable. A worktree the session merely
@@ -599,15 +603,12 @@ that skip keeps `worktrees_recovered` honest and nothing more, since its result
 is never written back to the row.
 `restore_session` clears both `deleted_at` and `force_deleted`.
 
-The **TUI** `Ctrl+D` soft-deletes too (with a `Ctrl+Z` undo window). The
-`[features] soft_delete` flag (default `true`) governs only this TUI path: set it
-`false` and `Ctrl+D` becomes a hard delete — the same
-`delete_session_headless(.., force=true)` teardown — since there is no `Ctrl+Z`
-for it. That hard delete is **conditional**: a confirmation appears **only when
-the session has work at risk** — uncommitted/untracked files, unpushed commits, a
-multi-worktree session whose other checkouts the snapshot does not stat, or a
-state that can't be read at all (remote host / git error → confirm to be safe) —
-itemizing what would be lost; a known-clean session is deleted with no prompt.
+The **TUI** `Ctrl+D` uses `[features] soft_delete` (default `false`): off
+means a hard delete; on keeps a `Ctrl+Z` undo window. A hard delete uses
+`delete_session_headless(.., force=true)` and offers no `Ctrl+Z` undo.
+The shared confirmation always asks, itemizing work at risk: uncommitted or
+untracked files, unpushed commits, other checkouts the snapshot does not stat,
+or a state that cannot be read (remote host / git error).
 "Unpushed" is `ahead > 0` **and** `git.merged ~= true`: a branch the forge
 rewrote on merge stays permanently ahead of the default branch (its commits are
 ancestors of nothing), so `git::merged_into_default` asks four questions of
@@ -646,8 +647,8 @@ the snapshot's `restore_refusal` (`DeletedRow`, published per row and nil when
 the restore would simply run), i.e. `restore_refusal`'s own sentence, not the
 `force-deleted` tag beside it: the two differ in both directions, and the pane
 must not describe a refusal it does not decide. The tag still says how the row
-was deleted, and drives the muted styling. The flag never changes
-`thurbox-cli session delete`, which stays soft unless `--force`.
+was deleted, and drives the muted styling. The CLI shares this preference,
+including session teardown during `extension deactivate`.
 
 ### Session lifecycle hooks (`hooks.toml`)
 

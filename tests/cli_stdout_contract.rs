@@ -287,7 +287,9 @@ fn session_restore_takes_a_reference_like_every_other_verb() {
     let env = Env::new();
     let id = seed_session(&env, "gone", "claude");
     assert_eq!(
-        env.run(&["session", "delete", &id, "--json"]).status.code(),
+        env.run(&["session", "delete", &id, "--soft", "--json"])
+            .status
+            .code(),
         Some(0)
     );
 

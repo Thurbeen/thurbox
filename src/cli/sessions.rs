@@ -181,23 +181,25 @@ pub enum Action {
         #[arg(long = "reports-as")]
         reports_as: Option<String>,
     },
-    /// Soft-delete a session. (`remove` is an alias.)
+    /// Delete a session and its runtime resources. (`remove` is an alias.)
     #[command(alias = "remove")]
     ///
-    /// By default only the DB row is soft-deleted, and `session restore`
-    /// brings it back. The session's windows come down once the undo
-    /// window closes — by a running interface, by the `automation tick`
-    /// heartbeat, or on demand with `session reap` — while the worktrees
-    /// stay, which is what makes the undo lossless. Pass `--force` to kill
-    /// the windows, remove the worktrees thurbox created, and cancel pending
-    /// scheduled commands in this call.
+    /// By default kills owned windows, removes worktrees thurbox created,
+    /// and disables send automations immediately. Set `[features] soft_delete`
+    /// = true or pass --soft to keep windows and worktrees for undo instead.
+    /// --force always tears down immediately, regardless of the setting.
+    /// With --json, a flagless delete stays soft for legacy sharing peers;
+    /// JSON callers must pass --force for immediate teardown.
     Delete {
         /// Session UUID.
         uuid: String,
         /// Also kill the window, remove worktrees, and cancel
         /// pending scheduled commands for this session.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "soft")]
         force: bool,
+        /// Keep the session undoable, overriding `[features] soft_delete`.
+        #[arg(long)]
+        soft: bool,
     },
     /// Restore a soft-deleted session.
     Restore {
@@ -603,7 +605,14 @@ pub fn run(
                 reports_as,
             },
         ),
-        Action::Delete { uuid, force } => delete_session(db, backends.get(), &uuid, force),
+        Action::Delete { uuid, force, soft } => {
+            let force = force
+                || (!soft
+                    && !crate::agent::settings_config::load_quiet()
+                        .features
+                        .soft_delete);
+            delete_session(db, backends.get(), &uuid, force)
+        }
         Action::Restore {
             session,
             best_effort,
@@ -3239,8 +3248,8 @@ mod tests {
     }
 
     #[test]
-    fn soft_delete_leaves_session_recoverable() {
-        // `session delete` without --force only soft-deletes the DB row,
+    fn explicit_soft_delete_leaves_session_recoverable() {
+        // `session delete --soft` only soft-deletes the DB row,
         // leaving its automations enabled and the session restorable.
         let db = db();
         let id = SessionId::default();
@@ -3277,6 +3286,7 @@ mod tests {
             Action::Delete {
                 uuid: id.to_string(),
                 force: false,
+                soft: true,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3315,6 +3325,7 @@ mod tests {
             Action::Delete {
                 uuid: id.to_string(),
                 force: true,
+                soft: false,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3369,6 +3380,7 @@ mod tests {
             Action::Delete {
                 uuid: id.to_string(),
                 force: true,
+                soft: false,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3409,6 +3421,7 @@ mod tests {
             Action::Delete {
                 uuid: id.to_string(),
                 force: false,
+                soft: true,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),

@@ -1274,6 +1274,29 @@ fn force_deleting_a_clean_session_still_asks() {
 }
 
 #[test]
+fn default_delete_confirms_hard_teardown_without_remembering_an_undo() {
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].git = Some(clean());
+    render_in(&host, &snapshot);
+    press_in(&host, &snapshot, "ctrl+d");
+    assert!(confirm_tree(&host, &snapshot).contains("for good?"));
+    host.on_key(
+        host.index_of("confirm").unwrap(),
+        &KeyPress {
+            name: "enter".into(),
+            ..KeyPress::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        host.drain_commands().as_slice(),
+        [Command::Delete { force: true, .. }]
+    ));
+    assert!(host.shared_string("sessions.deleted").is_none());
+}
+
+#[test]
 fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
     let host = host();
     let mut snapshot = snapshot();

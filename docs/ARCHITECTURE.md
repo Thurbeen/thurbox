@@ -1127,8 +1127,15 @@ ssh via `GIT_SSH_COMMAND` and carries the same advisory:
 via a shared SQLite database
 (`~/.local/share/thurbox/thurbox.db`). Each instance polls
 `PRAGMA data_version` to detect external changes. SQLite's WAL mode
-handles concurrent access safely. Deletions use soft delete
-(`deleted_at` column).
+handles concurrent access safely. Session deletions retain tombstones
+(`deleted_at` column) for sync and remote teardown retries. Runtime teardown
+is immediate by default in every build (`[features] soft_delete = false`);
+explicit opt-in leaves an undo window. A tombstone is not a lossless undo: hard
+deletes mark `force_deleted` before teardown. CLI `--soft` and `--force`
+override the preference. Delegation and tombstone propagation send the chosen
+mode explicitly to peers reporting `soft_delete_choice` in `version --json`;
+for soft deletion, older peers without that capability keep their implicit
+soft-delete command.
 
 The v2 snapshot uses `data_version` as its first gate, then schema v49's
 trigger-maintained row and hook-liveness generations. Perf telemetry changes

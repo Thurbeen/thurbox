@@ -98,7 +98,13 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         can_open: true,
         inventory: &[],
         ui_dir: "ui",
-        settings: &Default::default(),
+        settings: &thurbox::session::settings::Settings {
+            features: thurbox::session::settings::FeatureFlags {
+                soft_delete: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         repos: &repos,
         wants: &Default::default(),
         focus: None,

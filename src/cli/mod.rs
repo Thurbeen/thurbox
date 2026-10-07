@@ -474,7 +474,23 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
     let mut output: CommandOutput = match cli.command {
         // No subcommand: live state, not a usage dump (AXI principle 8).
         None => home::run(db)?,
-        Some(command) => dispatch(command, db, backends)?,
+        Some(mut command) => {
+            // Legacy sharing peers send exactly `session delete <id> --json`.
+            // It is indistinguishable from a local JSON caller, so preserve undo
+            // for both; new peers and destructive JSON callers specify the mode.
+            if cli.json {
+                if let Command::Session {
+                    action:
+                        sessions::Action::Delete {
+                            force: false, soft, ..
+                        },
+                } = &mut command
+                {
+                    *soft = true;
+                }
+            }
+            dispatch(command, db, backends)?
+        }
     };
     if cli.full {
         output.agent.max_text = None;

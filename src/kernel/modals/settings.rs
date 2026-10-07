@@ -1303,12 +1303,12 @@ mod tests {
             "the row says the change has not landed yet"
         );
         assert!(modal.dirty(&on_disk));
-        assert!(on_disk.features.soft_delete, "and the file has not moved");
+        assert!(!on_disk.features.soft_delete, "and the file has not moved");
 
         // Saving hands the whole draft over; the file and the live half are the
         // loop's business, not the modal's.
         match modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &on_disk, &[]) {
-            Outcome::Save(draft) => assert!(!draft.features.soft_delete),
+            Outcome::Save(draft) => assert!(draft.features.soft_delete),
             other => panic!(
                 "expected a save, got {}",
                 message(other).unwrap_or_default()

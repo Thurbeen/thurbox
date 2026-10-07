@@ -767,6 +767,8 @@ fn push_tombstones(db: &Database, host: &HostDef, cli: &CliInfo, ids: &[SessionI
         let mut args = vec!["session", "delete", &id];
         if forced {
             args.push("--force");
+        } else if cli.soft_delete_choice {
+            args.push("--soft");
         }
         if let Err(e) = host_cli::run(host, cli, &args) {
             tracing::warn!("could not push the delete of {id} to '{}': {e}", host.name);
@@ -866,6 +868,29 @@ mod tests {
     use super::*;
 
     const BACKEND: &str = "ssh:devbox";
+
+    #[test]
+    fn pushing_a_soft_tombstone_keeps_the_hosts_delete_undoable() {
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        db.upsert_session(&local_row(id, "soft-probe")).unwrap();
+        db.soft_delete_session(id).unwrap();
+        let host = HostDef {
+            name: "remote".into(),
+            ..Default::default()
+        };
+        for understands_soft in [true, false] {
+            let mut cli = host_cli::fake::cli();
+            cli.soft_delete_choice = understands_soft;
+            host_cli::fake::install_runner(Box::new(move |_, args| {
+                assert_eq!(args.iter().any(|arg| arg == "--soft"), understands_soft);
+                assert!(!args.iter().any(|arg| arg == "--force"));
+                Ok(json!({"deleted": true}))
+            }));
+            push_tombstones(&db, &host, &cli, &[id]);
+            host_cli::fake::clear();
+        }
+    }
 
     fn host_row(id: SessionId, name: &str) -> HostRow {
         session_from_json(

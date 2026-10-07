@@ -764,7 +764,7 @@ shell_pane    = true
 code_review   = true           # accepted, gates nothing (the pane was removed)
 mouse         = true
 notifications = true
-soft_delete   = true           # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete
+soft_delete   = false          # TUI + CLI delete immediately; true = undo window
 version_check = false          # opt-in: makes a network call
 auto_update   = false          # opt-in: downloads + replaces binaries
 
@@ -858,11 +858,13 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
               <tr>
                 <td><code>soft_delete</code></td>
-                <td><code>true</code></td>
+                <td><code>false</code></td>
                 <td>
-                  TUI <code>Ctrl+D</code> soft-deletes (with a <code>Ctrl+Z</code> undo window);
-                  <code>false</code> makes it a hard delete behind a confirmation modal. Never affects
-                  <code>thurbox-cli session delete</code> (soft unless <code>--force</code>).
+                  TUI <code>Ctrl+D</code> and <code>thurbox-cli session delete</code> tear down
+                  immediately by default in every build. Set <code>true</code> to keep the undo
+                  window. CLI <code>--soft</code> and <code>--force</code> override the setting.
+                  Flagless <code>--json</code> deletes stay soft for legacy sharing peers; JSON
+                  scripts must pass <code>--force</code> for immediate teardown.
                 </td>
               </tr>
               <tr>

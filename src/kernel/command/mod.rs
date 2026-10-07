@@ -36,7 +36,7 @@ pub enum Command {
         cwd: Option<std::path::PathBuf>,
         member_dirs: Vec<std::path::PathBuf>,
     },
-    /// Soft-delete by default; `force` also tears down the pane and worktrees.
+    /// Soft-delete unless `force`; the interface chooses from the deletion preference.
     Delete {
         session: String,
         force: bool,

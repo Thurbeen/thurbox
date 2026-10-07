@@ -144,13 +144,10 @@ pub struct FeatureFlags {
     /// passive banner only (the modern API requires a signed app bundle).
     #[serde(default = "default_true")]
     pub notifications: bool,
-    /// Soft-delete sessions in the TUI (Ctrl+D): mark the DB row deleted and
-    /// offer Ctrl+Z undo, leaving the tmux window + worktrees intact. Disabled
-    /// = the TUI **hard-deletes** (kills the tmux window, removes worktrees +
-    /// symlink workspace, disables send automations) after a confirmation
-    /// prompt. `thurbox-cli session delete` is unaffected (always soft unless
-    /// `--force`).
-    #[serde(default = "default_true")]
+    /// Keep sessions undoable on delete, leaving windows and worktrees intact.
+    /// Off by default in every build: TUI and CLI delete runtime resources
+    /// immediately. CLI `--soft` and `--force` override this preference.
+    #[serde(default)]
     pub soft_delete: bool,
     /// Version-update check: the TUI header "update available" badge and the
     /// `thurbox-cli version --check` command. **On by default for 1.0** — it
@@ -347,7 +344,7 @@ impl Default for FeatureFlags {
             perf_hud: true,
             mouse: true,
             notifications: true,
-            soft_delete: true,
+            soft_delete: false,
             version_check: true,
             auto_update: true,
         }
@@ -512,10 +509,10 @@ mod tests {
     }
 
     #[test]
-    fn soft_delete_feature_flag_defaults_true_and_parses() {
-        assert!(FeatureFlags::default().soft_delete);
-        let s: Settings = toml::from_str("[features]\nsoft_delete = false").unwrap();
-        assert!(!s.features.soft_delete);
+    fn soft_delete_feature_flag_defaults_false_and_parses() {
+        assert!(!FeatureFlags::default().soft_delete);
+        let s: Settings = toml::from_str("[features]\nsoft_delete = true").unwrap();
+        assert!(s.features.soft_delete);
         assert!(s.features.tasks, "untouched flags stay enabled");
     }
 

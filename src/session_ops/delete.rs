@@ -1,4 +1,4 @@
-//! Headless session deletion — soft-delete by default, `force` also tears
+//! Headless session deletion — callers select soft deletion or `force`, which tears
 //! down the tmux windows, worktrees, and pending scheduled commands so the
 //! filesystem and tmux server don't leak orphans when the TUI isn't
 //! running to observe the deletion.
@@ -80,7 +80,7 @@ pub fn delete_session_headless(
         super::windows::backend_for(backends, &session.backend_type).map_err(|e| {
             format!(
                 "cannot force-delete '{}': {e}. Its window and worktrees are left as they \
-                 are; a delete without --force keeps it restorable",
+                 are; a delete with --soft keeps it restorable",
                 session.name
             )
         })?;
@@ -103,6 +103,9 @@ pub fn delete_session_headless(
             let mut args = vec!["session", "delete", &id];
             if force {
                 args.push("--force");
+            } else if cli.soft_delete_choice {
+                // The peer's preference cannot change the caller's decision.
+                args.push("--soft");
             }
             let answer = match super::host_cli::run_classified(&host, &cli, &args) {
                 Ok(answer) => answer,
@@ -1550,6 +1553,34 @@ mod tests {
             "the local teardown could not reach the same down host either, \
              so the sweep is told to retry"
         );
+    }
+
+    #[test]
+    fn delegated_soft_delete_keeps_undo_on_new_and_legacy_peers() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        for understands_soft in [true, false] {
+            let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+            let mut cli = super::super::host_cli::fake::cli();
+            cli.soft_delete_choice = understands_soft;
+            super::super::host_cli::fake::force_usable(super::super::host_cli::Usable::Yes(cli));
+            super::super::host_cli::fake::install_runner(Box::new(move |_, args| {
+                assert_eq!(args.iter().any(|arg| arg == "--soft"), understands_soft);
+                assert!(!args.iter().any(|arg| arg == "--force"));
+                Ok(serde_json::json!({"deleted": true}))
+            }));
+            let report =
+                delete_session_headless(&db, &crate::backend::registry::inert(), id, false)
+                    .unwrap();
+            super::super::host_cli::fake::clear();
+            assert!(!report.killed_window);
+            assert!(
+                !db.get_deleted_session_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .force_deleted
+            );
+        }
     }
 
     /// A failure whose layer cannot be told must side with the unanswered

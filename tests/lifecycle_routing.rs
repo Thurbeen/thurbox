@@ -335,7 +335,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
 
     // a soft delete keeps the window for the undo, and a restore inside the
     // undo window adopts it rather than launching a second agent
-    cli(&db, &backends, &["session", "delete", &uuid]).expect("soft delete");
+    cli(&db, &backends, &["session", "delete", &uuid, "--soft"]).expect("soft delete");
     let kept = agent_window(&probe, id, "soft delete");
     cli(&db, &backends, &["session", "restore", &uuid]).expect("restore");
     assert_eq!(agent_window(&probe, id, "restore").pane, kept.pane);
@@ -343,7 +343,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
 
     // the reap sweep lets a soft-deleted session's agent go once the undo
     // window has closed
-    cli(&db, &backends, &["session", "delete", &uuid]).expect("soft delete");
+    cli(&db, &backends, &["session", "delete", &uuid, "--soft"]).expect("soft delete");
     backdate_delete(&db, id);
     let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get());
     assert_eq!(
@@ -531,7 +531,7 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
 
         // A soft delete touches no window and stays allowed; what comes after
         // it must not open or close one.
-        cli(&db, &backends, &["session", "delete", &uuid]).expect("soft delete");
+        cli(&db, &backends, &["session", "delete", &uuid, "--soft"]).expect("soft delete");
         let deleted = row_state(&db, id);
         assert!(deleted.deleted);
         assert!(

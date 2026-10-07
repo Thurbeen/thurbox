@@ -476,6 +476,268 @@ fn on_disk_db() -> thurbox::storage::Database {
 }
 
 #[test]
+fn shipped_soft_delete_default_is_off() {
+    assert!(
+        !thurbox::session::settings::Settings::default()
+            .features
+            .soft_delete
+    );
+    let settings: thurbox::session::settings::Settings = toml::from_str("[features]\n").unwrap();
+    assert!(!settings.features.soft_delete);
+}
+
+#[cfg(unix)]
+fn delete_probe(settings: &str, flags: &[&str], undoable: bool, extension: bool) {
+    delete_probe_with_format(settings, flags, undoable, extension, "--pretty");
+}
+
+#[cfg(unix)]
+fn delete_probe_with_format(
+    settings: &str,
+    flags: &[&str],
+    undoable: bool,
+    extension: bool,
+    format: &str,
+) {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    std::fs::write(config.join("settings.toml"), settings).unwrap();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .arg(format)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let created = cli(&[
+        "session",
+        "create",
+        "--name",
+        "delete-probe",
+        "--repo-path",
+        repo.path().to_str().unwrap(),
+        "--worktree-branch",
+        "delete-probe",
+        "--base-branch",
+        "main",
+        "--agent",
+        "shell",
+    ]);
+    let id: thurbox::session::SessionId = created["id"].as_str().unwrap().parse().unwrap();
+    let row = db.get_session_by_id(id).unwrap().unwrap();
+    let peer = thurbox::storage::Database::open_in_memory().unwrap();
+    let mut mirrored = row.clone();
+    mirrored.backend_type = "ssh:delete-peer".into();
+    peer.upsert_session(&mirrored).unwrap();
+    let wt = row.worktrees[0].worktree_path.clone();
+    assert!(wt.exists());
+    let target = Command::new("tmux")
+        .args(["-L", SOCKET, "list-sessions", "-F", "#{session_name}"])
+        .output()
+        .unwrap();
+    let target = String::from_utf8(target.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let shell = Command::new("tmux")
+        .args([
+            "-L",
+            SOCKET,
+            "new-window",
+            "-d",
+            "-t",
+            &target,
+            "-n",
+            "tbs-delete-probe",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "sh",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        shell.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shell.stderr)
+    );
+    let shell = String::from_utf8(shell.stdout).unwrap().trim().to_string();
+    for (key, value) in [
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_SESSION_OPTION,
+            id.to_string(),
+        ),
+        (
+            thurbox::backend::tmux_compat::server::WINDOW_ROLE_OPTION,
+            "shell".into(),
+        ),
+    ] {
+        assert!(Command::new("tmux")
+            .args(["-L", SOCKET, "set-option", "-w", "-t", &shell, key, &value])
+            .status()
+            .unwrap()
+            .success());
+    }
+    let automation = db
+        .create_automation(&thurbox::storage::automations::NewAutomation {
+            name: "send-probe".into(),
+            enabled: true,
+            schedule: thurbox::session::AutomationSchedule::Once { at: u64::MAX },
+            timezone: None,
+            action: thurbox::session::AutomationAction::Send { session_id: id },
+            prompt: "probe".into(),
+            next_run_at: Some(u64::MAX),
+        })
+        .unwrap();
+    let mut args = vec!["session", "delete", created["id"].as_str().unwrap()];
+    args.extend_from_slice(flags);
+    if extension {
+        let dir = config.join("extensions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("delete-probe.toml"), "name = \"delete-probe\"\n[[sessions]]\nname = \"delete-probe\"\nrepo_path = \".\"\nagent = \"shell\"\n").unwrap();
+        cli(&["extension", "deactivate", "delete-probe"]);
+    } else {
+        let deleted = cli(&args);
+        assert_eq!(deleted["forced"], !undoable);
+    }
+    if undoable {
+        peer.soft_delete_session(id).unwrap();
+    } else {
+        peer.force_delete_session(id).unwrap();
+    }
+    assert_eq!(
+        peer.get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .force_deleted,
+        !undoable
+    );
+    assert!(db.get_session_by_id(id).unwrap().is_none());
+    let tombstone = db.get_deleted_session_by_id(id).unwrap().unwrap();
+    assert_eq!(tombstone.force_deleted, !undoable);
+    assert_eq!(wt.exists(), undoable);
+    assert_eq!(
+        db.get_automation(automation).unwrap().unwrap().enabled,
+        undoable
+    );
+    let panes = Command::new("tmux")
+        .args(["-L", SOCKET, "list-panes", "-a", "-F", "#{pane_id}"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&panes.stdout)
+            .lines()
+            .any(|p| p == row.backend_id),
+        undoable
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&panes.stdout)
+            .lines()
+            .any(|p| p == shell),
+        undoable
+    );
+    assert!(thurbox::session_ops::reap_overdue_soft_deletes(
+        &db,
+        &thurbox::backend::wiring::configured().0
+    )
+    .is_empty());
+    if undoable {
+        cli(&["session", "restore", created["id"].as_str().unwrap()]);
+        peer.restore_session(id).unwrap();
+        assert!(peer.get_session_by_id(id).unwrap().is_some());
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+        assert!(wt.exists());
+    } else {
+        let replacement = cli(&[
+            "session",
+            "create",
+            "--name",
+            "delete-probe",
+            "--repo-path",
+            repo.path().to_str().unwrap(),
+            "--agent",
+            "shell",
+            "--on-existing",
+            "fail",
+        ]);
+        assert_ne!(replacement["id"], created["id"]);
+        assert!(thurbox::session_ops::reap_overdue_soft_deletes(
+            &db,
+            &thurbox::backend::wiring::configured().0
+        )
+        .is_empty());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn default_config_delete_is_immediate_and_has_nothing_to_reap() {
+    delete_probe("", &[], false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn legacy_flagless_peer_delete_on_new_host_remains_restorable_on_both_sides() {
+    delete_probe_with_format("", &[], true, false, "--json");
+}
+
+#[test]
+#[cfg(unix)]
+fn new_peer_explicit_modes_override_the_new_hosts_setting() {
+    delete_probe_with_format("", &["--soft"], true, false, "--json");
+    delete_probe_with_format(
+        "[features]\nsoft_delete = true\n",
+        &["--force"],
+        false,
+        false,
+        "--json",
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn explicit_soft_delete_override_remains_undoable() {
+    delete_probe("", &["--soft"], true, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn configured_soft_delete_remains_undoable() {
+    delete_probe("[features]\nsoft_delete = true\n", &[], true, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn force_delete_overrides_configured_soft_delete() {
+    delete_probe(
+        "[features]\nsoft_delete = true\n",
+        &["--force"],
+        false,
+        false,
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn default_extension_deactivation_deletes_sessions_immediately() {
+    delete_probe("", &[], false, true);
+}
+
+#[test]
 #[cfg(unix)]
 fn editing_agents_while_open_updates_the_picker_and_the_agent_actually_spawned() {
     use thurbox::kernel::snapshot::SnapshotStore;

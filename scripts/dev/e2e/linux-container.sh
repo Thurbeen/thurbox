@@ -186,7 +186,7 @@ shared_sessions_probe() {
   # Soft-delete inside, restore from here: the host relaunches, both sides agree.
   local e2e_id
   e2e_id="$(e2e_cli session list | json_field id)"
-  remote_cli session delete "$e2e_id" >/dev/null || die "soft delete inside the container failed"
+  remote_cli session delete "$e2e_id" --soft >/dev/null || die "soft delete inside the container failed"
   e2e_cli session sync --host podman >/dev/null
   case "$(e2e_cli session list --deleted)" in
     *"$e2e_id"*) ok "a soft-delete inside the container is mirrored here" ;;

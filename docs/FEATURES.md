@@ -1964,9 +1964,9 @@ take `Ctrl+N` from new-session everywhere. Recorded in `tests/keymap.rs`.
 
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
-`shell_pane`, `mouse`, `notifications`, `soft_delete` — all default
-`true`. `soft_delete` is the odd one out: it is not a pane gate but a
-behaviour switch for the TUI `Ctrl+D` delete (confirmation-gated soft-delete with a
+`shell_pane`, `mouse`, `notifications` — all default `true`.
+`soft_delete` defaults `false` in every build: it is not a pane gate but a
+behaviour switch for TUI `Ctrl+D` and CLI session deletion (confirmation-gated soft-delete with a
 `Ctrl+Z` undo window when on; a confirmation-gated hard delete when
 off — see *Explicit close vs quit*). Two flags reach the network and
 were opt-in before 1.0 — now both default on:
@@ -2457,16 +2457,17 @@ branch name) is saved in the database and reconstructed on restore.
 - **`Ctrl+Q` (Quit)**: Detaches from all sessions (tmux panes keep
   running), saves metadata. Sessions resume on next launch with
   terminal content preserved.
-- **`Ctrl+D` (Delete)**: Asks for confirmation, then soft-deletes the session — its tmux pane
-  is killed and its worktree (if any) is removed. The database
-  row is retained with `deleted_at` set so the deletion can be
-  undone with `Ctrl+Z` (most recent) or restored from the
-  `Ctrl+U` list. This is governed by `[features] soft_delete`
-  (default `true`): set it `false` and `Ctrl+D` becomes a **hard
-  delete** — the full teardown with no `Ctrl+Z` undo. The shared
-  confirmation float describes the work at risk for that case.
-  The flag never affects `thurbox-cli session delete`, which stays soft
-  unless `--force`. A teardown only removes worktrees **thurbox created**
+- **`Ctrl+D` (Delete)**: Asks for confirmation, then tears down owned windows,
+  worktrees and the symlink workspace immediately, with no `Ctrl+Z` undo.
+  `[features] soft_delete` defaults `false` in every build. Explicitly set it
+  `true` for an undoable delete that keeps windows and worktrees intact;
+  the windows are reaped after the 10-second undo window, and the worktrees stay.
+  `Ctrl+Z` undoes this interface's most recent soft delete; `Ctrl+U` lists
+  tombstones for restore, including best-effort recovery after hard deletion.
+  `thurbox-cli session delete` uses the same preference, with `--soft` and
+  `--force` overrides. Flagless `--json` deletes stay soft for legacy sharing
+  compatibility; JSON scripts use `--force` for immediate teardown. A teardown
+  only removes worktrees **thurbox created**
   (`created_by_thurbox`, schema v42): a session that *opened* a worktree the
   user already had leaves that directory exactly where it was and reports it
   as kept, because `git worktree remove --force` would take any uncommitted

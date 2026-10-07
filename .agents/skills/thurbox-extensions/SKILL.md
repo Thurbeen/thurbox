@@ -147,7 +147,9 @@ extension at TUI startup (before session restore) and at the top of the headless
 `automation tick`. Consequence worth knowing before debugging a "zombie" session:
 while an extension is active, deleting its session/automation is a **no-op** —
 they are recreated. `extension deactivate` is the real off-switch, and headless
-healing needs `[features] automations = true`.
+healing needs `[features] automations = true`. Session deletion during CLI
+deactivation follows `[features] soft_delete` (default `false`); `--force`
+always tears down immediately.
 
 A declared session is recreated only when its name is free **on the local
 backend**, asked through `session_ops::names` — the same rule `session create

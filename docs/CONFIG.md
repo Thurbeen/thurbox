@@ -661,7 +661,7 @@ git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 [features]
 shell_pane    = true
 perf_hud      = true
-soft_delete   = true
+soft_delete   = false
 automations   = true
 mouse         = true
 notifications = true
@@ -772,7 +772,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | `automations` | `true` | TUI schedule firing + heartbeat arming (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
-| `soft_delete` | `true` | TUI `Ctrl+D` asks, then soft-deletes (Ctrl+Z undo); off = hard delete after the same confirmation prompt |
+| `soft_delete` | `false` | TUI and CLI delete immediately; on = soft delete with an undo window (CLI `--soft` / `--force` override) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
@@ -791,20 +791,39 @@ URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
 
-`soft_delete = false` turns the TUI's `Ctrl+D` into a destructive
+`soft_delete = false` (the default in release, debug and sandbox builds) makes
+TUI `Ctrl+D` and `thurbox-cli session delete` a destructive
 **hard delete**: instead of marking the row deleted with a `Ctrl+Z`
 undo window, it kills the session's tmux window, removes its worktrees
-and symlink workspace, and disables any pending `Send` automations —
-after a confirmation prompt (`Enter`/`y` to delete, `Esc`/`n` to
-cancel), since the teardown is irreversible. The row is marked
+and symlink workspace, and disables any pending `Send` automations. The TUI
+asks first (`Enter`/`y` to delete, `Esc`/`n` to cancel), since the teardown
+is irreversible; the CLI performs the requested delete without a prompt. The row is marked
 **first**, before anything comes down: a crash partway through the
 teardown would otherwise leave an active session whose worktrees are
 already gone. It is marked force-deleted with it, so `Ctrl+U` lists it
 and refuses — unless every worktree was one thurbox merely opened
 rather than created, in which case nothing was lost and the restore
-stands (which re-spawns it fresh). This flag governs the TUI only:
-`thurbox-cli session delete` always soft-deletes unless you pass
-`--force`, regardless of the setting.
+stands (which re-spawns it fresh). Tombstones remain for multi-instance sync
+and remote cleanup retries; this is not a lossless undo. The CLI reads the
+same setting on each call: `--soft` explicitly opts into the undo window,
+while `--force` always tears down immediately. These flags are mutually exclusive.
+For mixed-version session sharing, new peers always send the selected mode:
+`--force` for hard deletion, `--soft` for peers advertising `soft_delete_choice`.
+Older hosts do not understand `--soft`, so the new peer uses their existing
+flagless soft-delete request instead. An old peer's flagless `--json` delete
+remains soft on an upgraded host, preserving both the peer's undo and the host's
+windows/worktrees. That request carries no caller marker and is identical to a
+local JSON command: **local flagless `--json` deletes also remain soft**.
+JSON scripts must pass `--force` for immediate cleanup or `--soft` for undo.
+Plain local CLI and TUI deletes still follow `soft_delete`, defaulting to hard.
+The capability bit selects flags understood by the receiver; major/schema
+compatibility alone does not identify the caller or its intended deletion mode.
+Users who never set the flag now get immediate teardown for plain CLI/TUI
+deletes; an explicit
+`[features] soft_delete = true` keeps the previous undoable behavior.
+`extension deactivate` follows the same preference for its sessions.
+Task and automation deletion have no undo window; their storage bookkeeping
+is independent of this session preference.
 With `soft_delete = true`, the TUI also asks before the reversible delete and
 records the `Ctrl+Z` undo target only after the answer is yes.
 
