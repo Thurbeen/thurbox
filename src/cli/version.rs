@@ -47,6 +47,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                     .and_then(|p| p.parent().map(|d| d.display().to_string())),
                 "schema_version": crate::storage::SCHEMA_VERSION,
                 "multiplexer_choice": true,
+                "soft_delete_choice": true,
             }),
             format!("thurbox {current}"),
         );
@@ -143,6 +144,7 @@ mod tests {
         let out = run(VersionArgs { check: false });
         assert!(out["version"].is_string(), "version field present");
         assert_eq!(out["multiplexer_choice"], true);
+        assert_eq!(out["soft_delete_choice"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

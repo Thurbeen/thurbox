@@ -73,7 +73,7 @@ config_version = 1
 # perf_hud = true         # F12 perf HUD overlay (live counters + timing)
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
-# soft_delete = true      # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard delete after a prompt
+# soft_delete = false     # TUI + CLI delete immediately; true = undo window (CLI --soft overrides)
 #
 # `version_check` and `auto_update` are ON by default for 1.0: both reach the
 # network (GitHub) on startup. `version_check` only *notifies* (TUI header

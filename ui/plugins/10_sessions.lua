@@ -383,7 +383,7 @@ end
 --- `[features] soft_delete` off means the TUI deletes for real — v1's own
 --- behaviour, and why the confirmation below exists: there is no Ctrl+Z for it.
 local function soft_delete()
-  return plugin_settings.feature("soft_delete", true) ~= false
+  return plugin_settings.feature("soft_delete", false) == true
 end
 
 --- Does a session this interface just created take the cursor and the keyboard?
