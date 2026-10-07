@@ -559,7 +559,7 @@ fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
     assert!(
         fake::calls()
             .iter()
-            .any(|c| c.as_slice() == ["session", "delete", &id.to_string()]),
+            .any(|c| c.as_slice() == ["session", "delete", &id.to_string(), "--soft"]),
         "the delete was pushed to the host: {:?}",
         fake::calls()
     );
