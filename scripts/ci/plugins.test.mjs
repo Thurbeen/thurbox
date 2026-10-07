@@ -181,6 +181,13 @@ test('link validation rejects a missing repository and unreachable media', async
   assert.ok(seen.includes(fixture[1].media.url));
   assert.ok(errors.some((e) => e.includes(fixture[1].repo)));
   assert.ok(errors.some((e) => e.includes(fixture[1].media.url)));
+  const shipsDemo = await checkLinks(fixture, async () => ({ ok: true }));
+  assert.ok(
+    shipsDemo.some((e) => e.startsWith(fixture[0].repo) && e.includes('has no media')),
+    'an entry without media is flagged when its repository ships media/demo.gif',
+  );
+  const noDemo = await checkLinks(fixture, async (url) => ({ ok: !url.endsWith('/demo.gif') }));
+  assert.ok(!noDemo.some((e) => e.startsWith(fixture[0].repo)));
   const unavailable = await checkLinks(fixture, async () => {
     throw new Error('offline');
   });

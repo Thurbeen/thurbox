@@ -104,6 +104,21 @@ export async function checkLinks(entries, request = fetch) {
       errors.push(`${url}: ${error.message}`);
     }
   }
+  // Every catalog GIF sits at the same repository path, so a missing preview
+  // is caught when an author adds one after the entry was written.
+  for (const entry of entries.filter((e) => !e.media)) {
+    const demo = `${entry.repo.replace('https://github.com/', 'https://raw.githubusercontent.com/')}/HEAD/media/demo.gif`;
+    try {
+      const response = await request(demo, {
+        method: 'HEAD',
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.ok) errors.push(`${entry.repo}: ships ${demo} but the entry has no media`);
+    } catch {
+      // An unreachable optional preview is not an error; the repo check above reports outages.
+    }
+  }
   return errors;
 }
 

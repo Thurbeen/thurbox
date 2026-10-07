@@ -339,8 +339,10 @@ steps when needed. Catalog commands are displayed, never executed by the site.
 
 Names and repository URLs must be unique (case-insensitive). Repository URLs
 must be canonical HTTPS GitHub URLs. Media URLs must use HTTPS; link to the
-repository's own screenshot or GIF instead of copying it. Include descriptive
-alt text. State which platforms are supported and qualify anything unverified.
+repository's own screenshot or GIF instead of copying it. `check:plugins:links`
+fails an entry without `media` whose repository has a `media/demo.gif`, so a GIF
+added after the listing reaches the page. Include descriptive alt text. State
+which platforms are supported and qualify anything unverified.
 Do not include private URLs or local machine information.
 
 The offline validator checks fields, enums, real dates, URL syntax and duplicates.
