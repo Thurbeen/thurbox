@@ -112,7 +112,11 @@ document-wide, so nothing of ours is ever orphaned.
 **Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
 (`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
 extensions ship **embedded** in the binary and are **auto-activated by default**
-(`ensure_builtin_extensions` at TUI startup + headless tick). Each is a
+(`ensure_builtin_extensions` at TUI startup, the headless tick, and before each
+`thurbox-cli session create`/`start`/`restart`/`fork` and each task or automation
+spawn (`cli::action::ensure_hooks_wired`, run once the command is committed to
+spawning) — a machine driven by the CLI alone reaches its first spawn before any tick, and that session used to
+launch without claude's `--settings`). Each is a
 `Builtin` — embedded assets, a home under *this build's* config dir, and how it
 describes what it just did — and the shared `Builtin::ensure` materializes the
 assets locally and installs them through the ordinary machinery above, so a

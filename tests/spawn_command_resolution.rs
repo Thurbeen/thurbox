@@ -98,9 +98,14 @@ fn repo(at: &Path) {
 /// the host's CLI at an absolute path over ssh and sshd hands the command its
 /// own stripped `PATH`.
 fn create_session(server: &TmuxServer, root: &Path, args: &[&str]) -> std::process::Output {
+    cli(server, root, &[&["session", "create"], args].concat())
+}
+
+/// Any `thurbox-cli` command, run the way [`create_session`] runs `session
+/// create`.
+fn cli(server: &TmuxServer, root: &Path, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    cmd.args(["session", "create"])
-        .args(args)
+    cmd.args(args)
         .arg("--json")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
@@ -109,7 +114,7 @@ fn create_session(server: &TmuxServer, root: &Path, args: &[&str]) -> std::proce
         .env_remove("THURBOX_SESSION")
         .env_remove("THURBOX_SESSION_ID");
     server.scope(&mut cmd);
-    cmd.output().expect("run thurbox-cli session create")
+    cmd.output().expect("run thurbox-cli")
 }
 
 /// A scratch instance: its own config, data, git repository and tmux server.
@@ -306,6 +311,203 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
     );
 }
 
+/// The **first** session a fresh install creates is launched with its status
+/// hooks wired.
+///
+/// The built-in hooks extension patches claude's `--settings` into
+/// `agents.toml`, and only the TUI's boot and the heartbeat's tick used to run
+/// that install. A machine driven by `thurbox-cli` alone — a lead agent, a
+/// shared-sessions host — armed the heartbeat *after* its first `session
+/// create`, so that session launched without the flag and never reported a
+/// state, while `session doctor` found the payload on disk and passed it.
+#[test]
+fn the_first_cli_session_on_a_fresh_install_launches_with_its_hooks() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+
+    write_argv_probe(root.path(), &argv);
+
+    let out = create_session(
+        &server,
+        root.path(),
+        &[
+            "--name",
+            "first",
+            "--repo-path",
+            checkout.to_str().expect("utf-8 path"),
+            "--agent",
+            "probe",
+        ],
+    );
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("tmux") || stderr.contains("multiplexer") {
+            eprintln!("skipping: tmux would not spawn a window: {stderr}");
+            return;
+        }
+        panic!("the spawn itself failed: {stderr}");
+    }
+
+    wait_for(&argv);
+    let launched = std::fs::read_to_string(&argv).expect("the agent ran and wrote its argv");
+    let settings = root.path().join("config/hooks/claude.json");
+    assert_eq!(
+        launched.trim(),
+        format!("--settings {}", settings.display()),
+        "the first session launched without the hooks' --settings, so it can \
+         never report a state"
+    );
+}
+
+/// The claude-family probe of the first-session tests: it writes down the
+/// arguments it was launched with, so a test can read whether the hooks'
+/// `--settings` reached it.
+fn write_argv_probe(root: &Path, argv: &Path) {
+    std::fs::write(
+        root.join("config/agents.toml"),
+        format!(
+            "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"sh\"\n\
+             hook_schema = \"claude\"\n\
+             args = [\"-c\", \"echo \\\"$*\\\" > {}; sleep 30\", \"probe\"]\n",
+            argv.display()
+        ),
+    )
+    .expect("write agents.toml");
+}
+
+/// `task run` spawns through its own path (`spawn_and_deliver`), so the first
+/// session a task starts on a CLI-only machine needs the same wiring as a
+/// `session create`.
+#[test]
+fn the_first_task_session_on_a_fresh_install_launches_with_its_hooks() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+    write_argv_probe(root.path(), &argv);
+
+    let repo = checkout.to_str().expect("utf-8 path");
+    let task = cli(
+        &server,
+        root.path(),
+        &[
+            "task", "create", "--title", "probe", "--repo", repo, "--agent", "probe",
+        ],
+    );
+    assert!(
+        task.status.success(),
+        "task create failed: {}",
+        String::from_utf8_lossy(&task.stderr)
+    );
+    let id = serde_json::from_slice::<serde_json::Value>(&task.stdout).expect("task JSON")["id"]
+        .to_string();
+    let run = cli(&server, root.path(), &["task", "run", id.trim_matches('"')]);
+    if !run.status.success() {
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        if stderr.contains("tmux") || stderr.contains("multiplexer") {
+            eprintln!("skipping: tmux would not spawn a window: {stderr}");
+            return;
+        }
+        panic!("task run failed: {stderr}");
+    }
+
+    wait_for(&argv);
+    let launched = std::fs::read_to_string(&argv).expect("the agent ran and wrote its argv");
+    let settings = root.path().join("config/hooks/claude.json");
+    assert_eq!(
+        launched.trim(),
+        format!("--settings {}", settings.display()),
+        "the task's session launched without the hooks' --settings"
+    );
+}
+
+/// A `session create` refused before it spawns anything leaves the agent
+/// config as it found it: wiring the hooks is a side effect of launching an
+/// agent, not of asking to.
+#[test]
+fn a_refused_create_leaves_the_agent_config_alone() {
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+    write_argv_probe(root.path(), &argv);
+    let before = std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap();
+
+    let out = create_session(
+        &server,
+        root.path(),
+        &[
+            "--name",
+            "refused",
+            "--repo-path",
+            checkout.to_str().expect("utf-8 path"),
+            "--agent",
+            "probe",
+            "--reports-as",
+            "no-such-agent",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "an unknown --reports-as was accepted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap(),
+        before,
+        "a create that spawned nothing rewrote agents.toml"
+    );
+}
+
+/// A `task run` whose session name is refused leaves the agent config alone.
+///
+/// `task create` takes any title, but the spawned session is named after it,
+/// and a `/` makes that name unsafe as a path — so the run is refused only once
+/// it reaches the spawn.
+#[test]
+fn a_refused_task_run_leaves_the_agent_config_alone() {
+    let (root, checkout, server) = instance();
+    let argv = root.path().join("argv");
+    write_argv_probe(root.path(), &argv);
+    let before = std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap();
+
+    let repo = checkout.to_str().expect("utf-8 path");
+    let task = cli(
+        &server,
+        root.path(),
+        &[
+            "task",
+            "create",
+            "--title",
+            "Fix foo/bar",
+            "--repo",
+            repo,
+            "--agent",
+            "probe",
+        ],
+    );
+    assert!(
+        task.status.success(),
+        "task create failed: {}",
+        String::from_utf8_lossy(&task.stderr)
+    );
+    let id = serde_json::from_slice::<serde_json::Value>(&task.stdout).expect("task JSON")["id"]
+        .to_string();
+    let run = cli(&server, root.path(), &["task", "run", id.trim_matches('"')]);
+    assert!(
+        !run.status.success(),
+        "a task named with a '/' spawned a session"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("config/agents.toml")).unwrap(),
+        before,
+        "a task run that spawned nothing rewrote agents.toml"
+    );
+}
+
 /// A command session with **no arguments** is still split by a shell.
 ///
 /// tmux runs a one-argument window command through its `default-shell` and a
@@ -363,5 +565,74 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
         found.trim(),
         env!("CARGO_BIN_EXE_thurbox-cli"),
         "the shell split the command but the pane lost the PATH prefix"
+    );
+}
+
+/// A CLI-created session is launched against the hooks payload this build
+/// ships, not whatever an earlier writer left at that path.
+///
+/// claude reads its `--settings` file once, at startup. When that file holds
+/// the form a remote host's pane needs (`tmux set-option -p @thurbox_state`),
+/// a local session runs those hooks, sets a pane option nothing reads for it,
+/// and reads `unreported` for as long as it lives. Only the TUI's boot and the
+/// heartbeat's tick used to repair the file, so on a machine driven by
+/// `thurbox-cli` alone every session created in between was launched dark.
+#[test]
+fn a_cli_session_launches_against_a_repaired_hooks_payload() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let (root, checkout, server) = instance();
+    let settings = root.path().join("config/hooks/claude.json");
+    std::fs::create_dir_all(settings.parent().expect("hooks dir")).expect("mkdir hooks");
+    let stale = include_str!("../extensions/hooks/claude.json").replace(
+        thurbox::session_ops::builtin_hooks::SIGNAL_MARKER,
+        "tmux set-option -p @thurbox_state ",
+    );
+    std::fs::write(&settings, stale).expect("seed a rewritten payload");
+
+    // The agent copies the settings file it was handed the moment it starts,
+    // which is when claude reads it.
+    let seen = root.path().join("seen.json");
+    std::fs::write(
+        root.path().join("config/agents.toml"),
+        format!(
+            "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"sh\"\n\
+             args = [\"-c\", \"cp \\\"$2\\\" {seen}; sleep 30\", \"probe\", \"--settings\", \"{settings}\"]\n",
+            seen = seen.display(),
+            settings = settings.display(),
+        ),
+    )
+    .expect("write agents.toml");
+
+    let out = create_session(
+        &server,
+        root.path(),
+        &[
+            "--name",
+            "repaired",
+            "--repo-path",
+            checkout.to_str().expect("utf-8 path"),
+            "--agent",
+            "probe",
+        ],
+    );
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("tmux") || stderr.contains("multiplexer") {
+            eprintln!("skipping: tmux would not spawn a window: {stderr}");
+            return;
+        }
+        panic!("the spawn itself failed: {stderr}");
+    }
+
+    wait_for(&seen);
+    let read = std::fs::read_to_string(&seen).expect("the agent ran and copied its settings");
+    assert!(
+        read.contains(thurbox::session_ops::builtin_hooks::SIGNAL_MARKER)
+            && !read.contains("@thurbox_state"),
+        "the session was launched against a hooks payload that cannot report \
+         its state:\n{read}"
     );
 }

@@ -1017,9 +1017,11 @@ The home dir is `~/.config/thurbox/hooks` on a release build and
 `~/.config/thurbox-dev/hooks` on a dev build. Because claude *merges* the
 `--settings` file, your own hooks still fire inside a thurbox session — both run.
 Hand-edits to a managed file are rewritten from the embedded payload on the next
-TUI start / heartbeat tick; to customize, deactivate the extension and wire the
-hook yourself, or edit the payload under `extensions/hooks/` and reinstall. Full
-per-agent detail: `extensions/hooks/README.md`.
+TUI start, heartbeat tick, or `thurbox-cli` command that launches an agent
+(`session create`/`start`/`restart`/`fork`, `task run`); to customize, deactivate
+the extension and wire the hook yourself, or edit the payload under
+`extensions/hooks/` and reinstall. Full per-agent detail:
+`extensions/hooks/README.md`.
 
 ## themes.toml
 
