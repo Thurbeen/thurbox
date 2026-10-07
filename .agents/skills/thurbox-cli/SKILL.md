@@ -558,7 +558,7 @@ its host is also written onto the row (`remote_teardown_owed`, schema v46's
 `session_ops::retry_owed_remote_teardowns` on the next tick or `Command::Reap`
 once that host answers — the same two drivers as the reap, and the reason
 force-deleting against a machine that is down is allowed to keep working. The
-row is always marked deleted last, in one write — a force delete stamps
+row is marked deleted before teardown, in one write — a force delete stamps
 `deleted_at` and `force_deleted` together rather than soft-deleting first, so a
 watcher of `session_events` never sees an intermediate state that reads as
 restorable. A worktree the session merely

@@ -1734,6 +1734,6 @@ thurbox-cli message inbox --for lead --claim</code></pre>
             <code>worktree_errors</code>
             ,
             <code>disabled_automations</code>
-            ) but never abort the delete. The DB row is always marked deleted last, in one write, so even a forced
-            delete stays restorable &mdash; it just re-spawns from a clean slate.
+            ) but never abort the delete. The DB row is marked force-deleted before teardown, in one write.
+            Recovery after destructive deletion is best-effort, not a lossless undo.
           </p>
