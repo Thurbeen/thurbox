@@ -1,15 +1,19 @@
 [
   {
     "name": "thurbox-info-panel",
-    "description": "Session, git, agent, usage and system readouts beside your terminal.",
+    "description": "Session, git, agent, account quota and system readouts beside your terminal.",
     "author": "Thurbeen",
     "badge": "official",
     "repo": "https://github.com/Thurbeen/thurbox-info-panel",
     "kind": "pane",
     "platforms": ["Linux", "macOS", "Windows (pane; metrics depend on host)"],
-    "updated": "2026-08-19",
+    "updated": "2026-10-07",
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel",
-    "notes": "Add the info slot to layout.lua, then press F2. README currently has a text preview; follow its media as the panel evolves."
+    "notes": "Requires Thurbox \u2265 2.51.7. Add the info slot to layout.lua, then press F2. Account quotas need quota-axi \u2265 0.1.58 and a run grant; install the optional refresh extension from the cloned plugin directory. See README for setup.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-info-panel/main/media/demo.gif",
+      "alt": "Info panel in the Thurbox interface"
+    }
   },
   {
     "name": "thurbox-auto-continue",
