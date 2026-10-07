@@ -50,6 +50,17 @@ impl App {
     /// Step focus one column along — see `kernel::focus::next_in_cycle` for why a
     /// switch slot is one stop however many panes share it.
     pub(crate) fn cycle_focus(&mut self, step: isize) {
+        if let Some(index) = self.grabbed {
+            let direction = if step > 0 { "next" } else { "previous" };
+            match self.host.on_focus_cycle(index, direction) {
+                Ok(true) => {
+                    self.dirty = true;
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => self.errors.push(error),
+            }
+        }
         let focusable = self.host.focusable();
         let ring: Vec<_> = focusable
             .iter()

@@ -1651,6 +1651,163 @@ return {
     assert!(tui.quit().success());
 }
 
+fn float_focus_tui(opted_in: bool) -> (tempfile::TempDir, Profile, Tui) {
+    let fixture = include_str!("fixtures/float_focus/91_cards.lua");
+    let body = if opted_in {
+        fixture.to_string()
+    } else {
+        fixture.replace("on_focus_cycle = function", "unused_cycle = function")
+    };
+    let interface = interface_plus("91_cards.lua", &body);
+    let profile = Profile::new();
+    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    (interface, profile, tui)
+}
+
+#[test]
+fn float_focus_cycles_next_and_wraps_without_moving_the_panes() {
+    let (_interface, _profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    for (item, calls) in [("beta", 1), ("gamma", 2), ("alpha", 3)] {
+        tui.send(b"\x0c");
+        tui.wait_for(&format!("CARDS {item} calls={calls} behind=agent"));
+    }
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_cycles_previous_and_wraps() {
+    let (_interface, _profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    for (item, calls) in [("gamma", 1), ("beta", 2), ("alpha", 3)] {
+        tui.send(b"\x08");
+        tui.wait_for(&format!("CARDS {item} calls={calls} behind=agent"));
+    }
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_close_preserves_focus_and_resumes_the_normal_cycle() {
+    let (_interface, _profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS beta calls=1 behind=agent");
+    tui.send(ESC);
+    tui.wait_gone("CARDS");
+    tui.send(b"\x0c");
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=sessions");
+    tui.send(ESC);
+    tui.wait_gone("CARDS");
+    tui.send(b"\x08");
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_empty_hook_declines_to_the_normal_cycle() {
+    let (_interface, _profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"e");
+    tui.wait_for("CARDS empty calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS empty calls=1 behind=sessions");
+    tui.send(b"\x08");
+    tui.wait_for("CARDS empty calls=2 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_without_opt_in_keeps_the_existing_cycle() {
+    let (_interface, _profile, mut tui) = float_focus_tui(false);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS alpha calls=0 behind=sessions");
+    tui.send(b"\x08");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_named_actions_use_the_same_hook() {
+    let (_interface, profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    profile.cli(&["ui", "action", "kernel.focus_next"]);
+    tui.wait_for("CARDS beta calls=1 behind=agent");
+    profile.cli(&["ui", "action", "kernel.focus_previous"]);
+    tui.wait_for("CARDS alpha calls=2 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_only_the_topmost_float_receives_the_cycle() {
+    let fixture = include_str!("fixtures/float_focus/91_cards.lua");
+    let interface = interface_plus("91_cards.lua", fixture);
+    let upper = fixture
+        .replace("cards", "upper")
+        .replace("CARDS", "UPPER")
+        .replace("ctrl+b", "ctrl+o");
+    std::fs::write(interface.path().join("plugins/92_upper.lua"), upper).unwrap();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    profile.cli(&["ui", "action", "upper.open"]);
+    tui.wait_for("UPPER alpha calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("UPPER beta calls=1 behind=agent");
+    tui.send(ESC);
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"\x08");
+    tui.wait_for("CARDS gamma calls=1 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn float_focus_error_falls_back_and_recovery_keys_still_work() {
+    let fixture = include_str!("fixtures/float_focus/91_cards.lua").replace(
+        "if state.empty then",
+        "if true then error('cycle failed') end; if state.empty then",
+    );
+    let interface = interface_plus("91_cards.lua", &fixture);
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS alpha calls=1 behind=sessions");
+    tui.send(F12);
+    tui.wait_for("rend/reuse");
+    tui.send(F12);
+    tui.wait_gone("rend/reuse");
+    std::fs::write(
+        interface.path().join("plugins/91_cards.lua"),
+        include_str!("fixtures/float_focus/91_cards.lua"),
+    )
+    .unwrap();
+    tui.send(F10);
+    tui.wait_for("reload=f10");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS beta calls=2 behind=sessions");
+    assert!(tui.quit().success());
+}
+
 #[test]
 fn ui_state_reports_the_focused_switch_pane_after_it_is_drawn() {
     let interface = interface_plus(

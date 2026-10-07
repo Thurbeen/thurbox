@@ -2036,6 +2036,33 @@ impl LuaHost {
         Ok(rendered)
     }
 
+    /// Offer the native cycle to a floating plugin. A missing hook or `false`
+    /// leaves the ordinary pane cycle in charge. Uses the key hook's budget.
+    pub fn on_focus_cycle(&self, index: usize, direction: &str) -> Result<bool, PluginError> {
+        let Some(plugin) = self.plugins.get(index).filter(|plugin| plugin.floats) else {
+            return Ok(false);
+        };
+        let fail = |message: String| PluginError {
+            plugin: plugin.name.clone(),
+            phase: Phase::Key,
+            message,
+        };
+        let handler: Value = plugin
+            .def
+            .get("on_focus_cycle")
+            .map_err(|e| fail(e.to_string()))?;
+        let Value::Function(handler) = handler else {
+            return Ok(false);
+        };
+        let start = self.call_started();
+        self.enter(plugin);
+        let guard = Budget::arm(&self.lua);
+        let handled: Result<bool, mlua::Error> = handler.call(direction);
+        drop(guard);
+        self.hook_finished(plugin, start, Hook::Key, handled.is_err());
+        handled.map_err(|e| fail(clean_error(&e)))
+    }
+
     /// Offer a key to one plugin. `Ok(true)` means it consumed the key.
     pub fn on_key(&self, index: usize, key: &KeyPress) -> Result<bool, PluginError> {
         let Some(plugin) = self.plugins.get(index) else {
