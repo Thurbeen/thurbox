@@ -47,9 +47,8 @@ impl App {
         }
     }
 
-    /// Step focus one column along — see `kernel::focus::next_in_cycle` for why a
-    /// switch slot is one stop however many panes share it.
-    pub(crate) fn cycle_focus(&mut self, step: isize) {
+    /// Offer explicit navigation to the topmost float before cycling panes.
+    pub(crate) fn cycle_focus_action(&mut self, step: isize) {
         if let Some(index) = self.grabbed {
             let direction = if step > 0 { "next" } else { "previous" };
             match self.host.on_focus_cycle(index, direction) {
@@ -61,6 +60,13 @@ impl App {
                 Err(error) => self.errors.push(error),
             }
         }
+        self.cycle_focus(step);
+    }
+
+    /// Step focus one column along — see `kernel::focus::next_in_cycle` for why a
+    /// switch slot is one stop however many panes share it. Automatic repair also
+    /// uses this path, so it must not dispatch input to a float from the last frame.
+    pub(crate) fn cycle_focus(&mut self, step: isize) {
         let focusable = self.host.focusable();
         let ring: Vec<_> = focusable
             .iter()

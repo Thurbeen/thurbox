@@ -1668,6 +1668,19 @@ fn float_focus_tui(opted_in: bool) -> (tempfile::TempDir, Profile, Tui) {
 }
 
 #[test]
+fn float_focus_resize_repairs_hidden_pane_without_cycling_the_float() {
+    let (_interface, _profile, mut tui) = float_focus_tui(true);
+    tui.send(b"\x0c");
+    tui.send(b"\x02");
+    tui.wait_for("CARDS alpha calls=0 behind=sessions");
+    tui.resize(40, 70);
+    tui.wait_for("CARDS alpha calls=0 behind=agent");
+    tui.send(b"\x0c");
+    tui.wait_for("CARDS beta calls=1 behind=agent");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn float_focus_cycles_next_and_wraps_without_moving_the_panes() {
     let (_interface, _profile, mut tui) = float_focus_tui(true);
     tui.send(b"\x02");
