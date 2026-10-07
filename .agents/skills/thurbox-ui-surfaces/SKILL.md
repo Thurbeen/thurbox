@@ -46,6 +46,13 @@ ahead of a float's exclusive grab so they still work from any pane, and copy
 *declines* the chord when there is no selection so `Ctrl+C` still interrupts the
 agent.
 
+A topmost open floating plugin may handle the reserved focus actions through
+`on_focus_cycle("next"|"previous")`, under the key hook's budget. `true` consumes
+without changing pane focus; `false`, no hook, or an error keeps the normal pane
+cycle. Closed and covered floats are not offered it. This is an opt-in hook,
+not a way to claim reserved chords; quit, reload and recovery remain reserved.
+`docs/PLUGINS.md` → Floating views and the native focus cycle has the example.
+
 Two properties the registry holds and `tests/keymap.rs` asserts:
 
 - **A plugin-scoped claim does not outrank a global one.** This is why search does

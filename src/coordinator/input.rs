@@ -312,8 +312,8 @@ impl App {
         match action {
             "core.quit" | "kernel.quit" => self.quit = true,
             "kernel.reload" => self.reload_by_key(),
-            "kernel.focus_previous" => self.cycle_focus(-1),
-            "kernel.focus_next" => self.cycle_focus(1),
+            "kernel.focus_previous" => self.cycle_focus_action(-1),
+            "kernel.focus_next" => self.cycle_focus_action(1),
             "kernel.perf_hud" if self.config.features().perf_hud => {
                 self.hud = !self.hud;
                 self.dirty = true;

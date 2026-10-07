@@ -317,8 +317,11 @@ to `user.x`. `commands = { { action, desc } }` puts an action in the `Ctrl+P`
 palette with no chord. The list of events is `thurbox-cli plugin events`.
 
 **Interactive hooks**: `on_key`, `on_action`, `on_click`, `on_context`,
-`on_outside` (a float's, for a press that missed it), `on_scroll`, and
-`on_event`.
+`on_outside` (a float's, for a press that missed it), `on_scroll`,
+`on_focus_cycle` (the topmost open float's native Ctrl+H/Ctrl+L cycle), and
+`on_event`. Return `true` from `on_focus_cycle("next"|"previous")` after moving
+your selected item; return `false` to keep the pane cycle. See
+[the plugin reference](../docs/PLUGINS.md#floating-views-and-the-native-focus-cycle).
 
 **A menu at the pointer**: from `on_context`, leave `store.menu` holding
 `at = { x = hit.screen_x, y = hit.screen_y }` and

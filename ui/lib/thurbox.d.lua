@@ -320,6 +320,7 @@
 ---@field capabilities? ("run"|"program")[]
 ---@field render? fun(ctx: thurbox.Ctx): thurbox.Root
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
+---@field on_focus_cycle? fun(direction: "next"|"previous"): boolean A topmost open float: true consumes; false keeps the pane cycle.
 ---@field on_key? fun(key: thurbox.Key): boolean
 ---@field on_action? fun(action: string, args?: table<string, string>): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean

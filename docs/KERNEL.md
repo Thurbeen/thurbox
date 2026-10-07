@@ -201,6 +201,13 @@ agent's terminal for whatever else shared the centre. `next_in_cycle` makes a
 switch slot one stop, its default occupant, and steps an alternate off the slot;
 alternates are opened by their own key or pill, which `can_focus` still lets in.
 
+An open float may consume that cycle with `on_focus_cycle("next"|"previous")`.
+The coordinator offers it only to the topmost drawn float, and the host calls it
+under the key hook's budget and environment. `true` leaves pane focus intact;
+`false`, a missing hook or an error continues through `next_in_cycle`. Item order
+and wrapping belong to Lua, so the kernel never learns what a card or row is.
+Quit, reload and recovery keys retain their reserved handling.
+
 There is a third fact underneath both, and it is a matter of *timing*: a pane can
 open its own slot. The search strip shows itself and asks for focus in one action,
 and `panels.show` is only read by the arrangement — so at the moment the request

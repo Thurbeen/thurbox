@@ -26,6 +26,27 @@ fn ctx() -> RenderContext {
 }
 
 #[test]
+fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
+    host::set_instruction_budget(200_000);
+    let dir = plugin_dir(
+        r#"return {
+             name = "spinner", floats = true,
+             on_focus_cycle = function() while true do end end,
+             render = function() return { type = "text", text = "" } end,
+           }"#,
+    );
+    let spinner = LuaHost::new(dir.path());
+    assert!(spinner.error.is_none(), "{:?}", spinner.error);
+    let result = spinner.on_focus_cycle(0, "next");
+    host::set_instruction_budget(0);
+    let failure = result.expect_err("cycle must be interrupted");
+    assert_eq!(failure.plugin, "spinner");
+    assert_eq!(failure.phase, host::Phase::Key);
+    assert!(failure.message.contains("instruction budget"), "{failure}");
+    spinner.render(0, ctx()).expect("budget removed after hook");
+}
+
+#[test]
 fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     host::set_instruction_budget(200_000);
     let dir = plugin_dir(
