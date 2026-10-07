@@ -1023,7 +1023,7 @@ timeout_secs = 300</code></pre>
           </div>
           <pre data-title="settings.toml"><code class="language-toml">[features]
 shell_pane = true     # Ctrl+T per-session shell
-soft_delete = true    # Ctrl+D soft-deletes (Ctrl+Z undo); false = hard-delete behind a confirm
+soft_delete = false   # TUI + CLI delete immediately; true = undo window
 automations = true    # schedule firing + arming the tmux heartbeat
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
@@ -1690,10 +1690,9 @@ thurbox-cli message inbox --for lead --claim</code></pre>
 
           <h3>How session delete is handled</h3>
           <p>
-            <code>session delete &lt;uuid&gt;</code>
-            is a
-            <strong>soft-delete</strong>
-            by default: it only marks the database row deleted. Its tmux windows &mdash; the agent's
+            <code>session delete &lt;uuid&gt;</code> tears down immediately by default in every build.
+            Set <code>[features] soft_delete = true</code> or pass <code>--soft</code> for an undoable
+            delete that only marks the database row deleted. With that opt-in, its tmux windows &mdash; the agent's
             and the companion shell's &mdash; come down once the 10-second undo window closes: a
             running TUI does it, the
             <code>automation tick</code>
@@ -1708,8 +1707,8 @@ thurbox-cli message inbox --for lead --claim</code></pre>
           <p>
             Pass
             <code>--force</code>
-            to tear down the session's runtime resources in the same call &mdash; for headless
-            cleanup when no TUI is running to observe the deletion. A forced delete also:
+            to tear down immediately even when soft deletion is enabled. Default deletion
+            uses this same teardown:
           </p>
           <ul>
             <li>kills the tmux window,</li>
