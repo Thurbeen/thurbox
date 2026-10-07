@@ -1,0 +1,105 @@
+[
+  {
+    "name": "thurbox-info-panel",
+    "description": "Session, git, agent, usage and system readouts beside your terminal.",
+    "author": "Thurbeen",
+    "badge": "official",
+    "repo": "https://github.com/Thurbeen/thurbox-info-panel",
+    "kind": "pane",
+    "platforms": ["Linux", "macOS", "Windows (pane; metrics depend on host)"],
+    "updated": "2026-08-19",
+    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel",
+    "notes": "Add the info slot to layout.lua, then press F2. README currently has a text preview; follow its media as the panel evolves."
+  },
+  {
+    "name": "thurbox-auto-continue",
+    "description": "Resume Claude sessions once their usage window resets.",
+    "author": "Thurbeen",
+    "badge": "official",
+    "repo": "https://github.com/Thurbeen/thurbox-auto-continue",
+    "kind": "extension",
+    "platforms": ["Linux", "macOS", "WSL (install on each host)"],
+    "updated": "2026-09-30",
+    "install": "git clone https://github.com/Thurbeen/thurbox-auto-continue\ncd thurbox-auto-continue\n./install.sh",
+    "notes": "Requires cargo or a prebuilt binary, Claude Code and Thurbox \u2265 2.36.2. Off by default. Follow the README to install both optional panes and grant run. Native Windows unsupported.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-auto-continue/main/media/demo.gif",
+      "alt": "Auto continue in the Thurbox interface"
+    }
+  },
+  {
+    "name": "thurbox-code-review",
+    "description": "Review worktree diffs and send numbered notes to your agent.",
+    "author": "Thurbeen",
+    "badge": "official",
+    "repo": "https://github.com/Thurbeen/thurbox-code-review",
+    "kind": "pane",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "Windows (Lua pane; optional shell commands need a POSIX shell)"
+    ],
+    "updated": "2026-09-27",
+    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review",
+    "notes": "Requires Thurbox \u2265 2.35.0. Replaces the bundled agent pane; follow README setup and capability grants. Cannot combine with the thurbox-files agent pane fork.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-code-review/main/media/demo.gif",
+      "alt": "Code review in the Thurbox interface"
+    }
+  },
+  {
+    "name": "thurbox-doom",
+    "description": "Play DOOM in an agent-pane tab, with a bundled engine and WADs.",
+    "author": "Thurbeen",
+    "badge": "official",
+    "repo": "https://github.com/Thurbeen/thurbox-doom",
+    "kind": "pane",
+    "platforms": ["Linux x86_64 (bundled engine)", "Other platforms (bring or build an engine)"],
+    "updated": "2026-10-02",
+    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-doom",
+    "notes": "Install code-review for the integrated Doom tab, then grant its agent pane program. F5 opens Doom. GIF shows the earlier standalone pane; README documents current setup.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-doom/main/media/demo.gif",
+      "alt": "Doom in the Thurbox interface"
+    }
+  },
+  {
+    "name": "thurbox-files",
+    "description": "Browse files and changes, with editor and diff tabs beside the agent.",
+    "author": "spscream",
+    "badge": "community",
+    "repo": "https://github.com/spscream/thurbox-files",
+    "kind": "pane",
+    "platforms": [
+      "Linux (documented setup)",
+      "Other platforms (POSIX tools and nvim required; unverified)"
+    ],
+    "updated": "2026-09-24",
+    "install": "thurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/90_files.lua\nthurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/95_files_menu.lua\nthurbox-cli plugin install git+https://github.com/spscream/thurbox-files --as plugins/20_agent.lua",
+    "notes": "Follow the README to replace the bundled agent pane, place the files slot in layout.lua and grant capabilities. Requires nvim. Conflicts with the code-review agent pane fork.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/spscream/thurbox-files/main/media/demo.gif",
+      "alt": "Files in the Thurbox interface"
+    }
+  },
+  {
+    "name": "thurbox-annotate",
+    "description": "Annotate captured agent output, or collect notes on a live selection.",
+    "author": "spscream",
+    "badge": "community",
+    "repo": "https://github.com/spscream/thurbox-annotate",
+    "kind": "pane",
+    "platforms": [
+      "Linux",
+      "macOS",
+      "Windows / WSL (Lite clipboard support; Full requires POSIX scripts)"
+    ],
+    "updated": "2026-09-17",
+    "install": "thurbox-cli plugin install git+https://github.com/spscream/thurbox-annotate --as plugins/41_notes.lua",
+    "notes": "Shown command installs Lite; requires Thurbox \u2265 2.25.0. Grant run for agent clipboard selection. Full uses plannotator-tui and the program capability; see README for its installer. F2 opens Lite; GIF shows Full.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/spscream/thurbox-annotate/main/media/demo.gif",
+      "alt": "Annotate in the Thurbox interface"
+    }
+  }
+]

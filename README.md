@@ -160,6 +160,9 @@ shipped file, `space` turns yours off.
 
 ![Turning a pane off from the Interface tab](./media/thurbox-interface.gif)
 
+[**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
+panes, extensions and other add-ons, with install commands and submission details.
+
 ## Documentation
 
 [**thurbox.thurbeen.eu/docs**](https://thurbox.thurbeen.eu/docs/) is the manual:

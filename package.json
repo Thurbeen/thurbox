@@ -9,8 +9,11 @@
     "lint:js": "eslint 'website/js/**/*.js'",
     "lint:format": "prettier --check 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
     "test:performance-cpu-scale": "node scripts/ci/check-performance-cpu-scale.mjs",
-    "lint:website": "npm run build:website && npm run test:performance-cpu-scale && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
-    "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'"
+    "lint:website": "npm run check:plugins && npm run test:plugins && npm run build:website && npm run test:performance-cpu-scale && npm run lint:format && npm run lint:html && npm run lint:css && npm run lint:js",
+    "fmt:website": "prettier --write 'website/css/**/*.css' 'website/js/**/*.js' 'eleventy.config.js'",
+    "test:plugins": "node --test scripts/ci/plugins.test.mjs",
+    "check:plugins": "node scripts/ci/validate-plugins.mjs",
+    "check:plugins:links": "node scripts/ci/validate-plugins.mjs website/_data/plugins.json --links"
   },
   "devDependencies": {
     "@11ty/eleventy": "^3.0.0",

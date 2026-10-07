@@ -101,6 +101,8 @@ jobs:
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
+              - 'eleventy.config.js'
+              - 'scripts/ci/*plugins*.mjs'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yml'
@@ -505,6 +507,8 @@ jobs:
       # the site first, then runs every linter.
       - name: Lint website
         run: npm run lint:website
+      - name: Validate plugin repository and media URLs
+        run: npm run check:plugins:links
 
   sonarqube:
     name: SonarQube

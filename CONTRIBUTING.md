@@ -294,3 +294,59 @@ rumdl, shellcheck) that gate every merge — there are no LLM-gated checks.
 
 By contributing, you agree that your contributions will be licensed under the
 [MIT License](LICENSE), the same license that covers the project.
+
+## Plugin catalog
+
+The [Plugins page](https://thurbox.thurbeen.eu/plugins.html) reads only
+`website/_data/plugins.json`. To submit an add-on:
+
+1. Add the `thurbox-plugin` topic to your public GitHub repository.
+2. Open a PR adding one object to the catalog, using the template below.
+3. Link setup instructions in your README, including required Thurbox versions,
+   capability grants, dependencies, platform limits and conflicts with other panes.
+4. Run `npm ci`, `npm run lint:website` and `npm run check:plugins:links`.
+
+Maintainers review every listing before publishing. The topic helps discovery;
+it never adds entries automatically. An official badge is reserved for
+Thurbeen-maintained add-ons. Use `community` for submissions.
+
+```json
+{
+  "name": "thurbox-example",
+  "description": "A one-line explanation of what the add-on does.",
+  "author": "Your public GitHub name",
+  "badge": "community",
+  "repo": "https://github.com/your-account/thurbox-example",
+  "kind": "pane",
+  "platforms": ["Linux", "macOS"],
+  "updated": "2026-10-01",
+  "install": "thurbox-cli plugin install git+https://github.com/your-account/thurbox-example",
+  "notes": "Required version, layout changes, capability grants and conflicts.",
+  "media": {
+    "url": "https://raw.githubusercontent.com/your-account/thurbox-example/main/media/demo.gif",
+    "alt": "Describe what the screenshot or demo shows."
+  }
+}
+```
+
+[`website/plugins.schema.json`](website/plugins.schema.json) defines the schema.
+All template fields are required except `media`. `release` is an optional
+stable release tag; `updated` is the repository's last push date, recorded as
+`YYYY-MM-DD`. Kinds are `pane`, `extension`, `agent`, `theme` and `other`:
+use the kind the add-on actually installs. An extension can include optional
+panes. Use the appropriate command for the kind, including clone and install
+steps when needed. Catalog commands are displayed, never executed by the site.
+
+Names and repository URLs must be unique (case-insensitive). Repository URLs
+must be canonical HTTPS GitHub URLs. Media URLs must use HTTPS; link to the
+repository's own screenshot or GIF instead of copying it. Include descriptive
+alt text. State which platforms are supported and qualify anything unverified.
+Do not include private URLs or local machine information.
+
+The offline validator checks fields, enums, real dates, URL syntax and duplicates.
+CI also checks repository and media URLs. The page builds without network calls,
+using this checked-in snapshot even when GitHub is unavailable. A dead link
+fails the submission check rather than silently publishing a broken entry.
+Catalog updates follow the same reviewed PR process as new entries; archived
+or superseded add-ons should be removed or clearly explained. Build and filter
+regressions are exercised with fixture entries by `npm run test:plugins`.
