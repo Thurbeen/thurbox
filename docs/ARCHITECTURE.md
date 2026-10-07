@@ -1647,6 +1647,13 @@ Five rules carry it, each load-bearing:
    environment. Enforced statically by `thurbox.yml` as well as at runtime.
 5. **Anything touching the world runs on a worker.**
 
+**Floating focus stays plugin-defined.** The topmost open float can consume the
+native focus cycle through the bounded `on_focus_cycle("next"|"previous")` hook.
+The kernel routes the direction and preserves pane focus when consumed; Lua
+owns target order, selection and wrapping. Declining retains the ordinary pane
+cycle. This extends the plugin API without giving the kernel a card or row model;
+quit, reload and recovery keys remain reserved. See `docs/PLUGINS.md`.
+
 **The name is the constraint on how this shipped.** The updater in an installed
 binary hard-fails on a known binary missing from a release archive and swallows the
 error, so an archive that dropped the name `thurbox` would silently end auto-update

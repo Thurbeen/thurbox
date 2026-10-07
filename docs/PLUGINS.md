@@ -665,6 +665,45 @@ user who rebinds you onto `f7` gets the action back in the terminal.
 `on_key(key)` still exists for panes that need every keystroke — the terminal
 uses it, alongside `input = "session"` to forward what it does not handle.
 
+## Floating views and the native focus cycle
+
+A floating plugin opts in by declaring `on_focus_cycle(direction)`. The
+kernel offers `"next"` for Ctrl+L and `"previous"` for Ctrl+H to the **topmost
+open float**, before moving between panes. The same hook handles the existing
+`kernel.focus_next` and `kernel.focus_previous` actions in the action catalog.
+Closed floats and floats underneath another float receive nothing.
+
+Return `true` after moving your selection to consume the cycle. Keep your own
+ordered targets and selected item in `state`, and use the same selection for
+keyboard, mouse and render. For example, a card view can wrap in display order:
+
+```lua
+on_focus_cycle = function(direction)
+  local items = state.items or {}
+  if #items == 0 then return false end
+  local step = direction == "next" and 1 or -1
+  state.selected = ((state.selected or 1) - 1 + step) % #items + 1
+  return true
+end,
+```
+
+Return `false` to retain the ordinary pane cycle, including for an empty view
+or an end where your view should let focus leave. A missing hook preserves the
+existing behaviour. A hook error is reported and falls back to the pane cycle;
+the hook runs under the same instruction and memory limits as `on_key`.
+Quit, reload and recovery chords stay kernel-owned; declaring Ctrl+H/Ctrl+L
+in `keys` still cannot override them.
+
+A consumed cycle leaves the underlying pane focus intact, so closing the float
+returns input to that pane. If the hook declines or explicitly issues a focus
+command, closing leaves focus at the destination it requested. No `focusable`
+declaration or `command("focus")` is needed to receive this hook: `floats = true`
+and an open rendered float are enough.
+
+The sample [card float](../tests/fixtures/float_focus/91_cards.lua) opens with
+Ctrl+B, cycles three targets in both directions, closes with Escape, and uses
+`e` to exercise the empty-view fallback.
+
 ## Events: be told, rather than look
 
 ```lua
