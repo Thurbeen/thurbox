@@ -192,6 +192,7 @@ test('link validation rejects a missing repository and unreachable media', async
     throw new Error('offline');
   });
   assert.ok(unavailable.length);
+  assert.ok(!unavailable.some((e) => e.includes('has no media') || e.includes('/HEAD/')));
 });
 
 test('catalog inherits the website single theme', async () => {
