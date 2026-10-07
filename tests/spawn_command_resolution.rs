@@ -365,3 +365,69 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
         "the shell split the command but the pane lost the PATH prefix"
     );
 }
+
+/// A CLI-created session is launched against the hooks payload this build
+/// ships, not whatever an earlier writer left at that path.
+///
+/// claude reads its `--settings` file once, at startup. When that file holds
+/// the form a remote host's pane needs (`tmux set-option -p @thurbox_state`),
+/// a local session runs those hooks, sets a pane option nothing reads for it,
+/// and reads `unreported` for as long as it lives. Only the TUI's boot and the
+/// heartbeat's tick used to repair the file, so on a machine driven by
+/// `thurbox-cli` alone every session created in between was launched dark.
+#[test]
+fn a_cli_session_launches_against_a_repaired_hooks_payload() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let (root, checkout, server) = instance();
+    let settings = root.path().join("config/hooks/claude.json");
+    std::fs::create_dir_all(settings.parent().expect("hooks dir")).expect("mkdir hooks");
+    let stale = include_str!("../extensions/hooks/claude.json").replace(
+        thurbox::session_ops::builtin_hooks::SIGNAL_MARKER,
+        "tmux set-option -p @thurbox_state ",
+    );
+    std::fs::write(&settings, stale).expect("seed a rewritten payload");
+
+    // The agent copies the settings file it was handed the moment it starts,
+    // which is when claude reads it.
+    let seen = root.path().join("seen.json");
+    std::fs::write(
+        root.path().join("config/agents.toml"),
+        format!(
+            "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"sh\"\n\
+             args = [\"-c\", \"cp \\\"$2\\\" {seen}; sleep 30\", \"probe\", \"--settings\", \"{settings}\"]\n",
+            seen = seen.display(),
+            settings = settings.display(),
+        ),
+    )
+    .expect("write agents.toml");
+
+    let out = create_session(
+        &server,
+        root.path(),
+        &[
+            "--name",
+            "repaired",
+            "--repo-path",
+            checkout.to_str().expect("utf-8 path"),
+            "--agent",
+            "probe",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "the spawn itself failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    wait_for(&seen);
+    let read = std::fs::read_to_string(&seen).expect("the agent ran and copied its settings");
+    assert!(
+        read.contains(thurbox::session_ops::builtin_hooks::SIGNAL_MARKER)
+            && !read.contains("@thurbox_state"),
+        "the session was launched against a hooks payload that cannot report \
+         its state:\n{read}"
+    );
+}
