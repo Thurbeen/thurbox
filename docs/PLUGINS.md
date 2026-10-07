@@ -672,6 +672,8 @@ kernel offers `"next"` for Ctrl+L and `"previous"` for Ctrl+H to the **topmost
 open float**, before moving between panes. The same hook handles the existing
 `kernel.focus_next` and `kernel.focus_previous` actions in the action catalog.
 Closed floats and floats underneath another float receive nothing.
+Automatic focus repair after a pane is hidden, including on resize, moves pane
+focus without invoking the hook or changing the float's selection.
 
 Return `true` after moving your selection to consume the cycle. Keep your own
 ordered targets and selected item in `state`, and use the same selection for
