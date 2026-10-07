@@ -155,9 +155,9 @@ pub(crate) enum SpawnDeliverError {
 /// The TUI's boot and the heartbeat's tick each run the install, but a machine
 /// driven by `thurbox-cli` alone reaches its first spawn before either has: the
 /// heartbeat is armed only *after* `session create`, so that first session
-/// launched without claude's `--settings` and never reported a state. Called
-/// once a command is committed to spawning, so one that is refused or answered
-/// by an existing session leaves the agent config alone.
+/// launched without claude's `--settings` and never reported a state. `create`
+/// and the task path reach it through [`ensure_hooks_wired_for`] once the
+/// request validates; `restart`, `start` and `fork` call it unconditionally.
 pub(crate) fn ensure_hooks_wired(db: &Database, backends: &crate::backend::BackendRegistry) {
     for m in &crate::session_ops::ensure_builtin_extensions(db, backends) {
         tracing::info!("{m}");
