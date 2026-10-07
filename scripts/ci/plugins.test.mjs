@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import Eleventy from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 
@@ -35,6 +35,7 @@ const fixture = [
 
 // The fixture goes through the same template and transforms as the production catalog.
 test('site builds every fixture entry, badges, controls and escaped text', async () => {
+  await mkdir('tmp', { recursive: true });
   const scratch = await mkdtemp('tmp/plugins-site-');
   const output = `${scratch}/output`;
   try {
