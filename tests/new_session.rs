@@ -414,8 +414,33 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
 
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
-    if world.snapshot.hosts.is_empty() {
+    if drawn(host, world).contains("Multiplexer") {
         press(host, world, "enter");
+    }
+}
+
+/// From the repository step to the create: tick the first repository, accept
+/// the name, take the default agent.
+fn create_from_repos(host: &LuaHost, world: &World) -> Option<String> {
+    press(host, world, "space");
+    press(host, world, "enter");
+    press(host, world, "enter");
+    press(host, world, "enter");
+    match host.drain_commands().as_slice() {
+        [Command::Create { multiplexer, .. }] => multiplexer.clone(),
+        other => panic!("expected one create, got {other:?}"),
+    }
+}
+
+fn devbox(platform: &str, available: &[&str]) -> HostRow {
+    HostRow {
+        name: "devbox".into(),
+        detail: "me@devbox".into(),
+        backend: "ssh:devbox".into(),
+        platform: platform.into(),
+        multiplexer: None,
+        available_multiplexers: available.iter().map(ToString::to_string).collect(),
+        probing: false,
     }
 }
 
@@ -445,7 +470,9 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
 #[test]
 fn opening_without_hosts_shows_available_multiplexers_first() {
     let host = host();
-    let world = World::default();
+    let mut world = World::default();
+    let local = thurbox::agent::preflight::local_multiplexer();
+    world.snapshot.mux.available = vec![local.into(), "rmux".into()];
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Multiplexer"), "{screen}");
@@ -453,6 +480,154 @@ fn opening_without_hosts_shows_available_multiplexers_first() {
         screen.contains(thurbox::agent::preflight::local_multiplexer()),
         "{screen}"
     );
+}
+
+#[test]
+fn a_single_available_multiplexer_is_used_without_asking() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.binary = "rmux".into();
+    world.snapshot.mux.available = vec!["rmux".into()];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("Select Repos") && !screen.contains("Multiplexer"),
+        "one installed multiplexer is not a choice: {screen}"
+    );
+    assert_eq!(create_from_repos(&host, &world).as_deref(), Some("rmux"));
+}
+
+#[test]
+fn several_available_multiplexers_list_only_those_with_the_default_selected() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = vec![devbox("windows", &["psmux", "rmux"])];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("▸ psmux"),
+        "the platform default is kept: {screen}"
+    );
+    assert!(screen.contains("  rmux"), "{screen}");
+    assert!(!screen.contains("tmux"), "{screen}");
+    assert!(!screen.contains("unavailable"), "{screen}");
+}
+
+#[test]
+fn no_available_multiplexer_says_so_with_an_install_hint() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.available = Vec::new();
+    world.snapshot.mux.presence = Presence::Missing;
+    world.snapshot.mux.advice = "install tmux 3.2 or newer".into();
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("No multiplexer is installed"), "{screen}");
+    assert!(screen.contains("install tmux 3.2 or newer"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(
+        drawn(&host, &world).contains("Multiplexer"),
+        "nothing to start"
+    );
+
+    let mut world = World::default();
+    world.snapshot.hosts = vec![devbox("posix", &[])];
+    press(&host, &world, "esc");
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("No multiplexer is installed"), "{screen}");
+    assert!(screen.contains("install tmux"), "{screen}");
+}
+
+#[test]
+fn the_choice_is_per_host() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.available = vec!["tmux".into()];
+    world.snapshot.hosts = vec![devbox("posix", &["tmux", "rmux"])];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    assert!(
+        drawn(&host, &world).contains("Select Repos"),
+        "only tmux is installed here"
+    );
+    press(&host, &world, "esc");
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("▸ tmux") && screen.contains("  rmux"),
+        "the host has both: {screen}"
+    );
+}
+
+#[test]
+fn a_host_still_being_asked_shows_the_step_rather_than_guess() {
+    let host = host();
+    let mut world = World::default();
+    let mut asking = devbox("posix", &["tmux"]);
+    asking.probing = true;
+    world.snapshot.hosts = vec![asking];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("▸ tmux"), "{screen}");
+    assert!(
+        screen.contains("Looking for multiplexers on devbox"),
+        "{screen}"
+    );
+    world.snapshot.hosts[0].probing = false;
+    world.snapshot.hosts[0].available_multiplexers = vec!["tmux".into(), "rmux".into()];
+    assert!(
+        drawn(&host, &world).contains("  rmux"),
+        "the answer lands in place"
+    );
+}
+
+#[test]
+fn a_probe_without_the_guessed_default_moves_the_selection_to_what_it_found() {
+    let host = host();
+    let mut world = World::default();
+    let mut asking = devbox("posix", &["tmux"]);
+    asking.probing = true;
+    world.snapshot.hosts = vec![asking];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("▸ tmux"));
+    world.snapshot.hosts[0].probing = false;
+    world.snapshot.hosts[0].available_multiplexers = vec!["rmux".into()];
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("▸ rmux"), "{screen}");
+    assert!(!screen.contains("unavailable"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
+fn a_configured_multiplexer_that_is_available_skips_the_step() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.mux.configured = Some("rmux".into());
+    world.snapshot.mux.available = vec!["tmux".into(), "rmux".into()];
+    press(&host, &world, "ctrl+n");
+    assert!(drawn(&host, &world).contains("Select Repos"));
+    assert_eq!(create_from_repos(&host, &world).as_deref(), Some("rmux"));
+
+    let mut world = World::default();
+    let mut configured = devbox("posix", &["tmux", "rmux"]);
+    configured.multiplexer = Some("rmux".into());
+    world.snapshot.hosts = vec![configured];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repos"));
 }
 
 #[test]
@@ -466,6 +641,7 @@ fn opening_with_hosts_asks_where_to_run_first() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     open(&host, &world);
     let screen = drawn(&host, &world);
@@ -491,6 +667,7 @@ fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+        probing: false,
     }];
     press(&host, &world, "ctrl+n");
     press(&host, &world, "down");
@@ -551,6 +728,7 @@ fn ui_state_tracks_host_and_multiplexer_selection() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
+        probing: false,
     }];
     let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
     press(&host, &world, "ctrl+n");
@@ -2062,6 +2240,7 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     // The memory that matters here is the HOST's, not the local machine's.
     world
@@ -2069,8 +2248,7 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
+    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
 
     // Repository memory is scoped to the machine the repositories live on.
     assert_eq!(
@@ -2204,14 +2382,14 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
+    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
     press(&host, &world, "tab");
     type_text(&host, &world, "/srv/th");
 
@@ -2283,6 +2461,7 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             platform: "posix".into(),
             multiplexer: None,
             available_multiplexers: vec!["tmux".into()],
+            probing: false,
         },
         HostRow {
             name: "builder".into(),
@@ -2291,6 +2470,7 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             platform: "posix".into(),
             multiplexer: None,
             available_multiplexers: vec!["tmux".into()],
+            probing: false,
         },
     ];
     open(&host, &world);
@@ -2665,12 +2845,12 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
     open(&h, &world);
     press(&h, &world, "j"); // local → devbox
-    press(&h, &world, "enter");
-    press(&h, &world, "enter"); // multiplexer → repositories
+    press(&h, &world, "enter"); // one multiplexer on devbox: straight to repositories
     world.wants.bookmarks = Some("ssh:devbox".into());
 
     let empty = drawn(&h, &world);
@@ -2954,6 +3134,7 @@ fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     open(&host, &world);
     press(&host, &world, "j");
@@ -2979,6 +3160,7 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     world.snapshot.agents[1].presence = Presence::Missing;
     world
@@ -2986,8 +3168,7 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // multiplexer → repositories
+    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
     world.wants.bookmarks = Some("ssh:devbox".into());
     press(&host, &world, "space");
     press(&host, &world, "enter");
@@ -3224,6 +3405,7 @@ fn a_hovered_host_row_is_banded() {
         platform: "posix".into(),
         multiplexer: None,
         available_multiplexers: vec!["tmux".into()],
+        probing: false,
     }];
     let host = host();
     press(&host, &world, "ctrl+n");

@@ -508,22 +508,34 @@ local function picker_mux_order(options)
   return ordered
 end
 
-local function mux_options(flow)
+--- The flow's host row, or nil for the local machine.
+local function flow_host(flow)
   if (flow.host or "") == "" then
-    local mux = preflight().mux or {}
-    return picker_mux_order(mux.available or {}), mux.configured or mux.binary
+    return nil
   end
   for _, host in ipairs(hosts()) do
     if host.backend == flow.host then
-      return picker_mux_order(host.available_multiplexers or {}), host.multiplexer or "tmux"
+      return host
     end
   end
-  return {}, nil
+  return nil
 end
 
-local function choose_mux(flow)
-  local options, configured = mux_options(flow)
-  flow.mux_name = configured and configured ~= "default" and configured or options[1]
+--- The multiplexers the flow's machine offers (only those installed there —
+--- the kernel's answer), the one configured for it if any, and what it runs
+--- when nothing is configured.
+local function mux_options(flow)
+  if (flow.host or "") == "" then
+    local mux = preflight().mux or {}
+    return picker_mux_order(mux.available or {}), mux.configured, mux.binary
+  end
+  local host = flow_host(flow)
+  if not host then
+    return {}, nil, nil
+  end
+  return picker_mux_order(host.available_multiplexers or {}),
+    host.multiplexer,
+    host.platform == "windows" and "psmux" or "tmux"
 end
 
 local function mux_index(options, name)
@@ -535,25 +547,79 @@ local function mux_index(options, name)
   return 0
 end
 
+--- Settle the multiplexer for the flow's machine, and say whether that is a
+--- question worth asking: only when there is a real choice — two or more
+--- installed and nothing configured — or when nothing usable is there, which
+--- the step then says.
+local function choose_mux(flow)
+  local options, configured, default = mux_options(flow)
+  if configured and configured ~= "default" then
+    flow.mux_name = configured
+    flow.mux_guessed = false
+    return mux_index(options, configured) == 0
+  end
+  flow.mux_name = mux_index(options, default) > 0 and default or options[1]
+  flow.mux_guessed = true
+  -- A host still being asked may have more to offer than its default.
+  local host = flow_host(flow)
+  return #options ~= 1 or (host ~= nil and host.probing == true)
+end
+
+--- The multiplexer the step stands on. A guess — the default, picked before a
+--- host's probe answered — follows the options when the answer leaves it out,
+--- so the step never sits on a row it no longer has; a choice (configured, or
+--- moved to) is kept and reported unavailable instead.
+local function settled_mux(flow)
+  local options, _, default = mux_options(flow)
+  if not flow.mux_guessed or mux_index(options, flow.mux_name) > 0 then
+    return flow.mux_name
+  end
+  return mux_index(options, default) > 0 and default or options[1]
+end
+
+--- Where the flow goes once the machine is settled: the multiplexer step when
+--- `choose_mux` says it is a question, the repositories otherwise.
+local function after_host(flow)
+  flow.step = choose_mux(flow) and "multiplexer" or "repo"
+end
+
+--- Why nothing can be offered, and what to install: the kernel's own advice
+--- for this machine, and the platform's multiplexer for a host.
+local function no_mux_rows(flow)
+  local host = flow_host(flow)
+  local where, advice
+  if host then
+    where = "on " .. host.name
+    advice = host.platform == "windows" and "install psmux there: https://github.com/psmux/psmux"
+      or "install tmux 3.2 or newer (or rmux) there"
+  else
+    where = "on this machine"
+    local mux = preflight().mux or {}
+    advice = (mux.advice or "") ~= "" and mux.advice or "run: thurbox-cli doctor"
+  end
+  return {
+    { type = "text", len = 1, text = "  No multiplexer is installed " .. where },
+    { type = "text", len = 1, text = "  " .. advice },
+  }
+end
+
 local function render_mux(flow)
   local options, configured = mux_options(flow)
-  local index = mux_index(options, flow.mux_name)
+  local chosen = settled_mux(flow)
+  local index = mux_index(options, chosen)
   local warning
-  if configured and configured ~= "default" then
-    local found = false
-    for _, name in ipairs(options) do
-      found = found or name == configured
-    end
-    if not found then
-      warning = configured .. " is unavailable for this host"
-    end
+  if configured and configured ~= "default" and mux_index(options, configured) == 0 then
+    warning = configured .. " is unavailable for this host"
   end
-  if not warning and flow.mux_name and index == 0 then
-    warning = flow.mux_name .. " is unavailable for this host"
+  if not warning and chosen and index == 0 and #options > 0 then
+    warning = chosen .. " is unavailable for this host"
   end
-  local height = math.max(1, #options)
-  local rows = #options > 0 and selector_rows(options, index, height)
-    or { { type = "text", len = 1, text = "  No registered multiplexer is available" } }
+  local host = flow_host(flow)
+  if not warning and host and host.probing then
+    warning = "Looking for multiplexers on " .. host.name .. "…"
+  end
+  local rows = #options > 0 and selector_rows(options, index, #options) or no_mux_rows(flow)
+  local height = #rows
   return frame("Multiplexer", height + 4, {
     { type = "box", len = height, children = rows },
     { type = "text", len = 1, text = warning or "" },
@@ -1335,8 +1401,9 @@ local function move_selection(flow, step)
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
   elseif flow.step == "multiplexer" then
     local options = mux_options(flow)
-    local index = widgets.clamp(mux_index(options, flow.mux_name) + step, #options)
+    local index = widgets.clamp(mux_index(options, settled_mux(flow)) + step, #options)
     flow.mux_name = options[index]
+    flow.mux_guessed = false
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "branch" then
@@ -1359,7 +1426,7 @@ return {
     if flow.step == "host" then
       selection = flow.host_index
     elseif flow.step == "multiplexer" then
-      selection = mux_index(mux_options(flow), flow.mux_name)
+      selection = mux_index(mux_options(flow), settled_mux(flow))
     elseif flow.step == "branch" then
       selection = flow.branch_index
     elseif flow.step == "agent" then
@@ -1566,8 +1633,7 @@ return {
       end
       local flow = fresh()
       if #hosts() == 0 then
-        flow.step = "multiplexer"
-        choose_mux(flow)
+        after_host(flow)
       end
       save(flow)
       ask(flow)
@@ -1738,8 +1804,7 @@ return {
       if name == "enter" then
         local index = flow.host_index
         flow.host = index > 1 and (hosts()[index - 1].backend or "") or ""
-        flow.step = "multiplexer"
-        choose_mux(flow)
+        after_host(flow)
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
         -- earlier host's selection must not carry over.
@@ -1752,6 +1817,7 @@ return {
     end
 
     if flow.step == "multiplexer" then
+      flow.mux_name = settled_mux(flow)
       if name == "enter" and mux_index(mux_options(flow), flow.mux_name) > 0 then
         flow.step = "repo"
         save(flow)
@@ -2077,6 +2143,7 @@ return {
         return false
       end
       flow.mux_name = options[index]
+      flow.mux_guessed = false
     elseif flow.step == "branch" then
       flow.branch_index = index
     elseif flow.step == "agent" then

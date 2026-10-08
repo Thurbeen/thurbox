@@ -420,11 +420,21 @@ not applicable.
    `Alt+P` parent scans and their periodic re-scan — runs on a worker,
    never blocking the UI on a host round trip; the worktree and multiplexer
    window are created on that host through its configured transport.
-2. **Multiplexer picker** — choose a backend offered on that host. The
-   configured choice or platform default stays selected. An unavailable
-   configured choice requires an explicit replacement selection. RMUX sits next
-   to tmux; locally it appears only when `rmux` resolves on `PATH`. A choice
-   stays tied to its backend name when the available list refreshes.
+2. **Multiplexer picker** — shown only when there is a real choice. It
+   lists the multiplexers **available on that host**: installed there and
+   native to its platform (tmux on POSIX and WSL, psmux on native Windows,
+   RMUX on either). With exactly one available the step is skipped and that
+   one is used; with none, the step says so with an install hint instead of
+   offering a backend that cannot start. A configured choice (`hosts.toml`
+   or `settings.toml`) that is available also skips the step; one that is
+   not requires an explicit replacement selection. Otherwise the platform
+   default stays selected, RMUX sits next to tmux, and a choice stays tied to
+   its backend name when the available list refreshes. Locally the answer is
+   a `PATH` lookup; a POSIX or WSL host is asked by the same probe that reads
+   its login `PATH`, in the background while the flow is open and re-asked
+   once a minute old, so the picker never waits on a host — until it
+   answers, and on a native-Windows host, which it never asks, the host
+   offers its platform default and its configured choice.
 3. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is

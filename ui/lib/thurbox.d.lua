@@ -455,11 +455,12 @@
 ---@field backend string
 ---@field platform "posix"|"windows"
 ---@field multiplexer? string
----@field available_multiplexers string[]
+---@field available_multiplexers string[] Installed there and native to its platform. While `probing`, only its platform default and `multiplexer`.
+---@field probing boolean The host has not yet said which multiplexers it has.
 
 --- The local multiplexer every session's window is created in.
 ---@class (exact) thurbox.Mux
----@field binary string `tmux`, or `psmux` on native Windows.
+---@field binary string What a create here runs when nothing names one: the configured multiplexer, else the platform default when installed, else the one that is.
 ---@field configured? string
 ---@field available string[]
 ---@field presence thurbox.Presence

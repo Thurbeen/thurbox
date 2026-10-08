@@ -1537,7 +1537,15 @@ fn resolve_backend(
     multiplexer: Option<&str>,
 ) -> Result<crate::session::BackendChoice, String> {
     let (_, host_def) = resolve_host_flag(host)?;
-    let configured = crate::agent::settings_config::load_quiet().multiplexer;
+    // Nothing named, locally: what is installed here decides, so a machine
+    // with only RMUX runs RMUX rather than failing on a missing tmux.
+    let configured = crate::agent::settings_config::load_quiet()
+        .multiplexer
+        .or_else(|| {
+            let installed = crate::agent::preflight::local_multiplexers();
+            crate::session::Multiplexer::preferred(crate::session::Platform::local(), &installed)
+                .map(|mux| mux.name().to_string())
+        });
     let choice =
         crate::session::BackendChoice::resolve(host_def, multiplexer, configured.as_deref())?;
     if !backends.supports(&choice.route) {

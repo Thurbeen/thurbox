@@ -446,6 +446,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::agent_config",
             "agent::extension_config",
             "agent::host_config",
+            "agent::host_path",
             "agent::preflight",
             "agent::self_update",
             "agent::settings_config",

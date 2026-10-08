@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 
-use crate::session::HostDef;
+use crate::session::{HostDef, Multiplexer};
 use crate::shell::{posix_quote, HostLauncher};
 
 /// Each login shell's own budget on the host, enforced there by `timeout(1)`
@@ -56,6 +56,9 @@ pub struct HostEnv {
     /// `/bin/sh -lc`: `~/.profile`, the one login file every POSIX shell's
     /// user is likely to have, and the fallback for an unreadable `$SHELL`.
     pub sh_login: Option<Vec<String>>,
+    /// The multiplexers found on the merged login `PATH`, in
+    /// [`Multiplexer::ALL`] order: what the new-session flow may offer here.
+    pub multiplexers: Vec<Multiplexer>,
 }
 
 /// The probe, as one `sh -c` script.
@@ -63,16 +66,23 @@ pub struct HostEnv {
 /// Each login shell prints its `PATH` behind a sentinel and the part after the
 /// **last** sentinel is kept, so an rc file that echoes something on a login
 /// shell cannot end up as a `PATH` component. `-l` without `-i` and stdin on
-/// `/dev/null`: nothing here can print a prompt or wait for input.
+/// `/dev/null`: nothing here can print a prompt or wait for input. Last, each
+/// multiplexer found on those `PATH`s and the launcher's is named on an `@mux`
+/// line — one probe answers both questions a host is asked.
 pub fn probe_script() -> String {
+    let names: Vec<&str> = Multiplexer::ALL.iter().map(|mux| mux.name()).collect();
+    let names = names.join(" ");
     format!(
         "exec </dev/null; t=; command -v timeout >/dev/null 2>&1 && t='timeout {SHELL_TIMEOUT_SECS}'; \
          printf '@home %s\\n' \"$HOME\"; printf '@base %s\\n' \"$PATH\"; \
-         r() {{ p=$($t \"$1\" -lc 'printf \"\\n@@PATH=%s\" \"$PATH\"' 2>/dev/null); \
-         case $p in *@@PATH=*) printf '@%s %s\\n' \"$2\" \"${{p##*@@PATH=}}\";; esac; }}; \
+         L=; r() {{ p=$($t \"$1\" -lc 'printf \"\\n@@PATH=%s\" \"$PATH\"' 2>/dev/null); \
+         case $p in *@@PATH=*) v=${{p##*@@PATH=}}; L=\"$L:$v\"; \
+         printf '@%s %s\\n' \"$2\" \"$v\";; esac; }}; \
          r /bin/sh sh; s=${{SHELL:-}}; \
          [ -n \"$s\" ] || s=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
-         [ -n \"$s\" ] && [ -x \"$s\" ] && r \"$s\" shell; exit 0"
+         [ -n \"$s\" ] && [ -x \"$s\" ] && r \"$s\" shell; \
+         PATH=\"${{L#:}}${{L:+:}}$PATH\"; for m in {names}; do \
+         command -v \"$m\" >/dev/null 2>&1 && printf '@mux %s\\n' \"$m\"; done; exit 0"
     )
 }
 
@@ -94,6 +104,11 @@ pub fn parse_probe(stdout: &str) -> Option<HostEnv> {
             }
             "@shell" => env.shell_login = Some(split_path(value)),
             "@sh" => env.sh_login = Some(split_path(value)),
+            "@mux" => {
+                if let Ok(mux) = Multiplexer::parse(value) {
+                    env.multiplexers.push(mux);
+                }
+            }
             _ => {}
         }
     }
@@ -243,6 +258,106 @@ fn cached_env(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
+/// What a host's probe last said about its multiplexers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MuxProbe {
+    /// Not answered yet.
+    Pending,
+    /// It will not answer: it failed, or the host is native Windows, which has
+    /// no `sh` to probe with.
+    Unanswered,
+    /// Installed there, in [`Multiplexer::ALL`] order.
+    Found(Vec<Multiplexer>),
+}
+
+/// How long a host's multiplexer answer stands before an open flow asks
+/// again — so a host that was down, or has since had one installed, is not
+/// read wrong for the rest of the process.
+const MUX_TTL: Duration = Duration::from_secs(60);
+
+/// What a probe found on `host`, without ever waiting for one. When `start`
+/// allows it, an answer that is missing or older than a minute is asked
+/// for again on a thread of its own; the last answer stands meanwhile.
+pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
+    if host.is_windows() {
+        return MuxProbe::Unanswered;
+    }
+    let key = host.backend_name();
+    let hit = mux_cache().lock().ok().and_then(|c| c.get(&key).cloned());
+    let stale = hit.as_ref().map_or(true, |(at, _)| at.elapsed() >= MUX_TTL);
+    if stale && start && !cfg!(test) {
+        reprobe(host, key);
+    }
+    match hit {
+        None => MuxProbe::Pending,
+        Some((_, None)) => MuxProbe::Unanswered,
+        Some((_, Some(found))) => MuxProbe::Found(found),
+    }
+}
+
+/// Probe `host` in the background, once at a time per host.
+fn reprobe(host: &HostDef, key: String) {
+    let started = in_flight()
+        .lock()
+        .map(|mut flight| flight.insert(key.clone()))
+        .unwrap_or(false);
+    if !started {
+        return;
+    }
+    let host = host.clone();
+    std::thread::spawn(move || {
+        let env = run_bounded(
+            HostLauncher::for_host(&host).shell_c(&probe_script()),
+            PROBE_TIMEOUT,
+        )
+        .and_then(|out| parse_probe(&out));
+        record_probe(&key, env);
+        if let Ok(mut flight) = in_flight().lock() {
+            flight.remove(&key);
+        }
+    });
+}
+
+/// Store what a background probe of the host keyed `key` said. Its `PATH`
+/// fills that cache only on success and only where it is empty: that cache is
+/// never re-asked, so a failure there would leave a host that was down at the
+/// first ask without its login `PATH` for the rest of the process, and a
+/// spawn's own answer is never replaced.
+fn record_probe(key: &str, env: Option<HostEnv>) {
+    if let (Some(env), Ok(mut c)) = (env.as_ref(), cache().lock()) {
+        c.entry(key.to_string())
+            .or_insert_with(|| Some(env.clone()));
+    }
+    if let Ok(mut c) = mux_cache().lock() {
+        c.insert(
+            key.to_string(),
+            (Instant::now(), env.map(|e| e.multiplexers)),
+        );
+    }
+}
+
+type MuxAnswer = (Instant, Option<Vec<Multiplexer>>);
+
+fn mux_cache() -> &'static Mutex<HashMap<String, MuxAnswer>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, MuxAnswer>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
+    static IN_FLIGHT: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(Default::default)
+}
+
+/// Record that a probe of `host` found `multiplexers` (`None`: it did not
+/// answer), for tests that must not reach one.
+#[cfg(test)]
+pub fn seed_multiplexers(host: &HostDef, multiplexers: Option<Vec<Multiplexer>>) {
+    mux_cache()
+        .lock()
+        .unwrap()
+        .insert(host.backend_name(), (Instant::now(), multiplexers));
+}
+
 /// Record what a probe of `host` found, for tests that must not reach one.
 #[cfg(test)]
 pub fn seed(host: &HostDef, env: Option<HostEnv>) {
@@ -337,6 +452,7 @@ mod tests {
             base: s(base),
             shell_login: shell.map(s),
             sh_login: sh.map(s),
+            multiplexers: Vec::new(),
         }
     }
 
@@ -432,8 +548,62 @@ mod tests {
                 base: s(&["/usr/bin", "/bin"]),
                 shell_login: Some(s(&["/home/me/.bun/bin", "/usr/bin"])),
                 sh_login: Some(s(&["/home/me/.local/bin", "/usr/bin"])),
+                multiplexers: Vec::new(),
             })
         );
+    }
+
+    #[test]
+    fn the_probe_reports_each_multiplexer_it_finds() {
+        let out = "@base /usr/bin\n@mux tmux\n@mux rmux\n@mux screen\n";
+        assert_eq!(
+            parse_probe(out).map(|env| env.multiplexers),
+            Some(vec![Multiplexer::Tmux, Multiplexer::Rmux])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_script_finds_a_multiplexer_on_the_hosts_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let rmux = dir.path().join("rmux");
+        std::fs::write(&rmux, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&rmux, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(probe_script())
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+            .env("HOME", dir.path());
+        let env = run_bounded(cmd, PROBE_TIMEOUT)
+            .and_then(|out| parse_probe(&out))
+            .expect("the probe answers");
+        assert!(
+            env.multiplexers.contains(&Multiplexer::Rmux),
+            "{:?}",
+            env.multiplexers
+        );
+    }
+
+    #[test]
+    fn a_failed_multiplexer_probe_leaves_the_path_cache_to_a_later_spawn() {
+        let host = HostDef {
+            name: "down-at-first-ask".into(),
+            destination: "me@down".into(),
+            ..Default::default()
+        };
+        let key = host.backend_name();
+        record_probe(&key, None);
+        assert!(
+            !cache().lock().unwrap().contains_key(&key),
+            "a failure must not stop a spawn from reading the login PATH"
+        );
+        assert_eq!(multiplexers_found(&host, false), MuxProbe::Unanswered);
+
+        let found = env(&["/usr/bin"], None, None);
+        record_probe(&key, Some(found.clone()));
+        assert_eq!(cache().lock().unwrap().get(&key), Some(&Some(found)));
     }
 
     #[test]

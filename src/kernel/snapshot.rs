@@ -288,6 +288,9 @@ pub struct HostRow {
     pub platform: String,
     pub multiplexer: Option<String>,
     pub available_multiplexers: Vec<String>,
+    /// The host's probe has not answered yet, so `available_multiplexers` is
+    /// the platform default and preference only, and may still grow.
+    pub probing: bool,
 }
 
 /// An immutable picture of the engine at one instant.
@@ -714,6 +717,9 @@ pub struct SnapshotStore {
     registry_contents: Option<Result<String, String>>,
     registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
+    /// Whether the create flow is open, so each host may be probed for its
+    /// multiplexers — see [`Self::probe_hosts`].
+    probe_hosts: bool,
     /// The routes the process's registry serves, read once from it: which
     /// multiplexers the create flow may offer, here and on each host.
     served: std::collections::HashSet<crate::session::Route>,
@@ -795,7 +801,8 @@ impl SnapshotStore {
             registry,
             registry_contents: None,
             registry_polled_at: None,
-            hosts: read_hosts(&served),
+            hosts: read_hosts(&served, false),
+            probe_hosts: false,
             mux: read_mux(&served),
             served,
             backends: backends.clone(),
@@ -831,7 +838,8 @@ impl SnapshotStore {
             registry,
             registry_contents: None,
             registry_polled_at: None,
-            hosts: read_hosts(&served),
+            hosts: read_hosts(&served, false),
+            probe_hosts: false,
             mux: read_mux(&served),
             served,
             backends: backends.clone(),
@@ -947,7 +955,7 @@ impl SnapshotStore {
         // Asked here rather than in `refresh`, which stops running altogether
         // on a database nobody writes to — which is exactly the state thurbox
         // is in while the user is off installing what was missing.
-        let preflight_moved = self.poll_preflight();
+        let preflight_moved = self.poll_preflight() | self.poll_hosts();
         if !panes_moved && self.rows_are_current() {
             self.last_refresh = Some(now);
             let stamp = taken_at_stamp();
@@ -1502,6 +1510,28 @@ impl SnapshotStore {
         moved
     }
 
+    /// Whether the create flow is open. Only then is a host probed for which
+    /// multiplexers it has: a closed flow costs no connection to any host.
+    pub fn probe_hosts(&mut self, wanted: bool) {
+        self.probe_hosts = wanted;
+    }
+
+    /// Re-read the host rows while the flow is open, which is how a probe
+    /// answering in the background reaches the picker. A cache lookup per
+    /// host, never a wait. Returns whether any row moved.
+    fn poll_hosts(&mut self) -> bool {
+        if !self.probe_hosts {
+            return false;
+        }
+        let hosts = read_hosts(&self.served, true);
+        if hosts == self.hosts {
+            return false;
+        }
+        self.hosts = hosts;
+        self.current.hosts = self.hosts.clone();
+        true
+    }
+
     pub fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
         let taken_at_ms = taken_at_stamp();
@@ -1812,51 +1842,79 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
         .collect()
 }
 
-/// Whether the local multiplexer is installed, and what to do when it is not.
+/// Which multiplexers this machine can run sessions in, and the one a create
+/// uses when nothing names one — what to do when there is none.
 fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow {
-    let binary = crate::agent::preflight::local_multiplexer();
-    let presence = crate::agent::preflight::look_up(binary);
-    let available = crate::session::Multiplexer::ALL
+    use crate::session::{Multiplexer, Platform, Route};
+    let configured = crate::session::settings::global().multiplexer.clone();
+    let available: Vec<Multiplexer> = crate::agent::preflight::local_multiplexers()
         .into_iter()
-        .filter(|mux| {
-            served.contains(&crate::session::Route::local(Some(*mux)))
-                && mux.local_picker_binary().map_or(true, |binary| {
-                    crate::agent::preflight::look_up(binary)
-                        == crate::agent::preflight::Presence::Present
-                })
-        })
-        .map(|mux| mux.name().to_string())
+        .filter(|mux| served.contains(&Route::local(Some(*mux))))
         .collect();
+    // What a bare local create would run: the configured one, else the one
+    // the picker preselects. Named here so the warning names it too.
+    let binary = configured
+        .as_deref()
+        .and_then(|name| Multiplexer::parse(name).ok())
+        .or_else(|| Multiplexer::preferred(Platform::local(), &available))
+        .unwrap_or_else(Multiplexer::platform_default);
+    let presence = crate::agent::preflight::look_up(binary.name());
     MuxRow {
-        binary: binary.to_string(),
-        configured: crate::session::settings::global().multiplexer.clone(),
-        available,
+        binary: binary.name().to_string(),
+        configured,
+        available: available.iter().map(|mux| mux.name().to_string()).collect(),
         presence,
         advice: match presence {
             crate::agent::preflight::Presence::Present => String::new(),
-            _ => crate::agent::preflight::Dependency::LocalMultiplexer.fix(),
+            _ => crate::agent::preflight::Dependency::Multiplexer(binary.name()).fix(),
         },
     }
 }
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips
 /// asking.
-fn read_hosts(served: &std::collections::HashSet<crate::session::Route>) -> Vec<HostRow> {
+fn read_hosts(
+    served: &std::collections::HashSet<crate::session::Route>,
+    probe: bool,
+) -> Vec<HostRow> {
     let (registry, _warnings) = crate::agent::host_config::cached_registry();
-    registry
-        .hosts
+    hosts_from(&registry.hosts, served, probe)
+}
+
+/// Each host's row, offering the multiplexers its probe found there, and
+/// starting that probe when `probe` allows it. The probe is never waited for:
+/// until it answers, a host offers what
+/// [`crate::session::Multiplexer::available_on`] trusts it with unseen.
+fn hosts_from(
+    hosts: &[crate::session::HostDef],
+    served: &std::collections::HashSet<crate::session::Route>,
+    probe: bool,
+) -> Vec<HostRow> {
+    hosts
         .iter()
-        .map(|host| HostRow {
-            name: host.name.clone(),
-            detail: host.picker_detail(),
-            backend: host.backend_name(),
-            platform: host.platform().name().to_string(),
-            multiplexer: host.multiplexer.clone(),
-            available_multiplexers: crate::session::Multiplexer::ALL
+        .map(|host| {
+            let answer = crate::agent::host_path::multiplexers_found(host, probe);
+            let found = match &answer {
+                crate::agent::host_path::MuxProbe::Found(found) => Some(found.as_slice()),
+                _ => None,
+            };
+            HostRow {
+                name: host.name.clone(),
+                detail: host.picker_detail(),
+                backend: host.backend_name(),
+                platform: host.platform().name().to_string(),
+                multiplexer: host.multiplexer.clone(),
+                available_multiplexers: crate::session::Multiplexer::available_on(
+                    host.platform(),
+                    found,
+                    host.multiplexer(),
+                )
                 .into_iter()
                 .filter(|mux| served.contains(&host.route(Some(*mux))))
                 .map(|mux| mux.name().to_string())
                 .collect(),
+                probing: answer == crate::agent::host_path::MuxProbe::Pending,
+            }
         })
         .collect()
 }
@@ -2161,10 +2219,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_local_picker_offers_rmux_only_when_its_binary_is_found() {
+    fn the_local_picker_offers_only_the_multiplexers_installed_here() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
+        let install = |name: &str| {
+            let binary = dir.path().join(name);
+            std::fs::write(&binary, "#!/bin/sh\n").expect("write stand-in");
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod");
+        };
         let served = [
             crate::session::Route::local(Some(crate::session::Multiplexer::Tmux)),
             crate::session::Route::local(Some(crate::session::Multiplexer::Psmux)),
@@ -2173,16 +2237,53 @@ mod tests {
         .into_iter()
         .collect();
         crate::paths::with_path(dir.path(), || {
-            let missing = read_mux(&served);
-            assert_eq!(missing.available, vec!["tmux", "psmux"]);
+            let none = read_mux(&served);
+            assert!(none.available.is_empty(), "{none:?}");
+            assert_eq!(none.presence, crate::agent::preflight::Presence::Missing);
 
-            let binary = dir.path().join("rmux");
-            std::fs::write(&binary, "#!/bin/sh\n").expect("write rmux stand-in");
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
-                .expect("chmod");
-            let present = read_mux(&served);
-            assert_eq!(present.available, vec!["tmux", "psmux", "rmux"]);
+            install("rmux");
+            let only_rmux = read_mux(&served);
+            assert_eq!(only_rmux.available, vec!["rmux"]);
+            assert_eq!(only_rmux.binary, "rmux", "the one installed is the default");
+            assert_eq!(
+                only_rmux.presence,
+                crate::agent::preflight::Presence::Present
+            );
+
+            // psmux is native Windows: a binary of that name on a POSIX PATH
+            // does not make it a choice here.
+            install("psmux");
+            install("tmux");
+            let both = read_mux(&served);
+            assert_eq!(both.available, vec!["tmux", "rmux"]);
+            assert_eq!(both.binary, "tmux");
         });
+    }
+
+    #[test]
+    fn a_host_offers_what_its_probe_found_and_never_waits_for_one() {
+        use crate::session::{HostDef, Multiplexer};
+        let probed = HostDef {
+            name: "probed-host".into(),
+            ..Default::default()
+        };
+        let pending = HostDef {
+            name: "pending-host".into(),
+            ..Default::default()
+        };
+        crate::agent::host_path::seed_multiplexers(&probed, Some(vec![Multiplexer::Rmux]));
+        let served: std::collections::HashSet<_> = [&probed, &pending]
+            .into_iter()
+            .flat_map(|host| Multiplexer::ALL.map(|mux| host.route(Some(mux))))
+            .collect();
+        let rows = hosts_from(&[probed, pending], &served, false);
+        assert_eq!(rows[0].available_multiplexers, vec!["rmux"]);
+        assert_eq!(
+            rows[1].available_multiplexers,
+            vec!["tmux"],
+            "a host not looked at yet offers its platform default"
+        );
+        assert!(!rows[0].probing && rows[1].probing);
     }
 
     #[test]
