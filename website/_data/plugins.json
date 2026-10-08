@@ -31,7 +31,7 @@
     "notes": "Requires Thurbox \u2265 2.51.7. Add the info slot to layout.lua, then press F2. Account quotas need quota-axi \u2265 0.1.58 and a run grant; install the optional refresh extension from the cloned plugin directory. See README for setup.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-info-panel/main/media/demo.gif",
-      "alt": "Info panel in the Thurbox interface"
+      "alt": "Info panel in Thurbox's Doom theme, shown in a wide column and then a compact one"
     }
   },
   {
@@ -42,12 +42,12 @@
     "repo": "https://github.com/Thurbeen/thurbox-auto-continue",
     "kind": "extension",
     "platforms": ["Linux", "macOS", "WSL (install on each host)"],
-    "updated": "2026-09-30",
+    "updated": "2026-10-08",
     "install": "git clone https://github.com/Thurbeen/thurbox-auto-continue\ncd thurbox-auto-continue\n./install.sh",
     "notes": "Requires cargo or a prebuilt binary, Claude Code and Thurbox \u2265 2.36.2. Off by default. Follow the README to install both optional panes and grant run. Native Windows unsupported.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-auto-continue/main/media/demo.gif",
-      "alt": "Auto continue in the Thurbox interface"
+      "alt": "Auto-continue pane in Thurbox's Doom theme typing a session's resume message once its usage window resets"
     }
   },
   {
@@ -62,12 +62,12 @@
       "macOS",
       "Windows (Lua pane; optional shell commands need a POSIX shell)"
     ],
-    "updated": "2026-09-27",
+    "updated": "2026-10-07",
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review",
     "notes": "Requires Thurbox \u2265 2.35.0. Replaces the bundled agent pane; follow README setup and capability grants. Cannot combine with the thurbox-files agent pane fork.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-code-review/main/media/demo.gif",
-      "alt": "Code review in the Thurbox interface"
+      "alt": "Review tab beside Agent and Shell in Thurbox's Doom theme, with a note written on a line and sent to the agent"
     }
   },
   {
@@ -78,12 +78,12 @@
     "repo": "https://github.com/Thurbeen/thurbox-doom",
     "kind": "pane",
     "platforms": ["Linux x86_64 (bundled engine)", "Other platforms (bring or build an engine)"],
-    "updated": "2026-10-02",
+    "updated": "2026-10-07",
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-doom",
-    "notes": "Install code-review for the integrated Doom tab, then grant its agent pane program. F5 opens Doom. GIF shows the earlier standalone pane; README documents current setup.",
+    "notes": "Grant the pane its program capability, then press F5 to open the standalone Doom pane shown in the GIF. See the README for setup and the agent-pane Doom tab.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-doom/main/media/demo.gif",
-      "alt": "Doom in the Thurbox interface"
+      "alt": "DOOM in the standalone Doom pane, in Thurbox's Doom theme"
     }
   },
   {
