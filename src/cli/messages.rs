@@ -301,7 +301,7 @@ fn first_line(body: &str) -> String {
 /// Enqueue a message, deliver it natively unless `no_wake`, then build the
 /// command output. Shared by `send` and `reply`; `new.to_session_id` must be
 /// `recipient.id`.
-fn enqueue_and_deliver(
+pub(crate) fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: NewMessage,

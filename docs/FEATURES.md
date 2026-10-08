@@ -2612,6 +2612,21 @@ exposes has the right semantics by construction, so there is no keystroke
 fallback: `tests/architecture_rules.rs` (`message_delivery_never_reaches_the_multiplexer`)
 keeps the multiplexer unreachable from the message path.
 
+`session send` is the one verb whose job *is* typing, so it keeps a narrow
+screen gate rather than none — and only on the half of the screen the
+placeholder cannot reach. It reads the cursor's row **left of the cursor**
+(`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE`),
+and calls the line empty only when what is there is whitespace, box drawing
+and at most one prompt glyph; the dim suggestion an idle agent draws sits to
+the cursor's right and never counts. A busy line is not typed onto: the text
+goes the way `message send` delivers it. After Enter the same reading confirms
+the line left, and one more Enter goes only to a line that still ends with the
+text sent, never to a dialog that replaced it. Its limits are the ones a
+screen imposes: a cursor moved back into a draft reads as a bare prompt, a
+shell prompt carrying more than its glyph (`user@box:~$`) reads as typed text
+and needs `--force`, and where the row cannot be read the send reports
+`submitted: null` rather than a guess.
+
 ### Finding the recipient's inbox
 
 The agent is **detected from what it announced**, not from the row's agent

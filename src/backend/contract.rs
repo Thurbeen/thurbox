@@ -632,6 +632,14 @@ pub trait SessionBackend: Send + Sync {
     /// region, and its styling as SGR sequences when `ansi`.
     fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String>;
 
+    /// The text on the cursor's row to the left of the cursor — what has been
+    /// typed into the input line the cursor is on, prompt included. `Ok(None)`:
+    /// this backend cannot tell, which a caller must treat as unknown rather
+    /// than as an empty line.
+    fn text_before_cursor(&self, _pane: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
     /// could not ask; an answer it could not read is a default field, not an
     /// error.

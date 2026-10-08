@@ -162,6 +162,7 @@ fn parse_session_send_disambiguates_global_text_flag() {
                 uuid,
                 text,
                 no_enter,
+                force,
             },
     } = subcommand(cli)
     else {
@@ -171,6 +172,8 @@ fn parse_session_send_disambiguates_global_text_flag() {
     assert_eq!(text, "hello");
     // The default is unchanged: text is submitted unless --no-enter says not to.
     assert!(!no_enter);
+    // And waits for an empty composer unless --force says not to.
+    assert!(!force);
 
     // The original collision-triggering invocation: global `--text` flag set.
     let cli = Cli::try_parse_from([

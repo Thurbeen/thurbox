@@ -1153,7 +1153,7 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
           </p>
           <pre data-wrap><code class="language-bash">thurbox-cli session list
 thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex
-thurbox-cli session send &lt;uuid&gt; "run the test suite"
+thurbox-cli session send &lt;uuid&gt; "run the test suite"           # only into an empty composer; reports "submitted"
 thurbox-cli session send &lt;uuid&gt; "steer it here" --no-enter   # typed, not submitted
 thurbox-cli session key &lt;uuid&gt; enter                         # ...and now submit it
 thurbox-cli session key &lt;uuid&gt; escape                        # interrupt the turn

@@ -595,6 +595,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             uuid: row.id.to_string(),
             text: "draft prompt".into(),
             no_enter: true,
+            force: false,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -619,6 +620,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             uuid: row.id.to_string(),
             text: "start the turn".into(),
             no_enter: false,
+            force: false,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -912,6 +914,7 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
             uuid: row.id.to_string(),
             text: "hello".into(),
             no_enter: false,
+            force: false,
         },
         Action::Key {
             uuid: row.id.to_string(),

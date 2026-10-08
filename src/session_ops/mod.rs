@@ -8,6 +8,7 @@
 pub mod builtin;
 pub mod builtin_hooks;
 pub mod builtin_ui_skill;
+pub mod composer;
 pub mod delete;
 pub mod extensions;
 pub mod host_cli;
@@ -83,6 +84,121 @@ pub fn send_text_with_status(
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// How long `session send` waits for an operator's half-typed line to clear
+/// before it leaves the text in the mailbox instead.
+pub const COMPOSER_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a submitted line has to leave the composer before Enter is pressed
+/// once more.
+const SUBMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What [`send_text_confirmed`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// The composer held text the whole wait; nothing was typed.
+    ComposerBusy,
+    /// Typed. `submitted` is `Some(false)` for `submit = false`, and `None`
+    /// where the input line could not confirm it either way.
+    Typed {
+        submitted: Option<bool>,
+        enter_retried: bool,
+    },
+}
+
+/// [`send_text_with_status`] that only types into an empty input line, unless
+/// `force`, and confirms a submission.
+///
+/// Enter is pressed once the typed text shows in the composer, not on a timer,
+/// and a line still sitting there afterwards gets one more Enter — only while
+/// it still ends with the text sent, so a dialog that took its place is never
+/// answered. A backend that cannot read the line back gets the plain send and
+/// `submitted: None`.
+pub fn send_text_confirmed(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &SharedSession,
+    text: &str,
+    submit: bool,
+    force: bool,
+) -> anyhow::Result<SendOutcome> {
+    use composer::Composer;
+    let (backend, pane) =
+        windows::require_agent_pane(backends, session).map_err(anyhow::Error::msg)?;
+    let backend = backend.as_ref();
+    let wait = if force {
+        std::time::Duration::ZERO
+    } else {
+        COMPOSER_WAIT
+    };
+    let before = composer::wait_while(backend, &pane, Composer::Holding, wait);
+    if before == Composer::Holding && !force {
+        return Ok(SendOutcome::ComposerBusy);
+    }
+    if !submit || before == Composer::Unknown {
+        send_text_with_status(db, backends, session, text, submit)?;
+        return Ok(SendOutcome::Typed {
+            submitted: if submit { None } else { Some(false) },
+            enter_retried: false,
+        });
+    }
+    send_text_with_status(db, backends, session, text, false)?;
+    let typed = composer::wait_for_sent(backend, &pane, text, SUBMIT_WAIT);
+    press_enter(db, backend, &pane, session)?;
+    let after = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    let unsent = after == Composer::Holding
+        && composer::read_line(backend, &pane).is_some_and(|l| composer::ends_with_sent(&l, text));
+    if !unsent {
+        // Empty after the text was seen typed is a submission; anything else
+        // — the text never showed, or something other than it is on the line
+        // now — is not something this can confirm either way.
+        let seen = typed && after == Composer::Empty;
+        return Ok(SendOutcome::Typed {
+            submitted: seen.then_some(true),
+            enter_retried: false,
+        });
+    }
+    press_enter(db, backend, &pane, session)?;
+    let retried = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    Ok(SendOutcome::Typed {
+        submitted: match retried {
+            Composer::Empty => Some(true),
+            Composer::Holding => Some(false),
+            Composer::Unknown => None,
+        },
+        enter_retried: true,
+    })
+}
+
+/// Press Enter in a session's pane, retiring a Codex report made before it as
+/// [`send_text_with_status`] does for a submitting send.
+fn press_enter(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    pane: &str,
+    session: &SharedSession,
+) -> anyhow::Result<()> {
+    let prior = if session.agent == "codex" {
+        db.load_hook_state(session.id).unwrap_or_else(|e| {
+            tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
+            None
+        })
+    } else {
+        None
+    };
+    backend
+        .send_key(
+            pane,
+            &crate::backend::Key::parse("enter").expect("enter is a key"),
+        )
+        .map_err(|e| anyhow::anyhow!("session '{}': {e:#}", session.name))?;
+    if let Some(prior) = prior {
+        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
+            tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
         }
     }
     Ok(())

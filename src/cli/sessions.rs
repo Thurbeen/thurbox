@@ -287,6 +287,13 @@ pub enum Action {
     ///
     /// The text is delivered as one bracketed paste, so it arrives literally —
     /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
+    ///
+    /// It is typed only into an empty input line: while the composer holds
+    /// someone's typing, `send` waits a few seconds for it to clear and then
+    /// hands the text over as `message send` does — the agent's own inbox, or
+    /// the mailbox, which exits non-zero. After Enter it checks the line left
+    /// the composer, presses Enter once more if the text is still there, and
+    /// reports `submitted` — exiting non-zero when it never left.
     /// Local sessions only: the pane lives on this machine's server, so a
     /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
@@ -299,6 +306,10 @@ pub enum Action {
         /// what a type-then-verify-then-submit protocol needs.
         #[arg(long = "no-enter")]
         no_enter: bool,
+        /// Type even when the composer already holds text, instead of waiting
+        /// for it to empty and then leaving the text in the mailbox.
+        #[arg(long)]
+        force: bool,
     },
     /// Send one named special key to a session's terminal.
     ///
@@ -647,7 +658,8 @@ pub fn run(
             uuid,
             text,
             no_enter,
-        } => run_send(db, backends.get(), uuid, text, no_enter),
+            force,
+        } => run_send(db, backends.get(), uuid, text, no_enter, force),
         Action::Key { uuid, key } => run_key(db, backends.get(), uuid, key),
         Action::Capture { uuid, lines, ansi } => {
             capture_pane(db, backends.get(), &uuid, lines, ansi)
@@ -1079,7 +1091,9 @@ fn run_send(
     uuid: String,
     text: String,
     no_enter: bool,
+    force: bool,
 ) -> Result<CommandOutput, CommandError> {
+    use crate::session_ops::SendOutcome;
     let session = resolve(db, &uuid)?;
     if text.trim().is_empty() {
         return Err("text must not be empty".into());
@@ -1090,26 +1104,116 @@ fn run_send(
     if no_enter {
         args.push("--no-enter");
     }
+    if force {
+        args.push("--force");
+    }
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
     let submit = !no_enter;
-    crate::session_ops::send_text_with_status(db, backends, &session, &text, submit)
-        .map_err(|e| format!("send: {e:#}"))?;
-    let human = if submit {
-        format!("Sent to '{}'.", session.name)
-    } else {
-        format!("Typed into '{}' (not submitted).", session.name)
+    let outcome =
+        crate::session_ops::send_text_confirmed(db, backends, &session, &text, submit, force)
+            .map_err(|e| format!("send: {e:#}"))?;
+    let (submitted, enter_retried) = match outcome {
+        SendOutcome::ComposerBusy => return leave_in_mailbox(db, &session, text),
+        SendOutcome::Typed {
+            submitted,
+            enter_retried,
+        } => (submitted, enter_retried),
     };
-    Ok(CommandOutput::new(
-        json!({
-            "sent": true,
-            "submitted": submit,
-            "session_id": session.id.to_string(),
-            "session_name": session.name,
-        }),
-        human,
-    ))
+    let json = json!({
+        "sent": true,
+        "submitted": submitted,
+        "enter_retried": enter_retried,
+        "delivered_via": "pane",
+        "session_id": session.id.to_string(),
+        "session_name": session.name,
+    });
+    let retried = if enter_retried {
+        " (Enter pressed twice)"
+    } else {
+        ""
+    };
+    Ok(match (submit, submitted) {
+        (false, _) => CommandOutput::new(
+            json,
+            format!("Typed into '{}' (not submitted).", session.name),
+        ),
+        (true, Some(true)) => {
+            CommandOutput::new(json, format!("Sent to '{}'{retried}.", session.name))
+        }
+        (true, None) => CommandOutput::new(
+            json,
+            format!(
+                "Sent to '{}'; the input line could not confirm whether it was submitted.",
+                session.name
+            ),
+        ),
+        (true, Some(false)) => CommandOutput::failed(
+            json,
+            format!(
+                "Typed into '{}', but it is still in the composer.",
+                session.name
+            ),
+            format!(
+                "'{}' did not submit the text: it is still in its composer after a second Enter",
+                session.name
+            ),
+        ),
+    })
+}
+
+/// `session send` into a composer that holds someone else's typing: the text
+/// is not typed onto their line but handed over the way `message send` hands a
+/// body — the agent's own inbox where it has one, the mailbox otherwise. Only
+/// the mailbox is a failure: nothing will show the agent the text there.
+fn leave_in_mailbox(
+    db: &Database,
+    session: &SharedSession,
+    text: String,
+) -> Result<CommandOutput, CommandError> {
+    let new = crate::storage::messages::NewMessage {
+        to_session_id: session.id,
+        from_session_id: super::identity::calling_session(db).map(|s| s.id),
+        from_task_id: std::env::var("THURBOX_TASK")
+            .ok()
+            .and_then(|t| t.parse().ok()),
+        kind: "session-send".into(),
+        body: text,
+    };
+    let delivered = super::messages::enqueue_and_deliver(db, session, new, false)?;
+    let mut json = delivered.json.clone();
+    json["sent"] = json!(false);
+    json["submitted"] = json!(false);
+    json["enter_retried"] = json!(false);
+    json["session_id"] = json!(session.id.to_string());
+    json["session_name"] = json!(session.name);
+    let via = json["delivered_via"]
+        .as_str()
+        .unwrap_or("mailbox")
+        .to_string();
+    let id = json["message_id"].clone();
+    let human = format!(
+        "'{}' has text in its composer, so nothing was typed; message #{id} went via {via}.",
+        session.name
+    );
+    let note = json["delivery_note"]
+        .as_str()
+        .unwrap_or("no reason given")
+        .to_string();
+    Ok(if via == "mailbox" {
+        CommandOutput::failed(
+            json,
+            human,
+            format!(
+                "'{}' has text in its composer and its agent inbox was not reached ({}); the \
+                 text is only in its mailbox (message #{id})",
+                session.name, note,
+            ),
+        )
+    } else {
+        CommandOutput::new(json, human)
+    })
 }
 
 fn run_key(
@@ -3211,6 +3315,7 @@ mod tests {
                         uuid: id.to_string(),
                         text: text.to_string(),
                         no_enter,
+                        force: false,
                     },
                     &db,
                     &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3239,6 +3344,7 @@ mod tests {
                 uuid: id.to_string(),
                 text: "hello".into(),
                 no_enter: true,
+                force: false,
             },
             Action::Key {
                 uuid: id.to_string(),

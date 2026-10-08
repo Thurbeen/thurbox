@@ -66,6 +66,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// in a tagged block, which is what makes a snapshot exact.
     const SNAPSHOTS: bool;
 
+    /// Whether `capture-pane -S n -E n` returns visible row `n` alone and
+    /// `#{cursor_x}`/`#{cursor_y}` say where the cursor is — what reading the
+    /// text before the cursor needs. Off unless measured: the wrong row read
+    /// back would be worse than not knowing.
+    const CURSOR_ROW_CAPTURE: bool = false;
+
     /// Whether one invocation takes a `;`-separated command list, so the whole
     /// session config can go in one process (#1243).
     const COMMAND_LISTS: bool;
@@ -2404,6 +2410,41 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    fn text_before_cursor(&self, pane: &str) -> Result<Option<String>> {
+        self.known_socket()?;
+        if !M::CURSOR_ROW_CAPTURE {
+            return Ok(None);
+        }
+        let format = format!(
+            "#{{cursor_x}}{PANE_STATE_SEP}#{{cursor_y}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}"
+        );
+        let mut argv = M::DISPLAY_FLAGS.to_vec();
+        argv.extend(["display-message", "-p", "-t", pane, &format]);
+        let output = self.one_shot("display-message (cursor)", &argv)?;
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let window = pane_answer_field(&raw, 2);
+        if !answered_for(
+            pane,
+            window.as_deref(),
+            pane_answer_field(&raw, 3).as_deref(),
+        ) {
+            return Ok(None);
+        }
+        let cell = |n| pane_answer_field(&raw, n).and_then(|v| v.parse::<usize>().ok());
+        let (Some(col), Some(row)) = (cell(0), cell(1)) else {
+            return Ok(None);
+        };
+        // One visible row, unjoined: `capture` joins wrapped lines, which
+        // would put the cursor's row somewhere else.
+        let row = row.to_string();
+        let output = self.one_shot(
+            "capture-pane (cursor row)",
+            &["capture-pane", "-p", "-t", pane, "-S", &row, "-E", &row],
+        )?;
+        let line = String::from_utf8_lossy(&output.stdout);
+        Ok(Some(cells_before(line.trim_end_matches('\n'), col)))
+    }
+
     fn pane_state(&self, pane: &str) -> Result<PaneState> {
         self.known_socket()?;
         // One `display-message` for everything the multiplexer knows, plus at
@@ -2879,6 +2920,18 @@ fn tmux_key_name(key: &Key) -> String {
         .find(|(name, _)| *name == key.name())
         .map(|(_, tmux)| (*tmux).to_string())
         .expect("every named key has a tmux name (tmux_names_every_key)")
+}
+
+/// The part of `line` that fills its first `cells` terminal columns. A wide
+/// character takes two, which is how the multiplexer counts the cursor.
+fn cells_before(line: &str, cells: usize) -> String {
+    let mut width = 0;
+    line.chars()
+        .take_while(|c| {
+            width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            width <= cells
+        })
+        .collect()
 }
 
 /// Whether a `display-message` answer came from the pane it was asked about.
@@ -3788,6 +3841,13 @@ mod tests {
     struct TestMux;
 
     type TestBackend = Server<TestMux>;
+
+    #[test]
+    fn cells_before_counts_a_wide_character_as_two_columns() {
+        assert_eq!(cells_before("❯ hi", 2), "❯ ");
+        assert_eq!(cells_before("> 漢字x", 4), "> 漢");
+        assert_eq!(cells_before("short", 40), "short");
+    }
 
     struct TypedKeys;
 

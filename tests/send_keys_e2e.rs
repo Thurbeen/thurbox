@@ -11,6 +11,7 @@
 
 use std::process::Command;
 
+use thurbox::cli::output::CommandOutput;
 use thurbox::cli::sessions::{run, Action};
 use thurbox::session::SessionId;
 use thurbox::storage::Database;
@@ -59,6 +60,11 @@ fn tmux(args: &[&str]) -> std::process::Output {
 /// Deliberately not `spawn_session_headless`: what is under test is the two
 /// input commands, and a window plus a row is the whole of the state they read.
 fn live_session(db: &Database) -> Option<SharedSession> {
+    live_session_running(db, PANE_PROGRAM)
+}
+
+/// [`live_session`] with `program` in the pane instead of `cat`.
+fn live_session_running(db: &Database, program: &str) -> Option<SharedSession> {
     let out = tmux(&[
         "new-session",
         "-d",
@@ -73,7 +79,7 @@ fn live_session(db: &Database) -> Option<SharedSession> {
         "-P",
         "-F",
         "#{pane_id}",
-        PANE_PROGRAM,
+        program,
     ]);
     if !out.status.success() {
         return None;
@@ -143,6 +149,7 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
             uuid: session.id.to_string(),
             text: "READY_TOKEN".into(),
             no_enter: true,
+            force: false,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -202,6 +209,7 @@ fn text_arrives_literally_whatever_it_starts_with() {
             uuid: session.id.to_string(),
             text: text.into(),
             no_enter: true,
+            force: false,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -234,6 +242,7 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
             uuid: session.id.to_string(),
             text: "DISCARD_ME".into(),
             no_enter: true,
+            force: false,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -300,4 +309,226 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
         !screen.contains("Escpe"),
         "a refused key must not have been typed into the pane; shows:\n{screen}"
     );
+}
+
+/// An agent composer, as far as `session send` can see one: a `❯ ` prompt with
+/// the cursor after whatever has been typed, redrawn empty once a line is
+/// submitted, and the submitted line echoed back as `got:<line>`.
+///
+/// It reads one byte at a time with the tty's own echo off, so it can do what a
+/// real agent sometimes does to an Enter that lands too soon after a paste:
+/// ignore it. `swallow` is how many Enters it ignores — `all` for every one —
+/// or `dialog`: the first Enter opens a confirmation prompt in place of the
+/// composer, and any Enter after that answers it.
+fn composer(swallow: &str) -> String {
+    format!(
+        r#"sh -c 'stty -icanon -echo; swallow={swallow}; buf=; printf "❯ "
+while :; do
+  c=$(dd bs=1 count=1 2>/dev/null)
+  if [ -n "$c" ]; then buf="$buf$c"; printf "%s" "$c"; continue; fi
+  [ "$swallow" = all ] && continue
+  if [ "$swallow" = dialog ]; then printf "\nProceed? Yes"; swallow=answer; continue; fi
+  if [ "$swallow" = answer ]; then printf "\nANSWERED\n"; continue; fi
+  if [ "$swallow" -gt 0 ]; then swallow=$((swallow - 1)); continue; fi
+  printf "\ngot:%s\n❯ " "$buf"; buf=
+done'"#
+    )
+}
+
+fn send(db: &Database, session: &SharedSession, text: &str, force: bool) -> CommandOutput {
+    run(
+        Action::Send {
+            uuid: session.id.to_string(),
+            text: text.into(),
+            no_enter: false,
+            force,
+        },
+        db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+    )
+    .expect("session send")
+}
+
+/// A composer up and drawn, or `None` when tmux would not start one.
+fn live_composer(db: &Database, swallow: &str) -> Option<SharedSession> {
+    let session = live_session_running(db, &composer(swallow))?;
+    let drawn = screen_when(&session, |s| s.contains('❯'));
+    assert!(
+        drawn.contains('❯'),
+        "the composer never drew; shows:\n{drawn}"
+    );
+    Some(session)
+}
+
+#[test]
+fn send_reports_a_submitted_line_as_submitted() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "0") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "FIRST_TRY", false);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    assert_eq!(out["enter_retried"], false, "{}", out.json);
+    assert!(out.failure.is_none());
+    let screen = screen_when(&session, |s| s.contains("got:FIRST_TRY"));
+    assert!(screen.contains("got:FIRST_TRY"), "shows:\n{screen}");
+}
+
+/// Retro: a message sat unsent in a worker's composer until the operator
+/// nudged it, while `session send` had answered `submitted: true`.
+#[test]
+fn a_swallowed_enter_is_pressed_once_more_and_the_send_says_so() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "1") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "SECOND_TRY", false);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    assert_eq!(out["enter_retried"], true, "{}", out.json);
+    let screen = screen_when(&session, |s| s.contains("got:SECOND_TRY"));
+    assert!(screen.contains("got:SECOND_TRY"), "shows:\n{screen}");
+}
+
+#[test]
+fn a_line_still_in_the_composer_after_the_retry_is_reported_unsubmitted() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "all") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "NEVER_SENT", false);
+    assert_eq!(out["sent"], true, "{}", out.json);
+    assert_eq!(out["submitted"], false, "{}", out.json);
+    assert_eq!(out["enter_retried"], true, "{}", out.json);
+    assert!(
+        out.failure.is_some(),
+        "an unsubmitted send must exit non-zero"
+    );
+}
+
+/// Retro: the reconciler's notice landed on the operator's half-typed "c",
+/// and the lead read "cfleet reconciler: …".
+#[test]
+fn text_for_a_composer_holding_typed_input_goes_to_the_mailbox() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "0") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+    tmux(&["send-keys", "-l", "-t", &session.backend_id, "c"]);
+    screen_when(&session, |s| s.contains("❯ c"));
+
+    let notice = "fleet reconciler: 1 task(s) ready";
+    let out = send(&db, &session, notice, false);
+    assert_eq!(out["sent"], false, "{}", out.json);
+    assert_eq!(out["submitted"], false, "{}", out.json);
+    // A `sh` composer has no agent inbox, so the mailbox is all there is — and
+    // nothing shows the agent the text there, which the exit status says.
+    assert_eq!(out["delivered_via"], "mailbox", "{}", out.json);
+    assert!(
+        out.failure.is_some(),
+        "a mailbox-only send must exit non-zero"
+    );
+
+    let screen = screen(&session);
+    assert!(
+        !screen.contains("fleet reconciler"),
+        "nothing may be typed onto the operator's input; shows:\n{screen}"
+    );
+    let inbox = db.list_messages(session.id, true, None).expect("inbox");
+    assert_eq!(inbox.len(), 1, "{inbox:?}");
+    assert_eq!(inbox[0].body, notice);
+}
+
+#[test]
+fn force_types_into_a_composer_that_holds_text() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "0") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+    tmux(&["send-keys", "-l", "-t", &session.backend_id, "c"]);
+    screen_when(&session, |s| s.contains("❯ c"));
+
+    let out = send(&db, &session, "FORCED", true);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    let screen = screen_when(&session, |s| s.contains("got:cFORCED"));
+    assert!(screen.contains("got:cFORCED"), "shows:\n{screen}");
+}
+
+#[test]
+fn a_dialog_that_replaces_the_composer_is_never_answered_by_the_retry() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "dialog") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "OPEN_DIALOG", false);
+    assert_eq!(out["enter_retried"], false, "{}", out.json);
+    assert_eq!(out["submitted"], serde_json::Value::Null, "{}", out.json);
+    let screen = screen(&session);
+    assert!(
+        screen.contains("Proceed?") && !screen.contains("ANSWERED"),
+        "the second Enter must not answer the dialog; shows:\n{screen}"
+    );
+}
+
+/// A long line wraps, and the cursor's row is then the end of the text alone,
+/// with no prompt on it. One ending in `%` must still read as typed text, or a
+/// dropped Enter is reported submitted.
+#[test]
+fn a_wrapped_line_ending_in_a_prompt_glyph_is_still_retried() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "1") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let text = format!("{} coverage fell to 50%", "x".repeat(190));
+    let out = send(&db, &session, &text, false);
+    assert_eq!(out["enter_retried"], true, "{}", out.json);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    let screen = screen_when(&session, |s| s.contains("got:xxx"));
+    assert!(screen.contains("got:xxx"), "shows:\n{screen}");
 }

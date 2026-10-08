@@ -46,6 +46,7 @@ impl TmuxCompatible for Tmux {
     const WINDOW_EVENTS: bool = true;
     const PANE_MONITORING: bool = true;
     const SNAPSHOTS: bool = true;
+    const CURSOR_ROW_CAPTURE: bool = true;
     const COMMAND_LISTS: bool = true;
     const COMMAND_LIST_SINGLE_REPLY: bool = false;
     const ONE_SHOT_SPAWN_ANSWERS: bool = true;
