@@ -788,24 +788,28 @@ impl Database {
         Ok(true)
     }
 
-    /// The sessions marked lost — see [`record_session_lost`](Self::record_session_lost).
-    pub fn load_lost_sessions(&self) -> rusqlite::Result<HashSet<SessionId>> {
+    /// The sessions marked lost, with when — see
+    /// [`record_session_lost`](Self::record_session_lost).
+    pub fn load_lost_sessions(&self) -> rusqlite::Result<HashMap<SessionId, i64>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id FROM sessions WHERE deleted_at IS NULL AND lost_at IS NOT NULL",
+            "SELECT id, lost_at FROM sessions WHERE deleted_at IS NULL AND lost_at IS NOT NULL",
         )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
         Ok(rows
             .filter_map(Result::ok)
-            .filter_map(|id| id.parse().ok())
+            .filter_map(|(id, at)| Some((id.parse().ok()?, at)))
             .collect())
     }
 
-    /// Lift the lost mark: the session has a pane again, so its next death is
-    /// news.
-    pub fn clear_session_lost(&self, id: SessionId) -> rusqlite::Result<()> {
+    /// Lift the lost mark set at `lost_at`: the session has a pane again, so
+    /// its next death is news. Only that mark — one a later loss has since set
+    /// is a death the caller has not seen, and stays.
+    pub fn clear_session_lost(&self, id: SessionId, lost_at: i64) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET lost_at = NULL WHERE id = ?1 AND lost_at IS NOT NULL",
-            params![id.to_string()],
+            "UPDATE sessions SET lost_at = NULL WHERE id = ?1 AND lost_at = ?2",
+            params![id.to_string(), lost_at],
         )?;
         Ok(())
     }
@@ -2068,7 +2072,13 @@ mod tests {
         db.set_backend_id(session.id, pane).unwrap();
         assert!(db.record_session_lost(session.id, pane).unwrap());
 
-        db.clear_session_lost(session.id).unwrap();
+        let at = db.load_lost_sessions().unwrap()[&session.id];
+        db.clear_session_lost(session.id, at - 1).unwrap();
+        assert!(
+            !db.record_session_lost(session.id, pane).unwrap(),
+            "not that mark"
+        );
+        db.clear_session_lost(session.id, at).unwrap();
         assert!(db.record_session_lost(session.id, pane).unwrap());
     }
 

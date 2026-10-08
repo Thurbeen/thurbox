@@ -72,13 +72,13 @@ impl LostSweep {
             };
             match index.agent_window(&row.id.to_string(), &row.name) {
                 // Already reported: nothing to confirm, and no write to take.
-                crate::backend::Located::Absent if !lost.contains(&row.id) => {
+                crate::backend::Located::Absent if !lost.contains_key(&row.id) => {
                     missing.insert(row.id, row.backend_id);
                 }
                 // Back again — however it came back, on whatever pane id — so
                 // its next death is news.
-                crate::backend::Located::At(_) if lost.contains(&row.id) => {
-                    if let Err(e) = db.clear_session_lost(row.id) {
+                crate::backend::Located::At(_) if lost.contains_key(&row.id) => {
+                    if let Err(e) = db.clear_session_lost(row.id, lost[&row.id]) {
                         tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
                     }
                 }
