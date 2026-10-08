@@ -331,6 +331,12 @@ return {
 ratatui object** — that indirection is why reloading is safe, and why a plugin
 that throws costs its own pane and nothing else.
 
+A pane that throws draws an error panel in its own rect, and keeps drawing it
+until it has rendered cleanly for five seconds, so a pane that fails on some
+frames and not others holds one state instead of alternating with every tick.
+A float has no rect of its own to fail in: while it is failing it is not drawn
+and takes no input, and the message band says why, once per failure.
+
 ## What you get
 
 | Global | What it is |

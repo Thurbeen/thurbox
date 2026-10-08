@@ -14,7 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::bands::{Band, BandState, Level};
-use thurbox::kernel::host::RenderContext;
+use thurbox::kernel::host::{PluginError, RenderContext, Rendered};
 use thurbox::kernel::layout::{resolve, SlotMode};
 use thurbox::kernel::node::{Axis, Identity};
 use thurbox::kernel::perf::Counters;
@@ -24,8 +24,8 @@ use super::{
     clamp_span, error_area, hud_area, plugin_hud_area, read_cells, render_hud, render_plugin_hud,
 };
 use crate::{
-    App, ClickTarget, FORCE_REDRAW_INTERVAL, KEEP_FRAME_WHILE_TYPING, MIN_FRAME_INTERVAL,
-    OUTPUT_FRAME_INTERVAL, QUIESCENT_AFTER, STATUS_TTL,
+    App, ClickTarget, FAILURE_HOLD, FORCE_REDRAW_INTERVAL, KEEP_FRAME_WHILE_TYPING,
+    MIN_FRAME_INTERVAL, OUTPUT_FRAME_INTERVAL, QUIESCENT_AFTER, STATUS_TTL,
 };
 
 impl App {
@@ -578,7 +578,13 @@ impl App {
                 elapsed: self.started.elapsed().as_secs_f64(),
                 frame: self.frames,
             };
-            let Ok(rendered) = self.host.render(index, probe) else {
+            // A failing float is not drawn and grabs nothing until it has
+            // rendered cleanly for `FAILURE_HOLD`: it has no rect of its own to
+            // fail in, and drawn on the frames it happened to succeed it covered
+            // most of the screen every other tick. The message band says why,
+            // once per failure rather than once per tick.
+            let rendered = self.host.render(index, probe);
+            let Ok(rendered) = self.hold_failure(index, rendered) else {
                 continue;
             };
             let Some(float) = rendered.float else {
@@ -646,11 +652,17 @@ impl App {
             frame: self.frames,
         };
         Counters::bump(&self.perf.renders);
-        let rendered = match self.host.render(index, ctx) {
+        let rendered = self.host.render(index, ctx);
+        // Counted here, before the hold: a clean render the hold answers with
+        // the held failure is not a failure, and counting it would report one
+        // per frame for as long as a recovered pane is held.
+        if rendered.is_err() {
+            Counters::bump(&self.perf.failures);
+        }
+        let rendered = match self.hold_failure(index, rendered) {
             Ok(rendered) => rendered,
             Err(e) => {
                 paint::render_error(frame, rect, &e.plugin, &e.message);
-                Counters::bump(&self.perf.failures);
                 self.errors.push(e);
                 // The pane's own rect, though it drew no rows to record. A
                 // press matching no target at all falls through to
@@ -724,6 +736,50 @@ impl App {
         // likewise records no `FocusPane` for panes that cannot hold focus.
         let fallback = self.host.plugins[index].focusable.then_some(rect);
         self.push_targets(index, fallback, hits);
+    }
+
+    /// Hold a plugin in its failed state for [`FAILURE_HOLD`] after its last
+    /// throw, so a render that succeeds in the meantime answers with the held
+    /// failure instead of its tree.
+    ///
+    /// Only the start and the end of a failure are changes; a failure that
+    /// repeats on every tick moves nothing on screen. A float has no rect to
+    /// show its failure in, so its start goes to the message band.
+    pub(crate) fn hold_failure(
+        &mut self,
+        index: usize,
+        rendered: Result<Rendered, PluginError>,
+    ) -> Result<Rendered, PluginError> {
+        match rendered {
+            Err(e) => {
+                let started = self
+                    .failing
+                    .insert(index, (e.clone(), Instant::now()))
+                    .is_none();
+                if started {
+                    self.changed_this_frame = true;
+                    if self
+                        .host
+                        .plugins
+                        .get(index)
+                        .is_some_and(|plugin| plugin.floats)
+                    {
+                        let first = e.message.lines().next().unwrap_or_default().trim();
+                        self.report(format!("{} failed: {first}", e.plugin), Level::Error);
+                    }
+                }
+                Err(e)
+            }
+            Ok(rendered) => match self.failing.get(&index) {
+                Some((e, at)) if at.elapsed() < FAILURE_HOLD => Err(e.clone()),
+                Some(_) => {
+                    self.failing.remove(&index);
+                    self.changed_this_frame = true;
+                    Ok(rendered)
+                }
+                None => Ok(rendered),
+            },
+        }
     }
 
     /// Let every decorator of this plugin's slot restyle its tree.

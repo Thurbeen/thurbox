@@ -45,6 +45,7 @@ impl App {
         self.click_targets.clear();
         self.last_floats.clear();
         self.drawn_floats.clear();
+        self.failing.clear();
         // A plugin that was edited away, renamed, removed or turned off must not
         // leave its answers behind to accumulate across reloads — and must not be
         // able to read them again if a file of that name comes back.

@@ -311,6 +311,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         focus_return: initial_focus,
         reload_at: None,
         errors: Vec::new(),
+        failing: std::collections::HashMap::new(),
         links: std::collections::HashMap::new(),
         link_stamps: std::collections::HashMap::new(),
         link_scans: std::collections::HashMap::new(),
