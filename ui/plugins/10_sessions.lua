@@ -915,11 +915,13 @@ pane = {
       id = "folded_hosts",
       desc = "Folded hosts (managed by the session list)",
       default = "",
+      list = true,
     },
     {
       id = "folded_repos",
       desc = "Folded repos (managed by the session list)",
       default = "",
+      list = true,
     },
   },
 

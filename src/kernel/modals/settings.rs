@@ -355,6 +355,7 @@ fn core_rows(draft: &Settings) -> Vec<Setting> {
             },
             default: (field.get)(&defaults),
             value: (field.get)(draft),
+            list: false,
         })
         .collect()
 }
@@ -730,7 +731,7 @@ impl SettingsModal {
         let inner_width = usize::from(width.saturating_sub(2));
 
         let (lines, rows) = self.build_rows(settings, inner_width, chrome);
-        let footer = self.footer(settings, self.dirty(on_disk), chrome);
+        let footer = self.footer(settings, self.dirty(on_disk), inner_width, chrome);
         // Sized to the real content — headers, separators and rows — then
         // clamped to the screen, exactly as v1 sizes its panel.
         let height = (lines.len() + footer.len() + 2)
@@ -929,7 +930,13 @@ impl SettingsModal {
     }
 
     /// The pinned footer: which setting is selected, then the key hints.
-    fn footer<'a>(&self, settings: &[Setting], dirty: bool, chrome: Chrome) -> Vec<Line<'a>> {
+    fn footer<'a>(
+        &self,
+        settings: &[Setting],
+        dirty: bool,
+        width: usize,
+        chrome: Chrome,
+    ) -> Vec<Line<'a>> {
         let mut footer = Vec::new();
         match settings.get(self.selected) {
             // A core row is named by its path in the file, which is where the
@@ -942,10 +949,23 @@ impl SettingsModal {
                 // and an unexplained glyph carries none of that.
                 Span::styled(format!("   {RESTART_MARK} needs restart"), chrome.muted()),
             ])),
-            Some(setting) => footer.push(Line::from(vec![
-                Span::styled("  key  ", chrome.muted()),
-                Span::styled(format!("{}.{}", setting.plugin, setting.id), chrome.muted()),
-            ])),
+            Some(setting) => {
+                let key = format!("  key  {}.{}", setting.plugin, setting.id);
+                let used = key.chars().count();
+                let mut line = vec![Span::styled(key, chrome.muted())];
+                // The row only has room for a count, so the selected list is
+                // spelled out here, cut to the line.
+                if let (true, Value::Text(text)) = (setting.list, &setting.value) {
+                    line.push(Span::styled(
+                        chrome::truncate(
+                            &format!("  {}", entries(text).join(", ")),
+                            width.saturating_sub(used),
+                        ),
+                        chrome.muted(),
+                    ));
+                }
+                footer.push(Line::from(line))
+            }
             None => footer.push(Line::from(Span::styled(
                 "  nothing to configure",
                 chrome.muted(),
@@ -1011,6 +1031,52 @@ fn value_text(value: &Value) -> String {
     }
 }
 
+/// What a row shows in its value column: a declared list as its entry count,
+/// since the raw string is escaped keys that mean nothing at a glance.
+fn shown(setting: &Setting) -> String {
+    match (setting.list, &setting.value) {
+        (true, Value::Text(text)) => match entries(text).len() {
+            0 => "none".to_string(),
+            1 => "1 entry".to_string(),
+            n => format!("{n} entries"),
+        },
+        (_, value) => value_text(value),
+    }
+}
+
+/// A list setting's entries, unescaped. A control character — the session
+/// list separates the parts of a key with `\0` and `\1` — is drawn as `/`,
+/// since a terminal cell cannot show one.
+fn entries(text: &str) -> Vec<String> {
+    text.split(';')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let mut bytes = Vec::with_capacity(entry.len());
+            let mut rest = entry.as_bytes();
+            while let Some((&byte, tail)) = rest.split_first() {
+                let hex = tail
+                    .get(..2)
+                    .and_then(|pair| std::str::from_utf8(pair).ok())
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+                match (byte, hex) {
+                    (b'%', Some(decoded)) => {
+                        bytes.push(decoded);
+                        rest = &tail[2..];
+                    }
+                    _ => {
+                        bytes.push(byte);
+                        rest = tail;
+                    }
+                }
+            }
+            String::from_utf8_lossy(&bytes)
+                .chars()
+                .map(|c| if c.is_control() { '/' } else { c })
+                .collect()
+        })
+        .collect()
+}
+
 /// One setting row, in fixed columns so the values line up:
 /// `▸ <id (bold)> <description (dimmed)> … <value right-justified>`.
 ///
@@ -1038,7 +1104,7 @@ fn desired_width(settings: &[Setting]) -> u16 {
 fn value_column(settings: &[Setting]) -> usize {
     settings
         .iter()
-        .map(|setting| value_text(&setting.value).chars().count())
+        .map(|setting| shown(setting).chars().count())
         .max()
         .unwrap_or(0)
         .clamp(3, VALUE_WIDTH_MAX)
@@ -1095,7 +1161,7 @@ fn setting_line<'a>(
                 text.into_iter().collect()
             }
         }
-        None => chrome::truncate(&value_text(&setting.value), value_width),
+        None => chrome::truncate(&shown(setting), value_width),
     };
     let id = chrome::pad(&setting.id, id_width);
     let block = 2 + id_width + 1;
@@ -1130,6 +1196,7 @@ mod tests {
             description: format!("what {id} does"),
             value: default.clone(),
             default,
+            list: false,
         }
     }
 
@@ -1144,6 +1211,23 @@ mod tests {
         assert_eq!(value_text(&Value::Number(30.0)), "‹ 30 ›");
         assert_eq!(value_text(&Value::Bool(true)), "on");
         assert_eq!(value_text(&Value::Text("hi".into())), "hi");
+    }
+
+    /// A malformed escape is kept as written rather than dropped, and the
+    /// session list's `\0`/`\1` separators are drawn as `/`.
+    #[test]
+    fn a_list_value_is_counted_and_unescaped() {
+        assert_eq!(
+            entries("repo%3Ah%01a%00b;;100%;%zz"),
+            ["repo:h/a/b", "100%", "%zz"]
+        );
+        let list = |value: &str| Setting {
+            list: true,
+            ..setting("sessions", "folded_repos", Value::Text(value.into()))
+        };
+        assert_eq!(shown(&list("")), "none");
+        assert_eq!(shown(&list("a")), "1 entry");
+        assert_eq!(shown(&list("a;b")), "2 entries");
     }
 
     /// An edit longer than the value column shows its tail, so the caret stays

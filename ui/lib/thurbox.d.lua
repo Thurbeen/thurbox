@@ -293,6 +293,7 @@
 ---@field id string
 ---@field desc? string
 ---@field default boolean|number|string
+---@field list? boolean A `;`-separated list of percent-escaped entries, shown as a count.
 
 --- What a plugin file returns.
 ---
