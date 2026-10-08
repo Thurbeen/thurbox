@@ -75,8 +75,8 @@ breadcrumb: 'FAQ'
 <h2 id="rmux-troubleshooting">Why is RMUX missing or refusing to start?</h2>
 <p>
   Check <code>rmux -V</code> where sessions run: locally, on the SSH host, or
-  inside the WSL distro. The local picker offers RMUX only when its binary is
-  on <code>PATH</code>, and thurbox rejects versions below 0.10.0. An old 0.9.x
+  inside the WSL distro. The picker offers RMUX only where its binary is
+  found (on <code>PATH</code> locally, by the host probe on a host), and thurbox rejects versions below 0.10.0. An old 0.9.x
   daemon is incompatible with a 0.10.0 client. Finish or save agents' work before
   stopping that server for an upgrade. See
   <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#multiplexer-requirements-and-rmux-setup">the upgrade procedure and known limits</a>.

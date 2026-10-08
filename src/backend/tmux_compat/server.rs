@@ -4327,6 +4327,7 @@ mod tests {
                 base: vec!["/usr/bin".into()],
                 shell_login: Some(vec!["/home/me/.local/bin".into(), "/usr/bin".into()]),
                 sh_login: None,
+                multiplexers: Vec::new(),
             }),
         );
         let backend = TestBackend::for_host(&host);

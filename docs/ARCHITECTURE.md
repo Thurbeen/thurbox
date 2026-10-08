@@ -2474,8 +2474,10 @@ registers probe adapters for all four multiplexers and checks each route
 reaches its own from a POSIX and a Windows thurbox, locally, over ssh to a host
 of either platform and in a WSL distro, built from the placement's platform
 and launcher, with a launcher that adds nothing to the probe's command line.
-The local picker offers every registered multiplexer whose optional binary is
-available, so psmux appears on a POSIX machine and tmux on Windows. The
+Registration is not what the new-session picker offers: it lists only the
+registered multiplexers that are native to the host's platform and installed
+there (`Multiplexer::available_on`), and skips itself when one remains, so
+psmux never appears on a POSIX machine nor tmux on native Windows. The
 heartbeat, the own-pane status write
 and the hook-state listing went behind the contract in ADR-32. The heartbeat
 only ensures its session exists: every backend applies its config before it

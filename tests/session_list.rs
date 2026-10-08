@@ -657,6 +657,7 @@ fn host_kind_uses_transport_and_platform_independently() {
         detail: String::new(),
         multiplexer: None,
         available_multiplexers: vec![],
+        probing: false,
     })
     .collect();
     let mut registry = registry_for(&host);

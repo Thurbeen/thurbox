@@ -351,12 +351,26 @@ preference. `thurbox-cli session create --multiplexer <name>` overrides either
 for one creation. The TUI asks for a host and then shows the registered
 multiplexers for it. The order is explicit choice, configured host or local
 preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
-The TUI keeps that default selected. Where both are offered, it places `rmux`
-immediately after `tmux`. The local picker offers `rmux` only while its binary
-resolves on `PATH`; a remote host's binaries cannot be checked locally, so its
-registered choices remain visible.
-If a configured choice is unavailable, the TUI requires an explicit selection
-of another offered multiplexer before continuing.
+
+The TUI offers only the multiplexers **available** on the chosen host:
+registered, native to its platform (tmux on POSIX and WSL, psmux on native
+Windows, RMUX on either), and installed there. Locally that is a `PATH`
+lookup. For an SSH or WSL host it is the probe that already reads the host's
+login `PATH` (see `path_prepend` above), which also names each multiplexer it
+finds; it runs in the background, once per host per process, so the picker
+never waits on a host. Until it answers, and on a native-Windows host, which
+is not probed, a host offers its platform default and its configured
+`multiplexer`.
+
+The picker appears only when that leaves a real choice. With exactly one
+available it is skipped and that one is used, so a machine with only RMUX
+runs RMUX. With none, it says so with an install hint. A configured choice
+that is available skips it too; one that is not requires an explicit
+selection of another offered multiplexer. With two or more, the platform
+default stays selected and `rmux` sits immediately after `tmux`. A local
+`thurbox-cli session create` with no `--multiplexer` and no configured one
+applies the same rule: the platform default when it is installed, otherwise
+the one that is.
 Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
 registered implementation is shown as unavailable and creation refuses it
 before making a worktree or pane.
@@ -399,7 +413,8 @@ Which multiplexers work is what is **registered**, never the OS: every
 multiplexer an adapter implements (`tmux`, `psmux`, and `rmux`) is registered for
 this machine and for every host, whatever either's platform or preference — a
 binary that is not installed is reported by name when a session first needs
-it. A route naming a multiplexer no adapter implements (`herdr` today)
+it (the TUI's picker narrows this further to what is installed; see above).
+A route naming a multiplexer no adapter implements (`herdr` today)
 is refused by name, and is neither created nor driven with another binary. A
 force-delete or reap of a local row on a multiplexer this machine does not run
 refuses rather than removing a
@@ -459,8 +474,9 @@ package layout: on Unix run the archive's `./install.sh --prefix ~/.local`,
 and keep its `bin/` and `libexec/`; do not copy just the executable.
 
 Press **Ctrl+N**, choose the host if prompted, then choose **RMUX** immediately
-after tmux in the multiplexer picker. Locally RMUX appears only when `rmux`
-resolves on `PATH`; host choices remain visible without a remote binary probe.
+after tmux in the multiplexer picker. RMUX appears only where an `rmux` binary
+is found — on `PATH` locally, by the host probe on a host — and when it is the
+only multiplexer installed, the picker is skipped and RMUX is used.
 To make it the default for new local sessions, set this top-level value in
 `settings.toml`:
 

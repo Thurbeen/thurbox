@@ -27,13 +27,49 @@ impl Multiplexer {
         }
     }
 
-    /// An optional local picker choice whose binary must be present before it
-    /// is offered. Established choices keep their existing picker behavior.
-    pub const fn local_picker_binary(self) -> Option<&'static str> {
+    /// Whether this multiplexer runs natively on a machine of `platform`.
+    /// psmux is a Windows program and tmux a POSIX one; a binary of either
+    /// name found on the other kind of machine is not something thurbox can
+    /// drive there.
+    pub const fn runs_on(self, platform: Platform) -> bool {
         match self {
-            Self::Rmux => Some("rmux"),
-            _ => None,
+            Self::Tmux => matches!(platform, Platform::Posix),
+            Self::Psmux => matches!(platform, Platform::Windows),
+            Self::Rmux | Self::Herdr => true,
         }
+    }
+
+    /// The multiplexers a machine of `platform` offers, in [`Self::ALL`] order:
+    /// those that run there and were `found` installed.
+    ///
+    /// `found` is `None` when nobody has looked — a host whose probe has not
+    /// answered, or a native-Windows host, which has no `sh` to probe with.
+    /// That offers what the machine was already trusted to run: its platform
+    /// default and its configured `preference`, never an optional one nobody
+    /// has seen.
+    pub fn available_on(
+        platform: Platform,
+        found: Option<&[Self]>,
+        preference: Option<Self>,
+    ) -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|mux| match found {
+                Some(found) => mux.runs_on(platform) && found.contains(mux),
+                None => *mux == Self::default_for(platform) || Some(*mux) == preference,
+            })
+            .collect()
+    }
+
+    /// What a create uses when nothing names a multiplexer, among the
+    /// `available` ones: the platform default when it is there, else the first
+    /// one that is — a machine with only RMUX installed runs RMUX.
+    pub fn preferred(platform: Platform, available: &[Self]) -> Option<Self> {
+        let default = Self::default_for(platform);
+        if available.contains(&default) {
+            return Some(default);
+        }
+        available.first().copied()
     }
 
     pub fn parse(name: &str) -> Result<Self, String> {
@@ -187,5 +223,60 @@ mod tests {
         for mux in Multiplexer::ALL {
             assert!(refused.contains(mux.name()), "{refused}");
         }
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    use Multiplexer::{Psmux, Rmux, Tmux};
+
+    #[test]
+    fn only_what_runs_on_the_platform_and_was_found_is_offered() {
+        let found = [Tmux, Psmux, Rmux];
+        assert_eq!(
+            Multiplexer::available_on(Platform::Posix, Some(&found), None),
+            vec![Tmux, Rmux],
+            "psmux is native Windows, whatever a POSIX PATH holds"
+        );
+        assert_eq!(
+            Multiplexer::available_on(Platform::Windows, Some(&found), None),
+            vec![Psmux, Rmux]
+        );
+        assert_eq!(
+            Multiplexer::available_on(Platform::Posix, Some(&[Rmux]), None),
+            vec![Rmux]
+        );
+        assert!(Multiplexer::available_on(Platform::Posix, Some(&[]), None).is_empty());
+    }
+
+    #[test]
+    fn an_unlooked_machine_offers_its_default_and_its_preference_only() {
+        assert_eq!(
+            Multiplexer::available_on(Platform::Posix, None, None),
+            vec![Tmux]
+        );
+        assert_eq!(
+            Multiplexer::available_on(Platform::Windows, None, None),
+            vec![Psmux]
+        );
+        assert_eq!(
+            Multiplexer::available_on(Platform::Posix, None, Some(Rmux)),
+            vec![Tmux, Rmux]
+        );
+    }
+
+    #[test]
+    fn the_preferred_one_is_the_platform_default_when_it_is_available() {
+        assert_eq!(
+            Multiplexer::preferred(Platform::Posix, &[Tmux, Rmux]),
+            Some(Tmux)
+        );
+        assert_eq!(Multiplexer::preferred(Platform::Posix, &[Rmux]), Some(Rmux));
+        assert_eq!(
+            Multiplexer::preferred(Platform::Windows, &[Psmux, Rmux]),
+            Some(Psmux)
+        );
+        assert_eq!(Multiplexer::preferred(Platform::Posix, &[]), None);
     }
 }

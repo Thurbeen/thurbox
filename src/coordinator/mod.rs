@@ -592,6 +592,9 @@ impl App {
         // is idempotent, so asking every iteration costs four lookups.
         let wants = self.repo_wants();
         self.repos.serve(&wants);
+        // An open flow is also what lets each host be asked which
+        // multiplexers it has.
+        self.snapshots.probe_hosts(wants.bookmarks.is_some());
         if self.repos.poll() {
             self.note_data_change();
         }

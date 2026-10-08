@@ -321,6 +321,16 @@ pub fn is_missing_dependency(err: &anyhow::Error) -> bool {
     err.chain().any(|e| e.is::<MissingDependency>())
 }
 
+/// The multiplexers installed here that this machine can run, in
+/// [`Multiplexer::ALL`] order.
+pub fn local_multiplexers() -> Vec<Multiplexer> {
+    let found: Vec<Multiplexer> = Multiplexer::ALL
+        .into_iter()
+        .filter(|mux| look_up(mux.name()) == Presence::Present)
+        .collect();
+    Multiplexer::available_on(crate::session::Platform::local(), Some(&found), None)
+}
+
 /// The multiplexer a local session would run in on this platform.
 pub fn local_multiplexer() -> &'static str {
     Multiplexer::platform_default().name()

@@ -845,6 +845,7 @@ fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
             "available_multiplexers",
             host.available_multiplexers.clone(),
         )?;
+        set(&item, "probing", host.probing)?;
         hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(hosts))
