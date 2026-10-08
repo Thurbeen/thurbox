@@ -439,7 +439,7 @@ fn devbox(platform: &str, available: &[&str]) -> HostRow {
         backend: "ssh:devbox".into(),
         platform: platform.into(),
         multiplexer: None,
-        available_multiplexers: available.iter().map(|name| name.to_string()).collect(),
+        available_multiplexers: available.iter().map(ToString::to_string).collect(),
         probing: false,
     }
 }
