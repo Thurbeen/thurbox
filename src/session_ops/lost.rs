@@ -38,6 +38,7 @@ impl LostSweep {
             }
         };
         let stopped = db.load_stopped_sessions().unwrap_or_default();
+        let lost = db.load_lost_sessions().unwrap_or_default();
         // One listing per backend. A backend that could not be asked proves
         // nothing about its rows: they are not missing on this look, so their
         // confirmation starts over.
@@ -66,12 +67,22 @@ impl LostSweep {
                             None
                         }
                     });
-            let absent = listing.as_ref().is_some_and(|index| {
-                index.agent_window(&row.id.to_string(), &row.name)
-                    == crate::backend::Located::Absent
-            });
-            if absent {
-                missing.insert(row.id, row.backend_id);
+            let Some(index) = listing.as_ref() else {
+                continue;
+            };
+            match index.agent_window(&row.id.to_string(), &row.name) {
+                // Already reported: nothing to confirm, and no write to take.
+                crate::backend::Located::Absent if !lost.contains(&row.id) => {
+                    missing.insert(row.id, row.backend_id);
+                }
+                // Back again — however it came back, on whatever pane id — so
+                // its next death is news.
+                crate::backend::Located::At(_) if lost.contains(&row.id) => {
+                    if let Err(e) = db.clear_session_lost(row.id) {
+                        tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
+                    }
+                }
+                _ => {}
             }
         }
         self.confirm(missing)

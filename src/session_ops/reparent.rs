@@ -41,9 +41,14 @@ pub fn reparent_session_headless(
         }
     }
 
-    db.set_session_parent(id, parent)
-        .map_err(|e| format!("could not set the parent of '{}': {e}", session.name))?;
-    Ok(())
+    match db.set_session_parent(id, parent) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("Session not found: {id}")),
+        Err(e) => Err(format!(
+            "could not set the parent of '{}': {e}",
+            session.name
+        )),
+    }
 }
 
 /// Walk up from `parent`; reaching `id` means `parent` is `id` or below it.

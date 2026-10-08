@@ -354,8 +354,11 @@ every pane on its server, and nothing inside it survives to log that. So every
 `changed`/`lost` for an active, unparked, local session whose window is gone —
 on the second look in a row with the same pane, so a `restart` caught between
 kill and respawn is not a loss. `Database::record_session_lost` checks under
-the write lock that the row still points at that pane and that the loss is not
-already logged, so concurrent and back-to-back watchers report it once. A
+the write lock that the row still points at that pane, that no restart holds
+it, and that its `lost_at` mark (schema v50) is unset, then sets it — so
+concurrent and back-to-back watchers report a loss once. The mark lifts when a
+sweep sees the window again or a pane is recorded for the row (a fresh tmux
+server reissues `%0`, so the pane id alone cannot say it came back). A
 listing that fails is not absence; a crashed server's stale socket is (tmux
 answers "no server running").
 

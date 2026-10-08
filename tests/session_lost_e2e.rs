@@ -20,6 +20,12 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+use tmux_server::TmuxServer;
+
 const SOCKET: &str = "thurbox-lost-e2e";
 
 /// Mirrors `agent::tmux::TMUX_SESSION` for a dev build, which a test binary is.
@@ -41,15 +47,20 @@ fn have_tmux() -> bool {
 
 struct Env {
     root: tempfile::TempDir,
+    /// The private server the sessions live on, and the one `watch` lists.
+    server: TmuxServer,
 }
 
 impl Env {
     fn new() -> Self {
         let root = tempfile::TempDir::new().expect("tempdir");
-        for sub in ["home", "config", "data", "tmux"] {
+        for sub in ["home", "config", "data"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        Self { root }
+        Self {
+            root,
+            server: TmuxServer::private(SOCKET),
+        }
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -61,12 +72,7 @@ impl Env {
     }
 
     fn tmux(&self, args: &[&str]) -> std::process::Output {
-        Command::new("tmux")
-            .env("TMUX_TMPDIR", self.path("tmux"))
-            .args(["-L", SOCKET])
-            .args(args)
-            .output()
-            .expect("run tmux")
+        self.server.tmux(args)
     }
 
     /// A window on the private server, named the way thurbox names a session's
@@ -131,8 +137,7 @@ impl Env {
         cmd.env("XDG_CONFIG_HOME", self.path("home").join("xdg-config"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        cmd.env("THURBOX_SOCKET", SOCKET);
-        cmd.env("TMUX_TMPDIR", self.path("tmux"));
+        self.server.scope(&mut cmd);
         cmd.env_remove("TMUX");
         cmd.env_remove("THURBOX_SOCKET_FOR");
         cmd.env_remove("THURBOX_SESSION");
@@ -153,12 +158,6 @@ impl Env {
             }
         });
         Watch { child, lines }
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        let _ = self.tmux(&["kill-server"]);
     }
 }
 
@@ -244,4 +243,36 @@ fn a_crashed_backend_reports_each_running_session_lost_once() {
     // The next watcher — a driver runs them back to back — has nothing to add.
     let again = env.watch();
     again.silent_for(QUIET, "the loss was already in the log");
+}
+
+/// A fresh tmux server numbers its panes from `%0` again, so a worker brought
+/// back after a crash can sit on the very pane id it had. Its next death is
+/// still news.
+#[test]
+fn a_session_back_on_the_same_pane_is_reported_when_it_dies_again() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let worker = row("worker", env.window("worker"));
+    db.upsert_session(&worker).expect("persist worker");
+
+    let watch = env.watch();
+    env.crash_server();
+    assert_eq!(watch.event("the first loss")["reason"], "lost");
+
+    // The agent comes back by hand on a new server, on the same pane id.
+    assert_eq!(
+        env.window("worker"),
+        worker.backend_id,
+        "tmux reused the pane id"
+    );
+    watch.silent_for(QUIET, "the window is back");
+
+    env.crash_server();
+    let again = watch.event("the second loss");
+    assert_eq!(again["reason"], "lost");
+    assert_eq!(again["session"], worker.id.to_string());
 }

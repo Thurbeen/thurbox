@@ -14,9 +14,9 @@ use migrations::{
     migrate_v41_joinable, migrate_v42_worktree_provenance, migrate_v43_session_events,
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
-    migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v5_session_commands,
-    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
-    migrate_v9_agent_session_id,
+    migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
+    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
+    migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -84,7 +84,11 @@ use rusqlite::Connection;
 /// Gaps in the step table are fine (there is no v18 step either).
 /// v49 separates snapshot changes from hook liveness stamps and perf telemetry.
 /// Triggers maintain the generations even for writes from older binaries.
-pub const SCHEMA_VERSION: u32 = 49;
+/// v50 adds `lost_at` to `sessions`: when `watch` reported the row's pane gone
+/// with nobody asking, cleared once a pane is seen or recorded for it again.
+/// The event log cannot carry that mark: a restarted agent can sit on the very
+/// pane id it had, which leaves no event behind, and the log is pruned.
+pub const SCHEMA_VERSION: u32 = 50;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -189,6 +193,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             reports_as        TEXT,
             host_updated_at   INTEGER,
             teardown_owed     INTEGER NOT NULL DEFAULT 0,
+            lost_at           INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -449,6 +454,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (47, migrate_v47_wsl_loopback_repair_owed, Reapply::Never),
         (48, migrate_v48_message_delivered_via, Reapply::WhenMissing),
         (49, migrate_v49_snapshot_versions, Reapply::WhenMissing),
+        (50, migrate_v50_lost_at, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {

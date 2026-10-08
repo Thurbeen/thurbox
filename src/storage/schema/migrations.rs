@@ -930,6 +930,12 @@ pub(super) fn migrate_v46_teardown_owed(conn: &Connection) -> rusqlite::Result<(
     )
 }
 
+/// See [`super::SCHEMA_VERSION`] v50: NULL on every existing row — nothing
+/// before this version reported a loss.
+pub(super) fn migrate_v50_lost_at(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "sessions", "lost_at", "INTEGER")
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.
