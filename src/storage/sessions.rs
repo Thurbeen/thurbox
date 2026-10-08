@@ -618,6 +618,26 @@ impl Database {
         Ok(())
     }
 
+    /// Point a live session at another parent, or at none. Returns whether a
+    /// row matched. The link is informational ([`SharedSession::parent_session_id`]),
+    /// so the caller validates the parent; this only writes it.
+    pub fn set_session_parent(
+        &self,
+        id: SessionId,
+        parent: Option<SessionId>,
+    ) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET parent_session_id = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted_at IS NULL",
+            params![
+                parent.map(|p| p.to_string()),
+                current_time_millis() as i64,
+                id.to_string()
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
     /// The agent every session declared with [`set_reports_as`](Self::set_reports_as),
     /// keyed by id — one query for a listing rather than one per row.
     ///
@@ -722,6 +742,56 @@ impl Database {
             )
             .optional()?;
         Ok(at.flatten().map(|v| v as u64))
+    }
+
+    /// Record that `id`'s pane `backend_id` is gone although nobody parked or
+    /// deleted it — the `changed`/`lost` event. Returns whether one was written.
+    ///
+    /// Checked and written under one write lock, so two watchers seeing the
+    /// same death record it once. Nothing is written when the row has moved on
+    /// since the caller looked (deleted, parked, or pointing at a new pane), or
+    /// when this loss is already in the log: the last event that could have
+    /// given the row a pane is the `lost` itself.
+    pub fn record_session_lost(&self, id: SessionId, backend_id: &str) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let row: Option<(String, Option<i64>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT backend_id, stopped_at, hook_state FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((pane, None, hook_state)) = row else {
+            return Ok(false);
+        };
+        if pane != backend_id {
+            return Ok(false);
+        }
+        let last: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT reason FROM session_events WHERE session_id = ?1 \
+                 AND reason IN ('lost', 'updated', 'started', 'spawned', 'registered', 'restored') \
+                 ORDER BY seq DESC LIMIT 1",
+                params![id_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if last.as_deref() == Some(EventReason::Lost.as_str()) {
+            return Ok(false);
+        }
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Lost,
+            hook_state.as_deref(),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Every stopped session, as a set. Loaded in one query beside

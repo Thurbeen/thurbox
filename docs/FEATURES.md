@@ -2523,8 +2523,9 @@ Sessions carry an optional `parent_session_id` (nullable column on
 `sessions`, schema v30) so orchestration scripts can model a lead
 session that spawns workers: `thurbox-cli session create --parent
 <uuid>` sets it, `session list`/`get` expose it, and `session list
---parent <uuid>` lists direct children. In the TUI, `Ctrl+F` fork
-records the source session as the fork's parent.
+--parent <uuid>` lists direct children, and `session reparent <session>
+<parent>` (or `--clear`) moves one — what a lead migration needs. In the TUI,
+`Ctrl+F` fork records the source session as the fork's parent.
 
 ### Why informational-only (no cascade)
 

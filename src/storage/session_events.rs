@@ -70,6 +70,10 @@ pub enum EventReason {
     /// `changed`: an identifying fact moved (the name, or the pane the row
     /// points at).
     Updated,
+    /// `changed`: the pane died with nobody asking — its multiplexer crashed,
+    /// or the process went and took the window. The row stands; a
+    /// `session restart` brings the agent back.
+    Lost,
     /// `gone`: soft-deleted, and so restorable.
     SoftDeleted,
     /// `gone`: hard-deleted — worktrees and window torn down, not restorable.
@@ -90,6 +94,7 @@ impl EventReason {
             Self::Stopped => "stopped",
             Self::Started => "started",
             Self::Updated => "updated",
+            Self::Lost => "lost",
             Self::SoftDeleted => "soft_deleted",
             Self::ForceDeleted => "force_deleted",
             Self::Forgotten => "forgotten",

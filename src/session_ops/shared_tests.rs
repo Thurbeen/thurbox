@@ -125,6 +125,14 @@ fn rig() -> Rig {
                 Ok(json!({ "reaped": known, "id": id.to_string() }))
             }
             ["session", "restart", _id, ..] => Ok(json!({ "restarted": true })),
+            ["session", "reparent", id, parent] => {
+                let id: SessionId = id.parse().unwrap();
+                let parent = (*parent != "--clear").then(|| parent.parse().unwrap());
+                for row in host.active.iter_mut().filter(|s| s.id == id) {
+                    row.parent_session_id = parent;
+                }
+                Ok(json!({ "session_id": id.to_string() }))
+            }
             ["session", "restore", id, ..] => {
                 let id: SessionId = id.parse().unwrap();
                 host.deleted.retain(|(gone, _)| *gone != id);
@@ -320,6 +328,36 @@ fn an_unpark_reaches_the_host_as_a_plain_restart() {
         .find(|c| c.get(1).map(String::as_str) == Some("restart"))
         .expect("the unpark is delegated");
     assert_eq!(restart, vec!["session", "restart", &id.to_string()]);
+}
+
+#[test]
+fn a_reparent_is_made_on_the_host_whose_record_wins() {
+    let rig = rig();
+    let (lead, worker) = (SessionId::default(), SessionId::default());
+    for (id, name) in [(lead, "lead"), (worker, "worker")] {
+        let mut row = host_session(id, name);
+        row.backend_type = BACKEND.into();
+        rig.db.upsert_session(&row).unwrap();
+        rig.host.borrow_mut().active.push(host_session(id, name));
+    }
+
+    super::reparent::reparent_session_headless(&rig.db, worker, Some(lead)).unwrap();
+
+    assert_eq!(
+        fake::calls()[0],
+        vec![
+            "session",
+            "reparent",
+            &worker.to_string(),
+            &lead.to_string()
+        ]
+    );
+    let row = rig.db.get_session_by_id(worker).unwrap().unwrap();
+    assert_eq!(
+        row.parent_session_id,
+        Some(lead),
+        "mirrored back from the host"
+    );
 }
 
 #[test]
