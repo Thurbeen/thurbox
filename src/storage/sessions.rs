@@ -618,6 +618,40 @@ impl Database {
         Ok(())
     }
 
+    /// The parent a session row names, deleted or not — what a walk up the
+    /// tree needs, since a soft-deleted ancestor can be restored into it.
+    pub fn session_parent_any(&self, id: SessionId) -> rusqlite::Result<Option<SessionId>> {
+        let parent: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT parent_session_id FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(parent.flatten().and_then(|p| p.parse().ok()))
+    }
+
+    /// Point a live session at another parent, or at none. Returns whether a
+    /// row matched. The link is informational ([`SharedSession::parent_session_id`]),
+    /// so the caller validates the parent; this only writes it.
+    pub fn set_session_parent(
+        &self,
+        id: SessionId,
+        parent: Option<SessionId>,
+    ) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET parent_session_id = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted_at IS NULL",
+            params![
+                parent.map(|p| p.to_string()),
+                current_time_millis() as i64,
+                id.to_string()
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
     /// The agent every session declared with [`set_reports_as`](Self::set_reports_as),
     /// keyed by id — one query for a listing rather than one per row.
     ///
@@ -722,6 +756,76 @@ impl Database {
             )
             .optional()?;
         Ok(at.flatten().map(|v| v as u64))
+    }
+
+    /// Record that `id`'s pane `backend_id` is gone although nobody parked or
+    /// deleted it — the `changed`/`lost` event, and the row's `lost_at` mark.
+    /// Returns whether one was written.
+    ///
+    /// Checked and written under one write lock, so two watchers seeing the
+    /// same death record it once. Nothing is written when the row has moved on
+    /// since the caller looked (deleted, parked, or pointing at a new pane),
+    /// while a restart holds it, or when it is already marked lost.
+    pub fn record_session_lost(&self, id: SessionId, backend_id: &str) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let row: Option<(String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT backend_id, hook_state FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL \
+                 AND lost_at IS NULL",
+                params![id_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((_, hook_state)) = row.filter(|(pane, _)| pane == backend_id) else {
+            return Ok(false);
+        };
+        // A restart kills the window before it spawns the next one; while it
+        // holds the row, the gap is on purpose.
+        if self.session_restart_held(&id_str, current_time_millis())? {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET lost_at = ?1 WHERE id = ?2",
+            params![current_time_millis() as i64, id_str],
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Lost,
+            hook_state.as_deref(),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The sessions marked lost, with when — see
+    /// [`record_session_lost`](Self::record_session_lost).
+    pub fn load_lost_sessions(&self) -> rusqlite::Result<HashMap<SessionId, i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, lost_at FROM sessions WHERE deleted_at IS NULL AND lost_at IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(id, at)| Some((id.parse().ok()?, at)))
+            .collect())
+    }
+
+    /// Lift the lost mark set at `lost_at`: the session has a pane again, so
+    /// its next death is news. Only that mark — one a later loss has since set
+    /// is a death the caller has not seen, and stays.
+    pub fn clear_session_lost(&self, id: SessionId, lost_at: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET lost_at = NULL WHERE id = ?1 AND lost_at = ?2",
+            params![id.to_string(), lost_at],
+        )?;
+        Ok(())
     }
 
     /// Every stopped session, as a set. Loaded in one query beside
@@ -1148,8 +1252,10 @@ impl Database {
                 |row| row.get(0),
             )
             .optional()?;
+        // A pane recorded for the row is one it has again, lost or not — even
+        // the same id, which a fresh tmux server hands out from `%0` again.
         let mut stmt = self.conn.prepare_cached(
-            "UPDATE sessions SET backend_id = ?1 \
+            "UPDATE sessions SET backend_id = ?1, lost_at = NULL \
              WHERE id = ?2 AND deleted_at IS NULL",
         )?;
         let updated = stmt.execute(params![pane, id_str])?;
@@ -1964,6 +2070,50 @@ mod tests {
             sessions[0].agent_session_id,
             Some("claude-abc-123".to_string())
         );
+    }
+
+    #[test]
+    fn a_loss_is_recorded_once_until_a_pane_is_recorded_again() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let pane = session.backend_id.as_str();
+
+        assert!(db.record_session_lost(session.id, pane).unwrap());
+        assert!(!db.record_session_lost(session.id, pane).unwrap(), "once");
+
+        // A restart onto the very pane id it had: no event, but a pane again.
+        db.set_backend_id(session.id, pane).unwrap();
+        assert!(db.record_session_lost(session.id, pane).unwrap());
+
+        let at = db.load_lost_sessions().unwrap()[&session.id];
+        db.clear_session_lost(session.id, at - 1).unwrap();
+        assert!(
+            !db.record_session_lost(session.id, pane).unwrap(),
+            "not that mark"
+        );
+        db.clear_session_lost(session.id, at).unwrap();
+        assert!(db.record_session_lost(session.id, pane).unwrap());
+    }
+
+    #[test]
+    fn a_session_mid_restart_is_not_lost() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let id = session.id.to_string();
+        let now = current_time_millis();
+        assert!(db.claim_session_restart(&id, now + 60_000, now).unwrap());
+
+        // Kill-then-spawn: between the two the window is gone on purpose.
+        assert!(!db
+            .record_session_lost(session.id, &session.backend_id)
+            .unwrap());
+
+        db.release_session_restart(&id, now + 60_000).unwrap();
+        assert!(db
+            .record_session_lost(session.id, &session.backend_id)
+            .unwrap());
     }
 
     #[test]

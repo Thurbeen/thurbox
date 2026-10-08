@@ -170,7 +170,7 @@ like, and a sampler that reads the row every 250 ms sees neither edge.
 
 Each line carries a `seq` (monotonic, never reused), the `event`
 (`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
-`spawned`/`registered`/`restored`, `state`/`stopped`/`started`/`updated`,
+`spawned`/`registered`/`restored`, `state`/`stopped`/`started`/`updated`/`lost`,
 `soft_deleted`/`force_deleted`/`forgotten` — the `from_state` → `to_state` of the
 transition, and the same gating fields the table above lists, so acting on a
 `blocked` needs no follow-up `session get`. `hook_state_contradicted` is `null`
@@ -188,12 +188,28 @@ touched nothing at all: a session mirrored through another host left this
 instance's list (`[remote] transitive_sessions = false`) and goes on running at
 its owner.
 
+`lost` is a session whose pane went with nobody asking — a multiplexer crash
+takes every pane on its server, and nothing inside that server is left to
+write an event. `watch` looks at the local windows every few seconds
+and reports a running session whose window is gone, once, as `changed`/`lost`
+with the last state in `from_state`. A parked session is not lost, and a
+`session restart` brings a lost one back. It covers **local sessions only**:
+a peer's mirror pass copies a host's rows, not its events, so a `--host`
+session's loss reaches nobody unless a `watch` runs on that host. Run `watch`
+with the environment the sessions were created in — a watcher that resolves a
+different tmux socket (another `TMUX_TMPDIR`, a private `/tmp`) finds no server
+and reports every local session lost.
+
 ### `--parent`
 
 Spawn workers with `--parent "$THURBOX_SESSION"` and the lead/worker
 tree is recorded rather than remembered. `session list --parent <uuid>
 --json` enumerates a run's workers afterwards — including the ones that
 never reported, which are exactly the ones you need to find.
+
+When a lead is replaced, move its workers with `session reparent <worker>
+<new-lead>` (`--clear` makes one top-level). The new parent must be active, and
+a link that would make a cycle is refused.
 
 ### Deliberately no automations
 

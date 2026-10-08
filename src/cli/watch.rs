@@ -42,6 +42,11 @@ use crate::storage::{Database, HookRow, SessionEventRow, SessionFacts};
 /// cost one.
 const POLL: Duration = Duration::from_millis(250);
 
+/// How often the local backends' windows are checked for a session whose pane
+/// died under it ([`crate::session_ops::lost`]). A loss takes two looks to
+/// confirm, so this is half the time a driver waits to hear of one.
+const SWEEP: Duration = Duration::from_secs(3);
+
 /// How many events one wake-up reads. A backlog larger than this is drained
 /// over consecutive reads rather than in one allocation.
 const BATCH: usize = 512;
@@ -84,7 +89,9 @@ pub fn run(
     args: WatchArgs,
     format: Format,
 ) -> Result<(), CommandError> {
-    // Only `--verify` reads a pane, so only it builds the registry.
+    // The lost-pane sweep only ever looks at local rows, so it takes the cheap
+    // registry; only `--verify` reads a pane through the full one.
+    let local = backends.local();
     let backends = args.verify.then(|| backends.get());
     let filter = args
         .session
@@ -145,6 +152,9 @@ pub fn run(
     // moved `data_version`, so the gate below would sit on it until somebody
     // else committed again.
     let mut version = db.data_version().unwrap_or_default();
+    let mut lost = crate::session_ops::lost::LostSweep::default();
+    lost.sweep(db, local);
+    let mut swept = Instant::now();
     if !drain(
         db,
         &registry,
@@ -163,10 +173,18 @@ pub fn run(
         };
         std::thread::sleep(nap);
 
+        // A loss this watcher records is its own commit, which the gate below
+        // cannot see — so it reads the log itself.
+        let mut found = 0;
+        if swept.elapsed() >= SWEEP {
+            found = lost.sweep(db, local);
+            swept = Instant::now();
+        }
+
         // The gate: unchanged means no other connection has committed, so
         // nothing can have happened and the log need not be read at all.
         let current = db.data_version().unwrap_or(version);
-        if current == version {
+        if current == version && found == 0 {
             continue;
         }
         version = current;

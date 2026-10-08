@@ -37,7 +37,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
 `schema` (CLI command tree plus that instance's live UI action catalog),
 `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
-[`--if-missing`]/rename/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
+[`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/register —
 `sync`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:
@@ -330,7 +330,7 @@ Each line carries:
 |---|---|
 | `seq` | monotonic, never reused — what `--since` resumes from |
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
-| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated` · `soft_deleted`, `force_deleted`, `forgotten` |
+| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost` · `soft_deleted`, `force_deleted`, `forgotten` |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
 | `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
 
@@ -347,6 +347,20 @@ since" is a fact about now, so a replayed `done` an operator has already read
 reports `idle`, matching what `session get` says for that row in that second.
 `to_state` still carries the event's own word verbatim, so the transition
 itself is never lost.
+
+**`lost` is the one event `watch` writes itself.** A multiplexer crash takes
+every pane on its server, and nothing inside it survives to log that. So every
+3 s `watch` lists each local backend's windows (`session_ops::lost`) and records
+`changed`/`lost` for an active, unparked, local session whose window is gone —
+on the second look in a row with the same pane, so a `restart` caught between
+kill and respawn is not a loss. `Database::record_session_lost` checks under
+the write lock that the row still points at that pane, that no restart holds
+it, and that its `lost_at` mark (schema v50) is unset, then sets it — so
+concurrent and back-to-back watchers report a loss once. The mark lifts when a
+sweep sees the window again or a pane is recorded for the row (a fresh tmux
+server reissues `%0`, so the pane id alone cannot say it came back). A
+listing that fails is not absence; a crashed server's stale socket is (tmux
+answers "no server running").
 
 `--session` narrows it to one (the log is filtered, not the output),
 `--for-secs` bounds it, `--initial` emits the current state as `present` rows
@@ -707,7 +721,9 @@ parent must be an existing active session — validated before any side effects)
 `session list`/`get` emit it in the JSON (`null` for top-level) and `session list
 --parent <uuid>` filters to direct children. The link is **purely
 informational**: deleting a parent never cascades (orphans render as top-level),
-and the parent is only validated at creation. In the TUI, **`Ctrl+F` fork**
+and the parent is validated when it is set: at creation, or by `session
+reparent <session> <parent>` (`--clear` for top-level), which also refuses a
+cycle and, for a session on a shareable host, reparents it on the host. In the TUI, **`Ctrl+F` fork**
 records the source session as the fork's parent; the session list nests children
 under their parent **within the same repo group** (muted `└` tree prefix; a child
 whose parent renders in another group keeps its own position with a `↳` mark).

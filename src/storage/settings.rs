@@ -395,6 +395,18 @@ impl Database {
         self.claim_until(&session_restart_claim_key(id), expires_at, now)
     }
 
+    /// Whether a restart holds session `id`'s window right now — a claim from
+    /// [`claim_session_restart`](Self::claim_session_restart) that has not
+    /// expired.
+    pub fn session_restart_held(&self, id: &str, now: u64) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM metadata \
+             WHERE key = ?1 AND CAST(value AS INTEGER) > ?2)",
+            params![session_restart_claim_key(id), now as i64],
+            |row| row.get(0),
+        )
+    }
+
     /// Give up a claim taken by
     /// [`claim_session_restart`](Self::claim_session_restart), identified by the
     /// `expires_at` it was taken with — a claim since taken over carries a

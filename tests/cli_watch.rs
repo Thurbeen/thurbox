@@ -157,13 +157,20 @@ fn reader(stdout: ChildStdout) -> mpsc::Receiver<String> {
     rx
 }
 
+/// A session row on a host: most tests here run no pane at all, and a local
+/// row whose pane is missing is one `watch` reports `lost` partway through a
+/// test. A host's sessions are that host's watcher's to judge.
 fn seed(db: &Database, name: &str) -> SessionId {
+    seed_on(db, name, "ssh:elsewhere")
+}
+
+fn seed_on(db: &Database, name: &str, backend_type: &str) -> SessionId {
     let row = SharedSession {
         id: SessionId::default(),
         name: name.into(),
         agent: "claude".into(),
         backend_id: "%1".into(),
-        backend_type: "local-tmux".into(),
+        backend_type: backend_type.into(),
         agent_session_id: None,
         cwd: None,
         additional_dirs: Vec::new(),
@@ -673,7 +680,7 @@ fn verify_names_the_agent_running_in_the_sessions_pane() {
     assert!(started.status.success(), "start the pane: {started:?}");
 
     let db = env.db();
-    let id = seed(&db, "worker");
+    let id = seed_on(&db, "worker", "local-tmux");
     let watch = env.watch(&["--json", "--verify", "--for-secs", "30"]);
     settle();
 

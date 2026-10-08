@@ -206,7 +206,10 @@ thurbox-cli message send --to "$LEAD" --kind result --body 'https://github.com/o
 thurbox-cli message inbox --for "$LEAD" --claim --json
 
 # Afterwards, enumerate the run's workers — including the silent ones.
-thurbox-cli session list --parent "$LEAD" --json</code></pre>
+thurbox-cli session list --parent "$LEAD" --json
+
+# A replacement lead adopts a worker.
+thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
 
 <h2 id="primitives">
   Why it is a Thurbox pattern
@@ -404,7 +407,9 @@ thurbox-cli session list --parent "$LEAD" --json</code></pre>
   <code>soft_deleted</code>
   can be restored,
   <code>force_deleted</code>
-  cannot &mdash; the
+  cannot, and
+  <code>lost</code>
+  is a pane that died with nobody asking, such as a multiplexer crash &mdash; the
   <code>from_state</code>
   &rarr;
   <code>to_state</code>

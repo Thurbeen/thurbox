@@ -246,6 +246,24 @@ pub enum Action {
         #[arg(value_name = "NEW_NAME")]
         name: String,
     },
+    /// Move a session under another parent, or to the top level with
+    /// `--clear`.
+    ///
+    /// What a lead migration needs: the workers of a lead that was replaced
+    /// still name the old one, and `session list --parent <lead>` is how a
+    /// driver finds its workers. The new parent must be an active session; a
+    /// link that would make a cycle is refused.
+    Reparent {
+        /// Session name, UUID, or unique id prefix.
+        #[arg(value_name = "SESSION")]
+        session: String,
+        /// The new parent: name, UUID, or unique id prefix.
+        #[arg(required_unless_present = "clear")]
+        parent: Option<String>,
+        /// Make the session top-level.
+        #[arg(long, conflicts_with = "parent")]
+        clear: bool,
+    },
     /// Mirror the sessions of a shareable host (or every one) into this
     /// database — the pass the interface runs on its own cadence.
     Sync {
@@ -620,6 +638,11 @@ pub fn run(
         Action::Reap { session } => run_reap(db, backends.get(), session),
         Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
         Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
+        Action::Reparent {
+            session,
+            parent,
+            clear,
+        } => run_reparent(db, &session, parent.as_deref().filter(|_| !clear)),
         Action::Send {
             uuid,
             text,
@@ -1019,6 +1042,32 @@ fn run_rename(
             "session_id": row.id.to_string(),
             "session_name": name,
             "previous_name": report.previous,
+        }),
+        human,
+    ))
+}
+
+fn run_reparent(
+    db: &Database,
+    reference: &str,
+    parent: Option<&str>,
+) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, reference)?;
+    let parent = parent.map(|p| resolve(db, p)).transpose()?;
+    crate::session_ops::reparent::reparent_session_headless(
+        db,
+        session.id,
+        parent.as_ref().map(|p| p.id),
+    )?;
+    let human = match &parent {
+        Some(p) => format!("'{}' is now under '{}' ({}).", session.name, p.name, p.id),
+        None => format!("'{}' is now top-level.", session.name),
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "session_id": session.id.to_string(),
+            "session_name": session.name,
+            "parent_session_id": parent.map(|p| p.id.to_string()),
         }),
         human,
     ))
