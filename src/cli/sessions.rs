@@ -269,6 +269,13 @@ pub enum Action {
     ///
     /// The text is delivered as one bracketed paste, so it arrives literally —
     /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
+    ///
+    /// It is typed only into an empty input line: while the composer holds
+    /// someone's typing, `send` waits a few seconds for it to clear and then
+    /// leaves the text in the session's mailbox instead (`delivered_via:
+    /// mailbox`). After Enter it checks the line left the composer, presses
+    /// Enter once more if not, and reports `submitted` — exiting non-zero when
+    /// the text is still there.
     /// Local sessions only: the pane lives on this machine's server, so a
     /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
@@ -281,6 +288,10 @@ pub enum Action {
         /// what a type-then-verify-then-submit protocol needs.
         #[arg(long = "no-enter")]
         no_enter: bool,
+        /// Type even when the composer already holds text, instead of waiting
+        /// for it to empty and then leaving the text in the mailbox.
+        #[arg(long)]
+        force: bool,
     },
     /// Send one named special key to a session's terminal.
     ///
@@ -624,7 +635,8 @@ pub fn run(
             uuid,
             text,
             no_enter,
-        } => run_send(db, backends.get(), uuid, text, no_enter),
+            force,
+        } => run_send(db, backends.get(), uuid, text, no_enter, force),
         Action::Key { uuid, key } => run_key(db, backends.get(), uuid, key),
         Action::Capture { uuid, lines, ansi } => {
             capture_pane(db, backends.get(), &uuid, lines, ansi)
@@ -1030,7 +1042,9 @@ fn run_send(
     uuid: String,
     text: String,
     no_enter: bool,
+    force: bool,
 ) -> Result<CommandOutput, CommandError> {
+    use crate::session_ops::SendOutcome;
     let session = resolve(db, &uuid)?;
     if text.trim().is_empty() {
         return Err("text must not be empty".into());
@@ -1041,25 +1055,99 @@ fn run_send(
     if no_enter {
         args.push("--no-enter");
     }
+    if force {
+        args.push("--force");
+    }
     if let Some(remote) = delegate_to_host(&session, &args)? {
         return Ok(remote);
     }
     let submit = !no_enter;
-    crate::session_ops::send_text_with_status(db, backends, &session, &text, submit)
-        .map_err(|e| format!("send: {e:#}"))?;
-    let human = if submit {
-        format!("Sent to '{}'.", session.name)
-    } else {
-        format!("Typed into '{}' (not submitted).", session.name)
+    let outcome =
+        crate::session_ops::send_text_confirmed(db, backends, &session, &text, submit, force)
+            .map_err(|e| format!("send: {e:#}"))?;
+    let (submitted, enter_retried) = match outcome {
+        SendOutcome::ComposerBusy => return leave_in_mailbox(db, &session, text),
+        SendOutcome::Typed {
+            submitted,
+            enter_retried,
+        } => (submitted, enter_retried),
     };
+    let json = json!({
+        "sent": true,
+        "submitted": submitted,
+        "enter_retried": enter_retried,
+        "delivered_via": "pane",
+        "session_id": session.id.to_string(),
+        "session_name": session.name,
+    });
+    let retried = if enter_retried {
+        " (Enter pressed twice)"
+    } else {
+        ""
+    };
+    Ok(match (submit, submitted) {
+        (false, _) => CommandOutput::new(
+            json,
+            format!("Typed into '{}' (not submitted).", session.name),
+        ),
+        (true, Some(true)) => {
+            CommandOutput::new(json, format!("Sent to '{}'{retried}.", session.name))
+        }
+        (true, None) => CommandOutput::new(
+            json,
+            format!(
+                "Sent to '{}'; its backend cannot show whether the line was submitted.",
+                session.name
+            ),
+        ),
+        (true, Some(false)) => CommandOutput::failed(
+            json,
+            format!(
+                "Typed into '{}', but it is still in the composer.",
+                session.name
+            ),
+            format!(
+                "'{}' did not submit the text: it is still in its composer after a second Enter",
+                session.name
+            ),
+        ),
+    })
+}
+
+/// `session send` into a composer that holds someone else's typing: the text
+/// goes to the session's mailbox, enqueued only, rather than onto their line.
+fn leave_in_mailbox(
+    db: &Database,
+    session: &SharedSession,
+    text: String,
+) -> Result<CommandOutput, CommandError> {
+    let new = crate::storage::messages::NewMessage {
+        to_session_id: session.id,
+        from_session_id: super::identity::calling_session(db).map(|s| s.id),
+        from_task_id: std::env::var("THURBOX_TASK")
+            .ok()
+            .and_then(|t| t.parse().ok()),
+        kind: "session-send".into(),
+        body: text,
+    };
+    let message_id = db
+        .enqueue_message(&new)
+        .map_err(|e| format!("enqueue_message: {e}"))?;
     Ok(CommandOutput::new(
         json!({
-            "sent": true,
-            "submitted": submit,
+            "sent": false,
+            "submitted": false,
+            "enter_retried": false,
+            "delivered_via": "mailbox",
+            "message_id": message_id,
             "session_id": session.id.to_string(),
             "session_name": session.name,
         }),
-        human,
+        format!(
+            "'{}' has text in its composer, so nothing was typed; left in its mailbox as \
+             message #{message_id}.",
+            session.name
+        ),
     ))
 }
 
@@ -3162,6 +3250,7 @@ mod tests {
                         uuid: id.to_string(),
                         text: text.to_string(),
                         no_enter,
+                        force: false,
                     },
                     &db,
                     &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3190,6 +3279,7 @@ mod tests {
                 uuid: id.to_string(),
                 text: "hello".into(),
                 no_enter: true,
+                force: false,
             },
             Action::Key {
                 uuid: id.to_string(),

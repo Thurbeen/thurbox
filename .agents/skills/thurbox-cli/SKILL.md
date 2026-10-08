@@ -459,7 +459,16 @@ implementation on the spec's own 179-case suite.
 text and presses Enter; **`--no-enter`** types it and stops, leaving it
 unsubmitted in the agent's composer — an integration that verifies what it typed
 before submitting cannot use the submitting form, because that fires every steer
-the instant it is typed. **`session key <uuid> <name>`** is the other half: one
+the instant it is typed. `send` types only into an **empty input line**: the
+text left of the cursor on its row (`text_before_cursor` on the backend, read by
+`session_ops::composer`) must be nothing but prompt chrome. While it holds
+someone's typing, `send` waits `COMPOSER_WAIT` for it to clear, then enqueues the
+text in the session's mailbox instead (`delivered_via: mailbox`, kind
+`session-send`, exit 0); `--force` types regardless. After Enter it checks the
+line left the composer, presses Enter once more if not (`enter_retried`), and
+reports `submitted` — `null` where the backend cannot read the line, `false`
+with a non-zero exit when the text is still there. **`session key <uuid>
+<name>`** is the other half: one
 named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and

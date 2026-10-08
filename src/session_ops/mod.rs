@@ -8,6 +8,7 @@
 pub mod builtin;
 pub mod builtin_hooks;
 pub mod builtin_ui_skill;
+pub mod composer;
 pub mod delete;
 pub mod extensions;
 pub mod host_cli;
@@ -84,6 +85,76 @@ pub fn send_text_with_status(
         }
     }
     Ok(())
+}
+
+/// How long `session send` waits for an operator's half-typed line to clear
+/// before it leaves the text in the mailbox instead.
+pub const COMPOSER_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long a submitted line has to leave the composer before Enter is pressed
+/// once more.
+const SUBMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What [`send_text_confirmed`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// The composer held text the whole wait; nothing was typed.
+    ComposerBusy,
+    /// Typed. `submitted` is `None` where the backend cannot read the input
+    /// line back, and `Some(false)` for `submit = false`.
+    Typed {
+        submitted: Option<bool>,
+        enter_retried: bool,
+    },
+}
+
+/// [`send_text_with_status`] that only types into an empty input line, unless
+/// `force`, and confirms a submission: a line still in the composer after
+/// Enter gets one more Enter, and the outcome says whether it left.
+pub fn send_text_confirmed(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &SharedSession,
+    text: &str,
+    submit: bool,
+    force: bool,
+) -> anyhow::Result<SendOutcome> {
+    use composer::Composer;
+    let (backend, pane) =
+        windows::require_agent_pane(backends, session).map_err(anyhow::Error::msg)?;
+    let backend = backend.as_ref();
+    if !force && composer::wait_for_empty(backend, &pane, COMPOSER_WAIT) == Composer::Holding {
+        return Ok(SendOutcome::ComposerBusy);
+    }
+    send_text_with_status(db, backends, session, text, submit)?;
+    if !submit {
+        return Ok(SendOutcome::Typed {
+            submitted: Some(false),
+            enter_retried: false,
+        });
+    }
+    let first = composer::wait_for_empty(backend, &pane, SUBMIT_WAIT);
+    if first != Composer::Holding {
+        return Ok(SendOutcome::Typed {
+            submitted: (first == Composer::Empty).then_some(true),
+            enter_retried: false,
+        });
+    }
+    backend
+        .send_key(
+            &pane,
+            &crate::backend::Key::parse("enter").expect("enter is a key"),
+        )
+        .map_err(|e| anyhow::anyhow!("session '{}': {e:#}", session.name))?;
+    let second = composer::wait_for_empty(backend, &pane, SUBMIT_WAIT);
+    Ok(SendOutcome::Typed {
+        submitted: match second {
+            Composer::Empty => Some(true),
+            Composer::Holding => Some(false),
+            Composer::Unknown => None,
+        },
+        enter_retried: true,
+    })
 }
 
 /// Hand a session that was just launched its prompt once its agent has had
