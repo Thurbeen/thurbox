@@ -317,7 +317,9 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
 ///
 /// It reads one byte at a time with the tty's own echo off, so it can do what a
 /// real agent sometimes does to an Enter that lands too soon after a paste:
-/// ignore it. `swallow` is how many Enters it ignores — `all` for every one.
+/// ignore it. `swallow` is how many Enters it ignores — `all` for every one —
+/// or `dialog`: the first Enter opens a confirmation prompt in place of the
+/// composer, and any Enter after that answers it.
 fn composer(swallow: &str) -> String {
     format!(
         r#"sh -c 'stty -icanon -echo; swallow={swallow}; buf=; printf "❯ "
@@ -325,6 +327,8 @@ while :; do
   c=$(dd bs=1 count=1 2>/dev/null)
   if [ -n "$c" ]; then buf="$buf$c"; printf "%s" "$c"; continue; fi
   [ "$swallow" = all ] && continue
+  if [ "$swallow" = dialog ]; then printf "\nProceed? Yes"; swallow=answer; continue; fi
+  if [ "$swallow" = answer ]; then printf "\nANSWERED\n"; continue; fi
   if [ "$swallow" -gt 0 ]; then swallow=$((swallow - 1)); continue; fi
   printf "\ngot:%s\n❯ " "$buf"; buf=
 done'"#
@@ -443,10 +447,12 @@ fn text_for_a_composer_holding_typed_input_goes_to_the_mailbox() {
     let out = send(&db, &session, notice, false);
     assert_eq!(out["sent"], false, "{}", out.json);
     assert_eq!(out["submitted"], false, "{}", out.json);
+    // A `sh` composer has no agent inbox, so the mailbox is all there is — and
+    // nothing shows the agent the text there, which the exit status says.
     assert_eq!(out["delivered_via"], "mailbox", "{}", out.json);
     assert!(
-        out.failure.is_none(),
-        "the text was delivered, to the mailbox"
+        out.failure.is_some(),
+        "a mailbox-only send must exit non-zero"
     );
 
     let screen = screen(&session);
@@ -478,4 +484,27 @@ fn force_types_into_a_composer_that_holds_text() {
     assert_eq!(out["submitted"], true, "{}", out.json);
     let screen = screen_when(&session, |s| s.contains("got:cFORCED"));
     assert!(screen.contains("got:cFORCED"), "shows:\n{screen}");
+}
+
+#[test]
+fn a_dialog_that_replaces_the_composer_is_never_answered_by_the_retry() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "dialog") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "OPEN_DIALOG", false);
+    assert_eq!(out["enter_retried"], false, "{}", out.json);
+    assert_eq!(out["submitted"], serde_json::Value::Null, "{}", out.json);
+    let screen = screen(&session);
+    assert!(
+        screen.contains("Proceed?") && !screen.contains("ANSWERED"),
+        "the second Enter must not answer the dialog; shows:\n{screen}"
+    );
 }

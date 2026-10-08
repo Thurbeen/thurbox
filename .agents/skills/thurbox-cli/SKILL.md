@@ -460,16 +460,17 @@ text and presses Enter; **`--no-enter`** types it and stops, leaving it
 unsubmitted in the agent's composer — an integration that verifies what it typed
 before submitting cannot use the submitting form, because that fires every steer
 the instant it is typed. `send` types only into an **empty input line**: the
-text left of the cursor on its row (`text_before_cursor` on the backend, read by
-`session_ops::composer`) must be nothing but prompt chrome. While it holds
-someone's typing, `send` waits `COMPOSER_WAIT` for it to clear, then enqueues the
-text in the session's mailbox instead (`delivered_via: mailbox`, kind
-`session-send`, exit 0); `--force` types regardless. After Enter it checks the
-line left the composer, presses Enter once more if not (`enter_retried`), and
-reports `submitted` — `null` where the backend cannot read the line, `false`
-with a non-zero exit when the text is still there. **`session key <uuid>
-<name>`** is the other half: one
-named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
+text left of the cursor on its row (`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE` — tmux; read by
+`session_ops::composer`) must be prompt chrome alone. While it holds someone's
+typing, `send` waits `COMPOSER_WAIT`, then hands the text over as `message send`
+does — the agent's own inbox, else the mailbox (kind `session-send`), and a
+mailbox-only result exits non-zero; either way `sent` and `submitted` read
+`false` and `delivered_via` names the route. `--force` types regardless. Enter is pressed
+once the typed text shows; a line still ending with it afterwards gets one more
+Enter (`enter_retried`), never a line something else replaced (a dialog).
+`submitted` is `false` with a non-zero exit when the text is still there, and
+`null` when the line cannot confirm it (psmux, a collapsed paste, a dialog).
+**`session key <uuid> <name>`** is the other half: one named special key (`enter`, `escape`, `tab`, `backspace`, `space`, the arrows,
 `home`/`end`, `page-up`/`page-down`, `delete`, or `ctrl-<letter>`), spelled
 case-insensitively with either separator (`ctrl-c` = `ctrl+c` = `C-c`) and
 resolved through the closed set in `backend::Key` (each adapter spells it in its

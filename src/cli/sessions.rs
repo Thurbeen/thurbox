@@ -272,10 +272,10 @@ pub enum Action {
     ///
     /// It is typed only into an empty input line: while the composer holds
     /// someone's typing, `send` waits a few seconds for it to clear and then
-    /// leaves the text in the session's mailbox instead (`delivered_via:
-    /// mailbox`). After Enter it checks the line left the composer, presses
-    /// Enter once more if not, and reports `submitted` — exiting non-zero when
-    /// the text is still there.
+    /// hands the text over as `message send` does — the agent's own inbox, or
+    /// the mailbox, which exits non-zero. After Enter it checks the line left
+    /// the composer, presses Enter once more if the text is still there, and
+    /// reports `submitted` — exiting non-zero when it never left.
     /// Local sessions only: the pane lives on this machine's server, so a
     /// session on a `--host` runs `thurbox-cli` there instead.
     Send {
@@ -1115,7 +1115,9 @@ fn run_send(
 }
 
 /// `session send` into a composer that holds someone else's typing: the text
-/// goes to the session's mailbox, enqueued only, rather than onto their line.
+/// is not typed onto their line but handed over the way `message send` hands a
+/// body — the agent's own inbox where it has one, the mailbox otherwise. Only
+/// the mailbox is a failure: nothing will show the agent the text there.
 fn leave_in_mailbox(
     db: &Database,
     session: &SharedSession,
@@ -1130,25 +1132,39 @@ fn leave_in_mailbox(
         kind: "session-send".into(),
         body: text,
     };
-    let message_id = db
-        .enqueue_message(&new)
-        .map_err(|e| format!("enqueue_message: {e}"))?;
-    Ok(CommandOutput::new(
-        json!({
-            "sent": false,
-            "submitted": false,
-            "enter_retried": false,
-            "delivered_via": "mailbox",
-            "message_id": message_id,
-            "session_id": session.id.to_string(),
-            "session_name": session.name,
-        }),
-        format!(
-            "'{}' has text in its composer, so nothing was typed; left in its mailbox as \
-             message #{message_id}.",
-            session.name
-        ),
-    ))
+    let delivered = super::messages::enqueue_and_deliver(db, session, new, false)?;
+    let mut json = delivered.json.clone();
+    json["sent"] = json!(false);
+    json["submitted"] = json!(false);
+    json["enter_retried"] = json!(false);
+    json["session_id"] = json!(session.id.to_string());
+    json["session_name"] = json!(session.name);
+    let via = json["delivered_via"]
+        .as_str()
+        .unwrap_or("mailbox")
+        .to_string();
+    let id = json["message_id"].clone();
+    let human = format!(
+        "'{}' has text in its composer, so nothing was typed; message #{id} went via {via}.",
+        session.name
+    );
+    let note = json["delivery_note"]
+        .as_str()
+        .unwrap_or("no reason given")
+        .to_string();
+    Ok(if via == "mailbox" {
+        CommandOutput::failed(
+            json,
+            human,
+            format!(
+                "'{}' has text in its composer and its agent inbox was not reached ({}); the \
+                 text is only in its mailbox (message #{id})",
+                session.name, note,
+            ),
+        )
+    } else {
+        CommandOutput::new(json, human)
+    })
 }
 
 fn run_key(

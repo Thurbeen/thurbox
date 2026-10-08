@@ -66,6 +66,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// in a tagged block, which is what makes a snapshot exact.
     const SNAPSHOTS: bool;
 
+    /// Whether `capture-pane -S n -E n` returns visible row `n` alone and
+    /// `#{cursor_x}`/`#{cursor_y}` say where the cursor is — what reading the
+    /// text before the cursor needs. Off unless measured: the wrong row read
+    /// back would be worse than not knowing.
+    const CURSOR_ROW_CAPTURE: bool = false;
+
     /// Whether one invocation takes a `;`-separated command list, so the whole
     /// session config can go in one process (#1243).
     const COMMAND_LISTS: bool;
@@ -2406,6 +2412,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     fn text_before_cursor(&self, pane: &str) -> Result<Option<String>> {
         self.known_socket()?;
+        if !M::CURSOR_ROW_CAPTURE {
+            return Ok(None);
+        }
         let format = format!(
             "#{{cursor_x}}{PANE_STATE_SEP}#{{cursor_y}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}"
         );
