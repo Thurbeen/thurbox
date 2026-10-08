@@ -508,3 +508,27 @@ fn a_dialog_that_replaces_the_composer_is_never_answered_by_the_retry() {
         "the second Enter must not answer the dialog; shows:\n{screen}"
     );
 }
+
+/// A long line wraps, and the cursor's row is then the end of the text alone,
+/// with no prompt on it. One ending in `%` must still read as typed text, or a
+/// dropped Enter is reported submitted.
+#[test]
+fn a_wrapped_line_ending_in_a_prompt_glyph_is_still_retried() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_composer(&db, "1") else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let text = format!("{} coverage fell to 50%", "x".repeat(190));
+    let out = send(&db, &session, &text, false);
+    assert_eq!(out["enter_retried"], true, "{}", out.json);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    let screen = screen_when(&session, |s| s.contains("got:xxx"));
+    assert!(screen.contains("got:xxx"), "shows:\n{screen}");
+}

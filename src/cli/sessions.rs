@@ -1096,7 +1096,7 @@ fn run_send(
         (true, None) => CommandOutput::new(
             json,
             format!(
-                "Sent to '{}'; its backend cannot show whether the line was submitted.",
+                "Sent to '{}'; the input line could not confirm whether it was submitted.",
                 session.name
             ),
         ),

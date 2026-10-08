@@ -7,13 +7,15 @@
 //! answered by one reading: the text left of the cursor on its row.
 //!
 //! Empty means nothing but prompt chrome is left of the cursor: whitespace, box
-//! drawing, and text ending in the line's *first* prompt glyph (`❯`, `›`, `>`,
-//! `→`, a shell's `$`/`%`/`#`). The dimmed placeholder an idle agent draws to
-//! the cursor's *right* does not count, and neither does a `#` the operator
-//! typed after the prompt.
+//! drawing, and at most one prompt glyph (`❯`, `›`, `>`, `→`, `$`, …). The
+//! dimmed placeholder an idle agent draws to the cursor's *right* does not
+//! count. Anything else is typed text — including the wrapped end of a long
+//! line that happens to finish in `%`, which has no prompt on its row at all.
 //!
 //! What this cannot see: a cursor moved back into a draft (Home, or the start
-//! of a draft's second line) reads as the bare prompt it is sitting after.
+//! of a draft's second line) reads as the bare prompt it is sitting after. And
+//! a shell prompt that carries more than its glyph (`user@box:~$`) reads as
+//! typed text, so a send to such a shell needs `--force`.
 
 use std::time::{Duration, Instant};
 
@@ -41,11 +43,12 @@ fn unframed(text: &str) -> &str {
 /// Classify the text left of the cursor.
 pub fn classify(before_cursor: &str) -> Composer {
     let line = unframed(before_cursor);
-    let prompt_end = line
-        .char_indices()
-        .find(|(_, c)| PROMPT_GLYPHS.contains(c))
-        .map(|(i, c)| i + c.len_utf8());
-    if line.is_empty() || prompt_end == Some(line.len()) {
+    let mut chars = line.chars();
+    let bare_prompt = matches!(
+        (chars.next(), chars.next()),
+        (Some(c), None) if PROMPT_GLYPHS.contains(&c)
+    );
+    if line.is_empty() || bare_prompt {
         Composer::Empty
     } else {
         Composer::Holding
@@ -121,7 +124,7 @@ mod tests {
 
     #[test]
     fn a_bare_prompt_is_empty_whatever_its_glyph() {
-        for line in ["", "  ", "❯ ", "› ", "│ > ", "→ ", "user@box:~$ ", "┃  "] {
+        for line in ["", "  ", "❯ ", "› ", "│ > ", "→ ", "$ ", "┃  "] {
             assert_eq!(classify(line), Composer::Empty, "{line:?}");
         }
     }
@@ -146,6 +149,13 @@ mod tests {
             "› it's at 50%",
             "❯ a -> b>",
             "user@box:~$ echo #",
+            // The wrapped end of a long line: no prompt on the row at all.
+            "xxxxxxxx coverage fell to 50%",
+            "see issue #",
+            "a -> b>",
+            // A shell prompt with more than its glyph: indistinguishable from
+            // a wrapped row of text, so it reads as typed.
+            "user@box:~$ ",
         ] {
             assert_eq!(classify(line), Composer::Holding, "{line:?}");
         }

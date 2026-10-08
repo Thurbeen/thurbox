@@ -461,7 +461,8 @@ unsubmitted in the agent's composer — an integration that verifies what it typ
 before submitting cannot use the submitting form, because that fires every steer
 the instant it is typed. `send` types only into an **empty input line**: the
 text left of the cursor on its row (`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE` — tmux; read by
-`session_ops::composer`) must be prompt chrome alone. While it holds someone's
+`session_ops::composer`) must be prompt chrome alone — at most one prompt glyph, so a shell prompt
+carrying more (`user@box:~$`) reads as busy and needs `--force`. While it holds someone's
 typing, `send` waits `COMPOSER_WAIT`, then hands the text over as `message send`
 does — the agent's own inbox, else the mailbox (kind `session-send`), and a
 mailbox-only result exits non-zero; either way `sent` and `submitted` read
