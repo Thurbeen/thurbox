@@ -5625,8 +5625,13 @@ fn open_repo_picker(profile: &Profile) -> Tui {
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("Multiplexer");
-    tui.send(b"\r");
+    // The multiplexer step is asked only where more than one is installed.
+    tui.wait_until("the new-session wizard to be up", |frame| {
+        frame.contains("Multiplexer") || frame.contains("Select Repos")
+    });
+    if tui.frame().contains("Multiplexer") {
+        tui.send(b"\r");
+    }
     tui.wait_for("Select Repos");
     tui
 }
@@ -6167,11 +6172,12 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
 
     // Now the wizard, which floats and therefore holds the keyboard.
     tui.send(CTRL_N);
-    // Its first question is "Run On" where the machine has hosts and
-    // "Multiplexer" where it has none — this one has sibling WSL distros, so which it
-    // is depends on the machine and neither is the point.
+    // Its first question is "Run On" where the machine has hosts, else
+    // "Multiplexer" where it has a choice of them and "Select Repos" where it
+    // has one — this one has sibling WSL distros, so which it is depends on the
+    // machine and none is the point.
     tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Run On") || frame.contains("Multiplexer")
+        frame.contains("Run On") || frame.contains("Multiplexer") || frame.contains("Select Repos")
     });
     tui.send(CTRL_V);
     // It has nothing to paste from — that is what the missing X clipboard

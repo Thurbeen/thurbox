@@ -471,7 +471,8 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
 fn opening_without_hosts_shows_available_multiplexers_first() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.mux.available = vec!["tmux".into(), "rmux".into()];
+    let local = thurbox::agent::preflight::local_multiplexer();
+    world.snapshot.mux.available = vec![local.into(), "rmux".into()];
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Multiplexer"), "{screen}");
