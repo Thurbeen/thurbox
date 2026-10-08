@@ -268,8 +268,9 @@ session), never on the loop, ADR-P12).
   "no answer" under `cfg(test)`; seed one with `host_path::seed`.
   The same probe names each multiplexer on that merged `PATH` (`@mux` lines,
   `HostEnv::multiplexers`): the new-session picker offers only those
-  (`host_path::multiplexers_found`, never waited for, started only while the
-  flow is open; `seed_multiplexers` in tests).
+  (`host_path::multiplexers_found`: never waited for, asked only while the
+  flow is open, its own cache re-asked after `MUX_TTL`; `seed_multiplexers`
+  in tests).
 - **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
   default) owns the record of the sessions on it: its **own thurbox database**.
   A remote thurbox *mirrors* that database into local rows on `ssh:<name>`

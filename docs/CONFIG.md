@@ -357,8 +357,10 @@ registered, native to its platform (tmux on POSIX and WSL, psmux on native
 Windows, RMUX on either), and installed there. Locally that is a `PATH`
 lookup. For an SSH or WSL host it is the probe that already reads the host's
 login `PATH` (see `path_prepend` above), which also names each multiplexer it
-finds; it runs in the background, once per host per process, so the picker
-never waits on a host. Until it answers, and on a native-Windows host, which
+finds; it runs in the background only while the new-session flow is open,
+and is asked again once its answer is a minute old, so the picker never waits
+on a host and a host that was down, or has since had a multiplexer installed,
+is read again. Until it answers, and on a native-Windows host, which
 is not probed, a host offers its platform default and its configured
 `multiplexer`.
 

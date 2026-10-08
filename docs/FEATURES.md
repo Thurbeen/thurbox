@@ -431,9 +431,10 @@ not applicable.
    default stays selected, RMUX sits next to tmux, and a choice stays tied to
    its backend name when the available list refreshes. Locally the answer is
    a `PATH` lookup; a POSIX or WSL host is asked by the same probe that reads
-   its login `PATH`, in the background and cached, so the picker never waits
-   on a host — until it answers, and on a native-Windows host, which it never
-   asks, the host offers its platform default and its configured choice.
+   its login `PATH`, in the background while the flow is open and re-asked
+   once a minute old, so the picker never waits on a host — until it
+   answers, and on a native-Windows host, which it never asks, the host
+   offers its platform default and its configured choice.
 3. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` toggles selection, `w` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is

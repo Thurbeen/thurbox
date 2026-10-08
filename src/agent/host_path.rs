@@ -258,7 +258,7 @@ fn cached_env(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
-/// What a host's probe has said about its multiplexers.
+/// What a host's probe last said about its multiplexers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MuxProbe {
     /// Not answered yet.
@@ -270,36 +270,66 @@ pub enum MuxProbe {
     Found(Vec<Multiplexer>),
 }
 
+/// How long a host's multiplexer answer stands before an open flow asks
+/// again — so a host that was down, or has since had one installed, is not
+/// read wrong for the rest of the process.
+const MUX_TTL: Duration = Duration::from_secs(60);
+
 /// What a probe found on `host`, without ever waiting for one. When `start`
-/// allows it, the first ask starts the probe on a thread of its own; its
-/// answer is cached for the process like the `PATH` it reads alongside.
+/// allows it, an answer that is missing or older than a minute is asked
+/// for again on a thread of its own; the last answer stands meanwhile.
 pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
     if host.is_windows() {
         return MuxProbe::Unanswered;
     }
     let key = host.backend_name();
-    if let Some(hit) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
-        return hit.map_or(MuxProbe::Unanswered, |env| {
-            MuxProbe::Found(env.multiplexers)
-        });
+    let hit = mux_cache().lock().ok().and_then(|c| c.get(&key).cloned());
+    let stale = hit.as_ref().map_or(true, |(at, _)| at.elapsed() >= MUX_TTL);
+    if stale && start && !cfg!(test) {
+        reprobe(host, key);
     }
-    if !start || cfg!(test) {
-        return MuxProbe::Pending;
+    match hit {
+        None => MuxProbe::Pending,
+        Some((_, None)) => MuxProbe::Unanswered,
+        Some((_, Some(found))) => MuxProbe::Found(found),
     }
+}
+
+/// Probe `host` in the background, once at a time per host. The `PATH` it
+/// reads alongside fills that cache only where it is empty: a spawn's answer
+/// is never replaced by a later failure.
+fn reprobe(host: &HostDef, key: String) {
     let started = in_flight()
         .lock()
         .map(|mut flight| flight.insert(key.clone()))
         .unwrap_or(false);
-    if started {
-        let host = host.clone();
-        std::thread::spawn(move || {
-            cached_env(&host);
-            if let Ok(mut flight) = in_flight().lock() {
-                flight.remove(&key);
-            }
-        });
+    if !started {
+        return;
     }
-    MuxProbe::Pending
+    let host = host.clone();
+    std::thread::spawn(move || {
+        let env = run_bounded(
+            HostLauncher::for_host(&host).shell_c(&probe_script()),
+            PROBE_TIMEOUT,
+        )
+        .and_then(|out| parse_probe(&out));
+        if let Ok(mut c) = cache().lock() {
+            c.entry(key.clone()).or_insert_with(|| env.clone());
+        }
+        if let Ok(mut c) = mux_cache().lock() {
+            c.insert(key.clone(), (Instant::now(), env.map(|e| e.multiplexers)));
+        }
+        if let Ok(mut flight) = in_flight().lock() {
+            flight.remove(&key);
+        }
+    });
+}
+
+type MuxAnswer = (Instant, Option<Vec<Multiplexer>>);
+
+fn mux_cache() -> &'static Mutex<HashMap<String, MuxAnswer>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, MuxAnswer>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
 }
 
 fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -311,13 +341,10 @@ fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
 /// answer), for tests that must not reach one.
 #[cfg(test)]
 pub fn seed_multiplexers(host: &HostDef, multiplexers: Option<Vec<Multiplexer>>) {
-    seed(
-        host,
-        multiplexers.map(|multiplexers| HostEnv {
-            multiplexers,
-            ..HostEnv::default()
-        }),
-    );
+    mux_cache()
+        .lock()
+        .unwrap()
+        .insert(host.backend_name(), (Instant::now(), multiplexers));
 }
 
 /// Record what a probe of `host` found, for tests that must not reach one.
