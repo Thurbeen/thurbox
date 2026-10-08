@@ -644,7 +644,10 @@ with another plugin, and let the user rebind them — none of which it could do 
 they only existed inside `on_key`. Help is a kernel modal rather than a plugin,
 and it renders the registry, so your key appears in it (and becomes rebindable)
 by being declared and nothing else. The same is true of `settings`: declare
-`{ id, desc, default }` and the settings modal grows a row for it.
+`{ id, desc, default }` and the settings modal grows a row for it. A text setting
+that holds a `;`-separated list of percent-escaped entries can add `list = true`:
+its row then shows how many entries it holds, and the footer spells them out,
+unescaped, while the row is selected.
 
 A plugin can also **write** its own settings — `command("set", { text =
 "yourpane.wrap", flag = true })` for a boolean, `number = 2` for a number, or

@@ -821,12 +821,15 @@ fn settings_renders_what_the_bundled_plugins_declare() {
 
 /// The settings modal drawn over a screen already full of `#`, so a cell the
 /// modal fails to paint shows up as one.
-fn settings_over_noise(registry: &Registry, width: u16, height: u16) -> Vec<String> {
+fn settings_over_noise(
+    modals: &mut Modals,
+    registry: &Registry,
+    width: u16,
+    height: u16,
+) -> Vec<String> {
     use ratatui::widgets::Paragraph;
 
     let themes = Themes::load(None);
-    let mut modals = Modals::default();
-    modals.toggle(ModalKind::Settings);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| {
@@ -888,7 +891,9 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
     registry.declare(bindings, settings);
 
     for width in [80, 160] {
-        let screen = settings_over_noise(&registry, width, 60);
+        let mut modals = Modals::default();
+        modals.toggle(ModalKind::Settings);
+        let screen = settings_over_noise(&mut modals, &registry, width, 60);
         let joined = screen.join("\n");
         let row = |id: &str| -> String {
             screen
@@ -919,8 +924,8 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
 
         let folded = row("folded_repos");
         assert!(
-            folded.trim_end().ends_with('…'),
-            "the long value is not truncated in its column at {width} columns: \
+            folded.trim_end().ends_with(" 12 entries"),
+            "the long value does not fit its column at {width} columns: \
              {folded:?}\n{joined}"
         );
         assert!(
@@ -940,6 +945,88 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
     }
 }
 
+/// The session list keeps its fold state in two text settings, each a `;` list
+/// of percent-escaped keys. Shown raw that is `repo%3Ahost%01project;…` cut at
+/// the column, which says nothing to a reader. A row declared as a list shows
+/// how many entries it holds, and the selected one spells them out, decoded, in
+/// the footer.
+#[test]
+fn a_fold_list_reads_as_a_count_and_spells_its_entries_out_when_selected() {
+    let host = host();
+    let (bindings, mut settings) = host.declarations();
+    for setting in &mut settings {
+        match setting.id.as_str() {
+            "folded_repos" => {
+                setting.value =
+                    Value::Text("repo%3Ahost-0%01project-0;repo%3Ahost-1%01project-1".into());
+            }
+            "folded_hosts" => setting.value = Value::Text("build-box".into()),
+            _ => {}
+        }
+    }
+    let mut registry = Registry::default();
+    registry.declare(bindings, settings);
+    let mut themes = Themes::load(None);
+
+    for width in [80, 160] {
+        let mut modals = Modals::default();
+        modals.toggle(ModalKind::Settings);
+        let footer_names = |screen: &[String]| {
+            screen
+                .iter()
+                .any(|line| line.contains("sessions.folded_repos"))
+        };
+        let mut screen = settings_over_noise(&mut modals, &registry, width, 60);
+        for _ in 0..registry.settings().len() + 40 {
+            if footer_names(&screen) {
+                break;
+            }
+            send(
+                &mut modals,
+                press(KeyCode::Down),
+                "down",
+                &mut registry,
+                &mut themes,
+                None,
+            );
+            screen = settings_over_noise(&mut modals, &registry, width, 60);
+        }
+        let joined = screen.join("\n");
+        assert!(
+            footer_names(&screen),
+            "never reached folded_repos\n{joined}"
+        );
+
+        let row = |id: &str| -> String {
+            screen
+                .iter()
+                .find(|line| line.contains(&format!(" {id} ")))
+                .and_then(|line| inside_borders(line))
+                .unwrap_or_else(|| panic!("no `{id}` row at {width} columns:\n{joined}"))
+        };
+        assert!(
+            row("folded_repos").trim_end().ends_with(" 2 entries"),
+            "folded_repos is not a count at {width} columns\n{joined}"
+        );
+        assert!(
+            row("folded_hosts").trim_end().ends_with(" 1 entry"),
+            "folded_hosts is not a count at {width} columns\n{joined}"
+        );
+        assert!(
+            !joined.contains("%3A") && !joined.contains("%01"),
+            "an escaped key reached the screen at {width} columns\n{joined}"
+        );
+        let footer = screen
+            .iter()
+            .find(|line| line.contains("sessions.folded_repos"))
+            .expect("footer");
+        assert!(
+            footer.contains("repo:host-0/project-0"),
+            "the selected list is not spelled out at {width} columns: {footer:?}"
+        );
+    }
+}
+
 #[test]
 fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -956,6 +1043,7 @@ fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings
             description: "metric or imperial".into(),
             default: Value::Bool(false),
             value: Value::Bool(false),
+            list: false,
         }],
     );
     let mut themes = Themes::load(None);
@@ -1443,6 +1531,7 @@ fn help_and_settings_page_and_jump_through_their_rows() {
             description: format!("a stand-in setting ({n})"),
             default: thurbox::kernel::registry::Value::Bool(true),
             value: thurbox::kernel::registry::Value::Bool(true),
+            list: false,
         })
         .collect();
     // `declare` REPLACES both lists, so the bundled declarations are re-passed

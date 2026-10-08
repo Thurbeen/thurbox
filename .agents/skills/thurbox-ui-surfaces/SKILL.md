@@ -131,7 +131,10 @@ different program.
 `Ctrl+,` (or `F6`) opens a **kernel-owned modal** (`kernel::modals::settings`) —
 chrome about thurbox itself, so it overlays the arrangement, captures input and
 stays out of the focus ring. Plugins contribute *data* to it: declare
-`{ id, desc, default }` and the modal grows a row.
+`{ id, desc, default }` and the modal grows a row. A text setting declared
+`list = true` (the session list's `folded_hosts`/`folded_repos`) shows its entry
+count in the row and its unescaped entries in the footer when selected; the value
+column is capped at `VALUE_WIDTH_MAX` so one long value cannot starve the rest.
 
 Two halves on one screen:
 

@@ -540,12 +540,17 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
                 ))
             }
         };
+        let list = entry
+            .get::<Option<bool>>("list")
+            .map_err(|e| format!("{where_}.list: {e}"))?
+            .unwrap_or(false);
         settings.push(Setting {
             plugin: plugin.to_string(),
             id,
             description,
             default: default.clone(),
             value: default,
+            list,
         });
     }
     Ok(settings)

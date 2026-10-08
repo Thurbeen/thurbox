@@ -90,6 +90,9 @@ pub struct Setting {
     pub default: Value,
     /// Effective value: the override when one exists, else the default.
     pub value: Value,
+    /// A text value holding a `;`-separated list of percent-escaped entries,
+    /// which the settings modal shows as a count rather than as the raw string.
+    pub list: bool,
 }
 
 /// An action-band entry a plugin contributes.
@@ -1759,6 +1762,7 @@ mod tests {
                 description: String::new(),
                 default: Value::Bool(false),
                 value: Value::Bool(false),
+                list: false,
             }],
         );
         assert_eq!(
@@ -1784,6 +1788,7 @@ mod tests {
                 description: String::new(),
                 default: Value::Bool(false),
                 value: Value::Bool(false),
+                list: false,
             }],
         );
         assert_eq!(
@@ -1854,6 +1859,7 @@ mod tests {
                 description: String::new(),
                 default: Value::Number(30.0),
                 value: Value::Number(30.0),
+                list: false,
             }],
         );
         let error = registry
