@@ -64,10 +64,11 @@ fn refuse_cycle(db: &Database, name: &str, id: SessionId, parent: SessionId) -> 
                 "{parent} is a descendant of '{name}', so it cannot be its parent"
             ));
         }
+        // Deleted rows included: a soft-deleted ancestor comes back with
+        // its link intact, and would close the cycle on restore.
         cursor = db
-            .get_session_by_id(at)
-            .map_err(|e| format!("Failed to load session: {e}"))?
-            .and_then(|s| s.parent_session_id);
+            .session_parent_any(at)
+            .map_err(|e| format!("Failed to load session: {e}"))?;
     }
     Ok(())
 }

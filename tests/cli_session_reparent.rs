@@ -112,3 +112,20 @@ fn a_cycle_is_refused() {
     assert_eq!(parent_of(&db, lead), None);
     assert_eq!(parent_of(&db, grandchild), Some(worker));
 }
+
+/// X <- D <- P with D soft-deleted: putting X under P would close a cycle the
+/// moment D is restored, so the walk goes through deleted rows too.
+#[test]
+fn a_cycle_through_a_deleted_ancestor_is_refused() {
+    let (_dir, db) = db();
+    let x = seed(&db, "x", None);
+    let d = seed(&db, "d", Some(x));
+    let p = seed(&db, "p", Some(d));
+    db.soft_delete_session(d).expect("delete the middle");
+
+    let err = reparent(&db, "x", Some("p")).expect_err("under its own descendant");
+
+    assert!(err.contains("descendant"), "{err}");
+    assert_eq!(parent_of(&db, x), None);
+    assert_eq!(parent_of(&db, p), Some(d));
+}

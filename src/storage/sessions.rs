@@ -618,6 +618,20 @@ impl Database {
         Ok(())
     }
 
+    /// The parent a session row names, deleted or not — what a walk up the
+    /// tree needs, since a soft-deleted ancestor can be restored into it.
+    pub fn session_parent_any(&self, id: SessionId) -> rusqlite::Result<Option<SessionId>> {
+        let parent: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT parent_session_id FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(parent.flatten().and_then(|p| p.parse().ok()))
+    }
+
     /// Point a live session at another parent, or at none. Returns whether a
     /// row matched. The link is informational ([`SharedSession::parent_session_id`]),
     /// so the caller validates the parent; this only writes it.

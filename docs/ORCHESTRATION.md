@@ -193,8 +193,12 @@ takes every pane on its server, and nothing inside that server is left to
 write an event. `watch` looks at the local windows every few seconds
 and reports a running session whose window is gone, once, as `changed`/`lost`
 with the last state in `from_state`. A parked session is not lost, and a
-`session restart` brings a lost one back. Sessions on a `--host` are watched
-from that host.
+`session restart` brings a lost one back. It covers **local sessions only**:
+a peer's mirror pass copies a host's rows, not its events, so a `--host`
+session's loss reaches nobody unless a `watch` runs on that host. Run `watch`
+with the environment the sessions were created in — a watcher that resolves a
+different tmux socket (another `TMUX_TMPDIR`, a private `/tmp`) finds no server
+and reports every local session lost.
 
 ### `--parent`
 
