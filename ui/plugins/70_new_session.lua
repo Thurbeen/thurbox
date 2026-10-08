@@ -555,12 +555,26 @@ local function choose_mux(flow)
   local options, configured, default = mux_options(flow)
   if configured and configured ~= "default" then
     flow.mux_name = configured
+    flow.mux_guessed = false
     return mux_index(options, configured) == 0
   end
   flow.mux_name = mux_index(options, default) > 0 and default or options[1]
+  flow.mux_guessed = true
   -- A host still being asked may have more to offer than its default.
   local host = flow_host(flow)
   return #options ~= 1 or (host ~= nil and host.probing == true)
+end
+
+--- The multiplexer the step stands on. A guess — the default, picked before a
+--- host's probe answered — follows the options when the answer leaves it out,
+--- so the step never sits on a row it no longer has; a choice (configured, or
+--- moved to) is kept and reported unavailable instead.
+local function settled_mux(flow)
+  local options, _, default = mux_options(flow)
+  if not flow.mux_guessed or mux_index(options, flow.mux_name) > 0 then
+    return flow.mux_name
+  end
+  return mux_index(options, default) > 0 and default or options[1]
 end
 
 --- Where the flow goes once the machine is settled: the multiplexer step when
@@ -591,13 +605,14 @@ end
 
 local function render_mux(flow)
   local options, configured = mux_options(flow)
-  local index = mux_index(options, flow.mux_name)
+  local chosen = settled_mux(flow)
+  local index = mux_index(options, chosen)
   local warning
   if configured and configured ~= "default" and mux_index(options, configured) == 0 then
     warning = configured .. " is unavailable for this host"
   end
-  if not warning and flow.mux_name and index == 0 and #options > 0 then
-    warning = flow.mux_name .. " is unavailable for this host"
+  if not warning and chosen and index == 0 and #options > 0 then
+    warning = chosen .. " is unavailable for this host"
   end
   local host = flow_host(flow)
   if not warning and host and host.probing then
@@ -1386,8 +1401,9 @@ local function move_selection(flow, step)
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
   elseif flow.step == "multiplexer" then
     local options = mux_options(flow)
-    local index = widgets.clamp(mux_index(options, flow.mux_name) + step, #options)
+    local index = widgets.clamp(mux_index(options, settled_mux(flow)) + step, #options)
     flow.mux_name = options[index]
+    flow.mux_guessed = false
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "branch" then
@@ -1410,7 +1426,7 @@ return {
     if flow.step == "host" then
       selection = flow.host_index
     elseif flow.step == "multiplexer" then
-      selection = mux_index(mux_options(flow), flow.mux_name)
+      selection = mux_index(mux_options(flow), settled_mux(flow))
     elseif flow.step == "branch" then
       selection = flow.branch_index
     elseif flow.step == "agent" then
@@ -1801,6 +1817,7 @@ return {
     end
 
     if flow.step == "multiplexer" then
+      flow.mux_name = settled_mux(flow)
       if name == "enter" and mux_index(mux_options(flow), flow.mux_name) > 0 then
         flow.step = "repo"
         save(flow)
@@ -2126,6 +2143,7 @@ return {
         return false
       end
       flow.mux_name = options[index]
+      flow.mux_guessed = false
     elseif flow.step == "branch" then
       flow.branch_index = index
     elseif flow.step == "agent" then

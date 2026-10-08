@@ -591,6 +591,26 @@ fn a_host_still_being_asked_shows_the_step_rather_than_guess() {
 }
 
 #[test]
+fn a_probe_without_the_guessed_default_moves_the_selection_to_what_it_found() {
+    let host = host();
+    let mut world = World::default();
+    let mut asking = devbox("posix", &["tmux"]);
+    asking.probing = true;
+    world.snapshot.hosts = vec![asking];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("▸ tmux"));
+    world.snapshot.hosts[0].probing = false;
+    world.snapshot.hosts[0].available_multiplexers = vec!["rmux".into()];
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("▸ rmux"), "{screen}");
+    assert!(!screen.contains("unavailable"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repos"));
+}
+
+#[test]
 fn a_configured_multiplexer_that_is_available_skips_the_step() {
     let host = host();
     let mut world = World::default();

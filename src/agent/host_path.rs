@@ -295,9 +295,7 @@ pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
     }
 }
 
-/// Probe `host` in the background, once at a time per host. The `PATH` it
-/// reads alongside fills that cache only where it is empty: a spawn's answer
-/// is never replaced by a later failure.
+/// Probe `host` in the background, once at a time per host.
 fn reprobe(host: &HostDef, key: String) {
     let started = in_flight()
         .lock()
@@ -313,16 +311,29 @@ fn reprobe(host: &HostDef, key: String) {
             PROBE_TIMEOUT,
         )
         .and_then(|out| parse_probe(&out));
-        if let Ok(mut c) = cache().lock() {
-            c.entry(key.clone()).or_insert_with(|| env.clone());
-        }
-        if let Ok(mut c) = mux_cache().lock() {
-            c.insert(key.clone(), (Instant::now(), env.map(|e| e.multiplexers)));
-        }
+        record_probe(&key, env);
         if let Ok(mut flight) = in_flight().lock() {
             flight.remove(&key);
         }
     });
+}
+
+/// Store what a background probe of the host keyed `key` said. Its `PATH`
+/// fills that cache only on success and only where it is empty: that cache is
+/// never re-asked, so a failure there would leave a host that was down at the
+/// first ask without its login `PATH` for the rest of the process, and a
+/// spawn's own answer is never replaced.
+fn record_probe(key: &str, env: Option<HostEnv>) {
+    if let (Some(env), Ok(mut c)) = (env.as_ref(), cache().lock()) {
+        c.entry(key.to_string())
+            .or_insert_with(|| Some(env.clone()));
+    }
+    if let Ok(mut c) = mux_cache().lock() {
+        c.insert(
+            key.to_string(),
+            (Instant::now(), env.map(|e| e.multiplexers)),
+        );
+    }
 }
 
 type MuxAnswer = (Instant, Option<Vec<Multiplexer>>);
@@ -573,6 +584,26 @@ mod tests {
             "{:?}",
             env.multiplexers
         );
+    }
+
+    #[test]
+    fn a_failed_multiplexer_probe_leaves_the_path_cache_to_a_later_spawn() {
+        let host = HostDef {
+            name: "down-at-first-ask".into(),
+            destination: "me@down".into(),
+            ..Default::default()
+        };
+        let key = host.backend_name();
+        record_probe(&key, None);
+        assert!(
+            !cache().lock().unwrap().contains_key(&key),
+            "a failure must not stop a spawn from reading the login PATH"
+        );
+        assert_eq!(multiplexers_found(&host, false), MuxProbe::Unanswered);
+
+        let found = env(&["/usr/bin"], None, None);
+        record_probe(&key, Some(found.clone()));
+        assert_eq!(cache().lock().unwrap().get(&key), Some(&Some(found)));
     }
 
     #[test]
