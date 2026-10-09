@@ -55,14 +55,29 @@ pub struct Ask {
     /// The plugin's own name for this run. Namespaced by the kernel, so two
     /// plugins may both call theirs `status`.
     pub key: String,
-    /// The command line, run through the session's own shell.
+    /// The command line, run through the shell of the machine it targets.
     pub program: String,
-    /// The session whose directory — and whose machine — it runs in.
-    pub session: String,
+    /// Where it runs.
+    pub target: Target,
     pub ttl: Duration,
     pub timeout: Duration,
     /// Run it again even if the answer is fresh.
     pub refresh: bool,
+}
+
+/// The machine, and the directory on it, a run happens in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// The session's working directory, on whatever machine the session lives
+    /// on — over the host launcher for a remote one. What makes `docker compose
+    /// ps` mean the right containers.
+    Session(String),
+    /// The machine running thurbox, in the user's home directory, whatever
+    /// session is selected. For a program that needs *this* machine — its
+    /// microphone, its display, its clipboard — and that a remote session's host
+    /// cannot stand in for. It grants nothing a local session's run does not
+    /// already: both are the user's own shell, here.
+    Local,
 }
 
 impl Ask {
@@ -567,7 +582,7 @@ mod tests {
         Ask {
             key: key.into(),
             program: "true".into(),
-            session: "s1".into(),
+            target: Target::Session("s1".into()),
             ttl: DEFAULT_TTL,
             timeout: DEFAULT_TIMEOUT,
             refresh: false,

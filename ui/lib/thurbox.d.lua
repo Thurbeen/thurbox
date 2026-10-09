@@ -862,7 +862,8 @@ function text.truncate(str, cols, opts) end
 function text.pad(str, cols, align) end
 
 ---@class (exact) thurbox.RunOpts
----@field session? string Run in this session's directory.
+---@field session? string Run in this session's directory, on the session's machine.
+---@field machine? "session"|"local" `"local"`: this machine, in the home directory, whatever session is selected.
 ---@field ttl? number Seconds an answer stays fresh.
 ---@field timeout? number Seconds before the program is given up on.
 ---@field refresh? boolean Ask again even if a fresh answer is held.

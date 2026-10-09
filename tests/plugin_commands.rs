@@ -8,7 +8,7 @@
 //! than trusted to review.
 
 use thurbox::kernel::host::{Capability, LuaHost, RenderContext};
-use thurbox::kernel::runs::{Ask, Run};
+use thurbox::kernel::runs::{Ask, Run, Target};
 
 /// Build an interface out of `plugins`, each `(file name, source)`.
 fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -325,12 +325,95 @@ fn an_ask_names_a_session_that_must_exist() {
     let ask = Ask {
         key: "k".into(),
         program: "true".into(),
-        session: "nope".into(),
+        target: Target::Session("nope".into()),
         ttl: thurbox::kernel::runs::DEFAULT_TTL,
         timeout: thurbox::kernel::runs::DEFAULT_TIMEOUT,
         refresh: false,
     };
-    assert_eq!(ask.session, "nope");
+    assert_eq!(ask.target, Target::Session("nope".into()));
+}
+
+/// A trusted pane asking with the given options table, verbatim.
+fn asking_with(name: &str, opts: &str) -> String {
+    format!(
+        r#"return {{
+  name = "{name}",
+  slot = "sessions",
+  capabilities = {{ "run" }},
+  render = function()
+    run("k", "echo hi", {opts})
+    return {{ type = "text", text = "" }}
+  end,
+}}"#
+    )
+}
+
+fn the_one_ask(opts: &str) -> Ask {
+    let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+    render(&host, "where");
+    let mut asked = host.drain_runs();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    asked.remove(0).1
+}
+
+#[test]
+fn a_run_belongs_to_its_session_by_default() {
+    // Today's behaviour, unchanged: the session's directory, on the session's
+    // machine — which is what makes `docker compose ps` mean the right containers.
+    assert_eq!(
+        the_one_ask(r#"{ session = "s1" }"#).target,
+        Target::Session("s1".into())
+    );
+    assert_eq!(
+        the_one_ask(r#"{ session = "s1", machine = "session" }"#).target,
+        Target::Session("s1".into())
+    );
+}
+
+#[test]
+fn a_run_may_ask_for_this_machine_instead() {
+    // A pane whose program needs *this* machine — its microphone, its display,
+    // its clipboard — asks for it, and no session is needed to do so.
+    assert_eq!(
+        the_one_ask(r#"{ machine = "local" }"#).target,
+        Target::Local
+    );
+    // Naming a session as well does not move the run onto that session's host:
+    // where it runs is what `machine` says.
+    assert_eq!(
+        the_one_ask(r#"{ machine = "local", session = "s1" }"#).target,
+        Target::Local
+    );
+}
+
+#[test]
+fn a_machine_nobody_knows_is_refused_not_guessed() {
+    // Falling back to the session would run the program somewhere the pane did
+    // not ask for, which is the one thing a `run` must never do.
+    let (_home, ui) = interface(&[(
+        "91_where.lua",
+        &asking_with("where", r#"{ machine = "mars" }"#),
+    )]);
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+    let err = host.render(
+        host.index_of("where").expect("loaded"),
+        RenderContext {
+            width: 40,
+            height: 10,
+            focused: true,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    );
+    assert!(err.is_err(), "an unknown machine must fail the call");
+    assert!(
+        format!("{:?}", err.unwrap_err()).contains("machine"),
+        "and say which option was wrong"
+    );
+    assert!(host.drain_runs().is_empty());
 }
 
 // ── the two capabilities are two decisions ─────────────────────────────────

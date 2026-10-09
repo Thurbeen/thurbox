@@ -252,13 +252,27 @@ fn install_run(
                     .filter(|n| *n > 0.0)
                     .map(std::time::Duration::from_secs_f64)
             };
+            let string = |name: &str| -> Option<String> {
+                opts.as_ref()
+                    .and_then(|t| t.get::<Option<String>>(name).ok().flatten())
+            };
+            // Refused rather than defaulted: falling back to the session would
+            // run the program on a machine the pane did not ask for.
+            let target = match string("machine").as_deref() {
+                None | Some("session") => {
+                    crate::kernel::runs::Target::Session(string("session").unwrap_or_default())
+                }
+                Some("local") => crate::kernel::runs::Target::Local,
+                Some(other) => {
+                    return Err(mlua::Error::runtime(format!(
+                        "run: machine must be \"session\" or \"local\", not {other:?}"
+                    )))
+                }
+            };
             let ask = crate::kernel::runs::Ask {
                 key,
                 program,
-                session: opts
-                    .as_ref()
-                    .and_then(|t| t.get::<Option<String>>("session").ok().flatten())
-                    .unwrap_or_default(),
+                target,
                 ttl: seconds("ttl").unwrap_or(crate::kernel::runs::DEFAULT_TTL),
                 timeout: seconds("timeout").unwrap_or(crate::kernel::runs::DEFAULT_TIMEOUT),
                 refresh: opts
