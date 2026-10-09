@@ -695,3 +695,99 @@ fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
         "no `top` plugin, so no rect reserved for one: {placed:?}"
     );
 }
+
+// ── strips: a pane that asks for a row needs no edit to `layout.lua` ────────
+
+fn strip_plugin(name: &str, slot: &str, extra: &str) -> String {
+    format!(
+        "return {{ name = \"{name}\", slot = \"{slot}\", strip = true, {extra}\n\
+         render = function() return {{ type = \"text\", text = \"{name}\" }} end }}"
+    )
+}
+
+fn rects(host: &LuaHost, width: u16, height: u16) -> Vec<(String, Rect)> {
+    let region = host.arrangement(width, height).expect("arrangement");
+    resolve(&region, Rect::new(0, 0, width, height))
+        .into_iter()
+        .map(|slot| (slot.slot, slot.rect))
+        .collect()
+}
+
+fn rect_of(rects: &[(String, Rect)], slot: &str) -> Rect {
+    rects
+        .iter()
+        .find(|(name, _)| name == slot)
+        .unwrap_or_else(|| panic!("{slot} is not placed: {rects:?}"))
+        .1
+}
+
+/// The whole point: installing a pane that wants a full-width row is enough.
+/// `plugin install` never writes `layout.lua` — placement is the user's — so a
+/// pane in a slot of its own used to load, declare its keys, and draw nothing
+/// until the user found the line to add. The bundled arrangement places every
+/// declared strip instead, so the user's file is still where it is decided.
+#[test]
+fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("dictation", "dictation", "size = { len = 2 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    let strip = rect_of(&placed, "dictation");
+    let footer = rect_of(&placed, "footer");
+    assert_eq!(strip.height, 2, "the height the pane declared");
+    assert_eq!(strip.width, 150, "full width");
+    assert_eq!(
+        strip.y + strip.height,
+        footer.y,
+        "directly above the bars: {placed:?}"
+    );
+    assert!(
+        rect_of(&placed, "center").y + rect_of(&placed, "center").height <= strip.y,
+        "and below the panes, which give up the rows"
+    );
+}
+
+#[test]
+fn strips_stack_in_load_order_and_default_to_one_row() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_first.lua"),
+        strip_plugin("first", "first", ""),
+    )
+    .expect("write");
+    fs::write(
+        dir.path().join("plugins/51_second.lua"),
+        strip_plugin("second", "second", "size = { len = 3 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    let (first, second) = (rect_of(&placed, "first"), rect_of(&placed, "second"));
+    assert_eq!(first.height, 1, "no size declared is one row");
+    assert_eq!(second.height, 3);
+    assert!(first.y < second.y, "load order, top to bottom: {placed:?}");
+}
+
+/// A float draws above the arrangement, so asking for a strip as well is asking
+/// for a reserved row nothing paints into — the bug `ctx.slots` exists to stop.
+#[test]
+fn a_float_is_not_a_strip() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("hover", "hover", "floats = true, size = { len = 2 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+    let placed = placed(&host, 150, 40);
+    assert!(
+        !placed.contains("hover"),
+        "a float reserves no strip: {placed:?}"
+    );
+}

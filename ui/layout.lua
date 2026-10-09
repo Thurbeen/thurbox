@@ -136,6 +136,14 @@ return function(ctx)
       { slot = "search", len = math.min(SEARCH_ROWS, math.max(3, height - 6)) }
   end
 
+  -- Strips: full-width rows that panes ask for with `strip = true` (a voice
+  -- indicator, a ticker). Listed here by the kernel in load order, each at the
+  -- height its pane declared, so installing one needs no edit to this file —
+  -- and deleting this loop is how you keep them all off the screen.
+  for _, strip in ipairs(ctx.strips or {}) do
+    children[#children + 1] = { slot = strip.slot, len = strip.len }
+  end
+
   -- The message band takes a row only while there is a message, so a quiet
   -- interface is not paying a row to say nothing.
   if status_rows() > 0 then

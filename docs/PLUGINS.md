@@ -612,6 +612,40 @@ panels.shown("sessions")   -- is the column open?
 panels.toggle("sessions")  -- flip it, returns the new state
 ```
 
+### Strips: a row of your own, with no layout edit
+
+A pane that wants a full-width row of its own — an indicator, a ticker — sits
+in a slot nothing else names, and a slot needs the arrangement to place it.
+`plugin install` never writes `layout.lua`, so that used to mean an install
+that loaded and drew nothing until you found the line to add. Declare it a
+strip instead:
+
+```lua
+return {
+  name = "voice",
+  slot = "voice",
+  strip = true,
+  size = { len = 2 },   -- rows; one when unsaid
+  render = function(ctx) ... end,
+}
+```
+
+The kernel lists every loaded strip to the arrangement as `ctx.strips`
+(`{ slot, len }`, in load order), and the shipped `layout.lua` places them
+above the bars:
+
+```lua
+for _, strip in ipairs(ctx.strips or {}) do
+  children[#children + 1] = { slot = strip.slot, len = strip.len }
+end
+```
+
+The arrangement is still yours: move the loop, or delete it to keep strips off
+the screen. A `layout.lua` written before strips existed has no loop, and
+`plugin check` says so, naming the loop as the fix rather than a line per
+strip. A float is never a strip: it draws above the arrangement, so a row
+reserved for it would stay empty.
+
 ## Colour: name roles, never values
 
 ```lua

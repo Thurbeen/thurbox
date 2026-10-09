@@ -349,9 +349,9 @@ fn check() -> Result<CommandOutput, String> {
                 .map(|plugin| plugin.path.as_str())
                 .collect();
             lines.push(format!(
-                "  ✗ {} — loaded, but nothing places slot {slot:?}\n      \
-                 add it to layout.lua's children: {{ slot = {slot:?} }}",
-                files.join(", ")
+                "  ✗ {} — loaded, but nothing places slot {slot:?}\n      {}",
+                files.join(", "),
+                layout_fix(&host, slot)
             ));
             rows.push(json!({ "slot": slot, "files": files }));
         }
@@ -695,6 +695,27 @@ fn install_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// What to add to `ui/layout.lua` so `slot` is placed.
+///
+/// A strip's slot is placed by the bundled arrangement's strips loop, so when one
+/// is unplaced the arrangement is an older or hand-written one without it — and
+/// the fix is that loop, once, rather than a line per strip that would then pin
+/// a height the pane declares itself.
+fn layout_fix(host: &crate::kernel::host::LuaHost, slot: &str) -> String {
+    let is_strip = host
+        .plugins
+        .iter()
+        .any(|plugin| plugin.slot == slot && plugin.strip);
+    if is_strip {
+        "it is a strip, and this layout.lua has no strips loop — add it before the message \
+         band: for _, strip in ipairs(ctx.strips or {}) do children[#children + 1] = \
+         { slot = strip.slot, len = strip.len } end"
+            .to_string()
+    } else {
+        format!("add it to layout.lua's children: {{ slot = {slot:?} }}")
+    }
+}
+
 /// The line to add to `ui/layout.lua` so a slot is placed.
 ///
 /// Printed at the moment of installing rather than left for `check` to discover:
@@ -712,8 +733,8 @@ fn placement_hint(dir: &Path, file: &str) -> Option<String> {
         .unwrap_or_default();
     if unplaced.contains(&plugin.slot) {
         return Some(format!(
-            "nothing places slot {slot:?} yet — add to layout.lua's children: \
-             {{ slot = {slot:?} }}",
+            "nothing places slot {slot:?} yet — {}",
+            layout_fix(&host, &plugin.slot),
             slot = plugin.slot
         ));
     }

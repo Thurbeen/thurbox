@@ -509,6 +509,13 @@ cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 (`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
 `examples/lua/events.lua` is the worked example.
 
+**A plugin can ask for a strip** — `strip = true` with `size = { len = n }`: a
+full-width row the shipped `layout.lua` places above the bars by iterating
+`ctx.strips` (`{ slot, len }`, load order; `LuaHost::strips`), so a pane in a slot
+of its own needs no `layout.lua` edit — which `plugin install` never makes.
+Floats and decorators are never strips. Under an arrangement without the loop,
+`plugin check`'s unplaced failure names the loop as the fix (`cli::plugins::layout_fix`).
+
 **A plugin can declare chord-less commands** — `commands = { { action, desc } }`
 — which the **command palette** (`Ctrl+P`, `kernel::modals::palette`) lists
 beside every declared key and the kernel's own actions, filtered by subsequence
