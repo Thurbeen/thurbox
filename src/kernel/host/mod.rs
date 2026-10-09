@@ -236,6 +236,10 @@ pub struct Plugin {
     /// kernel knows to render it *after* the arrangement, without having to
     /// render it once to find out.
     pub floats: bool,
+    /// Declared `strip = true`: a full-width row the bundled arrangement places
+    /// above the bars, `size.len` rows high (one when unsaid), without the user
+    /// editing `layout.lua` — published to the arrangement as `ctx.strips`.
+    pub strip: bool,
     /// Keys this plugin declared, as data — enumerable without invoking it.
     pub bindings: Vec<Binding>,
     /// Settings this plugin accepts.
@@ -2282,6 +2286,8 @@ impl LuaHost {
                 ctx.set("height", height).map_err(|e| e.to_string())?;
                 ctx.set("slots", self.occupied_slots_table()?)
                     .map_err(|e| e.to_string())?;
+                ctx.set("strips", self.strips_table()?)
+                    .map_err(|e| e.to_string())?;
 
                 let guard = Budget::arm(&self.lua);
                 let result: Result<Value, mlua::Error> = arrange.call(ctx);
@@ -2363,6 +2369,57 @@ impl LuaHost {
         }
         let region = self.arrangement(area.width, area.height)?;
         Ok(super::layout::placed_slots(&region, area))
+    }
+
+    /// Every slot a loaded strip names, once, as `{ slot, len }` in load order —
+    /// what the bundled arrangement places above the bars.
+    ///
+    /// This is how a pane that needs a row of its own arrives on screen without
+    /// `plugin install` writing `layout.lua`, which it never does: placement is
+    /// the user's, so the arrangement still decides, by iterating this list in
+    /// the file the user owns. Floats and decorators are excluded for the reason
+    /// [`Self::occupied_slots`] gives — neither paints into a carved-out rect.
+    ///
+    /// One entry per SLOT, not per pane: the arrangement places a slot once and
+    /// its occupants share that rect, so an entry per pane reserved rows nothing
+    /// drew into while the panes split a rect sized for one. `len` is what the
+    /// draw path needs — every occupant's rows for a stack, the tallest for a
+    /// switch, which shows one at a time.
+    pub fn strips(&self) -> Vec<(&str, u16)> {
+        let mut strips: Vec<(&str, u16)> = Vec::new();
+        for plugin in &self.plugins {
+            let slot = plugin.slot.as_str();
+            if !plugin.strip
+                || plugin.decorates.is_some()
+                || plugin.floats
+                || strips.iter().any(|(placed, _)| *placed == slot)
+            {
+                continue;
+            }
+            let lens = self
+                .in_slot(slot)
+                .iter()
+                .map(|index| &self.plugins[*index])
+                .filter(|occupant| !occupant.floats)
+                .map(|occupant| occupant.size.len.unwrap_or(1).max(1));
+            let len = match self.slot_mode(slot) {
+                SlotMode::Stack => lens.fold(0u16, u16::saturating_add),
+                SlotMode::Switch => lens.max().unwrap_or(1),
+            };
+            strips.push((slot, len));
+        }
+        strips
+    }
+
+    fn strips_table(&self) -> Result<Table, String> {
+        let list = self.lua.create_table().map_err(|e| e.to_string())?;
+        for (index, (slot, len)) in self.strips().into_iter().enumerate() {
+            let entry = self.lua.create_table().map_err(|e| e.to_string())?;
+            entry.set("slot", slot).map_err(|e| e.to_string())?;
+            entry.set("len", len).map_err(|e| e.to_string())?;
+            list.set(index + 1, entry).map_err(|e| e.to_string())?;
+        }
+        Ok(list)
     }
 
     fn occupied_slots_table(&self) -> Result<Table, String> {

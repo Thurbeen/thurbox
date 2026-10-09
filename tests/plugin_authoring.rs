@@ -1197,3 +1197,69 @@ fn a_name_two_files_answer_to_names_both_of_them() {
         );
     }
 }
+
+/// A pane that declares `strip = true` is placed by the arrangement thurbox
+/// ships, so a fresh install checks out with no edit to `layout.lua`.
+#[test]
+fn a_strip_checks_out_under_the_shipped_layout_with_no_edit() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    run(Action::New {
+        name: "ticker".into(),
+    })
+    .expect("new");
+    let file = ui.join("plugins").join("90_ticker.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(
+        &file,
+        body.replace(
+            "slot = \"center\"",
+            "slot = \"ticker\",\n  strip = true,\n  size = { len = 2 }",
+        ),
+    )
+    .expect("write");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(
+        output.failure.is_none(),
+        "the shipped layout places strips: {}",
+        output.human
+    );
+}
+
+/// An arrangement written before strips existed has no loop for them. The fix
+/// is that loop, once — not a line per strip, which would pin a height the pane
+/// already declares — so that is what the failure says.
+#[test]
+fn a_strip_under_a_layout_without_the_loop_is_told_to_add_the_loop() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let ui = at(home.path());
+    run(Action::New {
+        name: "ticker".into(),
+    })
+    .expect("new");
+    let file = ui.join("plugins").join("90_ticker.lua");
+    let body = std::fs::read_to_string(&file).expect("read");
+    std::fs::write(
+        &file,
+        body.replace("slot = \"center\"", "slot = \"ticker\",\n  strip = true"),
+    )
+    .expect("write");
+    std::fs::write(
+        ui.join("layout.lua"),
+        "return function(ctx)\n  return { children = {\n    { slot = \"sessions\", len = 1 },\n    \
+         { slot = \"center\" },\n    { slot = \"footer\", len = 1 },\n  } }\nend\n",
+    )
+    .expect("write layout");
+
+    let output = run(Action::Check).expect("check runs");
+    assert!(
+        output.failure.is_some(),
+        "an unplaced strip fails the check"
+    );
+    assert!(
+        output.human.contains("ctx.strips"),
+        "and names the loop as the fix: {}",
+        output.human
+    );
+}

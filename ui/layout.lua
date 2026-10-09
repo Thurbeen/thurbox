@@ -102,6 +102,16 @@ local function filled(ctx, slot)
   return slots[slot] == true
 end
 
+--- Does any node in `children`, at any depth, already place `slot`?
+local function places(children, slot)
+  for _, child in ipairs(children) do
+    if child.slot == slot or (child.children and places(child.children, slot)) then
+      return true
+    end
+  end
+  return false
+end
+
 return function(ctx)
   local height = ctx.height or 0
   local children = {}
@@ -136,6 +146,10 @@ return function(ctx)
       { slot = "search", len = math.min(SEARCH_ROWS, math.max(3, height - 6)) }
   end
 
+  -- Strips go here, between the panes and the bars. Their rows are inserted
+  -- at the end, once every other placement is known (see the loop below).
+  local strips_at = #children + 1
+
   -- The message band takes a row only while there is a message, so a quiet
   -- interface is not paying a row to say nothing.
   if status_rows() > 0 then
@@ -143,6 +157,20 @@ return function(ctx)
   end
   if height >= FOOTER_MIN_ROWS then
     children[#children + 1] = { slot = "footer", len = 1 }
+  end
+
+  -- Strips: full-width rows that panes ask for with `strip = true` (a voice
+  -- indicator, a ticker). Listed by the kernel in load order, one per slot at
+  -- the height its panes declared, so installing one needs no edit to this
+  -- file — and deleting this loop is how you keep them all off the screen. A
+  -- slot placed anywhere else in this file is skipped: a slot is drawn once,
+  -- so a second entry would only reserve blank rows. That is why this runs
+  -- last, after the bars, rather than where the rows land.
+  for _, strip in ipairs(ctx.strips or {}) do
+    if not places(children, strip.slot) then
+      table.insert(children, strips_at, { slot = strip.slot, len = strip.len })
+      strips_at = strips_at + 1
+    end
   end
 
   return { children = children }

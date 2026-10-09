@@ -206,6 +206,12 @@
 ---@field width integer
 ---@field height integer
 ---@field slots table<string, boolean>
+---@field strips thurbox.Strip[] Slots named by panes that declared `strip = true`, once each, in load order.
+
+--- A full-width row a pane asked for, as the arrangement is told it.
+---@class (exact) thurbox.Strip
+---@field slot string
+---@field len integer Its panes' declared `size.len` (1 when unsaid): summed in a stack slot, the tallest in a switch one.
 
 --- A key offered to `on_key`. Return true to consume it.
 ---@class (exact) thurbox.Key
@@ -309,6 +315,7 @@
 ---@field focusable? boolean
 ---@field pure? boolean Cache the tree until an input changes.
 ---@field floats? boolean
+---@field strip? boolean A full-width row above the bars, `size.len` high, placed without editing `layout.lua`.
 ---@field input? "session"
 ---@field size? thurbox.Size
 ---@field decorates? string A slot whose tree this plugin transforms.

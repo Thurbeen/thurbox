@@ -18,7 +18,8 @@ use ratatui::layout::Rect;
 use thurbox::kernel::bundled::{self, Source};
 use thurbox::kernel::host::LuaHost;
 use thurbox::kernel::inventory::{self, State};
-use thurbox::kernel::layout::resolve;
+use thurbox::kernel::layout::{divide_slot, resolve};
+use thurbox::kernel::node::Axis;
 use thurbox::kernel::registry::Registry;
 
 /// A pane that draws nothing, in as few lines as a plugin can be written.
@@ -694,4 +695,246 @@ fn the_demo_layout_drops_a_stack_slot_whose_plugin_is_missing() {
         !placed.contains("top"),
         "no `top` plugin, so no rect reserved for one: {placed:?}"
     );
+}
+
+// ── strips: a pane that asks for a row needs no edit to `layout.lua` ────────
+
+fn strip_plugin(name: &str, slot: &str, extra: &str) -> String {
+    format!(
+        "return {{ name = \"{name}\", slot = \"{slot}\", strip = true, {extra}\n\
+         render = function() return {{ type = \"text\", text = \"{name}\" }} end }}"
+    )
+}
+
+fn rects(host: &LuaHost, width: u16, height: u16) -> Vec<(String, Rect)> {
+    let region = host.arrangement(width, height).expect("arrangement");
+    resolve(&region, Rect::new(0, 0, width, height))
+        .into_iter()
+        .map(|slot| (slot.slot, slot.rect))
+        .collect()
+}
+
+fn rect_of(rects: &[(String, Rect)], slot: &str) -> Rect {
+    rects
+        .iter()
+        .find(|(name, _)| name == slot)
+        .unwrap_or_else(|| panic!("{slot} is not placed: {rects:?}"))
+        .1
+}
+
+/// The whole point: installing a pane that wants a full-width row is enough.
+/// `plugin install` never writes `layout.lua` — placement is the user's — so a
+/// pane in a slot of its own used to load, declare its keys, and draw nothing
+/// until the user found the line to add. The bundled arrangement places every
+/// declared strip instead, so the user's file is still where it is decided.
+#[test]
+fn a_strip_is_placed_above_the_bars_at_its_declared_height_with_no_layout_edit() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("dictation", "dictation", "size = { len = 2 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    let strip = rect_of(&placed, "dictation");
+    let footer = rect_of(&placed, "footer");
+    assert_eq!(strip.height, 2, "the height the pane declared");
+    assert_eq!(strip.width, 150, "full width");
+    assert_eq!(
+        strip.y + strip.height,
+        footer.y,
+        "directly above the bars: {placed:?}"
+    );
+    assert!(
+        rect_of(&placed, "center").y + rect_of(&placed, "center").height <= strip.y,
+        "and below the panes, which give up the rows"
+    );
+}
+
+#[test]
+fn strips_stack_in_load_order_and_default_to_one_row() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_first.lua"),
+        strip_plugin("first", "first", ""),
+    )
+    .expect("write");
+    fs::write(
+        dir.path().join("plugins/51_second.lua"),
+        strip_plugin("second", "second", "size = { len = 3 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    let (first, second) = (rect_of(&placed, "first"), rect_of(&placed, "second"));
+    assert_eq!(first.height, 1, "no size declared is one row");
+    assert_eq!(second.height, 3);
+    assert!(first.y < second.y, "load order, top to bottom: {placed:?}");
+}
+
+/// A float draws above the arrangement, so asking for a strip as well is asking
+/// for a reserved row nothing paints into — the bug `ctx.slots` exists to stop.
+#[test]
+fn a_float_is_not_a_strip() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("hover", "hover", "floats = true, size = { len = 2 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+    let placed = placed(&host, 150, 40);
+    assert!(
+        !placed.contains("hover"),
+        "a float reserves no strip: {placed:?}"
+    );
+}
+
+/// Each pane's rect inside `slot`, split the way the stack draw path splits it.
+fn pane_heights(host: &LuaHost, placed: &[(String, Rect)], slot: &str) -> Vec<u16> {
+    let sizes: Vec<_> = host
+        .in_slot(slot)
+        .iter()
+        .map(|index| host.plugins[*index].size)
+        .collect();
+    divide_slot(rect_of(placed, slot), Axis::Vertical, &sizes, 0)
+        .into_iter()
+        .map(|rect| rect.height)
+        .collect()
+}
+
+/// Nothing between the panes and the bars: every row the strips take is one
+/// the panes gave up, and none is left reserved for nothing.
+fn assert_no_blank_rows(placed: &[(String, Rect)], top: &str) {
+    let center = rect_of(placed, "center");
+    assert_eq!(
+        center.y + center.height,
+        rect_of(placed, top).y,
+        "the panes end where the first strip starts: {placed:?}"
+    );
+}
+
+/// Two panes naming one strip slot share one rect. Listing the slot once per
+/// pane placed it once — the first entry wins — and left the second entry's
+/// rows reserved and blank, while the panes split a rect sized for one.
+#[test]
+fn two_strips_sharing_a_stack_slot_get_one_rect_with_both_heights() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_first.lua"),
+        strip_plugin("first", "ticker", "size = { len = 2 },"),
+    )
+    .expect("write");
+    fs::write(
+        dir.path().join("plugins/51_second.lua"),
+        strip_plugin("second", "ticker", "size = { len = 3 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    assert_eq!(rect_of(&placed, "ticker").height, 5, "{placed:?}");
+    assert_eq!(pane_heights(&host, &placed, "ticker"), vec![2, 3]);
+    assert_eq!(
+        rect_of(&placed, "ticker").y + 5,
+        rect_of(&placed, "footer").y,
+        "directly above the bars: {placed:?}"
+    );
+    assert_no_blank_rows(&placed, "ticker");
+}
+
+/// A switch slot shows one pane at a time, so it is as tall as the tallest.
+#[test]
+fn two_strips_sharing_a_switch_slot_get_the_tallest_height() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_first.lua"),
+        strip_plugin(
+            "first",
+            "ticker",
+            "slot_mode = \"switch\", size = { len = 2 },",
+        ),
+    )
+    .expect("write");
+    fs::write(
+        dir.path().join("plugins/51_second.lua"),
+        strip_plugin("second", "ticker", "size = { len = 3 },"),
+    )
+    .expect("write");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    assert_eq!(rect_of(&placed, "ticker").height, 3, "{placed:?}");
+    assert_no_blank_rows(&placed, "ticker");
+}
+
+/// A strip the user placed by hand keeps that placement, and the loop does not
+/// reserve a second, blank row for it.
+#[test]
+fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("ticker", "ticker", "size = { len = 2 },"),
+    )
+    .expect("write");
+    let layout = dir.path().join("layout.lua");
+    let shipped = fs::read_to_string(&layout).expect("read layout");
+    let pinned = shipped.replacen(
+        "local children = {}",
+        "local children = { { slot = \"ticker\", len = 2 } }",
+        1,
+    );
+    assert_ne!(
+        pinned, shipped,
+        "the shipped layout still builds `children`"
+    );
+    fs::write(&layout, pinned).expect("write layout");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    assert_eq!(rect_of(&placed, "ticker").y, 0, "where the user put it");
+    let center = rect_of(&placed, "center");
+    assert_eq!(
+        center.y + center.height,
+        rect_of(&placed, "footer").y,
+        "no blank row above the bars: {placed:?}"
+    );
+}
+
+/// The same, for a placement written AFTER the loop: the loop cannot see it yet
+/// when it runs, so a guard that only looks back still reserves a blank row.
+#[test]
+fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("ticker", "ticker", "size = { len = 2 },"),
+    )
+    .expect("write");
+    let layout = dir.path().join("layout.lua");
+    let shipped = fs::read_to_string(&layout).expect("read layout");
+    let pinned = shipped.replacen(
+        "  if height >= FOOTER_MIN_ROWS then",
+        "  children[#children + 1] = { slot = \"ticker\", len = 2 }\n  \
+         if height >= FOOTER_MIN_ROWS then",
+        1,
+    );
+    assert_ne!(
+        pinned, shipped,
+        "the shipped layout still places the footer"
+    );
+    fs::write(&layout, pinned).expect("write layout");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    assert_eq!(
+        rect_of(&placed, "ticker").y + 2,
+        rect_of(&placed, "footer").y,
+        "where the user put it: {placed:?}"
+    );
+    assert_no_blank_rows(&placed, "ticker");
 }
