@@ -786,10 +786,21 @@ impl App {
             })
             .collect();
         std::sync::Arc::new(move |ask: &thurbox::kernel::runs::Ask| {
-            let Some((cwd, backend)) = sessions.get(&ask.session) else {
+            let session = match &ask.target {
+                thurbox::kernel::runs::Target::Session(session) => session,
+                thurbox::kernel::runs::Target::Local => {
+                    let Some(home) = thurbox::paths::home_dir() else {
+                        return thurbox::kernel::runs::Run::Failed(
+                            "no home directory to run it in".to_string(),
+                        );
+                    };
+                    let command = thurbox::kernel::runs::command_for(&ask.program, &home, None);
+                    return thurbox::kernel::runs::capture(command, ask.timeout);
+                }
+            };
+            let Some((cwd, backend)) = sessions.get(session) else {
                 return thurbox::kernel::runs::Run::Failed(format!(
-                    "no session {} to run it in",
-                    ask.session
+                    "no session {session} to run it in"
                 ));
             };
             let Some(host) = thurbox::session_ops::resolve_host(backend) else {

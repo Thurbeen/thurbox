@@ -1295,6 +1295,22 @@ ten minutes), and four run at once with the rest queued. A run happens in the
 session's working directory, and for a remote session **on that session's host** —
 which is what makes `docker compose ps` mean the right containers.
 
+**Some programs need this machine instead**: its microphone, its display, its
+clipboard. A remote session's host cannot stand in for those, so ask for the
+machine thurbox runs on:
+
+```lua
+run("start", "thurbox-voice start --session " .. id, { machine = "local" })
+```
+
+It runs in your home directory whatever session is selected, and needs no
+`session`. If you give one anyway, it is not where the program runs; `machine`
+decides that. A `machine` other than `"session"` (the default) or `"local"`
+fails the call rather than falling back, because guessing would run the program
+somewhere you did not ask for. This grants nothing new: a local session's runs
+already execute here as you, so it is the same `run` capability and the same
+trust.
+
 ## Running a program you interact with
 
 `run` captures a program's output once. It has no stdin and no terminal, so it
