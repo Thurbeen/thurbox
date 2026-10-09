@@ -641,29 +641,24 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
       </div>
     </section>
 
-    <!-- The engine's own cost. The page had no performance content at all while
-         two sections argued the Lua case; this is the other half of the Band 1 /
-         Band 2 split the features grid draws. Every number here is from
-         docs/PERFORMANCE.md - keep them in step, and do not add one that is not
-         recorded in an ADR there. -->
+    <!-- Keep the comparison tied to the source-pinned measurement page. -->
     <section class="section" id="performance">
       <div class="container">
-        <p class="section-eyebrow">Measured, not asserted</p>
-        <h2>A frame costs what changed, not what exists</h2>
+        <p class="section-eyebrow">Five-way Linux benchmark</p>
+        <h2>Measure the interface and its backend together</h2>
         <p class="section-lede">
-          The interface is Lua, and a frame runs your panes. That only stays cheap if the loop
-          refuses to redo the work nothing asked for &mdash; so the groups that cost something to
-          build are gated behind a version or a digest, and rebuilt only when their source moves.
-          The small ones are rebuilt every publish, because checking them costs more than building
-          them.
+          Closing the interface brings idle CPU close to the raw backend. With the interface open,
+          default process probes, rendering, memory and RMUX transport behavior still add cost.
+          The measured comparison covers Thurbox with tmux and RMUX, both raw backends, and Herdr,
+          with repeated-run noise bands and the gaps still to close.
         </p>
 
         <div class="grid grid-2">
           <div class="card">
             <div class="card-icon" aria-hidden="true">&#x25D3;</div>
-            <h3>An idle screen stops painting</h3>
+            <h3>Idle screens paint less often</h3>
             <p>
-              A keypress or new agent output repaints immediately. With nothing happening the loop
+              A keypress or new agent output schedules a repaint. With nothing happening the loop
               falls to four frames a second instead of a hundred, and the expensive half &mdash;
               layout, the terminal render, the panel rebuilds &mdash; is skipped rather than
               repeated.
@@ -671,13 +666,12 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
           </div>
           <div class="card">
             <div class="card-icon" aria-hidden="true">&#x25A4;</div>
-            <h3>Rebuilt only when the source moved</h3>
+            <h3>Default probes still cost CPU</h3>
             <p>
-              Under load the session list produced a byte-identical tree on 200 of 200 renders &mdash;
-              the loop was proving that work wasted only after paying for it. A change signal gates
-              the rebuild now, and a pane that declares itself
-              <code>pure</code>
-              can have its whole tree reused rather than re-run.
+              Twenty attached idle sessions used 20.89% of one core with tmux and 25.63% with RMUX.
+              Foreground-process discovery accounts for most of that cost. Hook-covered controls
+              reduce it, while a gap remains over the raw backend. The report separates those
+              conditional controls from the default result.
             </p>
           </div>
           <div class="card">
@@ -704,7 +698,7 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
           </div>
         </div>
         <p>
-          <a href="docs/performance.html">See the measured comparison with Herdr and tmux, and the F12 walkthrough &rarr;</a>
+          <a href="docs/performance.html">See the five-way measurements, remaining gaps, and F12 walkthrough &rarr;</a>
         </p>
       </div>
     </section>

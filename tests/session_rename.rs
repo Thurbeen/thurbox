@@ -53,9 +53,11 @@ impl Env {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
+        // Delivery uses bracketed paste, which POSIX sh need not understand.
+        // Bash provides that input mode on both the dev shell and Linux CI.
         std::fs::write(
             root.path().join("config/agents.toml"),
-            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"bash\"\nargs = [\"--noprofile\", \"--norc\"]\n",
         )
         .expect("seed agents");
         let server = TmuxServer::private(&format!("thurbox-rename-{}", std::process::id()));
@@ -376,7 +378,28 @@ fn renaming_a_running_session_renames_its_windows_and_keeps_its_pane() {
         "both windows must follow the session: {windows:?}"
     );
 
-    // The pane is still the session's: typing into it by the new name works.
-    let sent = env.run(&["session", "send", "renamed agent", "true"]);
+    // A shell prompt is not an agent composer. Bypass that guard and verify
+    // execution in the original repository, rather than just enqueue success.
+    let sent = env.run(&[
+        "session",
+        "send",
+        "renamed agent",
+        "printf renamed > rename-delivery",
+        "--force",
+    ]);
     assert!(sent.status.success(), "send after rename:\n{}", said(&sent));
+    let delivery = repo.join("rename-delivery");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::read_to_string(&delivery).ok().as_deref() != Some("renamed")
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(delivery).unwrap_or_else(|e| {
+            let pane = env.tmux(&["capture-pane", "-p", "-t", "tb-renamed_agent"]);
+            panic!("pane did not execute command: {e}; {}", said(&pane));
+        }),
+        "renamed"
+    );
 }

@@ -61,4 +61,4 @@
 
 - [GitHub repository](https://github.com/Thurbeen/thurbox): source, README, and releases.
 - [Keybindings](https://thurbox.thurbeen.eu/docs/keybindings.html): the Vim-inspired keyboard reference.
-- [Performance](https://thurbox.thurbeen.eu/docs/performance.html): demand-driven rendering and how throughput is measured.
+- [Performance](https://thurbox.thurbeen.eu/docs/performance.html): five-way Linux measurements, remaining overhead, noise bands and F12 diagnostics.
