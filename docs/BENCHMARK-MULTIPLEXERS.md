@@ -4,6 +4,12 @@ How the three compare as the thing your coding agents live in: starting
 sessions, holding them, showing them, typing into them, and surviving a crash.
 Same stand-in agent everywhere, so what differs is the host.
 
+This document retains the historical three-way measurements and their harness.
+The [source-pinned five-way website comparison](../website/docs/performance.html)
+adds RMUX, stage-1 deltas, repeated-run noise, received wakeups and remaining gaps.
+Its sixty-five-second host CPU accounting includes short-lived helper processes;
+keep that denominator separate from the older measurements below.
+
 Re-run it in one command, from a checkout of the commit you want to measure:
 
 ```sh
