@@ -6405,6 +6405,51 @@ fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
 }
 
 #[test]
+fn connected_host_markers_keep_arrows_without_a_circle() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "local-marker-probe",
+        "--repo-path",
+        profile.path("repo").to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+    ]);
+    tui.wait_for("local-marker-probe");
+    let mut redundant_markers = Vec::new();
+    for (label, glyph, child) in [
+        ("local", "⌂", "local-marker-probe"),
+        ("ssh devbox", "▣", REMOTE_NAME),
+    ] {
+        for arrow in ["▾", "▸"] {
+            let frame = tui.frame();
+            let line = frame
+                .lines()
+                .find(|line| line.contains(&format!("{glyph} {label}")))
+                .expect("host row");
+            let prefix = line.split(label).next().expect("host prefix");
+            eprintln!("rendered host prefix: {prefix}");
+            if !prefix.ends_with(&format!(" {arrow} {glyph} ")) {
+                redundant_markers.push(prefix.to_string());
+            }
+            if arrow == "▾" {
+                tui.press(0, tui.find(&format!("{glyph} {label}")));
+                tui.wait_gone(child);
+            }
+        }
+    }
+    assert!(tui.quit().success());
+    assert!(
+        redundant_markers.is_empty(),
+        "connected hosts should show only their arrow and host glyph: {redundant_markers:?}"
+    );
+}
+
+#[test]
 fn a_chord_is_answered_while_a_remote_sessions_link_is_wedged() {
     // The interface must stay the user's while the network is not.
     //
