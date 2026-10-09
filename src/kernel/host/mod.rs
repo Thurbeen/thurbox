@@ -2371,20 +2371,44 @@ impl LuaHost {
         Ok(super::layout::placed_slots(&region, area))
     }
 
-    /// Every loaded strip as `{ slot, len }`, in load order — what the bundled
-    /// arrangement places above the bars.
+    /// Every slot a loaded strip names, once, as `{ slot, len }` in load order —
+    /// what the bundled arrangement places above the bars.
     ///
     /// This is how a pane that needs a row of its own arrives on screen without
     /// `plugin install` writing `layout.lua`, which it never does: placement is
     /// the user's, so the arrangement still decides, by iterating this list in
     /// the file the user owns. Floats and decorators are excluded for the reason
     /// [`Self::occupied_slots`] gives — neither paints into a carved-out rect.
+    ///
+    /// One entry per SLOT, not per pane: the arrangement places a slot once and
+    /// its occupants share that rect, so an entry per pane reserved rows nothing
+    /// drew into while the panes split a rect sized for one. `len` is what the
+    /// draw path needs — every occupant's rows for a stack, the tallest for a
+    /// switch, which shows one at a time.
     pub fn strips(&self) -> Vec<(&str, u16)> {
-        self.plugins
-            .iter()
-            .filter(|plugin| plugin.strip && plugin.decorates.is_none() && !plugin.floats)
-            .map(|plugin| (plugin.slot.as_str(), plugin.size.len.unwrap_or(1).max(1)))
-            .collect()
+        let mut strips: Vec<(&str, u16)> = Vec::new();
+        for plugin in &self.plugins {
+            let slot = plugin.slot.as_str();
+            if !plugin.strip
+                || plugin.decorates.is_some()
+                || plugin.floats
+                || strips.iter().any(|(placed, _)| *placed == slot)
+            {
+                continue;
+            }
+            let lens = self
+                .in_slot(slot)
+                .iter()
+                .map(|index| &self.plugins[*index])
+                .filter(|occupant| !occupant.floats)
+                .map(|occupant| occupant.size.len.unwrap_or(1).max(1));
+            let len = match self.slot_mode(slot) {
+                SlotMode::Stack => lens.fold(0u16, u16::saturating_add),
+                SlotMode::Switch => lens.max().unwrap_or(1),
+            };
+            strips.push((slot, len));
+        }
+        strips
     }
 
     fn strips_table(&self) -> Result<Table, String> {

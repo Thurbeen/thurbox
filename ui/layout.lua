@@ -102,6 +102,16 @@ local function filled(ctx, slot)
   return slots[slot] == true
 end
 
+--- Does any node in `children`, at any depth, already place `slot`?
+local function places(children, slot)
+  for _, child in ipairs(children) do
+    if child.slot == slot or (child.children and places(child.children, slot)) then
+      return true
+    end
+  end
+  return false
+end
+
 return function(ctx)
   local height = ctx.height or 0
   local children = {}
@@ -137,11 +147,15 @@ return function(ctx)
   end
 
   -- Strips: full-width rows that panes ask for with `strip = true` (a voice
-  -- indicator, a ticker). Listed here by the kernel in load order, each at the
-  -- height its pane declared, so installing one needs no edit to this file —
-  -- and deleting this loop is how you keep them all off the screen.
+  -- indicator, a ticker). Listed here by the kernel in load order, one per slot
+  -- at the height its panes declared, so installing one needs no edit to this
+  -- file — and deleting this loop is how you keep them all off the screen. A
+  -- slot already placed above is skipped: a slot is drawn once, so a second
+  -- entry would only reserve blank rows.
   for _, strip in ipairs(ctx.strips or {}) do
-    children[#children + 1] = { slot = strip.slot, len = strip.len }
+    if not places(children, strip.slot) then
+      children[#children + 1] = { slot = strip.slot, len = strip.len }
+    end
   end
 
   -- The message band takes a row only while there is a message, so a quiet

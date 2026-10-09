@@ -206,12 +206,12 @@
 ---@field width integer
 ---@field height integer
 ---@field slots table<string, boolean>
----@field strips thurbox.Strip[] Panes that declared `strip = true`, in load order.
+---@field strips thurbox.Strip[] Slots named by panes that declared `strip = true`, once each, in load order.
 
 --- A full-width row a pane asked for, as the arrangement is told it.
 ---@class (exact) thurbox.Strip
 ---@field slot string
----@field len integer The pane's declared `size.len`, or 1.
+---@field len integer Its panes' declared `size.len` (1 when unsaid): summed in a stack slot, the tallest in a switch one.
 
 --- A key offered to `on_key`. Return true to consume it.
 ---@class (exact) thurbox.Key

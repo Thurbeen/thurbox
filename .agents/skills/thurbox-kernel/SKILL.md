@@ -511,7 +511,8 @@ cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 
 **A plugin can ask for a strip** — `strip = true` with `size = { len = n }`: a
 full-width row the shipped `layout.lua` places above the bars by iterating
-`ctx.strips` (`{ slot, len }`, load order; `LuaHost::strips`), so a pane in a slot
+`ctx.strips` (`{ slot, len }`, load order, one entry per slot — `len` sums a
+stack's panes and takes a switch's tallest; `LuaHost::strips`), so a pane in a slot
 of its own needs no `layout.lua` edit — which `plugin install` never makes.
 Floats and decorators are never strips. Under an arrangement without the loop,
 `plugin check`'s unplaced failure names the loop as the fix (`cli::plugins::layout_fix`).
