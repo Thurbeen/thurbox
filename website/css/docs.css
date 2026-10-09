@@ -241,6 +241,17 @@ h3:hover .heading-anchor {
   display: none;
 }
 
+.performance-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  margin-block: var(--space-lg);
+}
+
+.docs-content .performance-table-scroll table {
+  display: table;
+  min-width: 100%;
+}
+
 /* ---- Docs hub cards ---- */
 .docs-hub-grid {
   display: grid;
