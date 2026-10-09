@@ -330,7 +330,7 @@ local function host_line(item, width, selected)
   end
   local color = theme.accent
   local reach = "connected"
-  local reach_glyph = "●"
+  local reach_glyph = ""
   if counts.unreachable == counts.total and counts.total > 0 then
     reach, reach_glyph, color = "unreachable", "⊘", theme.role("status_unreachable")
   elseif counts.failed > 0 and counts.total == 0 then
