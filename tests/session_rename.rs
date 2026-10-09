@@ -53,9 +53,11 @@ impl Env {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
+        // Delivery uses bracketed paste, which POSIX sh need not understand.
+        // Bash provides that input mode on both the dev shell and Linux CI.
         std::fs::write(
             root.path().join("config/agents.toml"),
-            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"bash\"\nargs = [\"--noprofile\", \"--norc\"]\n",
         )
         .expect("seed agents");
         let server = TmuxServer::private(&format!("thurbox-rename-{}", std::process::id()));
@@ -394,7 +396,10 @@ fn renaming_a_running_session_renames_its_windows_and_keeps_its_pane() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(
-        std::fs::read_to_string(delivery).expect("pane executed command"),
+        std::fs::read_to_string(delivery).unwrap_or_else(|e| {
+            let pane = env.tmux(&["capture-pane", "-p", "-t", "tb-renamed_agent"]);
+            panic!("pane did not execute command: {e}; {}", said(&pane));
+        }),
         "renamed"
     );
 }
