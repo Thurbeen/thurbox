@@ -257,16 +257,29 @@ fn install_run(
                     .and_then(|t| t.get::<Option<String>>(name).ok().flatten())
             };
             // Refused rather than defaulted: falling back to the session would
-            // run the program on a machine the pane did not ask for.
-            let target = match string("machine").as_deref() {
-                None | Some("session") => {
+            // run the program on a machine the pane did not ask for. Read raw,
+            // not through `string`, whose `.ok()` would turn a `false` or a
+            // table into "absent" and so into the session.
+            let machine = match &opts {
+                Some(t) => t.get::<Value>("machine")?,
+                None => Value::Nil,
+            };
+            let target = match &machine {
+                Value::Nil => {
                     crate::kernel::runs::Target::Session(string("session").unwrap_or_default())
                 }
-                Some("local") => crate::kernel::runs::Target::Local,
-                Some(other) => {
+                Value::String(s) if s == "session" => {
+                    crate::kernel::runs::Target::Session(string("session").unwrap_or_default())
+                }
+                Value::String(s) if s == "local" => crate::kernel::runs::Target::Local,
+                other => {
+                    let got = match other.as_string() {
+                        Some(s) => format!("{:?}", s.to_string_lossy()),
+                        None => format!("a {}", other.type_name()),
+                    };
                     return Err(mlua::Error::runtime(format!(
-                        "run: machine must be \"session\" or \"local\", not {other:?}"
-                    )))
+                        "run: machine must be \"session\" or \"local\", not {got}"
+                    )));
                 }
             };
             let ask = crate::kernel::runs::Ask {

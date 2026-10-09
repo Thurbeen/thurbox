@@ -391,29 +391,36 @@ fn a_run_may_ask_for_this_machine_instead() {
 #[test]
 fn a_machine_nobody_knows_is_refused_not_guessed() {
     // Falling back to the session would run the program somewhere the pane did
-    // not ask for, which is the one thing a `run` must never do.
-    let (_home, ui) = interface(&[(
-        "91_where.lua",
-        &asking_with("where", r#"{ machine = "mars" }"#),
-    )]);
-    let host = LuaHost::new(&ui);
-    host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
-    let err = host.render(
-        host.index_of("where").expect("loaded"),
-        RenderContext {
-            width: 40,
-            height: 10,
-            focused: true,
-            elapsed: 0.0,
-            frame: 0,
-        },
-    );
-    assert!(err.is_err(), "an unknown machine must fail the call");
-    assert!(
-        format!("{:?}", err.unwrap_err()).contains("machine"),
-        "and say which option was wrong"
-    );
-    assert!(host.drain_runs().is_empty());
+    // not ask for, which is the one thing a `run` must never do. A value that is
+    // not a string at all is no less unknown than a misspelt one.
+    for opts in [
+        r#"{ machine = "mars" }"#,
+        r#"{ session = "remote-session", machine = false }"#,
+        r#"{ session = "remote-session", machine = {} }"#,
+    ] {
+        let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
+        let host = LuaHost::new(&ui);
+        host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+        let err = host.render(
+            host.index_of("where").expect("loaded"),
+            RenderContext {
+                width: 40,
+                height: 10,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        );
+        assert!(
+            err.is_err(),
+            "{opts}: an unknown machine must fail the call"
+        );
+        assert!(
+            format!("{:?}", err.unwrap_err()).contains("machine"),
+            "{opts}: and say which option was wrong"
+        );
+        assert!(host.drain_runs().is_empty(), "{opts}: nothing queued");
+    }
 }
 
 // ── the two capabilities are two decisions ─────────────────────────────────
