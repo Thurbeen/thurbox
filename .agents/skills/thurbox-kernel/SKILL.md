@@ -535,7 +535,9 @@ first external actions are `session.focus {session_id}` and
 `search.open {query}`; the coordinator validates them and applies them on the
 event loop. The local transport lives in `ui_control`, outside the session
 backend, and `thurbox-cli ui` selects the target interface explicitly when
-more than one is reachable.
+more than one is reachable. A key declared `release = true` passes
+`{ event = "press" }` and later `{ event = "release" }` through the same
+table (`coordinator::input::Holds`; `docs/PLUGINS.md` → **Keys**).
 
 - `docs/KERNEL.md` — the kernel's shape, its five rules, and the traps
 - `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**

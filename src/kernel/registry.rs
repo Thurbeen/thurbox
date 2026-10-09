@@ -72,6 +72,15 @@ pub struct Binding {
     /// `Ctrl+Q`, `Ctrl+N`) are deliberately not marked: they are the keyboard
     /// escape route out of the terminal.
     pub passthrough: bool,
+    /// Whether the plugin is also told when the key is let go.
+    ///
+    /// Such a binding is called `on_action(action, { event = "press" })` on the
+    /// press and `{ event = "release" }` on the release, and its auto-repeat is
+    /// swallowed rather than re-fired — a hold is one gesture, not a stream of
+    /// presses. A release needs a terminal that reports one (the kitty keyboard
+    /// protocol, or Windows), which `thurbox.keyboard.releases` says; without
+    /// one only the presses arrive. See `coordinator::input::Holds`.
+    pub release: bool,
     /// Section this key belongs to in help — "Navigation", "Sessions", …
     ///
     /// v1 grouped its help by *function* rather than by which module owned the
@@ -93,6 +102,28 @@ pub struct Setting {
     /// A text value holding a `;`-separated list of percent-escaped entries,
     /// which the settings modal shows as a count rather than as the raw string.
     pub list: bool,
+    /// The only values a text setting may take, in the order the settings modal
+    /// steps through them. Empty means free text.
+    ///
+    /// Declared rather than validated by the plugin, so the modal can offer a
+    /// pick instead of a text field and refuse a misspelt value before it is
+    /// persisted, and a stored value a newer plugin no longer offers falls back
+    /// to the default instead of reaching the plugin.
+    pub choices: Vec<String>,
+}
+
+impl Setting {
+    /// Whether `value` is one this setting may take: the declared type, and one
+    /// of the choices when there are any.
+    pub fn admits(&self, value: &Value) -> bool {
+        if value.type_name() != self.default.type_name() {
+            return false;
+        }
+        match value {
+            Value::Text(text) if !self.choices.is_empty() => self.choices.contains(text),
+            _ => true,
+        }
+    }
 }
 
 /// An action-band entry a plugin contributes.
@@ -495,8 +526,9 @@ impl Registry {
             if let Some(value) = self.setting_overrides.get(&key) {
                 // A stored value of the wrong shape is ignored rather than
                 // coerced: a plugin that declared a number should never be
-                // handed a string because an old file said so.
-                if value.type_name() == setting.default.type_name() {
+                // handed a string because an old file said so — nor a choice
+                // the plugin no longer offers.
+                if setting.admits(value) {
                     setting.value = value.clone();
                 }
             }
@@ -550,6 +582,7 @@ impl Registry {
                     description: command.description.clone(),
                     scope: Scope::Plugin,
                     passthrough: false,
+                    release: false,
                     group: command.plugin.clone(),
                 });
             }
@@ -1024,6 +1057,13 @@ impl Registry {
                         "{key} is a {}, not a {}",
                         declared.default.type_name(),
                         value.type_name()
+                    ));
+                }
+                if !declared.admits(&value) {
+                    return Err(format!(
+                        "{key} is one of {}, not {}",
+                        declared.choices.join(", "),
+                        value_to_json(&value)
                     ));
                 }
                 self.setting_overrides.insert(key, value);
@@ -1514,6 +1554,7 @@ pub fn binding_from(
         description: description.to_string(),
         scope: Scope::parse(scope),
         passthrough,
+        release: false,
         group: group.unwrap_or(plugin).to_string(),
     }
 }
@@ -1562,6 +1603,7 @@ mod tests {
             description: String::new(),
             scope,
             passthrough: false,
+            release: false,
             group: plugin.into(),
         }
     }
@@ -1763,6 +1805,7 @@ mod tests {
                 default: Value::Bool(false),
                 value: Value::Bool(false),
                 list: false,
+                choices: Vec::new(),
             }],
         );
         assert_eq!(
@@ -1789,6 +1832,7 @@ mod tests {
                 default: Value::Bool(false),
                 value: Value::Bool(false),
                 list: false,
+                choices: Vec::new(),
             }],
         );
         assert_eq!(
@@ -1860,6 +1904,7 @@ mod tests {
                 default: Value::Number(30.0),
                 value: Value::Number(30.0),
                 list: false,
+                choices: Vec::new(),
             }],
         );
         let error = registry

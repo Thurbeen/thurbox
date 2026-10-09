@@ -850,6 +850,38 @@ pub struct LuaHost {
     /// from the last good build.
     pub error: Option<String>,
     pub reloads: u32,
+    /// Published as `thurbox.keyboard.releases`; the loop learns it from the
+    /// terminal and sets it with [`Self::set_key_releases`].
+    key_releases: std::cell::Cell<KeyReleases>,
+}
+
+/// Whether this terminal tells thurbox when a key is let go, as
+/// `thurbox.keyboard.releases` publishes it.
+///
+/// Three states rather than a flag because "it should" and "it did" differ: a
+/// terminal can accept the kitty flag that asks for releases and still never
+/// send one, so a plugin offering a hold says so only once a release has
+/// actually arrived, and treats `negotiated` as worth trying with a fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyReleases {
+    /// Nothing asked for them: no kitty keyboard protocol, and not Windows.
+    #[default]
+    Unsupported,
+    /// Asked for and accepted (or Windows, whose console always reports them),
+    /// but none seen yet.
+    Negotiated,
+    /// A release has been seen in this run.
+    Reported,
+}
+
+impl KeyReleases {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyReleases::Unsupported => "unsupported",
+            KeyReleases::Negotiated => "negotiated",
+            KeyReleases::Reported => "reported",
+        }
+    }
 }
 
 /// What [`LuaHost::arrangement`]'s cache is keyed by. Compared exactly, like a
@@ -909,6 +941,7 @@ impl LuaHost {
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
+            key_releases: std::cell::Cell::new(KeyReleases::default()),
             perf_timing: std::cell::Cell::new(false),
             plugin_perf: RefCell::new(super::perf::PluginTable::default()),
             idle: std::cell::Cell::new(false),
@@ -1752,6 +1785,11 @@ impl LuaHost {
     /// moving every frame invalidates what reads it and nothing else. The value
     /// is a Lua reference, so reusing it costs a clone of a registry handle
     /// rather than a rebuild of the table behind it.
+    /// What `thurbox.keyboard.releases` says from the next publish on.
+    pub fn set_key_releases(&self, releases: KeyReleases) {
+        self.key_releases.set(releases);
+    }
+
     fn group(
         &self,
         name: &'static str,

@@ -5,6 +5,7 @@
 //! perf HUD.
 
 use std::time::Duration;
+use thurbox::kernel::host::KeyReleases;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -276,19 +277,35 @@ pub(crate) fn restore_terminal() {
 static KEYBOARD_ENHANCEMENT_PUSHED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Ask for `DISAMBIGUATE_ESCAPE_CODES`, if the terminal supports it.
-pub(crate) fn push_keyboard_enhancement() {
+/// Ask for `DISAMBIGUATE_ESCAPE_CODES` and `REPORT_EVENT_TYPES`, if the
+/// terminal supports the kitty keyboard protocol, and say whether key releases
+/// will now be reported.
+///
+/// Event types are what make a release (and a repeat, as distinct from a press)
+/// reportable at all; they change nothing for a binding that never asked for a
+/// release, because `coordinator::input::Holds` hands a repeat on as the press
+/// a legacy terminal would have sent and drops a release nobody holds.
+///
+/// Accepting the push is not proof the terminal honours event types (crossterm
+/// does not expose the flags read back), which is why the answer is
+/// `Negotiated` and only a release actually arriving makes it `Reported`.
+/// Windows needs no flag: its console reports every release already.
+pub(crate) fn push_keyboard_enhancement() -> KeyReleases {
     use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
     if matches!(
         crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
-    ) && crossterm::execute!(
-        std::io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
-    .is_ok()
+    ) && crossterm::execute!(std::io::stdout(), PushKeyboardEnhancementFlags(flags)).is_ok()
     {
         KEYBOARD_ENHANCEMENT_PUSHED.store(true, std::sync::atomic::Ordering::SeqCst);
+        return KeyReleases::Negotiated;
+    }
+    if cfg!(windows) {
+        KeyReleases::Negotiated
+    } else {
+        KeyReleases::Unsupported
     }
 }
 

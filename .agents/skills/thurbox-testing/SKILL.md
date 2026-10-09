@@ -62,7 +62,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   still be reported. `--check ui` proves the panes are clean; this proves the
   types have teeth. Runs in the Lua Lint job and in `just lint`.
 - **`scripts/ci/check-lua-std.sh`** — the same trick for `thurbox.yml`. The panes
-  in `tests/fixtures/lua_std/` read `granted`, `platform`, `metrics`, `hover`,
+  in `tests/fixtures/lua_std/` read `granted`, `platform`, `keyboard`, `metrics`, `hover`,
   `preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads and
   `runs` — the tables no bundled pane reads in a form selene can see:
   `reads.lua` reads every field on them and must lint clean, and `typos/`

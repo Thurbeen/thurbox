@@ -776,6 +776,7 @@ mod tests {
             description: String::new(),
             scope: Scope::Global,
             passthrough: false,
+            release: false,
             group: String::new(),
         }
     }

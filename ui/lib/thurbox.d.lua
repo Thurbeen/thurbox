@@ -268,6 +268,7 @@
 ---@field desc? string
 ---@field scope? "global"|"plugin"
 ---@field passthrough? boolean
+---@field release? boolean Also call `on_action(action, { event = "release" })` when the key is let go; the press then arrives as `{ event = "press" }` and auto-repeat is swallowed. Needs a terminal reporting releases — see `thurbox.keyboard`.
 ---@field group? string
 
 --- A palette row: an action reachable without a chord.
@@ -300,6 +301,7 @@
 ---@field desc? string
 ---@field default boolean|number|string
 ---@field list? boolean A `;`-separated list of percent-escaped entries, shown as a count.
+---@field choices? string[] The only values a string setting may take; the panel steps through them instead of offering a text field, and the default must be one of them.
 
 --- What a plugin file returns.
 ---
@@ -330,7 +332,7 @@
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
 ---@field on_focus_cycle? fun(direction: "next"|"previous"): boolean A topmost open float: true consumes; false keeps the pane cycle.
 ---@field on_key? fun(key: thurbox.Key): boolean
----@field on_action? fun(action: string, args?: table<string, string>): boolean
+---@field on_action? fun(action: string, args?: thurbox.ActionArgs): boolean
 ---@field on_click? fun(hit: thurbox.Hit): boolean
 ---@field on_context? fun(hit: thurbox.Hit): boolean A RIGHT press on the same node.
 ---@field on_outside? fun(hit: thurbox.Hit): boolean A float's: a press of either button that missed it while it held the pointer. `hit.id` is nil.
@@ -697,6 +699,19 @@
 ---@field os string
 ---@field arch string
 
+--- Whether a key's release reaches a binding declared `release = true`:
+--- `unsupported` (no kitty keyboard protocol, not Windows — only presses
+--- arrive), `negotiated` (asked for and accepted, none seen yet) or `reported`
+--- (one has arrived this run).
+---@class (exact) thurbox.Keyboard
+---@field releases "unsupported"|"negotiated"|"reported"
+
+--- The second argument `on_action` may receive. A binding declared
+--- `release = true` gets `event`; an action with declared `args` gets those.
+--- An action run from the palette or `thurbox-cli ui action` gets no `event`,
+--- which a hold-aware plugin should treat as a press.
+---@alias thurbox.ActionArgs table<string, string>|{ event: "press"|"release" }
+
 --- What the pointer is over, as whichever of the two the affordance was marked
 --- with. Empty when nothing is hovered.
 ---@class (exact) thurbox.Hover
@@ -738,6 +753,7 @@
 ---@field type string
 ---@field value boolean|number|string
 ---@field default boolean|number|string
+---@field choices? string[] Present only when the setting declared them.
 
 --- What every plugin declared, so help and settings render from it.
 ---@class (exact) thurbox.RegistrySnapshot
@@ -792,6 +808,7 @@
 ---@field granted thurbox.Granted
 ---@field metrics thurbox.Metrics
 ---@field platform thurbox.Platform
+---@field keyboard thurbox.Keyboard
 ---@field version string
 ---@field reloads integer
 ---@field can_open_links boolean

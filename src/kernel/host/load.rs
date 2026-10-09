@@ -502,7 +502,11 @@ fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
         let group: Option<String> = entry
             .get::<Option<String>>("group")
             .map_err(|e| format!("{where_}.group: {e}"))?;
-        bindings.push(binding_from(
+        let release: bool = entry
+            .get::<Option<bool>>("release")
+            .map_err(|e| format!("{where_}.release: {e}"))?
+            .unwrap_or(false);
+        let mut binding = binding_from(
             plugin,
             &chord,
             &action,
@@ -510,7 +514,9 @@ fn read_bindings(def: &Table, plugin: &str) -> Result<Vec<Binding>, String> {
             scope.as_deref(),
             passthrough,
             group.as_deref(),
-        ));
+        );
+        binding.release = release;
+        bindings.push(binding);
     }
     Ok(bindings)
 }
@@ -550,6 +556,30 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
             .get::<Option<bool>>("list")
             .map_err(|e| format!("{where_}.list: {e}"))?
             .unwrap_or(false);
+        let choices = entry
+            .get::<Option<Vec<String>>>("choices")
+            .map_err(|e| format!("{where_}.choices: {e}"))?
+            .unwrap_or_default();
+        // Refused rather than repaired: a default the plugin does not offer
+        // would be shown as the value of a row whose every step leaves it, and a
+        // choice on a boolean or a number has nothing to choose between.
+        if let Some(first) = choices.first() {
+            match &default {
+                SettingValue::Text(text) if choices.contains(text) => {}
+                SettingValue::Text(text) => {
+                    return Err(format!(
+                        "{where_}: default {text:?} is not one of its choices (first is {first:?})"
+                    ))
+                }
+                _ => return Err(format!("{where_}: choices need a string default")),
+            }
+        } else if entry
+            .get::<Option<Table>>("choices")
+            .map_err(|e| format!("{where_}.choices: {e}"))?
+            .is_some()
+        {
+            return Err(format!("{where_}: choices must not be empty"));
+        }
         settings.push(Setting {
             plugin: plugin.to_string(),
             id,
@@ -557,6 +587,7 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
             default: default.clone(),
             value: default,
             list,
+            choices,
         });
     }
     Ok(settings)

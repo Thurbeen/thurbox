@@ -176,7 +176,7 @@ table read as `thurbox.platform.os` needs an entry per field while a list read a
 `thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
 table left at the table — no bundled pane reads one by name — so
 `scripts/ci/check-lua-std.sh` runs the panes in `tests/fixtures/lua_std/`:
-`reads.lua` reads every field on `granted`, `platform`, `metrics`, `hover`,
+`reads.lua` reads every field on `granted`, `platform`, `keyboard`, `metrics`, `hover`,
 `preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads and
 `runs` and must lint clean, and `typos/` holds one pane per table
 misspelling one field, each of which must not. The assertion is selene's
