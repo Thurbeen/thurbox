@@ -635,8 +635,9 @@ The kernel lists every strip slot to the arrangement as `ctx.strips`
 above the bars. A slot is listed once however many strips name it, because
 its panes share one rect: `len` is the sum of their heights in a stack slot
 and the tallest in a `switch` one. The shipped loop also skips a slot the
-arrangement already placed, so pinning a strip elsewhere by hand reserves no
-second, blank row. Its core:
+arrangement places anywhere else (it runs last and inserts the rows above the
+bars), so pinning a strip elsewhere by hand reserves no second, blank row. Its
+core:
 
 ```lua
 for _, strip in ipairs(ctx.strips or {}) do

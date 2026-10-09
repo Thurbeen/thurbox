@@ -904,3 +904,37 @@ fn a_strip_placed_by_hand_is_not_placed_again_by_the_loop() {
         "no blank row above the bars: {placed:?}"
     );
 }
+
+/// The same, for a placement written AFTER the loop: the loop cannot see it yet
+/// when it runs, so a guard that only looks back still reserves a blank row.
+#[test]
+fn a_strip_placed_by_hand_below_the_loop_is_not_placed_again() {
+    let dir = interface();
+    fs::write(
+        dir.path().join("plugins/50_strip.lua"),
+        strip_plugin("ticker", "ticker", "size = { len = 2 },"),
+    )
+    .expect("write");
+    let layout = dir.path().join("layout.lua");
+    let shipped = fs::read_to_string(&layout).expect("read layout");
+    let pinned = shipped.replacen(
+        "  if height >= FOOTER_MIN_ROWS then",
+        "  children[#children + 1] = { slot = \"ticker\", len = 2 }\n  \
+         if height >= FOOTER_MIN_ROWS then",
+        1,
+    );
+    assert_ne!(
+        pinned, shipped,
+        "the shipped layout still places the footer"
+    );
+    fs::write(&layout, pinned).expect("write layout");
+    let host = loaded(dir.path());
+
+    let placed = rects(&host, 150, 40);
+    assert_eq!(
+        rect_of(&placed, "ticker").y + 2,
+        rect_of(&placed, "footer").y,
+        "where the user put it: {placed:?}"
+    );
+    assert_no_blank_rows(&placed, "ticker");
+}
