@@ -42,6 +42,7 @@ impl App {
         // plugin moved into that position, which then receives a press on a node
         // it never painted (#1118). The next paint records them again.
         self.grabbed = None;
+        self.holds.clear();
         self.click_targets.clear();
         self.last_floats.clear();
         self.drawn_floats.clear();

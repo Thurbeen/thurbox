@@ -482,6 +482,10 @@ globals:
     property: read-only
   thurbox.platform.arch:
     property: read-only
+  # Whether a key's release reaches a `release = true` binding:
+  # "unsupported" | "negotiated" | "reported" (`kernel::host::KeyReleases`).
+  thurbox.keyboard.releases:
+    property: read-only
   # Both are on the root table (`kernel::host` sets them beside the snapshot) and
   # were missing here, so a pane reading a field the kernel genuinely serves was
   # rejected by `selene ui` — the same error class as the deliberate

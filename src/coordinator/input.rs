@@ -25,7 +25,7 @@ use thurbox::agent::input::key_to_bytes;
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::clipboard;
 use thurbox::kernel::command::Command;
-use thurbox::kernel::host::KeyPress;
+use thurbox::kernel::host::{KeyPress, KeyReleases};
 use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord};
 
@@ -105,13 +105,31 @@ impl App {
                 // Where the terminal reports no paste of its own, one arrives
                 // here as keys and has to be recognised as one — the coalescer
                 // hands back whichever of the two this turned out to be.
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                Event::Key(key) => {
                     // Before anything else looks at it, so the coalescer, the
                     // registry, the fields and the pty encoder all see the same
                     // keystroke. See `resolve_altgr`.
                     let key = resolve_altgr(key, cfg!(windows));
-                    for input in self.paste_burst.push(key, Instant::now()) {
-                        self.apply_input(input, &mut published);
+                    let before = self.holds.releases;
+                    let route = self.holds.route(&key, cfg!(windows));
+                    if self.holds.releases != before {
+                        // Published through the data epoch, so a pure pane
+                        // reading `thurbox.keyboard` is not served its old tree.
+                        self.data_epoch = self.data_epoch.wrapping_add(1);
+                        self.dirty = true;
+                    }
+                    match route {
+                        Route::Press(key) => {
+                            for input in self.paste_burst.push(key, Instant::now()) {
+                                self.apply_input(input, &mut published);
+                            }
+                        }
+                        Route::Release { plugin, action } => {
+                            self.publish_for_batch(&mut published);
+                            self.deliver_release(&plugin, &action);
+                            self.note_input();
+                        }
+                        Route::Drop => {}
                     }
                 }
                 // Dropped rather than merely uncaptured when the feature is
@@ -234,7 +252,7 @@ impl App {
         if self.dispatch_grabbed(&press) {
             return;
         }
-        if self.dispatch_declared(&press) {
+        if self.dispatch_declared(&press, key.code) {
             return;
         }
         if self.dispatch_raw(&press) {
@@ -449,14 +467,14 @@ impl App {
     /// This is the path that can be rebound, conflict-checked and listed in
     /// help. Falls through (`false`) when nothing claimed the chord — including
     /// when it was deferred to the agent.
-    pub(crate) fn dispatch_declared(&mut self, press: &KeyPress) -> bool {
+    pub(crate) fn dispatch_declared(&mut self, press: &KeyPress, code: KeyCode) -> bool {
         let focused_name = self
             .host
             .focusable()
             .get(self.focus)
             .and_then(|index| self.host.plugins.get(*index))
             .map(|plugin| plugin.name.clone());
-        let Some((plugin, action, passthrough)) = self
+        let Some((plugin, action, passthrough, release)) = self
             .registry
             .resolve(press, focused_name.as_deref())
             .map(|binding| {
@@ -464,6 +482,7 @@ impl App {
                     binding.plugin.clone(),
                     binding.action.clone(),
                     binding.passthrough,
+                    binding.release,
                 )
             })
         else {
@@ -500,13 +519,42 @@ impl App {
         let Some(index) = self.host.index_of(&plugin) else {
             return false;
         };
-        match self.host.on_action(index, &action) {
-            Ok(true) => true,
+        // A binding that asked for its release is told which half this is, and
+        // the key is remembered only once the plugin took the press — so a
+        // release can never reach a plugin that did not act on the press.
+        let handled = if release {
+            self.host
+                .on_action_with_args(index, &action, &[("event", "press")])
+        } else {
+            self.host.on_action(index, &action)
+        };
+        match handled {
+            Ok(true) => {
+                if release {
+                    self.holds.hold(code, plugin, action);
+                }
+                true
+            }
             Ok(false) => false,
             Err(e) => {
                 self.errors.push(e);
                 false
             }
+        }
+    }
+
+    /// The second half of a hold: the plugin that took the press is told the
+    /// key went up, wherever focus moved meanwhile and whatever is open.
+    fn deliver_release(&mut self, plugin: &str, action: &str) {
+        self.dirty = true;
+        let Some(index) = self.host.index_of(plugin) else {
+            return;
+        };
+        if let Err(e) = self
+            .host
+            .on_action_with_args(index, action, &[("event", "release")])
+        {
+            self.errors.push(e);
         }
     }
 
@@ -1111,9 +1159,178 @@ fn resolve_altgr(key: KeyEvent, windows: bool) -> KeyEvent {
     }
 }
 
+/// The keys pressed on a binding that asked for its release, until they are
+/// let go — and what the terminal has shown about reporting releases at all.
+///
+/// The whole of the release contract is here, so it can be read in one place:
+///
+/// * a **release** is delivered only for a key some binding is holding, to the
+///   plugin that took the press — matched by the key alone, because the
+///   modifier is often let go first (`ctrl` up, then `space`). Every other
+///   release is dropped: none reaches a modal, a raw handler, a field or a
+///   session's terminal;
+/// * a **repeat** of a held key is swallowed — a hold is one gesture. Windows
+///   reports auto-repeat as presses, so there a press of a held key is one too.
+///   A repeat of any other key is passed on as the press a legacy terminal
+///   would have sent, so holding a key down still repeats it everywhere else;
+/// * a **press** is otherwise untouched. A held key pressed again with no
+///   release in between (the terminal lost focus mid-hold) is a new press and
+///   is delivered — except on Windows, where it cannot be told from
+///   auto-repeat; there the release that follows it ends the hold.
+///
+/// Nothing here infers a release from time: no release, no release event.
+#[derive(Debug, Default)]
+pub(crate) struct Holds {
+    held: Vec<(KeyCode, String, String)>,
+    pub(crate) releases: KeyReleases,
+}
+
+/// What [`Holds::route`] made of one key event.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// Dispatch it as a press, through the coalescer and `on_key`.
+    Press(KeyEvent),
+    /// Tell `plugin` that `action`'s key was let go.
+    Release { plugin: String, action: String },
+    /// Nothing receives it.
+    Drop,
+}
+
+/// The key a hold is remembered by: a letter in either case is one key, since
+/// a release can arrive with or without the shift that was down at the press.
+fn hold_key(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
+        other => other,
+    }
+}
+
+impl Holds {
+    pub(crate) fn route(&mut self, key: &KeyEvent, windows: bool) -> Route {
+        let code = hold_key(key.code);
+        let held = self.held.iter().position(|(held, ..)| *held == code);
+        match key.kind {
+            KeyEventKind::Release => {
+                self.releases = KeyReleases::Reported;
+                match held {
+                    Some(at) => {
+                        let (_, plugin, action) = self.held.remove(at);
+                        Route::Release { plugin, action }
+                    }
+                    None => Route::Drop,
+                }
+            }
+            KeyEventKind::Repeat if held.is_some() => Route::Drop,
+            KeyEventKind::Press if windows && held.is_some() => Route::Drop,
+            KeyEventKind::Press | KeyEventKind::Repeat => Route::Press(KeyEvent {
+                kind: KeyEventKind::Press,
+                ..*key
+            }),
+        }
+    }
+
+    /// Remember that `plugin` took the press of `code` for `action`. Only where
+    /// a release can come: elsewhere a hold would never end.
+    pub(crate) fn hold(&mut self, code: KeyCode, plugin: String, action: String) {
+        if self.releases == KeyReleases::Unsupported {
+            return;
+        }
+        let code = hold_key(code);
+        self.held.retain(|(held, ..)| *held != code);
+        self.held.push((code, plugin, action));
+    }
+
+    /// Forget every hold: the plugins that took the presses were rebuilt.
+    pub(crate) fn clear(&mut self) {
+        self.held.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, modifiers, kind)
+    }
+
+    fn holding(releases: KeyReleases) -> Holds {
+        let mut holds = Holds {
+            releases,
+            ..Holds::default()
+        };
+        holds.hold(KeyCode::Char(' '), "voice".into(), "voice.toggle".into());
+        holds
+    }
+
+    #[test]
+    fn a_held_key_swallows_its_repeats_and_hands_its_release_to_the_holder() {
+        let mut holds = holding(KeyReleases::Negotiated);
+        let space = |kind| event(KeyCode::Char(' '), KeyModifiers::CONTROL, kind);
+        assert_eq!(
+            holds.route(&space(KeyEventKind::Repeat), false),
+            Route::Drop
+        );
+        // Ctrl let go first: the release still finds the hold.
+        assert_eq!(
+            holds.route(
+                &event(
+                    KeyCode::Char(' '),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release
+                ),
+                false
+            ),
+            Route::Release {
+                plugin: "voice".into(),
+                action: "voice.toggle".into()
+            }
+        );
+        assert_eq!(holds.releases, KeyReleases::Reported);
+        assert_eq!(
+            holds.route(&space(KeyEventKind::Release), false),
+            Route::Drop,
+            "a second release has no holder"
+        );
+    }
+
+    #[test]
+    fn other_keys_repeat_as_presses_and_their_releases_go_nowhere() {
+        let mut holds = holding(KeyReleases::Negotiated);
+        let j = |kind| event(KeyCode::Char('j'), KeyModifiers::NONE, kind);
+        assert_eq!(
+            holds.route(&j(KeyEventKind::Repeat), false),
+            Route::Press(j(KeyEventKind::Press))
+        );
+        assert_eq!(holds.route(&j(KeyEventKind::Release), false), Route::Drop);
+    }
+
+    #[test]
+    fn windows_reports_auto_repeat_as_presses_of_the_held_key() {
+        let mut holds = holding(KeyReleases::Negotiated);
+        let press = event(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        assert_eq!(holds.route(&press, true), Route::Drop);
+        assert_eq!(
+            holds.route(&press, false),
+            Route::Press(press),
+            "not elsewhere"
+        );
+    }
+
+    #[test]
+    fn nothing_is_held_where_no_release_can_come() {
+        let mut holds = holding(KeyReleases::Unsupported);
+        let press = event(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        assert_eq!(holds.route(&press, true), Route::Press(press));
+    }
 
     #[test]
     fn a_paste_keeps_its_text_lines_and_unicode() {

@@ -356,6 +356,7 @@ fn core_rows(draft: &Settings) -> Vec<Setting> {
             default: (field.get)(&defaults),
             value: (field.get)(draft),
             list: false,
+            choices: Vec::new(),
         })
         .collect()
 }
@@ -582,8 +583,9 @@ impl SettingsModal {
             Value::Number(_) => self.step(registry, on_disk, NUMBER_STEP),
             Value::Text(text) => {
                 // An enum is stepped, not typed: there are four spellings and a
-                // fifth would be silently ignored.
-                if setting.plugin == CORE_OWNER {
+                // fifth would be silently ignored. A plugin's declared choices
+                // are one for the same reason.
+                if setting.plugin == CORE_OWNER || !setting.choices.is_empty() {
                     return self.step(registry, on_disk, NUMBER_STEP);
                 }
                 self.editing = Some(text.clone());
@@ -603,6 +605,10 @@ impl SettingsModal {
             // text, which only typing changes.
             Value::Text(name) if setting.plugin == CORE_OWNER => {
                 let next = next_backend(name, by >= 0.0);
+                self.put(registry, on_disk, &setting, Value::Text(next))
+            }
+            Value::Text(name) if !setting.choices.is_empty() => {
+                let next = next_choice(&setting.choices, name, by >= 0.0);
                 self.put(registry, on_disk, &setting, Value::Text(next))
             }
             Value::Text(_) => None,
@@ -953,6 +959,16 @@ impl SettingsModal {
                 let key = format!("  key  {}.{}", setting.plugin, setting.id);
                 let used = key.chars().count();
                 let mut line = vec![Span::styled(key, chrome.muted())];
+                // A pick says what it picks among, since the row shows one.
+                if !setting.choices.is_empty() {
+                    line.push(Span::styled(
+                        chrome::truncate(
+                            &format!("  {}", setting.choices.join(" · ")),
+                            width.saturating_sub(used),
+                        ),
+                        chrome.muted(),
+                    ));
+                }
                 // The row only has room for a count, so the selected list is
                 // spelled out here, cut to the line.
                 if let (true, Value::Text(text)) = (setting.list, &setting.value) {
@@ -1031,9 +1047,26 @@ fn value_text(value: &Value) -> String {
     }
 }
 
+/// The choice after (or before) `current`, wrapping. A value that is not one
+/// of them — it cannot be stored, but the list may have changed under the
+/// modal — steps onto the first.
+fn next_choice(choices: &[String], current: &str, forward: bool) -> String {
+    let count = choices.len();
+    let next = match choices.iter().position(|choice| choice == current) {
+        Some(at) if forward => (at + 1) % count,
+        Some(at) => (at + count - 1) % count,
+        None => 0,
+    };
+    choices[next].clone()
+}
+
 /// What a row shows in its value column: a declared list as its entry count,
-/// since the raw string is escaped keys that mean nothing at a glance.
+/// since the raw string is escaped keys that mean nothing at a glance, and a
+/// pick with the stepper a number has, since it is stepped the same way.
 fn shown(setting: &Setting) -> String {
+    if !setting.choices.is_empty() {
+        return format!("‹ {} ›", display(&setting.value));
+    }
     match (setting.list, &setting.value) {
         (true, Value::Text(text)) => match entries(text).len() {
             0 => "none".to_string(),
@@ -1197,6 +1230,7 @@ mod tests {
             value: default.clone(),
             default,
             list: false,
+            choices: Vec::new(),
         }
     }
 
@@ -1223,6 +1257,7 @@ mod tests {
         );
         let list = |value: &str| Setting {
             list: true,
+            choices: Vec::new(),
             ..setting("sessions", "folded_repos", Value::Text(value.into()))
         };
         assert_eq!(shown(&list("")), "none");
