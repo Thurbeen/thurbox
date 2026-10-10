@@ -228,6 +228,81 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
 }
 
+/// The half of a kitty-protocol terminal the keyboard negotiation talks to: a
+/// stack of pushed flags per screen, and answers to the two queries crossterm
+/// sends.
+///
+/// Per screen, as kitty keeps them: flags pushed on the alternate screen are
+/// not popped by a pop written after leaving it, which is the order mistake
+/// this exists to catch.
+#[derive(Default)]
+struct KittyTerminal {
+    /// How far into the output the sequences have been read.
+    scanned: usize,
+    main: Vec<u32>,
+    alternate: Vec<u32>,
+    on_alternate: bool,
+}
+
+impl KittyTerminal {
+    fn stack(&mut self) -> &mut Vec<u32> {
+        if self.on_alternate {
+            &mut self.alternate
+        } else {
+            &mut self.main
+        }
+    }
+
+    /// How many flag levels are pushed on the main and the alternate screen.
+    fn depths(&self) -> (usize, usize) {
+        (self.main.len(), self.alternate.len())
+    }
+
+    /// Read the output from where the last call stopped and return the bytes
+    /// a terminal would answer with. A sequence split across two reads is
+    /// left for the next call.
+    fn feed(&mut self, out: &[u8]) -> Vec<u8> {
+        let mut reply = Vec::new();
+        while let Some(start) = out[self.scanned..]
+            .windows(2)
+            .position(|w| w == b"\x1b[")
+            .map(|at| self.scanned + at)
+        {
+            let body = &out[start + 2..];
+            let Some(end) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+                // Incomplete: wait for the rest.
+                self.scanned = start;
+                return reply;
+            };
+            let (params, last) = (&body[..end], body[end]);
+            match (params.first(), last) {
+                (Some(b'?'), b'u') if params.len() == 1 => {
+                    let flags = self.stack().last().copied().unwrap_or(0);
+                    reply.extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
+                }
+                (Some(b'>'), b'u') => {
+                    let flags = std::str::from_utf8(&params[1..])
+                        .ok()
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
+                    self.stack().push(flags);
+                }
+                (Some(b'<'), b'u') => {
+                    self.stack().pop();
+                }
+                (Some(b'?'), b'h') if params == b"?1049" => self.on_alternate = true,
+                (Some(b'?'), b'l') if params == b"?1049" => self.on_alternate = false,
+                (None, b'c') => reply.extend_from_slice(b"\x1b[?62;22c"),
+                _ => {}
+            }
+            self.scanned = start + 2 + end + 1;
+        }
+        // Keep a trailing ESC for the next read, in case its `[` follows.
+        self.scanned = out.len().saturating_sub(1).max(self.scanned);
+        reply
+    }
+}
+
 /// The binary, running on a pty, with everything it has written so far.
 struct Tui {
     child: Child,
@@ -240,6 +315,8 @@ struct Tui {
     exited: Option<ExitStatus>,
     /// The binary's own log, quoted when a wait times out.
     log: PathBuf,
+    /// The kitty-protocol half of the terminal, on one that speaks it.
+    kitty: Option<Arc<Mutex<KittyTerminal>>>,
 }
 
 impl Tui {
@@ -253,6 +330,30 @@ impl Tui {
         rows: u16,
         cols: u16,
         adjust: impl FnOnce(&mut Command),
+    ) -> Self {
+        Self::spawn_on(profile, rows, cols, adjust, false)
+    }
+
+    /// [`Self::spawn_with`] on a terminal that speaks the kitty keyboard
+    /// protocol: it answers the flags query with the flags pushed so far and
+    /// the device-attributes query after it, which is how crossterm detects
+    /// support. Without an answer the binary waits out its query and runs on a
+    /// legacy keyboard, which is what every other scenario here gets.
+    fn spawn_kitty(
+        profile: &Profile,
+        rows: u16,
+        cols: u16,
+        adjust: impl FnOnce(&mut Command),
+    ) -> Self {
+        Self::spawn_on(profile, rows, cols, adjust, true)
+    }
+
+    fn spawn_on(
+        profile: &Profile,
+        rows: u16,
+        cols: u16,
+        adjust: impl FnOnce(&mut Command),
+        kitty: bool,
     ) -> Self {
         let (master, slave) = openpty(rows, cols);
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox"));
@@ -280,6 +381,13 @@ impl Tui {
         let raw = Arc::new(Mutex::new(Vec::new()));
         let screen = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
         let mut reader = std::fs::File::from(master.try_clone().expect("dup master"));
+        let kitty = kitty.then(|| Arc::new(Mutex::new(KittyTerminal::default())));
+        let mut answer = kitty.clone().map(|terminal| {
+            (
+                terminal,
+                std::fs::File::from(master.try_clone().expect("dup master")),
+            )
+        });
         {
             let raw = Arc::clone(&raw);
             let screen = Arc::clone(&screen);
@@ -290,7 +398,16 @@ impl Tui {
                     if n == 0 {
                         break;
                     }
-                    raw.lock().unwrap().extend_from_slice(&buf[..n]);
+                    let mut raw = raw.lock().unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    if let Some((terminal, writer)) = answer.as_mut() {
+                        let reply = terminal.lock().unwrap().feed(&raw);
+                        if !reply.is_empty() {
+                            let _ = writer.write_all(&reply);
+                            let _ = writer.flush();
+                        }
+                    }
+                    drop(raw);
                     screen.lock().unwrap().process(&buf[..n]);
                 }
             });
@@ -302,7 +419,26 @@ impl Tui {
             screen,
             exited: None,
             log: profile.path("data/thurbox.log"),
+            kitty,
         }
+    }
+
+    /// On a kitty terminal, wait for every pushed keyboard-flag level to have
+    /// been popped again — a level left behind keeps the shell receiving an
+    /// escape code for every key release.
+    fn assert_keyboard_flags_popped(&self) {
+        let kitty = self.kitty.as_ref().expect("a kitty terminal");
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            if kitty.lock().unwrap().depths() == (0, 0) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        panic!(
+            "keyboard flags still pushed after exit (main, alternate): {:?}",
+            kitty.lock().unwrap().depths()
+        );
     }
 
     /// The frame as vt100 reconstructs it, rows trimmed of trailing blanks.
@@ -7702,4 +7838,316 @@ fn a_held_failure_is_not_counted_as_a_failure_on_every_frame() {
         "a pane that stopped throwing must stop adding failures while it is held"
     );
     assert!(tui.quit().success());
+}
+
+// --- key releases -----------------------------------------------------------
+
+/// What the `hold` probe pane has been handed: its event log, how often the
+/// press-only chord fired, and what the kernel says about key releases.
+fn hold_state(profile: &Profile) -> (String, u64, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+    assert!(output.status.success(), "ui state failed");
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    let pane = &state["plugin_state"]["plugins/91_hold.lua"];
+    (
+        pane["events"].as_str().unwrap_or_default().to_string(),
+        pane["plain"].as_u64().unwrap_or(0),
+        pane["releases"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+fn wait_hold(profile: &Profile, tui: &Tui, events: &str, releases: &str) {
+    let deadline = Instant::now() + WAIT;
+    let mut last = (String::new(), 0, String::new());
+    while Instant::now() < deadline {
+        last = hold_state(profile);
+        if last.0 == events && last.2 == releases {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    tui.give_up(&format!(
+        "hold events {events:?} with releases {releases:?}; last was {last:?}"
+    ));
+}
+
+fn hold_interface() -> tempfile::TempDir {
+    interface_plus(
+        "91_hold.lua",
+        include_str!("fixtures/key_release/91_hold.lua"),
+    )
+}
+
+/// The kitty encodings of `ctrl+space`: press, repeat, release, and a release
+/// arriving after `ctrl` was already let go.
+const CTRL_SPACE_PRESS: &[u8] = b"\x1b[32;5u";
+const CTRL_SPACE_REPEAT: &[u8] = b"\x1b[32;5:2u";
+const CTRL_SPACE_RELEASE: &[u8] = b"\x1b[32;5:3u";
+const SPACE_RELEASE_CTRL_UP: &[u8] = b"\x1b[32;1:3u";
+
+#[test]
+fn a_release_binding_gets_one_press_no_repeats_and_its_release() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    wait_hold(&profile, &tui, "", "negotiated");
+
+    tui.send(CTRL_SPACE_PRESS);
+    for _ in 0..3 {
+        tui.send(CTRL_SPACE_REPEAT);
+    }
+    wait_hold(&profile, &tui, "press", "negotiated");
+    tui.send(CTRL_SPACE_RELEASE);
+    wait_hold(&profile, &tui, "press,release", "reported");
+
+    // The modifier is often let go first; the release still belongs to the
+    // chord that was pressed.
+    tui.send(CTRL_SPACE_PRESS);
+    tui.send(SPACE_RELEASE_CTRL_UP);
+    wait_hold(&profile, &tui, "press,release,press,release", "reported");
+
+    // A release nobody is holding goes nowhere.
+    tui.send(CTRL_SPACE_RELEASE);
+
+    // A press-only chord is untouched: no argument, and a repeat fires again
+    // exactly as an auto-repeated press always did — but its release does not.
+    tui.send(b"\x1b[18~");
+    tui.send(b"\x1b[18;1:2~");
+    tui.send(b"\x1b[18;1:3~");
+    let deadline = Instant::now() + WAIT;
+    while hold_state(&profile).1 < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let (events, plain, _) = hold_state(&profile);
+    assert_eq!(
+        plain, 2,
+        "a press and its repeat, and nothing for the release"
+    );
+    assert_eq!(events, "press,release,press,release");
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
+}
+
+#[test]
+fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+
+    // Pressed while help is open: the modal takes the press, so the release
+    // that follows has no holder and reaches nobody.
+    tui.send(F1);
+    tui.wait_for("Keybindings");
+    tui.send(CTRL_SPACE_PRESS);
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    tui.send(CTRL_SPACE_RELEASE);
+
+    // Typing with releases reported: each key's release must not type it a
+    // second time.
+    tui.send(b"\x1b[47;5u");
+    tui.wait_for("Search");
+    for &key in b"qz" {
+        tui.send(&[key]);
+        tui.send(format!("\x1b[{key};1:3u").as_bytes());
+    }
+    tui.wait_for("Search qz");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(tui.frame().contains("Search qz "), "{}", tui.frame());
+    let (events, _, releases) = hold_state(&profile);
+    assert_eq!(events, "", "the modal's press is not the pane's to release");
+    assert_eq!(releases, "reported");
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
+}
+
+#[test]
+fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    wait_hold(&profile, &tui, "", "unsupported");
+    // `ctrl+space` in a legacy terminal is NUL. Every press is delivered, as
+    // a press, because nothing can say the key was ever let go.
+    tui.send(b"\x00");
+    wait_hold(&profile, &tui, "press", "unsupported");
+    tui.send(b"\x00");
+    wait_hold(&profile, &tui, "press,press", "unsupported");
+    assert!(tui.quit().success());
+}
+
+/// The terminal is handed to a terminal editor with the kitty keyboard flags
+/// popped, and they are pushed again when it exits — otherwise every key
+/// release would reach the editor as an escape sequence, on a terminal whose
+/// flag stack the editor shares.
+#[test]
+fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus(
+        "91_edit.lua",
+        r#"return {
+  name = "edit",
+  slot = "edit",
+  strip = true,
+  size = { len = 1 },
+  focusable = false,
+  keys = { { key = "f7", action = "edit.open", scope = "global" } },
+  on_action = function(action)
+    if action ~= "edit.open" then return false end
+    command("editor", { session = thurbox.sessions[1].id })
+    return true
+  end,
+  render = function() return { type = "text", text = "EDIT" } end,
+}"#,
+    );
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+    // An "editor" that says it started and waits to be told to exit.
+    let started = profile.path("editor-started");
+    let finish = profile.path("editor-finish");
+    let editor = profile.path("bin/fake-editor");
+    std::fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+            started.display(),
+            finish.display()
+        ),
+    )
+    .expect("editor script");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    profile.cli(&["editor", "set", editor.to_str().expect("utf-8 path")]);
+    profile.cli(&["editor", "mode", "terminal"]);
+
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("probe");
+    let kitty = tui.kitty.clone().expect("a kitty terminal");
+    // (main, alternate): thurbox pushes on the alternate screen it runs on.
+    let depth = || kitty.lock().unwrap().depths();
+    fn wait(tui: &Tui, what: &str, done: &dyn Fn() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            if Instant::now() > deadline {
+                tui.give_up(what);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+    wait(&tui, "the flags to be pushed", &|| depth() == (0, 1));
+
+    tui.send(b"\x1b[18~");
+    wait(&tui, "the editor to start", &|| started.exists());
+    // The editor is running: the pop has to have been written before it.
+    std::thread::sleep(Duration::from_millis(200));
+    // Neither screen: an editor that opens the alternate screen, as most do,
+    // would otherwise find thurbox's flags waiting on it.
+    assert_eq!(
+        depth(),
+        (0, 0),
+        "the editor inherited thurbox's keyboard flags"
+    );
+
+    std::fs::write(&finish, "").expect("finish the editor");
+    std::thread::sleep(Duration::from_millis(200));
+    wait(&tui, "the flags to be pushed again", &|| depth() == (0, 1));
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
+}
+
+/// The loop's `frames` counter from the first perf snapshot captured after
+/// `after` (its `captured_at`, whole seconds since the epoch), with that
+/// snapshot's own `captured_at`.
+fn frames_after(profile: &Profile, tui: &Tui, after: u64) -> (u64, u64) {
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let out = cmd.args(["perf", "--json"]).output().expect("perf");
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            let at = json["captured_at"].as_u64().unwrap_or(0);
+            if at > after {
+                return (json["counters"]["frames"].as_u64().unwrap_or(0), at);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    tui.give_up("a fresh perf snapshot");
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+}
+
+#[test]
+fn a_release_nobody_holds_draws_no_frame() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+        cmd.env("THURBOX_PERF_LOG", "1");
+    });
+    tui.wait_for("No sessions yet");
+    // Snapshots are published every few seconds. The idle rate comes from two
+    // consecutive ones after the first (whose window holds the boot's frames),
+    // and the window the releases are counted in starts at the second and ends
+    // at the first snapshot captured after the last release was written — so
+    // it holds every send, whatever the cadence.
+    let (_, booted_at) = frames_after(&profile, &tui, 0);
+    let (first, first_at) = frames_after(&profile, &tui, booted_at);
+    let (start, start_at) = frames_after(&profile, &tui, first_at);
+    let idle_per_sec = (start - first) as f64 / (start_at - first_at).max(1) as f64;
+    // Releases of a key nothing pressed, each in its own read so none share
+    // a batch.
+    const RELEASES: u64 = 200;
+    for _ in 0..RELEASES {
+        tui.send(b"\x1b[120;1:3u");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let sent_by = epoch_secs();
+    let (end, end_at) = frames_after(&profile, &tui, sent_by);
+    let idle = idle_per_sec * (end_at - start_at) as f64;
+    let drawn = (end - start) as f64 - idle;
+    assert!(
+        drawn < (RELEASES / 10) as f64,
+        "{drawn:.0} frames beyond the idle rate ({idle_per_sec:.1}/s) drawn for {RELEASES} \
+         releases nobody holds"
+    );
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
 }

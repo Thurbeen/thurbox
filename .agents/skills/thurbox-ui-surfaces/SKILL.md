@@ -74,7 +74,7 @@ instead. Navigation and app-control chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) 
 **never** deferred — they are the way out of a focused terminal.
 
 **macOS.** The kitty keyboard protocol is pushed at startup
-(`PushKeyboardEnhancementFlags(DISAMBIGUATE_ESCAPE_CODES)`, gated on
+(`PushKeyboardEnhancementFlags(DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES)`, gated on
 `supports_keyboard_enhancement()`, popped in `restore_terminal` and the panic hook
 because `ratatui::restore()` does not). That is what makes `cmd+…` bindable at all
 (iTerm2 3.5+, kitty, WezTerm, Ghostty — not Terminal.app) and what separates
@@ -89,6 +89,25 @@ perform (Ghostty's `performable:` keybinds) passes them on, one that swallows it
 own does not, and thurbox can do nothing about a key it never receives. F-keys
 need `Fn` on Mac laptops unless "Use F1, F2, etc. as standard function keys" is
 on.
+
+**Key releases.** Event types are pushed with the flags so a binding declared
+`release = true` can be told when its key is let go
+(`on_action(action, { event = "press" | "release" })`). The routing is one struct,
+`coordinator::input::Holds`: a release reaches only the plugin that took the
+press (matched by key code, since `ctrl` is often released first) and is dropped
+otherwise — never a modal, `on_key`, a field or the pty; a held key's repeats are
+swallowed (on Windows, whose console reports repeats as presses, a press of a held
+key is one); every other repeat is handed on as the press a legacy terminal
+sent, so nothing that did not ask changes. `thurbox.keyboard.releases` is
+`unsupported` / `negotiated` / `reported` (`kernel::host::KeyReleases`):
+`negotiated` once the push is accepted or on Windows, `reported` once a release
+has actually arrived. Nothing infers a release from time. A release travels
+through the Windows paste coalescer in its place (`sort_key`) — after a paste
+it comes out behind the `Paste`, not discarded — and is routed when dispatched; one
+nobody holds returns before the publish, so it draws no frame. The flags are
+popped before a terminal editor takes the screen (still on the alternate
+screen, where they were pushed) and pushed again after. `tests/tui_e2e.rs` drives
+it on a pty that answers the kitty query (`KittyTerminal`).
 
 **Windows.** The console reports AltGr as `Ctrl`+`Alt`, so the pair is dropped at
 the input boundary (`coordinator::input::resolve_altgr`) for any character no key
@@ -134,7 +153,11 @@ stays out of the focus ring. Plugins contribute *data* to it: declare
 `{ id, desc, default }` and the modal grows a row. A text setting declared
 `list = true` (the session list's `folded_hosts`/`folded_repos`) shows its entry
 count in the row and its unescaped entries in the footer when selected; the value
-column is capped at `VALUE_WIDTH_MAX` so one long value cannot starve the rest.
+column is capped at `VALUE_WIDTH_MAX` so one long value cannot starve the rest. A text setting declared
+`choices = { … }` is stepped through them like a core enum (`Enter`/`Space`/`←`/`→`),
+never typed into, and lists them in the footer; `Registry::set_setting` refuses a
+value outside them and a stored one the plugin no longer offers falls back to the
+default (`Setting::admits`).
 
 Two halves on one screen:
 

@@ -300,6 +300,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         hovered: None,
         mouse: config.features().mouse,
         paste_burst: crate::coordinator::paste::PasteBurst::for_platform(),
+        holds: Default::default(),
         config,
         registry: Registry::load(),
         modals: Modals::default(),
@@ -391,7 +392,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // separates `ctrl+/` from the bytes a legacy terminal sends for it. Pushed
     // after the terminal is taken and popped by `restore_terminal`, which
     // `ratatui::restore()` does not do for us.
-    push_keyboard_enhancement();
+    app.holds.releases = push_keyboard_enhancement();
     // Drag-to-select and click targeting need mouse reporting. Enabled after
     // init so the panic hook ratatui installed still restores the terminal if
     // anything below goes wrong, and only when `[features] mouse` is on — v1

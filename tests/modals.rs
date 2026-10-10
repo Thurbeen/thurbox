@@ -1044,6 +1044,7 @@ fn a_setting_declared_by_an_unknown_plugin_is_editable_without_touching_settings
             default: Value::Bool(false),
             value: Value::Bool(false),
             list: false,
+            choices: Vec::new(),
         }],
     );
     let mut themes = Themes::load(None);
@@ -1532,6 +1533,7 @@ fn help_and_settings_page_and_jump_through_their_rows() {
             default: thurbox::kernel::registry::Value::Bool(true),
             value: thurbox::kernel::registry::Value::Bool(true),
             list: false,
+            choices: Vec::new(),
         })
         .collect();
     // `declare` REPLACES both lists, so the bundled declarations are re-passed
@@ -1647,5 +1649,64 @@ fn a_modal_owns_the_caret_so_none_is_left_blinking_behind_it() {
         None,
         "an open modal with no field of its own must still claim the caret \
          (as absent), or the pane underneath keeps it"
+    );
+}
+
+#[test]
+fn a_setting_with_choices_steps_through_them_and_is_never_typed_into() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let _guard = thurbox::paths::TestPathGuard::new(dir.path());
+    let mut registry = Registry::load();
+    let declared = Value::Text("parakeet".into());
+    registry.declare(
+        Vec::new(),
+        vec![Setting {
+            plugin: "voice".into(),
+            id: "engine".into(),
+            description: "speech model".into(),
+            default: declared.clone(),
+            value: declared,
+            list: false,
+            choices: vec!["parakeet".into(), "whisper".into(), "other".into()],
+        }],
+    );
+    let mut themes = Themes::load(None);
+    let mut modals = Modals::default();
+    modals.toggle(ModalKind::Settings);
+    macro_rules! key {
+        ($code:expr, $chord:expr) => {
+            send(
+                &mut modals,
+                press($code),
+                $chord,
+                &mut registry,
+                &mut themes,
+                None,
+            )
+        };
+    }
+    let value = |registry: &Registry| registry.settings()[0].value.clone();
+    key!(KeyCode::End, "end");
+    // Enter steps rather than opening an edit: were an edit open, the arrow
+    // below would be a no-op inside it and the value would not move.
+    key!(KeyCode::Enter, "enter");
+    assert_eq!(value(&registry), Value::Text("whisper".into()));
+    key!(KeyCode::Right, "right");
+    assert_eq!(value(&registry), Value::Text("other".into()));
+    key!(KeyCode::Char(' '), "space");
+    assert_eq!(value(&registry), Value::Text("parakeet".into()), "wraps");
+    key!(KeyCode::Left, "left");
+    assert_eq!(value(&registry), Value::Text("other".into()), "backwards");
+    key!(KeyCode::Char('l'), "l");
+    assert_eq!(
+        value(&registry),
+        Value::Text("parakeet".into()),
+        "l steps too"
+    );
+
+    let screen = modal_screen(&mut modals, &registry, &themes, 100, 20);
+    assert!(
+        screen.contains("parakeet · whisper · other"),
+        "the allowed values are listed for the selected row:\n{screen}"
     );
 }

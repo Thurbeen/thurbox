@@ -19,12 +19,16 @@
 //! Two rules, both deliberately small:
 //!
 //! * **Grouping is by timing.** A plain character joins a run when it arrives
-//!   within [`MACHINE_GAP`] of the last one; **everything else passes straight
-//!   through the instant it arrives** — an arrow key, `Delete`, `Esc`, any
-//!   `Ctrl`/`Alt` chord is never held, never matched against a marker, never at
-//!   risk of being swallowed. The earlier attempts carried a marker/`Esc`/
-//!   VT-sequence state machine that fired on none of these inputs yet stood
-//!   between every one of them and the agent; it is gone.
+//!   within [`MACHINE_GAP`] of the last one; **every other press passes
+//!   straight through the instant it arrives** — an arrow key, `Delete`,
+//!   `Esc`, any `Ctrl`/`Alt` chord is never held, never matched against a
+//!   marker, never at risk of being swallowed. The earlier attempts carried a
+//!   marker/`Esc`/VT-sequence state machine that fired on none of these inputs
+//!   yet stood between every one of them and the agent; it is gone. A key
+//!   *release* is the one thing that waits: while a run is open it keeps its
+//!   place in it, so it can never overtake its own press or a key typed before
+//!   it, and it comes out after the run — after the `Paste`, when the run was
+//!   one.
 //! * **A run is a paste only if it carries an interior newline.** Sending
 //!   newlines to the agent one keystroke at a time is the sole thing this path
 //!   exists to prevent, so it is the sole thing it acts on. A newline-free run
@@ -37,7 +41,7 @@
 //! which carries the reassembled paste to a psmux pane in one piece (ADR-13);
 //! the rationale for both halves is ADR-4.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::{Duration, Instant};
 
 /// What the key stream resolved to, in the order it must be dispatched.
@@ -57,7 +61,8 @@ const MACHINE_GAP: Duration = Duration::from_millis(10);
 /// crossterm delivers `Event::Paste` on its own.
 pub(crate) struct PasteBurst {
     active: bool,
-    /// Plain-character keys gathered so far as a possible paste.
+    /// Plain-character presses gathered so far as a possible paste, and the
+    /// releases that arrived among them, in order.
     run: Vec<KeyEvent>,
     /// When the last key arrived, for the gap that tells paste from typing.
     last: Option<Instant>,
@@ -69,7 +74,7 @@ impl PasteBurst {
         Self::new(cfg!(windows))
     }
 
-    fn new(active: bool) -> Self {
+    pub(crate) fn new(active: bool) -> Self {
         Self {
             active,
             run: Vec::new(),
@@ -89,10 +94,23 @@ impl PasteBurst {
         }
     }
 
-    /// Feed one key press, with the instant it arrived.
+    /// Feed one key event, with the instant it arrived.
+    ///
+    /// A release is no part of a paste's timing or text, but it keeps its
+    /// place: with a run open it waits in it, so nothing it follows is
+    /// overtaken, and it never ends the run. See [`Self::flush`] for where it
+    /// goes when the run is a paste. No key is matched here — whose release it
+    /// is, is the dispatcher's question.
     pub(crate) fn push(&mut self, key: KeyEvent, at: Instant) -> Vec<Input> {
         if !self.active {
             return vec![Input::Key(key)];
+        }
+        if key.kind == KeyEventKind::Release {
+            if self.run.is_empty() {
+                return vec![Input::Key(key)];
+            }
+            self.run.push(key);
+            return Vec::new();
         }
         let gap = self.last.map(|last| at.saturating_duration_since(last));
         self.last = Some(at);
@@ -133,12 +151,27 @@ impl PasteBurst {
     /// `Enter`; it must still submit, so it too stays keys. A newline-free
     /// paste loses nothing by arriving as keystrokes — the text lands in the
     /// prompt identically.
+    ///
+    /// A paste is followed by the run's releases, in order: one whose press
+    /// was pasted finds no hold and goes nowhere, and one whose press came
+    /// before the run closes the hold that press opened.
     pub(crate) fn flush(&mut self) -> Vec<Input> {
-        if self.run.len() >= 2 {
+        let presses = self
+            .run
+            .iter()
+            .filter(|key| key.kind != KeyEventKind::Release)
+            .count();
+        if presses >= 2 {
             let text: String = self.run.iter().filter_map(|key| paste_char(*key)).collect();
             if text.trim_end_matches(['\r', '\n']).contains(['\r', '\n']) {
-                self.run.clear();
-                return vec![Input::Paste(text)];
+                let mut out = vec![Input::Paste(text)];
+                out.extend(
+                    self.run
+                        .drain(..)
+                        .filter(|key| key.kind == KeyEventKind::Release)
+                        .map(Input::Key),
+                );
+                return out;
             }
         }
         self.run.drain(..).map(Input::Key).collect()
@@ -152,6 +185,9 @@ impl PasteBurst {
 /// between two pasted lines, so an agent sees the same bytes on either platform.
 /// A modifier other than SHIFT means a chord, which is never paste text.
 fn paste_char(key: KeyEvent) -> Option<char> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
     let plain = (key.modifiers - KeyModifiers::SHIFT).is_empty();
     match key.code {
         KeyCode::Char(ch) if plain => Some(ch),
@@ -222,6 +258,72 @@ mod tests {
         fn settle(&mut self) -> Vec<Input> {
             self.burst.flush()
         }
+    }
+
+    fn release(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Release)
+    }
+
+    /// The Windows console reports a release for every pasted key. They keep
+    /// their place in the run without breaking it, so a pasted block is still
+    /// one paste — and come out after it, in order, for whoever holds them.
+    #[test]
+    fn releases_inside_a_paste_follow_it_in_order() {
+        let mut feed = Feed::new(true);
+        let mut out = Vec::new();
+        for key in events("a\rb") {
+            feed.now += Duration::from_millis(1);
+            out.extend(feed.burst.push(key, feed.now));
+            out.extend(
+                feed.burst
+                    .push(release(key.code, KeyModifiers::NONE), feed.now),
+            );
+        }
+        out.extend(feed.settle());
+        let none = KeyModifiers::NONE;
+        assert_eq!(
+            out,
+            vec![
+                Input::Paste("a\rb".into()),
+                Input::Key(release(KeyCode::Char('a'), none)),
+                Input::Key(release(KeyCode::Enter, none)),
+                Input::Key(release(KeyCode::Char('b'), none)),
+            ]
+        );
+        // With no run open there is nothing to wait behind.
+        let x = release(KeyCode::Char('x'), none);
+        assert_eq!(feed.burst.push(x, feed.now), vec![Input::Key(x)]);
+    }
+
+    /// A release whose press came before the run (a key held while a paste
+    /// started) survives the paste: were it swallowed with it, the hold its
+    /// press opened would never close.
+    #[test]
+    fn a_release_from_before_the_run_survives_its_paste() {
+        let held = release(KeyCode::Char(' '), KeyModifiers::CONTROL);
+        let mut feed = Feed::new(true);
+        let mut out = Vec::new();
+        for (at, key) in events("a\rb").into_iter().enumerate() {
+            feed.now += Duration::from_millis(1);
+            out.extend(feed.burst.push(key, feed.now));
+            if at == 0 {
+                out.extend(feed.burst.push(held, feed.now));
+            }
+        }
+        out.extend(feed.settle());
+        assert_eq!(out, vec![Input::Paste("a\rb".into()), Input::Key(held)]);
+    }
+
+    /// Nor does it overtake a key typed after its press: hold a key, type a
+    /// character, let go within the window — the character comes first.
+    #[test]
+    fn a_release_from_before_the_run_keeps_its_place_behind_typing() {
+        let held = release(KeyCode::Char(' '), KeyModifiers::CONTROL);
+        let mut feed = Feed::new(true);
+        let mut out = feed.burst.push(ch('j'), feed.now);
+        out.extend(feed.burst.push(held, feed.now));
+        out.extend(feed.settle());
+        assert_eq!(out, vec![Input::Key(ch('j')), Input::Key(held)]);
     }
 
     #[test]

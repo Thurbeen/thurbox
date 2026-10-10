@@ -81,6 +81,7 @@ impl App {
         let inventory = std::mem::take(&mut self.inventory);
         let ui_dir = self.ui_dir.display().to_string();
         let meta = self.terminals.meta_map();
+        self.host.set_key_releases(self.holds.releases);
         if let Err(e) = self.host.publish(&thurbox::kernel::host::Published {
             epoch: thurbox::kernel::host::Epoch {
                 snapshot: self.snapshots.version(),

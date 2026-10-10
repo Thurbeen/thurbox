@@ -349,6 +349,17 @@ impl LuaHost {
         let platform = self.group("platform", [0, 0, 0, 0], || build_platform(&self.lua))?;
         set(&table, "platform", platform)?;
 
+        // Whether a key's release reaches a binding that asked for it (see
+        // `Binding::release`) — what a pane offering press-and-hold reads to
+        // decide whether to offer it or to fall back to press-to-toggle.
+        let releases = self.key_releases.get();
+        let keyboard = self.group("keyboard", [releases as u64 + 1, 0, 0, 0], || {
+            let keyboard = self.lua.create_table().map_err(|e| e.to_string())?;
+            set(&keyboard, "releases", releases.as_str())?;
+            Ok(Value::Table(keyboard))
+        })?;
+        set(&table, "keyboard", keyboard)?;
+
         // So a plugin can say "open" or "copy" before you press it.
         set(&table, "can_open_links", *can_open)?;
         set(
@@ -992,6 +1003,15 @@ fn build_registry(lua: &Lua, registry: &Registry) -> Result<Value, String> {
         set(&item, "type", setting.value.type_name())?;
         set_value(&item, "value", &setting.value)?;
         set_value(&item, "default", &setting.default)?;
+        if !setting.choices.is_empty() {
+            let choices = lua.create_table().map_err(|e| e.to_string())?;
+            for (at, choice) in setting.choices.iter().enumerate() {
+                choices
+                    .raw_set(at + 1, choice.as_str())
+                    .map_err(|e| e.to_string())?;
+            }
+            set(&item, "choices", choices)?;
+        }
         settings
             .raw_set(index + 1, item)
             .map_err(|e| e.to_string())?;

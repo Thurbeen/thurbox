@@ -686,7 +686,20 @@ by being declared and nothing else. The same is true of `settings`: declare
 `{ id, desc, default }` and the settings modal grows a row for it. A text setting
 that holds a `;`-separated list of percent-escaped entries can add `list = true`:
 its row then shows how many entries it holds, and the footer spells them out,
-unescaped, while the row is selected.
+unescaped, while the row is selected. A text setting with a fixed set of values
+declares them as `choices`:
+
+```lua
+settings = {
+  { id = "engine", desc = "speech model", default = "parakeet", choices = { "parakeet", "whisper" } },
+},
+```
+
+The settings modal then steps through them (`Enter`, `Space`, `←`/`→`) instead of
+opening a text field, and lists them in its footer. A value outside them is refused
+— from the modal and from `command("set")` alike — and one stored in `ui.json` that
+the plugin no longer offers falls back to the default. The default must be one of
+the choices, or the plugin fails to load with an error naming the setting.
 
 A plugin can also **write** its own settings — `command("set", { text =
 "yourpane.wrap", flag = true })` for a boolean, `number = 2` for a number, or
@@ -709,6 +722,43 @@ focused terminal keeps the keystroke while your action stays reachable from
 every other pane — which is why the panes that do this also declare an F-key
 alternate. It applies only while the bound chord is a bare `ctrl+<letter>`, so a
 user who rebinds you onto `f7` gets the action back in the terminal.
+
+A key can also report being **let go**. Declare `release = true` and the action is
+called twice per keystroke, with a second argument saying which half it is:
+
+```lua
+keys = {
+  { key = "ctrl+space", action = "mine.talk", scope = "global", release = true },
+},
+
+on_action = function(action, args)
+  if action ~= "mine.talk" then return false end
+  local event = args and args.event or "press" -- palette and CLI runs carry none
+  if event == "press" then start() else stop() end
+  return true
+end,
+```
+
+Return `true` from the press, or the release is never delivered: the release goes to
+the plugin that took the press, whichever pane has focus by then, and only to it.
+Where the terminal reports releases, a held key's auto-repeat is swallowed rather than
+fired again. A release nobody is holding goes nowhere — never to a modal, an `on_key`,
+a text field or a session's terminal — and every binding without `release` behaves
+exactly as before (no second argument, and a held key repeats).
+
+Only a terminal that reports releases can deliver one. thurbox asks for them with the
+kitty keyboard protocol (kitty, WezTerm, Ghostty, foot, Alacritty, iTerm2 3.5+), and the
+Windows console reports them by itself; a legacy terminal, `tmux`/`screen` in between,
+or macOS Terminal.app does not. `thurbox.keyboard.releases` says which case you are in:
+`"unsupported"` (only presses will arrive), `"negotiated"` (asked for and accepted, none
+seen yet) or `"reported"` (one has arrived). On `"unsupported"`, and on a terminal that
+accepted the request without honouring it (it stays `"negotiated"`), auto-repeat is
+indistinguishable from pressing again: holding the key delivers a stream of
+`{ event = "press" }` and no release. So offer a hold only once releases are
+`"reported"` or at least `"negotiated"`, fall back to press-to-start/press-to-stop
+otherwise, and in either mode let a second press stop what the first started — that is
+what keeps a release lost to the window losing focus, or a terminal that never sends
+one, from leaving anything stuck. Nothing infers a release from time.
 
 `on_key(key)` still exists for panes that need every keystroke — the terminal
 uses it, alongside `input = "session"` to forward what it does not handle.
@@ -1927,12 +1977,12 @@ the interface does not reload too often, it **stops reloading at all** while you
 busy. A pane that fetches or builds its own engine on first run is exactly the case
 that tempts you into it.
 
-**Key releases do not reach a program pane.** thurbox asks its own terminal only for
-`DISAMBIGUATE_ESCAPE_CODES`, not `REPORT_EVENT_TYPES`, and the loop handles
-`KeyEventKind::Press` alone — so a program that distinguishes press from release
-(anything using the kitty keyboard protocol's `CSI > 3 u`) sees presses only, and a
-held key latches. Nothing a plugin can do about it; it needs a change in the kernel.
-Worth knowing before you build a pane whose program wants held keys.
+**Key releases do not reach a program pane.** thurbox asks its own terminal for
+event types, but a release goes only to a binding declared `release = true` (see
+**Keys**), and a repeat reaches everything else as a press — so a program that
+distinguishes press from release (anything using the kitty keyboard protocol's
+`CSI > 3 u`) sees presses only, and a held key latches. Worth knowing before you build
+a pane whose program wants held keys.
 
 **If you publish one:** shipping a program under a copyleft licence obliges your
 repository to carry that program's corresponding source. That is your obligation, not
