@@ -226,16 +226,19 @@ pub(crate) fn open_editor(
     // Stand the interface down so the editor inherits a normal cooked
     // terminal, then put everything back and force a full repaint — the
     // editor overwrote the cells ratatui thinks are on screen.
+    //
+    // The kitty flags come off first and go back on last, mirroring boot: they
+    // were pushed on the alternate screen, and a terminal keeps a flag stack
+    // per screen, so a pop written after leaving it would miss them and an
+    // editor opening the alternate screen would be sent an escape sequence for
+    // every key it is let go of.
+    let popped = pop_keyboard_enhancement();
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen
     );
     let _ = crossterm::terminal::disable_raw_mode();
-    // The kitty flags too: a terminal keeps one flag stack per screen at most,
-    // so an editor left under ours would be sent an escape sequence for every
-    // key it is let go of.
-    let popped = pop_keyboard_enhancement();
     let status = std::process::Command::new(&program).args(&args).status();
     let _ = crossterm::terminal::enable_raw_mode();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);

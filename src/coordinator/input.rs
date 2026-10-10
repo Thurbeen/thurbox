@@ -206,16 +206,23 @@ impl App {
 
     /// Dispatch one resolved input, publishing `thurbox.*` once per batch.
     fn apply_input(&mut self, input: Input, published: &mut bool) {
+        // A release is routed here, in the order the coalescer gives it back,
+        // rather than on arrival: a press it is still holding has not opened
+        // its hold yet. See `sort_key`. One nobody holds — nearly every
+        // release, on a terminal that reports them for every key — costs
+        // nothing: no publish, and no activity that would repaint.
+        if let Input::Key(key) = &input {
+            if key.kind == KeyEventKind::Release {
+                if let Some((plugin, action)) = self.holds.release_target(key) {
+                    self.publish_for_batch(published);
+                    self.deliver_release(&plugin, &action);
+                    self.note_input();
+                }
+                return;
+            }
+        }
         self.publish_for_batch(published);
         match input {
-            // Routed here, in the order the coalescer gives it back, rather
-            // than on arrival: a press it is still holding has not opened its
-            // hold yet. See `sort_key`.
-            Input::Key(key) if key.kind == KeyEventKind::Release => {
-                if let Route::Release { plugin, action } = self.holds.route(&key, cfg!(windows)) {
-                    self.deliver_release(&plugin, &action);
-                }
-            }
             Input::Key(key) => self.time_op("input_dispatch", |app| app.on_key(&key)),
             Input::Paste(text) => self.on_paste(text),
         }
@@ -1259,6 +1266,15 @@ impl Holds {
         }
     }
 
+    /// The plugin and action a release ends a hold for, closing that hold —
+    /// `None` for a release nobody holds, which then goes nowhere.
+    pub(crate) fn release_target(&mut self, key: &KeyEvent) -> Option<(String, String)> {
+        match self.route(key, false) {
+            Route::Release { plugin, action } => Some((plugin, action)),
+            Route::Press(_) | Route::Drop => None,
+        }
+    }
+
     /// Remember that `plugin` took the press of `code` for `action`. Only where
     /// a release can come: elsewhere a hold would never end.
     pub(crate) fn hold(&mut self, code: KeyCode, plugin: String, action: String) {
@@ -1379,16 +1395,15 @@ mod tests {
         inputs.extend(burst.flush());
         assert_eq!(inputs, vec![Input::Key(press), Input::Key(release)]);
 
-        // Dispatched in that order — the press taken by a release binding,
-        // then the release — the hold is opened and closed.
+        // Dispatched in that order — the press taken by a release binding (as
+        // `dispatch_declared` records it), then the release through the same
+        // `release_target` `apply_input` asks — the hold is opened and closed.
         holds.hold(KeyCode::Char(' '), "p".into(), "p.talk".into());
         assert_eq!(
-            holds.route(&release, true),
-            Route::Release {
-                plugin: "p".into(),
-                action: "p.talk".into()
-            }
+            holds.release_target(&release),
+            Some(("p".into(), "p.talk".into()))
         );
+        assert_eq!(holds.release_target(&release), None, "closed once");
         assert_eq!(
             holds.route(&press, true),
             Route::Press(press),

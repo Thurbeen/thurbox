@@ -101,7 +101,12 @@ key is one); every other repeat is handed on as the press a legacy terminal
 sent, so nothing that did not ask changes. `thurbox.keyboard.releases` is
 `unsupported` / `negotiated` / `reported` (`kernel::host::KeyReleases`):
 `negotiated` once the push is accepted or on Windows, `reported` once a release
-has actually arrived. Nothing infers a release from time. `tests/tui_e2e.rs` drives
+has actually arrived. Nothing infers a release from time. A release travels
+through the Windows paste coalescer behind its own press (`sort_key`) — only one
+whose press is in the open run waits there — and is routed when dispatched; one
+nobody holds returns before the publish, so it draws no frame. The flags are
+popped before a terminal editor takes the screen (still on the alternate
+screen, where they were pushed) and pushed again after. `tests/tui_e2e.rs` drives
 it on a pty that answers the kitty query (`KittyTerminal`).
 
 **Windows.** The console reports AltGr as `Ctrl`+`Alt`, so the pair is dropped at
