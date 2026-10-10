@@ -766,7 +766,7 @@ fn automation(
             if !(auto.enabled && auto.next_run_at.is_some()) {
                 auto.next_run_at = Some(next_run(&auto, crate::sync::current_time_millis())?);
                 auto.enabled = true;
-                db.update_automation_definition(&auto)
+                db.update_automation_definition(&auto, true)
                     .map_err(|e| format!("update automation: {e}"))?;
             }
         }
@@ -919,7 +919,7 @@ fn save_automation(
 
     match id {
         Some(_) => db
-            .update_automation_definition(&auto)
+            .update_automation_definition(&auto, !unmoved)
             .map_err(|e| format!("update automation: {e}")),
         None => db
             .create_automation(&crate::storage::automations::NewAutomation {
@@ -1491,6 +1491,50 @@ mod tests {
                 })
                 .expect("insert");
             save_automation(&db, Some(once), &rename, NOW + 1_000).expect("a due one-shot renames");
+        }
+
+        /// The heartbeat claims a due row by compare-and-set on `next_run_at`.
+        /// An edit that read the row before that claim and leaves the
+        /// schedule alone must not write the old fire back, or the row is due
+        /// again and fires twice — a one-shot re-enabled, a cron a second time.
+        #[test]
+        fn an_edit_racing_a_fire_does_not_re_arm_it() {
+            let db = Database::open_in_memory().expect("db");
+            let cron = stored_multi_repo(&db);
+            let once = db
+                .create_automation(&NewAutomation {
+                    name: "once".into(),
+                    enabled: true,
+                    schedule: AutomationSchedule::Once { at: NOW },
+                    timezone: None,
+                    action: AutomationAction::Exec {
+                        command: "true".into(),
+                    },
+                    prompt: String::new(),
+                    next_run_at: Some(NOW),
+                })
+                .expect("insert");
+            for (id, after_fire) in [(cron, Some(NOW + 3_600_000)), (once, None)] {
+                let mut stale = db.get_automation(id).expect("get").expect("row");
+                let due = stale.next_run_at.expect("due");
+                assert!(db
+                    .claim_due_automation(id, due, after_fire, NOW)
+                    .expect("claim"));
+                stale.name = "renamed".into();
+                db.update_automation_definition(&stale, false)
+                    .expect("write");
+                let row = db.get_automation(id).expect("get").expect("row");
+                assert_eq!(row.name, "renamed");
+                assert_eq!(
+                    row.next_run_at, after_fire,
+                    "#{id}: the fire is not re-armed"
+                );
+                assert_eq!(
+                    row.enabled,
+                    after_fire.is_some(),
+                    "#{id}: a spent one-shot stays off"
+                );
+            }
         }
 
         #[test]

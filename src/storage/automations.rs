@@ -130,40 +130,61 @@ impl Database {
     }
 
     /// [`Self::update_automation`] for a writer that read the row a moment ago:
-    /// everything but `last_run_at`, which only a fire writes. A tick that
-    /// fired between that read and this write keeps the run it recorded.
-    pub fn update_automation_definition(&self, auto: &Automation) -> rusqlite::Result<()> {
+    /// it never writes `last_run_at`, which only a fire writes, and with
+    /// `timing` false it leaves `enabled` and `next_run_at` alone too.
+    ///
+    /// The heartbeat claims a due row by compare-and-set on `next_run_at`
+    /// ([`Self::claim_due_automation`]), so a writer that does not mean to move
+    /// the schedule must not write back the values it read before a claim: that
+    /// re-arms the fire, and the row runs twice.
+    pub fn update_automation_definition(
+        &self,
+        auto: &Automation,
+        timing: bool,
+    ) -> rusqlite::Result<()> {
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
             super::action_to_columns(&auto.action);
         let now = current_time_millis() as i64;
-        self.conn.execute(
-            "UPDATE automations SET
-                name = ?2, enabled = ?3, schedule_kind = ?4, schedule_spec = ?5,
-                timezone = ?6, action_kind = ?7, target_session = ?8, repo_path = ?9,
-                worktree_branch = ?10, base_branch = ?11, agent = ?12, prompt = ?13,
-                updated_at = ?14, next_run_at = ?15,
-                action_extra_repos = ?16, action_command = ?17
-             WHERE id = ?1",
-            params![
-                auto.id,
-                auto.name,
-                auto.enabled as i64,
-                auto.schedule.kind(),
-                auto.schedule.spec(),
-                auto.timezone,
-                auto.action.kind(),
-                target_session,
-                repo_path,
-                worktree_branch,
-                base_branch,
-                agent,
-                auto.prompt,
-                now,
-                auto.next_run_at.map(|v| v as i64),
-                extra,
-                command,
-            ],
-        )?;
+        let definition = "name = ?2, schedule_kind = ?3, schedule_spec = ?4, timezone = ?5, \
+             action_kind = ?6, target_session = ?7, repo_path = ?8, worktree_branch = ?9, \
+             base_branch = ?10, agent = ?11, prompt = ?12, updated_at = ?13, \
+             action_extra_repos = ?14, action_command = ?15";
+        let columns = params![
+            auto.id,
+            auto.name,
+            auto.schedule.kind(),
+            auto.schedule.spec(),
+            auto.timezone,
+            auto.action.kind(),
+            target_session,
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            auto.prompt,
+            now,
+            extra,
+            command,
+        ];
+        if timing {
+            let mut all = columns.to_vec();
+            let enabled = auto.enabled as i64;
+            let next = auto.next_run_at.map(|v| v as i64);
+            all.push(&enabled);
+            all.push(&next);
+            self.conn.execute(
+                &format!(
+                    "UPDATE automations SET {definition}, enabled = ?16, next_run_at = ?17 \
+                     WHERE id = ?1"
+                ),
+                all.as_slice(),
+            )?;
+        } else {
+            self.conn.execute(
+                &format!("UPDATE automations SET {definition} WHERE id = ?1"),
+                columns,
+            )?;
+        }
         Ok(())
     }
 

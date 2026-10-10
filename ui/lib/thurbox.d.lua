@@ -953,7 +953,7 @@ function require(name) end
 ---@field branch? string Create: the spawn's worktree branch.
 ---@field base? string
 ---@field agent? string
----@field command? string Create, or edit an exec one: run this command line. Needs the issuing file to hold `run`; refused as `command.failed` otherwise.
+---@field command? string Create, or edit an exec one: run this command line. Sending it at all, even unchanged, needs the issuing file to hold `run`; refused as `command.failed` otherwise, so an edit that keeps the command leaves it out.
 
 ---@class (exact) thurbox.cmd.ExtraMember
 ---@field path string
