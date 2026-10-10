@@ -69,11 +69,10 @@
   }
 }
 
-/* Wide desktops: use the space instead of leaving dead margins. The features
-   grid holds exactly 10 cards, so 5 columns fills as a clean 5+5 — 4 columns
-   left a 2-card last row with a conspicuous gap beside it. Explicit rather than
-   auto-fit, because the card count is known and auto-fit reintroduces the
-   ragged tail at intermediate widths. */
+/* Wide desktops: use the space instead of leaving dead margins. Explicit
+   rather than auto-fit, because auto-fit reintroduces a ragged tail at
+   intermediate widths; a grid whose card count five does not divide sets its
+   own column count at this step. */
 @media (min-width: 1440px) {
   .container {
     max-width: var(--container-wide);

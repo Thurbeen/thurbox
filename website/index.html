@@ -641,68 +641,6 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
       </div>
     </section>
 
-    <!-- Keep the comparison tied to the source-pinned measurement page. -->
-    <section class="section" id="performance">
-      <div class="container">
-        <p class="section-eyebrow">Five-way Linux benchmark</p>
-        <h2>Measure the interface and its backend together</h2>
-        <p class="section-lede">
-          Closing the interface brings idle CPU close to the raw backend. With the interface open,
-          default process probes, rendering, memory and RMUX transport behavior still add cost.
-          The measured comparison covers Thurbox with tmux and RMUX, both raw backends, and Herdr,
-          with repeated-run noise bands and the gaps still to close.
-        </p>
-
-        <div class="grid grid-2">
-          <div class="card">
-            <div class="card-icon" aria-hidden="true">&#x25D3;</div>
-            <h3>Idle screens paint less often</h3>
-            <p>
-              A keypress or new agent output schedules a repaint. With nothing happening the loop
-              falls to four frames a second instead of a hundred, and the expensive half &mdash;
-              layout, the terminal render, the panel rebuilds &mdash; is skipped rather than
-              repeated.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon" aria-hidden="true">&#x25A4;</div>
-            <h3>Default probes still cost CPU</h3>
-            <p>
-              Twenty attached idle sessions used 20.89% of one core with tmux and 25.63% with RMUX.
-              Foreground-process discovery accounts for most of that cost. Hook-covered controls
-              reduce it, while a gap remains over the raw backend. The report separates those
-              conditional controls from the default result.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon" aria-hidden="true">&#x25F3;</div>
-            <h3>You can see what each pane costs</h3>
-            <p>
-              Turn timing on with the F12 HUD or
-              <code>THURBOX_PERF_LOG=1</code>
-              and
-              <code>thurbox-cli perf --plugins</code>
-              ranks every pane by what it cost &mdash; total, p95, max, its share of the frame, and
-              how often its cache was reused instead of re-run. On an interface made of your own
-              panes, that is the question actually worth asking.
-            </p>
-          </div>
-          <div class="card">
-            <div class="card-icon" aria-hidden="true">&#x25A6;</div>
-            <h3>Regressions are counted, not timed</h3>
-            <p>
-              The gate counts frames painted, redraws skipped and cache rebuilds. A counter reads
-              the same on every machine, so a regression fails a test instead of being argued about
-              from a stopwatch.
-            </p>
-          </div>
-        </div>
-        <p>
-          <a href="docs/performance.html">See the five-way measurements, remaining gaps, and F12 walkthrough &rarr;</a>
-        </p>
-      </div>
-    </section>
-
     <!-- Features, in two bands.
          The split is not decoration: the engine is compiled and fixed, the
          interface is Lua you edit. Grouping the cards that way is the same
@@ -732,17 +670,6 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
               <p>
                 Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
                 persist across crashes, restarts, and multiple concurrent Thurbox instances.
-              </p>
-            </div>
-          </a>
-          <a href="docs/performance.html" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x25D3;</div>
-              <h3>Demand-driven rendering</h3>
-              <p>
-                An idle screen paints four frames a second, not a hundred, and the groups that
-                cost something to build are rebuilt only when their source changes. Per-pane cost
-                is a report, not a guess.
               </p>
             </div>
           </a>
