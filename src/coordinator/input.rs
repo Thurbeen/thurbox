@@ -1411,6 +1411,34 @@ mod tests {
         );
     }
 
+    /// A press reported shifted and its release unshifted are one key: the
+    /// release keeps its place behind the press in the coalescer and closes
+    /// the hold the press opened.
+    #[test]
+    fn a_shifted_press_is_closed_by_its_unshifted_release() {
+        let mut burst = super::super::paste::PasteBurst::new(true);
+        let mut holds = Holds {
+            releases: KeyReleases::Negotiated,
+            ..Holds::default()
+        };
+        let now = Instant::now();
+        let press = event(KeyCode::Char('A'), KeyModifiers::SHIFT, KeyEventKind::Press);
+        let release = event(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        let mut inputs = sort_key(&mut burst, &mut holds, press, now, true);
+        inputs.extend(sort_key(&mut burst, &mut holds, release, now, true));
+        inputs.extend(burst.flush());
+        assert_eq!(inputs, vec![Input::Key(press), Input::Key(release)]);
+        holds.hold(press.code, "p".into(), "p.shout".into());
+        assert_eq!(
+            holds.release_target(&release),
+            Some(("p".into(), "p.shout".into()))
+        );
+    }
+
     #[test]
     fn nothing_is_held_where_no_release_can_come() {
         let mut holds = holding(KeyReleases::Unsupported);
