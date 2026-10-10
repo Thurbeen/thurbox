@@ -229,15 +229,35 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
 }
 
 /// The half of a kitty-protocol terminal the keyboard negotiation talks to: a
-/// stack of pushed flags, and answers to the two queries crossterm sends.
+/// stack of pushed flags per screen, and answers to the two queries crossterm
+/// sends.
+///
+/// Per screen, as kitty keeps them: flags pushed on the alternate screen are
+/// not popped by a pop written after leaving it, which is the order mistake
+/// this exists to catch.
 #[derive(Default)]
 struct KittyTerminal {
     /// How far into the output the sequences have been read.
     scanned: usize,
-    stack: Vec<u32>,
+    main: Vec<u32>,
+    alternate: Vec<u32>,
+    on_alternate: bool,
 }
 
 impl KittyTerminal {
+    fn stack(&mut self) -> &mut Vec<u32> {
+        if self.on_alternate {
+            &mut self.alternate
+        } else {
+            &mut self.main
+        }
+    }
+
+    /// How many flag levels are pushed on the main and the alternate screen.
+    fn depths(&self) -> (usize, usize) {
+        (self.main.len(), self.alternate.len())
+    }
+
     /// Read the output from where the last call stopped and return the bytes
     /// a terminal would answer with. A sequence split across two reads is
     /// left for the next call.
@@ -257,7 +277,7 @@ impl KittyTerminal {
             let (params, last) = (&body[..end], body[end]);
             match (params.first(), last) {
                 (Some(b'?'), b'u') if params.len() == 1 => {
-                    let flags = self.stack.last().copied().unwrap_or(0);
+                    let flags = self.stack().last().copied().unwrap_or(0);
                     reply.extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
                 }
                 (Some(b'>'), b'u') => {
@@ -265,11 +285,13 @@ impl KittyTerminal {
                         .ok()
                         .and_then(|n| n.parse().ok())
                         .unwrap_or(0);
-                    self.stack.push(flags);
+                    self.stack().push(flags);
                 }
                 (Some(b'<'), b'u') => {
-                    self.stack.pop();
+                    self.stack().pop();
                 }
+                (Some(b'?'), b'h') if params == b"?1049" => self.on_alternate = true,
+                (Some(b'?'), b'l') if params == b"?1049" => self.on_alternate = false,
                 (None, b'c') => reply.extend_from_slice(b"\x1b[?62;22c"),
                 _ => {}
             }
@@ -408,14 +430,14 @@ impl Tui {
         let kitty = self.kitty.as_ref().expect("a kitty terminal");
         let deadline = Instant::now() + WAIT;
         while Instant::now() < deadline {
-            if kitty.lock().unwrap().stack.is_empty() {
+            if kitty.lock().unwrap().depths() == (0, 0) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(40));
         }
         panic!(
-            "keyboard flags still pushed after exit: {:?}",
-            kitty.lock().unwrap().stack
+            "keyboard flags still pushed after exit (main, alternate): {:?}",
+            kitty.lock().unwrap().depths()
         );
     }
 
@@ -8033,7 +8055,8 @@ fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
     });
     tui.wait_for("probe");
     let kitty = tui.kitty.clone().expect("a kitty terminal");
-    let depth = || kitty.lock().unwrap().stack.len();
+    // (main, alternate): thurbox pushes on the alternate screen it runs on.
+    let depth = || kitty.lock().unwrap().depths();
     fn wait(tui: &Tui, what: &str, done: &dyn Fn() -> bool) {
         let deadline = Instant::now() + WAIT;
         while !done() {
@@ -8043,16 +8066,73 @@ fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
             std::thread::sleep(Duration::from_millis(40));
         }
     }
-    wait(&tui, "the flags to be pushed", &|| depth() == 1);
+    wait(&tui, "the flags to be pushed", &|| depth() == (0, 1));
 
     tui.send(b"\x1b[18~");
     wait(&tui, "the editor to start", &|| started.exists());
     // The editor is running: the pop has to have been written before it.
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(depth(), 0, "the editor inherited thurbox's keyboard flags");
+    // Neither screen: an editor that opens the alternate screen, as most do,
+    // would otherwise find thurbox's flags waiting on it.
+    assert_eq!(
+        depth(),
+        (0, 0),
+        "the editor inherited thurbox's keyboard flags"
+    );
 
     std::fs::write(&finish, "").expect("finish the editor");
-    wait(&tui, "the flags to be pushed again", &|| depth() == 1);
+    std::thread::sleep(Duration::from_millis(200));
+    wait(&tui, "the flags to be pushed again", &|| depth() == (0, 1));
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
+}
+
+/// The loop's `frames` counter from a perf snapshot published after `after`
+/// (its `captured_at`, in seconds), with that snapshot's own `captured_at`.
+fn frames_after(profile: &Profile, tui: &Tui, after: u64) -> (u64, u64) {
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let out = cmd.args(["perf", "--json"]).output().expect("perf");
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            let at = json["captured_at"].as_u64().unwrap_or(0);
+            if at > after {
+                return (json["counters"]["frames"].as_u64().unwrap_or(0), at);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    tui.give_up("a fresh perf snapshot");
+}
+
+/// A terminal reporting releases sends one for every key. One nobody holds
+/// must cost nothing — no republish, no repaint — or every keystroke pays for
+/// a second frame.
+#[test]
+fn a_release_nobody_holds_draws_no_frame() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+        cmd.env("THURBOX_PERF_LOG", "1");
+    });
+    tui.wait_for("No sessions yet");
+    let mut tui = tui;
+    let (before, at) = frames_after(&profile, &tui, 0);
+    // Releases of a key nothing pressed, each in its own read so none share
+    // a batch: 200 of them over a second or so.
+    const RELEASES: u64 = 200;
+    for _ in 0..RELEASES {
+        tui.send(b"\x1b[120;1:3u");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (after, _) = frames_after(&profile, &tui, at);
+    let drawn = after.saturating_sub(before);
+    assert!(
+        drawn < RELEASES / 4,
+        "{drawn} frames drawn for {RELEASES} releases nobody holds"
+    );
     assert!(tui.quit().success());
     tui.assert_keyboard_flags_popped();
 }

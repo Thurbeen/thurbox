@@ -91,16 +91,22 @@ impl PasteBurst {
 
     /// Feed one key event, with the instant it arrived.
     ///
-    /// A release is no part of a paste's timing or text: it passes straight
-    /// through unless a run is open, and then waits in the run behind the
-    /// press it belongs to, so the two are dispatched in the order they came.
-    /// A run that turns out to be a paste takes its releases with it.
+    /// A release is no part of a paste's timing or text. One whose press is
+    /// in the open run waits there behind it, so the two are dispatched in the
+    /// order they came, and goes with the run if it turns out to be a paste —
+    /// that press was never dispatched either. Every other release passes
+    /// straight through: its press came before the run and was dispatched, so
+    /// discarding the release with a paste would leave that press held.
     pub(crate) fn push(&mut self, key: KeyEvent, at: Instant) -> Vec<Input> {
         if !self.active {
             return vec![Input::Key(key)];
         }
         if key.kind == KeyEventKind::Release {
-            if self.run.is_empty() {
+            let pressed_in_run = self
+                .run
+                .iter()
+                .any(|held| held.kind != KeyEventKind::Release && held.code == key.code);
+            if !pressed_in_run {
                 return vec![Input::Key(key)];
             }
             self.run.push(key);
@@ -268,6 +274,29 @@ mod tests {
             feed.burst.push(release('x'), feed.now),
             vec![Input::Key(release('x'))]
         );
+    }
+
+    /// A release whose press came before the run (a key held while a paste
+    /// started) is not the run's to discard: were it swallowed with the
+    /// paste, the hold its press opened would never close.
+    #[test]
+    fn a_release_from_before_the_run_is_not_lost_to_its_paste() {
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Release,
+        );
+        let mut feed = Feed::new(true);
+        let mut out = Vec::new();
+        for (at, key) in events("a\rb").into_iter().enumerate() {
+            feed.now += Duration::from_millis(1);
+            out.extend(feed.burst.push(key, feed.now));
+            if at == 0 {
+                out.extend(feed.burst.push(release, feed.now));
+            }
+        }
+        out.extend(feed.settle());
+        assert_eq!(out, vec![Input::Key(release), Input::Paste("a\rb".into())]);
     }
 
     #[test]
