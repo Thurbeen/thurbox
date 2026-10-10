@@ -19,12 +19,16 @@
 //! Two rules, both deliberately small:
 //!
 //! * **Grouping is by timing.** A plain character joins a run when it arrives
-//!   within [`MACHINE_GAP`] of the last one; **everything else passes straight
-//!   through the instant it arrives** — an arrow key, `Delete`, `Esc`, any
-//!   `Ctrl`/`Alt` chord is never held, never matched against a marker, never at
-//!   risk of being swallowed. The earlier attempts carried a marker/`Esc`/
-//!   VT-sequence state machine that fired on none of these inputs yet stood
-//!   between every one of them and the agent; it is gone.
+//!   within [`MACHINE_GAP`] of the last one; **every other press passes
+//!   straight through the instant it arrives** — an arrow key, `Delete`,
+//!   `Esc`, any `Ctrl`/`Alt` chord is never held, never matched against a
+//!   marker, never at risk of being swallowed. The earlier attempts carried a
+//!   marker/`Esc`/VT-sequence state machine that fired on none of these inputs
+//!   yet stood between every one of them and the agent; it is gone. A key
+//!   *release* is the one thing that waits: while a run is open it keeps its
+//!   place in it, so it can never overtake its own press or a key typed before
+//!   it, and it comes out after the run — after the `Paste`, when the run was
+//!   one.
 //! * **A run is a paste only if it carries an interior newline.** Sending
 //!   newlines to the agent one keystroke at a time is the sole thing this path
 //!   exists to prevent, so it is the sole thing it acts on. A newline-free run
@@ -57,7 +61,8 @@ const MACHINE_GAP: Duration = Duration::from_millis(10);
 /// crossterm delivers `Event::Paste` on its own.
 pub(crate) struct PasteBurst {
     active: bool,
-    /// Plain-character keys gathered so far as a possible paste.
+    /// Plain-character presses gathered so far as a possible paste, and the
+    /// releases that arrived among them, in order.
     run: Vec<KeyEvent>,
     /// When the last key arrived, for the gap that tells paste from typing.
     last: Option<Instant>,
