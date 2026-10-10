@@ -87,6 +87,22 @@
     }
   },
   {
+    "name": "thurbox-voice",
+    "description": "Dictate a prompt into the selected session with Ctrl+Space. Speech is transcribed on your machine, and the text waits unsent.",
+    "author": "TMSCH",
+    "badge": "community",
+    "repo": "https://github.com/TMSCH/thurbox-voice",
+    "kind": "pane",
+    "platforms": ["Linux", "macOS"],
+    "updated": "2026-10-09",
+    "install": "git clone https://github.com/TMSCH/thurbox-voice && cd thurbox-voice\ncargo install --locked --path crates/thurbox-voice\nthurbox-voice pull parakeet\nthurbox-cli plugin install git+https://github.com/TMSCH/thurbox-voice\nthurbox-cli plugin check",
+    "notes": "Requires Thurbox ≥ 2.56.0, Rust and cmake; Linux also needs pkg-config and ALSA headers. Trust the voice pane to run its helper. Audio stays local. An optional cleanup pass, on by default, sends the transcript and session context to a language model, hosted unless you point it at a local server. See README.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/TMSCH/thurbox-voice/main/media/demo.gif",
+      "alt": "Dictating into a Thurbox session: Ctrl+Space, speak, Ctrl+Space, and the text waits in the input box"
+    }
+  },
+  {
     "name": "thurbox-files",
     "description": "Browse files and changes, with editor and diff tabs beside the agent.",
     "author": "spscream",
