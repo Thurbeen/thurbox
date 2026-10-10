@@ -87,6 +87,22 @@
     }
   },
   {
+    "name": "thurbox-automations",
+    "description": "Manage automations and read their recent runs: create, edit, switch on and off, run now and delete.",
+    "author": "Thurbeen",
+    "badge": "official",
+    "repo": "https://github.com/Thurbeen/thurbox-automations",
+    "kind": "pane",
+    "platforms": ["Linux", "Windows (native)", "macOS (untested)"],
+    "updated": "2026-10-10",
+    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations",
+    "notes": "Requires Thurbox \u2265 2.56.5; creating and editing need a release with the automation create/edit command. No capability grant or layout.lua edit. Alt+A opens it. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif",
+      "alt": "The automations pane: the list, a failed run's output, and a new automation created through the form"
+    }
+  },
+  {
     "name": "thurbox-voice",
     "description": "Dictate a prompt into the selected session with Ctrl+Space. Speech is transcribed on your machine, and the text waits unsent.",
     "author": "TMSCH",

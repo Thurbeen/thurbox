@@ -491,19 +491,35 @@
 ---@field updated_at integer
 
 ---@class (exact) thurbox.AutomationRun
----@field started_at integer
----@field status string
----@field detail string
+---@field id integer
+---@field started_at integer Unix millis.
+---@field status "success"|"error"|"skipped"
+---@field detail string What the run reported: the error, the skip reason or an exec's output tail. The only log a run keeps.
+---@field session? string The session it sent to or spawned, when it recorded one.
 
 ---@class (exact) thurbox.Automation
 ---@field id integer
 ---@field name string
----@field schedule string
----@field action string
+---@field schedule string The cron expression, or `once`.
+---@field action "send"|"spawn"|"exec"
 ---@field enabled boolean
 ---@field last_outcome? string
 ---@field last_detail? string
----@field runs thurbox.AutomationRun[]
+---@field runs thurbox.AutomationRun[] The ten most recent, newest first.
+---@field trigger string `cron:<expr>` or `at:<unix_millis>`: what an edit's `trigger` takes back unchanged.
+---@field timezone? string IANA name; nil is the system's own.
+---@field prompt string Empty for an exec automation.
+---@field session? string A send's target session.
+---@field repo? string A spawn's repository.
+---@field branch? string A spawn's worktree branch.
+---@field base? string
+---@field agent? string
+---@field extra_repos integer Further repositories a multi-repo spawn spans.
+---@field command? string An exec automation's command line.
+---@field created_at integer Unix millis.
+---@field updated_at integer
+---@field last_run_at? integer
+---@field next_run_at? integer Nil while disabled, and once a schedule has no future occurrence.
 
 --- A command this interface accepted but has not finished.
 ---@class (exact) thurbox.InFlight
@@ -916,11 +932,28 @@ function require(name) end
 ---@field number integer The task to dispatch.
 ---@field session? string
 
+--- Without `action`: enable, disable, run or delete automation `number`. With
+--- `action = "create"` or `"edit"` (which needs `number`): the fields below,
+--- validated as `thurbox-cli automation create` validates them, a mistake
+--- reported as `command.failed`. An edit leaves out what it does not change.
 ---@class (exact) thurbox.cmd.Automation
----@field number integer
+---@field number? integer The automation; every use but a create needs it.
 ---@field flag? boolean Enable or disable it.
 ---@field force? boolean Run it now.
 ---@field reset? boolean Delete it.
+---@field action? "create"|"edit"
+---@field name? string
+---@field trigger? string `hourly`|`daily`|`weekdays`|`weekly`|`cron:<expr>`|`at:<unix_millis>`.
+---@field time? string `HH:MM`, for a preset.
+---@field weekday? integer 0..7 (0 and 7 are Sunday), for `weekly`.
+---@field timezone? string IANA name; `""` is the system's own.
+---@field prompt? string
+---@field session? string Create: send to this session.
+---@field repo? string Create: spawn a session in this repository.
+---@field branch? string Create: the spawn's worktree branch.
+---@field base? string
+---@field agent? string
+---@field command? string Create, or edit an exec one: run this command line.
 
 ---@class (exact) thurbox.cmd.ExtraMember
 ---@field path string

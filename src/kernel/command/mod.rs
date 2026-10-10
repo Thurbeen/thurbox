@@ -163,6 +163,11 @@ pub enum Command {
         run_now: bool,
         delete: bool,
     },
+    /// Create an automation (`id` is `None`) or edit one.
+    AutomationSave {
+        id: Option<i64>,
+        draft: AutomationDraft,
+    },
     /// Copy a surface's terminal contents to the clipboard.
     ///
     /// `session` is a SURFACE name: a bare id is the agent's pane and
@@ -382,6 +387,37 @@ pub enum Command {
 /// what it becomes: a plugin names a path and whether it takes a worktree, and
 /// the base branch is the session's own — a per-member base is reachable
 /// headlessly but nothing in the flow asks for one.
+/// The fields an `automation` create or edit carries, each as the plugin
+/// passed it.
+///
+/// Typed fields rather than a command line: a name or a prompt is whatever the
+/// user typed, and none of it is ever read by a shell on its way to the
+/// database. On an edit `None` leaves a field as it is; a create needs a name, a
+/// trigger and exactly one target — `session` (send), `repo` (spawn) or
+/// `command` (exec). Validated where it is applied, so a mistake reaches the
+/// pane as `command.failed` with a sentence rather than as a Lua error.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationDraft {
+    pub name: Option<String>,
+    /// `hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<unix_millis>`.
+    pub trigger: Option<String>,
+    /// `HH:MM`, for a preset trigger.
+    pub time: Option<String>,
+    /// 0..=7 (0 and 7 are Sunday), for the `weekly` preset.
+    pub weekday: Option<u32>,
+    /// An IANA name; empty means the system's own.
+    pub timezone: Option<String>,
+    pub prompt: Option<String>,
+    pub enabled: Option<bool>,
+    pub session: Option<String>,
+    pub repo: Option<String>,
+    /// The worktree branch a spawn creates or reuses.
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub agent: Option<String>,
+    pub command: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtraMember {
     pub path: String,
@@ -443,7 +479,7 @@ impl Command {
             Command::OpenLink { .. } => "open",
             Command::Task { .. } => "task",
             Command::DispatchTask { .. } => "dispatch",
-            Command::Automation { .. } => "automation",
+            Command::Automation { .. } | Command::AutomationSave { .. } => "automation",
             Command::Theme { .. } => "theme",
             Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
@@ -480,7 +516,7 @@ impl Command {
             Command::Create { .. } => "",
             // A dispatch may name one, when it is sending rather than creating.
             Command::DispatchTask { session, .. } => session.as_deref().unwrap_or(""),
-            Command::Task { .. } | Command::Automation { .. } => "",
+            Command::Task { .. } | Command::Automation { .. } | Command::AutomationSave { .. } => "",
             // Global, not per-session.
             Command::Theme { .. }
             | Command::Plugin { .. }
@@ -561,6 +597,13 @@ impl Command {
                 .map(|name| name.to_string_lossy().to_string())
                 .or_else(|| Some(repo.clone())),
             Command::Bookmark { path, .. } => Some(path.clone()),
+            // `#<id>`, or a create's name: what a pane managing automations
+            // matches a `command.failed` against to show the error by the row
+            // or form it came from.
+            Command::Automation { id, .. } | Command::AutomationSave { id: Some(id), .. } => {
+                Some(format!("#{id}"))
+            }
+            Command::AutomationSave { id: None, draft } => draft.name.clone(),
             _ => None,
         }
     }
@@ -772,7 +815,31 @@ impl Command {
     }
 
     fn parse_automation(args: Args) -> Result<Self, String> {
-        let Some(id) = args.number.map(|n| n as i64) else {
+        let id = args.number.map(|n| n as i64);
+        match args.action.as_deref() {
+            None | Some("") => {}
+            Some("create") => {
+                return Ok(Command::AutomationSave {
+                    id: None,
+                    draft: automation_draft(&args),
+                })
+            }
+            Some("edit") => {
+                let Some(id) = id else {
+                    return Err("command \"automation\" needs an id".to_string());
+                };
+                return Ok(Command::AutomationSave {
+                    id: Some(id),
+                    draft: automation_draft(&args),
+                });
+            }
+            Some(other) => {
+                return Err(format!(
+                    "command \"automation\" has no action \"{other}\" (create or edit)"
+                ))
+            }
+        }
+        let Some(id) = id else {
             return Err("command \"automation\" needs an id".to_string());
         };
         Ok(Command::Automation {
@@ -930,6 +997,44 @@ impl Command {
 /// A struct rather than a parameter list because commands want different
 /// fields, and threading six positional `Option`s through was already at the
 /// point where a caller could transpose two of them silently.
+/// An automation draft out of a command's options.
+///
+/// The fields the shared [`Args`] already reads keep their meaning (`session`,
+/// `repo`, `branch`, `base`, `agent`, `flag`); the rest are read by name from the
+/// payload, where every scalar the plugin passed is kept.
+fn automation_draft(args: &Args) -> AutomationDraft {
+    use super::events::Field;
+    let field = |key: &str| {
+        args.payload
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, v)| v)
+    };
+    let text = |key: &str| match field(key) {
+        Some(Field::Text(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let filled = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
+    AutomationDraft {
+        name: text("name"),
+        trigger: text("trigger"),
+        time: text("time"),
+        weekday: match field("weekday") {
+            Some(Field::Number(n)) if *n >= 0.0 => Some(*n as u32),
+            _ => None,
+        },
+        timezone: text("timezone"),
+        prompt: text("prompt"),
+        enabled: args.flag,
+        session: (!args.session.is_empty()).then(|| args.session.clone()),
+        repo: filled(&args.repo),
+        branch: filled(&args.branch),
+        base: filled(&args.base),
+        agent: filled(&args.agent),
+        command: text("command"),
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Args {
     pub session: String,
@@ -1365,6 +1470,23 @@ mod tests {
                 "automation",
                 Args::default(),
                 err("command \"automation\" needs an id"),
+            ),
+            (
+                "automation",
+                Args {
+                    action: text("edit"),
+                    ..Args::default()
+                },
+                err("command \"automation\" needs an id"),
+            ),
+            (
+                "automation",
+                Args {
+                    action: text("rename"),
+                    number: Some(1.0),
+                    ..Args::default()
+                },
+                err("command \"automation\" has no action \"rename\" (create or edit)"),
             ),
             (
                 "create",

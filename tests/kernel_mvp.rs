@@ -2355,6 +2355,134 @@ fn task_and_automation_commands_validate_their_arguments() {
     assert!(Command::parse("automation", Args::default()).is_err());
 }
 
+/// One pane file in an otherwise empty interface, for the automation tests.
+fn lone_pane(source: &str) -> (tempfile::TempDir, LuaHost) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plugins = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugins).expect("mkdir");
+    std::fs::write(plugins.join("10_pane.lua"), source).expect("write");
+    let host = LuaHost::new(dir.path());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    (dir, host)
+}
+
+/// A pane that manages automations has to show when one fires next, what it
+/// targets and what it says, and has to hand all of it back to an edit form.
+#[test]
+fn an_automation_row_carries_what_a_pane_needs_to_manage_it() {
+    use thurbox::kernel::snapshot::{AutomationRow, RunRow};
+
+    let (_dir, host) = lone_pane(
+        r#"return { name = "pane", slot = "a",
+  render = function()
+    local a = thurbox.automations[1]
+    local run = a.runs[1]
+    return { text = table.concat({
+      a.trigger, a.timezone, a.prompt, a.repo, a.branch, a.base, a.agent,
+      tostring(a.extra_repos), tostring(a.next_run_at), tostring(a.last_run_at),
+      tostring(a.created_at), tostring(a.updated_at), tostring(a.session),
+      tostring(a.command), tostring(run.id), tostring(run.session),
+    }, "|") }
+  end }"#,
+    );
+    publish(
+        &host,
+        &Snapshot {
+            automations: vec![AutomationRow {
+                id: 3,
+                name: "nightly".into(),
+                schedule: "0 9 * * 1-5".into(),
+                action: "spawn".into(),
+                enabled: true,
+                trigger: "cron:0 9 * * 1-5".into(),
+                timezone: Some("Europe/Zurich".into()),
+                prompt: "review the queue".into(),
+                repo: Some("/srv/app".into()),
+                branch: Some("feat/x".into()),
+                base: Some("main".into()),
+                agent: Some("claude".into()),
+                extra_repos: 2,
+                created_at: 1_699_000_000_000,
+                updated_at: 1_699_500_000_000,
+                last_run_at: Some(1_699_990_000_000),
+                next_run_at: Some(1_700_000_060_000),
+                runs: vec![RunRow {
+                    id: 12,
+                    started_at: 1_699_990_000_000,
+                    status: "success".into(),
+                    detail: "spawned".into(),
+                    session: Some("s1".into()),
+                }],
+                ..AutomationRow::default()
+            }],
+            ..snapshot(Vec::new())
+        },
+    );
+    let painted = paint(&host, index_of(&host, "pane"), 220, 1).join("");
+    assert!(
+        painted.contains(
+            "cron:0 9 * * 1-5|Europe/Zurich|review the queue|/srv/app|feat/x|main|claude|2|\
+             1700000060000|1699990000000|1699000000000|1699500000000|nil|nil|12|s1"
+        ),
+        "{painted}"
+    );
+}
+
+/// Create and edit travel as typed fields, never as a command line a shell
+/// would read, and a malformed write fails in the pane that issued it.
+#[test]
+fn a_pane_creates_and_edits_an_automation_with_typed_fields() {
+    use thurbox::kernel::command::{AutomationDraft, Command};
+
+    let (_dir, host) = lone_pane(
+        r#"return { name = "pane", slot = "a",
+  render = function()
+    command("automation", { action = "create", name = "nightly", trigger = "daily",
+      time = "09:30", weekday = 1, timezone = "UTC", prompt = "it's $(rm -rf ~)",
+      repo = "/srv/app", branch = "feat/x", base = "main", agent = "claude", flag = false })
+    command("automation", { action = "edit", number = 7, name = "renamed",
+      command = "make sync", timezone = "" })
+    local edit_without_id = pcall(command, "automation", { action = "edit" })
+    local unknown = pcall(command, "automation", { action = "rename", number = 1 })
+    return { text = tostring(edit_without_id) .. " " .. tostring(unknown) }
+  end }"#,
+    );
+    publish(&host, &snapshot(Vec::new()));
+    let painted = paint(&host, index_of(&host, "pane"), 40, 1).join("");
+    assert!(painted.starts_with("false false"), "{painted}");
+    assert_eq!(
+        host.drain_commands(),
+        vec![
+            Command::AutomationSave {
+                id: None,
+                draft: AutomationDraft {
+                    name: Some("nightly".into()),
+                    trigger: Some("daily".into()),
+                    time: Some("09:30".into()),
+                    weekday: Some(1),
+                    timezone: Some("UTC".into()),
+                    prompt: Some("it's $(rm -rf ~)".into()),
+                    enabled: Some(false),
+                    repo: Some("/srv/app".into()),
+                    branch: Some("feat/x".into()),
+                    base: Some("main".into()),
+                    agent: Some("claude".into()),
+                    ..AutomationDraft::default()
+                },
+            },
+            Command::AutomationSave {
+                id: Some(7),
+                draft: AutomationDraft {
+                    name: Some("renamed".into()),
+                    command: Some("make sync".into()),
+                    timezone: Some(String::new()),
+                    ..AutomationDraft::default()
+                },
+            },
+        ]
+    );
+}
+
 // --- navigation panes ------------------------------------------------------
 
 #[test]

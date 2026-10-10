@@ -199,15 +199,23 @@ pub struct TaskRow {
 }
 
 /// One recorded run of an automation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunRow {
+    pub id: i64,
     pub started_at: i64,
     pub status: String,
+    /// What the run reported: the error, the skip reason, or an exec's output
+    /// tail. The only log an automation run keeps.
     pub detail: String,
+    /// The session the run sent to or spawned, when it recorded one.
+    pub session: Option<String>,
 }
 
 /// An automation, flattened for rendering.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// The first fields summarise; the rest are the definition itself, so a pane
+/// can show when it fires and edit it rather than only list it.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AutomationRow {
     pub id: i64,
     pub name: String,
@@ -219,6 +227,30 @@ pub struct AutomationRow {
     pub last_detail: Option<String>,
     /// Recent runs, newest first — what you look at a scheduler for.
     pub runs: Vec<RunRow>,
+    /// The schedule as `cron:<expr>` or `at:<unix_millis>`: what an edit's
+    /// `trigger` takes back unchanged.
+    pub trigger: String,
+    /// IANA name; `None` is the system's own.
+    pub timezone: Option<String>,
+    /// Empty for an exec automation, which runs `command` instead.
+    pub prompt: String,
+    /// A send's target session.
+    pub session: Option<String>,
+    /// A spawn's repository, worktree branch, base and agent.
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub agent: Option<String>,
+    /// How many further repositories a multi-repo spawn spans.
+    pub extra_repos: usize,
+    /// An exec automation's command line.
+    pub command: Option<String>,
+    /// Unix millis, as stored.
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub last_run_at: Option<u64>,
+    /// `None` while disabled, and once a schedule has no future occurrence.
+    pub next_run_at: Option<u64>,
 }
 
 /// Something a session can be created against.
@@ -1715,6 +1747,7 @@ impl SnapshotStore {
             })
             .unwrap_or_default();
 
+        use crate::session::automation::{AutomationAction, AutomationSchedule};
         // Run history for the whole list in one query, not one per automation.
         let mut run_history = database.list_recent_automation_runs(10).unwrap_or_default();
         let automations = database
@@ -1726,21 +1759,50 @@ impl SnapshotStore {
                         let runs: Vec<RunRow> = history
                             .iter()
                             .map(|run| RunRow {
+                                id: run.id,
                                 started_at: run.started_at as i64,
                                 status: run.status.as_str().to_string(),
                                 detail: run.detail.clone(),
+                                session: run.related_session_id.map(|id| id.to_string()),
                             })
                             .collect();
                         let last = history.into_iter().next();
+                        let mut target = AutomationRow::default();
+                        match &auto.action {
+                            AutomationAction::Send { session_id } => {
+                                target.session = Some(session_id.to_string());
+                            }
+                            AutomationAction::Spawn {
+                                repo_path,
+                                worktree_branch,
+                                base_branch,
+                                agent,
+                                extra_repos,
+                            } => {
+                                target.repo = Some(repo_path.to_string_lossy().to_string());
+                                target.branch = worktree_branch.clone();
+                                target.base = base_branch.clone();
+                                target.agent = agent.clone();
+                                target.extra_repos = extra_repos.len();
+                            }
+                            AutomationAction::Exec { command } => {
+                                target.command = Some(command.clone());
+                            }
+                        }
                         AutomationRow {
+                            trigger: auto.schedule.trigger(),
+                            timezone: auto.timezone.clone(),
+                            prompt: auto.prompt.clone(),
+                            created_at: auto.created_at,
+                            updated_at: auto.updated_at,
+                            last_run_at: auto.last_run_at,
+                            next_run_at: auto.next_run_at,
                             id: auto.id,
                             name: auto.name,
                             // The expression itself when it is a cron, else
                             // the kind — what a pane wants to show.
                             schedule: match &auto.schedule {
-                                crate::session::automation::AutomationSchedule::Cron { expr } => {
-                                    expr.clone()
-                                }
+                                AutomationSchedule::Cron { expr } => expr.clone(),
                                 other => other.kind().to_string(),
                             },
                             action: auto.action.kind().to_string(),
@@ -1748,6 +1810,7 @@ impl SnapshotStore {
                             last_outcome: last.as_ref().map(|run| run.status.as_str().to_string()),
                             last_detail: last.map(|run| run.detail).filter(|d| !d.is_empty()),
                             runs,
+                            ..target
                         }
                     })
                     .collect()
@@ -2284,6 +2347,49 @@ mod tests {
             "a host not looked at yet offers its platform default"
         );
         assert!(!rows[0].probing && rows[1].probing);
+    }
+
+    /// The automation rows carry the definition and its timing, not only a
+    /// summary — a pane cannot edit what it cannot read.
+    #[test]
+    fn an_automation_row_carries_its_definition_and_timing() {
+        use crate::session::automation::{
+            AutomationAction, AutomationRunStatus, AutomationSchedule,
+        };
+        use crate::storage::automations::NewAutomation;
+
+        let database = Database::open_in_memory().expect("in-memory database opens");
+        let id = database
+            .create_automation(&NewAutomation {
+                name: "sync".into(),
+                enabled: true,
+                schedule: AutomationSchedule::Once {
+                    at: 4_000_000_000_000,
+                },
+                timezone: Some("UTC".into()),
+                action: AutomationAction::Exec {
+                    command: "make sync".into(),
+                },
+                prompt: String::new(),
+                next_run_at: Some(4_000_000_000_000),
+            })
+            .expect("insert");
+        database
+            .record_automation_run(id, AutomationRunStatus::Error, "exit 2: boom", None)
+            .expect("run");
+        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let row = &store.current().automations[0];
+        assert_eq!(row.schedule, "once", "the old summary is unchanged");
+        assert_eq!(row.trigger, "at:4000000000000");
+        assert_eq!(row.timezone.as_deref(), Some("UTC"));
+        assert_eq!(row.command.as_deref(), Some("make sync"));
+        assert_eq!(row.repo, None);
+        assert_eq!(row.next_run_at, Some(4_000_000_000_000));
+        assert!(row.created_at > 0 && row.updated_at >= row.created_at);
+        assert_eq!(row.runs.len(), 1);
+        assert!(row.runs[0].id > 0);
+        assert_eq!(row.runs[0].status, "error");
+        assert_eq!(row.runs[0].detail, "exit 2: boom");
     }
 
     #[test]

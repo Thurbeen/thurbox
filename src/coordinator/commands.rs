@@ -367,7 +367,13 @@ impl App {
             .current()
             .session(&session)
             .map(|row| row.name.clone())
-            .filter(|label| !label.is_empty());
+            .filter(|label| !label.is_empty())
+            // An automation names no session; its own `#<id>` or name is what
+            // the message band and `command.failed`'s `subject` should carry.
+            .or_else(|| match &command {
+                Command::Automation { .. } | Command::AutomationSave { .. } => command.subject(),
+                _ => None,
+            });
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
         let name = match &command {

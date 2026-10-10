@@ -128,7 +128,10 @@ pub(super) fn execute(
     // Tasks and automations are keyed by number, not by session id.
     if matches!(
         command,
-        Command::Task { .. } | Command::DispatchTask { .. } | Command::Automation { .. }
+        Command::Task { .. }
+            | Command::DispatchTask { .. }
+            | Command::Automation { .. }
+            | Command::AutomationSave { .. }
     ) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
@@ -148,6 +151,9 @@ pub(super) fn execute(
                 run_now,
                 delete,
             } => automation(&db, *id, *enabled, *run_now, *delete),
+            Command::AutomationSave { id, draft } => {
+                save_automation(&db, *id, draft, crate::sync::current_time_millis())
+            }
             _ => unreachable!(),
         };
     }
@@ -238,7 +244,8 @@ pub(super) fn execute(
         | Command::Task { .. }
         | Command::DispatchTask { .. }
         | Command::Reap
-        | Command::Automation { .. } => unreachable!("handled before the id parse"),
+        | Command::Automation { .. }
+        | Command::AutomationSave { .. } => unreachable!("handled before the id parse"),
         Command::Theme { .. }
         | Command::Setting { .. }
         | Command::Copy { .. }
@@ -745,9 +752,25 @@ fn automation(
             .map(|_| ())
             .map_err(|e| format!("delete automation: {e}"));
     }
-    if let Some(enabled) = enabled {
-        db.set_automation_enabled(id, enabled)
-            .map_err(|e| format!("set enabled: {e}"))?;
+    match enabled {
+        // Disabling clears the next run, so enabling computes it again — as
+        // `thurbox-cli automation edit --enabled` does. Setting the flag alone
+        // left an enabled automation that never fired.
+        Some(true) => {
+            let mut auto = db
+                .get_automation(id)
+                .map_err(|e| format!("get automation: {e}"))?
+                .ok_or_else(|| format!("automation #{id} no longer exists"))?;
+            auto.next_run_at = Some(next_run(&auto, crate::sync::current_time_millis())?);
+            auto.enabled = true;
+            db.update_automation(&auto)
+                .map_err(|e| format!("update automation: {e}"))?;
+        }
+        Some(false) => {
+            db.set_automation_enabled(id, false)
+                .map_err(|e| format!("set enabled: {e}"))?;
+        }
+        None => {}
     }
     if run_now {
         // Marks it due; the next `automation tick` — the heartbeat keeper's,
@@ -757,6 +780,160 @@ fn automation(
             .map_err(|e| format!("trigger: {e}"))?;
     }
     Ok(())
+}
+
+/// When an enabled automation fires next, or why it never will.
+fn next_run(auto: &crate::session::Automation, now: u64) -> Result<u64, String> {
+    auto.schedule.check()?;
+    auto.schedule
+        .next_after(now, auto.timezone.as_deref())
+        .ok_or_else(|| {
+            format!(
+                "`{}` never fires again; give it a schedule in the future",
+                auto.schedule.trigger()
+            )
+        })
+}
+
+/// Create an automation (`id` is `None`) or edit one, from a pane's draft.
+///
+/// The same rules as `thurbox-cli automation create` / `edit`, plus the two the
+/// CLI leaves to a schedule that silently never fires: a cron expression must
+/// parse and a timezone must exist. An edit changes what the draft names and
+/// keeps the rest — the target included, extra repositories and all — and, like
+/// the CLI's, recomputes the next run.
+fn save_automation(
+    db: &Database,
+    id: Option<i64>,
+    draft: &super::AutomationDraft,
+    now: u64,
+) -> Result<(), String> {
+    use crate::session::automation::{check_timezone, parse_trigger, AutomationAction};
+
+    let mut auto = match id {
+        Some(id) => db
+            .get_automation(id)
+            .map_err(|e| format!("get automation: {e}"))?
+            .ok_or_else(|| format!("automation #{id} no longer exists"))?,
+        None => crate::session::Automation {
+            id: 0,
+            name: String::new(),
+            enabled: true,
+            schedule: parse_trigger(
+                draft
+                    .trigger
+                    .as_deref()
+                    .ok_or("an automation needs a trigger")?,
+                draft.time.as_deref(),
+                draft.weekday,
+            )?,
+            timezone: None,
+            action: draft_action(db, draft)?,
+            prompt: String::new(),
+            created_at: now,
+            updated_at: now,
+            last_run_at: None,
+            next_run_at: None,
+        },
+    };
+
+    if let Some(name) = &draft.name {
+        auto.name = name.trim().to_string();
+    }
+    if auto.name.is_empty() {
+        return Err("an automation needs a name".into());
+    }
+    if id.is_some() {
+        if let Some(trigger) = &draft.trigger {
+            auto.schedule = parse_trigger(trigger, draft.time.as_deref(), draft.weekday)?;
+        }
+        if let Some(command) = &draft.command {
+            match &mut auto.action {
+                AutomationAction::Exec { command: current } if !command.trim().is_empty() => {
+                    *current = command.clone();
+                }
+                AutomationAction::Exec { .. } => return Err("the command must not be empty".into()),
+                _ => return Err("only an exec automation runs a command".into()),
+            }
+        }
+    }
+    if let Some(timezone) = &draft.timezone {
+        auto.timezone = (!timezone.is_empty()).then(|| timezone.clone());
+    }
+    if let Some(timezone) = &auto.timezone {
+        check_timezone(timezone)?;
+    }
+    if let Some(prompt) = &draft.prompt {
+        auto.prompt = prompt.clone();
+    }
+    if !matches!(auto.action, AutomationAction::Exec { .. }) && auto.prompt.trim().is_empty() {
+        return Err("the prompt must not be empty".into());
+    }
+    if let Some(enabled) = draft.enabled {
+        auto.enabled = enabled;
+    }
+    auto.schedule.check()?;
+    auto.next_run_at = if auto.enabled {
+        Some(next_run(&auto, now)?)
+    } else {
+        None
+    };
+
+    match id {
+        Some(_) => db
+            .update_automation(&auto)
+            .map_err(|e| format!("update automation: {e}")),
+        None => db
+            .create_automation(&crate::storage::automations::NewAutomation {
+                name: auto.name,
+                enabled: auto.enabled,
+                schedule: auto.schedule,
+                timezone: auto.timezone,
+                action: auto.action,
+                prompt: auto.prompt,
+                next_run_at: auto.next_run_at,
+            })
+            .map(|_| ())
+            .map_err(|e| format!("create automation: {e}")),
+    }
+}
+
+/// The action a new automation's draft names: exactly one of a session to
+/// send to, a repository to spawn in, or a command to run.
+fn draft_action(
+    db: &Database,
+    draft: &super::AutomationDraft,
+) -> Result<crate::session::automation::AutomationAction, String> {
+    use crate::session::automation::AutomationAction;
+
+    match (&draft.session, &draft.repo, &draft.command) {
+        (Some(session), None, None) => {
+            let session_id: SessionId = session
+                .parse()
+                .map_err(|_| format!("not a session id: {session}"))?;
+            db.get_session_by_id(session_id)
+                .map_err(|e| format!("get session: {e}"))?
+                .ok_or_else(|| format!("no session {session} to send to"))?;
+            Ok(AutomationAction::Send { session_id })
+        }
+        (None, Some(repo), None) => Ok(AutomationAction::Spawn {
+            repo_path: repo.into(),
+            worktree_branch: draft.branch.clone(),
+            base_branch: draft.base.clone(),
+            agent: draft.agent.clone(),
+            extra_repos: Vec::new(),
+        }),
+        (None, None, Some(command)) if command.trim().is_empty() => {
+            Err("the command must not be empty".into())
+        }
+        (None, None, Some(command)) => Ok(AutomationAction::Exec {
+            command: command.clone(),
+        }),
+        (None, None, None) => {
+            Err("an automation needs a target: a session, a repository or a command".into())
+        }
+        _ => Err("name only one target: a session, a repository or a command".into()),
+    }
 }
 
 /// A repository to create a task's session in.
@@ -920,5 +1097,354 @@ mod tests {
             std::path::Path::new("/repo"),
         );
         assert_eq!(name, "chosen");
+    }
+
+    /// A pane managing automations writes through `automation` alone, so what
+    /// the CLI validates has to be validated here too — and a mistake has to
+    /// come back as a sentence the pane can show, not as a row that never fires.
+    mod automation_writes {
+        use super::super::{automation, save_automation};
+        use crate::kernel::command::AutomationDraft;
+        use crate::session::automation::{AutomationAction, AutomationSchedule, ExtraRepo};
+        use crate::storage::automations::NewAutomation;
+        use crate::storage::Database;
+
+        // 2024-01-01 00:00:00 UTC, a Monday.
+        const NOW: u64 = 1_704_067_200_000;
+
+        fn spawn_draft() -> AutomationDraft {
+            AutomationDraft {
+                name: Some("nightly".into()),
+                trigger: Some("daily".into()),
+                time: Some("09:30".into()),
+                timezone: Some("UTC".into()),
+                prompt: Some("review the queue".into()),
+                repo: Some("/srv/app".into()),
+                branch: Some("feat/nightly".into()),
+                base: Some("main".into()),
+                agent: Some("claude".into()),
+                ..AutomationDraft::default()
+            }
+        }
+
+        fn only(db: &Database) -> crate::session::Automation {
+            let mut all = db.list_automations().expect("list");
+            assert_eq!(all.len(), 1, "{all:?}");
+            all.remove(0)
+        }
+
+        #[test]
+        fn a_created_automation_is_stored_with_its_next_run() {
+            let db = Database::open_in_memory().expect("db");
+            save_automation(&db, None, &spawn_draft(), NOW).expect("create");
+            let auto = only(&db);
+            assert_eq!(auto.name, "nightly");
+            assert!(auto.enabled);
+            assert_eq!(
+                auto.schedule,
+                AutomationSchedule::Cron {
+                    expr: "30 9 * * *".into()
+                }
+            );
+            assert_eq!(auto.timezone.as_deref(), Some("UTC"));
+            assert_eq!(auto.prompt, "review the queue");
+            assert_eq!(
+                auto.action,
+                AutomationAction::Spawn {
+                    repo_path: "/srv/app".into(),
+                    worktree_branch: Some("feat/nightly".into()),
+                    base_branch: Some("main".into()),
+                    agent: Some("claude".into()),
+                    extra_repos: Vec::new(),
+                }
+            );
+            assert_eq!(auto.next_run_at, Some(NOW + (9 * 60 + 30) * 60_000));
+        }
+
+        #[test]
+        fn a_disabled_create_is_not_scheduled() {
+            let db = Database::open_in_memory().expect("db");
+            let draft = AutomationDraft {
+                enabled: Some(false),
+                ..spawn_draft()
+            };
+            save_automation(&db, None, &draft, NOW).expect("create");
+            let auto = only(&db);
+            assert!(!auto.enabled);
+            assert_eq!(auto.next_run_at, None);
+        }
+
+        #[test]
+        fn an_exec_automation_needs_a_command_and_no_prompt() {
+            let db = Database::open_in_memory().expect("db");
+            let draft = AutomationDraft {
+                name: Some("sync".into()),
+                trigger: Some("cron:*/15 * * * *".into()),
+                command: Some("make sync".into()),
+                ..AutomationDraft::default()
+            };
+            save_automation(&db, None, &draft, NOW).expect("create");
+            assert_eq!(
+                only(&db).action,
+                AutomationAction::Exec {
+                    command: "make sync".into()
+                }
+            );
+        }
+
+        #[test]
+        fn a_create_names_what_is_wrong_and_stores_nothing() {
+            let db = Database::open_in_memory().expect("db");
+            let cases: Vec<(AutomationDraft, &str)> = vec![
+                (
+                    AutomationDraft {
+                        name: Some("  ".into()),
+                        ..spawn_draft()
+                    },
+                    "name",
+                ),
+                (
+                    AutomationDraft {
+                        trigger: Some("monthly".into()),
+                        ..spawn_draft()
+                    },
+                    "unknown trigger",
+                ),
+                (
+                    AutomationDraft {
+                        trigger: Some("cron:61 * * * *".into()),
+                        time: None,
+                        ..spawn_draft()
+                    },
+                    "cron",
+                ),
+                (
+                    AutomationDraft {
+                        time: Some("25:00".into()),
+                        ..spawn_draft()
+                    },
+                    "time",
+                ),
+                (
+                    AutomationDraft {
+                        timezone: Some("Mars/Olympus".into()),
+                        ..spawn_draft()
+                    },
+                    "timezone",
+                ),
+                (
+                    AutomationDraft {
+                        trigger: Some(format!("at:{}", NOW - 1)),
+                        time: None,
+                        ..spawn_draft()
+                    },
+                    "never fires",
+                ),
+                (
+                    AutomationDraft {
+                        prompt: Some(String::new()),
+                        ..spawn_draft()
+                    },
+                    "prompt",
+                ),
+                (
+                    AutomationDraft {
+                        repo: None,
+                        branch: None,
+                        base: None,
+                        agent: None,
+                        ..spawn_draft()
+                    },
+                    "target",
+                ),
+                (
+                    AutomationDraft {
+                        command: Some("make sync".into()),
+                        ..spawn_draft()
+                    },
+                    "only one",
+                ),
+                (
+                    AutomationDraft {
+                        repo: None,
+                        session: Some("not-a-session".into()),
+                        ..spawn_draft()
+                    },
+                    "session",
+                ),
+                (
+                    AutomationDraft {
+                        repo: None,
+                        session: Some("6f1c1d8e-2a2b-4c1e-9d1f-0a1b2c3d4e5f".into()),
+                        ..spawn_draft()
+                    },
+                    "no session",
+                ),
+            ];
+            for (draft, expected) in cases {
+                let error = save_automation(&db, None, &draft, NOW)
+                    .expect_err(&format!("{draft:?} must be refused"));
+                assert!(
+                    error.contains(expected),
+                    "{draft:?}: {error:?} does not mention {expected:?}"
+                );
+            }
+            assert!(db.list_automations().expect("list").is_empty());
+        }
+
+        fn stored_multi_repo(db: &Database) -> i64 {
+            db.create_automation(&NewAutomation {
+                name: "multi".into(),
+                enabled: true,
+                schedule: AutomationSchedule::Cron {
+                    expr: "0 9 * * 1-5".into(),
+                },
+                timezone: None,
+                action: AutomationAction::Spawn {
+                    repo_path: "/srv/app".into(),
+                    worktree_branch: Some("feat/x".into()),
+                    base_branch: None,
+                    agent: None,
+                    extra_repos: vec![ExtraRepo {
+                        repo_path: "/srv/lib".into(),
+                        worktree: true,
+                        base_branch: None,
+                    }],
+                },
+                prompt: "go".into(),
+                next_run_at: Some(NOW + 1),
+            })
+            .expect("insert")
+        }
+
+        #[test]
+        fn an_edit_changes_what_it_names_and_keeps_the_target() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            let before = only(&db).action;
+            let edit = AutomationDraft {
+                name: Some("renamed".into()),
+                trigger: Some("cron:0 18 * * *".into()),
+                timezone: Some("Europe/Zurich".into()),
+                prompt: Some("wrap up".into()),
+                ..AutomationDraft::default()
+            };
+            save_automation(&db, Some(id), &edit, NOW).expect("edit");
+            let after = only(&db);
+            assert_eq!(after.name, "renamed");
+            assert_eq!(after.prompt, "wrap up");
+            assert_eq!(after.timezone.as_deref(), Some("Europe/Zurich"));
+            assert_eq!(after.action, before, "the target and its extra repos stay");
+            assert!(after.next_run_at.is_some_and(|next| next > NOW));
+
+            // An empty timezone goes back to the system's own.
+            let clear = AutomationDraft {
+                timezone: Some(String::new()),
+                ..AutomationDraft::default()
+            };
+            save_automation(&db, Some(id), &clear, NOW).expect("edit");
+            assert_eq!(only(&db).timezone, None);
+        }
+
+        #[test]
+        fn an_edit_of_a_deleted_automation_says_so() {
+            let db = Database::open_in_memory().expect("db");
+            let error = save_automation(
+                &db,
+                Some(41),
+                &AutomationDraft {
+                    name: Some("x".into()),
+                    ..AutomationDraft::default()
+                },
+                NOW,
+            )
+            .expect_err("nothing to edit");
+            assert!(error.contains("#41"), "{error}");
+        }
+
+        #[test]
+        fn only_an_exec_automation_takes_a_new_command() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            let error = save_automation(
+                &db,
+                Some(id),
+                &AutomationDraft {
+                    command: Some("rm -rf /".into()),
+                    ..AutomationDraft::default()
+                },
+                NOW,
+            )
+            .expect_err("a spawn has no command");
+            assert!(error.contains("command"), "{error}");
+
+            let exec = AutomationDraft {
+                name: Some("sync".into()),
+                trigger: Some("hourly".into()),
+                command: Some("make sync".into()),
+                ..AutomationDraft::default()
+            };
+            save_automation(&db, None, &exec, NOW).expect("create");
+            let exec_id = db
+                .list_automations()
+                .expect("list")
+                .into_iter()
+                .find(|a| a.name == "sync")
+                .expect("created")
+                .id;
+            save_automation(
+                &db,
+                Some(exec_id),
+                &AutomationDraft {
+                    command: Some("make sync-all".into()),
+                    ..AutomationDraft::default()
+                },
+                NOW,
+            )
+            .expect("edit");
+            let edited = db.get_automation(exec_id).expect("get").expect("row");
+            assert_eq!(
+                edited.action,
+                AutomationAction::Exec {
+                    command: "make sync-all".into()
+                }
+            );
+        }
+
+        /// Disabling clears the next run, so enabling has to compute it again —
+        /// before this, an automation switched back on from a pane was enabled
+        /// and never fired.
+        #[test]
+        fn enabling_from_a_pane_schedules_the_next_run_again() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            automation(&db, id, Some(false), false, false).expect("disable");
+            assert_eq!(only(&db).next_run_at, None);
+            automation(&db, id, Some(true), false, false).expect("enable");
+            let auto = only(&db);
+            assert!(auto.enabled);
+            assert!(auto.next_run_at.is_some(), "an enabled schedule must fire");
+        }
+
+        #[test]
+        fn enabling_a_spent_one_shot_is_refused_rather_than_silent() {
+            let db = Database::open_in_memory().expect("db");
+            let id = db
+                .create_automation(&NewAutomation {
+                    name: "once".into(),
+                    enabled: false,
+                    schedule: AutomationSchedule::Once { at: 5 },
+                    timezone: None,
+                    action: AutomationAction::Exec {
+                        command: "true".into(),
+                    },
+                    prompt: String::new(),
+                    next_run_at: None,
+                })
+                .expect("insert");
+            let error = automation(&db, id, Some(true), false, false).expect_err("spent");
+            assert!(error.contains("never fires"), "{error}");
+            assert!(!only(&db).enabled);
+        }
     }
 }
