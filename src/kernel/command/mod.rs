@@ -163,6 +163,14 @@ pub enum Command {
         run_now: bool,
         delete: bool,
     },
+    /// Create an automation (`id` is `None`) or edit one.
+    AutomationSave {
+        id: Option<i64>,
+        draft: AutomationDraft,
+        /// The plugin that issued it, by path — stamped by the kernel, and
+        /// checked against [`Command::requires`] before it is applied.
+        owner: String,
+    },
     /// Copy a surface's terminal contents to the clipboard.
     ///
     /// `session` is a SURFACE name: a bare id is the agent's pane and
@@ -376,6 +384,38 @@ pub enum Command {
     },
 }
 
+/// The fields an `automation` create or edit carries, each as the plugin
+/// passed it.
+///
+/// Typed fields rather than a command line: a name or a prompt is whatever the
+/// user typed, and none of it is ever read by a shell on its way to the
+/// database. On an edit `None` leaves a field as it is; a create needs a name, a
+/// trigger and exactly one target — `session` (send), `repo` (spawn) or
+/// `command` (exec). Validated where it is applied, so a mistake reaches the
+/// pane as `command.failed` with a sentence rather than as a Lua error.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationDraft {
+    pub name: Option<String>,
+    /// `hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<unix_millis>`.
+    pub trigger: Option<String>,
+    /// `HH:MM`, for a preset trigger.
+    pub time: Option<String>,
+    /// 0..=7 (0 and 7 are Sunday), for the `weekly` preset. Kept as passed so
+    /// a value out of that range is refused rather than read as the default.
+    pub weekday: Option<i64>,
+    /// An IANA name; empty means the system's own.
+    pub timezone: Option<String>,
+    pub prompt: Option<String>,
+    pub enabled: Option<bool>,
+    pub session: Option<String>,
+    pub repo: Option<String>,
+    /// The worktree branch a spawn creates or reuses.
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub agent: Option<String>,
+    pub command: Option<String>,
+}
+
 /// A further repository a new session spans.
 ///
 /// The kernel's spelling of [`crate::session::automation::ExtraRepo`], which is
@@ -443,7 +483,7 @@ impl Command {
             Command::OpenLink { .. } => "open",
             Command::Task { .. } => "task",
             Command::DispatchTask { .. } => "dispatch",
-            Command::Automation { .. } => "automation",
+            Command::Automation { .. } | Command::AutomationSave { .. } => "automation",
             Command::Theme { .. } => "theme",
             Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
@@ -480,7 +520,7 @@ impl Command {
             Command::Create { .. } => "",
             // A dispatch may name one, when it is sending rather than creating.
             Command::DispatchTask { session, .. } => session.as_deref().unwrap_or(""),
-            Command::Task { .. } | Command::Automation { .. } => "",
+            Command::Task { .. } | Command::Automation { .. } | Command::AutomationSave { .. } => "",
             // Global, not per-session.
             Command::Theme { .. }
             | Command::Plugin { .. }
@@ -547,6 +587,21 @@ impl Command {
         matches!(self, Command::Reap | Command::RetireHook { .. })
     }
 
+    /// The capability the issuing plugin must hold for this to be applied.
+    ///
+    /// An exec automation's command is a command line the heartbeat runs
+    /// through the platform shell, so writing one is gated exactly as running
+    /// one is: without `run`, a pane may toggle, run and delete automations and
+    /// edit everything else about them, but never author what an exec runs.
+    pub fn requires(&self) -> Option<super::host::Capability> {
+        match self {
+            Command::AutomationSave { draft, .. } if draft.command.is_some() => {
+                Some(super::host::Capability::Run)
+            }
+            _ => None,
+        }
+    }
+
     /// What this command concerns when it names no session.
     ///
     /// For a creation that is the repository, which is what lets the session
@@ -561,6 +616,15 @@ impl Command {
                 .map(|name| name.to_string_lossy().to_string())
                 .or_else(|| Some(repo.clone())),
             Command::Bookmark { path, .. } => Some(path.clone()),
+            // `#<id>`, or a create's name: what a pane managing automations
+            // matches a `command.failed` against to show the error by the row
+            // or form it came from.
+            Command::Automation { id, .. } | Command::AutomationSave { id: Some(id), .. } => {
+                Some(format!("#{id}"))
+            }
+            Command::AutomationSave {
+                id: None, draft, ..
+            } => draft.name.clone(),
             _ => None,
         }
     }
@@ -772,7 +836,33 @@ impl Command {
     }
 
     fn parse_automation(args: Args) -> Result<Self, String> {
-        let Some(id) = args.number.map(|n| n as i64) else {
+        let id = args.number.map(|n| n as i64);
+        match args.action.as_deref() {
+            None | Some("") => {}
+            Some("create") => {
+                return Ok(Command::AutomationSave {
+                    id: None,
+                    draft: automation_draft(&args),
+                    owner: args.owner.clone(),
+                })
+            }
+            Some("edit") => {
+                let Some(id) = id else {
+                    return Err("command \"automation\" needs an id".to_string());
+                };
+                return Ok(Command::AutomationSave {
+                    id: Some(id),
+                    draft: automation_draft(&args),
+                    owner: args.owner.clone(),
+                });
+            }
+            Some(other) => {
+                return Err(format!(
+                    "command \"automation\" has no action \"{other}\" (create or edit)"
+                ))
+            }
+        }
+        let Some(id) = id else {
             return Err("command \"automation\" needs an id".to_string());
         };
         Ok(Command::Automation {
@@ -922,6 +1012,46 @@ impl Command {
                  action or message"
             )),
         }
+    }
+}
+
+/// An automation draft out of a command's options.
+///
+/// The fields the shared [`Args`] already reads keep their meaning (`session`,
+/// `repo`, `branch`, `base`, `agent`, `flag`); the rest are read by name from the
+/// payload, where every scalar the plugin passed is kept.
+fn automation_draft(args: &Args) -> AutomationDraft {
+    use super::events::Field;
+    let field = |key: &str| {
+        args.payload
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, v)| v)
+    };
+    let text = |key: &str| match field(key) {
+        Some(Field::Text(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let filled = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
+    AutomationDraft {
+        name: text("name"),
+        trigger: text("trigger"),
+        time: text("time"),
+        weekday: match field("weekday") {
+            Some(Field::Number(n)) if n.fract() == 0.0 => Some(*n as i64),
+            Some(Field::Text(text)) => Some(text.trim().parse().unwrap_or(-1)),
+            Some(_) => Some(-1),
+            None => None,
+        },
+        timezone: text("timezone"),
+        prompt: text("prompt"),
+        enabled: args.flag,
+        session: (!args.session.is_empty()).then(|| args.session.clone()),
+        repo: filled(&args.repo),
+        branch: filled(&args.branch),
+        base: filled(&args.base),
+        agent: filled(&args.agent),
+        command: text("command"),
     }
 }
 
@@ -1367,6 +1497,23 @@ mod tests {
                 err("command \"automation\" needs an id"),
             ),
             (
+                "automation",
+                Args {
+                    action: text("edit"),
+                    ..Args::default()
+                },
+                err("command \"automation\" needs an id"),
+            ),
+            (
+                "automation",
+                Args {
+                    action: text("rename"),
+                    number: Some(1.0),
+                    ..Args::default()
+                },
+                err("command \"automation\" has no action \"rename\" (create or edit)"),
+            ),
+            (
                 "create",
                 Args {
                     repo: text("/srv/repo"),
@@ -1662,6 +1809,55 @@ mod tests {
                 "{kind} {args:?}"
             );
         }
+    }
+
+    /// Writing an exec automation's command is writing a command line the
+    /// heartbeat runs, so it needs the capability that running one needs.
+    #[test]
+    fn writing_an_automation_command_needs_run() {
+        use super::super::events::Field;
+        use super::super::host::Capability;
+        let save = |action: &str, number: Option<f64>, payload: Vec<(&str, Field)>| {
+            Command::parse(
+                "automation",
+                Args {
+                    action: Some(action.into()),
+                    number,
+                    owner: "plugins/30_x.lua".into(),
+                    payload: payload
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect(),
+                    ..Args::default()
+                },
+            )
+            .expect("parse")
+        };
+        let command = || ("command", Field::Text("make sync".into()));
+        let name = || ("name", Field::Text("x".into()));
+        assert_eq!(
+            save("create", None, vec![name(), command()]).requires(),
+            Some(Capability::Run)
+        );
+        assert_eq!(
+            save("edit", Some(3.0), vec![command()]).requires(),
+            Some(Capability::Run)
+        );
+        assert_eq!(save("edit", Some(3.0), vec![name()]).requires(), None);
+        assert_eq!(
+            Command::parse(
+                "automation",
+                Args {
+                    number: Some(3.0),
+                    force: true,
+                    ..Args::default()
+                }
+            )
+            .expect("parse")
+            .requires(),
+            None,
+            "running an existing one is not writing a command"
+        );
     }
 
     /// A pane reaching the action registry from a key handler, which is the

@@ -136,6 +136,26 @@ impl App {
             // The message band is kernel chrome; this is a plugin contributing
             // to it, like a pill or a binding.
             Command::Message { text, level } => self.report(text.clone(), *level),
+            // Refused here rather than on the worker, where no grant is known:
+            // an exec automation's command is a command line the heartbeat runs,
+            // so a pane may write one only if it may run programs at all.
+            Command::AutomationSave { owner, .. }
+                if command
+                    .requires()
+                    .is_some_and(|need| !self.host.may_path(owner, need)) =>
+            {
+                let error = format!(
+                    "{owner} may not write an automation's command — trust it in settings → Interface"
+                );
+                let subject = command.subject();
+                self.enqueue_event(
+                    thurbox::kernel::events::Event::new("command.failed")
+                        .with("kind", Some("automation"))
+                        .with("subject", subject.as_deref())
+                        .with("error", Some(error.as_str())),
+                );
+                self.report(error, Level::Error);
+            }
             _ => return false,
         }
         true
@@ -367,7 +387,13 @@ impl App {
             .current()
             .session(&session)
             .map(|row| row.name.clone())
-            .filter(|label| !label.is_empty());
+            .filter(|label| !label.is_empty())
+            // An automation names no session; its own `#<id>` or name is what
+            // the message band and `command.failed`'s `subject` should carry.
+            .or_else(|| match &command {
+                Command::Automation { .. } | Command::AutomationSave { .. } => command.subject(),
+                _ => None,
+            });
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
         let name = match &command {
