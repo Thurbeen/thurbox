@@ -7956,7 +7956,7 @@ fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
     // second time.
     tui.send(b"\x1b[47;5u");
     tui.wait_for("Search");
-    for key in [b'q', b'z'] {
+    for &key in b"qz" {
         tui.send(&[key]);
         tui.send(format!("\x1b[{key};1:3u").as_bytes());
     }
