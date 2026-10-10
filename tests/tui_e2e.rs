@@ -8087,8 +8087,9 @@ fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
     tui.assert_keyboard_flags_popped();
 }
 
-/// The loop's `frames` counter from a perf snapshot published after `after`
-/// (its `captured_at`, in seconds), with that snapshot's own `captured_at`.
+/// The loop's `frames` counter from the first perf snapshot captured after
+/// `after` (its `captured_at`, whole seconds since the epoch), with that
+/// snapshot's own `captured_at`.
 fn frames_after(profile: &Profile, tui: &Tui, after: u64) -> (u64, u64) {
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline {
@@ -8101,37 +8102,51 @@ fn frames_after(profile: &Profile, tui: &Tui, after: u64) -> (u64, u64) {
                 return (json["counters"]["frames"].as_u64().unwrap_or(0), at);
             }
         }
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(100));
     }
     tui.give_up("a fresh perf snapshot");
 }
 
-/// A terminal reporting releases sends one for every key. One nobody holds
-/// must cost nothing — no republish, no repaint — or every keystroke pays for
-/// a second frame.
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+}
+
 #[test]
 fn a_release_nobody_holds_draws_no_frame() {
     let interface = hold_interface();
     let profile = Profile::new();
-    let tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
         cmd.env("THURBOX_PERF_LOG", "1");
     });
     tui.wait_for("No sessions yet");
-    let mut tui = tui;
-    let (before, at) = frames_after(&profile, &tui, 0);
+    // Snapshots are published every few seconds. The idle rate comes from two
+    // consecutive ones after the first (whose window holds the boot's frames),
+    // and the window the releases are counted in starts at the second and ends
+    // at the first snapshot captured after the last release was written — so
+    // it holds every send, whatever the cadence.
+    let (_, booted_at) = frames_after(&profile, &tui, 0);
+    let (first, first_at) = frames_after(&profile, &tui, booted_at);
+    let (start, start_at) = frames_after(&profile, &tui, first_at);
+    let idle_per_sec = (start - first) as f64 / (start_at - first_at).max(1) as f64;
     // Releases of a key nothing pressed, each in its own read so none share
-    // a batch: 200 of them over a second or so.
+    // a batch.
     const RELEASES: u64 = 200;
     for _ in 0..RELEASES {
         tui.send(b"\x1b[120;1:3u");
         std::thread::sleep(Duration::from_millis(5));
     }
-    let (after, _) = frames_after(&profile, &tui, at);
-    let drawn = after.saturating_sub(before);
+    let sent_by = epoch_secs();
+    let (end, end_at) = frames_after(&profile, &tui, sent_by);
+    let idle = idle_per_sec * (end_at - start_at) as f64;
+    let drawn = (end - start) as f64 - idle;
     assert!(
-        drawn < RELEASES / 4,
-        "{drawn} frames drawn for {RELEASES} releases nobody holds"
+        drawn < (RELEASES / 10) as f64,
+        "{drawn:.0} frames beyond the idle rate ({idle_per_sec:.1}/s) drawn for {RELEASES} \
+         releases nobody holds"
     );
     assert!(tui.quit().success());
     tui.assert_keyboard_flags_popped();

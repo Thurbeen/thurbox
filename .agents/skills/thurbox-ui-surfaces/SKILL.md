@@ -102,8 +102,8 @@ sent, so nothing that did not ask changes. `thurbox.keyboard.releases` is
 `unsupported` / `negotiated` / `reported` (`kernel::host::KeyReleases`):
 `negotiated` once the push is accepted or on Windows, `reported` once a release
 has actually arrived. Nothing infers a release from time. A release travels
-through the Windows paste coalescer behind its own press (`sort_key`) — only one
-whose press is in the open run waits there — and is routed when dispatched; one
+through the Windows paste coalescer in its place (`sort_key`) — after a paste
+it comes out behind the `Paste`, not discarded — and is routed when dispatched; one
 nobody holds returns before the publish, so it draws no frame. The flags are
 popped before a terminal editor takes the screen (still on the alternate
 screen, where they were pushed) and pushed again after. `tests/tui_e2e.rs` drives
