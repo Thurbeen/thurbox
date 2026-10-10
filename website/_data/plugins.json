@@ -98,7 +98,7 @@
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations",
     "notes": "Requires Thurbox \u2265 2.56.5; creating and editing need a release with the automation create/edit command. No layout.lua edit. Alt+A opens it. Trust the pane (run) only to write exec automations' commands. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
     "media": {
-      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif",
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-automations/5f32d579d773080bf39bf5f4656e4fb86454772e/media/demo.gif",
       "alt": "The automations pane: the list, a failed run's output, and a new automation created through the form"
     }
   },
