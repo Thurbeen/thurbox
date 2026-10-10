@@ -741,20 +741,24 @@ end,
 
 Return `true` from the press, or the release is never delivered: the release goes to
 the plugin that took the press, whichever pane has focus by then, and only to it.
-While the key is held its auto-repeat is swallowed rather than fired again. A release
-nobody is holding goes nowhere — never to a modal, an `on_key`, a text field or a
-session's terminal — and every binding without `release` behaves exactly as before
-(no second argument, and a held key repeats).
+Where the terminal reports releases, a held key's auto-repeat is swallowed rather than
+fired again. A release nobody is holding goes nowhere — never to a modal, an `on_key`,
+a text field or a session's terminal — and every binding without `release` behaves
+exactly as before (no second argument, and a held key repeats).
 
 Only a terminal that reports releases can deliver one. thurbox asks for them with the
 kitty keyboard protocol (kitty, WezTerm, Ghostty, foot, Alacritty, iTerm2 3.5+), and the
 Windows console reports them by itself; a legacy terminal, `tmux`/`screen` in between,
 or macOS Terminal.app does not. `thurbox.keyboard.releases` says which case you are in:
 `"unsupported"` (only presses will arrive), `"negotiated"` (asked for and accepted, none
-seen yet) or `"reported"` (one has arrived). Offer a hold with a fallback — a second
-press stopping what the first started — so a release lost to the window losing focus,
-or a terminal that accepted the flag without honouring it, cannot leave anything stuck.
-Nothing infers a release from time.
+seen yet) or `"reported"` (one has arrived). On `"unsupported"`, and on a terminal that
+accepted the request without honouring it (it stays `"negotiated"`), auto-repeat is
+indistinguishable from pressing again: holding the key delivers a stream of
+`{ event = "press" }` and no release. So offer a hold only once releases are
+`"reported"` or at least `"negotiated"`, fall back to press-to-start/press-to-stop
+otherwise, and in either mode let a second press stop what the first started — that is
+what keeps a release lost to the window losing focus, or a terminal that never sends
+one, from leaving anything stuck. Nothing infers a release from time.
 
 `on_key(key)` still exists for panes that need every keystroke — the terminal
 uses it, alongside `input = "session"` to forward what it does not handle.

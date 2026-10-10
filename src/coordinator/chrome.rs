@@ -232,9 +232,16 @@ pub(crate) fn open_editor(
         crossterm::terminal::LeaveAlternateScreen
     );
     let _ = crossterm::terminal::disable_raw_mode();
+    // The kitty flags too: a terminal keeps one flag stack per screen at most,
+    // so an editor left under ours would be sent an escape sequence for every
+    // key it is let go of.
+    let popped = pop_keyboard_enhancement();
     let status = std::process::Command::new(&program).args(&args).status();
     let _ = crossterm::terminal::enable_raw_mode();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
+    if popped {
+        repush_keyboard_enhancement();
+    }
     // Mirrors the disable above; harmless when the feature is off, since the
     // loop drops mouse events either way.
     enable_mouse_clicks();
@@ -273,6 +280,11 @@ pub(crate) fn restore_terminal() {
     ratatui::restore();
 }
 
+/// The kitty flags thurbox runs under — see [`push_keyboard_enhancement`].
+const KEYBOARD_FLAGS: crossterm::event::KeyboardEnhancementFlags =
+    crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES);
+
 /// Whether we pushed the kitty flags, so only we pop them.
 static KEYBOARD_ENHANCEMENT_PUSHED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -291,13 +303,15 @@ static KEYBOARD_ENHANCEMENT_PUSHED: std::sync::atomic::AtomicBool =
 /// `Negotiated` and only a release actually arriving makes it `Reported`.
 /// Windows needs no flag: its console reports every release already.
 pub(crate) fn push_keyboard_enhancement() -> KeyReleases {
-    use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-    let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+    use crossterm::event::PushKeyboardEnhancementFlags;
     if matches!(
         crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
-    ) && crossterm::execute!(std::io::stdout(), PushKeyboardEnhancementFlags(flags)).is_ok()
+    ) && crossterm::execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)
+    )
+    .is_ok()
     {
         KEYBOARD_ENHANCEMENT_PUSHED.store(true, std::sync::atomic::Ordering::SeqCst);
         return KeyReleases::Negotiated;
@@ -309,16 +323,33 @@ pub(crate) fn push_keyboard_enhancement() -> KeyReleases {
     }
 }
 
-/// Pop them if and only if we pushed.
+/// Pop them if and only if we pushed, and say whether we did.
 ///
 /// `swap` so a second restore -- the panic hook racing the normal path -- cannot
 /// pop a level we never pushed.
-pub(crate) fn pop_keyboard_enhancement() {
-    if KEYBOARD_ENHANCEMENT_PUSHED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+pub(crate) fn pop_keyboard_enhancement() -> bool {
+    let pushed = KEYBOARD_ENHANCEMENT_PUSHED.swap(false, std::sync::atomic::Ordering::SeqCst);
+    if pushed {
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::event::PopKeyboardEnhancementFlags
         );
+    }
+    pushed
+}
+
+/// Push the flags [`push_keyboard_enhancement`] pushed, after a
+/// [`pop_keyboard_enhancement`] that handed the terminal to someone else. The
+/// terminal already answered whether it supports them, so it is not asked
+/// again.
+fn repush_keyboard_enhancement() {
+    if crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)
+    )
+    .is_ok()
+    {
+        KEYBOARD_ENHANCEMENT_PUSHED.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

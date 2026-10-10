@@ -293,6 +293,8 @@ struct Tui {
     exited: Option<ExitStatus>,
     /// The binary's own log, quoted when a wait times out.
     log: PathBuf,
+    /// The kitty-protocol half of the terminal, on one that speaks it.
+    kitty: Option<Arc<Mutex<KittyTerminal>>>,
 }
 
 impl Tui {
@@ -357,9 +359,10 @@ impl Tui {
         let raw = Arc::new(Mutex::new(Vec::new()));
         let screen = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
         let mut reader = std::fs::File::from(master.try_clone().expect("dup master"));
-        let mut answer = kitty.then(|| {
+        let kitty = kitty.then(|| Arc::new(Mutex::new(KittyTerminal::default())));
+        let mut answer = kitty.clone().map(|terminal| {
             (
-                KittyTerminal::default(),
+                terminal,
                 std::fs::File::from(master.try_clone().expect("dup master")),
             )
         });
@@ -376,7 +379,7 @@ impl Tui {
                     let mut raw = raw.lock().unwrap();
                     raw.extend_from_slice(&buf[..n]);
                     if let Some((terminal, writer)) = answer.as_mut() {
-                        let reply = terminal.feed(&raw);
+                        let reply = terminal.lock().unwrap().feed(&raw);
                         if !reply.is_empty() {
                             let _ = writer.write_all(&reply);
                             let _ = writer.flush();
@@ -394,7 +397,26 @@ impl Tui {
             screen,
             exited: None,
             log: profile.path("data/thurbox.log"),
+            kitty,
         }
+    }
+
+    /// On a kitty terminal, wait for every pushed keyboard-flag level to have
+    /// been popped again — a level left behind keeps the shell receiving an
+    /// escape code for every key release.
+    fn assert_keyboard_flags_popped(&self) {
+        let kitty = self.kitty.as_ref().expect("a kitty terminal");
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            if kitty.lock().unwrap().stack.is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        panic!(
+            "keyboard flags still pushed after exit: {:?}",
+            kitty.lock().unwrap().stack
+        );
     }
 
     /// The frame as vt100 reconstructs it, rows trimmed of trailing blanks.
@@ -7887,6 +7909,7 @@ fn a_release_binding_gets_one_press_no_repeats_and_its_release() {
     );
     assert_eq!(events, "press,release,press,release");
     assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
 }
 
 #[test]
@@ -7922,6 +7945,7 @@ fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
     assert_eq!(events, "", "the modal's press is not the pane's to release");
     assert_eq!(releases, "reported");
     assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
 }
 
 #[test]
@@ -7940,4 +7964,95 @@ fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     tui.send(b"\x00");
     wait_hold(&profile, &tui, "press,press", "unsupported");
     assert!(tui.quit().success());
+}
+
+/// The terminal is handed to a terminal editor with the kitty keyboard flags
+/// popped, and they are pushed again when it exits — otherwise every key
+/// release would reach the editor as an escape sequence, on a terminal whose
+/// flag stack the editor shares.
+#[test]
+fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus(
+        "91_edit.lua",
+        r#"return {
+  name = "edit",
+  slot = "edit",
+  strip = true,
+  size = { len = 1 },
+  focusable = false,
+  keys = { { key = "f7", action = "edit.open", scope = "global" } },
+  on_action = function(action)
+    if action ~= "edit.open" then return false end
+    command("editor", { session = thurbox.sessions[1].id })
+    return true
+  end,
+  render = function() return { type = "text", text = "EDIT" } end,
+}"#,
+    );
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+    // An "editor" that says it started and waits to be told to exit.
+    let started = profile.path("editor-started");
+    let finish = profile.path("editor-finish");
+    let editor = profile.path("bin/fake-editor");
+    std::fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+            started.display(),
+            finish.display()
+        ),
+    )
+    .expect("editor script");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    profile.cli(&["editor", "set", editor.to_str().expect("utf-8 path")]);
+    profile.cli(&["editor", "mode", "terminal"]);
+
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("probe");
+    let kitty = tui.kitty.clone().expect("a kitty terminal");
+    let depth = || kitty.lock().unwrap().stack.len();
+    fn wait(tui: &Tui, what: &str, done: &dyn Fn() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            if Instant::now() > deadline {
+                tui.give_up(what);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+    wait(&tui, "the flags to be pushed", &|| depth() == 1);
+
+    tui.send(b"\x1b[18~");
+    wait(&tui, "the editor to start", &|| started.exists());
+    // The editor is running: the pop has to have been written before it.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(depth(), 0, "the editor inherited thurbox's keyboard flags");
+
+    std::fs::write(&finish, "").expect("finish the editor");
+    wait(&tui, "the flags to be pushed again", &|| depth() == 1);
+    assert!(tui.quit().success());
+    tui.assert_keyboard_flags_popped();
 }
