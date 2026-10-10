@@ -105,29 +105,7 @@ impl App {
                 // Where the terminal reports no paste of its own, one arrives
                 // here as keys and has to be recognised as one — the coalescer
                 // hands back whichever of the two this turned out to be.
-                Event::Key(key) => {
-                    // Before anything else looks at it, so the coalescer, the
-                    // registry, the fields and the pty encoder all see the same
-                    // keystroke. See `resolve_altgr`.
-                    let key = resolve_altgr(key, cfg!(windows));
-                    let before = self.holds.releases;
-                    let inputs = sort_key(
-                        &mut self.paste_burst,
-                        &mut self.holds,
-                        key,
-                        Instant::now(),
-                        cfg!(windows),
-                    );
-                    if self.holds.releases != before {
-                        // Published through the data epoch, so a pure pane
-                        // reading `thurbox.keyboard` is not served its old tree.
-                        self.data_epoch = self.data_epoch.wrapping_add(1);
-                        self.dirty = true;
-                    }
-                    for input in inputs {
-                        self.apply_input(input, &mut published);
-                    }
-                }
+                Event::Key(key) => self.read_key(key, &mut published),
                 // Dropped rather than merely uncaptured when the feature is
                 // off, so the flag stays authoritative even if a terminal
                 // reports mouse events unasked. v1 does the same in
@@ -202,6 +180,31 @@ impl App {
             self.apply_input(input, &mut published);
         }
         Ok(())
+    }
+
+    /// One key event off the terminal: press, repeat or release.
+    fn read_key(&mut self, key: KeyEvent, published: &mut bool) {
+        // Before anything else looks at it, so the coalescer, the registry,
+        // the fields and the pty encoder all see the same keystroke. See
+        // `resolve_altgr`.
+        let key = resolve_altgr(key, cfg!(windows));
+        let before = self.holds.releases;
+        let inputs = sort_key(
+            &mut self.paste_burst,
+            &mut self.holds,
+            key,
+            Instant::now(),
+            cfg!(windows),
+        );
+        if self.holds.releases != before {
+            // Published through the data epoch, so a pure pane reading
+            // `thurbox.keyboard` is not served its old tree.
+            self.data_epoch = self.data_epoch.wrapping_add(1);
+            self.dirty = true;
+        }
+        for input in inputs {
+            self.apply_input(input, published);
+        }
     }
 
     /// Dispatch one resolved input, publishing `thurbox.*` once per batch.
