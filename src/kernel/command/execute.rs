@@ -799,6 +799,43 @@ fn next_run(auto: &crate::session::Automation, now: u64) -> Result<u64, String> 
         })
 }
 
+/// What an edit may change beyond what a create also sets: the schedule, and
+/// an exec automation's command. Refuses what it cannot apply.
+fn apply_edit(
+    auto: &mut crate::session::Automation,
+    draft: &super::AutomationDraft,
+    weekday: Option<u32>,
+) -> Result<(), String> {
+    use crate::session::automation::{parse_trigger, AutomationAction};
+
+    // The CLI's rule: `time`/`weekday` only shape a preset, so alone they
+    // would be a silent no-op. And an edit never retargets.
+    if draft.trigger.is_none() && (draft.time.is_some() || weekday.is_some()) {
+        return Err("time and weekday only apply with a trigger (--trigger), as a preset".into());
+    }
+    if draft.session.is_some()
+        || draft.repo.is_some()
+        || draft.branch.is_some()
+        || draft.base.is_some()
+        || draft.agent.is_some()
+    {
+        return Err("an edit keeps its target; create a new automation to change it".into());
+    }
+    if let Some(trigger) = &draft.trigger {
+        auto.schedule = parse_trigger(trigger, draft.time.as_deref(), weekday)?;
+    }
+    if let Some(command) = &draft.command {
+        match &mut auto.action {
+            AutomationAction::Exec { command: current } if !command.trim().is_empty() => {
+                *current = command.clone();
+            }
+            AutomationAction::Exec { .. } => return Err("the command must not be empty".into()),
+            _ => return Err("only an exec automation runs a command".into()),
+        }
+    }
+    Ok(())
+}
+
 /// Create an automation (`id` is `None`) or edit one, from a pane's draft.
 ///
 /// The same rules as `thurbox-cli automation create` / `edit`, plus the two the
@@ -860,33 +897,7 @@ fn save_automation(
     // What a stored fire depends on, to tell whether the edit moved it.
     let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
     if id.is_some() {
-        // The CLI's rule: `time`/`weekday` only shape a preset, so alone they
-        // would be a silent no-op. And an edit never retargets.
-        if draft.trigger.is_none() && (draft.time.is_some() || weekday.is_some()) {
-            return Err(
-                "time and weekday only apply with a trigger (--trigger), as a preset".into(),
-            );
-        }
-        if draft.session.is_some()
-            || draft.repo.is_some()
-            || draft.branch.is_some()
-            || draft.base.is_some()
-            || draft.agent.is_some()
-        {
-            return Err("an edit keeps its target; create a new automation to change it".into());
-        }
-        if let Some(trigger) = &draft.trigger {
-            auto.schedule = parse_trigger(trigger, draft.time.as_deref(), weekday)?;
-        }
-        if let Some(command) = &draft.command {
-            match &mut auto.action {
-                AutomationAction::Exec { command: current } if !command.trim().is_empty() => {
-                    *current = command.clone();
-                }
-                AutomationAction::Exec { .. } => return Err("the command must not be empty".into()),
-                _ => return Err("only an exec automation runs a command".into()),
-            }
-        }
+        apply_edit(&mut auto, draft, weekday)?;
     }
     if let Some(timezone) = &draft.timezone {
         auto.timezone = (!timezone.is_empty()).then(|| timezone.clone());
