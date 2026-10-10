@@ -502,3 +502,61 @@ fn the_choices_are_published_to_lua() {
         "{drawn}"
     );
 }
+
+/// A pane declaring one setting row, loaded beside the bundled interface: the
+/// load error it causes, if any.
+fn load_error_for(setting: &str) -> Option<String> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_ui(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        dir.path(),
+    );
+    std::fs::write(
+        dir.path().join("plugins/91_bad.lua"),
+        format!(
+            r#"return {{
+  name = "bad",
+  slot = "bad",
+  settings = {{ {setting} }},
+  render = function() return {{ type = "text", text = "" }} end,
+}}"#
+        ),
+    )
+    .expect("add a pane");
+    let host = LuaHost::new(dir.path().to_path_buf());
+    match host.index_of("bad") {
+        Some(_) => None,
+        None => Some(host.error.clone().unwrap_or_else(|| "not loaded".into())),
+    }
+}
+
+#[test]
+fn a_choices_declaration_that_cannot_be_stepped_is_a_load_error() {
+    for (setting, says) in [
+        (
+            r#"{ id = "e", default = "x", choices = { "a", "b" } }"#,
+            "not one of its choices",
+        ),
+        (
+            r#"{ id = "e", default = true, choices = { "a", "b" } }"#,
+            "string default",
+        ),
+        (
+            r#"{ id = "e", default = "a", choices = {} }"#,
+            "must not be empty",
+        ),
+        (
+            r#"{ id = "e", default = "a", choices = { "a", "a", "b" } }"#,
+            "more than once",
+        ),
+    ] {
+        let error = load_error_for(setting)
+            .unwrap_or_else(|| panic!("{setting} loaded, but it cannot be stepped"));
+        assert!(error.contains(says), "{setting}: {error}");
+    }
+    assert_eq!(
+        load_error_for(r#"{ id = "e", default = "b", choices = { "a", "b" } }"#),
+        None,
+        "a well-formed declaration loads"
+    );
+}

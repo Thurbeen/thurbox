@@ -37,7 +37,7 @@
 //! which carries the reassembled paste to a psmux pane in one piece (ADR-13);
 //! the rationale for both halves is ADR-4.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::{Duration, Instant};
 
 /// What the key stream resolved to, in the order it must be dispatched.
@@ -69,7 +69,7 @@ impl PasteBurst {
         Self::new(cfg!(windows))
     }
 
-    fn new(active: bool) -> Self {
+    pub(crate) fn new(active: bool) -> Self {
         Self {
             active,
             run: Vec::new(),
@@ -89,10 +89,22 @@ impl PasteBurst {
         }
     }
 
-    /// Feed one key press, with the instant it arrived.
+    /// Feed one key event, with the instant it arrived.
+    ///
+    /// A release is no part of a paste's timing or text: it passes straight
+    /// through unless a run is open, and then waits in the run behind the
+    /// press it belongs to, so the two are dispatched in the order they came.
+    /// A run that turns out to be a paste takes its releases with it.
     pub(crate) fn push(&mut self, key: KeyEvent, at: Instant) -> Vec<Input> {
         if !self.active {
             return vec![Input::Key(key)];
+        }
+        if key.kind == KeyEventKind::Release {
+            if self.run.is_empty() {
+                return vec![Input::Key(key)];
+            }
+            self.run.push(key);
+            return Vec::new();
         }
         let gap = self.last.map(|last| at.saturating_duration_since(last));
         self.last = Some(at);
@@ -134,7 +146,12 @@ impl PasteBurst {
     /// paste loses nothing by arriving as keystrokes — the text lands in the
     /// prompt identically.
     pub(crate) fn flush(&mut self) -> Vec<Input> {
-        if self.run.len() >= 2 {
+        let presses = self
+            .run
+            .iter()
+            .filter(|key| key.kind != KeyEventKind::Release)
+            .count();
+        if presses >= 2 {
             let text: String = self.run.iter().filter_map(|key| paste_char(*key)).collect();
             if text.trim_end_matches(['\r', '\n']).contains(['\r', '\n']) {
                 self.run.clear();
@@ -152,6 +169,9 @@ impl PasteBurst {
 /// between two pasted lines, so an agent sees the same bytes on either platform.
 /// A modifier other than SHIFT means a chord, which is never paste text.
 fn paste_char(key: KeyEvent) -> Option<char> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
     let plain = (key.modifiers - KeyModifiers::SHIFT).is_empty();
     match key.code {
         KeyCode::Char(ch) if plain => Some(ch),
@@ -222,6 +242,32 @@ mod tests {
         fn settle(&mut self) -> Vec<Input> {
             self.burst.flush()
         }
+    }
+
+    /// The Windows console reports a release for every pasted key. They join
+    /// the run behind their presses without breaking it, so a pasted block is
+    /// still one paste — and the releases go with it.
+    #[test]
+    fn releases_inside_a_paste_neither_break_it_nor_survive_it() {
+        let release = |c: char| {
+            KeyEvent::new_with_kind(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Release)
+        };
+        let mut feed = Feed::new(true);
+        let mut out = Vec::new();
+        for key in events("a\rb") {
+            feed.now += Duration::from_millis(1);
+            out.extend(feed.burst.push(key, feed.now));
+            if let KeyCode::Char(c) = key.code {
+                out.extend(feed.burst.push(release(c), feed.now));
+            }
+        }
+        out.extend(feed.settle());
+        assert_eq!(out, vec![Input::Paste("a\rb".into())]);
+        // With no run open there is nothing to wait behind.
+        assert_eq!(
+            feed.burst.push(release('x'), feed.now),
+            vec![Input::Key(release('x'))]
+        );
     }
 
     #[test]

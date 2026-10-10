@@ -561,8 +561,18 @@ fn read_settings(def: &Table, plugin: &str) -> Result<Vec<Setting>, String> {
             .map_err(|e| format!("{where_}.choices: {e}"))?
             .unwrap_or_default();
         // Refused rather than repaired: a default the plugin does not offer
-        // would be shown as the value of a row whose every step leaves it, and a
-        // choice on a boolean or a number has nothing to choose between.
+        // would be shown as the value of a row whose every step leaves it, a
+        // choice listed twice would be a step that goes nowhere, and a choice on
+        // a boolean or a number has nothing to choose between.
+        if let Some(twice) = choices
+            .iter()
+            .enumerate()
+            .find_map(|(at, choice)| choices[..at].contains(choice).then_some(choice))
+        {
+            return Err(format!(
+                "{where_}: choice {twice:?} is listed more than once"
+            ));
+        }
         if let Some(first) = choices.first() {
             match &default {
                 SettingValue::Text(text) if choices.contains(text) => {}

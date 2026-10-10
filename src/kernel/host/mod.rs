@@ -1775,6 +1775,11 @@ impl LuaHost {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
 
+    /// What `thurbox.keyboard.releases` says from the next publish on.
+    pub fn set_key_releases(&self, releases: KeyReleases) {
+        self.key_releases.set(releases);
+    }
+
     /// Publish the current snapshot so plugins can read it.
     ///
     /// Called once per frame from the event loop — never from inside a plugin,
@@ -1785,11 +1790,6 @@ impl LuaHost {
     /// moving every frame invalidates what reads it and nothing else. The value
     /// is a Lua reference, so reusing it costs a clone of a registry handle
     /// rather than a rebuild of the table behind it.
-    /// What `thurbox.keyboard.releases` says from the next publish on.
-    pub fn set_key_releases(&self, releases: KeyReleases) {
-        self.key_releases.set(releases);
-    }
-
     fn group(
         &self,
         name: &'static str,

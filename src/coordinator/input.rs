@@ -29,7 +29,7 @@ use thurbox::kernel::host::{KeyPress, KeyReleases};
 use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord};
 
-use super::paste::Input;
+use super::paste::{Input, PasteBurst};
 use super::{next_event, to_press};
 use crate::{App, INPUT_FAILURE_LIMIT};
 
@@ -111,25 +111,21 @@ impl App {
                     // keystroke. See `resolve_altgr`.
                     let key = resolve_altgr(key, cfg!(windows));
                     let before = self.holds.releases;
-                    let route = self.holds.route(&key, cfg!(windows));
+                    let inputs = sort_key(
+                        &mut self.paste_burst,
+                        &mut self.holds,
+                        key,
+                        Instant::now(),
+                        cfg!(windows),
+                    );
                     if self.holds.releases != before {
                         // Published through the data epoch, so a pure pane
                         // reading `thurbox.keyboard` is not served its old tree.
                         self.data_epoch = self.data_epoch.wrapping_add(1);
                         self.dirty = true;
                     }
-                    match route {
-                        Route::Press(key) => {
-                            for input in self.paste_burst.push(key, Instant::now()) {
-                                self.apply_input(input, &mut published);
-                            }
-                        }
-                        Route::Release { plugin, action } => {
-                            self.publish_for_batch(&mut published);
-                            self.deliver_release(&plugin, &action);
-                            self.note_input();
-                        }
-                        Route::Drop => {}
+                    for input in inputs {
+                        self.apply_input(input, &mut published);
                     }
                 }
                 // Dropped rather than merely uncaptured when the feature is
@@ -212,6 +208,14 @@ impl App {
     fn apply_input(&mut self, input: Input, published: &mut bool) {
         self.publish_for_batch(published);
         match input {
+            // Routed here, in the order the coalescer gives it back, rather
+            // than on arrival: a press it is still holding has not opened its
+            // hold yet. See `sort_key`.
+            Input::Key(key) if key.kind == KeyEventKind::Release => {
+                if let Route::Release { plugin, action } = self.holds.route(&key, cfg!(windows)) {
+                    self.deliver_release(&plugin, &action);
+                }
+            }
             Input::Key(key) => self.time_op("input_dispatch", |app| app.on_key(&key)),
             Input::Paste(text) => self.on_paste(text),
         }
@@ -1185,6 +1189,32 @@ pub(crate) struct Holds {
     pub(crate) releases: KeyReleases,
 }
 
+/// One key event, as it arrived, into the inputs to dispatch in order.
+///
+/// A press or repeat is routed first — a repeat of a held key goes no further,
+/// any other is a press — and then joins the coalescer. A release goes into the
+/// coalescer as it is, so it comes back out behind a press the coalescer is
+/// still holding (a plain character waits there in case a paste follows), and
+/// is routed to its holder only when dispatched: routed on arrival, it would
+/// find nothing held yet and be dropped, and the press dispatched after it
+/// would stay held.
+pub(crate) fn sort_key(
+    burst: &mut PasteBurst,
+    holds: &mut Holds,
+    key: KeyEvent,
+    at: Instant,
+    windows: bool,
+) -> Vec<Input> {
+    if key.kind == KeyEventKind::Release {
+        holds.releases = KeyReleases::Reported;
+        return burst.push(key, at);
+    }
+    match holds.route(&key, windows) {
+        Route::Press(key) => burst.push(key, at),
+        Route::Release { .. } | Route::Drop => Vec::new(),
+    }
+}
+
 /// What [`Holds::route`] made of one key event.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Route {
@@ -1318,6 +1348,51 @@ mod tests {
             holds.route(&press, false),
             Route::Press(press),
             "not elsewhere"
+        );
+    }
+
+    /// The Windows coalescer holds a plain character back for a few
+    /// milliseconds in case a paste follows. A quick tap of a plain-key
+    /// release binding puts its release behind that press: were the release
+    /// routed on arrival, nothing would be held yet, the release would be
+    /// dropped, and the press dispatched after it would stay held forever.
+    #[test]
+    fn a_release_waits_behind_its_press_in_the_coalescer() {
+        let mut burst = super::super::paste::PasteBurst::new(true);
+        let mut holds = Holds {
+            releases: KeyReleases::Negotiated,
+            ..Holds::default()
+        };
+        let now = Instant::now();
+        let press = event(KeyCode::Char(' '), KeyModifiers::NONE, KeyEventKind::Press);
+        let release = event(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        let mut inputs = sort_key(&mut burst, &mut holds, press, now, true);
+        inputs.extend(sort_key(&mut burst, &mut holds, release, now, true));
+        assert!(
+            inputs.is_empty(),
+            "the press is still in its run: {inputs:?}"
+        );
+        inputs.extend(burst.flush());
+        assert_eq!(inputs, vec![Input::Key(press), Input::Key(release)]);
+
+        // Dispatched in that order — the press taken by a release binding,
+        // then the release — the hold is opened and closed.
+        holds.hold(KeyCode::Char(' '), "p".into(), "p.talk".into());
+        assert_eq!(
+            holds.route(&release, true),
+            Route::Release {
+                plugin: "p".into(),
+                action: "p.talk".into()
+            }
+        );
+        assert_eq!(
+            holds.route(&press, true),
+            Route::Press(press),
+            "not left held"
         );
     }
 
