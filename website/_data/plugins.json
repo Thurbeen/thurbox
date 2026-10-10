@@ -96,7 +96,7 @@
     "platforms": ["Linux", "Windows (native)", "macOS (untested)"],
     "updated": "2026-10-10",
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations",
-    "notes": "Requires Thurbox \u2265 2.56.5; creating and editing need a release with the automation create/edit command. No capability grant or layout.lua edit. Alt+A opens it. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
+    "notes": "Requires Thurbox \u2265 2.56.5; creating and editing need a release with the automation create/edit command. No layout.lua edit. Alt+A opens it. Trust the pane (run) only to write exec automations' commands. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif",
       "alt": "The automations pane: the list, a failed run's output, and a new automation created through the form"

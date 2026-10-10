@@ -232,7 +232,8 @@ pub struct AutomationRow {
     pub trigger: String,
     /// IANA name; `None` is the system's own.
     pub timezone: Option<String>,
-    /// Empty for an exec automation, which runs `command` instead.
+    /// What a send or spawn types; an exec automation runs `command` and
+    /// ignores it.
     pub prompt: String,
     /// A send's target session.
     pub session: Option<String>,

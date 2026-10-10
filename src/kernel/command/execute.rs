@@ -151,7 +151,7 @@ pub(super) fn execute(
                 run_now,
                 delete,
             } => automation(&db, *id, *enabled, *run_now, *delete),
-            Command::AutomationSave { id, draft } => {
+            Command::AutomationSave { id, draft, .. } => {
                 save_automation(&db, *id, draft, crate::sync::current_time_millis())
             }
             _ => unreachable!(),
@@ -761,10 +761,14 @@ fn automation(
                 .get_automation(id)
                 .map_err(|e| format!("get automation: {e}"))?
                 .ok_or_else(|| format!("automation #{id} no longer exists"))?;
-            auto.next_run_at = Some(next_run(&auto, crate::sync::current_time_millis())?);
-            auto.enabled = true;
-            db.update_automation(&auto)
-                .map_err(|e| format!("update automation: {e}"))?;
+            // Already on and scheduled: nothing to do, and recomputing would
+            // push a fire that is due, or a run-now, to the next slot.
+            if !(auto.enabled && auto.next_run_at.is_some()) {
+                auto.next_run_at = Some(next_run(&auto, crate::sync::current_time_millis())?);
+                auto.enabled = true;
+                db.update_automation_definition(&auto)
+                    .map_err(|e| format!("update automation: {e}"))?;
+            }
         }
         Some(false) => {
             db.set_automation_enabled(id, false)
@@ -800,8 +804,9 @@ fn next_run(auto: &crate::session::Automation, now: u64) -> Result<u64, String> 
 /// The same rules as `thurbox-cli automation create` / `edit`, plus the two the
 /// CLI leaves to a schedule that silently never fires: a cron expression must
 /// parse and a timezone must exist. An edit changes what the draft names and
-/// keeps the rest — the target included, extra repositories and all — and, like
-/// the CLI's, recomputes the next run.
+/// keeps the rest — the target included, extra repositories and all — and
+/// recomputes the next run only when the schedule, timezone or enabled flag
+/// moved.
 fn save_automation(
     db: &Database,
     id: Option<i64>,
@@ -810,6 +815,15 @@ fn save_automation(
 ) -> Result<(), String> {
     use crate::session::automation::{check_timezone, parse_trigger, AutomationAction};
 
+    let weekday = match draft.weekday {
+        Some(day) if !(0..=7).contains(&day) => {
+            return Err(format!(
+                "invalid weekday `{day}` (use 0=Sun..6=Sat, or 7=Sun)"
+            ))
+        }
+        Some(day) => Some(day as u32),
+        None => None,
+    };
     let mut auto = match id {
         Some(id) => db
             .get_automation(id)
@@ -825,7 +839,7 @@ fn save_automation(
                     .as_deref()
                     .ok_or("an automation needs a trigger")?,
                 draft.time.as_deref(),
-                draft.weekday,
+                weekday,
             )?,
             timezone: None,
             action: draft_action(db, draft)?,
@@ -843,9 +857,26 @@ fn save_automation(
     if auto.name.is_empty() {
         return Err("an automation needs a name".into());
     }
+    // What a stored fire depends on, to tell whether the edit moved it.
+    let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
     if id.is_some() {
+        // The CLI's rule: `time`/`weekday` only shape a preset, so alone they
+        // would be a silent no-op. And an edit never retargets.
+        if draft.trigger.is_none() && (draft.time.is_some() || weekday.is_some()) {
+            return Err(
+                "time and weekday only apply with a trigger (--trigger), as a preset".into(),
+            );
+        }
+        if draft.session.is_some()
+            || draft.repo.is_some()
+            || draft.branch.is_some()
+            || draft.base.is_some()
+            || draft.agent.is_some()
+        {
+            return Err("an edit keeps its target; create a new automation to change it".into());
+        }
         if let Some(trigger) = &draft.trigger {
-            auto.schedule = parse_trigger(trigger, draft.time.as_deref(), draft.weekday)?;
+            auto.schedule = parse_trigger(trigger, draft.time.as_deref(), weekday)?;
         }
         if let Some(command) = &draft.command {
             match &mut auto.action {
@@ -873,15 +904,22 @@ fn save_automation(
         auto.enabled = enabled;
     }
     auto.schedule.check()?;
-    auto.next_run_at = if auto.enabled {
-        Some(next_run(&auto, now)?)
-    } else {
-        None
-    };
+    let unmoved = id.is_some()
+        && before == (auto.schedule.clone(), auto.timezone.clone(), auto.enabled)
+        && auto.next_run_at.is_some();
+    // An edit that leaves the schedule alone leaves its next run alone: a fire
+    // that is due, or a run-now, still happens after a rename.
+    if !unmoved {
+        auto.next_run_at = if auto.enabled {
+            Some(next_run(&auto, now)?)
+        } else {
+            None
+        };
+    }
 
     match id {
         Some(_) => db
-            .update_automation(&auto)
+            .update_automation_definition(&auto)
             .map_err(|e| format!("update automation: {e}")),
         None => db
             .create_automation(&crate::storage::automations::NewAutomation {
@@ -1409,6 +1447,105 @@ mod tests {
                     command: "make sync-all".into()
                 }
             );
+        }
+
+        /// Enabling what is already enabled changes nothing: a fire that is due,
+        /// or that run-now just marked, must not be pushed to the next slot.
+        #[test]
+        fn enabling_an_enabled_automation_keeps_a_pending_fire() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            assert!(db.trigger_automation_now(id).expect("run now"));
+            let due = only(&db).next_run_at;
+            automation(&db, id, Some(true), false, false).expect("enable");
+            assert_eq!(only(&db).next_run_at, due, "the run-now survives");
+        }
+
+        /// An edit that leaves the schedule alone leaves its next run alone, so
+        /// a fire already due — a run-now, or a one-shot not yet ticked — still
+        /// happens after a rename.
+        #[test]
+        fn an_edit_that_keeps_the_schedule_keeps_a_due_fire() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            assert!(db.trigger_automation_now(id).expect("run now"));
+            let due = only(&db).next_run_at;
+            let rename = AutomationDraft {
+                name: Some("renamed".into()),
+                ..AutomationDraft::default()
+            };
+            save_automation(&db, Some(id), &rename, NOW + 120_000).expect("edit");
+            assert_eq!(only(&db).next_run_at, due);
+
+            let once = db
+                .create_automation(&NewAutomation {
+                    name: "once".into(),
+                    enabled: true,
+                    schedule: AutomationSchedule::Once { at: NOW },
+                    timezone: None,
+                    action: AutomationAction::Exec {
+                        command: "true".into(),
+                    },
+                    prompt: String::new(),
+                    next_run_at: Some(NOW),
+                })
+                .expect("insert");
+            save_automation(&db, Some(once), &rename, NOW + 1_000).expect("a due one-shot renames");
+        }
+
+        #[test]
+        fn an_edit_refuses_what_it_cannot_apply() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            let cases: Vec<(AutomationDraft, &str)> = vec![
+                (
+                    AutomationDraft {
+                        time: Some("18:00".into()),
+                        ..AutomationDraft::default()
+                    },
+                    "--trigger",
+                ),
+                (
+                    AutomationDraft {
+                        weekday: Some(5),
+                        ..AutomationDraft::default()
+                    },
+                    "--trigger",
+                ),
+                (
+                    AutomationDraft {
+                        repo: Some("/srv/other".into()),
+                        ..AutomationDraft::default()
+                    },
+                    "target",
+                ),
+                (
+                    AutomationDraft {
+                        session: Some("6f1c1d8e-2a2b-4c1e-9d1f-0a1b2c3d4e5f".into()),
+                        ..AutomationDraft::default()
+                    },
+                    "target",
+                ),
+            ];
+            for (draft, expected) in cases {
+                let error = save_automation(&db, Some(id), &draft, NOW)
+                    .expect_err(&format!("{draft:?} must be refused"));
+                assert!(error.contains(expected), "{draft:?}: {error}");
+            }
+        }
+
+        #[test]
+        fn a_weekday_out_of_range_is_refused_not_read_as_monday() {
+            let db = Database::open_in_memory().expect("db");
+            for weekday in [-1, 8] {
+                let draft = AutomationDraft {
+                    trigger: Some("weekly".into()),
+                    weekday: Some(weekday),
+                    ..spawn_draft()
+                };
+                let error = save_automation(&db, None, &draft, NOW).expect_err("refused");
+                assert!(error.contains("weekday"), "{weekday}: {error}");
+            }
         }
 
         /// Disabling clears the next run, so enabling has to compute it again —

@@ -1172,7 +1172,10 @@ command("automation", { action = "edit", number = 4, trigger = "cron:0 18 * * *"
 
 An automation's fields travel typed — a name or prompt is never read by a shell —
 and are checked as `thurbox-cli automation create` checks them, plus a cron
-expression that must parse and a timezone that must exist. A mistake is
+expression that must parse and a timezone that must exist. An exec
+automation's `command` is a command line the heartbeat runs, so writing one —
+creating an exec automation, or changing its command — needs the issuing file to
+hold `run`; without it the write is refused like any other. A mistake is
 `command.failed`, whose `subject` is `#<id>` (or a create's name), so a pane can
 show it where it was made. `thurbox.automations` carries what an editor needs: the
 `trigger` to hand back, `timezone`, `prompt`, the target (`session`, or `repo` with
@@ -1798,8 +1801,10 @@ reading:
 
 [`thurbox-automations`](https://github.com/Thurbeen/thurbox-automations) gives back v1's
 automations pane the same way the review pane is placed — the `center` switch slot,
-a pill and a toggle chord (`Alt+A`) — and asks for nothing: the list, the definitions
-and the run history are in the snapshot, and every change is an `automation` command.
+a pill and a toggle chord (`Alt+A`). The list, the definitions and the run history
+are in the snapshot and every change is an `automation` command; it asks for `run`
+only because writing an exec automation's command requires it, and untrusted it
+manages everything else.
 
 The file viewer, the remaining missing surface, has no pane — by nobody having written
 one rather than by anything withheld: `files.list/read` is published, rooted at a

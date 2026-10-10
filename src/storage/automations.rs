@@ -129,6 +129,44 @@ impl Database {
         Ok(())
     }
 
+    /// [`Self::update_automation`] for a writer that read the row a moment ago:
+    /// everything but `last_run_at`, which only a fire writes. A tick that
+    /// fired between that read and this write keeps the run it recorded.
+    pub fn update_automation_definition(&self, auto: &Automation) -> rusqlite::Result<()> {
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
+            super::action_to_columns(&auto.action);
+        let now = current_time_millis() as i64;
+        self.conn.execute(
+            "UPDATE automations SET
+                name = ?2, enabled = ?3, schedule_kind = ?4, schedule_spec = ?5,
+                timezone = ?6, action_kind = ?7, target_session = ?8, repo_path = ?9,
+                worktree_branch = ?10, base_branch = ?11, agent = ?12, prompt = ?13,
+                updated_at = ?14, next_run_at = ?15,
+                action_extra_repos = ?16, action_command = ?17
+             WHERE id = ?1",
+            params![
+                auto.id,
+                auto.name,
+                auto.enabled as i64,
+                auto.schedule.kind(),
+                auto.schedule.spec(),
+                auto.timezone,
+                auto.action.kind(),
+                target_session,
+                repo_path,
+                worktree_branch,
+                base_branch,
+                agent,
+                auto.prompt,
+                now,
+                auto.next_run_at.map(|v| v as i64),
+                extra,
+                command,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Enable or disable an automation. Disabling clears `next_run_at` so the
     /// due-scan skips it; enabling leaves `next_run_at` for the caller to set.
     pub fn set_automation_enabled(&self, id: i64, enabled: bool) -> rusqlite::Result<bool> {

@@ -2454,6 +2454,7 @@ fn a_pane_creates_and_edits_an_automation_with_typed_fields() {
         host.drain_commands(),
         vec![
             Command::AutomationSave {
+                owner: "plugins/10_pane.lua".into(),
                 id: None,
                 draft: AutomationDraft {
                     name: Some("nightly".into()),
@@ -2471,6 +2472,7 @@ fn a_pane_creates_and_edits_an_automation_with_typed_fields() {
                 },
             },
             Command::AutomationSave {
+                owner: "plugins/10_pane.lua".into(),
                 id: Some(7),
                 draft: AutomationDraft {
                     name: Some("renamed".into()),

@@ -508,7 +508,7 @@
 ---@field runs thurbox.AutomationRun[] The ten most recent, newest first.
 ---@field trigger string `cron:<expr>` or `at:<unix_millis>`: what an edit's `trigger` takes back unchanged.
 ---@field timezone? string IANA name; nil is the system's own.
----@field prompt string Empty for an exec automation.
+---@field prompt string What a send or spawn types; an exec automation runs `command` and ignores it.
 ---@field session? string A send's target session.
 ---@field repo? string A spawn's repository.
 ---@field branch? string A spawn's worktree branch.
@@ -527,7 +527,7 @@
 ---@field kind string
 ---@field session string
 ---@field phase string
----@field subject? string A `create`'s repository name, or a `bookmark` write's path as issued.
+---@field subject? string A `create`'s repository name, a `bookmark` write's path as issued, or an `automation`'s `#<id>` (a create's name).
 ---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 
@@ -953,7 +953,7 @@ function require(name) end
 ---@field branch? string Create: the spawn's worktree branch.
 ---@field base? string
 ---@field agent? string
----@field command? string Create, or edit an exec one: run this command line.
+---@field command? string Create, or edit an exec one: run this command line. Needs the issuing file to hold `run`; refused as `command.failed` otherwise.
 
 ---@class (exact) thurbox.cmd.ExtraMember
 ---@field path string
