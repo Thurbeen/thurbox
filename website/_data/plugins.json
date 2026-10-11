@@ -96,7 +96,7 @@
     "platforms": ["Linux", "Windows (native)", "macOS (untested)"],
     "updated": "2026-10-11",
     "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations",
-    "notes": "Requires Thurbox \u2265 2.56.5; creating, editing and duplicating need \u2265 2.57.0. No layout.lua edit. Alt+A opens it. Trust the pane (run) only to write exec automations' commands. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
+    "notes": "Requires Thurbox \u2265 2.56.5; creating, editing, duplicating and switching back on need \u2265 2.57.0. No layout.lua edit. Alt+A opens it. Trust the pane (run) only to write exec automations' commands. Run history is the 10 most recent runs, and an exec run keeps only its output tail.",
     "media": {
       "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif",
       "alt": "The automations pane in the Doom theme: the list, a failed run's output filtered to errors, run now, an automation switched off and a delete confirmed"
