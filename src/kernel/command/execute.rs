@@ -811,6 +811,20 @@ fn enable_from(db: &Database, read: &crate::session::Automation, now: u64) -> Re
     }
 }
 
+/// Why an edit wrote nothing: the row was deleted since it was read, or its
+/// timing moved underneath an edit that meant to move it.
+fn edit_outcome(db: &Database, id: i64) -> Result<(), String> {
+    match db
+        .get_automation(id)
+        .map_err(|e| format!("get automation: {e}"))?
+    {
+        None => Err(format!("automation #{id} no longer exists")),
+        Some(_) => Err(format!(
+            "automation #{id} changed while it was being edited; reload it and try again"
+        )),
+    }
+}
+
 /// When an enabled automation fires next, or why it never will.
 fn next_run(auto: &crate::session::Automation, now: u64) -> Result<u64, String> {
     auto.schedule.check()?;
@@ -964,9 +978,7 @@ fn save_automation(
             if written {
                 Ok(())
             } else {
-                Err(format!(
-                    "automation #{id} changed while it was being edited; reload it and try again"
-                ))
+                edit_outcome(db, id)
             }
         }
         None => db
@@ -1189,7 +1201,7 @@ mod tests {
     /// the CLI validates has to be validated here too — and a mistake has to
     /// come back as a sentence the pane can show, not as a row that never fires.
     mod automation_writes {
-        use super::super::{automation, enable_from, save_automation};
+        use super::super::{automation, edit_outcome, enable_from, save_automation};
         use crate::kernel::command::AutomationDraft;
         use crate::session::automation::{AutomationAction, AutomationSchedule, ExtraRepo};
         use crate::storage::automations::NewAutomation;
@@ -1543,6 +1555,21 @@ mod tests {
             enable_from(&db, &stale, NOW).expect("the first enable");
             enable_from(&db, &stale, NOW).expect("the second finds it already on");
             assert!(only(&db).enabled);
+        }
+
+        /// A delete that lands between an edit's read and its write leaves
+        /// nothing to reload: the edit says the automation is gone.
+        #[test]
+        fn an_edit_of_a_row_deleted_underneath_says_it_is_gone() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            let stale = db.get_automation(id).expect("get").expect("row");
+            assert!(db.delete_automation(id).expect("delete"));
+            assert!(!db
+                .update_automation_definition(&stale, None)
+                .expect("write"));
+            let error = edit_outcome(&db, id).expect_err("nothing was written");
+            assert!(error.contains("no longer exists"), "{error}");
         }
 
         /// An edit that moves the timing writes it only if the row still holds
