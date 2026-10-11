@@ -761,19 +761,7 @@ fn automation(
                 .get_automation(id)
                 .map_err(|e| format!("get automation: {e}"))?
                 .ok_or_else(|| format!("automation #{id} no longer exists"))?;
-            // Already on and scheduled: nothing to do, and recomputing would
-            // push a fire that is due, or a run-now, to the next slot.
-            if !(auto.enabled && auto.next_run_at.is_some()) {
-                let next = next_run(&auto, crate::sync::current_time_millis())?;
-                let written = db
-                    .enable_automation(&auto, next)
-                    .map_err(|e| format!("enable automation: {e}"))?;
-                if !written {
-                    return Err(format!(
-                        "automation #{id} changed while it was being enabled; try again"
-                    ));
-                }
-            }
+            enable_from(db, &auto, crate::sync::current_time_millis())?;
         }
         Some(false) => {
             db.set_automation_enabled(id, false)
@@ -789,6 +777,38 @@ fn automation(
             .map_err(|e| format!("trigger: {e}"))?;
     }
     Ok(())
+}
+
+/// Switch on the automation `read` describes, as read a moment ago.
+///
+/// Already on and scheduled: nothing to do, since recomputing would push a fire
+/// that is due, or a run-now, to the next slot. Otherwise the flag and the next
+/// run are written by compare-and-set; a miss means another write landed since
+/// the read. One that left the row on and scheduled — a second enable of the
+/// same row — is success; any other is reported.
+fn enable_from(db: &Database, read: &crate::session::Automation, now: u64) -> Result<(), String> {
+    if read.enabled && read.next_run_at.is_some() {
+        return Ok(());
+    }
+    let next = next_run(read, now)?;
+    if db
+        .enable_automation(read, next)
+        .map_err(|e| format!("enable automation: {e}"))?
+    {
+        return Ok(());
+    }
+    let id = read.id;
+    let now_row = db
+        .get_automation(id)
+        .map_err(|e| format!("get automation: {e}"))?
+        .ok_or_else(|| format!("automation #{id} no longer exists"))?;
+    if now_row.enabled && now_row.next_run_at.is_some() {
+        Ok(())
+    } else {
+        Err(format!(
+            "automation #{id} changed while it was being enabled; try again"
+        ))
+    }
 }
 
 /// When an enabled automation fires next, or why it never will.
@@ -1169,7 +1189,7 @@ mod tests {
     /// the CLI validates has to be validated here too — and a mistake has to
     /// come back as a sentence the pane can show, not as a row that never fires.
     mod automation_writes {
-        use super::super::{automation, save_automation};
+        use super::super::{automation, enable_from, save_automation};
         use crate::kernel::command::AutomationDraft;
         use crate::session::automation::{AutomationAction, AutomationSchedule, ExtraRepo};
         use crate::storage::automations::NewAutomation;
@@ -1508,6 +1528,21 @@ mod tests {
                 .expect("reschedule");
             assert!(!db.enable_automation(&stale, NOW + 1).expect("enable"));
             assert!(!only(&db).enabled);
+        }
+
+        /// Two enables sent before the snapshot shows the first (a double
+        /// press) both find the row off; the second's compare-and-set misses,
+        /// and it must report the automation on rather than an error.
+        #[test]
+        fn a_second_enable_of_the_same_row_is_not_an_error() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            automation(&db, id, Some(false), false, false).expect("disable");
+            let stale = db.get_automation(id).expect("get").expect("row");
+            // Both enables read the row while it was off.
+            enable_from(&db, &stale, NOW).expect("the first enable");
+            enable_from(&db, &stale, NOW).expect("the second finds it already on");
+            assert!(only(&db).enabled);
         }
 
         /// An edit that moves the timing writes it only if the row still holds
