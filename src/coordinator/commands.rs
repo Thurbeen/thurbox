@@ -37,6 +37,20 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> bool {
         use thurbox::kernel::command::Command;
+        // Refused here rather than on a worker, which knows no grant: an exec
+        // automation's command is a command line the heartbeat runs, so a pane
+        // may write one only if it may run programs at all.
+        if let Some(error) = command.refusal(|owner, need| self.host.may_path(owner, need)) {
+            let subject = command.subject();
+            self.enqueue_event(
+                thurbox::kernel::events::Event::new("command.failed")
+                    .with("kind", Some(command.kind()))
+                    .with("subject", subject.as_deref())
+                    .with("error", Some(error.as_str())),
+            );
+            self.report(error, Level::Error);
+            return true;
+        }
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
             // state a worker thread cannot reach, and it is instant, so nothing is
@@ -136,26 +150,6 @@ impl App {
             // The message band is kernel chrome; this is a plugin contributing
             // to it, like a pill or a binding.
             Command::Message { text, level } => self.report(text.clone(), *level),
-            // Refused here rather than on the worker, where no grant is known:
-            // an exec automation's command is a command line the heartbeat runs,
-            // so a pane may write one only if it may run programs at all.
-            Command::AutomationSave { owner, .. }
-                if command
-                    .requires()
-                    .is_some_and(|need| !self.host.may_path(owner, need)) =>
-            {
-                let error = format!(
-                    "{owner} may not write an automation's command — trust it in settings → Interface"
-                );
-                let subject = command.subject();
-                self.enqueue_event(
-                    thurbox::kernel::events::Event::new("command.failed")
-                        .with("kind", Some("automation"))
-                        .with("subject", subject.as_deref())
-                        .with("error", Some(error.as_str())),
-                );
-                self.report(error, Level::Error);
-            }
             _ => return false,
         }
         true

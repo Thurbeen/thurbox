@@ -602,6 +602,22 @@ impl Command {
         }
     }
 
+    /// Why a plugin `may` not have this applied, when it may not.
+    ///
+    /// The coordinator's whole decision, kept here so it is tested without a
+    /// running interface: `may(owner, capability)` is the host's grant check.
+    pub fn refusal(&self, may: impl Fn(&str, super::host::Capability) -> bool) -> Option<String> {
+        let need = self.requires()?;
+        let Command::AutomationSave { owner, .. } = self else {
+            return None;
+        };
+        (!may(owner, need)).then(|| {
+            format!(
+                "{owner} may not write an automation's command — trust it in settings → Interface"
+            )
+        })
+    }
+
     /// What this command concerns when it names no session.
     ///
     /// For a creation that is the repository, which is what lets the session
@@ -1857,6 +1873,46 @@ mod tests {
             .requires(),
             None,
             "running an existing one is not writing a command"
+        );
+    }
+
+    /// The coordinator's decision, testable without a running interface: an
+    /// owner that may not hold what the command requires is refused with a
+    /// sentence naming it, and anything else passes.
+    #[test]
+    fn an_untrusted_exec_write_is_refused_and_a_trusted_one_passes() {
+        use super::super::events::Field;
+        use super::super::host::Capability;
+        let create = Command::parse(
+            "automation",
+            Args {
+                action: Some("create".into()),
+                owner: "plugins/30_x.lua".into(),
+                payload: vec![("command".into(), Field::Text("make sync".into()))],
+                ..Args::default()
+            },
+        )
+        .expect("parse");
+        let refused = create.refusal(|_, _| false).expect("refused");
+        assert!(refused.contains("plugins/30_x.lua"), "{refused}");
+        assert_eq!(
+            create.refusal(|owner, need| owner == "plugins/30_x.lua" && need == Capability::Run),
+            None
+        );
+        let rename = Command::parse(
+            "automation",
+            Args {
+                action: Some("edit".into()),
+                number: Some(3.0),
+                payload: vec![("name".into(), Field::Text("x".into()))],
+                ..Args::default()
+            },
+        )
+        .expect("parse");
+        assert_eq!(
+            rename.refusal(|_, _| false),
+            None,
+            "no command, no grant needed"
         );
     }
 

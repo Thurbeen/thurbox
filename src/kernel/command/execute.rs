@@ -757,17 +757,22 @@ fn automation(
         // `thurbox-cli automation edit --enabled` does. Setting the flag alone
         // left an enabled automation that never fired.
         Some(true) => {
-            let mut auto = db
+            let auto = db
                 .get_automation(id)
                 .map_err(|e| format!("get automation: {e}"))?
                 .ok_or_else(|| format!("automation #{id} no longer exists"))?;
             // Already on and scheduled: nothing to do, and recomputing would
             // push a fire that is due, or a run-now, to the next slot.
             if !(auto.enabled && auto.next_run_at.is_some()) {
-                auto.next_run_at = Some(next_run(&auto, crate::sync::current_time_millis())?);
-                auto.enabled = true;
-                db.update_automation_definition(&auto, true)
-                    .map_err(|e| format!("update automation: {e}"))?;
+                let next = next_run(&auto, crate::sync::current_time_millis())?;
+                let written = db
+                    .enable_automation(&auto, next)
+                    .map_err(|e| format!("enable automation: {e}"))?;
+                if !written {
+                    return Err(format!(
+                        "automation #{id} changed while it was being enabled; try again"
+                    ));
+                }
             }
         }
         Some(false) => {
@@ -894,8 +899,10 @@ fn save_automation(
     if auto.name.is_empty() {
         return Err("an automation needs a name".into());
     }
-    // What a stored fire depends on, to tell whether the edit moved it.
+    // What a stored fire depends on, to tell whether the edit moved it, and
+    // the timing as read, for the compare-and-set that writes a moved one.
     let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
+    let read_timing = (auto.enabled, auto.next_run_at);
     if id.is_some() {
         apply_edit(&mut auto, draft, weekday)?;
     }
@@ -929,9 +936,19 @@ fn save_automation(
     }
 
     match id {
-        Some(_) => db
-            .update_automation_definition(&auto, !unmoved)
-            .map_err(|e| format!("update automation: {e}")),
+        Some(id) => {
+            let timing = (!unmoved).then_some(read_timing);
+            let written = db
+                .update_automation_definition(&auto, timing)
+                .map_err(|e| format!("update automation: {e}"))?;
+            if written {
+                Ok(())
+            } else {
+                Err(format!(
+                    "automation #{id} changed while it was being edited; reload it and try again"
+                ))
+            }
+        }
         None => db
             .create_automation(&crate::storage::automations::NewAutomation {
                 name: auto.name,
@@ -1460,6 +1477,58 @@ mod tests {
             );
         }
 
+        /// Each command runs on its own worker, so an enable can read a row an
+        /// edit then rewrites. The enable must write the flag and the next run
+        /// only, and only for the schedule it computed that run from.
+        #[test]
+        fn an_enable_racing_an_edit_does_not_undo_it() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            automation(&db, id, Some(false), false, false).expect("disable");
+            let stale = db.get_automation(id).expect("get").expect("row");
+            // The edit lands between the enable's read and its write.
+            let mut edited = stale.clone();
+            edited.name = "renamed".into();
+            db.update_automation_definition(&edited, None)
+                .expect("rename");
+            assert!(db.enable_automation(&stale, NOW + 1).expect("enable"));
+            let row = only(&db);
+            assert_eq!(row.name, "renamed", "the edit stands");
+            assert!(row.enabled);
+            assert_eq!(row.next_run_at, Some(NOW + 1));
+
+            // A schedule that moved underneath is not enabled on the old one.
+            automation(&db, id, Some(false), false, false).expect("disable");
+            let stale = db.get_automation(id).expect("get").expect("row");
+            let mut moved = stale.clone();
+            moved.schedule = AutomationSchedule::Cron {
+                expr: "0 18 * * *".into(),
+            };
+            db.update_automation_definition(&moved, None)
+                .expect("reschedule");
+            assert!(!db.enable_automation(&stale, NOW + 1).expect("enable"));
+            assert!(!only(&db).enabled);
+        }
+
+        /// An edit that moves the timing writes it only if the row still holds
+        /// the timing it read, so a disable that landed meanwhile is not undone.
+        #[test]
+        fn an_edit_moving_the_timing_refuses_a_row_changed_underneath() {
+            let db = Database::open_in_memory().expect("db");
+            let id = stored_multi_repo(&db);
+            let mut stale = db.get_automation(id).expect("get").expect("row");
+            let read = (stale.enabled, stale.next_run_at);
+            automation(&db, id, Some(false), false, false).expect("a disable lands");
+            stale.schedule = AutomationSchedule::Cron {
+                expr: "0 18 * * *".into(),
+            };
+            stale.next_run_at = Some(NOW + 5);
+            assert!(!db
+                .update_automation_definition(&stale, Some(read))
+                .expect("write"));
+            assert!(!only(&db).enabled, "the disable stands");
+        }
+
         /// Enabling what is already enabled changes nothing: a fire that is due,
         /// or that run-now just marked, must not be pushed to the next slot.
         #[test]
@@ -1532,7 +1601,7 @@ mod tests {
                     .claim_due_automation(id, due, after_fire, NOW)
                     .expect("claim"));
                 stale.name = "renamed".into();
-                db.update_automation_definition(&stale, false)
+                db.update_automation_definition(&stale, None)
                     .expect("write");
                 let row = db.get_automation(id).expect("get").expect("row");
                 assert_eq!(row.name, "renamed");
