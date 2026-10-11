@@ -310,25 +310,138 @@ fn extractor_for(archive: &Path, into: &Path) -> (&'static str, Vec<std::ffi::Os
     }
 }
 
-/// A temp dir removed (best-effort) when dropped, so a failed/early-returned
-/// update leaves nothing behind. Avoids the `tempfile` crate (dev-only).
+/// Download staging removed on drop; a later allocation recovers old staging
+/// whose owner died without running destructors.
 #[derive(Debug)]
 struct ScratchDir {
     path: PathBuf,
 }
 
+const SCRATCH_RECOVERY_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 impl ScratchDir {
     fn new() -> Result<Self, String> {
-        // Unique per call, not per process: a peer host being provisioned
-        // (`fetch_archive`) can overlap the TUI's own startup update check.
-        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = crate::paths::log_directory().unwrap_or_else(std::env::temp_dir);
-        let path = base.join(format!(".update-{}-{seq}", std::process::id()));
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("create temp dir {}: {e}", path.display()))?;
-        Ok(Self { path })
+        let data_base = crate::paths::log_directory();
+        let base = data_base.clone().unwrap_or_else(std::env::temp_dir);
+        std::fs::create_dir_all(&base)
+            .map_err(|e| format!("create update scratch base {}: {e}", base.display()))?;
+        // The system temp fallback is shared with other programs.
+        if data_base.is_some() {
+            recover_scratch(&base);
+        }
+        loop {
+            // A random token avoids adopting an old process's sequence after
+            // pid reuse, including while another recovery pass is in flight.
+            let path = base.join(format!(
+                ".update-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4().as_u128()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("create temp dir {}: {e}", path.display())),
+            }
+        }
     }
+}
+
+/// Canonical decimal ownership only, including older releases' u32 sequences.
+fn scratch_owner(name: &std::ffi::OsStr) -> Option<u32> {
+    let name = name.to_str()?;
+    let (pid, token) = name.strip_prefix(".update-")?.split_once('-')?;
+    let pid = pid.parse::<u32>().ok().filter(|pid| *pid != 0)?;
+    let token = token.parse::<u128>().ok()?;
+    (name == format!(".update-{pid}-{token}")).then_some(pid)
+}
+
+fn ordinary_owned_directory(path: &Path) -> Option<std::fs::Metadata> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return None;
+        }
+    }
+    Some(meta)
+}
+
+fn recover_scratch(base: &Path) {
+    if ordinary_owned_directory(base).is_none() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let Some(pid) = scratch_owner(&entry.file_name()) else {
+            continue;
+        };
+        let path = entry.path();
+        let Some(meta) = ordinary_owned_directory(&path) else {
+            continue;
+        };
+        let Some(age) = meta
+            .modified()
+            .ok()
+            .and_then(|mtime| now.duration_since(mtime).ok())
+        else {
+            continue;
+        };
+        if age < SCRATCH_RECOVERY_AGE || !scratch_owner_exited(pid) {
+            continue;
+        }
+        // remove_dir_all unlinks nested links without following their targets.
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            tracing::debug!(path = %path.display(), %error, "could not recover update scratch");
+        }
+    }
+}
+
+// An unsuccessful probe is not proof of death: permission errors and unknown
+// states must preserve a concurrent updater, however old its staging is.
+#[cfg(unix)]
+fn scratch_owner_exited(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    (unsafe { libc::kill(pid, 0) }) == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(windows)]
+fn scratch_owner_exited(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return std::io::Error::last_os_error().raw_os_error()
+            == Some(ERROR_INVALID_PARAMETER as i32);
+    }
+    let state = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    state == WAIT_OBJECT_0
+}
+
+#[cfg(not(any(unix, windows)))]
+fn scratch_owner_exited(_pid: u32) -> bool {
+    false
 }
 
 impl Drop for ScratchDir {
@@ -528,9 +641,8 @@ fn install_binaries(
 /// Download, verify, extract, and install the latest release in place.
 ///
 /// `force` bypasses the up-to-date, dev-build and major-version guards
-/// (re-downloads + replaces regardless). Best-effort and side-effect-free until
-/// the checksum passes — any failure before the swap leaves the installed
-/// binaries untouched.
+/// (re-downloads + replaces regardless). Staging may be recovered before
+/// verification; any failure before the swap leaves installed binaries untouched.
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
@@ -599,6 +711,258 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SCRATCH_CHILD: &str = "agent::self_update::tests::scratch_lifecycle_child";
+
+    #[test]
+    fn scratch_lifecycle_child() {
+        let Some(root) = std::env::var_os("THURBOX_UPDATE_TEST_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let _paths = crate::paths::TestPathGuard::new(&root);
+        let scratch = ScratchDir::new().unwrap();
+        std::fs::write(scratch.path.join("partial.zip"), b"partial download").unwrap();
+        std::fs::write(root.join("ready.pending"), scratch.path.to_str().unwrap()).unwrap();
+        std::fs::rename(root.join("ready.pending"), root.join("ready")).unwrap();
+        if std::env::var_os("THURBOX_UPDATE_TEST_HOLD").is_some() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while !root.join("release").exists() {
+                assert!(std::time::Instant::now() < deadline, "child bounded wait");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        drop(scratch);
+    }
+
+    struct ScratchChild(std::process::Child);
+
+    impl Drop for ScratchChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn start_scratch_child(root: &Path, hold: bool) -> (ScratchChild, PathBuf) {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", SCRATCH_CHILD, "--nocapture"])
+            .env("THURBOX_UPDATE_TEST_ROOT", root)
+            .env_remove("THURBOX_UPDATE_TEST_HOLD");
+        if hold {
+            cmd.env("THURBOX_UPDATE_TEST_HOLD", "1");
+        }
+        let mut child = ScratchChild(cmd.spawn().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(path) = std::fs::read_to_string(root.join("ready")) {
+                return (child, PathBuf::from(path));
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before ready"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never became ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn set_scratch_modified(path: &Path, modified: std::time::SystemTime) {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+            };
+            options
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .access_mode(FILE_WRITE_ATTRIBUTES);
+        }
+        options
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    fn age_scratch(path: &Path) {
+        set_scratch_modified(
+            path,
+            std::time::SystemTime::now() - std::time::Duration::from_secs(7200),
+        );
+    }
+
+    #[test]
+    fn killed_update_scratch_is_recovered_by_the_next_update() {
+        let root = tempfile::tempdir().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(root.path());
+        let (mut child, abandoned) = start_scratch_child(root.path(), true);
+        child.0.kill().unwrap();
+        assert!(!child.0.wait().unwrap().success());
+        assert!(
+            abandoned.join("partial.zip").exists(),
+            "kill must bypass Drop"
+        );
+        age_scratch(&abandoned);
+        let next = ScratchDir::new().unwrap();
+        assert!(
+            !abandoned.exists(),
+            "next update must recover abandoned scratch"
+        );
+        assert!(next.path.is_dir());
+    }
+
+    #[test]
+    fn normally_exiting_update_removes_its_scratch() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut child, scratch) = start_scratch_child(root.path(), false);
+        assert!(child.0.wait().unwrap().success());
+        assert!(!scratch.exists());
+    }
+
+    #[test]
+    fn recovery_spares_live_and_recent_updates() {
+        let root = tempfile::tempdir().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(root.path());
+        let (mut child, live) = start_scratch_child(root.path(), true);
+        age_scratch(&live);
+        let next = ScratchDir::new().unwrap();
+        assert!(
+            live.join("partial.zip").exists(),
+            "old live work must survive"
+        );
+        drop(next);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        set_scratch_modified(&live, std::time::SystemTime::now());
+        let next = ScratchDir::new().unwrap();
+        assert!(live.exists(), "recent dead work must survive");
+        age_scratch(&live);
+        drop(next);
+        let _next = ScratchDir::new().unwrap();
+        assert!(!live.exists());
+    }
+
+    #[test]
+    fn scratch_creation_does_not_reuse_an_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(root.path());
+        // Reserve several sequences so this also holds under the shared-process runner.
+        for seq in 0..100 {
+            let path = root
+                .path()
+                .join(format!(".update-{}-{seq}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("keep"), b"existing work").unwrap();
+        }
+        let scratch = ScratchDir::new().unwrap();
+        assert!(
+            !scratch.path.join("keep").exists(),
+            "never adopt existing work"
+        );
+        drop(scratch);
+        for seq in 0..100 {
+            assert!(root
+                .path()
+                .join(format!(".update-{}-{seq}/keep", std::process::id()))
+                .exists());
+        }
+    }
+
+    #[test]
+    fn recovery_spares_malformed_ownership_and_unrelated_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(root.path());
+        let (mut child, abandoned) = start_scratch_child(root.path(), true);
+        let pid = child.0.id();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        age_scratch(&abandoned);
+        let legacy = root.path().join(format!(".update-{pid}-21"));
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("partial.zip"), b"older release download").unwrap();
+        age_scratch(&legacy);
+        let names = [
+            "unrelated".to_string(),
+            ".update-0-1".to_string(),
+            format!(".update-{pid}"),
+            format!(".update-{pid}-"),
+            format!(".update-{pid}-1-extra"),
+            format!(".update-{pid}-01"),
+            format!(".update-0{pid}-1"),
+            format!(".update-{pid}-+1"),
+            ".update-4294967296-1".to_string(),
+        ];
+        for name in &names {
+            let path = root.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("keep"), b"unrelated").unwrap();
+            age_scratch(&path);
+        }
+        let file = root.path().join(format!(".update-{pid}-17"));
+        std::fs::write(&file, b"not a directory").unwrap();
+        let future = root.path().join(format!(".update-{pid}-18"));
+        std::fs::create_dir(&future).unwrap();
+        set_scratch_modified(
+            &future,
+            std::time::SystemTime::now() + std::time::Duration::from_secs(7200),
+        );
+        let _next = ScratchDir::new().unwrap();
+        assert!(!abandoned.exists());
+        assert!(
+            !legacy.exists(),
+            "legacy sequence names must still be recovered"
+        );
+        for name in names {
+            assert!(root.path().join(name).join("keep").exists());
+        }
+        assert!(file.is_file());
+        assert!(future.is_dir());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn recovery_does_not_follow_directory_links() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep"), b"outside scratch").unwrap();
+        age_scratch(outside.path());
+        let _paths = crate::paths::TestPathGuard::new(root.path());
+        let (mut child, abandoned) = start_scratch_child(root.path(), true);
+        let pid = child.0.id();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let link = root.path().join(format!(".update-{pid}-19"));
+        let nested = abandoned.join("outside");
+        for path in [&link, &nested] {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(outside.path(), path).unwrap();
+            #[cfg(windows)]
+            assert!(Command::new("cmd.exe")
+                .args(["/C", "mklink", "/J"])
+                .arg(path)
+                .arg(outside.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        age_scratch(&abandoned);
+        let _next = ScratchDir::new().unwrap();
+        assert!(!abandoned.exists());
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "linked candidate must survive"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("keep")).unwrap(),
+            b"outside scratch"
+        );
+    }
 
     /// The triples an update or a peer provisioning may download — the
     /// artifacts `cd.yml` builds that `target_triple` actually selects (it

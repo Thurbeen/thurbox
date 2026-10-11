@@ -2065,6 +2065,26 @@ Both are on by default for 1.0 so a fresh install stays current on its
 own; set them to `false` if you'd rather make no network calls or have
 thurbox never mutate its own binary unless you ask.
 
+Self-update and peer archive fetching stage downloads in
+`.update-<pid>-<token>` directories under the instance's data directory.
+Normal returns remove staging, including download failures. An allocation
+also recovers staging left by a process that exited without destructors
+(issue #1380). Every condition below is required:
+
+| Condition | Recovery rule |
+|-----------|---------------|
+| Name | Canonical decimal PID and token; older releases' sequence tokens still qualify |
+| Directory | Ordinary directory, never a link or Windows reparse point; on Unix, both it and its parent must belong to the effective user |
+| Age | Directory modification time is at least one hour old; unknown or future timestamps are preserved |
+| Owner | The OS confirms the PID has exited; live PIDs, reused PIDs and uncertain probes are preserved |
+
+Age alone never authorizes deletion. Recovery stays inside that directory, never sweeps
+the system temp fallback, and unlinks nested links without following them. Failed cleanup
+does not block an update. New staging uses an exclusive
+directory creation with a random numeric token, preventing an update from adopting another
+allocation's path. Recovery runs when staging is allocated, rather than on checks that
+skip downloading.
+
 ---
 
 ## Error Handling UX
