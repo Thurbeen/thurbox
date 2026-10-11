@@ -80,6 +80,11 @@ breadcrumb: 'Features'
                 <td><a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a></td>
               </tr>
               <tr>
+                <td><a href="#automations">Automations</a></td>
+                <td>installable</td>
+                <td><a href="https://github.com/Thurbeen/thurbox-automations" target="_blank" rel="noopener">thurbox-automations</a></td>
+              </tr>
+              <tr>
                 <td>CPU / RAM gauges</td>
                 <td>installable</td>
                 <td><code>thurbox-cli plugin install top</code></td>
@@ -93,11 +98,6 @@ breadcrumb: 'Features'
                 <td><a href="#tasks">Tasks</a></td>
                 <td>CLI only</td>
                 <td><code>thurbox-cli task</code></td>
-              </tr>
-              <tr>
-                <td><a href="#automations">Automations</a></td>
-                <td>CLI only</td>
-                <td><code>thurbox-cli automation</code></td>
               </tr>
             </tbody>
           </table>
@@ -261,10 +261,12 @@ breadcrumb: 'Features'
 
           <div class="info-box">
             <p>
-              <strong>No pane, but they still fire.</strong>
+              <strong>They fire with or without a pane.</strong>
               Scheduling does not live in the interface: a detached tmux heartbeat keeper runs due
               automations whether or not thurbox is open. Author and inspect them with
-              <code>thurbox-cli automation</code>.
+              <code>thurbox-cli automation</code>, or in the
+              <a href="https://github.com/Thurbeen/thurbox-automations" target="_blank" rel="noopener">thurbox-automations</a>
+              pane.
             </p>
           </div>
           <h2 id="automations">

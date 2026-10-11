@@ -57,7 +57,7 @@ breadcrumb: 'Extensions'
               Everything else you install yourself, from a URL, a local directory, or a git
               repository. The worked example is
               <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">fleet</a>
-              , a control-plane template you clone &mdash; see
+              , the maintained control plane you install with one command &mdash; see
               <a href="#catalog">Available extensions</a>
               . The commands and manifest fields below are generic; the examples use fleet.
             </p>
@@ -276,9 +276,7 @@ thurbox-cli extension install https://example.com/ext/my-extension --home ~/work
             token is substituted with the resolved home directory.
           </p>
           <p>
-            The example below is modelled on fleet. Its real manifest uses
-            <code>[[agents]]</code>
-            , one
+            The example below is modelled on fleet. Its real manifest uses one
             <code>[[files]]</code>
             , three
             <code>[[symlinks]]</code>
@@ -301,7 +299,7 @@ args = ["--model", "claude-haiku-4-5"]
 [[files]]                       # fetched from the source, written under home
 path = "FLEET.md"
 [[files]]
-path = "scripts/sync-registry.sh"
+path = "scripts/hook.sh"
 executable = true               # chmod +x
 [[files]]
 path = "repos.md"
@@ -324,8 +322,8 @@ repo_path = "{home}"            # resolved to the absolute home at install.
                                 # whose session must open your own checkout ships
                                 # a placeholder its installer renders instead
 
-# [[automations]] is an OPTIONAL runtime resource (fleet ships none on purpose —
-# its only scheduled candidate pushes to `main`). An extension that wants a
+# [[automations]] is an OPTIONAL runtime resource (fleet ships none: its
+# periodic work is its own supervised reconciler). An extension that wants a
 # scheduled tick declares:
 [[automations]]
 name = "example-tick"
@@ -492,13 +490,12 @@ prompt = "tick"</code></pre>
             >
               <div class="card">
                 <div class="card-icon" aria-hidden="true">&#x2316;</div>
-                <h3>fleet <span class="badge">template</span></h3>
+                <h3>fleet <span class="badge">official</span></h3>
                 <p>
-                  A control plane for your work across GitHub: one repo holding the map of your
-                  projects and the orchestration of agent sessions run against them. Clone it, run
-                  its installer, and its manifest registers one long-lived
-                  <code>fleet</code>
-                  session. The
+                  The maintained control plane for Thurbox. Mission Control turns a goal into a
+                  queue of tasks, runs one worker session per task on its own worktree, and follows
+                  each change request until it lands. One command installs it, and its manifest
+                  registers the long-lived Mission Control session. The
                   <a
                     href="https://github.com/Thurbeen/thurbox/blob/main/docs/ORCHESTRATION.md"
                     target="_blank"

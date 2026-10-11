@@ -4,6 +4,12 @@ Design rationale for running agent sessions across more than one repo.
 For the primitives themselves, see [FEATURES.md](FEATURES.md); for how
 they are built, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+The maintained implementation is **[Fleet](https://github.com/Thurbeen/fleet)**:
+a control plane you install with one command, whose lead session, Mission
+Control, turns a goal into a queue of tasks and runs one worker session per
+task. Its README and `AGENTS.md` are the operating manual; this file is the
+rationale behind the shape, and the thurbox primitives it rests on.
+
 ---
 
 ## The problem
@@ -32,13 +38,13 @@ Give the plan its own repo. A **control plane** is a repo that holds two
 things and nothing else:
 
 - **The map.** An always-current index of your repos (`registry/`),
-  generated from the GitHub API so it cannot drift, plus hand-written
+  generated from your forge accounts so it cannot drift, plus hand-written
   context files (`registry/context/<repo>.md`) holding the judgement a
   generated index can't: what a project is *for*, how it relates to the
   others, what its current goals are.
-- **The orchestration.** Reusable recipes
-  (`orchestration/playbooks/<name>.md`) and one log per run
-  (`orchestration/runs/<date>-<slug>.md`).
+- **The orchestration.** A task queue (`orchestration/queue/<topic>/`),
+  reusable recipes (`orchestration/playbooks/<name>.md`) and one log per
+  run (`orchestration/runs/<date>-<topic>.md`).
 
 The defining rule is what the control plane *doesn't* hold:
 
@@ -71,16 +77,26 @@ it.
 
 ## The run loop
 
-1. Clarify the goal. Pick a playbook, or write one from the template.
-2. Open a run log, named `<YYYY-MM-DD>-<slug>.md`.
-3. For each unit of work, launch a worker session with one
-   self-contained prompt, in its own worktree on the target repo.
-4. Record every session — name, repo, prompt intent, outcome, PR — in
-   the run log **as it happens**, not at the end. A run log written
-   afterwards is a summary; one written during is the source of truth
-   for what happened, and it survives the lead session dying.
-5. Drain results from the mailbox as workers report.
-6. Review the PRs. Delete each session as it closes out.
+Fleet drives it with `uv run fleet queue`:
+
+1. **Topic.** `queue topic add` keeps the prompt verbatim.
+2. **Briefs.** `queue add` makes one task per branch, each with a
+   self-contained `BRIEF.md`: the goal, the constraints, what done means.
+   Workers share no context with the lead or with each other.
+3. **Plan and dispatch.** `queue plan` says what is ready and why the
+   rest waits; `queue dispatch` launches every ready task at once, each in
+   its own worktree on the target repo.
+4. **Watch and collect.** `queue watch` folds thurbox's event stream into
+   the records; `queue collect` reads the `result.md` each worker writes
+   and checks its artifact. Only that closes a task.
+5. **Shepherd and refuel.** `queue shepherd` follows every open change
+   request and merges only where the operator allowed it; `queue refuel`
+   restarts a worker that stopped on a spent quota window.
+6. **Land and reap.** When the forge says every artifact merged, the task
+   is landed and `queue reap` releases its session.
+
+The run log opens with the topic and stays the lead's: the goal in its
+words, the decisions, what went wrong.
 
 ---
 
@@ -117,44 +133,42 @@ can be addressed. Workers can mail it. It has a UUID to hand out as
 session. The lead being a first-class session is the precondition for
 everything in the next two sections.
 
-### The mailbox, not polling
+### A report the worker writes, not polling
 
-Workers report by mailing the lead:
+Completion is something the worker writes on purpose. In Fleet that is a
+`result.md` in the task's queue directory, with an outcome, the artifact
+and what the worker learned; `fleet queue collect` reads it and checks the
+artifact against the forge, or against git for a pushed commit. A turn
+ending is not a task finishing.
+
+A lead you build yourself can use thurbox's mailbox for the same report:
 
 ```sh
 thurbox-cli message send --to <lead> --kind result --body '<PR url>'
-```
-
-The lead drains its inbox exactly once:
-
-```sh
 thurbox-cli message inbox --for <lead> --claim --json
 ```
 
-`send` **wakes** the recipient by default, so the lead never polls.
 thurbox injects `THURBOX_SESSION` into each session's environment, and
-both `--from` and `inbox --for` default to it, so a worker needs no ids
-to mail home and the lead needs none to read its own mail.
+both `--from` and `inbox --for` default to it, so neither side needs ids.
+`send` wakes the recipient unless given `--no-wake`; Fleet's reconciler
+uses `--no-wake` to leave Mission Control a note it cannot type in.
 
-**Why not poll `gh pr list`?** Three reasons, and the third is the one
-that matters:
+**Why not poll `gh pr list`?** Either report beats it:
 
-- It is **exact**. A message is addressed to the lead by a worker that
-  knows it finished. A PR query infers completion from a side effect.
-- It is **immediate**. `send` wakes the lead; a poll runs on its own
-  cadence and adds latency proportional to the interval.
+- It is **exact**. The report comes from a worker that knows it
+  finished. A PR query infers completion from a side effect.
 - It can say **"not applicable"**. A worker that correctly concludes
-  there was nothing to do reports that in one message. A PR poll cannot
-  distinguish "no PR because there was nothing to fix" from "no PR
-  because the worker is still thinking" — and those demand opposite
-  responses from the lead.
+  there was nothing to do says so. A PR poll cannot distinguish "no PR
+  because there was nothing to fix" from "no PR because the worker is
+  still thinking" — and those demand opposite responses from the lead.
 
-`--kind` is a free-form tag, so a run can distinguish `result` from
-`questions` or `plan` without the lead parsing prose.
+Fleet picks the file over the message because a file is durable: it
+survives the lead session restarting, and the lead reads it on its own
+schedule instead of being interrupted.
 
 ### `watch`, for everything that is not a report
 
-The mailbox is how a worker says it finished. `thurbox-cli watch` is how a
+A report is how a worker says it finished. `thurbox-cli watch` is how a
 driver learns everything the worker was never going to mail — that it went
 blocked on a permission, that its pane died, that somebody deleted it:
 
@@ -211,20 +225,21 @@ When a lead is replaced, move its workers with `session reparent <worker>
 <new-lead>` (`--clear` makes one top-level). The new parent must be active, and
 a link that would make a cycle is refused.
 
-### Deliberately no automations
+### A supervised loop, not automations
 
-thurbox has `[[automations]]` (ADR-8b), and this pattern does not use
-them.
+thurbox has `[[automations]]` (ADR-8b), and Fleet does not use them for its
+periodic work. That is its reconciler, `uv run fleet reconcile`: one
+supervised process holding a lock and a heartbeat, brought back by a user
+service or by the lead's session start, and stopped only by the operator
+(`stop` leaves a down flag `ensure` honours; `start` clears it). It runs
+`watch`, `collect`, `shepherd`, `refuel` and the read-only `plan` on
+their own intervals, because a worker that died on a token limit fires no
+hook to say so.
 
-The one scheduled candidate is the registry sync. It regenerates the
-index from the GitHub API, then commits and pushes. That is a write to
-`main` on a cadence, with no reader — so a human runs it and reads the
-diff. Nothing else in the pattern is periodic: a run starts because
-someone has a goal.
-
-Restraint here is part of the pattern, not an omission from it. A
-control plane that fires unattended writes is a second actor in the
-system, and the whole point of the run log is that there is one.
+Restraint is still part of the pattern. The reconciler never dispatches,
+cancels or reorders, and every effect it has goes through `fleet queue`.
+Rebuilding the map (`uv run fleet sync-registry`) is a command the operator
+runs, and it writes only local, gitignored files.
 
 ---
 
@@ -244,8 +259,9 @@ wired to report at all. Polling it for completion is how a lead waits
 forever on a worker that finished an hour ago, or declares one done
 because its agent was never instrumented in the first place.
 
-So headless completion detection is still the **mailbox**, or a printed
-sentinel the lead greps out of `session capture`. What the state fields
+So headless completion detection is still a **report** the worker writes
+— a result file or a mailbox message — or a printed sentinel the lead
+greps out of `session capture`. What the state fields
 are for is *supervision* — noticing that a worker is stuck, blocked, or
 gone — and each one comes with what it takes to judge it:
 
@@ -422,83 +438,49 @@ Fetch and fast-forward before `session create`, and verify
 
 ## The reference implementation
 
-Everything above, as a public GitHub template: **the `fleet` repository**,
-<https://github.com/Thurbeen/fleet>. It is also the worked example of a
-thurbox extension — the one the rest of the documentation points at, since
-`extensions/` in the thurbox repo holds only the two built-ins.
-
-```text
-registry/
-  owners.example.txt         copy to owners.txt; GitHub owners to index
-  repos.generated.yaml       generated and gitignored; never hand-edited
-  context/_TEMPLATE.md       copy this to add a project
-orchestration/
-  playbooks/_TEMPLATE.md     copy this to add a recipe
-  runs/_TEMPLATE.md          copy this per run
-  session-profiles.yaml      the session shapes a run may ask for
-scripts/
-  sync-registry.sh           regenerate the index via `gh`
-  sync-checkout.sh           fast-forward main when that is safe
-  install-extension.sh       render extension.toml, then install
-  update-from-template.sh    pull the template's changes into your clone
-extension.toml.in            manifest template (rendered at install time)
-FLEET.md                     standing context for the long-lived session
-CLAUDE.md                    how an agent works inside the control plane
-```
-
-**Clone it — do not use "Use this template", and do not fork.** A control
-plane is private *and* has to be updatable, and only a clone gives both:
-a generated-from-template repo shares no history with its source, so there
-is nothing to merge, and GitHub refuses to make a public fork private.
+**[Fleet](https://github.com/Thurbeen/fleet)** is all of the above,
+maintained. It is also the worked example of a thurbox extension — the one
+the rest of the documentation points at, since `extensions/` in the thurbox
+repo holds only the two built-ins.
 
 ```sh
-git clone https://github.com/Thurbeen/fleet.git my-control-plane
-cd my-control-plane
-git remote rename origin template   # the template you later update FROM
-gh repo create my-control-plane --private --source=. --remote=origin --push
+curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
 ```
 
-Then open the clone in your agent CLI and run its `/fleet-onboarding`
-skill, which does the setup rather than instructing you through it. By
-hand it is the two scripts that skill calls:
+On Windows, `irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex`.
+It needs thurbox with tmux (psmux on Windows), git and an agent CLI;
+`gh` or `glab` is optional, and a local-only fleet works without either.
+Then start Mission Control in thurbox and run `/fleet-onboarding`. The
+[README](https://github.com/Thurbeen/fleet#readme) and
+[`AGENTS.md`](https://github.com/Thurbeen/fleet/blob/main/AGENTS.md) are
+the operating manual.
 
-```sh
-cp registry/owners.example.txt registry/owners.txt   # then edit: you + your orgs
-./scripts/sync-registry.sh
-./scripts/install-extension.sh
-```
+Everything a running fleet writes — the queue, run logs, the generated map
+and its facts, the operator's settings — is gitignored, so the public repo
+holds only the machinery and does not back that content up. Merging is
+explicit: `shepherd` squash-merges only the repositories the operator's own
+`auto-merge.conf` names, and the tracked example names none.
 
-It needs `gh` (authenticated), `jq`, and **thurbox 2.19.0 or newer** —
-`extension.toml.in` records why the floor sits exactly there.
-
-That leaves you with a working control-plane session, and a manifest
-that registers exactly two things: a `fleet` agent in `agents.toml`, and
-one long-lived `fleet` session opened on the checkout.
-
-It is a template, not a thurbox feature: nothing in thurbox knows it
-exists, and your clone is yours to diverge from immediately. The part
-worth copying is the arrangement, not the files. Two of its choices are
-that arrangement rather than its own taste.
+Fleet is an extension, not a thurbox feature: nothing in thurbox knows it
+exists. The part worth copying is the arrangement, not the files. Two of
+its choices are that arrangement rather than its own taste.
 
 **The lead's job description is a payload file, not a prompt.** The
-manifest's `[[files]]` lays down `FLEET.md` in the extension home and
-three `[[symlinks]]` surface it as `CLAUDE.md`, `AGENTS.md` and
-`GEMINI.md`, so the lead reads what it is *for* whichever CLI is behind
-it. That text is deliberately not the repo's own `AGENTS.md`: one says
-what the session is for — hold the plan and the log, never the branches
-— and the other says how to work inside the checkout. A lead whose
-invariant lives only in the conversation that stated it keeps that
-invariant exactly as long as the conversation.
+manifest's `[[files]]` lays down `FLEET.rendered.md`, rendered from the
+checkout's `FLEET.md`, in the extension home, and three `[[symlinks]]`
+surface it as `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`, so the lead reads
+what it is *for* whichever CLI is behind it. That text is deliberately not
+the repo's own `AGENTS.md`: one says what the session is for — hold the
+plan and the log, never the branches — and the other says how to work
+inside the checkout. A lead whose invariant lives only in the conversation
+that stated it keeps that invariant exactly as long as the conversation.
 
 **The manifest ships as `extension.toml.in` because no token spells "my
 clone".** `[[sessions]] repo_path` has to name the checkout — that is
 where `registry/` and `orchestration/` are — and `{home}` is
 substituted, but it resolves to the extension home
-(`<config>/extensions/<name>/`). A template cannot hardcode a path that
-exists on one machine, so it ships a `__REPO_PATH__` placeholder that
-`install-extension.sh` renders from `git rev-parse --show-toplevel`
-before calling `extension install`. A leading `~` *is* expanded there
-(`resolved_for_home`) since 0.174.2, and the manifest's floor is well past
-that — but expansion would not help anyway: `~` names a home directory, not
-a clone, so the placeholder is the permanent answer rather than a
-workaround for an old binary.
+(`<config>/extensions/<name>/`). A committed file cannot hardcode a path
+that exists on one machine, so it ships a `__REPO_PATH__` placeholder that
+`uv run fleet install-extension` renders with the clone's absolute path
+before installing. A leading `~` would not help: it names a home
+directory, not a clone, so the placeholder is the permanent answer.
