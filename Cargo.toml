@@ -142,6 +142,10 @@ name = "search_cost"
 harness = false
 
 [profile.dev]
+# Keep source locations in backtraces without copying full type/variable
+# information into every integration-test binary. The test profile inherits this.
+debug = "line-tables-only"
+
 # Our own crate: enough optimisation to be usable, still quick to rebuild.
 #
 # v2 renders through an embedded Lua VM, so a dev build runs interpreter-heavy
