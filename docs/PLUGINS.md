@@ -1379,6 +1379,15 @@ render = function(ctx)
 end,
 ```
 
+**Choose where it runs.** `machine = "session"` is the default and requires
+`opts.session` to be a nonempty string ID. Missing, empty or non-string session
+values fail the `run()` call before anything is queued. For a machine-level
+readout with no session, select local execution explicitly:
+
+```lua
+run("quota", "quota-axi --json", { machine = "local", ttl = 60, timeout = 30 })
+```
+
 **Ask on every frame.** `run` does nothing while the answer is fresh *or while a
 run for that key is already going*, so asking is a map lookup rather than a
 process — and asking once, somewhere clever, is how a pane ends up showing

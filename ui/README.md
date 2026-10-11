@@ -390,6 +390,10 @@ without, so a misspelling reads as that field missing.
 
 These are the ones that cost real time.
 
+- **Choose the run target.** `run` requires a nonempty string `opts.session`
+  by default. For a machine-level readout without a session, use
+  `{ machine = "local" }`; it runs in the home directory. Invalid session
+  options fail the call before queueing.
 - **Asking every frame is correct.** `run(...)` and the `store.want_*` reads are
   designed to be called on every render: a fresh answer is a table lookup, not a
   process. Do not try to call them "only once" — you will get a pane that never

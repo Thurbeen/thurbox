@@ -389,6 +389,43 @@ fn a_run_may_ask_for_this_machine_instead() {
 }
 
 #[test]
+fn session_routing_requires_a_nonempty_string_before_queueing() {
+    for opts in [
+        "nil",
+        "{}",
+        r#"{ ttl = 60, timeout = 30 }"#,
+        r#"{ machine = "session" }"#,
+        r#"{ session = "" }"#,
+        r#"{ session = false }"#,
+        r#"{ session = {} }"#,
+        r#"{ session = 42 }"#,
+        r#"{ machine = "session", session = "" }"#,
+    ] {
+        let (_home, ui) = interface(&[("91_where.lua", &asking_with("where", opts))]);
+        let host = LuaHost::new(&ui);
+        host.set_trusted(vec!["plugins/91_where.lua".to_string()]);
+        let err = host
+            .render(
+                host.index_of("where").expect("loaded"),
+                RenderContext {
+                    width: 40,
+                    height: 10,
+                    focused: true,
+                    elapsed: 0.0,
+                    frame: 0,
+                },
+            )
+            .expect_err("a session target must identify a session");
+        assert!(
+            err.message
+                .contains("opts.session is required unless opts.machine is \"local\""),
+            "{opts}: {err:?}"
+        );
+        assert!(host.drain_runs().is_empty(), "{opts}: nothing queued");
+    }
+}
+
+#[test]
 fn a_machine_nobody_knows_is_refused_not_guessed() {
     // Falling back to the session would run the program somewhere the pane did
     // not ask for, which is the one thing a `run` must never do. A value that is

@@ -252,25 +252,30 @@ fn install_run(
                     .filter(|n| *n > 0.0)
                     .map(std::time::Duration::from_secs_f64)
             };
-            let string = |name: &str| -> Option<String> {
-                opts.as_ref()
-                    .and_then(|t| t.get::<Option<String>>(name).ok().flatten())
+            let session_target = || {
+                let session = match &opts {
+                    Some(t) => t.get::<Value>("session")?,
+                    None => Value::Nil,
+                };
+                let session = match session {
+                    Value::String(s) if !s.as_bytes().is_empty() => s.to_string_lossy(),
+                    _ => {
+                        return Err(mlua::Error::runtime(
+                            "run(key, program, opts): opts.session is required unless opts.machine is \"local\"",
+                        ));
+                    }
+                };
+                Ok(crate::kernel::runs::Target::Session(session))
             };
-            // Refused rather than defaulted: falling back to the session would
-            // run the program on a machine the pane did not ask for. Read raw,
-            // not through `string`, whose `.ok()` would turn a `false` or a
-            // table into "absent" and so into the session.
+            // A fallback could run the program on a machine the pane did not
+            // ask for, so invalid routing options are refused before queueing.
             let machine = match &opts {
                 Some(t) => t.get::<Value>("machine")?,
                 None => Value::Nil,
             };
             let target = match &machine {
-                Value::Nil => {
-                    crate::kernel::runs::Target::Session(string("session").unwrap_or_default())
-                }
-                Value::String(s) if s == "session" => {
-                    crate::kernel::runs::Target::Session(string("session").unwrap_or_default())
-                }
+                Value::Nil => session_target()?,
+                Value::String(s) if s == "session" => session_target()?,
                 Value::String(s) if s == "local" => crate::kernel::runs::Target::Local,
                 other => {
                     let got = match other.as_string() {
