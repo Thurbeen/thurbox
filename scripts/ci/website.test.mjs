@@ -31,3 +31,30 @@ test('homepage does not promote performance', () => {
   assert.ok(!home.querySelector('a[href*="performance"]'), 'no performance links');
   assert.doesNotMatch(text(home), /benchmark|five-way|frames a second|% of one core|Herdr/i);
 });
+
+test('plugin catalog lists Automations with its repository, install command and current requirements', () => {
+  const repo = 'https://github.com/Thurbeen/thurbox-automations';
+  const card = built('plugins.html')
+    .querySelectorAll('[data-plugin]')
+    .find((c) => c.querySelector('h2 a')?.getAttribute('href') === repo);
+  assert.ok(card, 'a catalog card links to the thurbox-automations repository');
+  assert.equal(card.getAttribute('data-badge'), 'official');
+  assert.equal(
+    text(parse(card.querySelector('pre').innerHTML)).trim(),
+    'thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations',
+  );
+  const copy = text(card);
+  assert.match(copy, /run history|recent runs/i);
+  assert.match(copy, /2\.56\.5/);
+  assert.match(copy, /2\.57\.0/, 'names the release that brought create and edit');
+  assert.doesNotMatch(copy, /need a release with/i, 'create and edit have shipped');
+  const gif = card.querySelector('img').getAttribute('src');
+  assert.equal(gif, 'https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif');
+});
+
+test('features page points automations at their pane', () => {
+  const features = built('docs/features.html');
+  const repo = 'https://github.com/Thurbeen/thurbox-automations';
+  assert.ok(features.querySelector(`a[href="${repo}"]`), 'links the automations pane');
+  assert.doesNotMatch(text(features), /No pane, but they still fire/);
+});
