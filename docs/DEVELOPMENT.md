@@ -91,6 +91,52 @@ reports CPU. Neither is in CI — wall-clock timing stays out of the gate
 terminal size and session count, never a single absolute number. Both are
 explained in [`docs/PERFORMANCE.md`](PERFORMANCE.md).
 
+### Debug information and disk usage
+
+The dev profile uses `debug = "line-tables-only"`; the test profile inherits it,
+including dependency builds. Backtraces retain function names and file/line
+locations, while debugger inspection of local variables and types needs full
+debug information. Optimization, debug assertions, overflow checks and
+incremental compilation keep their existing settings. Release profiles are
+unchanged.
+
+Measured on x86-64 Linux with Rust 1.96.0 and locked dependencies: equivalent
+clean `cargo test --locked --test build_artifacts --test render_props --no-run`
+builds before and after the profile change, with incremental compilation enabled.
+This sample includes Cargo's application binaries, not the whole test suite.
+
+| Artifact | Full debug (before) | Line tables (after) |
+|----------|---------------------|---------------------|
+| `render_props` executable | 315,447,136 B | 111,139,288 B |
+| Its `.debug_*` sections | 305,365,470 B | 101,060,143 B |
+| `thurbox-cli` executable | 320,331,016 B | 122,324,640 B |
+| Sample `target/` disk usage | 3,571,748,864 B | 2,051,538,944 B |
+| Sample `target/debug/incremental/` disk usage | 893,779,968 B | 524,468,224 B |
+
+This applies to `cargo build`, `cargo test`, `just test`, nextest and its archives
+on Linux and native Windows. Nextest's `--profile ci` selects runner settings
+from `.config/nextest.toml`, not a Cargo build profile.
+
+Request full debug information for a debugging session with environment
+overrides (the default-artifact regression skips these explicit overrides):
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=2 cargo build
+CARGO_PROFILE_TEST_DEBUG=2 cargo test
+```
+
+In PowerShell, set `$env:CARGO_PROFILE_DEV_DEBUG = '2'` before `cargo build`, or
+`$env:CARGO_PROFILE_TEST_DEBUG = '2'` before `cargo test`, then remove that variable
+with `Remove-Item Env:CARGO_PROFILE_DEV_DEBUG` or
+`Remove-Item Env:CARGO_PROFILE_TEST_DEBUG` when finished.
+
+Changing profiles does not remove old artifacts. Each worktree retains its own
+`target/`, including previous hash generations and incremental caches. Run
+`cargo clean` in that worktree to reclaim them when a rebuild is acceptable.
+For disposable builds, `CARGO_INCREMENTAL=0` avoids the incremental cache; leave
+it enabled for normal development. Build output belongs on a disk with enough
+space, rather than a memory-backed temporary directory.
+
 ## 3. Runtime sandbox — run thurbox isolated
 
 The sandbox runs the dev build (`0.0.0-dev` → `dev_build` cfg, which uses a
