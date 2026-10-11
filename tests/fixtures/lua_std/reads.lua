@@ -1,6 +1,6 @@
 -- A pane that reads EVERY field `thurbox.yml` declares on the injected tables no
 -- bundled pane reads in a form selene can see — `thurbox.granted`, `.platform`,
--- `.metrics`, `.hover`, `.preflight.mux`, `.settings`, `.theme.roles`, the four
+-- `.keyboard`, `.metrics`, `.hover`, `.preflight.mux`, `.settings`, `.theme.roles`, the four
 -- creation-flow reads and `.runs` — each as a plain dotted path.
 --
 -- Every field, not a sample: a declaration this file does not name is one that
@@ -30,6 +30,8 @@ return {
       -- platform (2)
       tostring(thurbox.platform.os),
       tostring(thurbox.platform.arch),
+      -- keyboard (1)
+      tostring(thurbox.keyboard.releases),
       -- metrics.system (3)
       tostring(thurbox.metrics.system.cpu_percent),
       tostring(thurbox.metrics.system.memory_used),

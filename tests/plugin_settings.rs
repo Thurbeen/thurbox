@@ -332,3 +332,231 @@ fn local_host_row_follows_the_host_grouping_setting() {
     let flat = session_list_of(&host, &registry, one_machine());
     assert!(!flat.contains("local"), "{flat}");
 }
+
+// --- a text setting with declared choices -----------------------------------
+
+/// The bundled interface plus one pane declaring a setting with choices, and
+/// reading back what the registry publishes for it.
+fn host_with_choices() -> (tempfile::TempDir, LuaHost) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_ui(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        dir.path(),
+    );
+    std::fs::write(
+        dir.path().join("plugins/91_picker.lua"),
+        r#"return {
+  name = "picker",
+  slot = "picker",
+  settings = {
+    { id = "engine", desc = "which engine", default = "parakeet", choices = { "parakeet", "whisper" } },
+    { id = "free", desc = "free text", default = "x" },
+  },
+  render = function()
+    local shown = {}
+    for _, entry in ipairs(thurbox.registry.settings) do
+      if entry.plugin == "picker" then
+        shown[#shown + 1] = entry.id .. "=" .. tostring(entry.value) .. "["
+          .. table.concat(entry.choices or {}, "|") .. "]"
+      end
+    end
+    return { type = "text", text = table.concat(shown, " ") }
+  end,
+}"#,
+    )
+    .expect("add a pane");
+    let host = LuaHost::new(dir.path().to_path_buf());
+    assert!(host.error.is_none(), "{:?}", host.error);
+    (dir, host)
+}
+
+fn copy_ui(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("mkdir");
+    for entry in std::fs::read_dir(from).expect("read_dir") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("file_type").is_dir() {
+            copy_ui(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy");
+        }
+    }
+}
+
+fn picker(registry: &Registry) -> &thurbox::kernel::registry::Setting {
+    registry
+        .settings()
+        .iter()
+        .find(|s| s.plugin == "picker" && s.id == "engine")
+        .expect("declared")
+}
+
+#[test]
+fn declared_choices_are_collected_and_a_value_outside_them_is_refused() {
+    let (_dir, host) = host_with_choices();
+    let mut registry = registry_for(&host);
+    assert_eq!(picker(&registry).choices, vec!["parakeet", "whisper"]);
+    let free = registry
+        .settings()
+        .iter()
+        .find(|s| s.plugin == "picker" && s.id == "free")
+        .expect("declared");
+    assert!(free.choices.is_empty(), "no choices means free text");
+
+    registry
+        .set_setting("picker", "engine", Some(Value::Text("whisper".into())))
+        .expect("a declared choice is accepted");
+    assert_eq!(picker(&registry).value, Value::Text("whisper".into()));
+    let refused = registry.set_setting("picker", "engine", Some(Value::Text("wisper".into())));
+    assert!(refused.is_err(), "a misspelt choice must be refused");
+    assert_eq!(picker(&registry).value, Value::Text("whisper".into()));
+}
+
+#[test]
+fn a_persisted_value_outside_the_choices_falls_back_to_the_default() {
+    let config = tempfile::tempdir().expect("tempdir");
+    let _guard = thurbox::paths::TestPathGuard::new(config.path());
+    let ui_json = thurbox::paths::config_file()
+        .and_then(|file| file.parent().map(|dir| dir.join("ui.json")))
+        .expect("config dir");
+    std::fs::create_dir_all(ui_json.parent().unwrap()).expect("mkdir");
+    std::fs::write(
+        &ui_json,
+        r#"{ "settings": { "picker.engine": "retired-model" } }"#,
+    )
+    .expect("seed ui.json");
+    let (_dir, host) = host_with_choices();
+    let mut registry = Registry::load();
+    let (bindings, settings) = host.declarations();
+    registry.declare(bindings, settings);
+    assert_eq!(picker(&registry).value, Value::Text("parakeet".into()));
+}
+
+#[test]
+fn the_choices_are_published_to_lua() {
+    let (_dir, host) = host_with_choices();
+    let registry = registry_for(&host);
+    let snapshot = Snapshot::default();
+    let themes = Themes::load(None);
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
+        snapshot: &snapshot,
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: None,
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+    let index = host
+        .plugins
+        .iter()
+        .position(|p| p.name == "picker")
+        .expect("picker plugin");
+    let node = host
+        .render(
+            index,
+            RenderContext {
+                width: 80,
+                height: 1,
+                focused: false,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render")
+        .node;
+    let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            thurbox::kernel::paint::render(
+                frame,
+                frame.area(),
+                &node,
+                &thurbox::kernel::paint::PlaceholderSurfaces,
+            )
+        })
+        .expect("draw");
+    let drawn: String = (0..80)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_string())
+        .collect();
+    assert!(
+        drawn.contains("engine=parakeet[parakeet|whisper] free=x[]"),
+        "{drawn}"
+    );
+}
+
+/// A pane declaring one setting row, loaded beside the bundled interface: the
+/// load error it causes, if any.
+fn load_error_for(setting: &str) -> Option<String> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_ui(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        dir.path(),
+    );
+    std::fs::write(
+        dir.path().join("plugins/91_bad.lua"),
+        format!(
+            r#"return {{
+  name = "bad",
+  slot = "bad",
+  settings = {{ {setting} }},
+  render = function() return {{ type = "text", text = "" }} end,
+}}"#
+        ),
+    )
+    .expect("add a pane");
+    let host = LuaHost::new(dir.path().to_path_buf());
+    match host.index_of("bad") {
+        Some(_) => None,
+        None => Some(host.error.clone().unwrap_or_else(|| "not loaded".into())),
+    }
+}
+
+#[test]
+fn a_choices_declaration_that_cannot_be_stepped_is_a_load_error() {
+    for (setting, says) in [
+        (
+            r#"{ id = "e", default = "x", choices = { "a", "b" } }"#,
+            "not one of its choices",
+        ),
+        (
+            r#"{ id = "e", default = true, choices = { "a", "b" } }"#,
+            "string default",
+        ),
+        (
+            r#"{ id = "e", default = "a", choices = {} }"#,
+            "must not be empty",
+        ),
+        (
+            r#"{ id = "e", default = "a", choices = { "a", "a", "b" } }"#,
+            "more than once",
+        ),
+    ] {
+        let error = load_error_for(setting)
+            .unwrap_or_else(|| panic!("{setting} loaded, but it cannot be stepped"));
+        assert!(error.contains(says), "{setting}: {error}");
+    }
+    assert_eq!(
+        load_error_for(r#"{ id = "e", default = "b", choices = { "a", "b" } }"#),
+        None,
+        "a well-formed declaration loads"
+    );
+}

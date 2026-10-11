@@ -82,7 +82,7 @@ else
     failed=1
 fi
 
-for name in granted.lua platform.lua metrics.lua metrics_system.lua hover.lua \
+for name in granted.lua platform.lua keyboard.lua metrics.lua metrics_system.lua hover.lua \
     preflight_mux.lua settings_features.lua theme_roles.lua bookmarks.lua \
     browse.lua branches.lua worktrees.lua; do
     reported=$(lint "$probes/typos/$name")

@@ -23,7 +23,7 @@ mod draw;
 pub(crate) mod editor;
 pub(crate) mod events;
 mod focus;
-mod input;
+pub(crate) mod input;
 mod interface;
 pub(crate) mod mouse;
 pub(crate) mod paste;
