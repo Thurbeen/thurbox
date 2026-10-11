@@ -49,24 +49,7 @@ fn updater(root: &Path) -> Command {
     cmd
 }
 
-#[test]
-fn interrupted_cli_update_recovers_only_abandoned_scratch() {
-    let root = tempfile::tempdir().unwrap();
-    for directory in ["config", "data", "home", "bin"] {
-        std::fs::create_dir(root.path().join(directory)).unwrap();
-    }
-    let live = root
-        .path()
-        .join("data")
-        .join(format!(".update-{}-23", std::process::id()));
-    std::fs::create_dir(&live).unwrap();
-    std::fs::write(live.join("keep"), b"live update").unwrap();
-    std::fs::File::open(&live)
-        .unwrap()
-        .set_times(
-            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(7200)),
-        )
-        .unwrap();
+fn install_fake_downloaders(root: &Path) {
     for (name, script) in [
         (
             "curl",
@@ -92,10 +75,91 @@ exit 1
         ),
         ("wget", "#!/bin/sh\nexit 1\n"),
     ] {
-        let path = root.path().join("bin").join(name);
+        let path = root.join("bin").join(name);
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
+
+#[test]
+fn fallback_fetch_child() {
+    if std::env::var_os("THURBOX_UPDATE_TEST_FALLBACK").is_none() {
+        return;
+    }
+    let error =
+        thurbox::agent::self_update::fetch_archive("1.2.3", "x86_64-pc-windows-msvc").unwrap_err();
+    assert!(error.contains("failed to download"), "{error}");
+}
+
+#[test]
+fn fallback_does_not_reserve_or_sweep_shared_temp_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let temporary = root.path().join("temporary");
+    std::fs::create_dir(&temporary).unwrap();
+    std::fs::create_dir(root.path().join("bin")).unwrap();
+    install_fake_downloaders(root.path());
+    std::fs::write(temporary.join("thurbox-update"), b"unrelated file").unwrap();
+    let mut exited = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fallback_fetch_child"])
+        .env_remove("THURBOX_UPDATE_TEST_FALLBACK")
+        .spawn()
+        .unwrap();
+    let pid = exited.id();
+    assert!(exited.wait().unwrap().success());
+    let unrelated = temporary.join(format!(".update-{pid}-31"));
+    std::fs::create_dir(&unrelated).unwrap();
+    std::fs::write(unrelated.join("keep"), b"unrelated staging").unwrap();
+    std::fs::File::open(&unrelated)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(7200)),
+        )
+        .unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fallback_fetch_child", "--nocapture"])
+        .env("THURBOX_UPDATE_TEST_FALLBACK", "1")
+        .env("THURBOX_UPDATE_TEST_HOLD", "0")
+        .env("TMPDIR", &temporary)
+        .env("PATH", root.path().join("bin"))
+        .env_remove("THURBOX_DATA_DIR")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("HOME")
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "unrelated temp namespace must not block fetching"
+    );
+    assert_eq!(
+        std::fs::read(temporary.join("thurbox-update")).unwrap(),
+        b"unrelated file"
+    );
+    assert_eq!(
+        std::fs::read(unrelated.join("keep")).unwrap(),
+        b"unrelated staging"
+    );
+    assert_eq!(std::fs::read_dir(&temporary).unwrap().count(), 2);
+}
+
+#[test]
+fn interrupted_cli_update_recovers_only_abandoned_scratch() {
+    let root = tempfile::tempdir().unwrap();
+    for directory in ["config", "data", "home", "bin"] {
+        std::fs::create_dir(root.path().join(directory)).unwrap();
+    }
+    let live = root
+        .path()
+        .join("data")
+        .join(format!(".update-{}-23", std::process::id()));
+    std::fs::create_dir(&live).unwrap();
+    std::fs::write(live.join("keep"), b"live update").unwrap();
+    std::fs::File::open(&live)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(7200)),
+        )
+        .unwrap();
+    install_fake_downloaders(root.path());
     let mut running = UpdateProcess {
         child: updater(root.path())
             .env("THURBOX_UPDATE_TEST_HOLD", "1")

@@ -321,11 +321,14 @@ const SCRATCH_RECOVERY_AGE: std::time::Duration = std::time::Duration::from_secs
 
 impl ScratchDir {
     fn new() -> Result<Self, String> {
-        let base = crate::paths::log_directory()
-            .unwrap_or_else(|| std::env::temp_dir().join("thurbox-update"));
+        let data_base = crate::paths::log_directory();
+        let base = data_base.clone().unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&base)
             .map_err(|e| format!("create update scratch base {}: {e}", base.display()))?;
-        recover_scratch(&base);
+        // The system temp fallback is shared with other programs.
+        if data_base.is_some() {
+            recover_scratch(&base);
+        }
         loop {
             // A random token avoids adopting an old process's sequence after
             // pid reuse, including while another recovery pass is in flight.
@@ -638,9 +641,8 @@ fn install_binaries(
 /// Download, verify, extract, and install the latest release in place.
 ///
 /// `force` bypasses the up-to-date, dev-build and major-version guards
-/// (re-downloads + replaces regardless). Best-effort and side-effect-free until
-/// the checksum passes — any failure before the swap leaves the installed
-/// binaries untouched.
+/// (re-downloads + replaces regardless). Staging may be recovered before
+/// verification; any failure before the swap leaves installed binaries untouched.
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 

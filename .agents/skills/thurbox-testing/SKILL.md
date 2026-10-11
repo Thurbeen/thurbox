@@ -118,9 +118,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   group mid-download. The leader stays unreaped until group teardown so the
   harness cannot signal a reused pid. Pins recovery on the next update while
   preserving an aged live owner's staging; no network or installed binary is
-  touched. `agent::self_update::tests` covers the same staging lifecycle in
-  child processes on Unix and native Windows, including normal exit, recent
-  work, legacy names, malformed ownership, and symlinks / Windows junctions.
+  touched. A subprocess probe also pins that the system temp fallback never
+  reserves or sweeps unrelated paths. `agent::self_update::tests` covers the same
+  staging lifecycle in child processes on Unix and native Windows, including normal
+  exit, recent work, legacy names, malformed ownership, and symlinks / Windows junctions.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
   throwaway socket (skipped when tmux is absent), because the bug it pins only
   exists in how tmux resolves a target. 13 tests. Six pin the reap itself: a

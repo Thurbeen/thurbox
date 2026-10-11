@@ -2078,12 +2078,12 @@ also recovers staging left by a process that exited without destructors
 | Age | Directory modification time is at least one hour old; unknown or future timestamps are preserved |
 | Owner | The OS confirms the PID has exited; live PIDs, reused PIDs and uncertain probes are preserved |
 
-Age alone never authorizes deletion. Recovery stays inside that directory,
-unlinks nested links without following them, and is best-effort so a failed
-cleanup does not block an update. New staging uses an exclusive directory
-creation with a random numeric token, preventing an update from adopting
-another allocation's path. Recovery runs when staging is allocated, rather
-than on checks that skip downloading.
+Age alone never authorizes deletion. Recovery stays inside that directory, never sweeps
+the system temp fallback, and unlinks nested links without following them. Failed cleanup
+does not block an update. New staging uses an exclusive
+directory creation with a random numeric token, preventing an update from adopting another
+allocation's path. Recovery runs when staging is allocated, rather than on checks that
+skip downloading.
 
 ---
 
