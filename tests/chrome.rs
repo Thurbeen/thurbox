@@ -62,9 +62,7 @@ fn automation(id: i64, name: &str) -> AutomationRow {
         schedule: "0 3 * * *".into(),
         action: "send".into(),
         enabled: true,
-        last_outcome: None,
-        last_detail: None,
-        runs: Vec::new(),
+        ..AutomationRow::default()
     }
 }
 

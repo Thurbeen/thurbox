@@ -919,15 +919,39 @@ fn build_automations(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
             "last_detail",
             opt_lua_string(lua, row.last_detail.as_deref())?,
         )?;
+        set(&item, "trigger", row.trigger.clone())?;
+        set(&item, "prompt", row.prompt.clone())?;
+        for (key, value) in [
+            ("timezone", &row.timezone),
+            ("session", &row.session),
+            ("repo", &row.repo),
+            ("branch", &row.branch),
+            ("base", &row.base),
+            ("agent", &row.agent),
+            ("command", &row.command),
+        ] {
+            set(&item, key, opt_lua_string(lua, value.as_deref())?)?;
+        }
+        set(&item, "extra_repos", row.extra_repos)?;
+        set(&item, "created_at", row.created_at)?;
+        set(&item, "updated_at", row.updated_at)?;
+        set(&item, "last_run_at", row.last_run_at)?;
+        set(&item, "next_run_at", row.next_run_at)?;
         // The whole history, not just the last outcome: v1's run-history
         // pane lists every recent run, and a plugin cannot reconstruct
         // those from `last_outcome` alone.
         let runs = lua.create_table().map_err(|e| e.to_string())?;
         for (position, run) in row.runs.iter().enumerate() {
             let entry = lua.create_table().map_err(|e| e.to_string())?;
+            set(&entry, "id", run.id)?;
             set(&entry, "started_at", run.started_at)?;
             set(&entry, "status", run.status.clone())?;
             set(&entry, "detail", run.detail.clone())?;
+            set(
+                &entry,
+                "session",
+                opt_lua_string(lua, run.session.as_deref())?,
+            )?;
             runs.raw_set(position + 1, entry)
                 .map_err(|e| e.to_string())?;
         }

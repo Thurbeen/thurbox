@@ -98,6 +98,31 @@ impl AutomationSchedule {
         }
     }
 
+    /// The schedule as a `trigger` value: `cron:<expr>` or `at:<unix_millis>`.
+    ///
+    /// The spelling [`parse_trigger`] reads, so an editor can hand a stored
+    /// schedule back unchanged.
+    pub fn trigger(&self) -> String {
+        match self {
+            Self::Once { at } => format!("at:{at}"),
+            Self::Cron { expr } => format!("cron:{expr}"),
+        }
+    }
+
+    /// Why this schedule cannot be evaluated, when it cannot.
+    ///
+    /// [`Self::next_after`] answers `None` both for a schedule with no future
+    /// occurrence and for a cron expression that does not parse; a writer has to
+    /// tell the two apart to say what is wrong.
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            Self::Once { .. } => Ok(()),
+            Self::Cron { expr } => cron::Schedule::from_str(&normalize_cron(expr))
+                .map(|_| ())
+                .map_err(|e| format!("invalid cron expression `{expr}`: {e}")),
+        }
+    }
+
     /// Compute the next fire time strictly after `now_millis`, evaluated in the
     /// given IANA `timezone` (or system local when `None`). Returns `None` when
     /// the schedule has no future occurrence (a past one-shot, or an
@@ -296,6 +321,13 @@ pub fn parse_trigger(
     };
     Ok(AutomationSchedule::Cron {
         expr: preset_to_cron(preset, hour, minute, dow),
+    })
+}
+
+/// Refuse a timezone [`AutomationSchedule::next_after`] would silently ignore.
+pub fn check_timezone(timezone: &str) -> Result<(), String> {
+    chrono_tz::Tz::from_str(timezone).map(|_| ()).map_err(|_| {
+        format!("unknown timezone `{timezone}` (use an IANA name such as Europe/Zurich)")
     })
 }
 

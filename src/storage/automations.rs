@@ -129,6 +129,94 @@ impl Database {
         Ok(())
     }
 
+    /// [`Self::update_automation`] for a writer that read the row a moment ago.
+    ///
+    /// It never writes `last_run_at`, which only a fire writes. `timing` is the
+    /// `(enabled, next_run_at)` the writer read: with `None` neither is written,
+    /// and with `Some` both are written only if the row still holds them, so a
+    /// fire the heartbeat claimed ([`Self::claim_due_automation`] is a
+    /// compare-and-set on `next_run_at`) or a disable that landed meanwhile is
+    /// not undone. Returns whether the row was written.
+    pub fn update_automation_definition(
+        &self,
+        auto: &Automation,
+        timing: Option<(bool, Option<u64>)>,
+    ) -> rusqlite::Result<bool> {
+        let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
+            super::action_to_columns(&auto.action);
+        let now = current_time_millis() as i64;
+        let definition = "name = ?2, schedule_kind = ?3, schedule_spec = ?4, timezone = ?5, \
+             action_kind = ?6, target_session = ?7, repo_path = ?8, worktree_branch = ?9, \
+             base_branch = ?10, agent = ?11, prompt = ?12, updated_at = ?13, \
+             action_extra_repos = ?14, action_command = ?15";
+        let columns = params![
+            auto.id,
+            auto.name,
+            auto.schedule.kind(),
+            auto.schedule.spec(),
+            auto.timezone,
+            auto.action.kind(),
+            target_session,
+            repo_path,
+            worktree_branch,
+            base_branch,
+            agent,
+            auto.prompt,
+            now,
+            extra,
+            command,
+        ];
+        let updated = match timing {
+            Some((read_enabled, read_next)) => {
+                let mut all = columns.to_vec();
+                let enabled = auto.enabled as i64;
+                let next = auto.next_run_at.map(|v| v as i64);
+                let read_enabled = read_enabled as i64;
+                let read_next = read_next.map(|v| v as i64);
+                all.extend([
+                    &enabled as &dyn rusqlite::ToSql,
+                    &next,
+                    &read_enabled,
+                    &read_next,
+                ]);
+                self.conn.execute(
+                    &format!(
+                        "UPDATE automations SET {definition}, enabled = ?16, next_run_at = ?17 \
+                         WHERE id = ?1 AND enabled = ?18 AND next_run_at IS ?19"
+                    ),
+                    all.as_slice(),
+                )?
+            }
+            None => self.conn.execute(
+                &format!("UPDATE automations SET {definition} WHERE id = ?1"),
+                columns,
+            )?,
+        };
+        Ok(updated > 0)
+    }
+
+    /// Switch an automation on with the next run computed from `read`, the
+    /// row as the caller read it: only the flag and the next run are written,
+    /// and only while the row is still off or unscheduled on that same schedule.
+    /// An edit that landed meanwhile keeps its definition; one that moved the
+    /// schedule is not enabled on the old one. Returns whether it was written.
+    pub fn enable_automation(&self, read: &Automation, next_run_at: u64) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE automations SET enabled = 1, next_run_at = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND (enabled = 0 OR next_run_at IS NULL) \
+             AND schedule_kind = ?4 AND schedule_spec = ?5 AND timezone IS ?6",
+            params![
+                read.id,
+                next_run_at as i64,
+                current_time_millis() as i64,
+                read.schedule.kind(),
+                read.schedule.spec(),
+                read.timezone,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
     /// Enable or disable an automation. Disabling clears `next_run_at` so the
     /// due-scan skips it; enabling leaves `next_run_at` for the caller to set.
     pub fn set_automation_enabled(&self, id: i64, enabled: bool) -> rusqlite::Result<bool> {

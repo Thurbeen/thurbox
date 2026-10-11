@@ -37,6 +37,20 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> bool {
         use thurbox::kernel::command::Command;
+        // Refused here rather than on a worker, which knows no grant: an exec
+        // automation's command is a command line the heartbeat runs, so a pane
+        // may write one only if it may run programs at all.
+        if let Some(error) = command.refusal(|owner, need| self.host.may_path(owner, need)) {
+            let subject = command.subject();
+            self.enqueue_event(
+                thurbox::kernel::events::Event::new("command.failed")
+                    .with("kind", Some(command.kind()))
+                    .with("subject", subject.as_deref())
+                    .with("error", Some(error.as_str())),
+            );
+            self.report(error, Level::Error);
+            return true;
+        }
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
             // state a worker thread cannot reach, and it is instant, so nothing is
@@ -367,7 +381,13 @@ impl App {
             .current()
             .session(&session)
             .map(|row| row.name.clone())
-            .filter(|label| !label.is_empty());
+            .filter(|label| !label.is_empty())
+            // An automation names no session; its own `#<id>` or name is what
+            // the message band and `command.failed`'s `subject` should carry.
+            .or_else(|| match &command {
+                Command::Automation { .. } | Command::AutomationSave { .. } => command.subject(),
+                _ => None,
+            });
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
         let name = match &command {
