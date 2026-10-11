@@ -472,7 +472,9 @@ Four panes per plugin. `thurbox.granted.<name>` is how a pane knows, since
 in the session's working directory, and on that session's own host for a remote
 session — or, with `machine = "local"`, on the machine running thurbox, in the home
 directory, with no session (`runs::Target::Local`; for programs that need this
-machine's microphone, display or clipboard). An unknown `machine` fails the call
+machine's microphone, display or clipboard). The default `machine = "session"`
+requires a nonempty string `opts.session`; missing, empty or non-string IDs fail
+before queueing. An unknown `machine` fails the call
 rather than falling back. `run(key, program, opts)`; the answer arrives next frame as
 `thurbox.runs[key]`, so Lua still never blocks, and asking **every frame is the
 intended pattern** because a fresh answer is a map lookup rather than a process

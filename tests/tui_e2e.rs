@@ -2873,6 +2873,41 @@ fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
     .expect("seed trust");
 }
 
+#[test]
+fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
+    let body = r#"return {
+  name = "run-contract", slot = "sessions", capabilities = { "run" },
+  render = function()
+    if not run then return { type = "text", text = "untrusted" } end
+    local accepted, err = pcall(run, "missing", "echo SHOULD-NOT-RUN", { ttl = 60 })
+    if not state.asked then
+      run("local", "echo LOCAL-RUN-OK", { machine = "local", ttl = 60 })
+      state.asked = true
+    end
+    local got = (thurbox.runs or {})["local"]
+    return { type = "box", children = {
+      { type = "text", len = 1, text = accepted and "MISSING-ACCEPTED" or tostring(err) },
+      { type = "text", len = 1, text = got and (got.stdout or got.error or got.state) or "pending" },
+    } }
+  end,
+}"#;
+    let interface = interface_with("plugins/10_sessions.lua", body);
+    std::fs::write(
+        interface.path().join("layout.lua"),
+        "return function() return { children = { { slot = 'sessions' } } } end",
+    )
+    .expect("layout");
+    let profile = Profile::new();
+    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("opts.session is required unless opts.machine is \"local\"");
+    tui.wait_for("LOCAL-RUN-OK");
+    assert!(!tui.frame().contains("MISSING-ACCEPTED"));
+    assert!(tui.quit().success());
+}
+
 /// Types at a program it started, and counts what `command.failed` told it.
 const TYPIST: &str = r#"return {
   name = "typist",
