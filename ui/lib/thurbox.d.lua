@@ -268,7 +268,7 @@
 ---@field desc? string
 ---@field scope? "global"|"plugin"
 ---@field passthrough? boolean
----@field release? boolean Also call `on_action(action, { event = "release" })` when the key is let go; the press then arrives as `{ event = "press" }` and auto-repeat is swallowed. Needs a terminal reporting releases — see `thurbox.keyboard`.
+---@field release? boolean Also call `on_action(action, { event = "release" })` when the key is let go; the press then arrives as `{ event = "press" }` and auto-repeat is swallowed — on a chord with `ctrl`, `alt` or `super`, since outside Windows a held text key (`v`, `space`) repeats as fresh presses. Needs a terminal reporting releases — see `thurbox.keyboard`.
 ---@field group? string
 
 --- A palette row: an action reachable without a chord.

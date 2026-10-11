@@ -79,7 +79,10 @@ pub struct Binding {
     /// swallowed rather than re-fired — a hold is one gesture, not a stream of
     /// presses. A release needs a terminal that reports one (the kitty keyboard
     /// protocol, or Windows), which `thurbox.keyboard.releases` says; without
-    /// one only the presses arrive. See `coordinator::input::Holds`.
+    /// one only the presses arrive. Outside Windows the repeat is swallowed
+    /// only on a chord that types nothing: kitty sends a held `v`, `shift+a`
+    /// or `space` as plain text, a fresh press each time, so such a binding
+    /// wants `ctrl`, `alt` or `super`. See `coordinator::input::Holds`.
     pub release: bool,
     /// Section this key belongs to in help — "Navigation", "Sessions", …
     ///

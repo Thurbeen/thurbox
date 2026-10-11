@@ -742,7 +742,10 @@ end,
 Return `true` from the press, or the release is never delivered: the release goes to
 the plugin that took the press, whichever pane has focus by then, and only to it.
 Where the terminal reports releases, a held key's auto-repeat is swallowed rather than
-fired again. A release nobody is holding goes nowhere — never to a modal, an `on_key`,
+fired again. Give `release` to a chord that types nothing — one with `ctrl`, `alt` or
+`super`, or a key such as `f5`: outside Windows, kitty-protocol terminals send a held
+`v`, `shift+a` or `space` as plain text, so each repeat arrives as a fresh
+`{ event = "press" }`. A release nobody is holding goes nowhere — never to a modal, an `on_key`,
 a text field or a session's terminal — and every binding without `release` behaves
 exactly as before (no second argument, and a held key repeats).
 

@@ -7934,6 +7934,76 @@ fn a_release_binding_gets_one_press_no_repeats_and_its_release() {
     tui.assert_keyboard_flags_popped();
 }
 
+/// kitty sends a text key's press and repeat as plain text even with event
+/// types reported, so once `ctrl` is let go a held `ctrl+space` repeats as a
+/// bare space. Until its release that is still the hold, and types nothing.
+#[test]
+fn a_held_chord_repeating_as_text_after_its_modifier_lifts_types_nothing() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    tui.send(CTRL_SPACE_PRESS);
+    tui.send(CTRL_SPACE_RELEASE);
+    wait_hold(&profile, &tui, "press,release", "reported");
+
+    tui.send(CTRL_SPACE_PRESS);
+    wait_hold(&profile, &tui, "press,release,press", "reported");
+    for _ in 0..3 {
+        tui.send(b" ");
+    }
+    tui.send(SPACE_RELEASE_CTRL_UP);
+    wait_hold(&profile, &tui, "press,release,press,release", "reported");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(spaces(&profile), 0, "the hold's repeats reached a binding");
+
+    // Once let go, a space is a space again.
+    tui.send(b" ");
+    wait_spaces(&profile, &tui, 1);
+    assert!(tui.quit().success());
+}
+
+/// A terminal that accepted the request but sends no releases never ends a
+/// hold, so there a held chord's key must keep typing.
+#[test]
+fn a_terminal_that_sends_no_releases_keeps_a_held_chords_key_typing() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    tui.send(CTRL_SPACE_PRESS);
+    wait_hold(&profile, &tui, "press", "negotiated");
+    tui.send(b" ");
+    wait_spaces(&profile, &tui, 1);
+    assert!(tui.quit().success());
+}
+
+fn wait_spaces(profile: &Profile, tui: &Tui, want: u64) {
+    let deadline = Instant::now() + WAIT;
+    while spaces(profile) < want && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let got = spaces(profile);
+    if got != want {
+        tui.give_up(&format!("{want} spaces reached the binding, saw {got}"));
+    }
+}
+
+/// How many plain spaces reached the `hold` probe pane's `space` binding.
+fn spaces(profile: &Profile) -> u64 {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    state["plugin_state"]["plugins/91_hold.lua"]["spaces"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
 #[test]
 fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
     let interface = hold_interface();
