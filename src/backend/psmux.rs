@@ -981,6 +981,54 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn psmux_no_server_reply_with_unexpected_stdout_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("psmux-listing");
+        std::fs::write(
+            &mux,
+            "#!/bin/sh\nprintf '%s\\n' 'malformed listing'\nprintf '%s\\n' \"psmux: no server running on session 'private-socket__thurbox'\" >&2\nexit 1\n",
+        )
+        .expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let backend = PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "private-socket",
+            "thurbox",
+            "local:psmux",
+        );
+
+        assert!(backend.discover_answered().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_no_server_reply_with_a_second_error_is_an_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = listing_backend(
+            &root,
+            "psmux: no server running on session 'private-socket__thurbox'\npermission denied",
+            1,
+        );
+        assert!(backend.discover_answered().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_no_server_reply_mixed_with_a_same_line_error_is_an_error() {
+        for stderr in [
+            "permission denied: psmux: no server running on session 'private-socket__thurbox'",
+            "psmux: no server running on session 'private-socket__thurbox': permission denied",
+        ] {
+            let root = tempfile::tempdir().expect("tempdir");
+            let backend = listing_backend(&root, stderr, 1);
+            assert!(backend.discover_answered().is_err(), "accepted: {stderr}");
+        }
+    }
+
+    #[cfg(unix)]
     fn attempt_count(root: &tempfile::TempDir) -> usize {
         std::fs::read_to_string(root.path().join("attempts"))
             .expect("new-session was attempted")

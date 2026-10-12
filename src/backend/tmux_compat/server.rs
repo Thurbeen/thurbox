@@ -541,6 +541,57 @@ fn listing_is_absence(is_ssh: bool, code: Option<i32>, stderr: &str) -> bool {
     }
 }
 
+/// Whether a failed listing is exactly the multiplexer's absence reply.
+///
+/// A refusal does not make any stdout trustworthy, and another stderr line
+/// means another failure happened beside it. SSH advisory banners are the one
+/// transport-owned exception; [`mux_stderr`] removes those before this check.
+fn listing_output_is_absence(is_ssh: bool, output: &std::process::Output) -> bool {
+    if !output.stdout.is_empty() {
+        return false;
+    }
+    let stderr = mux_stderr(output, is_ssh);
+    let mut answers = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let Some(answer) = answers.next() else {
+        return false;
+    };
+    answers.next().is_none()
+        && listing_is_absence(is_ssh, output.status.code(), answer)
+        && raw_listing_answered_absent(answer)
+}
+
+/// The unwrapped refusal shapes a one-shot listing can emit.
+///
+/// [`mux_answered_absent`] also reads errors after callers have added command
+/// context, so it deliberately searches within a string. Raw process output
+/// has no such wrapper and must match one documented shape from its first byte.
+fn raw_listing_answered_absent(error: &str) -> bool {
+    if let Some(socket) = error.strip_prefix("psmux: no server running on session '") {
+        return socket
+            .strip_suffix('\'')
+            .is_some_and(|socket| !socket.is_empty() && !socket.contains('\''));
+    }
+    if let Some(path) = error.strip_prefix("error connecting to ") {
+        return path
+            .strip_suffix(" (No such file or directory)")
+            .is_some_and(|path| !path.is_empty());
+    }
+    [
+        "no server running on ",
+        "can't find session: ",
+        "session not found: ",
+    ]
+    .into_iter()
+    .any(|prefix| {
+        error
+            .strip_prefix(prefix)
+            .is_some_and(|value| !value.is_empty())
+    })
+}
+
 /// Whether a multiplexer's stderr is its *own* answer that there is nothing to
 /// act on, rather than any of the ways a question can fail to be answered.
 ///
@@ -920,10 +971,10 @@ impl<M: TmuxCompatible> Server<M> {
                 mux_failure(&output, self.transport.is_ssh())
             );
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if listing_is_absence(self.transport.is_ssh(), output.status.code(), stderr.trim()) {
+        if listing_output_is_absence(self.transport.is_ssh(), &output) {
             return Ok(Vec::new());
         }
+        let stderr = String::from_utf8_lossy(&output.stderr);
         // Plain stderr, as `run_tmux` reports it: `agent` may not reach into
         // `git` (its stderr cleaner lives there), and the architecture test
         // enforces that.
@@ -2925,8 +2976,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                     .launch_failure("Failed to run tmux command", e)
             })?;
         if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if listing_is_absence(self.transport.is_ssh(), out.status.code(), stderr.trim()) {
+            if listing_output_is_absence(self.transport.is_ssh(), &out) {
                 return Ok(false);
             }
             bail!(
