@@ -424,10 +424,18 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
     assert!(db.list_owed_teardowns().unwrap().is_empty());
 
     instance.assert_tmux_untouched("the owed teardown");
+    // The one direct contact: the session's dropped-image directory, which no
+    // backend verb owns, removed with the session.
+    let ssh_log = instance.ssh_log();
+    let direct: Vec<&str> = ssh_log.lines().collect();
     assert_eq!(
-        instance.ssh_log(),
-        "",
-        "nothing spoke to the host but its backend"
+        direct.len(),
+        1,
+        "nothing spoke to the host but its backend and the drop cleanup: {ssh_log}"
+    );
+    assert!(
+        direct[0].ends_with(&format!("rm -rf /tmp/thurbox-drop/{far_id}'")),
+        "the one direct call removes the session's drop directory: {ssh_log}"
     );
 }
 

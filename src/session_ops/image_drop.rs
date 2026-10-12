@@ -56,7 +56,7 @@ pub fn supported(host: &HostDef) -> bool {
 /// Terminals spell a dropped file as a bare path, a quoted or
 /// backslash-escaped one, or a `file://` URI, and several files as several
 /// such words. Every word must resolve to an existing image file within
-/// [`MAX_IMAGE_BYTES`]; one that does not makes the whole paste ordinary text.
+/// `MAX_IMAGE_BYTES`; one that does not makes the whole paste ordinary text.
 pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
     let words = split_words(text.trim())?;
     if words.is_empty() {
