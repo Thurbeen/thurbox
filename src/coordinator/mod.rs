@@ -832,17 +832,10 @@ impl App {
             if !self.respawned.insert(id.clone()) {
                 continue;
             }
-            let name = self
-                .snapshots
-                .current()
-                .session(&id)
-                .map(|row| row.name.clone())
-                .unwrap_or_else(|| id.clone());
             self.dispatch_tracked(thurbox::kernel::command::Command::Restart {
-                session: id.clone(),
+                session: id,
                 if_missing: true,
             });
-            self.toast(format!("{name}: agent was gone, relaunching"));
         }
     }
 

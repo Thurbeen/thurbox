@@ -272,6 +272,12 @@ instead.
 
 ### Session-backend e2e harnesses
 
+On native Windows, `tests/session_lifetime.rs` runs
+`scripts/dev/e2e/psmux-exit-control.ps1` when psmux is installed. It creates a
+random socket and disposable config/data profile, opts out of agent wiring in
+that fresh profile, and checks a real TUI's crash-loop message and failed-command
+event after three actual CLI relaunches. Cleanup runs in `finally`.
+
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)
 sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
