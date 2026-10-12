@@ -613,9 +613,15 @@ fn restart_delegated(
     if if_missing {
         args.push("--if-missing");
     }
-    super::host_cli::run(host, cli, &args)?;
+    let result = super::host_cli::run(host, cli, &args)?;
     if let Err(e) = super::mirror::mirror_host(db, host, cli) {
         tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
+    }
+    if result["held_back"].as_bool().unwrap_or(false) {
+        return Ok(RestartReport {
+            held_back: true,
+            ..RestartReport::default()
+        });
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);

@@ -23,6 +23,38 @@ mod tmux_server;
 
 use tmux_server::TmuxServer;
 
+#[cfg(windows)]
+#[test]
+fn a_psmux_crash_loop_is_reported_as_held_back_in_the_running_interface() {
+    if std::process::Command::new("psmux")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: psmux is not installed");
+        return;
+    }
+    let binaries = std::path::Path::new(env!("CARGO_BIN_EXE_thurbox"))
+        .parent()
+        .unwrap();
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/dev/e2e/psmux-exit-control.ps1"
+        ))
+        .arg("-BinaryDir")
+        .arg(binaries)
+        .output()
+        .expect("run native psmux regression");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
     SessionRow {
         id: id.into(),

@@ -189,6 +189,75 @@ fn restart_refuses_a_false_successful_kill_and_explicit_retry_recovers() {
     assert_eq!(std::fs::read_to_string(history).unwrap(), "author work\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_delegated_crash_loop_hold_reaches_the_calling_cli() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(
+        env.path("config/settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+    )
+    .unwrap();
+    let version = env.run(&["version", "--json"]);
+    assert!(version.status.success());
+    std::fs::write(env.path("data/host-version"), version.stdout).unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.path("config/hooks.toml"),
+        r#"[[hooks]]
+event = 'session.post_restart'
+command = 'touch "$THURBOX_DATA_DIR/post-hook"'
+"#,
+    )
+    .unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        r#"#!/bin/sh
+case "$*" in
+    *'version --json'*)
+        printf '%s\n' '@cli /probe/thurbox-cli' '@status 0'
+        cat "$THURBOX_DATA_DIR/host-version"
+        ;;
+    *session*restart*) printf '%s\n' '{"restarted":false,"held_back":true,"hook_failures":[]}' ;;
+    *session*list*) printf '%s\n' '[]' ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = env.seed("delegated-probe", None);
+    let db = env.db();
+    let mut session = db.get_session_by_id(id).unwrap().unwrap();
+    session.backend_type = "ssh:probe".into();
+    db.upsert_session(&session).unwrap();
+    let mut cmd = env.command(&[
+        "session",
+        "restart",
+        &id.to_string(),
+        "--if-missing",
+        "--json",
+    ]);
+    cmd.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["held_back"], true, "{report}");
+    assert_eq!(report["restarted"], false, "{report}");
+    assert!(!env.path("data/post-hook").exists());
+}
+
 /// `session exec` runs "in the session's context", and the environment is part
 /// of that context.
 ///

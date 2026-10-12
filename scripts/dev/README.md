@@ -2,7 +2,8 @@
 
 Which script for which job. Everything here is isolated from your real
 environment (its own tmux socket, scoped `THURBOX_*_DIR` / temp `HOME`, private
-`-L` sockets) and writes only under `target/` (gitignored).
+`-L` sockets). Build output stays under `target/` (gitignored); host probes use
+disposable profiles on the host.
 
 ## e2e — session-backend end-to-end family (`e2e/`)
 
@@ -31,6 +32,17 @@ Shared verbs across the trio: `up` (provision) · `test` (headless e2e) · `ssh`
 `e2e/windows-vm.sh` and `e2e/real-host.sh` add host-specific extras (`deploy`,
 `test-suite`, `wait`, `wsl-setup`, …) — run a script with no args for its full
 usage.
+
+On native Windows with psmux installed, the lifetime suite also runs
+`e2e/psmux-exit-control.ps1`. It drives real CLI relaunches into the crash-loop
+hold, boots the TUI, and checks its message and plugin completion events. It
+uses a random socket and disposable config and data directories, removed in
+`finally`, and opts out of agent wiring in that fresh profile. To run it against
+a built binary pair directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-exit-control.ps1 -BinaryDir target/debug
+```
 
 ```bash
 scripts/dev/e2e/linux-container.sh up      # then: … test

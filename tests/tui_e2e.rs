@@ -3835,6 +3835,194 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 }
 
 #[test]
+fn an_automatic_restart_does_not_announce_a_relaunch_before_it_succeeds() {
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            std::fs::write(
+                profile.path("config/hooks.toml"),
+                r#"[[hooks]]
+event = 'session.pre_restart'
+command = 'touch "$THURBOX_DATA_DIR/restart-entered"; while test ! -f "$THURBOX_DATA_DIR/restart-release"; do sleep 0.05; done; echo refused-restart >&2; exit 1'
+"#,
+            )
+            .expect("seed refusing restart hook");
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
+    let original = db.get_session_by_name("probe").unwrap().unwrap();
+    let mut kill = Command::new("tmux");
+    profile.apply(&mut kill);
+    assert!(kill
+        .args([
+            "-L",
+            profile.server.socket(),
+            "kill-pane",
+            "-t",
+            &original.backend_id
+        ])
+        .status()
+        .unwrap()
+        .success());
+    tui.wait_until("restart worker to enter the hook", |_| {
+        profile.path("data/restart-entered").exists()
+    });
+    let frame = tui.frame();
+    // Release before asserting, so a failure cannot strand the hook worker.
+    std::fs::write(profile.path("data/restart-release"), "").unwrap();
+    assert!(
+        !frame.contains("agent was gone, relaunching"),
+        "a worker that has not passed its pre-hook cannot claim a relaunch:\n{frame}"
+    );
+    tui.wait_for("could not restart probe");
+    assert_eq!(
+        db.get_session_by_name("probe").unwrap().unwrap().backend_id,
+        original.backend_id
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_crash_loop_hold_reaches_the_tui_and_does_not_emit_post_restart() {
+    assert_crash_loop_hold_in_tui(false, false);
+}
+
+#[test]
+fn a_crash_loop_hold_outlives_the_audit_retention() {
+    assert_crash_loop_hold_in_tui(true, false);
+}
+
+#[test]
+fn a_recent_crash_loop_survives_disabled_audit_history() {
+    assert_crash_loop_hold_in_tui(false, true);
+}
+
+fn assert_crash_loop_hold_in_tui(aged: bool, zero_audit: bool) {
+    let profile = Profile::new();
+    let script = profile.bin.join("psmux");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$THURBOX_DATA_DIR/mux-calls"
+case " $* " in
+    *" -V "*) printf '%s\n' 'psmux 3.3.8' ;;
+    *" display-message "*) printf '%s\n' '3.3.8' ;;
+    *" new-window "*) echo 'probe refuses an unexpected spawn' >&2; exit 1 ;;
+    *" -C "*)
+        while IFS= read -r line; do
+            printf '%s\n' '%begin 1 1 0'
+            case "$line" in *'#{version}'*) printf '%s\n' '3.3.8' ;; esac
+            printf '%s\n' '%end 1 1 0'
+        done
+        ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "[[agents]]\nname = 'shell'\ncommand = 'sh'\n",
+    )
+    .unwrap();
+    let ui = profile.path("config/ui/plugins");
+    std::fs::create_dir_all(&ui).unwrap();
+    std::fs::write(
+        ui.join("99_exit_probe.lua"),
+        r#"return {
+    name = "exit_probe", slot = "exit_probe", strip = true, size = { len = 1 },
+    events = { "command.done", "command.failed", "session.post_restart" },
+    on_event = function(name, payload)
+        if name == "command.done" and payload.kind == "restart" then
+            state.result = "APPLIED"
+        elseif name == "command.failed" and payload.kind == "restart" then
+            state.result = "FAILED"
+        elseif name == "session.post_restart" then
+            state.post_restart = true
+        end
+    end,
+    render = function()
+        return { type = "text", text = "exit-probe=" .. (state.result or "WAIT")
+            .. ";post=" .. tostring(state.post_restart == true) }
+    end,
+}
+"#,
+    )
+    .unwrap();
+    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
+    let session = thurbox::sync::SharedSession {
+        id: thurbox::session::SessionId::default(),
+        name: "hold-probe".into(),
+        agent: "shell".into(),
+        backend_id: String::new(),
+        backend_type: "local:psmux".into(),
+        agent_session_id: Some("test-conversation".into()),
+        cwd: Some(profile.root.path().to_path_buf()),
+        additional_dirs: vec![],
+        worktrees: vec![],
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    };
+    db.upsert_session(&session).unwrap();
+    for _ in 0..thurbox::session_ops::restart::CRASH_LOOP_RELAUNCHES {
+        db.record_relaunch(session.id, 0).unwrap();
+    }
+    if aged || zero_audit {
+        std::fs::write(
+            profile.path("config/settings.toml"),
+            format!(
+                "audit_retention_days = {}\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+                if zero_audit { 0 } else { 1 }
+            ),
+        )
+        .unwrap();
+    }
+    if aged {
+        db.hold_relaunches(session.id).unwrap();
+        let sql = rusqlite::Connection::open(profile.path("data/thurbox.db")).unwrap();
+        sql.execute(
+            "UPDATE session_relaunches SET at_ms = 1000 WHERE session_id = ?1",
+            [session.id.to_string()],
+        )
+        .unwrap();
+        sql.execute(
+            "UPDATE session_events SET at_ms = 1000 WHERE session_id = ?1 AND reason = 'relaunched'",
+            [session.id.to_string()],
+        )
+        .unwrap();
+        sql.execute(
+            "UPDATE sessions SET lost_at = 1000, relaunch_held_at = 1000 WHERE id = ?1",
+            [session.id.to_string()],
+        )
+        .unwrap();
+    }
+    profile.cli(&["config", "accept-interface"]);
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("restart completion to reach the observer", |frame| {
+        frame.contains("exit-probe=APPLIED")
+            || frame.contains("exit-probe=HELD")
+            || frame.contains("exit-probe=FAILED")
+    });
+    let frame = tui.frame();
+    let lost = db.load_lost_sessions().unwrap().contains_key(&session.id);
+    let calls = std::fs::read_to_string(profile.path("data/mux-calls")).unwrap();
+    assert!(tui.quit().success());
+    assert!(lost, "the backend must actually have held back the restart");
+    assert!(!calls.contains("new-window"), "{calls}");
+    assert!(
+        frame.contains("exit-probe=FAILED;post=false"),
+        "a held-back restart must report its failure without post_restart:\n{frame}"
+    );
+    assert!(frame.contains("it keeps exiting"), "{frame}");
+    assert!(!frame.contains("restarted hold-probe"), "{frame}");
+}
+
+#[test]
 fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
     let Some((profile, mut tui)) =
         shell_session_prepared_on_branch(Some("test/relaunch-same-worktree"), |_| {}, |_| {})
