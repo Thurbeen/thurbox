@@ -130,6 +130,13 @@ event with the status and the pane tail. Each repairer relaunch is logged as
 `relaunched`, and three within ten minutes hold the next one back and mark
 the session lost (`keeps_exited_windows`; ADR-13 → "A psmux agent reports its
 own exit").
+Psmux 3.3.8 also rejects tmux's `=window` exact-name target and can print that
+`ERROR:` on stdout while exiting 0. Recovery of an unstamped row lists windows
+and accepts exactly one live pane with the expected name; duplicate names are
+`Unknown`. Psmux one-shot commands treat reportable stderr as failure regardless
+of the process status, and structured listings reject `ERROR:` stdout too;
+captured pane output is preserved. SSH's informational `**` advisory lines are
+ignored.
 On psmux 3.3.8, cold `new-session -d` sometimes refuses or returns before a
 server answers. Its `has-session` deletes a starting server's port file after
 a failed TCP connection, so the adapter probes with `list-windows`. The

@@ -963,7 +963,16 @@ reference to read before touching that path.
   carrying a global one, which no migration could reach: the option outlives
   every session it was written for and only `kill-server` clears it.
   psmux resolves by window name instead, which is what ADR-25 always intended
-  for it.
+  for it. Recovery still has to resolve that name through `list-windows`:
+  psmux 3.3.8 does not implement tmux's `=window` exact-match target and prints
+  `ERROR: can't find window` on stdout with exit status 0. An unstamped row is
+  therefore rebound only when its expected name has exactly one live pane;
+  duplicate live names answer `Unknown`, never an arbitrary pane. Psmux
+  one-shot commands also treat reportable stderr as failure even when the
+  process exits successfully. Structured listings reject an `ERROR:` stdout
+  answer too; captured pane output does not, because its real contents may
+  begin that way. SSH's informational `**` advisory lines are not a command
+  failure.
 - **The `attach-session` carried on argv is answered with nothing.** tmux
   replies to it with one `%begin`/`%end` block that is not a reply to anything
   the client sent, and `ControlMode::start` consumes it synchronously, before
