@@ -132,6 +132,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// a server on `socket` too old to give a pane its own console.
     fn check_banner(banner: &str, socket: &str) -> Result<()>;
 
+    /// Refuse command diagnostics in a listing even when its status claims
+    /// success. Captured terminal contents are not listings.
+    fn check_listing(_listing: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// The session config only this multiplexer takes, applied after the shared
     /// options and best-effort or fatal as each says.
     fn session_config(session: &str) -> Vec<ConfigOption>;
@@ -846,6 +852,7 @@ impl<M: TmuxCompatible> Server<M> {
         if output.status.success()
             && !(M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true))
         {
+            M::check_listing(&String::from_utf8_lossy(&output.stdout))?;
             let stamps = self.stamps_are_per_window();
             return Ok(String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -949,8 +956,8 @@ impl<M: TmuxCompatible> Server<M> {
     /// What `owner`'s `role` window is, where the listing alone could not say.
     ///
     /// A multiplexer without window options (ADR-13) stamps nothing, so
-    /// two namesakes are indistinguishable there and the name is the answer —
-    /// on a host, only through the pane the row remembers. Locally, one stamp
+    /// namesakes can only be resolved through a remembered pane whose listed
+    /// window still has the right name. Locally, one stamp
     /// on two windows is repairable, and here is where repairing it matters:
     /// `stamped_match` refuses the pair by design, so without this nothing
     /// would ever look again and the session stayed unaddressable for good
@@ -987,6 +994,7 @@ impl<M: TmuxCompatible> Server<M> {
                 "-F",
                 "#{pane_id}|#{window_name}",
             ])?;
+            M::check_listing(&panes)?;
             return Ok(
                 match window_of_pane(&panes, remembered) == Some(name.as_str()) {
                     true => Located::At(remembered.to_string()),
@@ -2274,6 +2282,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             self.session
         ))?;
 
+        M::check_listing(&result)?;
+
         let stamps = self.stamps_are_per_window();
         Ok(result
             .lines()
@@ -3000,8 +3010,8 @@ fn cells_before(line: &str, cells: usize) -> String {
 /// exits 0 and answers for the client's current pane — or, for a pane id that
 /// is gone, prints nothing. Reporting a stranger's shell as this pane's
 /// foreground process is the plausible wrong answer every field is built to
-/// avoid. A pane id must come back as itself; a window target (the name
-/// psmux's unstamped windows are reached by) must come back as that window.
+/// avoid. A pane id must come back as itself; callers using a window target
+/// must receive that window.
 fn answered_for(target: &str, window: Option<&str>, pane: Option<&str>) -> bool {
     match target.split_once(":=") {
         Some((_, name)) => window == Some(name),
