@@ -939,6 +939,47 @@ mod tests {
         )
     }
 
+    /// A psmux whose `list-windows` writes `stderr` and exits `code`.
+    #[cfg(unix)]
+    fn listing_backend(root: &tempfile::TempDir, stderr: &str, code: i32) -> PsmuxBackend {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.path().join("psmux-listing");
+        let script = format!("#!/bin/sh\necho \"{stderr}\" >&2\nexit {code}\n");
+        std::fs::write(&mux, script).expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "private-socket",
+            "thurbox",
+            "local:psmux",
+        )
+    }
+
+    /// psmux 3.3.8 exits 1 with this wording when its server is gone. That is
+    /// its answer that nothing is there — what lets a restart respawn a
+    /// session whose server died — not a listing that went unanswered.
+    #[cfg(unix)]
+    #[test]
+    fn psmux_no_server_reply_is_an_empty_listing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = listing_backend(
+            &root,
+            "psmux: no server running on session 'private-socket__thurbox'",
+            1,
+        );
+        assert!(backend.discover_answered().expect("absence").is_empty());
+    }
+
+    /// The same words behind exit 0 are a hidden failure, not an answer.
+    #[cfg(unix)]
+    #[test]
+    fn psmux_stderr_behind_a_zero_exit_is_still_an_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = listing_backend(&root, "psmux: something went wrong", 0);
+        assert!(backend.discover_answered().is_err());
+    }
+
     #[cfg(unix)]
     fn attempt_count(root: &tempfile::TempDir) -> usize {
         std::fs::read_to_string(root.path().join("attempts"))

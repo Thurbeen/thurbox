@@ -911,7 +911,9 @@ impl<M: TmuxCompatible> Server<M> {
                 .filter_map(|line| parse_discovered(line, stamps))
                 .collect());
         }
-        if M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true) {
+        // Only an exit-zero reply is hidden failure; a non-zero one falls
+        // through so psmux's own "no server running" (exit 1) reads as absence.
+        if output.status.success() {
             bail!(
                 "tmux {} failed: {}",
                 args.join(" "),
