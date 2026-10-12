@@ -108,6 +108,88 @@ fn the_registered_rmux_backend_keeps_the_contract() {
     backend.shutdown();
 }
 
+#[cfg(unix)]
+fn missing_window_pid<M: TmuxCompatible>() {
+    use thurbox::backend::tmux_compat::{server::Server, transport::TmuxTransport};
+    use thurbox::backend::{Owner, PaneState, WindowSpec};
+
+    let binary = M::MULTIPLEXER.name();
+    if std::process::Command::new(binary)
+        .arg("-V")
+        .output()
+        .map_or(true, |out| {
+            !out.status.success()
+                || M::check_banner(&String::from_utf8_lossy(&out.stdout), "test").is_err()
+        })
+    {
+        eprintln!("skipping: {binary} is not installed");
+        return;
+    }
+    let socket = format!("thurbox-missing-pid-{binary}-{}", std::process::id());
+    let _server = TmuxServer::pin(&socket);
+    struct Cleanup<'a>(&'a str, &'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new(self.0)
+                .args(["-L", self.1, "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(binary, &socket);
+    let backend = Server::<M>::with_transport(
+        TmuxTransport::local(binary),
+        &socket,
+        "identity-probe",
+        format!("local:{binary}"),
+    );
+    let pane = backend
+        .create_window(&WindowSpec {
+            owner: Owner::new("00000000-0000-4000-8000-0000000000ab", "live"),
+            role: WindowRole::Agent,
+            command: "sleep",
+            args: &["300".into()],
+            cwd: None,
+            env: &Default::default(),
+        })
+        .expect("create live pane");
+    for attached in [false, true] {
+        if attached {
+            backend.ensure_ready().expect("attach");
+        }
+        let pid = backend.pane_pid(&pane).expect("live pid");
+        assert!(pid.is_some());
+        assert_eq!(
+            backend
+                .pane_pid("identity-probe:=tb-live")
+                .expect("live window pid"),
+            pid
+        );
+        let missing = "identity-probe:=tb-missing";
+        assert_eq!(
+            backend.pane_state(missing).unwrap_or_default(),
+            PaneState::default()
+        );
+        assert_eq!(
+            backend.pane_pid(missing).expect("missing window pid"),
+            None,
+            "{binary}, attached={attached}: a missing window borrowed the live pane's pid"
+        );
+    }
+    backend.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_tmux_window_never_borrows_a_live_panes_pid() {
+    missing_window_pid::<thurbox::backend::tmux::Tmux>();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_rmux_window_never_borrows_a_live_panes_pid() {
+    missing_window_pid::<Rmux>();
+}
+
 /// An unreachable machine answers nothing, and a fake that answered "empty"
 /// instead would make every teardown through it look finished.
 #[test]

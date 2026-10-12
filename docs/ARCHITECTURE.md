@@ -2468,6 +2468,10 @@ host gets its prompt there. `pane_state` reads the foreground process's argv
 with a local `ps` only for a local pane, and an answer that names another pane
 than the one asked about — `display-message` answers for the current pane
 against a target it cannot resolve — is no answer.
+The single-pane PID lookup validates the returned pane or window identity too,
+both headlessly and through control mode, so a missing target never borrows
+the current pane's process ID. Real tmux and RMUX regressions cover live and
+missing exact-name targets in both modes.
 
 ---
 

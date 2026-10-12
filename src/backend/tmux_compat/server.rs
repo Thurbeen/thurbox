@@ -2645,17 +2645,23 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
-        if !self.attached() {
+        let format =
+            format!("#{{pane_pid}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}");
+        let raw = if self.attached() {
+            self.ctrl_command(&format!("display-message -t {backend_id} -p '{format}'"))?
+        } else {
             // A pane that is already gone has no pid, which is not an error.
-            return Ok(self
-                .tmux_output(&["display-message", "-p", "-t", backend_id, "#{pane_pid}"])
-                .ok()
-                .and_then(|pid| pid.trim().parse().ok()));
+            self.tmux_output(&["display-message", "-p", "-t", backend_id, &format])
+                .unwrap_or_default()
+        };
+        if !answered_for(
+            backend_id,
+            pane_answer_field(&raw, 1).as_deref(),
+            pane_answer_field(&raw, 2).as_deref(),
+        ) {
+            return Ok(None);
         }
-        let result = self.ctrl_command(&format!(
-            "display-message -t {backend_id} -p '#{{pane_pid}}'"
-        ))?;
-        Ok(result.trim().parse().ok())
+        Ok(pane_answer_field(&raw, 0).and_then(|pid| pid.parse().ok()))
     }
 
     fn pane_pids(&self) -> Result<HashMap<String, u32>> {
