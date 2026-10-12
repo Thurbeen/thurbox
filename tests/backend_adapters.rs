@@ -169,3 +169,112 @@ fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
     backend_contract::pane_io(&backend);
     backend_contract::shutdown_is_final(&PsmuxBackend::local());
 }
+
+/// A psmux window with no stored pane id is the recovery shape of a row that
+/// survived a server or application restart. Resolve it from the live listing:
+/// psmux 3.3.8 does not implement tmux's `=name` exact-match target, reports
+/// that lookup error on stdout with exit status 0, and permits duplicate window
+/// names. A name target can therefore be neither the recovered pane nor proof
+/// that capture succeeded.
+#[test]
+fn psmux_recovery_requires_one_unique_live_pane() {
+    use thurbox::backend::{Located, Owner, WindowRole, WindowSpec};
+
+    if !have("psmux") {
+        eprintln!("skipping: psmux is not installed");
+        return;
+    }
+
+    let socket = format!("thurbox-psmux-recovery-{}", std::process::id());
+    let _pinned = tmux_server::TmuxServer::pin(&socket);
+    struct Reap(String);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("psmux")
+                .args(["-L", &self.0, "kill-server"])
+                .output();
+        }
+    }
+    let _reap = Reap(socket.clone());
+    let backend = PsmuxBackend::local();
+    let env = std::collections::HashMap::new();
+    let args = [
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        "Write-Output psmux-recovery-marker; Start-Sleep -Seconds 300".to_string(),
+    ];
+    let owner = Owner::new("11111111-1111-4111-8111-111111111111", "recovery");
+    backend
+        .create_window(&WindowSpec {
+            owner,
+            role: WindowRole::Agent,
+            command: "powershell",
+            args: &args,
+            cwd: None,
+            env: &env,
+        })
+        .expect("create the recovery window");
+    let pane = backend
+        .discover()
+        .expect("list the recovery window")
+        .into_iter()
+        .find(|window| window.name == "tb-recovery")
+        .expect("the created window is listed")
+        .backend_id;
+
+    assert_eq!(
+        backend
+            .locate(owner)
+            .expect("list the recovery window")
+            .agent,
+        Located::At(pane.clone()),
+        "recovery must return the pane psmux actually listed"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let captured = loop {
+        let captured = backend.capture(&pane, 20, false).expect("capture the pane");
+        if captured.contains("psmux-recovery-marker") || std::time::Instant::now() >= deadline {
+            break captured;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        captured.contains("psmux-recovery-marker"),
+        "the recovered pane must be reachable: {captured:?}"
+    );
+    let exact = std::process::Command::new("psmux")
+        .args([
+            "-L",
+            &socket,
+            "capture-pane",
+            "-p",
+            "-t",
+            "thurbox-dev:=tb-recovery",
+        ])
+        .output()
+        .expect("probe psmux's exact-name target");
+    assert!(exact.status.success(), "psmux hides the lookup failure");
+    assert!(
+        exact.stderr.is_empty()
+            && String::from_utf8_lossy(&exact.stdout).contains("can't find window"),
+        "the hidden psmux error must be reproduced: stdout={:?}, stderr={:?}",
+        String::from_utf8_lossy(&exact.stdout),
+        String::from_utf8_lossy(&exact.stderr)
+    );
+
+    backend
+        .create_window(&WindowSpec {
+            owner: Owner::new("22222222-2222-4222-8222-222222222222", "recovery"),
+            role: WindowRole::Agent,
+            command: "powershell",
+            args: &args,
+            cwd: None,
+            env: &env,
+        })
+        .expect("create the indistinguishable namesake");
+    assert_eq!(
+        backend.locate(owner).expect("list both namesakes").agent,
+        Located::Unknown,
+        "duplicate unstamped namesakes must never select one agent"
+    );
+}

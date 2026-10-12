@@ -58,6 +58,11 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Where it does not, liveness is polled and no pane size is reported.
     const WINDOW_EVENTS: bool;
 
+    /// Whether a command can report `ERROR:` while exiting zero.
+    /// Such an answer is a failure even though the process status says
+    /// otherwise; accepting it turns the diagnostic into pane contents.
+    const EXIT_ZERO_ERRORS: bool = false;
+
     /// Whether pane output must be enabled and disabled with `refresh-client
     /// -A`. Servers that stream attached panes automatically do not take it.
     const PANE_MONITORING: bool;
@@ -289,17 +294,6 @@ fn parse_discovered(line: &str, stamps: bool) -> Option<DiscoveredSession> {
         },
         role: WindowRole::parse(role).unwrap_or(by_name),
     })
-}
-
-/// Build the `session:=window` tmux target for a thurbox agent session.
-///
-/// The `=` prefix forces tmux to match the window name exactly. Without
-/// it tmux falls back to FNMATCH-style prefix matching, so a target of
-/// `tb-foo` would resolve ambiguously when both `tb-foo` and
-/// `tb-foo-bar` exist — `send-keys`/`capture-pane` then fails with
-/// "ambiguous window" and the caller's text is silently dropped.
-fn window_target(window_name: &str) -> String {
-    format!("{TMUX_SESSION}:={window_name}")
 }
 
 /// The tmux window option carrying the id of the session row that owns a
@@ -785,7 +779,7 @@ impl<M: TmuxCompatible> Server<M> {
             bail!(
                 "{} new-session (heartbeat) {}",
                 self.transport.mux(),
-                mux_failure(&out)
+                mux_failure(&out, self.transport.is_ssh())
             );
         }
         // As `ensure_session_configured` waits after creating one: a server
@@ -849,12 +843,21 @@ impl<M: TmuxCompatible> Server<M> {
                 self.transport
                     .launch_failure("Failed to run tmux command", e)
             })?;
-        if output.status.success() {
+        if output.status.success()
+            && !(M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true))
+        {
             let stamps = self.stamps_are_per_window();
             return Ok(String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .filter_map(|line| parse_discovered(line, stamps))
                 .collect());
+        }
+        if M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true) {
+            bail!(
+                "tmux {} failed: {}",
+                args.join(" "),
+                mux_failure(&output, self.transport.is_ssh())
+            );
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         if listing_is_absence(self.transport.is_ssh(), output.status.code(), stderr.trim()) {
@@ -962,7 +965,12 @@ impl<M: TmuxCompatible> Server<M> {
         if !M::WINDOW_OPTIONS {
             let name = window_name_for(role, owner.name);
             if !self.transport.is_remote() {
-                return Ok(Located::At(window_target(&name)));
+                return Ok(WindowIndex::from_listing(self.discover_answered()?).locate(
+                    owner.session_id,
+                    owner.name,
+                    role,
+                    true,
+                ));
             }
             if remembered.is_empty() {
                 return Ok(Located::Unknown);
@@ -1020,8 +1028,14 @@ impl<M: TmuxCompatible> Server<M> {
                 self.transport
                     .launch_failure("Failed to run tmux command", e)
             })?;
-        if !output.status.success() {
-            bail!("{} {what} {}", self.transport.mux(), mux_failure(&output));
+        if !output.status.success()
+            || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
+        {
+            bail!(
+                "{} {what} {}",
+                self.transport.mux(),
+                mux_failure(&output, self.transport.is_ssh())
+            );
         }
         Ok(output)
     }
@@ -1075,9 +1089,11 @@ impl<M: TmuxCompatible> Server<M> {
                     .launch_failure("Failed to run tmux command", e)
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("tmux {} failed: {}", args.join(" "), stderr.trim());
+        if !output.status.success()
+            || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
+        {
+            let detail = mux_failure(&output, self.transport.is_ssh());
+            bail!("tmux {} failed: {detail}", args.join(" "));
         }
 
         Ok(output)
@@ -2785,7 +2801,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             bail!(
                 "{} new-window (heartbeat) {}",
                 self.transport.mux(),
-                mux_failure(&out)
+                mux_failure(&out, self.transport.is_ssh())
             );
         }
         debug!("Armed automation heartbeat keeper window on {}", self.name);
@@ -2816,7 +2832,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             bail!(
                 "{} list-windows (heartbeat) {}",
                 self.transport.mux(),
-                mux_failure(&out)
+                mux_failure(&out, self.transport.is_ssh())
             );
         }
         Ok(String::from_utf8_lossy(&out.stdout)
@@ -2881,13 +2897,45 @@ fn parse_pane_dead(output: &str) -> bool {
 /// Captured rather than inherited — see [`Server::one_shot`] (AXI
 /// principle 6, "an agent reads one stream"). tmux says nothing at all for
 /// some failures, hence the fallback to the bare status.
-fn mux_failure(out: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&out.stderr);
+fn mux_failure(out: &std::process::Output, is_ssh: bool) -> String {
+    let stderr = mux_stderr(out, is_ssh);
     let detail = stderr.trim();
-    if detail.is_empty() {
-        return format!("exited with status {}", out.status);
+    if !detail.is_empty() {
+        return detail.to_string();
     }
-    detail.to_string()
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let detail = stdout.trim();
+    if detail.starts_with("ERROR:") {
+        return detail.to_string();
+    }
+    format!("exited with status {}", out.status)
+}
+
+/// Whether a multiplexer hid a failure behind a successful process status.
+/// psmux 3.3.8 does this for unsupported tmux target syntax, on stdout; that
+/// stream is inspected only where the answer is structured protocol, because
+/// captured pane contents may legitimately begin `ERROR:`. Stderr remains a
+/// failure channel for every one-shot command. Informational SSH advisory lines
+/// are transport noise, not a remote command answer.
+fn mux_reported_error(out: &std::process::Output, is_ssh: bool, stdout_is_protocol: bool) -> bool {
+    !mux_stderr(out, is_ssh).trim().is_empty()
+        || (stdout_is_protocol
+            && String::from_utf8_lossy(&out.stdout)
+                .trim_start()
+                .starts_with("ERROR:"))
+}
+
+/// Stderr that came from the command rather than an informational SSH banner.
+fn mux_stderr(out: &std::process::Output, is_ssh: bool) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !is_ssh {
+        return stderr.into_owned();
+    }
+    stderr
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("**"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// How tmux names each of [`Key::NAMED`] — `ctrl-<letter>` is `C-<letter>`.
@@ -5097,17 +5145,6 @@ mod tests {
     }
 
     #[test]
-    fn window_target_uses_exact_match_prefix() {
-        // Without `=`, tmux treats the window name as a pattern and will
-        // resolve `tb-foo` ambiguously when both `tb-foo` and
-        // `tb-foo-bar` exist. The `=` prefix forces exact-match lookup.
-        let t = window_target(&agent_window_name("foo"));
-        assert!(t.ends_with(":=tb-foo"), "got {t}");
-        let shell = window_target(&shell_window_name("foo"));
-        assert!(shell.ends_with(":=tbs-foo"), "got {shell}");
-    }
-
-    #[test]
     fn parse_pane_dead_only_accepts_one() {
         assert!(parse_pane_dead("1"));
         assert!(parse_pane_dead("1\n"));
@@ -5122,6 +5159,36 @@ mod tests {
         // Never infer deadness from anything but the flag itself.
         assert!(!parse_pane_dead("10"));
         assert!(!parse_pane_dead("dead"));
+    }
+
+    #[test]
+    fn exit_zero_mux_errors_are_still_errors() {
+        let mut output = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit", "0"])
+                .output()
+                .expect("run a successful command")
+        } else {
+            std::process::Command::new("true")
+                .output()
+                .expect("run a successful command")
+        };
+        assert!(output.status.success());
+
+        output.stderr = b"psmux diagnostic".to_vec();
+        assert!(mux_reported_error(&output, false, false));
+        assert!(mux_reported_error(&output, true, false));
+        output.stderr.clear();
+        output.stdout = b"ERROR: can't find window".to_vec();
+        assert!(mux_reported_error(&output, false, true));
+        assert!(!mux_reported_error(&output, false, false));
+        output.stdout = b"ordinary command answer".to_vec();
+        assert!(!mux_reported_error(&output, false, true));
+        output.stderr = b"** informational SSH advisory\n".to_vec();
+        assert!(!mux_reported_error(&output, true, true));
+        output.stdout = b"ERROR: remote psmux failure".to_vec();
+        assert!(mux_reported_error(&output, true, true));
+        assert_eq!(mux_failure(&output, true), "ERROR: remote psmux failure");
     }
 
     // --- mouse_seed_bytes tests (adopt-time mouse-mode restore) ---

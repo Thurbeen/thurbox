@@ -63,6 +63,10 @@ impl TmuxCompatible for Psmux {
 
     /// psmux sends no `%window-close` and no `%layout-change`.
     const WINDOW_EVENTS: bool = false;
+
+    /// Unsupported tmux target syntax prints `ERROR:` on stdout and exits 0
+    /// on psmux 3.3.8.
+    const EXIT_ZERO_ERRORS: bool = true;
     const PANE_MONITORING: bool = true;
 
     /// Nothing has verified that a psmux reply queues behind the pane output
