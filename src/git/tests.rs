@@ -2320,3 +2320,37 @@ fn the_windows_script_quotes_the_path_and_the_url() {
     assert!(script.contains("-ErrorAction Stop"), "{script}");
     assert!(!script.contains("-Force -Path"), "{script}");
 }
+
+#[test]
+fn worktree_stats_on_a_host_asks_the_host_and_never_the_local_disk() {
+    // A path that is a perfectly good work tree HERE, handed to a host that
+    // cannot be reached (nothing listens on port 1): a stat that ran `git`
+    // locally would answer; one that goes through the host cannot, and says
+    // `None`. A remote session's `cwd` is a path on its host, and reading it
+    // locally is what left the delete confirmation unable to read its state.
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = git_program()
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "{args:?}");
+    };
+    git(&["init", "-q"]);
+    assert!(
+        worktree_stats(tmp.path(), None).is_some(),
+        "a local work tree"
+    );
+
+    let unreachable = HostDef {
+        name: "h".into(),
+        destination: "nobody@127.0.0.1".into(),
+        ssh_opts: vec!["-p".into(), "1".into(), "-o".into(), "BatchMode=yes".into()],
+        ..Default::default()
+    };
+    assert!(
+        worktree_stats_on(Some(&unreachable), tmp.path(), None).is_none(),
+        "the host was asked, not this machine's disk"
+    );
+}
