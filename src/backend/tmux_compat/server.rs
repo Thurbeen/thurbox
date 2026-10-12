@@ -956,8 +956,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// What `owner`'s `role` window is, where the listing alone could not say.
     ///
     /// A multiplexer without window options (ADR-13) stamps nothing, so
-    /// duplicate names stay unknown: a restarted server can reissue a remembered
-    /// pane id to another window with the same name. Locally, one stamp on two
+    /// local recovery can select the sole fresh live namesake, but multiple live
+    /// names stay unknown. A restarted server can reissue a remembered pane id
+    /// to another same-name window. Locally, one stamp on two
     /// windows is repairable, and here is where repairing it matters:
     /// `stamped_match` refuses the pair by design, so without this nothing
     /// would ever look again and the session stayed unaddressable for good
@@ -966,6 +967,14 @@ impl<M: TmuxCompatible> Server<M> {
     /// as the answer.
     fn settle(&self, owner: Owner<'_>, role: WindowRole) -> Result<Located> {
         if !M::WINDOW_OPTIONS {
+            if !self.transport.is_remote() {
+                return Ok(WindowIndex::from_listing(self.discover_answered()?).locate(
+                    owner.session_id,
+                    owner.name,
+                    role,
+                    true,
+                ));
+            }
             return Ok(Located::Unknown);
         }
         if self.transport.is_remote()

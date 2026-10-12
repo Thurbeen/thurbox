@@ -2056,11 +2056,12 @@ Migration is the sole-namesake rule — an unstamped window is adoptable only
 while it is the only one with that name, and it is stamped on adoption
 (`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
 first use. psmux (ADR-13) has no usable window options, so a lone namesake
-resolves to its listed pane. With several namesakes, the answer stays unknown,
-even when a remembered pane currently has the expected window name: a restarted
-server can reissue that id to another namesake. This applies locally and
-remotely: neither a pane id nor an exact-name target proves which of several
-unstamped windows belongs to the session. psmux can print an `ERROR:` diagnostic
+resolves to its listed pane. Local recovery can also select the sole live pane
+among exited namesakes from a fresh listing. Multiple live namesakes stay
+unknown locally; remote duplicates stay unknown even when a remembered pane
+currently has the expected name. A restarted server can reissue that id to
+another namesake, so neither a remembered pane id nor an exact-name target
+proves ownership among ambiguous unstamped windows. psmux can print an `ERROR:` diagnostic
 on stdout while exiting zero, so its listing replies reject those lines rather
 than treating an error as an empty server. Captured terminal text is not parsed
 for diagnostics; a program may legitimately print the same prefix.

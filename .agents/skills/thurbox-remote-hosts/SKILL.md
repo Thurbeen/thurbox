@@ -412,9 +412,10 @@ session), never on the loop, ADR-P12).
   Every kill is resolved from the window's own `@thurbox_session` stamp, not the
   row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
   when it restarts, so a remembered `%N` there can be a live namesake's pane;
-  on local and remote psmux alike, only a unique unstamped name resolves from
-  the fresh listing. Duplicate names stay unknown even when a remembered pane
-  has that name, because its id may have been reassigned after a server restart.
+  local psmux recovery can select the sole fresh live pane among exited
+  namesakes; remote psmux requires a unique name. Multiple live names stay
+  unknown locally, and remote duplicates stay unknown even when a remembered
+  pane has that name: its id may have been reassigned after a server restart.
   psmux listing replies reject `ERROR:` lines even with exit status zero;
   captured screen contents remain arbitrary text. An unreachable host or a missing `hosts.toml` entry is recorded in
   `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
