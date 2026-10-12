@@ -936,6 +936,13 @@ pub(super) fn migrate_v50_lost_at(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "sessions", "lost_at", "INTEGER")
 }
 
+/// See [`super::SCHEMA_VERSION`] v51: NULL on every existing event — nothing
+/// before this version recorded an agent's exit.
+pub(super) fn migrate_v51_event_exit(conn: &Connection) -> rusqlite::Result<()> {
+    add_column_if_absent(conn, "session_events", "exit_code", "INTEGER")?;
+    add_column_if_absent(conn, "session_events", "detail", "TEXT")
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.

@@ -322,6 +322,8 @@ fn line(
     line["reason"] = json!(event.reason);
     line["from_state"] = json!(event.from_state);
     line["to_state"] = json!(event.to_state);
+    line["exit_code"] = json!(event.exit_code);
+    line["detail"] = json!(event.detail);
     line["stopped"] = json!(stopped);
     line["at"] = json!(event.at_ms);
     line
@@ -336,6 +338,8 @@ fn present(seq: i64, id: SessionId, facts: &SessionFacts, hook: &Assessment) -> 
     line["reason"] = Value::Null;
     line["from_state"] = Value::Null;
     line["to_state"] = json!(hook.hook_state);
+    line["exit_code"] = Value::Null;
+    line["detail"] = Value::Null;
     line["stopped"] = json!(facts.stopped);
     line["at"] = json!(crate::sync::current_time_millis());
     line
@@ -430,6 +434,7 @@ const COLUMNS: &[&str] = &[
     "state",
     "from_state",
     "to_state",
+    "exit_code",
     "session",
 ];
 
@@ -522,8 +527,13 @@ fn human(event: &Value) -> String {
             if to.is_empty() { "-" } else { to }
         ),
     };
+    let exit = event
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map(|code| format!("  exit {code}"))
+        .unwrap_or_default();
     format!(
-        "{seq:>5}  {:<8}{reason}  {}  [{}]{transition}",
+        "{seq:>5}  {:<8}{reason}  {}  [{}]{transition}{exit}",
         field("event"),
         field("name"),
         field("state"),

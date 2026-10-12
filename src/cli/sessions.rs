@@ -503,6 +503,12 @@ pub enum Action {
     /// Bind the current Codex pane to the conversation reported by its
     /// SessionStart hook. Reads the hook's JSON from stdin.
     BindCodex,
+    /// Record that the agent in the calling pane ($THURBOX_SESSION) returned,
+    /// with the exit status read from stdin and the pane's last lines. What a
+    /// psmux agent window runs after its agent: that window closes with its
+    /// program, so this is the only moment anything can still see why.
+    #[command(hide = true)]
+    Exited,
 }
 
 /// What `session create` should do when the name is already taken.
@@ -684,6 +690,7 @@ pub fn run(
         Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
         Action::Signal { state, session } => run_signal(db, backends, state, session),
         Action::BindCodex => run_bind_codex(db),
+        Action::Exited => run_exited(db, backends),
     }
 }
 
@@ -1022,11 +1029,23 @@ fn run_restart(
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
-    let mut human = format!("Restarted session '{}' ({})", session.name, session.id);
+    let mut human = match report.held_back {
+        true => format!(
+            "Not relaunching '{}' ({}): it was relaunched {} times within {} minutes. \
+             It is marked lost; `thurbox-cli session restart {}` brings it back.",
+            session.name,
+            session.id,
+            crate::session_ops::restart::CRASH_LOOP_RELAUNCHES,
+            crate::session_ops::restart::CRASH_LOOP_WINDOW_MS / 60_000,
+            session.id
+        ),
+        false => format!("Restarted session '{}' ({})", session.name, session.id),
+    };
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
-            "restarted": true,
+            "restarted": !report.held_back,
+            "held_back": report.held_back,
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
@@ -1447,6 +1466,57 @@ fn run_signal(
             "state": state,
         }),
         format!("Signaled {state} for '{}'.", target.name),
+    ))
+}
+
+/// How much of an exited agent's screen `session exited` keeps.
+const EXIT_TAIL_LINES: u32 = 20;
+
+/// The status `session exited` reads from stdin: PowerShell's `LASTEXITCODE`,
+/// or nothing at all when the program never ran.
+fn parse_exit_status(input: &str) -> Option<i64> {
+    input.trim().parse().ok()
+}
+
+fn run_exited(
+    db: &Database,
+    backends: &super::Backends<'_>,
+) -> Result<CommandOutput, CommandError> {
+    use std::io::Read;
+
+    let mut input = String::new();
+    // A status is one integer; anything longer is not one.
+    let _ = std::io::stdin().take(64).read_to_string(&mut input);
+    let code = parse_exit_status(&input);
+    let Some(target) = super::identity::calling_session(db) else {
+        return Ok(CommandOutput::new(
+            json!({ "recorded": false }),
+            "Not inside a thurbox session; nothing to record.",
+        ));
+    };
+    // The window is still open — this runs inside it — so its screen is
+    // still there to read. Best-effort: the status is the part that matters.
+    let tail = signal_backend(backends, &target.backend_type)
+        .and_then(|backend| backend.capture(&target.backend_id, EXIT_TAIL_LINES, false))
+        .map_err(|e| tracing::debug!("could not capture the exited pane: {e:#}"))
+        .ok()
+        .map(|screen| screen.trim_end().to_string())
+        .filter(|screen| !screen.is_empty());
+    db.record_session_exited(target.id, code, tail.as_deref())
+        .map_err(|e| format!("record_session_exited: {e}"))?;
+    let status = code.map_or_else(
+        || "an unknown status".to_string(),
+        |c| format!("status {c}"),
+    );
+    tracing::warn!("the agent of '{}' exited with {status}", target.name);
+    Ok(CommandOutput::new(
+        json!({
+            "recorded": true,
+            "session_id": target.id.to_string(),
+            "session_name": target.name,
+            "exit_code": code,
+        }),
+        format!("Recorded that '{}' exited with {status}.", target.name),
     ))
 }
 

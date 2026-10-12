@@ -309,6 +309,49 @@ fn record_pane(db: &Database, session: &crate::sync::SharedSession, pane: &str) 
 pub struct RestartReport {
     /// `session.post_restart` hooks that failed. The restart stands regardless.
     pub hook_failures: Vec<String>,
+    /// A relaunch refused because the agent is crash-looping
+    /// ([`CRASH_LOOP_RELAUNCHES`]); the session is marked lost instead.
+    pub held_back: bool,
+}
+
+/// How many repairer relaunches within [`CRASH_LOOP_WINDOW_MS`] make a crash
+/// loop. Three is past anything a reboot or one bad turn produces, and few
+/// enough that a broken agent is not re-run for long.
+pub const CRASH_LOOP_RELAUNCHES: usize = 3;
+
+/// The window [`CRASH_LOOP_RELAUNCHES`] is counted over: 10 minutes.
+pub const CRASH_LOOP_WINDOW_MS: i64 = 10 * 60 * 1000;
+
+/// Whether `session`'s agent has been relaunched [`CRASH_LOOP_RELAUNCHES`]
+/// times within [`CRASH_LOOP_WINDOW_MS`].
+///
+/// Counted from the event log, which every interface and every
+/// `restart --if-missing` writes to — so the limit holds across all of them,
+/// where the interface's own `respawned` set only ever stopped one process.
+///
+/// The window ends at the session's lost mark when it has one, so a session
+/// held back here stays held back however long it sits: the mark is lifted
+/// only by a pane recorded for it again — an operator's `session restart` or
+/// `session start`, or the agent's window coming back. A loss `watch` recorded
+/// for some other reason counts only the relaunches before it, as it should.
+fn crash_looping(db: &Database, session: &SharedSession) -> Result<bool, String> {
+    let read =
+        |e: rusqlite::Error| format!("could not read the relaunches of '{}': {e}", session.name);
+    let until = db
+        .load_lost_sessions()
+        .map_err(read)?
+        .get(&session.id)
+        .copied()
+        .unwrap_or_else(|| crate::sync::current_time_millis() as i64);
+    let relaunches = db
+        .count_session_events(
+            session.id,
+            crate::storage::EventReason::Relaunched,
+            until - CRASH_LOOP_WINDOW_MS,
+            until,
+        )
+        .map_err(read)?;
+    Ok(relaunches >= CRASH_LOOP_RELAUNCHES)
 }
 
 /// Restart an existing session in-place — kills its tmux windows (agent +
@@ -454,6 +497,28 @@ fn restart_for(
         return Ok(RestartReport::default());
     }
 
+    // Where an exit takes its window with it, "missing" is also what an agent
+    // that keeps dying looks like, so a repairer's relaunches are counted.
+    let counted = why.is_a_repairer() && !backend.keeps_exited_windows();
+    if counted && crash_looping(db, &session)? {
+        // The hold has to go first: a loss is not recorded while a restart
+        // holds the row, since that gap is normally on purpose.
+        drop(held);
+        tracing::warn!(
+            "'{}' was relaunched {CRASH_LOOP_RELAUNCHES} times within {} minutes; \
+             not relaunching it again until it is restarted by hand",
+            session.name,
+            CRASH_LOOP_WINDOW_MS / 60_000
+        );
+        if let Err(e) = db.record_session_lost(session.id, &session.backend_id) {
+            tracing::warn!("could not record the loss of '{}': {e}", session.name);
+        }
+        return Ok(RestartReport {
+            held_back: true,
+            ..RestartReport::default()
+        });
+    }
+
     let hooks_enabled = super::hooks_enabled(db);
     // Strict, both of them: a `--command` session's recipe read as absent makes
     // `build_restart_plan` treat it as a registry agent, find no `agents.toml`
@@ -486,6 +551,11 @@ fn restart_for(
     refuse_if_deleted(db, &session)?;
 
     respawn(db, backend.as_ref(), &session, &plan)?;
+    if counted {
+        if let Err(e) = db.record_session_relaunched(session.id) {
+            tracing::warn!("could not record the relaunch of '{}': {e}", session.name);
+        }
+    }
 
     // The agent was re-spawned fresh; clear any stale hook-driven status so it
     // doesn't show a leftover Blocked/Working/Done until the agent re-reports
@@ -501,7 +571,10 @@ fn restart_for(
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session_id);
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
 
-    Ok(RestartReport { hook_failures })
+    Ok(RestartReport {
+        hook_failures,
+        ..RestartReport::default()
+    })
 }
 
 /// Restart through the host's own CLI, then mirror the row back from it.
@@ -525,7 +598,10 @@ fn restart_delegated(
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
-    Ok(RestartReport { hook_failures })
+    Ok(RestartReport {
+        hook_failures,
+        ..RestartReport::default()
+    })
 }
 
 /// A restart's hold on the row it is replacing the window of, given back when
@@ -758,6 +834,94 @@ mod tests {
             hold_restart(&db, row.id).is_some(),
             "the restart ending gives the row back"
         );
+    }
+
+    /// A session on `mux`, with a conversation to resume, served by a stub.
+    fn on(
+        mux: crate::session::Multiplexer,
+    ) -> (Database, crate::backend::BackendRegistry, SharedSession) {
+        let route = crate::session::Route::local(Some(mux));
+        let backends = crate::backend::registry::inert_serving(std::slice::from_ref(&route));
+        let db = Database::open_in_memory().unwrap();
+        let mut row = session(Some("conversation"), None);
+        row.backend_type = route.format();
+        db.upsert_session(&row).unwrap();
+        (db, backends, row)
+    }
+
+    /// The agent exits, and its window goes with it — what psmux does.
+    fn exit(db: &Database, backends: &crate::backend::BackendRegistry, row: &SharedSession) {
+        let pane = db.get_session_by_id(row.id).unwrap().unwrap().backend_id;
+        let backend = super::super::windows::backend_for(backends, &row.backend_type).unwrap();
+        backend.kill(&pane).unwrap();
+    }
+
+    fn relaunches(db: &Database, row: &SharedSession) -> usize {
+        db.count_session_events(row.id, crate::storage::EventReason::Relaunched, 0, i64::MAX)
+            .unwrap()
+    }
+
+    /// Issue: on psmux every agent exit read as a vanished window, which each
+    /// interface and every `restart --if-missing` relaunched — forever, and
+    /// with nothing left behind to say it had happened.
+    #[test]
+    fn a_crash_loop_on_psmux_is_held_back_and_marked_lost() {
+        let (_temp, _guard) = hooks_isolated();
+        let (db, backends, row) = on(crate::session::Multiplexer::Psmux);
+        let relaunch = || restart_session_headless_with(&db, &backends, row.id, true).unwrap();
+
+        for n in 1..=CRASH_LOOP_RELAUNCHES {
+            exit(&db, &backends, &row);
+            assert!(!relaunch().held_back, "relaunch {n} is owed");
+            assert_eq!(relaunches(&db, &row), n, "each relaunch is recorded");
+        }
+
+        exit(&db, &backends, &row);
+        let pane = db.get_session_by_id(row.id).unwrap().unwrap().backend_id;
+        assert!(relaunch().held_back, "the next one is a crash loop");
+        assert_eq!(relaunches(&db, &row), CRASH_LOOP_RELAUNCHES);
+        assert!(db.load_lost_sessions().unwrap().contains_key(&row.id));
+        assert_eq!(
+            db.get_session_by_id(row.id).unwrap().unwrap().backend_id,
+            pane,
+            "nothing was launched"
+        );
+        assert!(
+            relaunch().held_back,
+            "a second repairer is held back as well"
+        );
+
+        // The operator's own restart is never held back, and is what lifts it.
+        let asked = restart_session_headless_with(&db, &backends, row.id, false).unwrap();
+        assert!(!asked.held_back);
+        assert!(!db.load_lost_sessions().unwrap().contains_key(&row.id));
+    }
+
+    /// A loss with no relaunches behind it — a reboot — is relaunched as
+    /// before, however long ago it was recorded.
+    #[test]
+    fn a_lost_session_with_no_crash_loop_is_relaunched() {
+        let (_temp, _guard) = hooks_isolated();
+        let (db, backends, row) = on(crate::session::Multiplexer::Psmux);
+        exit(&db, &backends, &row);
+        db.record_session_lost(row.id, &row.backend_id).unwrap();
+        let report = restart_session_headless_with(&db, &backends, row.id, true).unwrap();
+        assert!(!report.held_back);
+        assert_eq!(relaunches(&db, &row), 1);
+    }
+
+    /// tmux keeps an exited agent's window, so "missing" there is never an
+    /// exit: its relaunches are neither recorded nor counted.
+    #[test]
+    fn a_multiplexer_that_keeps_exited_windows_is_never_held_back() {
+        let (_temp, _guard) = hooks_isolated();
+        let (db, backends, row) = on(crate::session::Multiplexer::Tmux);
+        for _ in 0..=CRASH_LOOP_RELAUNCHES {
+            exit(&db, &backends, &row);
+            let report = restart_session_headless_with(&db, &backends, row.id, true).unwrap();
+            assert!(!report.held_back);
+        }
+        assert_eq!(relaunches(&db, &row), 0);
     }
 
     /// `session start` is the caller that looks like a repairer and is not. It

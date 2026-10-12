@@ -163,6 +163,7 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// The environment and program that close a one-shot `new-window`'s argv.
     fn push_window_program(
         cmd: &mut Command,
+        _window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
@@ -1934,6 +1935,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn needs_liveness_poll(&self) -> bool {
         !M::WINDOW_EVENTS
     }
+    /// Only where the window can be told to keep its dead pane
+    /// ([`TmuxCompatible::WINDOW_SETTINGS`], `remain-on-exit`).
+    fn keeps_exited_windows(&self) -> bool {
+        M::WINDOW_SETTINGS
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -3506,7 +3512,7 @@ impl<M: TmuxCompatible> Server<M> {
         if let Some(dir) = cwd {
             tmux.args(["-c", &dir.to_string_lossy()]);
         }
-        M::push_window_program(&mut tmux, command, args, env);
+        M::push_window_program(&mut tmux, window_name, command, args, env);
 
         // Chained into the same command list as the creation, not sent after
         // it — `birth_options` has the measurement. This path passes `-d`, so
@@ -3897,6 +3903,7 @@ mod tests {
         }
         fn push_window_program(
             cmd: &mut Command,
+            _: &str,
             command: &str,
             args: &[String],
             env: &HashMap<String, String>,

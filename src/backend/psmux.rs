@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use tracing::warn;
 
-use crate::backend::contract::SessionBackend;
+use crate::backend::contract::{SessionBackend, WindowRole};
 use crate::backend::tmux_compat::control_mode::{ControlPolicy, PaneInput, SEND_KEYS_CHUNK_BYTES};
 use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
@@ -56,7 +56,9 @@ impl TmuxCompatible for Psmux {
     /// — ADR-13), so a stamp read back from psmux identifies nothing.
     const WINDOW_OPTIONS: bool = false;
 
-    /// psmux has neither `remain-on-exit` nor `window-size`.
+    /// psmux has neither `remain-on-exit` nor `window-size`, so an agent that
+    /// exits takes its window with it: the agent window reports its own exit
+    /// instead (`EXIT_REPORT`).
     const WINDOW_SETTINGS: bool = false;
 
     /// psmux sends no `%window-close` and no `%layout-change`.
@@ -140,23 +142,24 @@ impl TmuxCompatible for Psmux {
 
     fn window_command(
         _server: &Server<Self>,
-        _window_name: &str,
+        window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
     ) -> String {
-        psmux_window_command(command, args, env)
+        psmux_window_command(window_name, command, args, env)
     }
 
     /// One argv token: the environment and the program as the PowerShell
     /// `psmux_window_powershell` builds, since `-e` would be ignored.
     fn push_window_program(
         cmd: &mut Command,
+        window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
     ) {
-        cmd.arg(psmux_window_powershell(command, args, env));
+        cmd.arg(psmux_window_powershell(window_name, command, args, env));
     }
 
     /// psmux's own `send-paste`, which wraps and writes the payload itself (see
@@ -349,8 +352,27 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     }
 }
 
+/// What an agent window runs once its agent returns: the exit status, piped to
+/// `thurbox-cli session exited`, which records it with the pane's last lines.
+///
+/// psmux has no `remain-on-exit`, so the window closes with the PowerShell that
+/// launched the agent, and nothing outside it can learn the status or read the
+/// screen afterwards — every exit reads as a window that simply vanished. The
+/// window is still open while this runs, which is what leaves the screen there
+/// to capture.
+///
+/// Piped rather than passed as an argument: `LASTEXITCODE` is unset when the
+/// program never ran, and an empty argument is dropped by Windows PowerShell
+/// 5.1, so an empty pipe is the one spelling that says "no status" the same
+/// way everywhere. `Get-Variable` keeps the string `$`-free, as `Set-Item`
+/// does for the environment. A machine with no `thurbox-cli` on PATH prints an
+/// error into a window that is closing anyway.
+const EXIT_REPORT: &str =
+    "; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
+
 /// Build the PowerShell command a psmux window runs: set the env vars, then
-/// launch the agent.
+/// launch the agent — and, in an agent window, report its exit
+/// ([`EXIT_REPORT`]).
 ///
 /// psmux ignores `new-window -e` — env vars never reach the window's
 /// process — so they are folded into the command itself (`Set-Item Env:K
@@ -375,6 +397,7 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
 ///   ([`TmuxCompatible::push_window_program`]; the argv path joins trailing
 ///   tokens fine, but still ignores `-e`).
 fn psmux_window_powershell(
+    window_name: &str,
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
@@ -391,13 +414,25 @@ fn psmux_window_powershell(
         ps.push(' ');
         ps.push_str(&powershell_quote(a));
     }
-    ps.replace(['"', '\n'], " ")
+    let mut ps = ps.replace(['"', '\n'], " ");
+    if WindowRole::from_window_name(window_name) == Some(WindowRole::Agent) {
+        ps.push_str(EXIT_REPORT);
+    }
+    ps
 }
 
 /// [`psmux_window_powershell`] framed as one
 /// **double-quoted** control-mode token for a `new-window` line.
-fn psmux_window_command(command: &str, args: &[String], env: &HashMap<String, String>) -> String {
-    format!("\"{}\"", psmux_window_powershell(command, args, env))
+fn psmux_window_command(
+    window_name: &str,
+    command: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+) -> String {
+    format!(
+        "\"{}\"",
+        psmux_window_powershell(window_name, command, args, env)
+    )
 }
 
 /// The `run-shell` script that pastes the prompt, waits a beat, then presses
@@ -1112,7 +1147,7 @@ mod tests {
     #[test]
     fn psmux_window_command_is_one_double_quoted_token() {
         let args = vec!["--session-id".to_string(), "abc-123".to_string()];
-        let cmd = psmux_window_command("claude", &args, &HashMap::new());
+        let cmd = psmux_window_command("tbs-x", "claude", &args, &HashMap::new());
         assert_eq!(cmd, "\"& 'claude' '--session-id' 'abc-123'\"");
     }
 
@@ -1123,11 +1158,32 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         env.insert("B".to_string(), "x y".to_string());
-        let cmd = psmux_window_command("claude", &[], &env);
+        let cmd = psmux_window_command("tbs-x", "claude", &[], &env);
         assert_eq!(
             cmd,
             "\"Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'\""
         );
+    }
+
+    #[test]
+    fn an_agent_window_reports_its_exit() {
+        let cmd = psmux_window_command("tb-x", "claude", &[], &HashMap::new());
+        assert_eq!(
+            cmd,
+            "\"& 'claude'; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore \
+             | thurbox-cli session exited\""
+        );
+        // The report rides inside the one token, and stays free of what that
+        // token cannot carry.
+        assert!(!EXIT_REPORT.contains(['"', '\n', '$', '{', '}']));
+    }
+
+    #[test]
+    fn only_an_agent_window_reports_its_exit() {
+        for name in ["tbs-x", "tbp-x", "other"] {
+            let cmd = psmux_window_powershell(name, "pwsh", &[], &HashMap::new());
+            assert!(!cmd.contains("session exited"), "{name}: {cmd}");
+        }
     }
 
     #[test]
@@ -1137,7 +1193,7 @@ mod tests {
         // neutralized to spaces. Backslash paths pass through untouched (psmux
         // treats backslash literally everywhere).
         let args = vec!["it's".to_string(), "say \"hi\"\nnow".to_string()];
-        let cmd = psmux_window_command("C:\\Tools\\claude.exe", &args, &HashMap::new());
+        let cmd = psmux_window_command("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
         assert_eq!(cmd, "\"& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'\"");
     }
 
@@ -1154,7 +1210,7 @@ mod tests {
         let backend = PsmuxBackend::for_host(&host);
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
         assert_eq!(
-            Psmux::window_command(&backend, "tb-x", "claude", &[], &HashMap::new()),
+            Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()),
             "\"& 'claude'\"",
             "the window's command is the PowerShell token, never a POSIX wrap"
         );

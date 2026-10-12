@@ -1012,6 +1012,49 @@ ask, does the binary's `-V` answer — before it starts one that every spawn
 would then refuse. Attaching to existing panes is not gated, so an
 old server's sessions stay reachable until then.
 
+### A psmux agent reports its own exit, and its relaunches are bounded
+
+psmux has no `remain-on-exit` (the adapter's `WINDOW_SETTINGS` is `false`), so
+an agent that exits takes its window with it. Liveness then reads `Missing`,
+not `Exited`. That is the one answer a repairer relaunches on
+(`BackendLiveness::permits_relaunch`): the interface's `respawn_missing_agents`
+and every `restart --if-missing`. Before this, every exit came back as a
+silent `--resume` with no status, no last screen and no lost mark. An agent
+that kept dying was relaunched once per interface and once per CLI call, for
+as long as anything kept asking.
+
+Two pieces close that, both gated on the backend's `keeps_exited_windows`
+(the `WINDOW_SETTINGS` answer). tmux and RMUX keep a dead pane, so for them
+neither piece exists and nothing changes:
+
+- **The window reports its exit.** An agent window's PowerShell ends with
+  `Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli
+  session exited` (`EXIT_REPORT` in `backend::psmux`). That runs while the
+  window is still open, so `session exited` can still capture the pane's last
+  20 lines. It writes a `changed`/`exited` event carrying `exit_code` and the
+  tail in `detail` (schema v51). The status is piped rather than passed:
+  `LASTEXITCODE` is unset when the program never ran, and Windows PowerShell
+  5.1 drops an empty argument. An empty pipe means "no status" on every
+  version.
+- **Relaunches are counted, in the database.** Each repairer relaunch on such
+  a backend writes a `changed`/`relaunched` event. `restart::crash_looping`
+  refuses the next one once `CRASH_LOOP_RELAUNCHES` (3) have happened within
+  `CRASH_LOOP_WINDOW_MS` (10 minutes), and marks the session lost instead. The
+  count comes from the event log, which every process writes, so the limit
+  holds across interfaces and CLI calls. The interface's `respawned` set only
+  ever covered its own process. The window ends at the lost mark, so a session
+  held back stays held back until a pane is recorded for it again: an
+  operator's `session restart` or `session start`, which are never held back.
+  A loss with no relaunches behind it, such as a reboot, is relaunched as
+  before.
+
+The back-off counts relaunches rather than `exited` events. A window that
+vanished without reporting is the same loop: it was killed outside thurbox,
+or the machine has no `thurbox-cli` on PATH. psmux ≥ 3.3.8 does implement
+`remain-on-exit`, but the adapter still declares none. Turning it on would
+need a per-server version gate on a const answer, and the reporting above
+works on the 3.3.7 floor.
+
 ### The host's platform is its own dimension
 
 A session's place (this machine, an ssh host, a WSL distro), the host's OS, the
