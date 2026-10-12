@@ -61,12 +61,26 @@ impl TmuxCompatible for Psmux {
     /// instead (`EXIT_REPORT`).
     const WINDOW_SETTINGS: bool = false;
 
-    /// psmux sends no `%window-close` and no `%layout-change`.
+    /// psmux sends `%window-close`, but not one to act on: on 3.3.7 a close
+    /// was measured naming a window still alive while the one that went was
+    /// never named, so a close is only a hint, confirmed against the session's
+    /// panes before any reader ends (`Self::control_policy`). No
+    /// `%layout-change` that reports a pane's size either.
     const WINDOW_EVENTS: bool = false;
 
     /// Unsupported tmux target syntax prints `ERROR:` on stdout and exits 0
     /// on psmux 3.3.8.
     const EXIT_ZERO_ERRORS: bool = true;
+
+    /// psmux numbers panes and windows per session (psmux #569), and its socket
+    /// hosts a `__warm__` session beside thurbox's with the same numbers.
+    const SESSION_SCOPED_IDS: bool = true;
+
+    /// psmux 3.3.7 resolves `kill-window -t thurbox:.%8` to the session's
+    /// ACTIVE window (fixed in 3.3.8, dc183e3), where `kill-pane` with the same
+    /// target kills `%8`. A thurbox window holds one pane, so that is its
+    /// window gone.
+    const KILL_BY_PANE: bool = true;
     const PANE_MONITORING: bool = true;
 
     /// Nothing has verified that a psmux reply queues behind the pane output
@@ -229,6 +243,7 @@ impl TmuxCompatible for Psmux {
             subscriptions: false,
             status_poll: (transport.is_remote() && Self::HOOK_STATUS)
                 .then(|| hook_poll_command(session)),
+            confirm_close: Some(live_panes_command(session)),
         }
     }
 
@@ -292,6 +307,17 @@ fn hook_poll_command(session: &str) -> String {
         "list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}} #{{{}}}\"",
         crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION,
     )
+}
+
+/// The control-mode command listing the panes `session` still has, which a
+/// `%window-close` is checked against ([`ControlPolicy::confirm_close`]).
+/// Framed as [`hook_poll_command`] frames its session, for the same reason.
+fn live_panes_command(session: &str) -> String {
+    let session_safe: String = session
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\'))
+        .collect();
+    format!("list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}}\"")
 }
 
 /// psmux's pane input: [`psmux_send_keys_commands`] for keystrokes, and a
@@ -1127,6 +1153,48 @@ mod tests {
         assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
         // A pre-release suffix on the patch is still that patch, not 0.
         assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
+    }
+
+    /// Measured on psmux 3.3.7: `kill-window -t thurbox:.%8` killed the
+    /// session's active window, and a bare `kill-window -t @7` another
+    /// session's `@7`. A pane's window goes by `kill-pane` on the qualified
+    /// pane; a window by id goes qualified; a window by name is already
+    /// qualified and is left as it is.
+    #[test]
+    fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
+        let psmux = PsmuxBackend::local();
+        let session = psmux.session.clone();
+        assert_eq!(
+            psmux.kill_command("%8"),
+            ("kill-pane", format!("{session}:.%8").into())
+        );
+        assert_eq!(
+            psmux.kill_command("@7"),
+            ("kill-window", format!("{session}:@7").into())
+        );
+        assert_eq!(
+            psmux.kill_command("thurbox:=tb-x"),
+            ("kill-window", "thurbox:=tb-x".into())
+        );
+    }
+
+    /// Every pane a psmux command names goes out in thurbox's session, never as
+    /// a bare `%N` the server could route to its `__warm__` session.
+    #[test]
+    fn a_psmux_pane_target_names_thurboxs_session() {
+        let psmux = PsmuxBackend::local();
+        assert_eq!(psmux.target("%2"), format!("{}:.%2", psmux.session));
+    }
+
+    /// A close is confirmed against the session's own panes, listed in the
+    /// framing psmux's tokenizer reads.
+    #[test]
+    fn a_psmux_close_is_confirmed_against_the_sessions_panes() {
+        let policy = Psmux::control_policy(&TmuxTransport::local("psmux"), "thurbox");
+        assert_eq!(
+            policy.confirm_close.as_deref(),
+            Some("list-panes -s -t \"thurbox\" -F \"#{pane_id}\"")
+        );
     }
 
     /// A banner this cannot read says nothing about the fix, and refusing it

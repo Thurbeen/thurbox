@@ -144,6 +144,7 @@ impl TmuxCompatible for Tmux {
             command_list_single_reply: Self::COMMAND_LIST_SINGLE_REPLY,
             subscriptions: true,
             status_poll: None,
+            confirm_close: None,
         }
     }
 

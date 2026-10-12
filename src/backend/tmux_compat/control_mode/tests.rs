@@ -264,6 +264,144 @@ fn window_close_leaves_other_windows_alone() {
     assert_eq!(&buf[..10], b"still here");
 }
 
+// --- a close that is only a hint (psmux) ---
+
+/// The phantom close: psmux 3.3.7 announced `@2` closing while `@2` lived on.
+/// A pane the session's listing still has keeps its reader, whatever window
+/// the close named.
+#[test]
+fn a_close_hint_for_a_live_window_ends_no_reader() {
+    let registered = vec!["%2".to_string(), "%8".to_string()];
+    assert!(ControlMode::confirm_closes(&registered, "%2\n%8\n%10\n").is_empty());
+}
+
+/// The close that named the wrong window still ends the pane that did go.
+#[test]
+fn a_close_hint_ends_only_the_panes_the_session_lost() {
+    let registered = vec!["%2".to_string(), "%6".to_string(), "%9".to_string()];
+    assert_eq!(
+        ControlMode::confirm_closes(&registered, "%2\n%8\n"),
+        vec!["%6".to_string(), "%9".to_string()]
+    );
+}
+
+/// A listing with no pane in it says nothing — the session's own server
+/// answered — and must not end every reader at once.
+#[test]
+fn an_empty_listing_confirms_no_close() {
+    let registered = vec!["%2".to_string()];
+    assert!(ControlMode::confirm_closes(&registered, "").is_empty());
+    assert!(ControlMode::confirm_closes(&registered, "garbage\n").is_empty());
+}
+
+/// A reader that was dropped no longer holds a place: the next output for its
+/// pane unregisters its sender, and the pane's entry with it once no reader is
+/// left, so a close check never counts it as one.
+#[test]
+fn a_dropped_readers_sender_is_unregistered() {
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
+    let (gone_tx, gone_rx) = sync_channel(4);
+    let (kept_tx, kept_rx) = sync_channel(4);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), vec![gone_tx, kept_tx]);
+    drop(ControlModeReader::new(gone_rx));
+
+    ControlMode::dispatch_output(&senders, "%7", b"hi".to_vec());
+    assert_eq!(senders.lock().unwrap()["%7"].len(), 1);
+    let mut kept = ControlModeReader::new(kept_rx);
+    let mut buf = [0u8; 4];
+    assert_eq!(kept.read(&mut buf).unwrap(), 2);
+
+    drop(kept);
+    ControlMode::dispatch_output(&senders, "%7", b"hi".to_vec());
+    assert!(senders.lock().unwrap().is_empty());
+}
+
+/// The reader thread with a close hint, end to end against a fake server that
+/// announces `%window-close @3` and then lists the session's panes as the
+/// test says: `%7` (in `@3`) keeps its reader while listed, and gets its EOF
+/// once it is not.
+#[cfg(unix)]
+#[test]
+fn a_window_close_is_confirmed_before_a_reader_ends() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `%%` because the listing goes through the fake's `printf` format.
+    for (listed, ends) in [("%%7", false), ("%%1", true)] {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("fake-mux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nwhile IFS= read -r line; do\n\
+                 printf '%s\\n' \"$line\" >> \"$0.log\"\n\
+                 case \"$line\" in\n\
+                   *close*) printf '%%window-close @3\\n%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+                   list-panes*) printf '%%begin 1 1 0\\n%%1\\n{listed}\\n%%end 1 1 0\\n' ;;\n\
+                   *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+                 esac\n\
+                 done\n"
+            ),
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let control = ControlMode::start(
+            &TmuxTransport::local(mux.to_string_lossy()),
+            "unused",
+            "unused",
+            "tests",
+            &ControlPolicy {
+                flow_control_command: None,
+                implicit_attach_reply: false,
+                tagged_blocks: false,
+                command_list_single_reply: false,
+                subscriptions: false,
+                status_poll: None,
+                confirm_close: Some("list-panes -s -t thurbox -F '#{pane_id}'".into()),
+            },
+        )
+        .expect("control client");
+        let (tx, rx) = sync_channel(4);
+        control
+            .pane_senders
+            .lock()
+            .unwrap()
+            .insert("%7".to_string(), vec![tx]);
+        control
+            .pane_windows
+            .lock()
+            .unwrap()
+            .insert("%7".to_string(), "@3".to_string());
+        let _reader = ControlModeReader::new(rx);
+
+        control
+            .send_command("display-message -p close")
+            .expect("close");
+        let log = mux.with_extension("log");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read_to_string(&log)
+            .is_ok_and(|log| log.lines().any(|l| l.starts_with("list-panes")))
+        {
+            assert!(std::time::Instant::now() < deadline, "no close check ran");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Answered after the listing, so the check has its reply by now.
+        control
+            .send_command("display-message -p sync")
+            .expect("sync");
+        let registered = || control.pane_senders.lock().unwrap().contains_key("%7");
+        while ends && registered() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !ends {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert_eq!(registered(), !ends, "listing {listed}");
+    }
+}
+
 // --- layout change → the reader's grid size ---
 
 #[test]
@@ -1200,6 +1338,7 @@ fn a_control_client_without_flow_control_attaches_without_refreshing() {
             command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
+            confirm_close: None,
         },
     )
     .expect("attach without flow control");
@@ -1228,6 +1367,7 @@ fn a_control_client_without_flow_control_attaches_without_refreshing() {
             command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
+            confirm_close: None,
         },
     )
     .expect("adapter-selected setup command");
@@ -1269,6 +1409,7 @@ fn a_single_reply_command_list_leaves_the_next_reply_aligned() {
             command_list_single_reply: false,
             subscriptions: false,
             status_poll: None,
+            confirm_close: None,
         },
     )
     .expect("control client");
@@ -1342,6 +1483,7 @@ impl ThrowawayServer {
                 command_list_single_reply: false,
                 subscriptions: true,
                 status_poll: None,
+                confirm_close: None,
             },
         )
         .expect("control mode starts")
@@ -1403,6 +1545,7 @@ fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
             command_list_single_reply: true,
             subscriptions: false,
             status_poll: None,
+            confirm_close: None,
         },
     )
     .expect("control connection without flow control");
