@@ -937,10 +937,19 @@ pub(super) fn migrate_v50_lost_at(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// See [`super::SCHEMA_VERSION`] v51: NULL on every existing event — nothing
-/// before this version recorded an agent's exit.
+/// before this version recorded an agent's exit, and no session is held back.
 pub(super) fn migrate_v51_event_exit(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "session_events", "exit_code", "INTEGER")?;
-    add_column_if_absent(conn, "session_events", "detail", "TEXT")
+    add_column_if_absent(conn, "session_events", "detail", "TEXT")?;
+    add_column_if_absent(conn, "sessions", "relaunch_held_at", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_relaunches (
+            session_id TEXT NOT NULL,
+            at_ms      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_relaunches_session
+            ON session_relaunches(session_id, at_ms);",
+    )
 }
 
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing

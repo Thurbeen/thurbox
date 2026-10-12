@@ -80,8 +80,8 @@ pub enum EventReason {
     /// nothing else would ever see why it went.
     Exited,
     /// `changed`: a repairer (the interface's respawn, `restart --if-missing`)
-    /// put back an agent whose window had vanished. Counted by the crash-loop
-    /// back-off in [`crate::session_ops::restart`].
+    /// put back an agent whose window had vanished. The crash-loop guard keeps
+    /// its own count (`storage::relaunches`), since this log is pruned.
     Relaunched,
     /// `gone`: soft-deleted, and so restorable.
     SoftDeleted,
@@ -181,36 +181,6 @@ impl Database {
             ],
         )?;
         Ok(())
-    }
-
-    /// Record that a repairer relaunched `id`'s vanished agent.
-    pub fn record_session_relaunched(&self, id: SessionId) -> rusqlite::Result<()> {
-        self.record_session_event(
-            id,
-            SessionEventKind::Changed,
-            EventReason::Relaunched,
-            None,
-            None,
-        )
-    }
-
-    /// How many `reason` events `id` has with `at_ms` in `from_ms..=to_ms`.
-    pub fn count_session_events(
-        &self,
-        id: SessionId,
-        reason: EventReason,
-        from_ms: i64,
-        to_ms: i64,
-    ) -> rusqlite::Result<usize> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT COUNT(*) FROM session_events \
-             WHERE session_id = ?1 AND reason = ?2 AND at_ms BETWEEN ?3 AND ?4",
-        )?;
-        stmt.query_row(
-            params![id.to_string(), reason.as_str(), from_ms, to_ms],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n as usize)
     }
 
     /// The highest seq in the log, or `0` when it is empty. The baseline a
@@ -393,7 +363,6 @@ mod tests {
         let head = db.latest_session_event_seq().unwrap();
         db.record_session_exited(session.id, Some(-1073741819), Some("boom"))
             .unwrap();
-        db.record_session_relaunched(session.id).unwrap();
 
         let events = db.session_events_since(head, None, 100).unwrap();
         let seen: Vec<(&str, &str, Option<i64>, Option<&str>)> = events
@@ -409,32 +378,7 @@ mod tests {
             .collect();
         assert_eq!(
             seen,
-            vec![
-                ("changed", "exited", Some(-1073741819), Some("boom")),
-                ("changed", "relaunched", None, None),
-            ]
+            vec![("changed", "exited", Some(-1073741819), Some("boom")),]
         );
-    }
-
-    #[test]
-    fn count_reads_one_reason_in_one_window() {
-        let db = Database::open_in_memory().unwrap();
-        let mine = row("mine");
-        let theirs = row("theirs");
-        db.upsert_session(&mine).unwrap();
-        db.upsert_session(&theirs).unwrap();
-        db.record_session_relaunched(mine.id).unwrap();
-        db.record_session_relaunched(mine.id).unwrap();
-        db.record_session_relaunched(theirs.id).unwrap();
-        db.record_session_exited(mine.id, Some(1), None).unwrap();
-
-        let now = current_time_millis() as i64;
-        let count = |id, from| {
-            db.count_session_events(id, EventReason::Relaunched, from, now)
-                .unwrap()
-        };
-        assert_eq!(count(mine.id, 0), 2);
-        assert_eq!(count(theirs.id, 0), 1);
-        assert_eq!(count(mine.id, now + 1), 0);
     }
 }

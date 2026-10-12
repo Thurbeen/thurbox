@@ -1037,16 +1037,23 @@ neither piece exists and nothing changes:
   5.1 drops an empty argument. An empty pipe means "no status" on every
   version.
 - **Relaunches are counted, in the database.** Each repairer relaunch on such
-  a backend writes a `changed`/`relaunched` event. `restart::crash_looping`
-  refuses the next one once `CRASH_LOOP_RELAUNCHES` (3) have happened within
-  `CRASH_LOOP_WINDOW_MS` (10 minutes), and marks the session lost instead. The
-  count comes from the event log, which every process writes, so the limit
-  holds across interfaces and CLI calls. The interface's `respawned` set only
-  ever covered its own process. The window ends at the lost mark, so a session
-  held back stays held back until a pane is recorded for it again: an
-  operator's `session restart` or `session start`, which are never held back.
-  A loss with no relaunches behind it, such as a reboot, is relaunched as
-  before.
+  a backend is stored in `session_relaunches` and reported as a
+  `changed`/`relaunched` event. `restart::crash_looping` refuses the next one
+  once `CRASH_LOOP_RELAUNCHES` (3) have happened within `CRASH_LOOP_WINDOW_MS`
+  (10 minutes). It sets the sticky `sessions.relaunch_held_at` mark and marks
+  the session lost. Every process writes these, so the limit holds across
+  interfaces and CLI calls; the interface's `respawned` set only ever covered
+  its own process.
+  - **Not counted from the event log.** That log is pruned on the audit
+    retention every time a database opens, and a retention of zero is
+    valid. A guard read from it forgot the loop it was holding back.
+  - **What lifts the hold.** Only a pane recorded for the session again
+    (`set_backend_id`): an operator's `session restart` or `session start`,
+    which are never held back, or an adoption.
+  - **Plain losses.** A loss with no relaunches behind it, such as a reboot,
+    is relaunched as before.
+  - **In the interface.** A held-back relaunch fails as a command with its
+    reason. The interface reports that, not "restarted".
 
 The back-off counts relaunches rather than `exited` events. A window that
 vanished without reporting is the same loop: it was killed outside thurbox,

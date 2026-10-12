@@ -1031,12 +1031,10 @@ fn run_restart(
     )?;
     let mut human = match report.held_back {
         true => format!(
-            "Not relaunching '{}' ({}): it was relaunched {} times within {} minutes. \
-             It is marked lost; `thurbox-cli session restart {}` brings it back.",
+            "Not relaunching '{}' ({}): {}. `thurbox-cli session restart {}` brings it back.",
             session.name,
             session.id,
-            crate::session_ops::restart::CRASH_LOOP_RELAUNCHES,
-            crate::session_ops::restart::CRASH_LOOP_WINDOW_MS / 60_000,
+            crate::session_ops::restart::held_back_reason(),
             session.id
         ),
         false => format!("Restarted session '{}' ({})", session.name, session.id),

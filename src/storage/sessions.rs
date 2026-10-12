@@ -1253,9 +1253,11 @@ impl Database {
             )
             .optional()?;
         // A pane recorded for the row is one it has again, lost or not — even
-        // the same id, which a fresh tmux server hands out from `%0` again.
+        // the same id, which a fresh tmux server hands out from `%0` again. A
+        // crash-loop hold goes with it: whoever recorded this pane (an
+        // operator's restart or start, an adoption) has put the agent back.
         let mut stmt = self.conn.prepare_cached(
-            "UPDATE sessions SET backend_id = ?1, lost_at = NULL \
+            "UPDATE sessions SET backend_id = ?1, lost_at = NULL, relaunch_held_at = NULL \
              WHERE id = ?2 AND deleted_at IS NULL",
         )?;
         let updated = stmt.execute(params![pane, id_str])?;

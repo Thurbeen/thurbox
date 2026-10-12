@@ -91,6 +91,9 @@ use rusqlite::Connection;
 /// v51 adds `exit_code` and `detail` to `session_events`: an `exited` event
 /// carries the agent's exit status and the pane's last lines, which a
 /// multiplexer that closes a window with its program (psmux) otherwise loses.
+/// It also adds the crash-loop guard's own state, which the pruned event log
+/// cannot hold: `session_relaunches` (the recent automatic relaunches) and
+/// `sessions.relaunch_held_at` (the hold, until a pane is recorded again).
 pub const SCHEMA_VERSION: u32 = 51;
 
 /// A single migration step: applied when the stored version is below `target`,
@@ -197,6 +200,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             host_updated_at   INTEGER,
             teardown_owed     INTEGER NOT NULL DEFAULT 0,
             lost_at           INTEGER,
+            relaunch_held_at  INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -370,6 +374,13 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON session_events(at_ms);
         CREATE INDEX IF NOT EXISTS idx_session_events_session
             ON session_events(session_id, seq);
+
+        CREATE TABLE IF NOT EXISTS session_relaunches (
+            session_id TEXT NOT NULL,
+            at_ms      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_relaunches_session
+            ON session_relaunches(session_id, at_ms);
         ",
     )?;
 

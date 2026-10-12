@@ -314,6 +314,27 @@ pub struct RestartReport {
     pub held_back: bool,
 }
 
+impl RestartReport {
+    /// The restart as a command outcome: a relaunch held back is a failure,
+    /// with the reason, since no agent came back. The interface reports a
+    /// command that succeeds as "restarted" and lets go of the old pane.
+    pub fn into_outcome(self) -> Result<(), String> {
+        match self.held_back {
+            true => Err(held_back_reason()),
+            false => Ok(()),
+        }
+    }
+}
+
+/// Why a relaunch was held back, as the CLI and the interface both say it.
+pub fn held_back_reason() -> String {
+    format!(
+        "it keeps exiting ({CRASH_LOOP_RELAUNCHES} relaunches within {} minutes), \
+         so it was marked lost and is not relaunched until it is restarted by hand",
+        CRASH_LOOP_WINDOW_MS / 60_000
+    )
+}
+
 /// How many repairer relaunches within [`CRASH_LOOP_WINDOW_MS`] make a crash
 /// loop. Three is past anything a reboot or one bad turn produces, and few
 /// enough that a broken agent is not re-run for long.
@@ -322,36 +343,33 @@ pub const CRASH_LOOP_RELAUNCHES: usize = 3;
 /// The window [`CRASH_LOOP_RELAUNCHES`] is counted over: 10 minutes.
 pub const CRASH_LOOP_WINDOW_MS: i64 = 10 * 60 * 1000;
 
-/// Whether `session`'s agent has been relaunched [`CRASH_LOOP_RELAUNCHES`]
-/// times within [`CRASH_LOOP_WINDOW_MS`].
+/// Whether `session` is held back from automatic relaunches: it already was,
+/// or it has been relaunched [`CRASH_LOOP_RELAUNCHES`] times within
+/// [`CRASH_LOOP_WINDOW_MS`] and is held from now on.
 ///
-/// Counted from the event log, which every interface and every
-/// `restart --if-missing` writes to — so the limit holds across all of them,
-/// where the interface's own `respawned` set only ever stopped one process.
+/// Both are the database's (`storage::relaunches`), which every interface and
+/// every `restart --if-missing` writes to — so the limit holds across all of
+/// them, where the interface's own `respawned` set only ever stopped one
+/// process. Neither is read from the event log, which is pruned.
 ///
-/// The window ends at the session's lost mark when it has one, so a session
-/// held back here stays held back however long it sits: the mark is lifted
-/// only by a pane recorded for it again — an operator's `session restart` or
-/// `session start`, or the agent's window coming back. A loss `watch` recorded
-/// for some other reason counts only the relaunches before it, as it should.
+/// The hold is sticky: it outlasts the window, and is lifted only by a pane
+/// recorded for the session again — an operator's `session restart` or
+/// `session start`, or an adoption. The relaunches that tripped it stay
+/// counted until they age out, so an agent that dies again straight after
+/// the operator's restart is held again rather than given three more tries.
 fn crash_looping(db: &Database, session: &SharedSession) -> Result<bool, String> {
     let read =
         |e: rusqlite::Error| format!("could not read the relaunches of '{}': {e}", session.name);
-    let until = db
-        .load_lost_sessions()
-        .map_err(read)?
-        .get(&session.id)
-        .copied()
-        .unwrap_or_else(|| crate::sync::current_time_millis() as i64);
-    let relaunches = db
-        .count_session_events(
-            session.id,
-            crate::storage::EventReason::Relaunched,
-            until - CRASH_LOOP_WINDOW_MS,
-            until,
-        )
-        .map_err(read)?;
-    Ok(relaunches >= CRASH_LOOP_RELAUNCHES)
+    if db.relaunches_held(session.id).map_err(read)? {
+        return Ok(true);
+    }
+    let since = crate::sync::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS;
+    if db.relaunches_since(session.id, since).map_err(read)? < CRASH_LOOP_RELAUNCHES {
+        return Ok(false);
+    }
+    db.hold_relaunches(session.id)
+        .map_err(|e| format!("could not hold back '{}': {e}", session.name))?;
+    Ok(true)
 }
 
 /// Restart an existing session in-place — kills its tmux windows (agent +
@@ -505,8 +523,8 @@ fn restart_for(
         // holds the row, since that gap is normally on purpose.
         drop(held);
         tracing::warn!(
-            "'{}' was relaunched {CRASH_LOOP_RELAUNCHES} times within {} minutes; \
-             not relaunching it again until it is restarted by hand",
+            "'{}' keeps exiting ({CRASH_LOOP_RELAUNCHES} relaunches within {} minutes); \
+             not relaunching it until it is restarted by hand",
             session.name,
             CRASH_LOOP_WINDOW_MS / 60_000
         );
@@ -552,7 +570,10 @@ fn restart_for(
 
     respawn(db, backend.as_ref(), &session, &plan)?;
     if counted {
-        if let Err(e) = db.record_session_relaunched(session.id) {
+        if let Err(e) = db.record_relaunch(
+            session.id,
+            crate::sync::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS,
+        ) {
             tracing::warn!("could not record the relaunch of '{}': {e}", session.name);
         }
     }
@@ -857,8 +878,7 @@ mod tests {
     }
 
     fn relaunches(db: &Database, row: &SharedSession) -> usize {
-        db.count_session_events(row.id, crate::storage::EventReason::Relaunched, 0, i64::MAX)
-            .unwrap()
+        db.relaunches_since(row.id, 0).unwrap()
     }
 
     /// Issue: on psmux every agent exit read as a vanished window, which each
@@ -895,6 +915,64 @@ mod tests {
         let asked = restart_session_headless_with(&db, &backends, row.id, false).unwrap();
         assert!(!asked.held_back);
         assert!(!db.load_lost_sessions().unwrap().contains_key(&row.id));
+    }
+
+    /// Review of #1390: the guard was counted from the event log, which every
+    /// database open prunes on the audit retention — zero included — and a
+    /// hold anchored there was released once its relaunches aged out of it.
+    #[test]
+    fn a_hold_survives_a_pruned_event_log_and_an_aged_window() {
+        let (_temp, _guard) = hooks_isolated();
+        let (db, backends, row) = on(crate::session::Multiplexer::Psmux);
+        let relaunch = || restart_session_headless_with(&db, &backends, row.id, true).unwrap();
+
+        // A zero retention prunes the log after every relaunch.
+        for _ in 0..CRASH_LOOP_RELAUNCHES {
+            exit(&db, &backends, &row);
+            assert!(!relaunch().held_back);
+            db.conn_ref()
+                .execute("DELETE FROM session_events", [])
+                .unwrap();
+        }
+        exit(&db, &backends, &row);
+        assert!(relaunch().held_back, "the loop is still counted");
+
+        // Long after the window: the relaunches have aged out, the hold has not.
+        db.conn_ref()
+            .execute("UPDATE session_relaunches SET at_ms = 0", [])
+            .unwrap();
+        assert!(relaunch().held_back, "the hold outlives its window");
+
+        // Only a pane recorded again lifts it.
+        restart_session_headless_with(&db, &backends, row.id, false).unwrap();
+        exit(&db, &backends, &row);
+        assert!(
+            !relaunch().held_back,
+            "after the operator's restart, and with the old loop aged out, a relaunch is owed"
+        );
+    }
+
+    /// Review of #1390: the interface reported a held-back relaunch as
+    /// "restarted" (and let go of a pane), because the kernel dropped the
+    /// report. As a command outcome it is a failure that says why.
+    #[test]
+    fn a_held_back_relaunch_is_a_failed_command_with_its_reason() {
+        let held = RestartReport {
+            held_back: true,
+            ..RestartReport::default()
+        };
+        let error = held.into_outcome().unwrap_err();
+        assert!(error.contains("marked lost"), "{error}");
+        assert_eq!(RestartReport::default().into_outcome(), Ok(()));
+        let hook_failed = RestartReport {
+            hook_failures: vec!["post".into()],
+            ..RestartReport::default()
+        };
+        assert_eq!(
+            hook_failed.into_outcome(),
+            Ok(()),
+            "a failed post-restart hook still leaves the restart standing"
+        );
     }
 
     /// A loss with no relaunches behind it — a reboot — is relaunched as
