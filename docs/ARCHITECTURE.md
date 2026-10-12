@@ -2059,6 +2059,13 @@ the interface has opened one, and every teardown — force delete, reap, `stop`,
 `restart`, `--on-existing replace` — now takes both down through the stamp
 rather than through a column that is usually NULL.
 
+Restart also verifies that the old agent is absent after teardown, before
+creating its replacement. A successful kill reply can leave the window live
+(for example, a multiplexer reports an unresolved target with status zero).
+A live or ambiguous ownership listing refuses the restart, and a failed listing
+propagates the error. The session row and conversation ID remain available for
+an explicit retry; no replacement is launched on a failed verification.
+
 **One session, one window per role is enforced, not merely assumed.** The
 three-valued answer above only works while that holds, and as first written
 nothing kept it: a restart's respawn is kill-then-spawn, and between those two steps

@@ -103,6 +103,92 @@ fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+/// A multiplexer can acknowledge a kill without removing the window. Restart
+/// must refuse before putting a second agent on the same conversation.
+#[cfg(unix)]
+#[test]
+fn restart_refuses_a_false_successful_kill_and_explicit_retry_recovers() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(real_tmux) = thurbox::paths::resolve_on_path("tmux") else {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    };
+    let env = Env::new();
+    std::fs::write(
+        env.path("config/agents.toml"),
+        "default = \"shell\"\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\n\
+         args = [\"-c\", \"while :; do sleep 1; done\"]\n",
+    )
+    .unwrap();
+    let work = env.path("work");
+    let history = work.join("history");
+    std::fs::write(&history, "author work\n").unwrap();
+    let id = env.seed("recovery", Some(&work));
+    let id_text = id.to_string();
+    let first = env.run(&["session", "restart", &id_text, "--json"]);
+    assert!(first.status.success(), "{}", stdout_of(&first));
+    let before = env.db().get_session_by_id(id).unwrap().unwrap();
+
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let wrapper = bin.join("tmux");
+    std::fs::write(
+        &wrapper,
+        "#!/bin/sh\nfor arg in \"$@\"; do\n\
+         if [ \"$arg\" = kill-window ]; then exit 0; fi\n\
+         done\nexec \"$RECOVERY_REAL_TMUX\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    for _ in 0..2 {
+        let refused = env
+            .command(&["session", "restart", &id_text, "--json"])
+            .env("PATH", &path)
+            .env("RECOVERY_REAL_TMUX", &real_tmux)
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "restart accepted a kill that left the old agent alive: {}",
+            stdout_of(&refused)
+        );
+        assert!(
+            stdout_of(&refused).contains("still present"),
+            "{}",
+            stdout_of(&refused)
+        );
+        let after = env.db().get_session_by_id(id).unwrap().unwrap();
+        assert_eq!(after.backend_id, before.backend_id);
+        assert_eq!(after.agent_session_id, before.agent_session_id);
+        let panes = env
+            .server
+            .tmux(&["list-panes", "-a", "-F", "#{pane_id}|#{window_name}"]);
+        let panes = stdout_of(&panes);
+        assert_eq!(
+            panes
+                .lines()
+                .filter(|p| p.ends_with("|tb-recovery"))
+                .count(),
+            1
+        );
+        assert!(panes
+            .lines()
+            .any(|p| p == format!("{}|tb-recovery", before.backend_id)));
+    }
+
+    let retry = env.run(&["session", "restart", &id_text, "--json"]);
+    assert!(retry.status.success(), "{}", stdout_of(&retry));
+    let after = env.db().get_session_by_id(id).unwrap().unwrap();
+    assert_ne!(after.backend_id, before.backend_id);
+    assert_eq!(after.agent_session_id, before.agent_session_id);
+    assert_eq!(std::fs::read_to_string(history).unwrap(), "author work\n");
+}
+
 /// `session exec` runs "in the session's context", and the environment is part
 /// of that context.
 ///

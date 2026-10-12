@@ -752,6 +752,19 @@ fn respawn(
             ),
         });
     }
+    // A successful kill reply need not mean the old window went away. In
+    // particular, a mux can report an unresolved target with status zero.
+    // Starting another agent then puts two processes on one conversation.
+    if super::windows::agent_running(backend, owner_of(session, &id))
+        .map_err(|e| format!("cannot verify teardown of '{}': {e:#}", session.name))?
+    {
+        return Err(format!(
+            "cannot restart '{}': its agent window is still present after teardown; \
+             no replacement was launched",
+            session.name
+        ));
+    }
+
     let pane = backend
         .create_window(&crate::backend::WindowSpec {
             owner: crate::backend::Owner::new(&id, &plan.window_name),
