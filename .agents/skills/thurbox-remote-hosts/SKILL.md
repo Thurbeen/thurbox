@@ -123,6 +123,13 @@ either alone is the whole symptom). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
+psmux has **no `remain-on-exit`**, so an agent window closes with its agent
+and reads `Missing`. The agent window's PowerShell therefore ends by piping
+`LASTEXITCODE` into `thurbox-cli session exited`, which records an `exited`
+event with the status and the pane tail. Each repairer relaunch is logged as
+`relaunched`, and three within ten minutes hold the next one back and mark
+the session lost (`keeps_exited_windows`; ADR-13 → "A psmux agent reports its
+own exit").
 On psmux 3.3.8, cold `new-session -d` sometimes refuses or returns before a
 server answers. Its `has-session` deletes a starting server's port file after
 a failed TCP connection, so the adapter probes with `list-windows`. The

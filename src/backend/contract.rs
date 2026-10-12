@@ -461,6 +461,16 @@ pub trait SessionBackend: Send + Sync {
         true
     }
 
+    /// Whether an agent that exits leaves its window behind ([`BackendLiveness::Exited`]).
+    ///
+    /// Where it does not, an exit and a window somebody closed both read as
+    /// [`BackendLiveness::Missing`], which a repairer relaunches — so a relaunch
+    /// there is recorded and a crash loop is held back
+    /// (`session_ops::restart`).
+    fn keeps_exited_windows(&self) -> bool {
+        true
+    }
+
     /// Check if the backend is available/healthy.
     fn check_available(&self) -> Result<()>;
 

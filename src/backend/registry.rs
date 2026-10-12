@@ -257,6 +257,11 @@ pub(crate) mod tests {
         fn name(&self) -> &str {
             &self.backend_name
         }
+        /// As the multiplexer its route names: psmux's windows close with
+        /// their program.
+        fn keeps_exited_windows(&self) -> bool {
+            !self.backend_name.ends_with(":psmux")
+        }
         fn default_shell(&self) -> String {
             "/bin/sh".to_string()
         }

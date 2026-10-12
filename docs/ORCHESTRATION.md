@@ -184,10 +184,12 @@ like, and a sampler that reads the row every 250 ms sees neither edge.
 
 Each line carries a `seq` (monotonic, never reused), the `event`
 (`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
-`spawned`/`registered`/`restored`, `state`/`stopped`/`started`/`updated`/`lost`,
+`spawned`/`registered`/`restored`,
+`state`/`stopped`/`started`/`updated`/`lost`/`exited`/`relaunched`,
 `soft_deleted`/`force_deleted`/`forgotten` — the `from_state` → `to_state` of the
-transition, and the same gating fields the table above lists, so acting on a
-`blocked` needs no follow-up `session get`. `hook_state_contradicted` is `null`
+transition, an `exited` event's `exit_code` and pane tail (`detail`), and the
+same gating fields the table above lists, so acting on a `blocked` needs no
+follow-up `session get`. `hook_state_contradicted` is `null`
 (not checked) unless you pass `--verify`.
 
 A driver that persists the last `seq` it handled restarts with
@@ -213,6 +215,15 @@ session's loss reaches nobody unless a `watch` runs on that host. Run `watch`
 with the environment the sessions were created in — a watcher that resolves a
 different tmux socket (another `TMUX_TMPDIR`, a private `/tmp`) finds no server
 and reports every local session lost.
+
+`exited` and `relaunched` come from a multiplexer whose windows close with their
+agent (psmux), where a vanished window is otherwise all anyone sees. The agent's
+window reports its own exit status and last screen on the way out. A relaunch by
+the interface or by `restart --if-missing` is logged too. After three of those
+within ten minutes the session is not relaunched again: it is marked `lost` and
+waits for an operator's `session restart`. That `restart --if-missing` answers
+`"held_back": true`. Sessions on tmux keep their dead pane and never produce
+either event.
 
 ### `--parent`
 

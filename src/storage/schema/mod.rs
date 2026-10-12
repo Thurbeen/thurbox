@@ -15,8 +15,8 @@ use migrations::{
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
-    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
-    migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v51_event_exit, migrate_v5_session_commands, migrate_v6_worktrees_pk,
+    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -88,7 +88,13 @@ use rusqlite::Connection;
 /// with nobody asking, cleared once a pane is seen or recorded for it again.
 /// The event log cannot carry that mark: a restarted agent can sit on the very
 /// pane id it had, which leaves no event behind, and the log is pruned.
-pub const SCHEMA_VERSION: u32 = 50;
+/// v51 adds `exit_code` and `detail` to `session_events`: an `exited` event
+/// carries the agent's exit status and the pane's last lines, which a
+/// multiplexer that closes a window with its program (psmux) otherwise loses.
+/// It also adds the crash-loop guard's own state, which the pruned event log
+/// cannot hold: `session_relaunches` (the recent automatic relaunches) and
+/// `sessions.relaunch_held_at` (the hold, until a pane is recorded again).
+pub const SCHEMA_VERSION: u32 = 51;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -194,6 +200,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             host_updated_at   INTEGER,
             teardown_owed     INTEGER NOT NULL DEFAULT 0,
             lost_at           INTEGER,
+            relaunch_held_at  INTEGER,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -359,12 +366,21 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             reason     TEXT NOT NULL,
             from_state TEXT,
             to_state   TEXT,
-            at_ms      INTEGER NOT NULL
+            at_ms      INTEGER NOT NULL,
+            exit_code  INTEGER,
+            detail     TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_session_events_at
             ON session_events(at_ms);
         CREATE INDEX IF NOT EXISTS idx_session_events_session
             ON session_events(session_id, seq);
+
+        CREATE TABLE IF NOT EXISTS session_relaunches (
+            session_id TEXT NOT NULL,
+            at_ms      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_relaunches_session
+            ON session_relaunches(session_id, at_ms);
         ",
     )?;
 
@@ -455,6 +471,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (48, migrate_v48_message_delivered_via, Reapply::WhenMissing),
         (49, migrate_v49_snapshot_versions, Reapply::WhenMissing),
         (50, migrate_v50_lost_at, Reapply::WhenMissing),
+        (51, migrate_v51_event_exit, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {

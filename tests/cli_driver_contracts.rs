@@ -294,3 +294,50 @@ fn agent_launch_args_reports_what_to_run() {
     // And the identity the agent's own `session signal` will report under.
     assert_eq!(doc["env"]["THURBOX_SESSION"], Value::String(id), "{doc}");
 }
+
+/// A psmux agent window closes with its agent, so the window reports the exit
+/// itself on the way out: `LASTEXITCODE` piped into `session exited`. What a
+/// driver tailing `watch` then sees is the status, not a window that vanished.
+#[test]
+fn an_exited_agent_leaves_its_status_in_the_event_log() {
+    use std::io::Write;
+
+    let env = Env::new();
+    let target = env.seed("target", None);
+    let head = env.db().latest_session_event_seq().expect("head");
+
+    let mut cmd = env.command(&["session", "exited", "--json"]);
+    cmd.env("THURBOX_SESSION", target.to_string());
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("run thurbox-cli");
+    // As PowerShell pipes it: a 0xC0000005 crash, with its line ending.
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"-1073741819\r\n")
+        .expect("write the status");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success(), "{}", stderr_of(&out));
+
+    let events = env
+        .db()
+        .session_events_since(head, Some(target), 10)
+        .expect("events");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].reason, "exited");
+    assert_eq!(events[0].exit_code, Some(-1073741819));
+}
+
+/// Outside a session there is nothing to record against, and nothing to fail:
+/// the call is the last thing a closing window runs.
+#[test]
+fn an_exit_outside_a_session_records_nothing() {
+    let env = Env::new();
+    let out = env.run(&["session", "exited", "--json"]);
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["recorded"], Value::Bool(false));
+}

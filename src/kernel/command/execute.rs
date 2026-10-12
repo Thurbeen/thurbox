@@ -195,6 +195,7 @@ pub(super) fn execute(
             )
         }
         // A failed post-restart hook is already in the log; the restart stands.
+        // A relaunch held back for a crash loop does not, and fails with why.
         Command::Restart { if_missing, .. } => {
             crate::session_ops::restart::restart_session_headless_with(
                 &db,
@@ -202,7 +203,7 @@ pub(super) fn execute(
                 id,
                 *if_missing,
             )
-            .map(|_| ())
+            .and_then(crate::session_ops::restart::RestartReport::into_outcome)
         }
         Command::Send { text, .. } => {
             let session = db

@@ -601,7 +601,7 @@ fn toon_row_escapes_a_name_that_contains_the_delimiter() {
 
     assert_eq!(
         fields.len(),
-        8,
+        9,
         "the comma and colon inside the session name must not add a column: {row}"
     );
     assert_eq!(
@@ -609,7 +609,7 @@ fn toon_row_escapes_a_name_that_contains_the_delimiter() {
         "the name must decode back exactly: {row}"
     );
     assert_eq!(
-        fields[7],
+        fields[8],
         id.to_string(),
         "the session column must still be the id, not a shifted fragment: {row}"
     );

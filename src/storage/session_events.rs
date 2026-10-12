@@ -74,6 +74,15 @@ pub enum EventReason {
     /// or the process went and took the window. The row stands; a
     /// `session restart` brings the agent back.
     Lost,
+    /// `changed`: the agent's process returned, with its exit status and the
+    /// pane's last lines (`exit_code`, `detail`). Reported from inside the pane
+    /// by a multiplexer that closes the window with its program (psmux), where
+    /// nothing else would ever see why it went.
+    Exited,
+    /// `changed`: a repairer (the interface's respawn, `restart --if-missing`)
+    /// put back an agent whose window had vanished. The crash-loop guard keeps
+    /// its own count (`storage::relaunches`), since this log is pruned.
+    Relaunched,
     /// `gone`: soft-deleted, and so restorable.
     SoftDeleted,
     /// `gone`: hard-deleted — worktrees and window torn down, not restorable.
@@ -95,6 +104,8 @@ impl EventReason {
             Self::Started => "started",
             Self::Updated => "updated",
             Self::Lost => "lost",
+            Self::Exited => "exited",
+            Self::Relaunched => "relaunched",
             Self::SoftDeleted => "soft_deleted",
             Self::ForceDeleted => "force_deleted",
             Self::Forgotten => "forgotten",
@@ -115,6 +126,10 @@ pub struct SessionEventRow {
     pub from_state: Option<String>,
     pub to_state: Option<String>,
     pub at_ms: i64,
+    /// The agent's exit status, on an `exited` event.
+    pub exit_code: Option<i64>,
+    /// What else the event has to say — an `exited` event's pane tail.
+    pub detail: Option<String>,
 }
 
 impl Database {
@@ -144,6 +159,30 @@ impl Database {
         Ok(())
     }
 
+    /// Record that the agent in `id`'s pane returned with `exit_code` (`None`
+    /// when the shell could not say), leaving `tail` on its screen.
+    pub fn record_session_exited(
+        &self,
+        id: SessionId,
+        exit_code: Option<i64>,
+        tail: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO session_events \
+             (session_id, event, reason, at_ms, exit_code, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id.to_string(),
+                SessionEventKind::Changed.as_str(),
+                EventReason::Exited.as_str(),
+                current_time_millis() as i64,
+                exit_code,
+                tail,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// The highest seq in the log, or `0` when it is empty. The baseline a
     /// watcher starts from when it was not given a `--since`.
     pub fn latest_session_event_seq(&self) -> rusqlite::Result<i64> {
@@ -168,7 +207,8 @@ impl Database {
         // session" — so `prepare_cached` compiles it once and the filter is
         // always a bound value.
         let mut stmt = self.conn.prepare_cached(
-            "SELECT seq, session_id, event, reason, from_state, to_state, at_ms \
+            "SELECT seq, session_id, event, reason, from_state, to_state, at_ms, \
+             exit_code, detail \
              FROM session_events \
              WHERE seq > ?1 AND (?3 IS NULL OR session_id = ?3) \
              ORDER BY seq LIMIT ?2",
@@ -187,6 +227,8 @@ impl Database {
                         from_state: row.get(4)?,
                         to_state: row.get(5)?,
                         at_ms: row.get(6)?,
+                        exit_code: row.get(7)?,
+                        detail: row.get(8)?,
                     },
                 ))
             },
@@ -311,5 +353,32 @@ mod tests {
 
         assert_eq!(db.prune_session_events().unwrap(), 1);
         assert_eq!(db.session_events_since(0, None, 100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_exit_carries_its_code_and_tail() {
+        let db = Database::open_in_memory().unwrap();
+        let session = row("worker");
+        db.upsert_session(&session).unwrap();
+        let head = db.latest_session_event_seq().unwrap();
+        db.record_session_exited(session.id, Some(-1073741819), Some("boom"))
+            .unwrap();
+
+        let events = db.session_events_since(head, None, 100).unwrap();
+        let seen: Vec<(&str, &str, Option<i64>, Option<&str>)> = events
+            .iter()
+            .map(|e| {
+                (
+                    e.event.as_str(),
+                    e.reason.as_str(),
+                    e.exit_code,
+                    e.detail.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![("changed", "exited", Some(-1073741819), Some("boom")),]
+        );
     }
 }
