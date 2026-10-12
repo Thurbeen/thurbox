@@ -143,7 +143,133 @@ fn have(binary: &str) -> bool {
 
 #[cfg(unix)]
 #[test]
-fn local_psmux_namesakes_resolve_only_through_a_remembered_pane() {
+fn reassigned_pane_ids_do_not_claim_duplicate_unstamped_names() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::backend::contract::{Located, Owner};
+
+    let Some(tmux) = thurbox::paths::resolve_on_path("tmux") else {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    };
+    let server = tmux_server::TmuxServer::pin("thurbox-reassigned-pane-test");
+    std::env::remove_var("TMUX");
+    let create = |command: &str, name: &str| {
+        let output = server.tmux(&[
+            command,
+            "-d",
+            "-s",
+            "thurbox-dev",
+            "-n",
+            name,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "cat",
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("pane id")
+            .trim()
+            .to_string()
+    };
+    let old_agent = create("new-session", "tb-stale");
+    let shell = server.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        "thurbox-dev",
+        "-n",
+        "tbs-stale",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "cat",
+    ]);
+    assert!(shell.status.success());
+    let old_shell = String::from_utf8(shell.stdout)
+        .expect("shell id")
+        .trim()
+        .to_string();
+    server.reap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let reassigned_agent = create("new-session", "tb-stale");
+    let shell = server.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        "thurbox-dev",
+        "-n",
+        "tbs-stale",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "cat",
+    ]);
+    assert!(shell.status.success());
+    let reassigned_shell = String::from_utf8(shell.stdout)
+        .expect("shell id")
+        .trim()
+        .to_string();
+    assert_eq!(
+        reassigned_agent, old_agent,
+        "server must reissue the stale agent id"
+    );
+    assert_eq!(
+        reassigned_shell, old_shell,
+        "server must reissue the stale shell id"
+    );
+    for _ in 0..3 {
+        for name in ["tb-stale", "tbs-stale"] {
+            assert!(server
+                .tmux(&["new-window", "-d", "-t", "thurbox-dev", "-n", name, "cat"])
+                .status
+                .success());
+        }
+    }
+
+    // Real unstamped windows exercise the psmux adapter's ownership rules;
+    // forwarding changes only the executable name, never the listing replies.
+    let bin = tempfile::tempdir().expect("shim directory");
+    let shim = bin.path().join("psmux");
+    std::fs::write(&shim, "#!/bin/sh\nexec \"$IDENTITY_REAL_TMUX\" \"$@\"\n").expect("shim");
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::env::set_var("IDENTITY_REAL_TMUX", tmux);
+    let path = std::env::var_os("PATH").expect("PATH");
+    let paths = std::iter::once(bin.path().to_path_buf()).chain(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(paths).expect("shim PATH"));
+    let backend = PsmuxBackend::local();
+    let windows = backend.discover().expect("real windows");
+    for name in ["tb-stale", "tbs-stale"] {
+        assert_eq!(
+            windows.iter().filter(|window| window.name == name).count(),
+            4
+        );
+    }
+    let located = backend
+        .locate(
+            Owner::new("11111111-1111-4111-8111-111111111111", "stale")
+                .remembering(&old_agent, &old_shell),
+        )
+        .expect("locate after server restart");
+    assert_eq!(
+        located.agent,
+        Located::Unknown,
+        "a reassigned id does not prove agent ownership"
+    );
+    assert_eq!(
+        located.shell,
+        Located::Unknown,
+        "a reassigned id does not prove shell ownership"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn local_psmux_namesakes_stay_unknown_with_a_remembered_pane() {
     use std::os::unix::fs::PermissionsExt;
     use thurbox::backend::contract::{Located, Owner};
 
@@ -170,8 +296,8 @@ esac
         Located::Unknown
     );
     for (remembered, expected) in [
-        ("%1", Located::At("%1".into())),
-        ("%2", Located::At("%2".into())),
+        ("%1", Located::Unknown),
+        ("%2", Located::Unknown),
         ("%3", Located::Unknown),
         ("%9", Located::Unknown),
     ] {
@@ -191,7 +317,7 @@ esac
 
 #[cfg(windows)]
 #[test]
-fn native_psmux_namesakes_resolve_only_through_a_remembered_pane() {
+fn native_psmux_namesakes_stay_unknown_with_a_remembered_pane() {
     use std::process::Command;
     use std::time::{Duration, Instant};
     use thurbox::backend::contract::{Located, Owner};
@@ -239,15 +365,17 @@ fn native_psmux_namesakes_resolve_only_through_a_remembered_pane() {
         assert!(Instant::now() < deadline, "isolated session did not start");
         std::thread::sleep(Duration::from_millis(100));
     }
-    let created = run(&[
-        "new-window",
-        "-t",
-        SESSION,
-        "-n",
-        "tb-demo",
-        "powershell -NoProfile -Command Start-Sleep 120",
-    ]);
-    assert!(created.status.success(), "create second window");
+    for _ in 0..3 {
+        let created = run(&[
+            "new-window",
+            "-t",
+            SESSION,
+            "-n",
+            "tb-demo",
+            "powershell -NoProfile -Command Start-Sleep 120",
+        ]);
+        assert!(created.status.success(), "create duplicate window");
+    }
 
     let backend = PsmuxBackend::local();
     let panes: Vec<_> = backend
@@ -257,7 +385,7 @@ fn native_psmux_namesakes_resolve_only_through_a_remembered_pane() {
         .filter(|window| window.name == "tb-demo")
         .map(|window| window.backend_id)
         .collect();
-    assert_eq!(panes.len(), 2, "two isolated namesakes must be listed");
+    assert_eq!(panes.len(), 4, "four isolated namesakes must be listed");
     let exact = run(&["capture-pane", "-p", "-t", "thurbox-dev:=tb-demo"]);
     eprintln!(
         "exact-name capture: status {:?}, stdout {:?}, stderr {:?}",
@@ -276,7 +404,7 @@ fn native_psmux_namesakes_resolve_only_through_a_remembered_pane() {
                 .locate(owner.remembering(pane, ""))
                 .expect("locate")
                 .agent,
-            Located::At(pane.clone())
+            Located::Unknown
         );
     }
     assert_eq!(
@@ -290,6 +418,12 @@ fn native_psmux_namesakes_resolve_only_through_a_remembered_pane() {
     assert!(run(&["rename-window", "-t", &target, "tb-demo-extra"])
         .status
         .success());
+    for pane in &panes[2..] {
+        let target = format!("{SESSION}:.{pane}");
+        assert!(run(&["rename-window", "-t", &target, "unrelated"])
+            .status
+            .success());
+    }
     assert_eq!(
         backend.locate(owner).expect("unique name").agent,
         Located::At(panes[0].clone())

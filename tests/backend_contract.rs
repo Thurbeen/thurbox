@@ -320,17 +320,16 @@ fn killing_a_split_window_takes_the_whole_window() {
     }
 }
 
-/// A psmux host stamps nothing, so where two windows share a session's name a
-/// teardown can go only by the pane the row remembers — and it must find that
-/// pane's *window*, whichever of its panes is selected, and never a window of
-/// another name the id was reissued to after a restart.
+/// A psmux host stamps nothing, so remembered pane ids cannot prove ownership
+/// among duplicate names, even when a split changes the selected pane. A
+/// restarted server can reissue an id to another same-name window.
 ///
 /// The host is a stand-in: `ssh` runs its remote command here and `psmux`
 /// is this machine's tmux, so the adapter's psmux path runs for real against
 /// a private server.
 #[cfg(unix)]
 #[test]
-fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
+fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
     use std::os::unix::fs::PermissionsExt;
     use thurbox::backend::{Located, Owner};
     if !have_tmux() {
@@ -424,32 +423,20 @@ fn a_psmux_hosts_remembered_pane_finds_its_own_window_and_no_other() {
     let backend = thurbox::backend::psmux::PsmuxBackend::for_host(&host);
     let row = "00000000-0000-4000-8000-0000000000bb";
 
-    // An id reissued to a window of another name is not this row's.
-    let reissued = backend
-        .locate(Owner::new(row, "x").remembering(&other, ""))
-        .expect("locate");
-    assert_eq!(reissued.agent, Located::Unknown, "claimed another window");
-
-    // The remembered pane, split away from, is still this row's window.
-    let placed = backend
-        .locate(Owner::new(row, "x").remembering(&own, ""))
-        .expect("locate");
-    assert_eq!(placed.agent, Located::At(own.clone()));
-    backend.kill(&own).expect("kill");
+    for remembered in [&own, &namesake, &other] {
+        let placed = backend
+            .locate(Owner::new(row, "x").remembering(remembered, ""))
+            .expect("locate");
+        assert_eq!(placed.agent, Located::Unknown, "claimed {remembered}");
+    }
     let panes = pane(&["list-panes", "-s", "-t", "probe", "-F", "#{pane_id}"]);
     let panes: Vec<&str> = panes.lines().collect();
-    assert!(
-        !panes.contains(&own.as_str()),
-        "the row's window survived: {panes:?}"
-    );
-    assert!(
-        panes.contains(&namesake.as_str()),
-        "the namesake was killed"
-    );
-    assert!(
-        panes.contains(&other.as_str()),
-        "the other window was killed"
-    );
+    for original in [&own, &namesake, &other] {
+        assert!(
+            panes.contains(&original.as_str()),
+            "window removed: {panes:?}"
+        );
+    }
 }
 
 /// Input the tmux adapter must refuse or defer, on a real server: a pane whose
