@@ -317,6 +317,7 @@ pub fn teardown_runtime_resources(
                 match super::windows::backend_for(backends, &session.backend_type) {
                     Ok(backend) => {
                         kill_remote_window(backend.as_ref(), session, report);
+                        super::image_drop::cleanup(host, &session.id.to_string());
                         for wt in &session.worktrees {
                             remove_worktree_into(Some(host), wt, report);
                         }

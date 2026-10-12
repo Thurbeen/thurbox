@@ -262,6 +262,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         image_probe: thurbox::clipboard::ImageProbe::default(),
         paste_targets: Vec::new(),
         probed_presses: 0,
+        image_drops: Vec::new(),
         perf: Counters::default(),
         timings: thurbox::kernel::perf::Timings::default(),
         startup,
