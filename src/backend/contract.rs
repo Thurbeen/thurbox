@@ -225,9 +225,8 @@ pub struct Owner<'a> {
     /// found by its name only where nothing stamped says otherwise.
     pub name: &'a str,
     /// The panes the row last recorded for its agent and its shell, or empty.
-    /// Hints, never proof — a server that restarted reissues pane ids — which
-    /// a backend that cannot stamp its windows may fall back on when its
-    /// listing cannot tell namesakes apart.
+    /// Hints, never proof: a restarted server can reissue these ids, so they
+    /// cannot distinguish duplicate unstamped window names.
     pub agent_pane: &'a str,
     pub shell_pane: &'a str,
 }

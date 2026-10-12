@@ -125,6 +125,13 @@ impl TmuxCompatible for Psmux {
         check_psmux_version(banner, socket)
     }
 
+    fn check_listing(listing: &str) -> Result<()> {
+        if let Some(error) = listing.lines().find(|line| line.starts_with("ERROR:")) {
+            bail!("psmux listing failed: {error}");
+        }
+        Ok(())
+    }
+
     /// Nothing beyond the shared options: psmux has no OSC 52 clipboard
     /// forwarding (a local Windows session copies via the native clipboard path
     /// instead) and no `mouse` option to set.

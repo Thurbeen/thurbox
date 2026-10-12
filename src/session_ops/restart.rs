@@ -136,8 +136,8 @@ pub(crate) fn build_restart_plan(
     })
 }
 
-/// The row as its backend is asked about it, remembering the panes it
-/// recorded — the tiebreaker a backend that cannot stamp falls back on.
+/// The row and its recorded pane hints, which cannot prove ownership after
+/// a server restart (ADR-25).
 fn owner_of<'a>(session: &'a SharedSession, id: &'a str) -> crate::backend::Owner<'a> {
     crate::backend::Owner::new(id, &session.name).remembering(
         &session.backend_id,

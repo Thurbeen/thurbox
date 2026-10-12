@@ -132,6 +132,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// a server on `socket` too old to give a pane its own console.
     fn check_banner(banner: &str, socket: &str) -> Result<()>;
 
+    /// Refuse command diagnostics in a listing even when its status claims
+    /// success. Captured terminal contents are not listings.
+    fn check_listing(_listing: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// The session config only this multiplexer takes, applied after the shared
     /// options and best-effort or fatal as each says.
     fn session_config(session: &str) -> Vec<ConfigOption>;
@@ -846,6 +852,7 @@ impl<M: TmuxCompatible> Server<M> {
         if output.status.success()
             && !(M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true))
         {
+            M::check_listing(&String::from_utf8_lossy(&output.stdout))?;
             let stamps = self.stamps_are_per_window();
             return Ok(String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -949,21 +956,17 @@ impl<M: TmuxCompatible> Server<M> {
     /// What `owner`'s `role` window is, where the listing alone could not say.
     ///
     /// A multiplexer without window options (ADR-13) stamps nothing, so
-    /// two namesakes are indistinguishable there and the name is the answer —
-    /// on a host, only through the pane the row remembers. Locally, one stamp
-    /// on two windows is repairable, and here is where repairing it matters:
+    /// local recovery can select the sole fresh live namesake, but multiple live
+    /// names stay unknown. A restarted server can reissue a remembered pane id
+    /// to another same-name window. Locally, one stamp on two
+    /// windows is repairable, and here is where repairing it matters:
     /// `stamped_match` refuses the pair by design, so without this nothing
     /// would ever look again and the session stayed unaddressable for good
     /// (issue #1207). The refusal itself is untouched — the choice is made by
     /// *retiring* a window, which is a write, and never by reading one of two
     /// as the answer.
     fn settle(&self, owner: Owner<'_>, role: WindowRole) -> Result<Located> {
-        let remembered = match role {
-            WindowRole::Shell => owner.shell_pane,
-            _ => owner.agent_pane,
-        };
         if !M::WINDOW_OPTIONS {
-            let name = window_name_for(role, owner.name);
             if !self.transport.is_remote() {
                 return Ok(WindowIndex::from_listing(self.discover_answered()?).locate(
                     owner.session_id,
@@ -972,27 +975,7 @@ impl<M: TmuxCompatible> Server<M> {
                     true,
                 ));
             }
-            if remembered.is_empty() {
-                return Ok(Located::Unknown);
-            }
-            // The remembered pane's own window, asked for by pane: a window
-            // lists its *selected* pane, which after a split need not be the
-            // one the row remembers. A server that restarted reissues ids, so
-            // one now in a window of another name is not this row's.
-            let panes = self.tmux_output(&[
-                "list-panes",
-                "-s",
-                "-t",
-                &self.session,
-                "-F",
-                "#{pane_id}|#{window_name}",
-            ])?;
-            return Ok(
-                match window_of_pane(&panes, remembered) == Some(name.as_str()) {
-                    true => Located::At(remembered.to_string()),
-                    false => Located::Unknown,
-                },
-            );
+            return Ok(Located::Unknown);
         }
         if self.transport.is_remote()
             || self
@@ -2274,6 +2257,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             self.session
         ))?;
 
+        M::check_listing(&result)?;
+
         let stamps = self.stamps_are_per_window();
         Ok(result
             .lines()
@@ -3000,8 +2985,8 @@ fn cells_before(line: &str, cells: usize) -> String {
 /// exits 0 and answers for the client's current pane — or, for a pane id that
 /// is gone, prints nothing. Reporting a stranger's shell as this pane's
 /// foreground process is the plausible wrong answer every field is built to
-/// avoid. A pane id must come back as itself; a window target (the name
-/// psmux's unstamped windows are reached by) must come back as that window.
+/// avoid. A pane id must come back as itself; callers using a window target
+/// must receive that window.
 fn answered_for(target: &str, window: Option<&str>, pane: Option<&str>) -> bool {
     match target.split_once(":=") {
         Some((_, name)) => window == Some(name),
@@ -3867,16 +3852,6 @@ fn posix_env_binary() -> Option<std::path::PathBuf> {
 #[cfg(windows)]
 fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
-}
-
-/// The name of the window `pane` is in, from a `list-panes -F
-/// '#{pane_id}|#{window_name}'` answer.
-fn window_of_pane<'a>(listing: &'a str, pane: &str) -> Option<&'a str> {
-    listing
-        .lines()
-        .filter_map(|line| line.split_once('|'))
-        .find(|(id, _)| *id == pane)
-        .map(|(_, window)| window)
 }
 
 /// Whether a kill's failure says its target is already gone — named by its
@@ -4787,16 +4762,6 @@ mod tests {
             ..host
         };
         assert_eq!(known_host_socket(&pinned).unwrap(), "thurbox");
-    }
-
-    /// A pane is placed in its own window, whichever pane of it is selected.
-    #[test]
-    fn a_pane_is_placed_in_the_window_it_is_in() {
-        let listing = "%3|tb-mine\n%5|tb-mine\n%4|tb-theirs\n";
-        assert_eq!(window_of_pane(listing, "%5"), Some("tb-mine"));
-        assert_eq!(window_of_pane(listing, "%4"), Some("tb-theirs"));
-        assert_eq!(window_of_pane(listing, "%9"), None);
-        assert_eq!(window_of_pane(listing, ""), None);
     }
 
     // Compile-time check: channel capacity must be large enough to buffer heavy output.

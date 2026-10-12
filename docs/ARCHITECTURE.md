@@ -2055,10 +2055,18 @@ whose name cannot be resolved is left alone rather than given a second agent.
 Migration is the sole-namesake rule — an unstamped window is adoptable only
 while it is the only one with that name, and it is stamped on adoption
 (`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
-first use. psmux (ADR-13) has no usable window options, so the name fallback
-stands there — the one place it still does, matching the shape of the other
-psmux carve-outs. "No usable window options" had been read as "a stamp written
-there is simply lost"; it is not, and that cost every Windows pane
+first use. psmux (ADR-13) has no usable window options, so a lone namesake
+resolves to its listed pane. Local recovery can also select the sole live pane
+among exited namesakes from a fresh listing. Multiple live namesakes stay
+unknown locally; remote duplicates stay unknown even when a remembered pane
+currently has the expected name. A restarted server can reissue that id to
+another namesake, so neither a remembered pane id nor an exact-name target
+proves ownership among ambiguous unstamped windows. psmux can print an `ERROR:` diagnostic
+on stdout while exiting zero, so its listing replies reject those lines rather
+than treating an error as an empty server. Captured terminal text is not parsed
+for diagnostics; a program may legitimately print the same prefix.
+"No usable window options" had been read as "a stamp written there is simply lost";
+it is not, and that cost every Windows pane
 (issue #1168). psmux keeps a *global* option under the name and answers
 `#{@...}` with it for every window, so the stamp has to be withheld at both
 ends rather than merely expected to fail. And because the stamp
@@ -2466,7 +2474,7 @@ owned it.
   that cannot tell whether its earlier session runs refuses rather than
   launching a second one; a reader (`--verify`, the doctor, the interface's
   probe) reports the state as unknown. The tmux adapter's own settling
-  (retiring a duplicated stamp, psmux's unstamped windows reached by name,
+  (retiring a duplicated stamp, psmux's unstamped windows resolved from a listing,
   ADR-25) happens inside `locate`, where it is that backend's to decide.
 - **Default methods**: the six verbs are required; a stub refuses them.
 
