@@ -978,6 +978,12 @@ pub struct ControlPolicy {
     /// listing every pane's hook-state option, polled each
     /// `HOOK_POLL_INTERVAL` into the queue a subscription would feed.
     pub status_poll: Option<String>,
+    /// Where a `%window-close` is only a hint: the command listing every pane
+    /// the attached session still has, one `#{pane_id}` per line. A close then
+    /// ends only the readers of panes that listing no longer has, whatever
+    /// window it named (`ControlMode::confirm_closes`). `None` takes the
+    /// close at its word.
+    pub confirm_close: Option<String>,
 }
 
 impl ControlMode {
@@ -1052,6 +1058,7 @@ impl ControlMode {
         let reader_alive = Arc::clone(&alive);
 
         let strict_blocks = policy.tagged_blocks;
+        let confirm_close = policy.confirm_close.clone();
         let reader_handle = std::thread::Builder::new()
             .name("tmux-control-reader".into())
             .spawn(move || {
@@ -1064,6 +1071,7 @@ impl ControlMode {
                     reader_queue,
                     reader_sub_events,
                     strict_blocks,
+                    confirm_close,
                     &reader_sizer,
                 );
                 reader_alive.store(false, Ordering::Relaxed);
@@ -1263,6 +1271,7 @@ impl ControlMode {
         response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
         strict_blocks: bool,
+        confirm_close: Option<String>,
         sizer: &str,
     ) {
         // The in-flight block: the tag its `%begin` carried, and its lines.
@@ -1331,15 +1340,21 @@ impl ControlMode {
                 Notification::Pause { pane_id } => {
                     Self::resume_pane(&stdin, &pane_id);
                 }
-                Notification::WindowClose { window_id } => {
-                    Self::close_window_panes(&pane_senders, &pane_windows, &window_id);
-                    if let Ok(mut sizes) = pane_sizes.lock() {
-                        let windows = pane_windows.lock().ok();
-                        sizes.retain(|pane, _| {
-                            windows.as_ref().is_some_and(|w| w.contains_key(pane))
-                        });
+                Notification::WindowClose { window_id } => match &confirm_close {
+                    None => {
+                        Self::close_window_panes(&pane_senders, &pane_windows, &window_id);
+                        Self::forget_sizes(&pane_sizes, &pane_windows);
                     }
-                }
+                    Some(listing) => Self::spawn_close_check(
+                        &stdin,
+                        &response_queue,
+                        &pane_senders,
+                        &pane_windows,
+                        &pane_sizes,
+                        listing,
+                        &window_id,
+                    ),
+                },
                 Notification::LayoutChange {
                     window_id,
                     rows,
@@ -1411,17 +1426,11 @@ impl ControlMode {
         window_id: &str,
     ) {
         let gone: Vec<String> = match pane_windows.lock() {
-            Ok(mut windows) => {
-                let gone: Vec<String> = windows
-                    .iter()
-                    .filter(|(_, window)| window.as_str() == window_id)
-                    .map(|(pane, _)| pane.clone())
-                    .collect();
-                for pane in &gone {
-                    windows.remove(pane);
-                }
-                gone
-            }
+            Ok(windows) => windows
+                .iter()
+                .filter(|(_, window)| window.as_str() == window_id)
+                .map(|(pane, _)| pane.clone())
+                .collect(),
             Err(_) => return,
         };
         if gone.is_empty() {
@@ -1429,12 +1438,113 @@ impl ControlMode {
             // open itself, which is most of them on a shared server.
             return;
         }
+        Self::close_panes(pane_senders, pane_windows, &gone);
+        debug!(window_id, panes = ?gone, "window closed, its pane readers get EOF");
+    }
+
+    /// Drop the senders of `panes` and forget their windows: EOF for their
+    /// readers.
+    fn close_panes(
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        panes: &[String],
+    ) {
+        if let Ok(mut windows) = pane_windows.lock() {
+            for pane in panes {
+                windows.remove(pane);
+            }
+        }
         if let Ok(mut senders) = pane_senders.lock() {
-            for pane in &gone {
+            for pane in panes {
                 senders.remove(pane);
             }
         }
-        debug!(window_id, panes = ?gone, "window closed, its pane readers get EOF");
+    }
+
+    /// Forget the size of every pane whose window is no longer known.
+    fn forget_sizes(pane_sizes: &PaneSizesMapShared, pane_windows: &PaneWindowsMapShared) {
+        if let Ok(mut sizes) = pane_sizes.lock() {
+            let windows = pane_windows.lock().ok();
+            sizes.retain(|pane, _| windows.as_ref().is_some_and(|w| w.contains_key(pane)));
+        }
+    }
+
+    /// A `%window-close` from a server whose closes are only hints
+    /// ([`ControlPolicy::confirm_close`]): list the session's panes and end the
+    /// readers of the registered panes it no longer has.
+    ///
+    /// The window the close names is not used to choose: psmux 3.3.7 was
+    /// measured naming `@2`, still alive, for the closes of `@6` and `@9`.
+    /// Ending readers on that word is what blanked live agents and had them
+    /// relaunched; ending none would leave a pane that did go read forever.
+    ///
+    /// Off the reader thread, which is the one that delivers the listing's
+    /// reply. The registered panes are taken before the listing is asked for,
+    /// so a pane registered while it is in flight is never judged by a listing
+    /// older than it. A listing that fails ends nothing: such a server's
+    /// liveness is polled as well (`needs_liveness_poll`), which still finds a
+    /// pane that went.
+    fn spawn_close_check(
+        stdin: &Arc<Mutex<ChildStdin>>,
+        response_queue: &ResponseQueue,
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        pane_sizes: &PaneSizesMapShared,
+        listing: &str,
+        window_id: &str,
+    ) {
+        let registered: Vec<String> = match pane_senders.lock() {
+            Ok(senders) => senders.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        if registered.is_empty() {
+            return;
+        }
+        let stdin = Arc::clone(stdin);
+        let queue = Arc::clone(response_queue);
+        let senders = Arc::clone(pane_senders);
+        let windows = Arc::clone(pane_windows);
+        let sizes = Arc::clone(pane_sizes);
+        let listing = listing.to_string();
+        let window_id = window_id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("window-close-check".into())
+            .spawn(move || {
+                let live = match Self::send_command_on(&stdin, &queue, &listing, 1) {
+                    Ok(live) => live,
+                    Err(e) => {
+                        debug!(window_id, "could not confirm a window close: {e:#}");
+                        return;
+                    }
+                };
+                let gone = Self::confirm_closes(&registered, &live);
+                if gone.is_empty() {
+                    debug!(window_id, "window close named no pane that went; ignored");
+                    return;
+                }
+                Self::close_panes(&senders, &windows, &gone);
+                Self::forget_sizes(&sizes, &windows);
+                debug!(window_id, panes = ?gone, "panes gone, their readers get EOF");
+            });
+        if let Err(e) = spawned {
+            warn!("failed to spawn a window-close check: {e}");
+        }
+    }
+
+    /// The `registered` panes a `#{pane_id}` listing of the session no longer
+    /// has. A listing with no pane at all is not believed: the session's own
+    /// server answered it, so the session still has a window, and reading it
+    /// as "every pane went" would end every reader on one bad reply.
+    fn confirm_closes(registered: &[String], listing: &str) -> Vec<String> {
+        let live = parse_pane_ids(listing);
+        if live.is_empty() {
+            return Vec::new();
+        }
+        registered
+            .iter()
+            .filter(|pane| !live.contains(pane.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// Tell the readers of every pane in `window_id` that it is now `rows` ×
@@ -1478,20 +1588,47 @@ impl ControlMode {
     /// channel as output is dropped: the reader thread must never block.
     /// Whether every reader took it.
     fn send_event(pane_senders: &PaneSendersMapShared, pane_id: &str, event: PaneChunk) -> bool {
-        let Ok(senders) = pane_senders.lock() else {
+        let Ok(mut senders) = pane_senders.lock() else {
             return false;
         };
-        let Some(tx_vec) = senders.get(pane_id) else {
+        let Some(tx_vec) = senders.get_mut(pane_id) else {
             return false;
         };
         let mut all = true;
-        for tx in tx_vec {
-            if tx.try_send(event.clone()).is_err() {
-                debug!(pane_id = %pane_id, "Pane channel full or gone, dropping an event");
-                all = false;
+        let mut gone = Vec::new();
+        for (i, tx) in tx_vec.iter().enumerate() {
+            match tx.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    debug!(pane_id = %pane_id, "Pane channel full, dropping an event");
+                    all = false;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => gone.push(i),
             }
         }
+        if !gone.is_empty() {
+            all = false;
+            Self::prune_senders(&mut senders, pane_id, &gone);
+        }
         all
+    }
+
+    /// Drop the senders at `gone` (ascending) from `pane_id`'s, and the pane's
+    /// entry once none is left: a sender whose reader was dropped would
+    /// otherwise stay registered for the life of the connection, still handed
+    /// every chunk of the pane's output, and still counted as a reader by a
+    /// window-close check ([`Self::spawn_close_check`]).
+    fn prune_senders(senders: &mut PaneSendersMap, pane_id: &str, gone: &[usize]) {
+        let Some(tx_vec) = senders.get_mut(pane_id) else {
+            return;
+        };
+        for &i in gone.iter().rev() {
+            tx_vec.remove(i);
+        }
+        if tx_vec.is_empty() {
+            senders.remove(pane_id);
+        }
+        debug!(pane_id = %pane_id, dropped = gone.len(), "unregistered readers that went away");
     }
 
     /// Broadcast a `%output` payload to every reader registered for `pane_id`.
@@ -1505,7 +1642,7 @@ impl ControlMode {
     /// Hand `chunk` to every reader registered for `pane_id`, never blocking —
     /// see [`Self::dispatch_output`].
     fn dispatch(pane_senders: &PaneSendersMapShared, pane_id: &str, chunk: PaneChunk) {
-        let Ok(senders) = pane_senders.lock() else {
+        let Ok(mut senders) = pane_senders.lock() else {
             return;
         };
         let Some(tx_vec) = senders.get(pane_id) else {
@@ -1515,6 +1652,7 @@ impl ControlMode {
         // chunk into it instead of cloning. Only fan-out (multiple registered
         // instances) pays for a clone.
         let mut chunk = Some(chunk);
+        let mut gone = Vec::new();
         for (i, tx) in tx_vec.iter().enumerate() {
             let this = if i + 1 == tx_vec.len() {
                 chunk.take()
@@ -1522,15 +1660,18 @@ impl ControlMode {
                 chunk.clone()
             };
             let Some(this) = this else {
-                return;
+                break;
             };
             match tx.try_send(this) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
                     debug!(pane_id = %pane_id, "Pane output channel full, dropping chunk");
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => gone.push(i),
             }
+        }
+        if !gone.is_empty() {
+            Self::prune_senders(&mut senders, pane_id, &gone);
         }
     }
 

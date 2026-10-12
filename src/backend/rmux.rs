@@ -116,6 +116,7 @@ impl TmuxCompatible for Rmux {
                     crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
                 )
             }),
+            confirm_close: None,
         }
     }
 

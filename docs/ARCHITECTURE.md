@@ -994,6 +994,42 @@ reference to read before touching that path.
   nothing failed — it never came back. That was the headline symptom of issue
   #1168, and the stamp fix above does not reach it: the two are independent and
   either one alone leaves the interface attaching no pane at all.
+- **Pane and window ids are per session, and a bare id is routed.** psmux
+  numbers `%N` and `@N` per *session* (psmux #569), and a thurbox socket hosts
+  a `__warm__` session beside `thurbox` with the same numbers. Measured on
+  psmux 3.3.7 with two sessions on one socket: a one-shot
+  `display-message -t %2` answered for the *other* session's `%2`, and
+  `kill-window -t @7` killed the other session's `@7`. So every pane or window
+  id a command targets goes out qualified (`TmuxCompatible::SESSION_SCOPED_IDS`,
+  `qualify_target`): a pane in the pane slot (`thurbox:.%2`), a window in the
+  window slot (`thurbox:@7`). That form was checked against `display-message`,
+  `capture-pane`, `send-keys`, `send-paste`, `resize-pane`, `resize-window`,
+  `rename-window`, `set-option -w` and `kill-pane`. 3.3.8 refuses an ambiguous
+  bare `%N` (#569) and documents the pane-slot form. tmux ids are server-wide
+  and its targets are unchanged.
+- **`kill-window` misreads a pane id in the pane slot.** On 3.3.7,
+  `kill-window -t thurbox:.%8` killed the session's *active* window, not `%8`'s
+  (fixed in 3.3.8, dc183e3). `kill-pane` with the same target kills `%8`, and a
+  thurbox window holds one pane, so the adapter kills that way
+  (`TmuxCompatible::KILL_BY_PANE`).
+- **An unknown pane is answered for the active one.** In control mode 3.3.7
+  answers `display-message -t thurbox:.%9` for a pane that does not exist with
+  the *active* pane's fields and no error (3.3.8, #545, errors instead).
+  `register_pane` therefore asks for `#{pane_id}` alongside the window and
+  records the window only when the answer is the pane it asked about
+  (`parse_pane_location`). Otherwise the active window's next close would end
+  the wrong pane's reader.
+- **`%window-close` is sent but cannot be acted on.** psmux does send it, but
+  on 3.3.7 a close was measured naming `@2` (still alive) twice while `@6` and
+  `@9` were the windows that went. Taken at its word, it ended live agents'
+  readers: a blank pane until the next attach, and a relaunch of an agent that
+  never stopped. For psmux a close is only a hint
+  (`ControlPolicy::confirm_close`). The session's panes are listed off the
+  reader thread, and only registered panes that listing no longer has get
+  their EOF. An empty or failed listing ends nothing, because liveness is still
+  polled for psmux (`needs_liveness_poll`). A sender whose reader was dropped
+  is unregistered the next time the pane has output or an event for it
+  (`ControlMode::prune_senders`), so a close check never counts it as a reader.
 
 ### psmux 3.3.7 is the floor, asked of the server at each spawn
 
@@ -1098,7 +1134,8 @@ OS is read as a platform.
   the multiplexer's name (a Windows host on another multiplexer used to get
   `/bin/sh`). Whether the loop polls a backend for dead panes
   (`needs_liveness_poll`) is what its multiplexer can report: tmux announces
-  `%window-close`, psmux does not, and any other multiplexer is polled until
+  `%window-close`, psmux sends one that cannot be trusted (see "psmux
+  divergences from tmux"), and any other multiplexer is polled until
   an adapter says otherwise. The contract's `default_shell` has no default, so
   no backend inherits this build's shell.
 - **Nothing is reserved to an OS.** Every multiplexer name — including RMUX

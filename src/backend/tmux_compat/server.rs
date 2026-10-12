@@ -53,15 +53,27 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// `window-size`) — at birth, and as a pane's retention later.
     const WINDOW_SETTINGS: bool;
 
-    /// Whether the server announces in control mode that a window closed
-    /// (`%window-close`) and that a pane changed size (`%layout-change`).
-    /// Where it does not, liveness is polled and no pane size is reported.
+    /// Whether the server's `%window-close` and `%layout-change` can be taken
+    /// at their word: a close ends its panes' readers, and a size is reported
+    /// to the grid. Where they cannot, liveness is polled, no pane size is
+    /// reported, and a close is only a hint ([`ControlPolicy::confirm_close`]).
     const WINDOW_EVENTS: bool;
 
     /// Whether a command can report `ERROR:` while exiting zero.
     /// Such an answer is a failure even though the process status says
     /// otherwise; accepting it turns the diagnostic into pane contents.
     const EXIT_ZERO_ERRORS: bool = false;
+
+    /// Whether a pane or window id (`%3`, `@3`) is numbered per SESSION rather
+    /// than per server. Where it is, a bare `-t %3` resolves in whichever
+    /// session the server routes it to, so every id target is qualified with
+    /// thurbox's session (`qualify_target`).
+    const SESSION_SCOPED_IDS: bool = false;
+
+    /// Whether a pane's window is killed through `kill-pane` rather than
+    /// `kill-window`, for a server whose `kill-window` misreads a pane id in
+    /// the pane slot. Only right where a thurbox window holds one pane.
+    const KILL_BY_PANE: bool = false;
 
     /// Whether pane output must be enabled and disabled with `refresh-client
     /// -A`. Servers that stream attached panes automatically do not take it.
@@ -300,6 +312,31 @@ fn parse_discovered(line: &str, stamps: bool) -> Option<DiscoveredSession> {
         },
         role: WindowRole::parse(role).unwrap_or(by_name),
     })
+}
+
+/// `target` as `-t` should carry it on a server whose ids are numbered per
+/// session ([`TmuxCompatible::SESSION_SCOPED_IDS`]): a pane id in the pane slot
+/// of `session` (`thurbox:.%3`), a window id in its window slot
+/// (`thurbox:@3`). Anything else — a target that already names its session, a
+/// session name — is left as it is, as is every target where ids are
+/// server-wide.
+///
+/// Measured on psmux 3.3.7, whose socket hosts a `__warm__` session beside
+/// thurbox's with the same `%N`/`@N` numbers: a bare `kill-window -t @7`
+/// killed the other session's `@7`, and a bare `display-message -t %2`
+/// answered for the other session's `%2`. 3.3.8 refuses an ambiguous bare id
+/// instead (psmux #569) and documents the pane-slot form.
+pub(crate) fn qualify_target<'a>(session: &str, target: &'a str, scoped: bool) -> Cow<'a, str> {
+    if !scoped {
+        return Cow::Borrowed(target);
+    }
+    if control_mode::is_valid_pane_id(target) {
+        Cow::Owned(format!("{session}:.{target}"))
+    } else if control_mode::is_valid_window_id(target) {
+        Cow::Owned(format!("{session}:{target}"))
+    } else {
+        Cow::Borrowed(target)
+    }
 }
 
 /// The tmux window option carrying the id of the session row that owns a
@@ -747,6 +784,21 @@ impl<M: TmuxCompatible> Server<M> {
             .unwrap_or_else(|| self.socket.clone())
     }
 
+    /// `id` as a `-t` target on this server — see [`qualify_target`].
+    pub(in crate::backend) fn target<'a>(&self, id: &'a str) -> Cow<'a, str> {
+        qualify_target(&self.session, id, M::SESSION_SCOPED_IDS)
+    }
+
+    /// The command and target that kill the window `id` is in
+    /// ([`TmuxCompatible::KILL_BY_PANE`]).
+    pub(in crate::backend) fn kill_command<'a>(&self, id: &'a str) -> (&'static str, Cow<'a, str>) {
+        let verb = match M::KILL_BY_PANE && control_mode::is_valid_pane_id(id) {
+            true => "kill-pane",
+            false => "kill-window",
+        };
+        (verb, self.target(id))
+    }
+
     /// Refuse a status verb on a server whose hooks have no channel
     /// ([`TmuxCompatible::HOOK_STATUS`]).
     fn refuse_without_hook_status(&self) -> Result<()> {
@@ -1034,7 +1086,13 @@ impl<M: TmuxCompatible> Server<M> {
     /// then refused by the send itself.
     fn refuse_exited(&self, pane: &str) -> Result<()> {
         let dead = self
-            .tmux_output(&["display-message", "-p", "-t", pane, "#{pane_dead}"])
+            .tmux_output(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(pane),
+                "#{pane_dead}",
+            ])
             .is_ok_and(|answer| parse_pane_dead(&answer));
         if dead {
             bail!("its pane {pane} has exited and accepts no input");
@@ -1053,7 +1111,8 @@ impl<M: TmuxCompatible> Server<M> {
     /// process running in its other pane. One already gone is not an error:
     /// the teardown got what it wanted.
     fn kill_window_oneshot(&self, pane: &str) -> Result<()> {
-        match self.run_tmux(&["kill-window", "-t", pane]) {
+        let (verb, target) = self.kill_command(pane);
+        match self.run_tmux(&[verb, "-t", &target]) {
             Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
             _ => Ok(()),
         }
@@ -1683,24 +1742,34 @@ impl<M: TmuxCompatible> Server<M> {
         let window_id = match window_id {
             Some(id) => Some(id.to_string()),
             None => {
+                // The pane id leads the answer so whose answer it is can be
+                // checked: psmux 3.3.7 answers a `-t` naming a pane it cannot
+                // find with its *active* pane's fields and no error, even
+                // qualified, and a mapping learnt from that answer ends the
+                // wrong reader on the active window's next close.
                 let format = if M::WINDOW_EVENTS {
-                    format!("#{{window_id}} #{{pane_height}} #{{pane_width}} {SIZED_BY}")
+                    format!(
+                        "#{{pane_id}} #{{window_id}} #{{pane_height}} #{{pane_width}} {SIZED_BY}"
+                    )
                 } else {
-                    "#{window_id}".to_string()
+                    "#{pane_id} #{window_id}".to_string()
                 };
-                match self.ctrl_command(&format!("display-message -t {pane_id} -p '{format}'")) {
-                    Ok(out) => {
-                        let mut fields = out.split_whitespace();
-                        let window = fields
-                            .next()
-                            .map(str::to_string)
-                            .filter(|id| control_mode::is_valid_window_id(id));
-                        let rows = fields.next().and_then(|n| n.parse::<u16>().ok());
-                        let cols = fields.next().and_then(|n| n.parse::<u16>().ok());
-                        let sized_by = fields.next().map(str::to_string);
-                        learned = rows.zip(cols).map(|size| (size, sized_by));
-                        window
-                    }
+                let target = self.target(pane_id);
+                match self.ctrl_command(&format!("display-message -t {target} -p '{format}'")) {
+                    Ok(out) => match parse_pane_location(pane_id, &out) {
+                        Some(location) => {
+                            learned = location.size.map(|size| (size, location.sized_by));
+                            Some(location.window)
+                        }
+                        None => {
+                            warn!(
+                                "the answer for {pane_id}'s window was not {pane_id}'s ({}); \
+                                 its exit will not be announced",
+                                out.trim()
+                            );
+                            None
+                        }
+                    },
                     Err(e) => {
                         debug!(
                             "could not learn which window {pane_id} is in ({e:#}); its exit \
@@ -1781,10 +1850,13 @@ impl<M: TmuxCompatible> Server<M> {
         // How keystrokes are encoded, and whether a paste goes another way,
         // is the multiplexer's (`TmuxCompatible::pane_input`).
         let input = M::pane_input(&self.transport, &self.socket());
+        // The writer's only use of the id is as a `-t` target, and psmux's
+        // paste is a one-shot client that the server routes (`PsmuxPaste`).
+        let target = self.target(pane_id).into_owned();
         self.with_control(|ctrl| {
             Ok(ControlModeWriter {
                 stdin: Arc::clone(&ctrl.stdin),
-                pane_id: pane_id.to_string(),
+                pane_id: target,
                 input,
             })
         })
@@ -1850,7 +1922,7 @@ impl<M: TmuxCompatible> Server<M> {
             "-S",
             &start,
             "-t",
-            pane_id,
+            &self.target(pane_id),
         ])?;
         // Ahead of the history, not after it: the capture ends wherever the
         // pane's last line ended, and appending to a run that stopped mid
@@ -1890,7 +1962,7 @@ impl<M: TmuxCompatible> Server<M> {
             "display-message",
             "-p",
             "-t",
-            pane_id,
+            &self.target(pane_id),
             MOUSE_FLAGS_FORMAT_THEN_TITLE,
         ]) {
             Ok(out) => out,
@@ -2195,7 +2267,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         self.tmux_run(&[
             "set-window-option",
             "-t",
-            backend_id,
+            &self.target(backend_id),
             "remain-on-exit",
             keep,
         ])
@@ -2302,7 +2374,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         for role in [WindowRole::Agent, WindowRole::Shell] {
             match index.locate(owner.session_id, owner.name, role, false) {
                 Located::At(pane) => {
-                    self.tmux_run(&["rename-window", "-t", &pane, &window_name_for(role, to)])?;
+                    self.tmux_run(&[
+                        "rename-window",
+                        "-t",
+                        &self.target(&pane),
+                        &window_name_for(role, to),
+                    ])?;
                 }
                 Located::Absent => {}
                 Located::Unknown => bail!(
@@ -2338,18 +2415,26 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 (WINDOW_ROLE_OPTION, role.as_str()),
             ] {
                 if !value.is_empty() {
-                    self.tmux_run(&["set-option", "-w", "-t", backend_id, option, value])?;
+                    self.tmux_run(&[
+                        "set-option",
+                        "-w",
+                        "-t",
+                        &self.target(backend_id),
+                        option,
+                        value,
+                    ])?;
                 }
             }
         } else {
+            let target = self.target(backend_id);
             if !session_id.is_empty() {
                 self.ctrl_command(&format!(
-                    "set-option -w -t {backend_id} {WINDOW_SESSION_OPTION} {}",
+                    "set-option -w -t {target} {WINDOW_SESSION_OPTION} {}",
                     shell_escape(session_id)
                 ))?;
             }
             self.ctrl_command(&format!(
-                "set-option -w -t {backend_id} {WINDOW_ROLE_OPTION} {}",
+                "set-option -w -t {target} {WINDOW_ROLE_OPTION} {}",
                 role.as_str()
             ))?;
         }
@@ -2371,14 +2456,15 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // text arrives literally: no shell is involved, and the wrap is also
         // what keeps a leading `-` from reading as a flag and a newline from
         // submitting the line before it.
-        let paste = M::paste_args(pane, text);
+        let target = self.target(pane);
+        let paste = M::paste_args(&target, text);
         let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
         self.one_shot(&paste[0], &argv)?;
         if !submit {
             return Ok(());
         }
         std::thread::sleep(SEND_KEYS_ENTER_DELAY);
-        self.one_shot("send-keys (Enter)", &["send-keys", "-t", pane, "Enter"])?;
+        self.one_shot("send-keys (Enter)", &["send-keys", "-t", &target, "Enter"])?;
         Ok(())
     }
 
@@ -2386,7 +2472,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         self.known_socket()?;
         // A detached timer on the server: the headless caller exits long
         // before the agent it launched is ready for input.
-        let script = M::deferred_paste_script(self.transport.mux(), &self.socket(), pane, text);
+        let script = M::deferred_paste_script(
+            self.transport.mux(),
+            &self.socket(),
+            &self.target(pane),
+            text,
+        );
         let secs = delay.as_secs().to_string();
         self.one_shot(
             "run-shell (deferred prompt)",
@@ -2401,7 +2492,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let name = tmux_key_name(key);
         self.one_shot(
             &format!("send-keys ({name})"),
-            &["send-keys", "-t", pane, &name],
+            &["send-keys", "-t", &self.target(pane), &name],
         )?;
         Ok(name)
     }
@@ -2409,7 +2500,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String> {
         self.known_socket()?;
         let start = format!("-{}", lines.min(MAX_CAPTURE_LINES));
-        let mut args = vec!["capture-pane", "-p", "-J", "-t", pane, "-S", &start];
+        let target = self.target(pane);
+        let mut args = vec!["capture-pane", "-p", "-J", "-t", &target, "-S", &start];
         if ansi {
             args.push("-e");
         }
@@ -2426,7 +2518,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             "#{{cursor_x}}{PANE_STATE_SEP}#{{cursor_y}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}"
         );
         let mut argv = M::DISPLAY_FLAGS.to_vec();
-        argv.extend(["display-message", "-p", "-t", pane, &format]);
+        let target = self.target(pane);
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
         let output = self.one_shot("display-message (cursor)", &argv)?;
         let raw = String::from_utf8_lossy(&output.stdout);
         let window = pane_answer_field(&raw, 2);
@@ -2446,7 +2539,16 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let row = row.to_string();
         let output = self.one_shot(
             "capture-pane (cursor row)",
-            &["capture-pane", "-p", "-t", pane, "-S", &row, "-E", &row],
+            &[
+                "capture-pane",
+                "-p",
+                "-t",
+                &self.target(pane),
+                "-S",
+                &row,
+                "-E",
+                &row,
+            ],
         )?;
         let line = String::from_utf8_lossy(&output.stdout);
         Ok(Some(cells_before(line.trim_end_matches('\n'), col)))
@@ -2469,7 +2571,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         ]
         .join(&PANE_STATE_SEP.to_string());
         let mut argv = M::DISPLAY_FLAGS.to_vec();
-        argv.extend(["display-message", "-p", "-t", pane, &format]);
+        let target = self.target(pane);
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
         let output = self.one_shot("display-message (pane state)", &argv)?;
         let raw = String::from_utf8_lossy(&output.stdout);
 
@@ -2505,7 +2608,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             "#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}"
         );
         let mut argv = M::DISPLAY_FLAGS.to_vec();
-        argv.extend(["display-message", "-p", "-t", pane, &format]);
+        let target = self.target(pane);
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
         let output = self.one_shot("display-message (pane path)", &argv)?;
         let raw = String::from_utf8_lossy(&output.stdout);
         let start_command = pane_answer_field(&raw, 0).unwrap_or_default();
@@ -2535,8 +2639,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // that was not leaves the agent wrapping at the old width until some
         // later rect change asks again.
         let (rows, cols) = tmux_size(rows, cols);
-        let window = format!("resize-window -t {backend_id} -x {cols} -y {rows}");
-        let pane = format!("resize-pane -t {backend_id} -x {cols} -y {rows}");
+        let target = self.target(backend_id);
+        let window = format!("resize-window -t {target} -x {cols} -y {rows}");
+        let pane = format!("resize-pane -t {target} -x {cols} -y {rows}");
         if !M::CONDITIONAL_RESIZE {
             // No `if-shell -F` to decide with: the last instance to paint wins.
             return self.ctrl_command_detached(&[&window, &pane], 2);
@@ -2566,11 +2671,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let may = format!(
             "#{{||:#{{==:#{{session_attached}},1}},#{{||:#{{==:#{{{SIZER_OPTION}}},}},#{{==:#{{{SIZER_OPTION}}},{me}}}}}}}"
         );
-        let settle =
-            format!("set-option -F -w -t {backend_id} {SIZER_OPTION} '#{{?{may},{me},#{{{SIZER_OPTION}}}}}'");
+        let settle = format!(
+            "set-option -F -w -t {target} {SIZER_OPTION} '#{{?{may},{me},#{{{SIZER_OPTION}}}}}'"
+        );
         let mine = format!("#{{==:#{{{SIZER_OPTION}}},{me}}}");
         let only_if_mine = |cmd: &str| {
-            format!("if-shell -F -t {backend_id} '{mine}' '{cmd}' 'display-message -p \"\"'")
+            format!("if-shell -F -t {target} '{mine}' '{cmd}' 'display-message -p \"\"'")
         };
         self.ctrl_command_detached(&[&settle, &only_if_mine(&window), &only_if_mine(&pane)], 5)
     }
@@ -2582,14 +2688,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // Unconditional: this is the instance being typed into, which is what
         // decides who sizes (see `resize`).
         let (rows, cols) = tmux_size(rows, cols);
+        let target = self.target(backend_id);
         self.ctrl_command_detached(
             &[
-                &format!(
-                    "set-option -w -t {backend_id} {SIZER_OPTION} {}",
-                    self.sizer
-                ),
-                &format!("resize-window -t {backend_id} -x {cols} -y {rows}"),
-                &format!("resize-pane -t {backend_id} -x {cols} -y {rows}"),
+                &format!("set-option -w -t {target} {SIZER_OPTION} {}", self.sizer),
+                &format!("resize-window -t {target} -x {cols} -y {rows}"),
+                &format!("resize-pane -t {target} -x {cols} -y {rows}"),
             ],
             3,
         )
@@ -2603,8 +2707,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // seconds of an interface that answered nothing, to settle a question
         // whose honest answer when the host says nothing is the one the caller
         // already reads an error as: not known to be dead.
+        let target = self.target(backend_id);
         let result = self.ctrl_command_within(
-            &format!("display-message -t {backend_id} -p '#{{pane_dead}}'"),
+            &format!("display-message -t {target} -p '#{{pane_dead}}'"),
             LOOP_COMMAND_BUDGET,
         )?;
         Ok(result.trim() == "1")
@@ -2624,7 +2729,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
         let _ = self.unregister_pane(backend_id);
         // The window, not only the pane — see `kill_window_oneshot`.
-        match self.ctrl_command(&format!("kill-window -t {backend_id}")) {
+        let (verb, target) = self.kill_command(backend_id);
+        match self.ctrl_command(&format!("{verb} -t {target}")) {
             Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
             _ => Ok(()),
         }
@@ -2648,11 +2754,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
         let format =
             format!("#{{pane_pid}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}");
+        let target = self.target(backend_id);
         let raw = if self.attached() {
-            self.ctrl_command(&format!("display-message -t {backend_id} -p '{format}'"))?
+            self.ctrl_command(&format!("display-message -t {target} -p '{format}'"))?
         } else {
             // A pane that is already gone has no pid, which is not an error.
-            self.tmux_output(&["display-message", "-p", "-t", backend_id, &format])
+            self.tmux_output(&["display-message", "-p", "-t", &target, &format])
                 .unwrap_or_default()
         };
         if !answered_for(
@@ -2718,7 +2825,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 "set-option",
                 "-p",
                 "-t",
-                pane,
+                &self.target(pane),
                 control_mode::REMOTE_HOOK_STATE_OPTION,
                 state,
             ],
@@ -2992,6 +3099,35 @@ fn answered_for(target: &str, window: Option<&str>, pane: Option<&str>) -> bool 
         Some((_, name)) => window == Some(name),
         None => pane == Some(target),
     }
+}
+
+/// Where `register_pane` learnt a pane lives.
+#[derive(Debug, PartialEq, Eq)]
+struct PaneLocation {
+    window: String,
+    /// Rows and columns, where they were asked for.
+    size: Option<(u16, u16)>,
+    sized_by: Option<String>,
+}
+
+/// `register_pane`'s `#{pane_id} #{window_id} [rows cols [sizer]]` answer, or
+/// `None` unless it is `pane`'s own and names a window.
+fn parse_pane_location(pane: &str, answer: &str) -> Option<PaneLocation> {
+    let mut fields = answer.split_whitespace();
+    if fields.next() != Some(pane) {
+        return None;
+    }
+    let window = fields
+        .next()
+        .filter(|id| control_mode::is_valid_window_id(id))?
+        .to_string();
+    let rows = fields.next().and_then(|n| n.parse::<u16>().ok());
+    let cols = fields.next().and_then(|n| n.parse::<u16>().ok());
+    Some(PaneLocation {
+        window,
+        size: rows.zip(cols),
+        sized_by: fields.next().map(str::to_string),
+    })
 }
 
 /// Field `n` of a separated `display-message` answer, `None` when empty.
@@ -3645,9 +3781,10 @@ impl<M: TmuxCompatible> Server<M> {
     /// Kill the window `target` is in on this machine's server, with a
     /// one-shot command. One already gone is not an error.
     fn kill_window_at(&self, target: &str) -> Result<()> {
+        let (verb, target) = self.kill_command(target);
         let output = self
             .transport
-            .tmux_command(&self.socket(), &["kill-window", "-t", target])
+            .tmux_command(&self.socket(), &[verb, "-t", &target])
             .output()
             .context("Failed to run tmux kill-window")?;
         if !output.status.success() {
@@ -3956,6 +4093,7 @@ mod tests {
                 command_list_single_reply: false,
                 subscriptions: true,
                 status_poll: None,
+                confirm_close: None,
             }
         }
         const HOOK_STATUS: bool = true;
@@ -4007,6 +4145,7 @@ mod tests {
                 command_list_single_reply: false,
                 subscriptions: false,
                 status_poll: None,
+                confirm_close: None,
             }
         }
         const HOOK_STATUS: bool = false;
@@ -4727,6 +4866,59 @@ mod tests {
         assert!(!answered_for("%3", Some("tb-y"), Some("%0")));
         assert!(answered_for("thurbox:=tb-x", Some("tb-x"), Some("%9")));
         assert!(!answered_for("thurbox:=tb-x", Some("tb-y"), Some("%9")));
+    }
+
+    /// Where ids are per session, a bare `%2` reached the `__warm__` session's
+    /// `%2` (measured on psmux 3.3.7), so no id leaves without its session.
+    /// Where they are server-wide (tmux), nothing changes.
+    #[test]
+    fn an_id_target_is_qualified_only_where_ids_are_per_session() {
+        assert_eq!(qualify_target("thurbox", "%2", true), "thurbox:.%2");
+        assert_eq!(qualify_target("thurbox", "@7", true), "thurbox:@7");
+        assert_eq!(
+            qualify_target("thurbox", "thurbox:=tb-x", true),
+            "thurbox:=tb-x"
+        );
+        assert_eq!(qualify_target("thurbox", "thurbox", true), "thurbox");
+        for id in ["%2", "@7", "thurbox:=tb-x"] {
+            assert_eq!(qualify_target("thurbox", id, false), id);
+        }
+    }
+
+    /// Where ids are server-wide and windows are killed as windows (tmux), the
+    /// kill is what it always was. psmux's is pinned beside its adapter.
+    #[test]
+    fn a_kill_of_a_server_wide_id_is_unchanged() {
+        assert_eq!(
+            TestBackend::local().kill_command("%8"),
+            ("kill-window", Cow::Borrowed("%8"))
+        );
+    }
+
+    /// A `display-message` answered for another pane — psmux's answer for a
+    /// pane it cannot find — records no window, so no close of the active
+    /// window can end this pane's reader.
+    #[test]
+    fn a_pane_location_is_only_taken_from_the_panes_own_answer() {
+        assert_eq!(
+            parse_pane_location("%7", "%7 @3 24 80 me\n"),
+            Some(PaneLocation {
+                window: "@3".into(),
+                size: Some((24, 80)),
+                sized_by: Some("me".into()),
+            })
+        );
+        assert_eq!(
+            parse_pane_location("%7", "%7 @3"),
+            Some(PaneLocation {
+                window: "@3".into(),
+                size: None,
+                sized_by: None,
+            })
+        );
+        assert_eq!(parse_pane_location("%9", "%1 @1\n"), None);
+        assert_eq!(parse_pane_location("%7", "%7 nonsense"), None);
+        assert_eq!(parse_pane_location("%7", ""), None);
     }
 
     #[test]
