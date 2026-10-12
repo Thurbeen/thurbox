@@ -58,7 +58,7 @@ pub fn supported(host: &HostDef) -> bool {
 /// such words. Every word must resolve to an existing image file within
 /// `MAX_IMAGE_BYTES`; one that does not makes the whole paste ordinary text.
 pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
-    let words = split_words(text.trim())?;
+    let words = split_words(text.trim_matches(|c: char| c.is_ascii_whitespace()))?;
     if words.is_empty() {
         return None;
     }
@@ -87,6 +87,11 @@ fn is_image_file(path: &Path) -> bool {
 /// quotes, double quotes and backslash escapes. Backslashes are path
 /// separators on Windows, so they escape nothing there. `None` on an
 /// unterminated quote.
+///
+/// Only ASCII whitespace separates words, as in a shell. A terminal escapes
+/// the spaces it knows about and leaves Unicode ones bare: macOS names a
+/// screenshot `… at 4.33.57\u{202F}PM.png`, and Ghostty drops it with that
+/// narrow no-break space unescaped, so `char::is_whitespace` would split it.
 fn split_words(text: &str) -> Option<Vec<String>> {
     let escapes = !cfg!(windows);
     let mut words = Vec::new();
@@ -107,7 +112,7 @@ fn split_words(text: &str) -> Option<Vec<String>> {
                 current.push(chars.next()?);
                 in_word = true;
             }
-            (None, c) if c.is_whitespace() => {
+            (None, c) if c.is_ascii_whitespace() => {
                 if in_word {
                     words.push(std::mem::take(&mut current));
                     in_word = false;
@@ -262,6 +267,17 @@ mod tests {
             dropped_images(&format!("{p} '{s}'")),
             Some(vec![plain, spaced])
         );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn a_macos_screenshot_keeps_its_narrow_no_break_space() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let shot = image(dir.path(), "Screenshot 2026-10-08 at 4.33.57\u{202F}PM.png");
+        // Ghostty's spelling: ASCII spaces escaped, the U+202F left bare.
+        let dropped = shot.display().to_string().replace(' ', "\\ ");
+
+        assert_eq!(dropped_images(&dropped), Some(vec![shot]));
     }
 
     #[test]
