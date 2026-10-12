@@ -786,6 +786,37 @@ mod windows {
             .map_err(|e| e.to_string())
     }
 
+    // No `max_instances`: tokio's default is already PIPE_UNLIMITED_INSTANCES
+    // (255), and `max_instances` asserts its argument is at most 254, so
+    // passing 255 to mean "unlimited" panics the server thread. Concurrency is
+    // bounded by the `clients` semaphore instead.
+    fn create_instance(name: &std::path::Path, acl: &OwnerAcl) -> io::Result<NamedPipeServer> {
+        let mut attrs = acl.attrs();
+        unsafe {
+            ServerOptions::new()
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    name,
+                    (&mut attrs as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn server_creates_several_pipe_instances() {
+        let acl = OwnerAcl::new().expect("owner ACL");
+        let name = PathBuf::from(format!(
+            r"\\.\pipe\thurbox-ui-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        runtime().unwrap().block_on(async {
+            let first = create_instance(&name, &acl).expect("first instance");
+            let second = create_instance(&name, &acl).expect("second instance");
+            drop((first, second));
+        });
+    }
+
     async fn handle(mut pipe: NamedPipeServer, sender: SyncSender<Pending>) {
         let run = async {
             let mut len = [0; 4];
@@ -866,15 +897,7 @@ mod windows {
                     };
                     let mut first = true;
                     loop {
-                        let mut attrs = acl.attrs();
-                        let mut options = ServerOptions::new();
-                        options.reject_remote_clients(true).max_instances(255);
-                        let Ok(pipe) = (unsafe {
-                            options.create_with_security_attributes_raw(
-                                &pipe_name,
-                                (&mut attrs as *mut SECURITY_ATTRIBUTES).cast(),
-                            )
-                        }) else {
+                        let Ok(pipe) = create_instance(&pipe_name, &acl) else {
                             if first {
                                 let _ = started
                                     .send(Err("cannot create the UI control pipe".to_string()));
