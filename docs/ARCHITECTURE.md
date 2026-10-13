@@ -893,7 +893,13 @@ reference to read before touching that path.
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names). Arrow and navigation
   escape sequences use one named key command, so psmux can deliver them as a
   complete key and select CSI or SS3 for the pane's cursor mode; splitting an
-  arrow into `Escape` plus literal text delivered a bare Escape. tmux (incl. a WSL
+  arrow into `Escape` plus literal text delivered a bare Escape. Every other
+  complete escape sequence — Shift+Enter's `CSI 13;2u`, a mouse report, an Alt
+  chord — goes out as **one literal**, the ESC as a `0x1b` argument
+  (`psmux_escape_sequence`): split, the pane lost the ESC and had `[13;2u` or
+  `[<35;x;yM` typed into its prompt. One literal is one read in the pane
+  (verified on 3.3.8 over control mode). Only a lone or unfinished ESC is still
+  the `Escape` key. tmux (incl. a WSL
   distro's tmux) keeps the byte-exact `-H` path. Literal runs go out as
   `-l -N 1 "…"` (double-quoted, `\"`/`\\` escaped): `-N` makes psmux's
   send-coalescing decoder — which re-quotes with a POSIX `'\''` escape its own
@@ -920,9 +926,9 @@ reference to read before touching that path.
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
   data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance
   on Windows, where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
-- **A paste cannot be key-encoded at all** (the encoding above emits ESC as its
-  own `Escape` key-name, so the agent saw a bare Escape instead of the
-  `ESC[200~` marker and took each embedded CR as Enter — a pasted stack trace
+- **A paste cannot be key-encoded at all** (the encoding above types each
+  embedded CR as Enter, and the `ESC[200~` markers as writes of their own
+  rather than around the text — a pasted stack trace
   submitted line by line). It goes **out of band** through psmux's own paste
   command (`psmux::PsmuxPaste`, issue #916): psmux's control-mode
   dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
