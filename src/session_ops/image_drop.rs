@@ -313,11 +313,14 @@ mod tests {
 
     #[test]
     fn image_paths_reads_nothing_from_disk() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let missing = dir.path().join("gone.png");
         assert_eq!(
-            image_paths("/no/such/file.png"),
-            Some(vec![PathBuf::from("/no/such/file.png")])
+            image_paths(&missing.display().to_string()),
+            Some(vec![missing])
         );
-        assert_eq!(image_paths("/no/such/file.txt"), None);
+        let not_image = dir.path().join("gone.txt");
+        assert_eq!(image_paths(&not_image.display().to_string()), None);
         assert_eq!(image_paths("relative.png"), None);
     }
 
