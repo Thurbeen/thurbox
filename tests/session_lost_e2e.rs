@@ -310,3 +310,40 @@ fn a_lost_session_does_not_recover_onto_a_live_namesakes_unstamped_pane() {
         "the live row keeps its pane"
     );
 }
+
+#[test]
+fn two_lost_namesakes_do_not_both_recover_onto_one_unstamped_pane() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let pane = env.window("duplicate");
+    let first = row("duplicate", "%998".into());
+    db.upsert_session(&first).expect("persist first namesake");
+    assert!(db.record_session_lost(first.id, "%998").unwrap());
+    let second = row("duplicate", "%999".into());
+    db.upsert_session(&second).expect("persist second namesake");
+    assert!(db.record_session_lost(second.id, "%999").unwrap());
+
+    let watch = env.watch();
+    watch.silent_for(QUIET, "recovery does not emit an event");
+    drop(watch);
+
+    let rows = [first.id, second.id].map(|id| db.get_session_by_id(id).unwrap().unwrap());
+    assert_eq!(
+        rows.iter().filter(|row| row.backend_id == pane).count(),
+        1,
+        "one unstamped pane can recover only one lost namesake: {rows:#?}"
+    );
+    let lost = db.load_lost_sessions().unwrap();
+    assert_eq!(
+        [first.id, second.id]
+            .iter()
+            .filter(|id| lost.contains_key(id))
+            .count(),
+        1,
+        "the other namesake must remain lost"
+    );
+}

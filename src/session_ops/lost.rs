@@ -10,7 +10,7 @@
 //! Local sessions only. A session on a `--host` lives on that host's server,
 //! which the host's own watcher looks at.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::session::{Route, SessionId};
 use crate::storage::Database;
@@ -39,6 +39,7 @@ impl LostSweep {
         };
         let stopped = db.load_stopped_sessions().unwrap_or_default();
         let lost = db.load_lost_sessions().unwrap_or_default();
+        let mut recovered = HashSet::new();
         // One listing per backend. A backend that could not be asked proves
         // nothing about its rows: they are not missing on this look, so their
         // confirmation starts over.
@@ -87,12 +88,17 @@ impl LostSweep {
                             && !lost.contains_key(&other.id)
                             && other.backend_id == pane
                             && super::server_key(&other.backend_type) == server
-                    });
+                    }) || recovered.contains(&(server.clone(), pane.clone()));
                     if claimed {
                         continue;
                     }
-                    if let Err(e) = db.clear_session_lost(row.id, lost[&row.id], &pane) {
-                        tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
+                    match db.clear_session_lost(row.id, lost[&row.id], &pane) {
+                        Ok(()) => {
+                            recovered.insert((server, pane));
+                        }
+                        Err(e) => {
+                            tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
+                        }
                     }
                 }
                 _ => {}
