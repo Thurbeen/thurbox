@@ -642,6 +642,7 @@ fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
         return None;
     }
     let (len, rest) = match *buf.get(1)? {
+        b'[' | b'O' if buf.len() == 2 => (2, &buf[1..]),
         b'[' => {
             let body = &buf[2..];
             let params = body
