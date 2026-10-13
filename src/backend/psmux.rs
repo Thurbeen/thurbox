@@ -490,6 +490,17 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
     )
 }
 
+/// Shift+Enter as `agent::input::key_to_bytes` encodes it.
+///
+/// Under psmux it is typed as Ctrl+J, the one newline key every agent probed
+/// in a psmux pane (psmux 3.3.8, Windows 11) takes as one. ConPTY drops
+/// `CSI 13;2u` before an app that reads console key events sees it (vibe's
+/// Rust TUI, PowerShell's line editor: nothing happened); win32-input-mode's
+/// Shift+Enter reaches an app that reads VT bytes as a bare CR, which Claude
+/// Code took as Enter and submitted the prompt. Ctrl+J inserted a newline in
+/// vibe, Claude Code and PowerShell alike. On a selection menu it is Enter.
+const SHIFT_ENTER: &[u8] = b"\x1b[13;2u";
+
 /// Build the psmux-compatible `send-keys` command line(s) for `buf`.
 ///
 /// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
@@ -498,14 +509,30 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
 /// out as one `-l` literal command, each control byte as its key-name. Navigation
 /// sequences use one named key command: splitting ESC from the rest makes psmux
 /// dispatch a standalone Escape before the arrow sequence reaches the pane.
+/// Shift+Enter (`CSI 13;2u`) is sent as `C-j` (see `SHIFT_ENTER`). Every other
+/// escape sequence — a mouse report, an Alt chord, a modified F-key — goes out
+/// whole as one literal (`psmux_escape_sequence`): split, the pane got
+/// `[<35;…M` typed into it, with the ESC lost.
 pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     let mut cmds = Vec::new();
     let mut literal: Vec<u8> = Vec::new();
     let mut i = 0;
     while i < buf.len() {
+        if buf[i..].starts_with(SHIFT_ENTER) {
+            flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+            cmds.push(format!("send-keys -t {pane_id} C-j\n"));
+            i += SHIFT_ENTER.len();
+            continue;
+        }
         if let Some((len, name)) = psmux_navigation_key(&buf[i..]) {
             flush_psmux_literal(pane_id, &mut literal, &mut cmds);
             cmds.push(format!("send-keys -t {pane_id} {name}\n"));
+            i += len;
+            continue;
+        }
+        if let Some((len, args)) = psmux_escape_sequence(&buf[i..]) {
+            flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+            cmds.push(format!("send-keys -t {pane_id} -l -N 1 {args}\n"));
             i += len;
             continue;
         }
@@ -598,6 +625,105 @@ fn psmux_navigation_key(buf: &[u8]) -> Option<(usize, String)> {
     }
     name.push_str(base);
     Some((suffix_pos + 3, name))
+}
+
+/// A complete escape sequence at the head of `buf` that has no psmux key-name,
+/// as its length and the `send-keys -l` arguments that type it whole: the ESC
+/// as psmux's `0x1b` codepoint token, the rest as a literal. `None` for a lone
+/// or unfinished ESC, which stays the `Escape` key.
+///
+/// One literal is what reaches the pane as one read (verified on psmux 3.3.8
+/// over control mode); `send-keys -H` would too, but psmux 3.3.6 lacked it.
+/// Recognised: a CSI sequence (with xterm's `CSI M` mouse report, whose three
+/// fields follow the final byte), an SS3 key, and an Alt chord (ESC + one
+/// printable character).
+fn psmux_escape_sequence(buf: &[u8]) -> Option<(usize, String)> {
+    if buf.first() != Some(&0x1b) {
+        return None;
+    }
+    let (len, rest) = match *buf.get(1)? {
+        b'[' | b'O' if buf.len() == 2 => (2, &buf[1..]),
+        b'[' => {
+            let body = &buf[2..];
+            let params = body
+                .iter()
+                .take_while(|b| (0x30..=0x3f).contains(*b))
+                .count();
+            let inter = body[params..]
+                .iter()
+                .take_while(|b| (0x20..=0x2f).contains(*b))
+                .count();
+            let fin = *body.get(params + inter)?;
+            if !(0x40..=0x7e).contains(&fin) {
+                return None;
+            }
+            let end = 2 + params + inter + 1;
+            if fin == b'M' && params + inter == 0 {
+                // xterm's default/UTF-8 mouse encoding: three fields, each one
+                // character offset by 32, after the final byte.
+                let (fields, used) = mouse_fields(&buf[end..])?;
+                let mut args = vec!["0x1b".to_string(), psmux_quote("[M")];
+                args.extend(fields.iter().map(|c| format!("0x{:x}", *c as u32)));
+                return Some((end + used, args.join(" ")));
+            }
+            (end, &buf[1..end])
+        }
+        b'O' => {
+            let key = *buf.get(2)?;
+            if !(0x40..=0x7e).contains(&key) {
+                return None;
+            }
+            (3, &buf[1..3])
+        }
+        // Alt + a printable character (UTF-8 included); Alt + a control byte
+        // stays Escape and that byte's key-name.
+        first => {
+            let end = 1 + utf8_width(first);
+            let ch = std::str::from_utf8(buf.get(1..end)?).ok()?.chars().next()?;
+            if ch.is_control() {
+                return None;
+            }
+            (end, &buf[1..end])
+        }
+    };
+    let rest = std::str::from_utf8(rest).ok()?;
+    Some((len, format!("0x1b {}", psmux_literal_args(rest))))
+}
+
+/// The three fields of a `CSI M` mouse report: each a UTF-8 character (`?1005`)
+/// or, where the bytes are not UTF-8, a single raw byte (the default encoding's
+/// 8-bit coordinates), with the bytes they took. psmux types a field as its
+/// codepoint, so a raw byte past 0x7f — a coordinate past 95 in the default
+/// encoding — arrives as that codepoint's UTF-8; such an app should ask for SGR.
+fn mouse_fields(buf: &[u8]) -> Option<([char; 3], usize)> {
+    let mut fields = ['\0'; 3];
+    let mut used = 0;
+    for field in &mut fields {
+        let tail = buf.get(used..)?;
+        let first = *tail.first()?;
+        let width = utf8_width(first);
+        match tail.get(..width).and_then(|s| std::str::from_utf8(s).ok()) {
+            Some(s) => {
+                *field = s.chars().next()?;
+                used += width;
+            }
+            None => {
+                *field = char::from(first);
+                used += 1;
+            }
+        }
+    }
+    Some((fields, used))
+}
+
+/// The length of the UTF-8 sequence `first` leads, read from its lead byte.
+fn utf8_width(first: u8) -> usize {
+    match first {
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => 1,
+    }
 }
 
 /// Map a control byte to the psmux key-name that injects exactly that byte, or
@@ -761,11 +887,10 @@ fn send_paste_args(pane_id: &str, text: &str) -> Vec<String> {
 ///
 /// psmux's control-mode dispatcher implements no paste command at all
 /// (`paste-buffer`, `set-buffer` and psmux's own `send-paste` are CLI/server
-/// only), and its `send-keys` encoding cannot carry a paste: an ESC byte has to
-/// go out as its own `Escape` key-name, which reaches the pane as a standalone
-/// PTY write, so the agent sees a bare Escape keypress instead of the
-/// `ESC[200~` opening marker and then reads every embedded CR that follows as
-/// Enter — a pasted stack trace was submitted one line at a time (issue #916).
+/// only), and its `send-keys` encoding cannot carry a paste: every embedded CR
+/// goes out as the `Enter` key, and the markers reach the pane as separate
+/// writes rather than around the text — a pasted stack trace was submitted one
+/// line at a time (issue #916).
 ///
 /// So a paste is handed to psmux's *own* paste path with a one-shot
 /// `psmux send-paste` (the same command psmux's client uses for a Ctrl+Shift+V):
@@ -1551,9 +1676,74 @@ mod tests {
         );
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b[200~"),
+            vec!["send-keys -t %1 -l -N 1 0x1b \"[200~\"\n"]
+        );
+    }
+
+    #[test]
+    fn psmux_unnamed_escape_sequences_are_typed_whole() {
+        for (bytes, args) in [
+            // A mouse report: split, the pane got `[<35;10;5M` and no ESC.
+            (&b"\x1b[<35;10;5M"[..], "0x1b \"[<35;10;5M\""),
+            (&b"\x1b[<0;10;5m"[..], "0x1b \"[<0;10;5m\""),
+            (&b"\x1b[15;5~"[..], "0x1b \"[15;5~\""),
+            (&b"\x1bOP"[..], "0x1b \"OP\""),
+            (&b"\x1bb"[..], "0x1b \"b\""),
+            ("\x1bé".as_bytes(), "0x1b \"é\""),
+            // A leading `-` is still kept from reading as a flag.
+            (&b"\x1b-"[..], "0x1b 0x2d"),
+            (&b"\x1b[M #!"[..], "0x1b \"[M\" 0x20 0x23 0x21"),
+        ] {
+            assert_eq!(
+                psmux_send_keys_commands("%1", bytes),
+                vec![format!("send-keys -t %1 -l -N 1 {args}\n")],
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn psmux_shift_enter_is_ctrl_j() {
+        // Typed whole, `CSI 13;2u` did nothing in vibe's TUI or PowerShell.
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"a\x1b[13;2ub"),
+            vec![
+                "send-keys -t %1 -l -N 1 \"a\"\n",
+                "send-keys -t %1 C-j\n",
+                "send-keys -t %1 -l -N 1 \"b\"\n",
+            ]
+        );
+    }
+
+    #[test]
+    fn psmux_a_lone_or_unfinished_escape_stays_the_escape_key() {
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"\x1b\x1b"),
+            vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Escape\n"]
+        );
+        // Alt + a control byte: Escape, then that byte's key-name.
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"\x1b\r"),
+            vec!["send-keys -t %1 Escape\n", "send-keys -t %1 Enter\n"]
+        );
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"\x1b[13;2"),
             vec![
                 "send-keys -t %1 Escape\n",
-                "send-keys -t %1 -l -N 1 \"[200~\"\n"
+                "send-keys -t %1 -l -N 1 \"[13;2\"\n"
+            ]
+        );
+    }
+
+    #[test]
+    fn psmux_a_sequence_between_text_keeps_its_neighbours() {
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"x\x1b[<35;10;5My"),
+            vec![
+                "send-keys -t %1 -l -N 1 \"x\"\n",
+                "send-keys -t %1 -l -N 1 0x1b \"[<35;10;5M\"\n",
+                "send-keys -t %1 -l -N 1 \"y\"\n",
             ]
         );
     }
@@ -1636,19 +1826,16 @@ mod tests {
     }
 
     #[test]
-    fn psmux_bracketed_paste_splits_markers_from_text() {
-        // A paste arrives wrapped in `\x1b[200~ … \x1b[201~`; the ESC bytes
-        // become `Escape`, the rest stays literal — reconstructing the wrapper.
-        // Which is why a paste never takes this encoding: the split ESC reaches
-        // the pane as a bare Escape keypress, so the marker is lost and every CR
-        // after it is Enter. The writer sends it through `PsmuxPaste` instead.
+    fn psmux_bracketed_paste_keeps_markers_whole() {
+        // The markers are typed whole like any other sequence, but a paste
+        // still never takes this encoding: each CR in it would be Enter. The
+        // writer sends it through `PsmuxPaste` instead.
         assert_eq!(
             psmux_send_keys_commands("%1", b"\x1b[200~hi\x1b[201~"),
             vec![
-                "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l -N 1 \"[200~hi\"\n".to_string(),
-                "send-keys -t %1 Escape\n".to_string(),
-                "send-keys -t %1 -l -N 1 \"[201~\"\n".to_string(),
+                "send-keys -t %1 -l -N 1 0x1b \"[200~\"\n".to_string(),
+                "send-keys -t %1 -l -N 1 \"hi\"\n".to_string(),
+                "send-keys -t %1 -l -N 1 0x1b \"[201~\"\n".to_string(),
             ]
         );
     }
