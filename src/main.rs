@@ -316,6 +316,12 @@ struct App {
     /// spent only on the presses already made by then; the rest wait for a
     /// question of their own.
     probed_presses: usize,
+    /// Image drops being copied to a remote session's host, delivered by
+    /// [`Interface::poll_image_drops`] when the copy ends.
+    ///
+    /// A thread each, because the copy is an ssh round trip plus the file's
+    /// bytes and the interface must keep painting meanwhile.
+    image_drops: Vec<coordinator::input::PendingDrop>,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).

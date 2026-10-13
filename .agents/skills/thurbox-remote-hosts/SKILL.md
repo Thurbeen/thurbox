@@ -424,6 +424,17 @@ session), never on the loop, ADR-P12).
   force-delete it removes the worktree *directory* only, leaving the branch.
   `wsl.exe`'s exact arg-passing isn't verified in CI (no WSL runner); the
   construction is unit-tested (`transport::tests::wsl_*`, `git_command_wsl_*`).
+- **Dropped images are copied to the host.** A terminal's file drop pastes the
+  *local* path, which a remote agent cannot read. `Interface::on_paste` →
+  `begin_image_drop` selects image-shaped paths without filesystem access on
+  a POSIX `ssh:`/`wsl:` session. Its worker validates existence and size before
+  `session_ops::image_drop::upload` pipes each
+  file (and only it) over the host's launcher into
+  `/tmp/thurbox-drop/<session id>/`, and the paste is delivered with the remote
+  paths. `teardown_runtime_resources` removes that directory (best effort).
+  Rejected candidates keep their original paste. Native-Windows destinations
+  are unsupported. Linux SSH and native Windows-to-WSL transfers have been
+  exercised; native macOS remains unverified.
 - **A remote teardown that never reached its host is owed, not abandoned.**
   Recording the failure used to be the end of it, and for a `force_deleted`
   row that meant forever: every reaper skips such a row, and the mirror's

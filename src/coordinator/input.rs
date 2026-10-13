@@ -806,7 +806,78 @@ impl App {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
+        if self.begin_image_drop(&surface, &text) {
+            return;
+        }
         self.paste_text_into(&surface, &text);
+    }
+
+    /// Start copying dropped images to the host of a remote `surface`, if
+    /// `text` is a drop of nothing but existing local image files.
+    ///
+    /// The terminal pastes the *local* path; the agent runs on the host and
+    /// cannot read it. The files are copied to the session's directory there
+    /// (`session_ops::image_drop`) and the paste is delivered with the remote
+    /// paths when the copy ends — [`Self::poll_image_drops`]. Anything else, and
+    /// every local session, takes the ordinary paste.
+    fn begin_image_drop(&mut self, surface: &str, text: &str) -> bool {
+        use thurbox::session_ops::image_drop;
+        let Some((session, host)) = self
+            .terminals
+            .remote_host_of(surface, self.snapshots.current())
+        else {
+            return false;
+        };
+        if !image_drop::supported(&host) {
+            return false;
+        }
+        // Words only: the files are stat'ed on the worker, since a stalled
+        // mount would otherwise freeze the event loop here.
+        let Some(count) = image_drop::image_paths(text).map(|paths| paths.len()) else {
+            return false;
+        };
+        self.toast(format!("copying {count} image(s) to {}…", host.name));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let text = text.to_string();
+        std::thread::spawn(move || {
+            let outcome = match image_drop::dropped_images(&text) {
+                Some(files) => files
+                    .iter()
+                    .enumerate()
+                    .map(|(seq, file)| image_drop::upload(&host, &session, file, seq))
+                    .collect::<Result<Vec<String>, String>>()
+                    .map(|paths| DropOutcome::Copied(paths.join(" "))),
+                None => Ok(DropOutcome::NotImages(text)),
+            };
+            let _ = tx.send(outcome);
+        });
+        self.image_drops.push(PendingDrop {
+            surface: surface.to_string(),
+            done: rx,
+        });
+        true
+    }
+
+    /// Deliver the drops whose copy has ended: the remote paths as a paste, to
+    /// the pane the drop was aimed at, or the failure.
+    pub(crate) fn poll_image_drops(&mut self) {
+        if self.image_drops.is_empty() {
+            return;
+        }
+        let mut waiting = Vec::new();
+        for drop in std::mem::take(&mut self.image_drops) {
+            match drop.done.try_recv() {
+                Ok(Ok(DropOutcome::Copied(paths) | DropOutcome::NotImages(paths))) => {
+                    self.paste_text_into(&drop.surface, &paths);
+                }
+                Ok(Err(e)) => self.report(format!("could not copy the image: {e}"), Level::Error),
+                Err(std::sync::mpsc::TryRecvError::Empty) => waiting.push(drop),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.report("could not copy the image", Level::Error);
+                }
+            }
+        }
+        self.image_drops.extend(waiting);
     }
 
     /// Send `text` to one surface as a paste, made safe by [`paste_safe`].
@@ -1123,6 +1194,21 @@ fn reaches_the_pty(key: &KeyEvent) -> bool {
 /// both a press that has no pty encoding and an answer that arrives after the
 /// press is gone.
 const CTRL_V: u8 = 0x16;
+
+/// An image drop on its way to a remote host: where it was aimed, and the
+/// thread copying it, which answers with what to paste.
+pub(crate) struct PendingDrop {
+    surface: String,
+    done: std::sync::mpsc::Receiver<Result<DropOutcome, String>>,
+}
+
+/// What the worker found, either way the text to paste.
+enum DropOutcome {
+    /// The files were copied: the remote paths.
+    Copied(String),
+    /// A file was missing, too big or not a file: the original paste, untouched.
+    NotImages(String),
+}
 
 /// What a paste with nothing focused says. One message, because it is one
 /// situation: the press was made with no session's terminal in front of it.

@@ -12,6 +12,7 @@ pub mod composer;
 pub mod delete;
 pub mod extensions;
 pub mod host_cli;
+pub mod image_drop;
 pub mod lifecycle_hooks;
 pub mod lost;
 pub mod mirror;

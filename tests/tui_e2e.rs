@@ -6710,6 +6710,12 @@ impl Drop for Link {
 /// socket is named outright for the same reason the profile names it — a
 /// default would put the "remote" server on the developer's own.
 fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
+    remote_shell_session_with(|_, _| {})
+}
+
+fn remote_shell_session_with(
+    adjust: impl FnOnce(&Profile, &mut Command),
+) -> Option<(Profile, Link, Tui)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -6751,7 +6757,7 @@ fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
     ]);
     profile.cli(&["config", "accept-interface"]);
 
-    let tui = Tui::spawn(&profile, 40, 120);
+    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| adjust(&profile, cmd));
     tui.wait_for(REMOTE_NAME);
     tui.wait_until("the agent pane to be the focused one", |frame| {
         frame
@@ -8443,4 +8449,70 @@ fn a_release_nobody_holds_draws_no_frame() {
     );
     assert!(tui.quit().success());
     tui.assert_keyboard_flags_popped();
+}
+
+/// A blocked stat models a file on an unavailable filesystem. The syscall gate
+/// stays closed until after the theme picker answers, so a fast local disk
+/// cannot conceal metadata accidentally moved back onto the event thread.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn an_image_drop_keeps_the_tui_responsive_while_metadata_is_blocked() {
+    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
+        let shim = profile.path("metadata_gate.so");
+        let build = Command::new("cc")
+            .args(["-shared", "-fPIC"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata_gate.c"))
+            .arg("-o")
+            .arg(&shim)
+            .arg("-ldl")
+            .output()
+            .expect("compile metadata gate");
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let image = profile.path("blocked image.png");
+        std::fs::write(&image, b"\x89PNG").expect("image fixture");
+        cmd.env("LD_PRELOAD", shim);
+        cmd.env("THURBOX_TEST_METADATA_PATH", image);
+        cmd.env(
+            "THURBOX_TEST_METADATA_ENTERED",
+            profile.path("metadata-entered"),
+        );
+        cmd.env(
+            "THURBOX_TEST_METADATA_RELEASE",
+            profile.path("metadata-release"),
+        );
+    }) else {
+        return;
+    };
+    let image = profile.path("blocked image.png");
+    let release = profile.path("metadata-release");
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"release");
+        }
+    }
+    let _release = Release(release.clone());
+    tui.send(format!("\x1b[200~'{}'\x1b[201~", image.display()).as_bytes());
+    let entered = profile.path("metadata-entered");
+    let deadline = Instant::now() + WAIT;
+    while !entered.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the image's metadata was not requested"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    tui.send(CTRL_Y);
+    tui.wait_for("/ filter themes");
+    tui.send(ESC);
+    // Refuse the now-missing image once the stat resumes, avoiding an upload
+    // whose teardown would be unrelated to this responsiveness assertion.
+    std::fs::remove_file(image).expect("remove image fixture");
+    std::fs::write(release, b"release").expect("release metadata");
+    tui.wait_for("blocked image.png");
+    assert!(tui.quit().success());
 }

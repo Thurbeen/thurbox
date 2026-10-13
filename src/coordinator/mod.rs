@@ -615,6 +615,7 @@ impl App {
         // What Windows said about its clipboard, for a paste press that could
         // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
         self.poll_image_probe();
+        self.poll_image_drops();
 
         // An update that replaced binaries is worth saying once; a check that
         // merely found a release shows up in the header instead.

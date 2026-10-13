@@ -1514,6 +1514,22 @@ impl Terminals {
         )
     }
 
+    /// The session behind `surface` and the host it runs on, for a session on
+    /// an `ssh:`/`wsl:` backend; `None` for a local one or an unknown surface.
+    ///
+    /// The companion shell shares its session's host, so either surface of a
+    /// remote session answers.
+    pub fn remote_host_of(
+        &self,
+        surface: &str,
+        snapshot: &Snapshot,
+    ) -> Option<(String, crate::session::HostDef)> {
+        let (id, _) = split_surface(surface);
+        let row = snapshot.session(id)?;
+        let host = self.hosts.get(row.remote_host.as_deref()?)?;
+        Some((row.id.clone(), host.clone()))
+    }
+
     /// Open a shell beside the agent, in `cwd` — see [`Terminals::launch_cwd`].
     ///
     /// Idempotent: `ensure_shell_pane` returns early when one exists, so a
