@@ -15,8 +15,9 @@ use migrations::{
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
-    migrate_v51_event_exit, migrate_v5_session_commands, migrate_v6_worktrees_pk,
-    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v5_session_commands,
+    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
+    migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -94,7 +95,9 @@ use rusqlite::Connection;
 /// It also adds the crash-loop guard's own state, which the pruned event log
 /// cannot hold: `session_relaunches` (the recent automatic relaunches) and
 /// `sessions.relaunch_held_at` (the hold, until a pane is recorded again).
-pub const SCHEMA_VERSION: u32 = 51;
+/// v52 empties `backend_id` on rows already marked lost: a loss now forgets the
+/// dead pane, whose id the server may have reissued to another session since.
+pub const SCHEMA_VERSION: u32 = 52;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -472,6 +475,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (49, migrate_v49_snapshot_versions, Reapply::WhenMissing),
         (50, migrate_v50_lost_at, Reapply::WhenMissing),
         (51, migrate_v51_event_exit, Reapply::WhenMissing),
+        (52, migrate_v52_lost_rows_forget_pane, Reapply::Never),
     ];
 
     for &(target, step, reapply) in steps {
@@ -957,6 +961,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// v52 forgets the pane of a row already marked lost, and of no other: a
+    /// live row's pane is its own, and a soft-deleted row's is what its
+    /// teardown is asked about.
+    #[test]
+    fn migrate_from_v51_forgets_the_pane_of_a_lost_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, name, backend_id, created_at, updated_at, lost_at)
+                VALUES ('lost', 'lost', '%10', 0, 0, 1);
+             INSERT INTO sessions (id, name, backend_id, created_at, updated_at)
+                VALUES ('live', 'live', '%10', 0, 0);
+             INSERT INTO sessions (id, name, backend_id, created_at, updated_at, lost_at, deleted_at)
+                VALUES ('gone', 'gone', '%3', 0, 0, 1, 2);
+             UPDATE metadata SET value = '51' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let pane = |id: &str| -> String {
+            conn.query_row("SELECT backend_id FROM sessions WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(pane("lost"), "");
+        assert_eq!(pane("live"), "%10");
+        assert_eq!(pane("gone"), "%3");
+        assert_eq!(stored_version(&conn), SCHEMA_VERSION);
     }
 
     /// v47 does not relabel anything; it records that the repair is owed, for

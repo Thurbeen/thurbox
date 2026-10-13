@@ -762,6 +762,13 @@ impl Database {
     /// deleted it — the `changed`/`lost` event, and the row's `lost_at` mark.
     /// Returns whether one was written.
     ///
+    /// The row forgets the pane in the same write. A gone pane's id is free for
+    /// the server to hand out again — a restarted psmux numbers from `%0` — and
+    /// a row still naming it then claims another session's pane: hook states
+    /// matched by pane land on the wrong row, and the interface attaches to it
+    /// before a listing says otherwise. Found again, the row is given the pane
+    /// it was found on ([`clear_session_lost`](Self::clear_session_lost)).
+    ///
     /// Checked and written under one write lock, so two watchers seeing the
     /// same death record it once. Nothing is written when the row has moved on
     /// since the caller looked (deleted, parked, or pointing at a new pane),
@@ -788,7 +795,7 @@ impl Database {
             return Ok(false);
         }
         self.conn.execute(
-            "UPDATE sessions SET lost_at = ?1 WHERE id = ?2",
+            "UPDATE sessions SET lost_at = ?1, backend_id = '' WHERE id = ?2",
             params![current_time_millis() as i64, id_str],
         )?;
         self.record_session_event(
@@ -817,15 +824,50 @@ impl Database {
             .collect())
     }
 
-    /// Lift the lost mark set at `lost_at`: the session has a pane again, so
-    /// its next death is news. Only that mark — one a later loss has since set
-    /// is a death the caller has not seen, and stays.
-    pub fn clear_session_lost(&self, id: SessionId, lost_at: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET lost_at = NULL WHERE id = ?1 AND lost_at = ?2",
-            params![id.to_string(), lost_at],
+    /// Lift the lost mark set at `lost_at` only when no other live row on the
+    /// same server claims `pane`. The ownership check and write share one lock,
+    /// so a concurrent restart cannot claim the pane between them. Returns
+    /// whether the row recovered.
+    ///
+    /// `same_server` stays with the caller because route qualification reads
+    /// host configuration, which storage does not own.
+    pub fn clear_session_lost<F>(
+        &self,
+        id: SessionId,
+        lost_at: i64,
+        pane: &str,
+        mut same_server: F,
+    ) -> rusqlite::Result<bool>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let tx = self.write_transaction()?;
+        let id = id.to_string();
+        let claimed = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT backend_type FROM sessions \
+                 WHERE id != ?1 AND deleted_at IS NULL AND stopped_at IS NULL \
+                 AND lost_at IS NULL AND backend_id = ?2",
+            )?;
+            let backends = stmt.query_map(params![id, pane], |row| row.get::<_, String>(0))?;
+            let mut claimed = false;
+            for backend in backends {
+                if same_server(&backend?) {
+                    claimed = true;
+                    break;
+                }
+            }
+            claimed
+        };
+        if claimed {
+            return Ok(false);
+        }
+        let updated = tx.execute(
+            "UPDATE sessions SET lost_at = NULL, backend_id = ?3 WHERE id = ?1 AND lost_at = ?2",
+            params![id, lost_at, pane],
         )?;
-        Ok(())
+        tx.commit()?;
+        Ok(updated == 1)
     }
 
     /// Every stopped session, as a set. Loaded in one query beside
@@ -2083,18 +2125,27 @@ mod tests {
 
         assert!(db.record_session_lost(session.id, pane).unwrap());
         assert!(!db.record_session_lost(session.id, pane).unwrap(), "once");
+        let forgotten = db.get_session_by_id(session.id).unwrap().unwrap();
+        assert_eq!(forgotten.backend_id, "", "a lost row names no pane");
 
         // A restart onto the very pane id it had: no event, but a pane again.
         db.set_backend_id(session.id, pane).unwrap();
         assert!(db.record_session_lost(session.id, pane).unwrap());
 
         let at = db.load_lost_sessions().unwrap()[&session.id];
-        db.clear_session_lost(session.id, at - 1).unwrap();
+        db.clear_session_lost(session.id, at - 1, pane, |_| true)
+            .unwrap();
         assert!(
             !db.record_session_lost(session.id, pane).unwrap(),
             "not that mark"
         );
-        db.clear_session_lost(session.id, at).unwrap();
+        db.clear_session_lost(session.id, at, pane, |_| true)
+            .unwrap();
+        let found = db.get_session_by_id(session.id).unwrap().unwrap();
+        assert_eq!(
+            found.backend_id, pane,
+            "found again, on the pane it was found on"
+        );
         assert!(db.record_session_lost(session.id, pane).unwrap());
     }
 

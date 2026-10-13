@@ -916,14 +916,15 @@ mod tests {
         }
 
         exit(&db, &backends, &row);
-        let pane = db.get_session_by_id(row.id).unwrap().unwrap().backend_id;
         assert!(relaunch().held_back, "the next one is a crash loop");
         assert_eq!(relaunches(&db, &row), CRASH_LOOP_RELAUNCHES);
         assert!(db.load_lost_sessions().unwrap().contains_key(&row.id));
+        // Nothing was launched, and the dead pane's id — free for the server
+        // to reissue — is no longer the row's.
         assert_eq!(
             db.get_session_by_id(row.id).unwrap().unwrap().backend_id,
-            pane,
-            "nothing was launched"
+            "",
+            "a held-back row names no pane"
         );
         assert!(
             relaunch().held_back,

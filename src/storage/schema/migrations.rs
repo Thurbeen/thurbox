@@ -952,6 +952,24 @@ pub(super) fn migrate_v51_event_exit(conn: &Connection) -> rusqlite::Result<()> 
     )
 }
 
+/// See [`super::SCHEMA_VERSION`] v52: what `record_session_lost` now does as
+/// it marks a row, done once for the rows marked before it did. A lost row is
+/// found again by its window, never by this id, so nothing is lost by it.
+pub(super) fn migrate_v52_lost_rows_forget_pane(conn: &Connection) -> rusqlite::Result<()> {
+    // `pragma_table_info` answers nothing for a missing table, so this also
+    // covers a database with no `sessions` at all.
+    for column in ["backend_id", "lost_at", "deleted_at"] {
+        if !column_exists(conn, "sessions", column)? {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        "UPDATE sessions SET backend_id = '' WHERE lost_at IS NOT NULL AND deleted_at IS NULL",
+        [],
+    )
+    .map(drop)
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.

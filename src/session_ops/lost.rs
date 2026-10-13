@@ -45,7 +45,7 @@ impl LostSweep {
         let mut listings: HashMap<String, Option<crate::backend::identity::WindowIndex>> =
             HashMap::new();
         let mut missing = HashMap::new();
-        for row in rows {
+        for row in &rows {
             if Route::is_remote_key(&row.backend_type) || stopped.contains(&row.id) {
                 continue;
             }
@@ -73,13 +73,22 @@ impl LostSweep {
             match index.agent_window(&row.id.to_string(), &row.name) {
                 // Already reported: nothing to confirm, and no write to take.
                 crate::backend::Located::Absent if !lost.contains_key(&row.id) => {
-                    missing.insert(row.id, row.backend_id);
+                    missing.insert(row.id, row.backend_id.clone());
                 }
                 // Back again — however it came back, on whatever pane id — so
-                // its next death is news.
-                crate::backend::Located::At(_) if lost.contains_key(&row.id) => {
-                    if let Err(e) = db.clear_session_lost(row.id, lost[&row.id]) {
-                        tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
+                // its next death is news, and the row names that pane again.
+                crate::backend::Located::At(pane) if lost.contains_key(&row.id) => {
+                    // A lone unstamped name is only fallback identity. Duplicate
+                    // names are supported, so another live row's pane claim wins.
+                    let server = super::server_key(&row.backend_type);
+                    match db.clear_session_lost(row.id, lost[&row.id], &pane, |backend| {
+                        super::server_key(backend) == server
+                    }) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(e) => {
+                            tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
+                        }
                     }
                 }
                 _ => {}
