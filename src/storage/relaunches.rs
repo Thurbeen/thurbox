@@ -6,7 +6,7 @@
 //! retention of zero is valid — so a guard counted from it forgets the loop it
 //! was holding back. Here a relaunch is dropped only once it has aged out of
 //! the window that counts it, and a hold only when a pane is recorded for the
-//! session again ([`Database::set_backend_id`]).
+//! session again ([`Database::claim_backend_id`]).
 
 use rusqlite::{params, OptionalExtension};
 
@@ -161,7 +161,7 @@ mod tests {
             .unwrap();
         assert!(db.relaunches_held(session.id).unwrap());
 
-        db.set_backend_id(session.id, "%2").unwrap();
+        db.claim_backend_id(session.id, "%2", |_, _| false).unwrap();
         assert!(!db.relaunches_held(session.id).unwrap());
     }
 }

@@ -24,7 +24,7 @@ mod session_meta;
 mod sessions;
 mod settings;
 pub use session_events::{EventReason, SessionEventKind, SessionEventRow};
-pub use sessions::{DeletedSessionInfo, HookRow, SessionFacts};
+pub use sessions::{DeletedSessionInfo, HookRow, PaneClaim, SessionFacts};
 pub mod sync;
 pub mod tasks;
 mod worktrees;
@@ -379,7 +379,7 @@ mod tests {
         let writer = std::thread::spawn(move || {
             let db = Database::open_existing(&write_path).unwrap();
             started.send(()).unwrap();
-            let outcome = db.set_backend_id(id, "%42");
+            let outcome = db.claim_backend_id(id, "%42", |_, _| false);
             let _ = done.send(());
             outcome
         });
@@ -408,8 +408,9 @@ mod tests {
             .join()
             .unwrap()
             .expect("a peer's commit must not fail this write");
-        assert!(
+        assert_eq!(
             stored,
+            PaneClaim::Stored,
             "the row is still there, so the write must have hit it"
         );
         assert_eq!(
@@ -465,7 +466,7 @@ mod tests {
 
         let mut refused = Vec::new();
         for i in 0..500 {
-            if let Err(e) = db.set_backend_id(subject.id, &format!("%{i}")) {
+            if let Err(e) = db.claim_backend_id(subject.id, &format!("%{i}"), |_, _| false) {
                 refused.push(format!("write {i}: {e}"));
             }
         }

@@ -507,3 +507,100 @@ fn recovery_does_not_overwrite_a_pane_claimed_by_a_concurrent_restart() {
         "the restarted row keeps its pane"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn a_concurrent_restart_does_not_overwrite_a_pane_claimed_by_recovery() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let lost = row("duplicate", "%998".into());
+    db.upsert_session(&lost).expect("persist lost namesake");
+    assert!(db.record_session_lost(lost.id, "%998").unwrap());
+
+    let mut restarting = row("worker", "%999".into());
+    restarting.agent_session_id = Some(SessionId::default().to_string());
+    db.upsert_session(&restarting)
+        .expect("persist restarting namesake");
+    db.set_launch_recipe(
+        restarting.id,
+        &thurbox::session::LaunchRecipe {
+            command: "cat".into(),
+            args: Vec::new(),
+            env: Default::default(),
+        },
+    )
+    .expect("persist restart recipe");
+    let _server_anchor = env.window("unrelated");
+    let stale_pane = env.window("duplicate");
+
+    let (watch, discovery) = env.watch_paused_before_discovery();
+    env.crash_server();
+    discovery.resume();
+
+    let deadline = std::time::Instant::now() + WAIT;
+    while db.load_lost_sessions().unwrap().contains_key(&lost.id)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !db.load_lost_sessions().unwrap().contains_key(&lost.id),
+        "recovery did not claim the stale pane before restart"
+    );
+    assert_eq!(
+        db.get_session_by_id(lost.id).unwrap().unwrap().backend_id,
+        stale_pane,
+        "recovery must first record the pane from its stale listing"
+    );
+
+    let restarted = env.cli(&["session", "restart", &restarting.id.to_string()]);
+    assert!(
+        !restarted.status.success(),
+        "restart must refuse to duplicate recovery's pane claim"
+    );
+    let refusal: Value = serde_json::from_slice(&restarted.stdout).expect("restart refusal JSON");
+    assert!(
+        refusal["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("another live session already claims it")),
+        "unexpected restart refusal: {refusal}"
+    );
+    let windows = env.tmux(&[
+        "list-windows",
+        "-t",
+        THURBOX_TMUX_SESSION,
+        "-F",
+        "#{window_name} #{pane_id}",
+    ]);
+    assert!(windows.status.success(), "list restarted windows");
+    let windows = String::from_utf8(windows.stdout).expect("tmux listing is utf-8");
+    assert!(
+        windows
+            .lines()
+            .any(|line| line == format!("tb-worker {stale_pane}")),
+        "the real restart must have created the reused pane: {windows}"
+    );
+    let restarted_pane = db
+        .get_session_by_id(restarting.id)
+        .unwrap()
+        .unwrap()
+        .backend_id;
+    assert_eq!(
+        restarting.backend_id, restarted_pane,
+        "a refused claim must not overwrite the restarting row either"
+    );
+    drop(watch);
+
+    let rows = [lost.id, restarting.id].map(|id| db.get_session_by_id(id).unwrap().unwrap());
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.backend_id == stale_pane)
+            .count(),
+        1,
+        "recovery and restart must not both claim one pane: {rows:#?}"
+    );
+}

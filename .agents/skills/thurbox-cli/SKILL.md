@@ -362,9 +362,12 @@ the row's `backend_id`: a fresh tmux or psmux server reissues `%0`, so a dead
 pane's id soon names another session's pane, which a row still holding it would
 claim (hook states are matched to rows by pane). The mark lifts when a sweep
 sees the window again — the row then records the pane it was found on, unless
-a live row already names that pane (a namesake's unstamped window) — or a
-pane is recorded for the row. A
-listing that fails is not absence; a crashed server's stale socket is (tmux
+a live row already names that pane (a namesake's unstamped window) — or a pane
+is claimed for the row. Both directions use the same write-lock ownership
+rule: restart, restore and interface adoption refuse a same-server pane already
+claimed by another active row, while the same pane id on another server is
+independent. A listing that fails is not absence; a crashed server's stale
+socket is (tmux
 answers "no server running").
 
 `--session` narrows it to one (the log is filtered, not the output),

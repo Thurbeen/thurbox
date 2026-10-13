@@ -1102,8 +1102,8 @@ neither piece exists and nothing changes:
   - **Not counted from the event log.** That log is pruned on the audit
     retention every time a database opens, and a retention of zero is
     valid. A guard read from it forgot the loop it was holding back.
-  - **What lifts the hold.** Only a pane recorded for the session again
-    (`set_backend_id`): an operator's `session restart` or `session start`,
+  - **What lifts the hold.** Only a pane claimed for the session again
+    (`claim_backend_id`): an operator's `session restart` or `session start`,
     which are never held back, or an adoption.
   - **Plain losses.** A loss with no relaunches behind it, such as a reboot,
     is relaunched as before.
@@ -2192,7 +2192,7 @@ undo window in the same pass as one that must. `Command::Reap` is the one comman
 in-flight record of — it recurs forever with nobody waiting on it, and a row
 there is drawn, captioned and counted as activity (ADR-P22 in
 `docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a
-session row uses a targeted setter (`set_backend_id`, `set_session_shell`,
+session row uses a targeted setter (`claim_backend_id`, `set_session_shell`,
 `set_display_order`) rather than the full-row `upsert_session`.
 
 The sweep's ownership gate asks each remote host for its windows, and a host
@@ -2256,13 +2256,16 @@ what the mutex was reaching for and could not have.
 
 Every targeted setter now opens through the same `BEGIN IMMEDIATE`
 (`Database::write_transaction`), not only `reorder_sessions`. A `BEGIN
-DEFERRED` transaction that reads before it writes — `set_backend_id` among
+DEFERRED` transaction that reads before it writes — `claim_backend_id` among
 them, and `set_hook_state`, the path every agent hook takes — upgrades to a
 write lock mid-flight, and in WAL mode an upgrade whose read snapshot a peer
 has already overtaken fails `SQLITE_BUSY` immediately, without consulting
 `busy_timeout`. The database is shared by the TUI, `thurbox-cli` and every
 agent hook, so that upgrade race is not rare; taking the lock at `BEGIN`
 instead makes the write wait out a peer rather than fail in front of one.
+`claim_backend_id` also checks same-server pane ownership under that lock;
+restart, restore and interface adoption cannot overwrite a pane recovery
+claimed first, while pane ids remain free to repeat on different servers.
 
 **Rejected**:
 

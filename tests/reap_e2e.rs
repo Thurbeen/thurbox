@@ -356,10 +356,11 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
         return;
     };
     // The psmux shape: the window is up, the row remembers no pane for it.
-    assert!(
-        db.set_backend_id(session.session_id, "")
+    assert_eq!(
+        db.claim_backend_id(session.session_id, "", |_, _| false)
             .expect("clear the pane id"),
-        "the spawned row should be there to update"
+        thurbox::storage::PaneClaim::Stored,
+        "the spawned row should be there to update",
     );
     thurbox::session_ops::delete_session_headless(
         &db,
@@ -429,14 +430,15 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
 
     // Post-restart: the stale row's remembered pane id is now the live
     // namesake's pane, in a window that carries the very name it expects.
-    // `set_backend_id` only touches live rows, so the row is revived for the
+    // `claim_backend_id` only touches live rows, so the row is revived for the
     // write and deleted again — the persisted state, not the route to it, is
     // what the reap sees.
     db.restore_session(stale.session_id).expect("revive");
-    assert!(
-        db.set_backend_id(stale.session_id, &live.backend_id)
+    assert_eq!(
+        db.claim_backend_id(stale.session_id, &live.backend_id, |_, _| false)
             .expect("renumber the stale row's pane"),
-        "the stale row should be there to update"
+        thurbox::storage::PaneClaim::Stored,
+        "the stale row should be there to update",
     );
     db.soft_delete_session(stale.session_id)
         .expect("soft-delete again");
@@ -738,7 +740,7 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     let Some(session) = spawn(&db, repo.path(), "stamped") else {
         return;
     };
-    db.set_backend_id(session.session_id, "")
+    db.claim_backend_id(session.session_id, "", |_, _| false)
         .expect("clear the pane id");
 
     let backend = thurbox::backend::tmux::TmuxBackend::new();
