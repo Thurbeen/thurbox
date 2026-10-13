@@ -184,6 +184,117 @@ pub fn host_socket(host: &crate::session::HostDef) -> String {
         .unwrap_or_else(|| TMUX_SOCKET.to_string())
 }
 
+/// The directory under an instance's data dir its local tmux sockets live in:
+/// `<data dir>/tmux/tmux-<uid>/<socket>`.
+pub const SOCKET_DIR_NAME: &str = "tmux";
+
+/// The longest socket path `bind()` takes: `sun_path` is 104 bytes on macOS
+/// (108 on Linux), the terminating NUL included.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// The `TMUX_TMPDIR` this instance's local tmux server runs under:
+/// `<data dir>/tmux`, created `0700` — beside `thurbox.db`, out of the `/tmp`
+/// that macOS sweeps (see `SocketDir` in `backend::tmux_compat::transport`).
+///
+/// `None` leaves tmux to its own choice — `$TMUX_TMPDIR`, else `/tmp` — when
+/// the environment already sets `TMUX_TMPDIR` (test and sandbox tooling
+/// scoping its servers, or an operator's word), when there is no data dir,
+/// when it cannot be created, or when the socket inside it would be too long
+/// a path to bind.
+pub fn local_socket_dir(socket: &str) -> Option<PathBuf> {
+    let dir = socket_dir_for(
+        std::env::var_os("TMUX_TMPDIR").as_deref(),
+        crate::paths::data_directory().as_deref(),
+        socket,
+    )?;
+    match create_private_dir(&dir) {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            tracing::warn!(
+                "cannot create the tmux socket directory {}: {e}; using tmux's default",
+                dir.display()
+            );
+            None
+        }
+    }
+}
+
+/// The pure half of [`local_socket_dir`]: which directory, if any.
+fn socket_dir_for(
+    env: Option<&std::ffi::OsStr>,
+    data_dir: Option<&Path>,
+    socket: &str,
+) -> Option<PathBuf> {
+    if env.is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+    let dir = data_dir?.join(SOCKET_DIR_NAME);
+    if !socket_path_fits(&dir.to_string_lossy(), socket) {
+        tracing::warn!(
+            "the tmux socket path under {} would be too long to bind; using tmux's default",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// Whether `<dir>/tmux-<uid>/<socket>` fits in `sun_path` for any uid.
+pub fn socket_path_fits(dir: &str, socket: &str) -> bool {
+    // `/tmux-` + the widest 32-bit uid + `/`.
+    dir.len() + "/tmux-".len() + 10 + 1 + socket.len() <= SOCKET_PATH_MAX
+}
+
+/// Create `dir` (and any missing parent) as `0700`. An existing one is left as
+/// it is: tmux checks the `tmux-<uid>` level it makes inside, not this one.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// The socket directory this instance reports to a peer (`version --json`'s
+/// `tmux_tmpdir`): the `TMUX_TMPDIR` its local tmux commands run under, or
+/// `None` for tmux's own default.
+pub fn local_socket_dir_report() -> Option<String> {
+    std::env::var("TMUX_TMPDIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+        .or_else(|| local_socket_dir(&local_socket()).map(|d| d.display().to_string()))
+}
+
+/// Socket directories learned from a host's own `thurbox-cli` (`version
+/// --json`'s `tmux_tmpdir`), keyed like [`learned_host_sockets`]. `None` is a
+/// learned answer too: a CLI that reported none — or is too old to know the
+/// key — runs its servers in tmux's default directory, and a server started
+/// anywhere else would be a second one beside the one it spawns into.
+fn learned_host_socket_dirs() -> &'static Mutex<HashMap<String, Option<String>>> {
+    static LEARNED: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
+        std::sync::OnceLock::new();
+    LEARNED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record the socket directory a host's own CLI reported for itself.
+pub fn learn_host_socket_dir(host: &crate::session::HostDef, dir: Option<&str>) {
+    if let Ok(mut map) = learned_host_socket_dirs().lock() {
+        map.insert(
+            host.backend_name(),
+            dir.filter(|d| !d.is_empty()).map(str::to_string),
+        );
+    }
+}
+
+/// What [`learn_host_socket_dir`] recorded for the host behind `backend_name`:
+/// `None` when nothing was, `Some(None)` for tmux's default directory.
+pub(crate) fn learned_host_socket_dir(backend_name: &str) -> Option<Option<String>> {
+    learned_host_socket_dirs()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(backend_name).cloned())
+}
+
 /// The socket a remote operation on `host` may act on, or why it must not act
 /// at all.
 ///
@@ -216,6 +327,61 @@ pub(crate) fn known_host_socket(host: &crate::session::HostDef) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_socket_dir_is_under_the_data_dir_unless_the_environment_names_one() {
+        let data = Path::new("/home/me/.local/share/thurbox");
+        assert_eq!(
+            socket_dir_for(None, Some(data), "thurbox"),
+            Some(data.join("tmux"))
+        );
+        assert_eq!(
+            socket_dir_for(Some(std::ffi::OsStr::new("")), Some(data), "thurbox"),
+            Some(data.join("tmux")),
+            "an empty TMUX_TMPDIR is tmux's default, not a choice"
+        );
+        assert_eq!(
+            socket_dir_for(
+                Some(std::ffi::OsStr::new("/tmp/tbx-x")),
+                Some(data),
+                "thurbox"
+            ),
+            None,
+            "tooling that scopes its servers keeps them where it put them"
+        );
+        assert_eq!(socket_dir_for(None, None, "thurbox"), None);
+    }
+
+    #[test]
+    fn a_socket_dir_too_deep_to_bind_is_not_used() {
+        let deep = format!("/{}", "d".repeat(80));
+        assert_eq!(
+            socket_dir_for(None, Some(Path::new(&deep)), "thurbox"),
+            None
+        );
+        assert!(socket_path_fits(
+            "/Users/me/.local/share/thurbox/tmux",
+            "thurbox"
+        ));
+    }
+
+    #[test]
+    fn a_hosts_socket_dir_is_learned_even_when_it_is_the_default() {
+        let host = crate::session::HostDef {
+            name: "learned-socket-dir-host".into(),
+            destination: "me@h".into(),
+            ..Default::default()
+        };
+        let key = host.backend_name();
+        assert_eq!(learned_host_socket_dir(&key), None);
+        learn_host_socket_dir(&host, None);
+        assert_eq!(learned_host_socket_dir(&key), Some(None));
+        learn_host_socket_dir(&host, Some("/home/me/.local/share/thurbox/tmux"));
+        assert_eq!(
+            learned_host_socket_dir(&key),
+            Some(Some("/home/me/.local/share/thurbox/tmux".into()))
+        );
+    }
 
     #[test]
     fn a_learned_socket_is_used_unless_the_host_pins_one() {

@@ -73,7 +73,10 @@ all `tmux_compat::Server<M>` — runs over a transport-neutral
 `-L`). The local backend launches `<mux> -L thurbox …`; an SSH backend launches
 `ssh <dest> <mux> -L <host socket> …` (the host's socket, ADR-12); a **WSL
 backend launches `wsl.exe -d <distro> <mux> -L <host socket> …`**
-(`HostLauncher::Wsl`). Every remote command builds its
+(`HostLauncher::Wsl`). For tmux on a POSIX host the multiplexer runs behind a
+`sh -c` that sets `TMUX_TMPDIR` to the host's data dir (`SocketDir`, ADR-34),
+so the socket stays out of the `/tmp` macOS sweeps; a server lost from its
+socket is found again (`SIGUSR1`) before any `new-session`. Every remote command builds its
 launcher with the one conversion `HostLauncher::for_host`. `wsl.exe` forwards whitespace-free tokens to the
 in-distro shell like `ssh` does, so the same POSIX quoting
 (`shell::posix_quote`) and the byte-identical control-mode protocol
@@ -516,8 +519,11 @@ session), never on the loop, ADR-P12).
 - **Known limit**: tmux's absence is a claim about the *socket*, not the
   machine — a server with live panes whose socket is moved reports `(No such
   file or directory)`, verified against a real host with two processes still
-  running. thurbox reaches sessions only through that socket, so no retry could
-  ever discharge such an owed teardown; closing it would need a session's
+  running. A tmux server still bound to a *missing* path in a directory thurbox
+  looks in is brought back with `SIGUSR1` before the absence is believed
+  (ADR-34); one moved anywhere else, or whose path a second server now owns, is
+  reachable only through that socket, so no retry could ever discharge such an
+  owed teardown; closing it would need a session's
   processes to be identifiable without the multiplexer (a recorded OS pid per
   remote pane, or a scan by worktree cwd), which nothing here has today.
 - **A session owns two windows**, and every teardown takes both: the agent

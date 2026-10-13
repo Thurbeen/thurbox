@@ -279,7 +279,7 @@ configured hosts, error shown.
 | `destination` | for ssh | — | ssh target (`user@host` or `~/.ssh/config` alias) |
 | `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
 | `ssh_opts` | no | `[]` | extra ssh flags, one token per element (ssh only) |
-| `socket` | no | `thurbox` | host `tmux -L` socket |
+| `socket` | no | `thurbox` | host `tmux -L` socket name. The socket file lives under the host's thurbox data dir, `~/.local/share/thurbox/tmux/tmux-<uid>/<socket>` — see [Where the tmux socket lives](#where-the-tmux-socket-lives) |
 | `session` | no | `thurbox` | host tmux session name |
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
@@ -1301,6 +1301,7 @@ User-set (read by thurbox):
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
+| `TMUX_TMPDIR` | tmux's own: the directory its `tmux-<uid>/<socket>` goes under. When set, thurbox leaves it alone (test and sandbox tooling scope their servers with it); unset, thurbox sets it to `<data dir>/tmux` for every tmux command it runs — see [Where the tmux socket lives](#where-the-tmux-socket-lives). Empty = unset. |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
 
@@ -1445,6 +1446,73 @@ The name of the instance sizing a window is the window option `@thurbox_sizer`
 (`tmux -L <socket> show-options -w -t <pane> @thurbox_sizer`). Why it works
 this way, and what it costs, is ADR-27 in `docs/ARCHITECTURE.md`. On a Windows
 host (psmux) the last instance to paint a pane still sizes it.
+
+### Where the tmux socket lives
+
+thurbox runs tmux as `tmux -L <socket>`, and tmux puts that socket at
+`$TMUX_TMPDIR/tmux-<uid>/<socket>` — `/tmp/tmux-<uid>/thurbox` when nothing
+sets `TMUX_TMPDIR`. macOS sweeps old entries out of `/private/tmp`, and a unix
+socket's access time is not bumped by `connect()`, so a server in daily use
+loses its socket file after a few days (measured: 3 days 18 hours). The server
+keeps running with every agent in it, but nothing can reach it any more.
+
+So thurbox keeps the socket out of `/tmp`. Every tmux command it runs carries
+`TMUX_TMPDIR=<data dir>/tmux` (created `0700`), beside `thurbox.db`:
+
+| Where | Socket |
+|-------|--------|
+| this machine | `~/.local/share/thurbox/tmux/tmux-<uid>/thurbox` (`$XDG_DATA_HOME` respected; `thurbox-dev` for a dev build; a relocated `THURBOX_DATA_DIR` moves it too) |
+| an SSH host or WSL distro | the host's own data dir: `${XDG_DATA_HOME:-$HOME/.local/share}/thurbox/tmux/tmux-<uid>/<socket>`, created there by the host's `sh`, or the directory the host's own `thurbox-cli version --json` reports as `tmux_tmpdir` |
+
+The name is unchanged (`-L <socket>`); only the directory moves. Three things
+leave it where tmux would put it: a `TMUX_TMPDIR` already set in thurbox's
+environment, a data dir so deep that the socket path would not fit in a unix
+socket address (~100 bytes; thurbox logs a warning), and psmux, which has no
+socket directory. `thurbox-cli version --json` reports the directory in force
+as `tmux_tmpdir` (`null` = tmux's default).
+
+**Finding a server again.** Before thurbox reads a server as absent — when it
+first talks to it, when a listing comes back empty, and before every
+`new-session` — it looks for the one already running, on the machine the
+server runs on (over ssh for a host): first a server answering in the new
+directory or in tmux's default one, then a live tmux server still bound to a
+missing socket path in either. That one is sent `SIGUSR1`, which tmux documents
+as the way to recreate a removed socket, and thurbox reattaches to it. A path
+where a socket file exists is never signalled — tmux would unlink it and orphan
+whichever server owns it now. Only when no server exists is a new one started.
+`thurbox.log` says at INFO which way it went.
+
+**Upgrading.** A server started by an earlier build is in `/tmp`. The first
+thurbox with the new directory finds it there and keeps using it for as long as
+it runs; the next server, after it exits (or a reboot), starts in the new
+directory. Nothing has to be restarted, and no second server is started beside
+the old one.
+
+### An orphaned tmux server
+
+A thurbox older than the above, whose socket was swept, started a **second**
+server under the same name and resumed every session into it. The first one
+kept running and nobody could see it: not thurbox, not `tmux -L thurbox ls`.
+One machine found 93 processes and 3.1 GB of resident memory in one four days
+later, among them 22 agent processes — 13 duplicates of sessions also running
+in the new server, and 9 of sessions since deleted, since a deletion only
+reaches the server thurbox can talk to.
+
+Find one by looking for a tmux server whose socket file is not there:
+
+```bash
+ps -axo pid,lstart,args | grep '[t]mux -L thurbox'
+ls -l /tmp/tmux-$(id -u)/ ~/.local/share/thurbox/tmux/tmux-$(id -u)/
+# which file each server is bound to (macOS; on Linux, `ss -xlp | grep tmux`):
+lsof -a -U -c tmux -F pn
+```
+
+A server whose bound path has no file is orphaned. While nothing else owns that
+path, `kill -USR1 <pid>` brings it back, and thurbox does that itself. Once a
+second server owns the path, there is no way back in — signalling the old one
+would orphan the new one instead — so **killing the orphan is the only
+option**: `kill <pid>`. Its agents go with it; their work in a worktree stays on
+disk.
 
 ## Local UI control
 

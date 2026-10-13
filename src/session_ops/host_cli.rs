@@ -78,6 +78,9 @@ pub struct CliInfo {
     /// The tmux socket its sessions live on — what a peer must attach to.
     pub tmux_socket: Option<String>,
     pub data_dir: Option<String>,
+    /// The `TMUX_TMPDIR` its tmux servers run under; `None` for tmux's own
+    /// default, which is also what a CLI too old to report one uses.
+    pub tmux_tmpdir: Option<String>,
     /// Its database schema. `None` for a CLI too old to report one, which is
     /// also too old to share with.
     pub schema_version: Option<u32>,
@@ -166,12 +169,14 @@ fn is_fresh(verdict: &Verdict) -> bool {
     }
 }
 
-/// Tell the tmux layer the socket a usable host's CLI reported.
+/// Tell the tmux layer the socket a usable host's CLI reported, and the
+/// directory it is in: the server that CLI spawns into is the one to attach to.
 fn remember_socket(host: &HostDef, verdict: &Usable) {
     if let Usable::Yes(cli) = verdict {
         if let Some(socket) = &cli.tmux_socket {
             crate::backend::instance::learn_host_socket(host, socket);
         }
+        crate::backend::instance::learn_host_socket_dir(host, cli.tmux_tmpdir.as_deref());
     }
 }
 
@@ -668,6 +673,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .map(str::to_string),
         data_dir: json
             .get("data_dir")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tmux_tmpdir: json
+            .get("tmux_tmpdir")
             .and_then(Value::as_str)
             .map(str::to_string),
         schema_version: json
@@ -1307,6 +1316,7 @@ pub(crate) mod fake {
             version: crate::agent::version_check::current_version().into(),
             tmux_socket: Some("thurbox".into()),
             data_dir: Some("/home/me/.local/share/thurbox".into()),
+            tmux_tmpdir: Some("/home/me/.local/share/thurbox/tmux".into()),
             schema_version: Some(crate::storage::SCHEMA_VERSION),
             multiplexer_choice: false,
             soft_delete_choice: true,
@@ -1436,6 +1446,7 @@ mod tests {
             version: version.into(),
             tmux_socket: None,
             data_dir: None,
+            tmux_tmpdir: None,
             schema_version: schema,
             multiplexer_choice: false,
             soft_delete_choice: false,
@@ -1487,6 +1498,10 @@ mod tests {
         assert_eq!(found.path, "/usr/local/bin/thurbox-cli");
         assert_eq!(found.version, "1.4.0");
         assert_eq!(found.tmux_socket.as_deref(), Some("thurbox"));
+        assert_eq!(
+            found.tmux_tmpdir, None,
+            "a CLI that predates the key runs its servers in tmux's default directory"
+        );
         assert_eq!(found.schema_version, Some(40));
         assert!(!found.multiplexer_choice);
         assert!(!found.soft_delete_choice);

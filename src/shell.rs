@@ -221,6 +221,20 @@ impl HostLauncher {
         }
         cmd
     }
+
+    /// [`Self::shell_c`] with positional parameters: `sh -c <script> <args…>`,
+    /// so the first of `args` is the script's `$0`. Each one arrives as the
+    /// single word it is here, by the same rule as the script.
+    pub fn shell_c_args(&self, script: &str, args: &[&str]) -> Command {
+        let mut cmd = self.shell_c(script);
+        for arg in args {
+            match self {
+                Self::Wsl { .. } => cmd.arg(arg),
+                Self::Ssh { .. } => cmd.arg(posix_quote(arg)),
+            };
+        }
+        cmd
+    }
 }
 
 /// `program` with `args`: run on this machine when there is no `launcher`, or
