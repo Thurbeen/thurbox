@@ -276,3 +276,37 @@ fn a_session_back_on_the_same_pane_is_reported_when_it_dies_again() {
     assert_eq!(again["reason"], "lost");
     assert_eq!(again["session"], worker.id.to_string());
 }
+
+#[test]
+fn a_lost_session_does_not_recover_onto_a_live_namesakes_unstamped_pane() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let live = row("duplicate", env.window("duplicate"));
+    db.upsert_session(&live).expect("persist live namesake");
+    let lost = row("duplicate", "%999".into());
+    db.upsert_session(&lost).expect("persist lost namesake");
+    assert!(db.record_session_lost(lost.id, "%999").unwrap());
+
+    let watch = env.watch();
+    watch.silent_for(QUIET, "recovery does not emit an event");
+    drop(watch);
+
+    assert!(
+        db.load_lost_sessions().unwrap().contains_key(&lost.id),
+        "the live namesake's unstamped window must not recover the lost row"
+    );
+    assert_eq!(
+        db.get_session_by_id(lost.id).unwrap().unwrap().backend_id,
+        "",
+        "the lost row must not claim the live row's pane"
+    );
+    assert_eq!(
+        db.get_session_by_id(live.id).unwrap().unwrap().backend_id,
+        live.backend_id,
+        "the live row keeps its pane"
+    );
+}
