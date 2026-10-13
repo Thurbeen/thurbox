@@ -45,6 +45,17 @@ pub struct SessionFacts {
     pub seen_at: Option<i64>,
 }
 
+/// The result of atomically assigning an agent pane to an active session row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneClaim {
+    /// The row now owns the pane.
+    Stored,
+    /// The row was deleted or did not exist.
+    RowGone,
+    /// Another active row on the same server owns the pane.
+    Occupied,
+}
+
 /// Information about a soft-deleted session, including its worktrees.
 #[derive(Debug, Clone)]
 pub struct DeletedSessionInfo {
@@ -1277,23 +1288,45 @@ impl Database {
             .map(Option::flatten)
     }
 
-    /// Record the pane id (`%N`) of a session's agent window. A targeted UPDATE
-    /// like [`set_session_shell`](Self::set_session_shell) — one column, no
-    /// worktree churn. Used to refresh a stale or missing id (a legacy row the
-    /// interface just resolved by window name, a restore's fresh spawn);
-    /// ordinary spawns persist theirs through
-    /// [`upsert_session`](Self::upsert_session). Returns whether a row matched.
-    pub fn set_backend_id(&self, id: SessionId, pane: &str) -> rusqlite::Result<bool> {
+    /// Atomically record `pane` only when no other live row on the same server
+    /// claims it. `same_server` stays with the caller because route
+    /// qualification reads host configuration, which storage does not own.
+    pub fn claim_backend_id<F>(
+        &self,
+        id: SessionId,
+        pane: &str,
+        mut same_server: F,
+    ) -> rusqlite::Result<PaneClaim>
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
-        let before: Option<String> = self
+        let row: Option<(String, String)> = self
             .conn
             .query_row(
-                "SELECT backend_id FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                "SELECT backend_id, backend_type FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL",
                 params![id_str],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        let Some((before, target_backend)) = row else {
+            return Ok(PaneClaim::RowGone);
+        };
+        if !pane.is_empty() {
+            let mut stmt = tx.prepare_cached(
+                "SELECT backend_type FROM sessions \
+                 WHERE id != ?1 AND deleted_at IS NULL AND stopped_at IS NULL \
+                 AND lost_at IS NULL AND backend_id = ?2",
+            )?;
+            let backends = stmt.query_map(params![id_str, pane], |row| row.get::<_, String>(0))?;
+            for backend in backends {
+                if same_server(&target_backend, &backend?) {
+                    return Ok(PaneClaim::Occupied);
+                }
+            }
+        }
         // A pane recorded for the row is one it has again, lost or not — even
         // the same id, which a fresh tmux server hands out from `%0` again. A
         // crash-loop hold goes with it: whoever recorded this pane (an
@@ -1306,7 +1339,7 @@ impl Database {
         drop(stmt);
         // The pane a row points at is one of the facts `watch` reports, so a
         // real move is an event; re-writing the id it already had is not.
-        if before.as_deref().is_some_and(|had| had != pane) {
+        if before != pane {
             self.record_session_event(
                 id,
                 SessionEventKind::Changed,
@@ -1316,7 +1349,10 @@ impl Database {
             )?;
         }
         tx.commit()?;
-        Ok(updated > 0)
+        Ok(match updated {
+            0 => PaneClaim::RowGone,
+            _ => PaneClaim::Stored,
+        })
     }
 
     /// Renumber the manual order: read the rows and write their new positions
@@ -1362,7 +1398,7 @@ impl Database {
     /// Give several sessions their manual position at once: one `UPDATE … CASE`
     /// rather than a full-row [`upsert_session`](Self::upsert_session) per row.
     ///
-    /// Targeted like [`set_backend_id`](Self::set_backend_id) and for the same
+    /// Targeted like [`claim_backend_id`](Self::claim_backend_id) and for the same
     /// two reasons: the full-row write carries `deleted_at = NULL`, so a row
     /// deleted underneath a renumbering came back, and it rewrote every
     /// worktree row on each move. Returns how many rows moved; a deleted or
@@ -2129,7 +2165,7 @@ mod tests {
         assert_eq!(forgotten.backend_id, "", "a lost row names no pane");
 
         // A restart onto the very pane id it had: no event, but a pane again.
-        db.set_backend_id(session.id, pane).unwrap();
+        db.claim_backend_id(session.id, pane, |_, _| false).unwrap();
         assert!(db.record_session_lost(session.id, pane).unwrap());
 
         let at = db.load_lost_sessions().unwrap()[&session.id];
@@ -2147,6 +2183,42 @@ mod tests {
             "found again, on the pane it was found on"
         );
         assert!(db.record_session_lost(session.id, pane).unwrap());
+    }
+
+    #[test]
+    fn pane_claims_are_unique_within_one_server() {
+        let db = Database::open_in_memory().unwrap();
+        let owner = make_session("Owner");
+        db.upsert_session(&owner).unwrap();
+
+        let mut peer = make_session("Peer");
+        peer.backend_id = "%9".into();
+        db.upsert_session(&peer).unwrap();
+        assert_eq!(
+            db.claim_backend_id(peer.id, &owner.backend_id, |target, other| {
+                target == other
+            })
+            .unwrap(),
+            PaneClaim::Occupied
+        );
+        assert_eq!(
+            db.get_session_by_id(peer.id).unwrap().unwrap().backend_id,
+            "%9",
+            "a refused claim leaves the row unchanged"
+        );
+
+        let mut remote = make_session("Remote");
+        remote.backend_id = "%8".into();
+        remote.backend_type = "ssh:other:tmux".into();
+        db.upsert_session(&remote).unwrap();
+        assert_eq!(
+            db.claim_backend_id(remote.id, &owner.backend_id, |target, other| {
+                target == other
+            })
+            .unwrap(),
+            PaneClaim::Stored,
+            "pane ids belong to a server and may repeat across servers"
+        );
     }
 
     #[test]

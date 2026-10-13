@@ -259,6 +259,8 @@ enum Recorded {
     /// The row is **gone** — deleted while the restart was in flight. Nothing
     /// will ever attach to the window just spawned.
     RowGone,
+    /// A live row on the same server already names this pane.
+    Occupied,
     /// The write itself failed, which says nothing about the row. The window
     /// stays up; see [`record_pane`].
     WriteFailed(String),
@@ -274,7 +276,7 @@ impl Recorded {
 
 /// Persist the pane a restart just spawned.
 ///
-/// A targeted [`Database::set_backend_id`] rather than the full-row
+/// A targeted [`Database::claim_backend_id`] rather than the full-row
 /// `upsert_session` this used to be, and the difference is `deleted_at = NULL`:
 /// the full write revived a row deleted between the session being loaded and
 /// the new window being recorded, so a delete inside its own undo window came
@@ -297,9 +299,12 @@ impl Recorded {
 /// failure is the worse of the two mistakes, and it is the one that left a
 /// session with no window at all.
 fn record_pane(db: &Database, session: &crate::sync::SharedSession, pane: &str) -> Recorded {
-    match db.set_backend_id(session.id, pane) {
-        Ok(true) => Recorded::Stored,
-        Ok(false) => Recorded::RowGone,
+    match db.claim_backend_id(session.id, pane, |target, other| {
+        super::server_key(target) == super::server_key(other)
+    }) {
+        Ok(crate::storage::PaneClaim::Stored) => Recorded::Stored,
+        Ok(crate::storage::PaneClaim::RowGone) => Recorded::RowGone,
+        Ok(crate::storage::PaneClaim::Occupied) => Recorded::Occupied,
         Err(e) => Recorded::WriteFailed(format!("Failed to record the new pane: {e}")),
     }
 }
@@ -810,6 +815,12 @@ fn respawn(
             }
             return Err(Recorded::deleted_mid_restart(&session.name));
         }
+        Recorded::Occupied => {
+            return Err(format!(
+                "Failed to record the new pane for '{}': another live session already claims it",
+                session.name
+            ));
+        }
         // The agent is running; only the row lags. Reported, not killed.
         Recorded::WriteFailed(e) => return Err(e),
     }
@@ -1116,7 +1127,7 @@ mod tests {
     /// [`record_pane`] must tell a row that is genuinely gone apart from a write
     /// that merely failed — only the former means the window it just spawned is
     /// nobody's. The peer-lock trick the storage tests use to force `SQLITE_BUSY`
-    /// no longer reaches this path: `set_backend_id` takes the write lock up
+    /// no longer reaches this path: `claim_backend_id` takes the write lock up
     /// front and waits it out. Dropping the table out from under the connection
     /// forces a real, non-deletion storage error instead.
     #[test]

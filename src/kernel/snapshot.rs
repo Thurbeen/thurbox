@@ -1491,11 +1491,19 @@ impl SnapshotStore {
         {
             return Ok(());
         }
-        let matched = database
-            .set_backend_id(id, pane)
+        let claimed = database
+            .claim_backend_id(id, pane, |target, other| {
+                crate::session_ops::server_key(target) == crate::session_ops::server_key(other)
+            })
             .map_err(|e| format!("record agent pane: {e}"))?;
-        if !matched {
-            return Err(format!("session not found: {session}"));
+        match claimed {
+            crate::storage::PaneClaim::Stored => {}
+            crate::storage::PaneClaim::RowGone => {
+                return Err(format!("session not found: {session}"));
+            }
+            crate::storage::PaneClaim::Occupied => {
+                return Err(format!("pane {pane} is already claimed by another session"));
+            }
         }
         if let Some(current) = self
             .current

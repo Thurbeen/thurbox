@@ -420,8 +420,20 @@ fn respawn(
                     session.name
                 );
             }
-            db.set_backend_id(session.id, &pane)
-                .map_err(|e| format!("record the live pane: {e}"))?;
+            match db
+                .claim_backend_id(session.id, &pane, |target, other| {
+                    super::server_key(target) == super::server_key(other)
+                })
+                .map_err(|e| format!("record the live pane: {e}"))?
+            {
+                crate::storage::PaneClaim::Stored => {}
+                crate::storage::PaneClaim::RowGone => {
+                    return Err("restored session disappeared before its pane was recorded".into());
+                }
+                crate::storage::PaneClaim::Occupied => {
+                    return Err("the restored pane is already claimed by another session".into());
+                }
+            }
             return Ok(());
         }
     }
@@ -456,8 +468,20 @@ fn respawn(
         .map_err(|e| format!("re-spawn: {e:#}"))?;
     // The row still carries the pane the delete killed; the fresh one is what
     // every later read must target (empty on psmux — the name fallback stands).
-    db.set_backend_id(session.id, &pane)
-        .map_err(|e| format!("record the new pane: {e}"))?;
+    match db
+        .claim_backend_id(session.id, &pane, |target, other| {
+            super::server_key(target) == super::server_key(other)
+        })
+        .map_err(|e| format!("record the new pane: {e}"))?
+    {
+        crate::storage::PaneClaim::Stored => {}
+        crate::storage::PaneClaim::RowGone => {
+            return Err("restored session disappeared before its pane was recorded".into());
+        }
+        crate::storage::PaneClaim::Occupied => {
+            return Err("the new pane is already claimed by another session".into());
+        }
+    }
     Ok(())
 }
 
