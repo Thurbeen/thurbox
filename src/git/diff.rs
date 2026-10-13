@@ -15,6 +15,7 @@ use tracing::warn;
 
 use super::{
     git_command, reportable_stderr, resolve_base_ref, run_git_capture, run_git_capture_env,
+    run_git_capture_on,
 };
 use crate::session::HostDef;
 
@@ -490,12 +491,18 @@ fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
 /// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
 /// when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
-    let Some(base) = resolve_base_ref(None, cwd) else {
+    ahead_behind_on(None, cwd)
+}
+
+/// [`ahead_behind`], on `host` when the worktree lives off this machine.
+pub fn ahead_behind_on(host: Option<&HostDef>, cwd: &Path) -> (usize, usize) {
+    let Some(base) = resolve_base_ref(host, cwd) else {
         return (0, 0);
     };
     // `--left-right --count <base>...HEAD` → "<behind>\t<ahead>".
     let range = format!("{base}...HEAD");
-    let Some(out) = run_git_capture(&["rev-list", "--left-right", "--count", &range], cwd) else {
+    let Some(out) = run_git_capture_on(host, &["rev-list", "--left-right", "--count", &range], cwd)
+    else {
         return (0, 0);
     };
     let mut parts = out.split_whitespace();
@@ -615,10 +622,27 @@ pub fn worktree_stats(
     cwd: &Path,
     known: Option<KnownMerge<'_>>,
 ) -> Option<crate::session::GitStats> {
+    worktree_stats_on(None, cwd, known)
+}
+
+/// [`worktree_stats`], on `host` when the session's worktree lives off this
+/// machine. Its `cwd` is a path on that host, so running `git` here would find
+/// no such directory and answer `None` — which every consumer reads as "state
+/// could not be read" (the delete confirmation among them).
+///
+/// The merge answer is the one thing not asked of a host: it needs
+/// `commit-tree` under a pinned identity, which the remote form cannot carry
+/// (see `run_git_capture_env`). It stays `None` — "not known" — and a caller
+/// treats that as work that may not have landed, never as landed.
+pub fn worktree_stats_on(
+    host: Option<&HostDef>,
+    cwd: &Path,
+    known: Option<KnownMerge<'_>>,
+) -> Option<crate::session::GitStats> {
     // One status call carries dirty, the untracked count AND — via the
     // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
     // tree" probe: outside one it fails, exactly as a `rev-parse` would.
-    let status = run_git_capture(&["status", "--porcelain=v2", "--branch"], cwd)?;
+    let status = run_git_capture_on(host, &["status", "--porcelain=v2", "--branch"], cwd)?;
     let status = parse_status_v2(&status);
     // The second subprocess, and the status above already decides whether it
     // can say anything: `diff HEAD` reports on tracked files, so with no
@@ -626,7 +650,8 @@ pub fn worktree_stats(
     // known answer. Worth skipping because this path is polled — see
     // `StatusV2::tracked`.
     let (files_changed, insertions, deletions) = if status.tracked {
-        let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
+        let numstat =
+            run_git_capture_on(host, &["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
         parse_numstat(&numstat)
     } else {
         (0, 0, 0)
@@ -635,7 +660,9 @@ pub fn worktree_stats(
     // probe chain would pick first. Only a branch without one (no upstream, or
     // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
     // `origin/main` → `origin/master`), preserving the old answer there.
-    let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
+    let (ahead, behind) = status
+        .ahead_behind
+        .unwrap_or_else(|| ahead_behind_on(host, cwd));
     // Only a branch that *is* ahead has commits whose fate is in question, and
     // the check costs several `git` runs — so nothing ahead pays nothing, and
     // reports `None` rather than an answer nobody asked for. A worktree still
@@ -644,6 +671,7 @@ pub fn worktree_stats(
     let settled = known.filter(|k| Some(k.head) == status.head.as_deref());
     let merged = match settled {
         Some(known) => Some(known.merged),
+        None if host.is_some() => None,
         None => (ahead > 0).then(|| merged_into_default(cwd)).flatten(),
     };
     Some(crate::session::GitStats {
