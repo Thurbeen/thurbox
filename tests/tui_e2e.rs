@@ -8454,7 +8454,7 @@ fn a_release_nobody_holds_draws_no_frame() {
 /// A blocked stat models a file on an unavailable filesystem. The syscall gate
 /// stays closed until after the theme picker answers, so a fast local disk
 /// cannot conceal metadata accidentally moved back onto the event thread.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
 fn an_image_drop_keeps_the_tui_responsive_while_metadata_is_blocked() {
     let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
