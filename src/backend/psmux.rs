@@ -490,6 +490,17 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
     )
 }
 
+/// Shift+Enter as `agent::input::key_to_bytes` encodes it.
+///
+/// Under psmux it is typed as Ctrl+J, the one newline key every agent probed
+/// in a psmux pane (psmux 3.3.8, Windows 11) takes as one. ConPTY drops
+/// `CSI 13;2u` before an app that reads console key events sees it (vibe's
+/// Rust TUI, PowerShell's line editor: nothing happened); win32-input-mode's
+/// Shift+Enter reaches an app that reads VT bytes as a bare CR, which Claude
+/// Code took as Enter and submitted the prompt. Ctrl+J inserted a newline in
+/// vibe, Claude Code and PowerShell alike. On a selection menu it is Enter.
+const SHIFT_ENTER: &[u8] = b"\x1b[13;2u";
+
 /// Build the psmux-compatible `send-keys` command line(s) for `buf`.
 ///
 /// psmux supports `send-keys -l` (literal text) and key-names (`Enter`, `Tab`,
@@ -498,14 +509,21 @@ fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> S
 /// out as one `-l` literal command, each control byte as its key-name. Navigation
 /// sequences use one named key command: splitting ESC from the rest makes psmux
 /// dispatch a standalone Escape before the arrow sequence reaches the pane.
-/// Every other escape sequence — Shift+Enter's `CSI 13;2u`, a mouse report, an
-/// Alt chord — goes out whole as one literal (`psmux_escape_sequence`): split,
-/// the pane got `[13;2u` or `[<35;…M` typed into it, with the ESC lost.
+/// Shift+Enter (`CSI 13;2u`) is sent as `C-j` (see `SHIFT_ENTER`). Every other
+/// escape sequence — a mouse report, an Alt chord, a modified F-key — goes out
+/// whole as one literal (`psmux_escape_sequence`): split, the pane got
+/// `[<35;…M` typed into it, with the ESC lost.
 pub fn psmux_send_keys_commands(pane_id: &str, buf: &[u8]) -> Vec<String> {
     let mut cmds = Vec::new();
     let mut literal: Vec<u8> = Vec::new();
     let mut i = 0;
     while i < buf.len() {
+        if buf[i..].starts_with(SHIFT_ENTER) {
+            flush_psmux_literal(pane_id, &mut literal, &mut cmds);
+            cmds.push(format!("send-keys -t {pane_id} C-j\n"));
+            i += SHIFT_ENTER.len();
+            continue;
+        }
         if let Some((len, name)) = psmux_navigation_key(&buf[i..]) {
             flush_psmux_literal(pane_id, &mut literal, &mut cmds);
             cmds.push(format!("send-keys -t {pane_id} {name}\n"));
@@ -1664,8 +1682,7 @@ mod tests {
     #[test]
     fn psmux_unnamed_escape_sequences_are_typed_whole() {
         for (bytes, args) in [
-            // Shift+Enter: split, the pane got `[13;2u` and no ESC.
-            (&b"\x1b[13;2u"[..], "0x1b \"[13;2u\""),
+            // A mouse report: split, the pane got `[<35;10;5M` and no ESC.
             (&b"\x1b[<35;10;5M"[..], "0x1b \"[<35;10;5M\""),
             (&b"\x1b[<0;10;5m"[..], "0x1b \"[<0;10;5m\""),
             (&b"\x1b[15;5~"[..], "0x1b \"[15;5~\""),
@@ -1683,6 +1700,19 @@ mod tests {
                 String::from_utf8_lossy(bytes)
             );
         }
+    }
+
+    #[test]
+    fn psmux_shift_enter_is_ctrl_j() {
+        // Typed whole, `CSI 13;2u` did nothing in vibe's TUI or PowerShell.
+        assert_eq!(
+            psmux_send_keys_commands("%1", b"a\x1b[13;2ub"),
+            vec![
+                "send-keys -t %1 -l -N 1 \"a\"\n",
+                "send-keys -t %1 C-j\n",
+                "send-keys -t %1 -l -N 1 \"b\"\n",
+            ]
+        );
     }
 
     #[test]
@@ -1708,10 +1738,10 @@ mod tests {
     #[test]
     fn psmux_a_sequence_between_text_keeps_its_neighbours() {
         assert_eq!(
-            psmux_send_keys_commands("%1", b"x\x1b[13;2uy"),
+            psmux_send_keys_commands("%1", b"x\x1b[<35;10;5My"),
             vec![
                 "send-keys -t %1 -l -N 1 \"x\"\n",
-                "send-keys -t %1 -l -N 1 0x1b \"[13;2u\"\n",
+                "send-keys -t %1 -l -N 1 0x1b \"[<35;10;5M\"\n",
                 "send-keys -t %1 -l -N 1 \"y\"\n",
             ]
         );

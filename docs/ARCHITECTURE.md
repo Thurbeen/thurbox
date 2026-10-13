@@ -893,11 +893,15 @@ reference to read before touching that path.
   `Enter`/`Tab`/`Escape`/`BSpace`/`C-<letter>` key-names). Arrow and navigation
   escape sequences use one named key command, so psmux can deliver them as a
   complete key and select CSI or SS3 for the pane's cursor mode; splitting an
-  arrow into `Escape` plus literal text delivered a bare Escape. Every other
-  complete escape sequence — Shift+Enter's `CSI 13;2u`, a mouse report, an Alt
-  chord — goes out as **one literal**, the ESC as a `0x1b` argument
-  (`psmux_escape_sequence`): split, the pane lost the ESC and had `[13;2u` or
-  `[<35;x;yM` typed into its prompt. One literal is one read in the pane
+  arrow into `Escape` plus literal text delivered a bare Escape. **Shift+Enter**
+  (`CSI 13;2u`) is typed as `C-j`: whole, ConPTY drops it before an app that
+  reads console key events (vibe's Rust TUI, PowerShell) sees anything, and
+  win32-input-mode's Shift+Enter reaches an app reading VT bytes as a bare CR —
+  Claude Code submitted on it. Ctrl+J inserted a newline in vibe, Claude Code
+  and PowerShell alike. Every other complete escape sequence — a mouse report,
+  an Alt chord, a modified F-key — goes out as **one literal**, the ESC as a
+  `0x1b` argument (`psmux_escape_sequence`): split, the pane lost the ESC and
+  had `[<35;x;yM` typed into its prompt. One literal is one read in the pane
   (verified on 3.3.8 over control mode). Only a lone or unfinished ESC is still
   the `Escape` key. tmux (incl. a WSL
   distro's tmux) keeps the byte-exact `-H` path. Literal runs go out as
