@@ -2746,8 +2746,12 @@ mode cannot reconnect, and before any `new-session` — it runs one script where
 the server runs: a server answering in the new directory or in tmux's default
 one is adopted; failing that, a live server bound to a missing socket path in
 either is sent `SIGUSR1` (tmux's documented way to recreate a removed socket)
-and adopted. A path where a socket file exists is never signalled. Only when
-nothing is found is a server started, in the new directory. The directory a
+and adopted. A path where a socket file exists is never signalled. A server
+that is there but out of reach — it did not answer `SIGUSR1`, or is bound to a
+socket file that does not answer — is an error through discovery and bootstrap,
+never an absence. Only when nothing is found is a server started, in the new
+directory. A host's data dir too deep for a socket path falls back to tmux's
+default, tested by the host's `sh` the same way for every command. The directory a
 server was found in is kept for as long as it runs, so a server an earlier
 build left in `/tmp` stays in use until it exits. Which process is bound to a
 path is asked of the kernel (`/proc/net/unix` and `/proc/<pid>/fd`, else
@@ -2765,7 +2769,9 @@ being swept; finding the server first is what keeps any other loss from
 becoming a second server. Neither half alone does both: a socket can still be
 removed from anywhere, and recovery cannot help once a second server owns the
 path — tmux unlinks the path before binding, so signalling the first would
-orphan the second.
+orphan the second. For the same reason a server that did not answer is not
+replaced: its `SIGUSR1` is still pending, and would take the path from a second
+server the moment it resumed.
 
 **Limits**: psmux has no socket directory and is untouched; RMUX is unmeasured
 and keeps tmux's default. A socket moved to a directory thurbox does not look

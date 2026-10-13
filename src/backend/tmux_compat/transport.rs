@@ -36,6 +36,11 @@ pub enum SocketDir {
     HostData { app: String },
 }
 
+/// The longest socket path `bind()` takes on any POSIX host: `sun_path` is
+/// 104 bytes on macOS (108 on Linux), the terminating NUL included — the
+/// same bound `backend::instance` holds a local directory to.
+const SOCKET_PATH_MAX: usize = 103;
+
 impl SocketDir {
     /// The `TMUX_TMPDIR` this names, as a POSIX `sh` expression for the
     /// machine the multiplexer runs on — the right side of an assignment, so
@@ -46,13 +51,24 @@ impl SocketDir {
     /// (`backend::instance::local_socket_dir`): it is test and sandbox tooling
     /// scoping its servers, or an operator's own choice. A [`Self::Dir`] is
     /// that choice already made, so it is taken as it stands.
-    pub fn shell_expr(&self) -> String {
+    ///
+    /// A [`Self::HostData`] directory a `socket` path would not fit under
+    /// (103 bytes, as `backend::instance` checks it locally), or
+    /// that cannot be created, falls back to tmux's default there and then.
+    /// The test is the same for every command, so all of them land on the
+    /// same side of it.
+    pub fn shell_expr(&self, socket: &str) -> String {
         match self {
             Self::Inherited => "${TMUX_TMPDIR:-/tmp}".to_string(),
             Self::Dir(dir) => posix_quote(dir),
             Self::HostData { app } => format!(
-                "${{TMUX_TMPDIR:-${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/tmux}}",
-                posix_quote(app)
+                "$(d=${{TMUX_TMPDIR:-${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/tmux}}; \
+                 s=$d/tmux-$(id -u)/{}; \
+                 if [ \"${{#s}}\" -le {} ] && {{ [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; }} 2>/dev/null; \
+                 then printf %s \"$d\"; else printf %s \"${{TMUX_TMPDIR:-/tmp}}\"; fi)",
+                posix_quote(app),
+                posix_quote(socket),
+                SOCKET_PATH_MAX
             ),
         }
     }
@@ -62,7 +78,9 @@ impl SocketDir {
         match self {
             Self::Inherited => "$TMUX_TMPDIR (tmux's default: /tmp)".to_string(),
             Self::Dir(dir) => dir.clone(),
-            Self::HostData { app } => format!("the host's $XDG_DATA_HOME/{app}/tmux"),
+            Self::HostData { app } => format!(
+                "the host's $XDG_DATA_HOME/{app}/tmux (its /tmp when a socket would not fit there)"
+            ),
         }
     }
 }
@@ -170,7 +188,7 @@ impl TmuxTransport {
                 let script = format!(
                     "d={}; [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; \
                      TMUX_TMPDIR=$d; export TMUX_TMPDIR; exec \"$@\"",
-                    dir.shell_expr()
+                    dir.shell_expr(socket)
                 );
                 let mut args = vec!["sh", self.mux.as_str()];
                 args.extend(argv);
@@ -426,14 +444,72 @@ mod tests {
 
     #[test]
     fn an_explicit_socket_dir_is_taken_as_it_stands() {
-        assert_eq!(SocketDir::Inherited.shell_expr(), "${TMUX_TMPDIR:-/tmp}");
-        assert_eq!(SocketDir::Dir("/a b".into()).shell_expr(), "'/a b'");
         assert_eq!(
-            SocketDir::HostData {
-                app: "thurbox".into()
-            }
-            .shell_expr(),
-            "${TMUX_TMPDIR:-${XDG_DATA_HOME:-$HOME/.local/share}/thurbox/tmux}"
+            SocketDir::Inherited.shell_expr("thurbox"),
+            "${TMUX_TMPDIR:-/tmp}"
+        );
+        assert_eq!(
+            SocketDir::Dir("/a b".into()).shell_expr("thurbox"),
+            "'/a b'"
+        );
+    }
+
+    /// What a host's shell makes of [`SocketDir::HostData`] with `env`.
+    #[cfg(unix)]
+    fn host_data_dir(env: &[(&str, &str)], socket: &str) -> String {
+        let expr = SocketDir::HostData {
+            app: "thurbox".into(),
+        }
+        .shell_expr(socket);
+        let mut cmd = Command::new("sh");
+        cmd.env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        cmd.envs(env.iter().copied());
+        let out = cmd
+            .args(["-c", &format!("printf %s \"{expr}\"")])
+            .output()
+            .expect("sh");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A host's data dir holds its sockets when one fits there; a data dir
+    /// too deep for a socket path leaves the host on tmux's default rather
+    /// than failing every command with `File name too long`.
+    #[cfg(unix)]
+    #[test]
+    fn a_hosts_socket_dir_falls_back_where_a_socket_would_not_fit() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = home.path().to_str().expect("utf-8");
+        assert_eq!(
+            host_data_dir(&[("HOME", home)], "thurbox"),
+            format!("{home}/.local/share/thurbox/tmux")
+        );
+        assert!(std::path::Path::new(&format!("{home}/.local/share/thurbox/tmux")).is_dir());
+        let deep = format!("{home}/{}", "d".repeat(120));
+        assert_eq!(
+            host_data_dir(&[("HOME", home), ("XDG_DATA_HOME", &deep)], "thurbox"),
+            "/tmp"
+        );
+        assert!(
+            !std::path::Path::new(&deep).exists(),
+            "nothing is made there"
+        );
+        assert_eq!(
+            host_data_dir(
+                &[
+                    ("HOME", home),
+                    ("XDG_DATA_HOME", &deep),
+                    ("TMUX_TMPDIR", "/x")
+                ],
+                "thurbox"
+            ),
+            "/x",
+            "a TMUX_TMPDIR already set wins"
         );
     }
 

@@ -1467,8 +1467,9 @@ So thurbox keeps the socket out of `/tmp`. Every tmux command it runs carries
 The name is unchanged (`-L <socket>`); only the directory moves. Three things
 leave it where tmux would put it: a `TMUX_TMPDIR` already set in thurbox's
 environment, a data dir so deep that the socket path would not fit in a unix
-socket address (~100 bytes; thurbox logs a warning), and psmux, which has no
-socket directory. `thurbox-cli version --json` reports the directory in force
+socket address (~100 bytes; thurbox logs a warning, and a host's `sh` makes the
+same check, falling back the same way for every command), and psmux, which has
+no socket directory. `thurbox-cli version --json` reports the directory in force
 as `tmux_tmpdir` (`null` = tmux's default).
 
 **Finding a server again.** Before thurbox reads a server as absent — when it
@@ -1481,6 +1482,13 @@ as the way to recreate a removed socket, and thurbox reattaches to it. A path
 where a socket file exists is never signalled — tmux would unlink it and orphan
 whichever server owns it now. Only when no server exists is a new one started.
 `thurbox.log` says at INFO which way it went.
+
+A server that exists but cannot be reached — it does not answer `SIGUSR1`
+(stopped, or wedged), or a socket file is there and does not answer while a
+server is bound to it — is an **error**, not an absence: the session list fails
+rather than reading as empty, and no `new-session` runs. A second server beside
+it would be the leak again, and the first one's pending `SIGUSR1` would take
+the path from the second once it resumed. The error names the pids; see below.
 
 **Upgrading.** A server started by an earlier build is in `/tmp`. The first
 thurbox with the new directory finds it there and keeps using it for as long as

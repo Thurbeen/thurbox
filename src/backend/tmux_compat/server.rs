@@ -922,66 +922,94 @@ impl<M: TmuxCompatible> Server<M> {
         {
             return found.dir;
         }
-        let (dir, searched) = match self.socket_file_seen() {
-            Some(dir) => (dir, None),
-            None => (self.find_server().0, Some(std::time::Instant::now())),
+        let (dir, searched, outcome) = match self.socket_file_seen() {
+            Some(dir) => (dir, None, Search::Found),
+            None => {
+                let (dir, outcome) = self.find_server();
+                (dir, Some(std::time::Instant::now()), outcome)
+            }
         };
         if let Ok(mut map) = located_dirs().lock() {
             map.entry(key).or_insert(LocatedDir {
                 dir: dir.clone(),
                 searched,
+                outcome,
             });
         }
         dir
     }
 
     /// Look for this socket's server again, after a command found none:
-    /// whether one was found — answering in a directory, or brought back by
-    /// `SIGUSR1` — so the caller asks again rather than starting a second.
+    /// [`Search::Found`] when one was — answering in a directory, or brought
+    /// back by `SIGUSR1` — so the caller asks again rather than starting a
+    /// second, and [`Search::Stuck`] when one runs out of reach.
     ///
     /// `throttled` is for the questions asked on a timer — a listing, a
     /// reconnect — which on a host with no server would otherwise pay a
-    /// search per pass: those skip it within [`RELOCATE_EVERY`] of the last
-    /// one. What is about to start a server always searches.
-    fn relocate(&self, throttled: bool) -> bool {
+    /// search per pass: those repeat the last search's verdict within
+    /// [`RELOCATE_EVERY`] of it, a server out of reach included. What is about
+    /// to start a server always searches.
+    fn relocate(&self, throttled: bool) -> Search {
         if !self.manages_socket_dir() {
-            return false;
+            return Search::Absent;
         }
         let key = self.located_key();
         if throttled {
-            let recent = located_dirs().lock().ok().is_some_and(|m| {
+            let recent = located_dirs().lock().ok().and_then(|m| {
                 m.get(&key)
-                    .and_then(|found| found.searched)
-                    .is_some_and(|at| at.elapsed() < RELOCATE_EVERY)
+                    .filter(|found| {
+                        found
+                            .searched
+                            .is_some_and(|at| at.elapsed() < RELOCATE_EVERY)
+                    })
+                    .map(|found| found.outcome.clone())
             });
-            if recent {
-                return false;
+            if let Some(outcome) = recent {
+                return match outcome {
+                    Search::Stuck(why) => Search::Stuck(why),
+                    Search::Found | Search::Absent => Search::Absent,
+                };
             }
         }
-        let (dir, found) = self.find_server();
+        let (dir, outcome) = self.find_server();
         if let Ok(mut map) = located_dirs().lock() {
             map.insert(
                 key,
                 LocatedDir {
                     dir,
                     searched: Some(std::time::Instant::now()),
+                    outcome: outcome.clone(),
                 },
             );
         }
-        found
+        outcome
+    }
+
+    /// The error a server out of reach ([`Search::Stuck`]) is reported as.
+    fn out_of_reach(&self, why: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "{}: {why}; not starting a second server beside it \
+             (see 'An orphaned tmux server' in docs/CONFIG.md)",
+            self.name
+        )
     }
 
     /// After the session probe found nothing and before anything starts a
     /// server: whether looking for it again ([`Self::relocate`]) brought the
     /// session back. Says at INFO which way it went when it did not — into a
-    /// running server, or a new one.
-    fn found_after_all(&self) -> bool {
+    /// running server, or a new one — and fails when a server runs out of
+    /// reach ([`Search::Stuck`]), which nothing may start a second beside.
+    fn found_after_all(&self) -> Result<bool> {
         if !self.manages_socket_dir() {
-            return false;
+            return Ok(false);
         }
-        let found = self.relocate(false);
+        let found = match self.relocate(false) {
+            Search::Stuck(why) => return Err(self.out_of_reach(&why)),
+            Search::Found => true,
+            Search::Absent => false,
+        };
         if found && self.session_exists() {
-            return true;
+            return Ok(true);
         }
         let mux = self.transport.mux();
         let socket = self.socket();
@@ -996,7 +1024,7 @@ impl<M: TmuxCompatible> Server<M> {
                 self.socket_dir().describe()
             ),
         }
-        false
+        Ok(false)
     }
 
     /// On first use, a local socket file at the preferred path is taken as
@@ -1024,11 +1052,11 @@ impl<M: TmuxCompatible> Server<M> {
     /// signalled: tmux unlinks the path before binding, and would orphan
     /// whichever server owns it now.
     ///
-    fn find_server(&self) -> (SocketDir, bool) {
+    fn find_server(&self) -> (SocketDir, Search) {
         let candidates = self.socket_dir_candidates();
         let preferred = candidates[0].clone();
         let socket = self.socket();
-        let script = locate_script(&candidates);
+        let script = locate_script(&candidates, &socket);
         let output = self
             .transport
             .shell_command(&script, &["sh", self.transport.mux(), &socket])
@@ -1044,14 +1072,14 @@ impl<M: TmuxCompatible> Server<M> {
                     self.name,
                     mux_failure(&output, self.transport.is_ssh())
                 );
-                return (preferred, false);
+                return (preferred, Search::Absent);
             }
             Err(e) => {
                 debug!(
                     "{}: could not look for the server of socket '{socket}': {e}",
                     self.name
                 );
-                return (preferred, false);
+                return (preferred, Search::Absent);
             }
         };
         let answer = String::from_utf8_lossy(&output.stdout);
@@ -1068,7 +1096,7 @@ impl<M: TmuxCompatible> Server<M> {
                         preferred.describe()
                     );
                 }
-                (dir, true)
+                (dir, Search::Found)
             }
             ServerFound::Recovered {
                 at,
@@ -1089,26 +1117,26 @@ impl<M: TmuxCompatible> Server<M> {
                         self.name
                     );
                 }
-                (candidates[at].clone(), true)
+                (candidates[at].clone(), Search::Found)
             }
             ServerFound::Unanswered { at, pid, path } => {
-                warn!(
-                    "{}: sent SIGUSR1 to the {} server for socket '{socket}' (pid {pid}) to \
+                let why = format!(
+                    "sent SIGUSR1 to the {} server for socket '{socket}' (pid {pid}) to \
                      recreate {path}, and it has not answered since",
-                    self.name,
                     self.transport.mux()
                 );
-                (candidates[at].clone(), false)
+                warn!("{}: {why}", self.name);
+                (candidates[at].clone(), Search::Stuck(why))
             }
             ServerFound::Bound { pids, path } => {
-                warn!(
-                    "{}: {path} exists but does not answer, and server(s) {pids} are still \
-                     bound to it; not signalling them, which would orphan whichever owns it",
-                    self.name
+                let why = format!(
+                    "{path} exists but does not answer, and server(s) {pids} are still \
+                     bound to it; not signalling them, which would orphan whichever owns it"
                 );
-                (preferred, false)
+                warn!("{}: {why}", self.name);
+                (preferred, Search::Stuck(why))
             }
-            ServerFound::Nothing => (preferred, false),
+            ServerFound::Nothing => (preferred, Search::Absent),
         }
     }
 
@@ -1145,7 +1173,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// keeper needs none, and every spawn or attach applies it.
     fn ensure_heartbeat_session(&self) -> Result<()> {
         let exists = || self.session_exists();
-        if exists() || self.found_after_all() {
+        if exists() || self.found_after_all()? {
             return Ok(());
         }
         self.check_available()?;
@@ -1216,10 +1244,15 @@ impl<M: TmuxCompatible> Server<M> {
     /// window, and a listing that read it as empty would have each of them
     /// relaunched beside the original.
     pub(in crate::backend) fn discover_answered(&self) -> Result<Vec<DiscoveredSession>> {
-        match self.discover_answered_once()? {
-            Some(windows) => Ok(windows),
-            None if self.relocate(true) => Ok(self.discover_answered_once()?.unwrap_or_default()),
-            None => Ok(Vec::new()),
+        if let Some(windows) = self.discover_answered_once()? {
+            return Ok(windows);
+        }
+        match self.relocate(true) {
+            Search::Found => Ok(self.discover_answered_once()?.unwrap_or_default()),
+            // A server holding every window out of reach is not an empty one:
+            // the caller would relaunch each window beside the original.
+            Search::Stuck(why) => Err(self.out_of_reach(&why)),
+            Search::Absent => Ok(Vec::new()),
         }
     }
 
@@ -1651,7 +1684,7 @@ impl<M: TmuxCompatible> Server<M> {
                 return Ok(());
             }
         }
-        if !self.session_exists() && !self.found_after_all() {
+        if !self.session_exists() && !self.found_after_all()? {
             // No session to ask for `#{version}` yet, and creating one may start
             // a server — with an idle shell in it — that every spawn would then
             // refuse. The binary is what would start it, so it answers instead.
@@ -1937,7 +1970,7 @@ impl<M: TmuxCompatible> Server<M> {
         // went while the old connection held on: look for it once more.
         let fresh = match start() {
             Ok(fresh) => fresh,
-            Err(_) if self.relocate(true) => start()?,
+            Err(_) if self.relocate(true) == Search::Found => start()?,
             Err(e) => return Err(e),
         };
         *guard = Some(fresh);
@@ -3328,6 +3361,23 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 struct LocatedDir {
     dir: SocketDir,
     searched: Option<std::time::Instant>,
+    /// What that search concluded, for a throttled question to repeat.
+    outcome: Search,
+}
+
+/// What a search for a server concluded — see `Server::find_server`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Search {
+    /// A server answers, or answers again after `SIGUSR1`.
+    Found,
+    /// No server is running for the socket: one may be started.
+    Absent,
+    /// A server is running for the socket and cannot be reached — it did not
+    /// answer `SIGUSR1`, or is bound to a socket file that does not answer.
+    /// Nothing may be started: a second server is the leak this guards
+    /// against, and the first one's pending `SIGUSR1` would take the path
+    /// from it later. Says why.
+    Stuck(String),
 }
 
 /// How long a search for a server stands for the throttled questions — see
@@ -3389,7 +3439,10 @@ fn local_socket_file(dir: &SocketDir, socket: &str) -> bool {
 /// listening socket by its bound path, the unlinked included, and
 /// `/proc/<pid>/fd` says whose it is — one `ls` for every process this user
 /// can read. Elsewhere (macOS) `lsof` reports the same bound path. A path is
-/// spelled as tmux binds it: the directory resolved, `tmux-<uid>` beneath.
+/// spelled as tmux binds it: the directory resolved, `tmux-<uid>` beneath —
+/// and read whole, spaces and all: it is everything after `/proc/net/unix`'s
+/// seven fixed columns, and reaches `awk` through the environment, where
+/// `-v` would have interpreted its backslashes.
 const LOCATE_BODY: &str = r#"mux=$1 name=$2 uid=$(id -u)
 answers() { TMUX_TMPDIR=$1 "$mux" -L "$name" list-sessions >/dev/null 2>&1; }
 sock() {
@@ -3400,14 +3453,16 @@ sock() {
 }
 bound() {
   if [ -r /proc/net/unix ]; then
-    want=$(awk -v p="$1" '$4 == "00010000" && $8 == p { printf " %s ", $7 }' /proc/net/unix)
+    want=$(P=$1 awk '$4 == "00010000" {
+      path = $0; for (k = 0; k < 7; k++) sub(/^ *[^ ]+ /, "", path)
+      if (path == ENVIRON["P"]) printf " %s ", $7 }' /proc/net/unix)
     [ -n "$want" ] || return 0
     ls -l /proc/[0-9]*/fd 2>/dev/null | awk -v want="$want" '
       /^\/proc\/[0-9]+\/fd:$/ { split($0, a, "/"); pid = a[3]; next }
       / -> socket:\[/ { i = $NF; gsub(/^socket:\[|\]$/, "", i); if (index(want, " " i " ")) print pid }'
   elif command -v lsof >/dev/null 2>&1; then
     lsof -w -a -U -u "$uid" -F pn 2>/dev/null |
-      awk -v p="$1" '/^p/ { pid = substr($0, 2) } /^n/ && substr($0, 2) == p { print pid }'
+      P=$1 awk '/^p/ { pid = substr($0, 2) } /^n/ && substr($0, 2) == ENVIRON["P"] { print pid }'
   fi | sort -un
 }
 i=0
@@ -3445,10 +3500,10 @@ done
 
 /// The script `Server::find_server` runs where the multiplexer does: `candidates`
 /// as `d0…`, then [`LOCATE_BODY`].
-fn locate_script(candidates: &[SocketDir]) -> String {
+fn locate_script(candidates: &[SocketDir], socket: &str) -> String {
     let mut script = String::new();
     for (i, dir) in candidates.iter().enumerate() {
-        script.push_str(&format!("d{i}={}\n", dir.shell_expr()));
+        script.push_str(&format!("d{i}={}\n", dir.shell_expr(socket)));
     }
     script.push_str(&format!("n={}\n", candidates.len()));
     script.push_str(LOCATE_BODY);
@@ -4847,12 +4902,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_locate_script_is_valid_sh_and_names_every_candidate_in_order() {
-        let script = locate_script(&[
-            SocketDir::Dir("/home/me/.local/share/thurbox/tmux".into()),
-            SocketDir::Inherited,
-        ]);
-        assert!(script
-            .starts_with("d0=/home/me/.local/share/thurbox/tmux\nd1=${TMUX_TMPDIR:-/tmp}\nn=2\n"));
+        let script = locate_script(
+            &[
+                SocketDir::Dir("/home/me/.local/share/thurbox/tmux".into()),
+                SocketDir::Inherited,
+                SocketDir::HostData {
+                    app: "thurbox".into(),
+                },
+            ],
+            "thurbox",
+        );
+        assert!(script.starts_with(
+            "d0=/home/me/.local/share/thurbox/tmux\nd1=${TMUX_TMPDIR:-/tmp}\nd2=$(d="
+        ));
+        assert!(script.contains("\nn=3\n"));
         let parsed = std::process::Command::new("sh")
             .args(["-n", "-c", &script])
             .output()

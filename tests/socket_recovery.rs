@@ -45,10 +45,72 @@ struct ReapByPid(Vec<u32>);
 impl Drop for ReapByPid {
     fn drop(&mut self) {
         for pid in &self.0 {
-            // SAFETY: a plain signal to a pid this test started.
-            unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
+            // SAFETY: plain signals to a pid this test started — `SIGCONT`
+            // after, so a server a test stopped gets to act on the `SIGTERM`.
+            unsafe {
+                libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+                libc::kill(*pid as libc::pid_t, libc::SIGCONT);
+            }
         }
     }
+}
+
+/// Kills the server on `socket` in tmux's default directory when dropped —
+/// for the one test whose host is meant to fall back there, out of the
+/// [`TmuxServer`] guard's own directory.
+struct KillDefaultServer(String);
+
+impl Drop for KillDefaultServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args(["-L", &self.0, "kill-server"])
+            .output();
+    }
+}
+
+/// The destination the stand-in `ssh` answers for.
+const DEST: &str = "e2e@sockrec.invalid";
+
+/// Put a stand-in `ssh` first on `PATH` that runs the remote command here,
+/// so a host's commands run through a host's shell exactly as they would on
+/// one; the returned directory holds it.
+fn stand_in_ssh() -> tempfile::TempDir {
+    let bin = tempfile::tempdir().expect("tempdir");
+    let ssh = bin.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nwhile [ \"$1\" != '{DEST}' ]; do shift; done; shift; exec sh -c \"$*\"\n"
+        ),
+    )
+    .expect("ssh stand-in");
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![bin.path().to_path_buf()];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    bin
+}
+
+/// A backend for the stand-in host, its socket and session as given.
+fn host_backend(socket: &str, session: &str) -> TmuxBackend {
+    let host = HostDef {
+        name: "sockrec".into(),
+        destination: DEST.into(),
+        socket: Some(socket.into()),
+        session: Some(session.into()),
+        share_sessions: false,
+        ..Default::default()
+    };
+    TmuxBackend::on_host(
+        &host,
+        HostLauncher::Ssh {
+            destination: DEST.into(),
+            ssh_opts: Vec::new(),
+        },
+        Platform::Posix,
+    )
 }
 
 /// `<dir>/tmux-<uid>/<socket>`, where tmux puts a socket for `dir`.
@@ -155,42 +217,12 @@ fn a_hosts_server_whose_socket_was_removed_is_reattached_not_replaced() {
     }
     let server = TmuxServer::pin("tbx-sockrec-ssh");
     let mut reap = ReapByPid::default();
-    let bin = tempfile::tempdir().expect("tempdir");
-    const DEST: &str = "e2e@sockrec.invalid";
-    let ssh = bin.path().join("ssh");
-    std::fs::write(
-        &ssh,
-        format!(
-            "#!/bin/sh\nwhile [ \"$1\" != '{DEST}' ]; do shift; done; shift; exec sh -c \"$*\"\n"
-        ),
-    )
-    .expect("ssh stand-in");
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![bin.path().to_path_buf()];
-    dirs.extend(std::env::split_paths(&path));
-    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
-
-    let host = HostDef {
-        name: "sockrec".into(),
-        destination: DEST.into(),
-        socket: Some(server.socket().into()),
-        session: Some("tbx-sockrec".into()),
-        share_sessions: false,
-        ..Default::default()
-    };
+    let _bin = stand_in_ssh();
     let pid = start_with_window(&server, "tbx-sockrec");
     reap.0.push(pid);
     std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
 
-    let backend = TmuxBackend::on_host(
-        &host,
-        HostLauncher::Ssh {
-            destination: DEST.into(),
-            ssh_opts: Vec::new(),
-        },
-        Platform::Posix,
-    );
+    let backend = host_backend(server.socket(), "tbx-sockrec");
     assert!(
         window_names(&backend).contains(&"tb-survivor".to_string()),
         "discovery over ssh reads the original server's windows"
@@ -257,4 +289,93 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     );
     reap.0.extend(servers(server.socket()));
     started.shutdown();
+}
+
+/// A socket path with a space in it is found whole: on Linux the bound path
+/// is read out of `/proc/net/unix`, where a word-splitting reader saw only
+/// up to the space and never found the server's socket.
+#[test]
+fn a_socket_path_with_a_space_in_it_is_found_whole() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("tbx sockrec space");
+    let mut reap = ReapByPid::default();
+    let pid = start_with_window(&server, TMUX_SESSION);
+    reap.0.push(pid);
+    std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
+
+    let backend = TmuxBackend::local();
+    assert!(
+        window_names(&backend).contains(&"tb-survivor".to_string()),
+        "discovery reads the original server's windows"
+    );
+    assert_eq!(answering_pid(&server), Some(pid), "the original answers");
+    backend.shutdown();
+}
+
+/// A server that is running but does not answer even `SIGUSR1` — stopped
+/// here, wedged in life — is out of reach, not absent: discovery fails
+/// rather than reading its windows as none, and nothing starts a second
+/// server, which the first one's pending `SIGUSR1` would orphan later.
+#[test]
+fn a_server_that_will_not_answer_is_not_replaced() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("tbx-sockrec-stop");
+    let mut reap = ReapByPid::default();
+    let pid = start_with_window(&server, TMUX_SESSION);
+    reap.0.push(pid);
+    // SAFETY: a plain signal to the server this test started.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
+    std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
+
+    let backend = TmuxBackend::local();
+    let listed = backend.discover().map(|windows| windows.len());
+    assert!(
+        listed.is_err(),
+        "discovery must not read it as empty: {listed:?}"
+    );
+    let ready = backend.ensure_ready();
+    assert!(ready.is_err(), "nothing may start beside it");
+    assert_eq!(
+        servers(server.socket()),
+        vec![pid],
+        "and no second server runs"
+    );
+    backend.shutdown();
+}
+
+/// A host whose data dir is too deep for a socket path keeps its server in
+/// tmux's default directory, every command alike, rather than failing each
+/// one with `File name too long`.
+#[test]
+fn a_host_whose_data_dir_is_too_deep_starts_its_server_in_the_default() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("tbx-sockrec-deep");
+    let socket = format!("tbx-sockrec-deep-{}", std::process::id());
+    let _kill = KillDefaultServer(socket.clone());
+    let _bin = stand_in_ssh();
+    let deep = server.tmpdir().join("d".repeat(120));
+    std::env::set_var("XDG_DATA_HOME", &deep);
+    std::env::remove_var("TMUX_TMPDIR");
+
+    let backend = host_backend(&socket, "tbx-sockrec");
+    backend.ensure_ready().expect("start over ssh");
+    assert!(
+        socket_path(Path::new("/tmp"), &socket).exists(),
+        "the server is in tmux's default directory"
+    );
+    assert!(!deep.exists(), "nothing was made under the deep data dir");
+    assert!(
+        backend.discover().is_ok(),
+        "and later commands reach it there"
+    );
+    backend.shutdown();
 }
