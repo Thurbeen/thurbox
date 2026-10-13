@@ -831,22 +831,25 @@ impl App {
         if !image_drop::supported(&host) {
             return false;
         }
-        let Some(files) = image_drop::dropped_images(text) else {
+        // Words only: the files are stat'ed on the worker, since a stalled
+        // mount would otherwise freeze the event loop here.
+        let Some(count) = image_drop::image_paths(text).map(|paths| paths.len()) else {
             return false;
         };
-        self.toast(format!(
-            "copying {} image(s) to {}…",
-            files.len(),
-            host.name
-        ));
+        self.toast(format!("copying {count} image(s) to {}…", host.name));
         let (tx, rx) = std::sync::mpsc::channel();
+        let text = text.to_string();
         std::thread::spawn(move || {
-            let copied: Result<Vec<String>, String> = files
-                .iter()
-                .enumerate()
-                .map(|(seq, file)| image_drop::upload(&host, &session, file, seq))
-                .collect();
-            let _ = tx.send(copied.map(|paths| paths.join(" ")));
+            let outcome = match image_drop::dropped_images(&text) {
+                Some(files) => files
+                    .iter()
+                    .enumerate()
+                    .map(|(seq, file)| image_drop::upload(&host, &session, file, seq))
+                    .collect::<Result<Vec<String>, String>>()
+                    .map(|paths| DropOutcome::Copied(paths.join(" "))),
+                None => Ok(DropOutcome::NotImages(text)),
+            };
+            let _ = tx.send(outcome);
         });
         self.image_drops.push(PendingDrop {
             surface: surface.to_string(),
@@ -864,7 +867,9 @@ impl App {
         let mut waiting = Vec::new();
         for drop in std::mem::take(&mut self.image_drops) {
             match drop.done.try_recv() {
-                Ok(Ok(paths)) => self.paste_text_into(&drop.surface, &paths),
+                Ok(Ok(DropOutcome::Copied(paths) | DropOutcome::NotImages(paths))) => {
+                    self.paste_text_into(&drop.surface, &paths);
+                }
                 Ok(Err(e)) => self.report(format!("could not copy the image: {e}"), Level::Error),
                 Err(std::sync::mpsc::TryRecvError::Empty) => waiting.push(drop),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1191,10 +1196,18 @@ fn reaches_the_pty(key: &KeyEvent) -> bool {
 const CTRL_V: u8 = 0x16;
 
 /// An image drop on its way to a remote host: where it was aimed, and the
-/// thread copying it, which answers with the remote paths.
+/// thread copying it, which answers with what to paste.
 pub(crate) struct PendingDrop {
     surface: String,
-    done: std::sync::mpsc::Receiver<Result<String, String>>,
+    done: std::sync::mpsc::Receiver<Result<DropOutcome, String>>,
+}
+
+/// What the worker found, either way the text to paste.
+enum DropOutcome {
+    /// The files were copied: the remote paths.
+    Copied(String),
+    /// A file was missing, too big or not a file: the original paste, untouched.
+    NotImages(String),
 }
 
 /// What a paste with nothing focused says. One message, because it is one

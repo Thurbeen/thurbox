@@ -57,7 +57,22 @@ pub fn supported(host: &HostDef) -> bool {
 /// backslash-escaped one, or a `file://` URI, and several files as several
 /// such words. Every word must resolve to an existing image file within
 /// `MAX_IMAGE_BYTES`; one that does not makes the whole paste ordinary text.
+///
+/// Touches the filesystem, so it belongs on a worker: a stat on a stalled
+/// mount blocks for as long as the mount does. The event thread asks only
+/// [`image_paths`], which reads nothing.
 pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
+    let paths = image_paths(text)?;
+    paths
+        .iter()
+        .all(|path| is_image_file(path))
+        .then_some(paths)
+}
+
+/// The absolute, image-extension paths `text` spells, judged by its words
+/// alone — no filesystem access, so it is safe on the event thread. A superset
+/// of [`dropped_images`]: the files may not exist.
+pub fn image_paths(text: &str) -> Option<Vec<PathBuf>> {
     let words = split_words(text.trim_matches(|c: char| c.is_ascii_whitespace()))?;
     if words.is_empty() {
         return None;
@@ -66,21 +81,19 @@ pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
         .iter()
         .map(|word| {
             let path = PathBuf::from(file_uri_path(word)?);
-            is_image_file(&path).then_some(path)
+            let image = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+            (image && path.is_absolute()).then_some(path)
         })
         .collect()
 }
 
 fn is_image_file(path: &Path) -> bool {
-    let image = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
-    image
-        && path.is_absolute()
-        && std::fs::metadata(path)
-            .map(|meta| meta.is_file() && meta.len() <= MAX_IMAGE_BYTES)
-            .unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.len() <= MAX_IMAGE_BYTES)
+        .unwrap_or(false)
 }
 
 /// Split like a shell would for the three spellings a terminal uses: single
@@ -296,6 +309,16 @@ mod tests {
         assert_eq!(dropped_images("relative.png"), None);
         assert_eq!(dropped_images(&format!("'{p}")), None);
         assert_eq!(dropped_images(&dir.path().display().to_string()), None);
+    }
+
+    #[test]
+    fn image_paths_reads_nothing_from_disk() {
+        assert_eq!(
+            image_paths("/no/such/file.png"),
+            Some(vec![PathBuf::from("/no/such/file.png")])
+        );
+        assert_eq!(image_paths("/no/such/file.txt"), None);
+        assert_eq!(image_paths("relative.png"), None);
     }
 
     #[test]
