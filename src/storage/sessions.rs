@@ -824,21 +824,50 @@ impl Database {
             .collect())
     }
 
-    /// Lift the lost mark set at `lost_at`: the session has a pane again —
-    /// `pane`, which the row records — so its next death is news. Only that
-    /// mark — one a later loss has since set is a death the caller has not
-    /// seen, and stays.
-    pub fn clear_session_lost(
+    /// Lift the lost mark set at `lost_at` only when no other live row on the
+    /// same server claims `pane`. The ownership check and write share one lock,
+    /// so a concurrent restart cannot claim the pane between them. Returns
+    /// whether the row recovered.
+    ///
+    /// `same_server` stays with the caller because route qualification reads
+    /// host configuration, which storage does not own.
+    pub fn clear_session_lost<F>(
         &self,
         id: SessionId,
         lost_at: i64,
         pane: &str,
-    ) -> rusqlite::Result<()> {
-        self.conn.execute(
+        mut same_server: F,
+    ) -> rusqlite::Result<bool>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let tx = self.write_transaction()?;
+        let id = id.to_string();
+        let claimed = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT backend_type FROM sessions \
+                 WHERE id != ?1 AND deleted_at IS NULL AND stopped_at IS NULL \
+                 AND lost_at IS NULL AND backend_id = ?2",
+            )?;
+            let backends = stmt.query_map(params![id, pane], |row| row.get::<_, String>(0))?;
+            let mut claimed = false;
+            for backend in backends {
+                if same_server(&backend?) {
+                    claimed = true;
+                    break;
+                }
+            }
+            claimed
+        };
+        if claimed {
+            return Ok(false);
+        }
+        let updated = tx.execute(
             "UPDATE sessions SET lost_at = NULL, backend_id = ?3 WHERE id = ?1 AND lost_at = ?2",
-            params![id.to_string(), lost_at, pane],
+            params![id, lost_at, pane],
         )?;
-        Ok(())
+        tx.commit()?;
+        Ok(updated == 1)
     }
 
     /// Every stopped session, as a set. Loaded in one query beside
@@ -2104,12 +2133,14 @@ mod tests {
         assert!(db.record_session_lost(session.id, pane).unwrap());
 
         let at = db.load_lost_sessions().unwrap()[&session.id];
-        db.clear_session_lost(session.id, at - 1, pane).unwrap();
+        db.clear_session_lost(session.id, at - 1, pane, |_| true)
+            .unwrap();
         assert!(
             !db.record_session_lost(session.id, pane).unwrap(),
             "not that mark"
         );
-        db.clear_session_lost(session.id, at, pane).unwrap();
+        db.clear_session_lost(session.id, at, pane, |_| true)
+            .unwrap();
         let found = db.get_session_by_id(session.id).unwrap().unwrap();
         assert_eq!(
             found.backend_id, pane,

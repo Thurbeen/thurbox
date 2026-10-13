@@ -132,16 +132,32 @@ impl Env {
     fn watch(&self) -> Watch {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         cmd.args(["watch", "--json", "--for-secs", "120"]);
+        self.spawn_watch(cmd)
+    }
+
+    #[cfg(unix)]
+    fn cli(&self, args: &[&str]) -> std::process::Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(args).arg("--json");
+        self.scope(&mut cmd);
+        cmd.output().expect("run thurbox-cli")
+    }
+
+    fn scope(&self, cmd: &mut Command) {
         cmd.env("HOME", self.path("home"));
         cmd.env("XDG_DATA_HOME", self.path("home").join("xdg-data"));
         cmd.env("XDG_CONFIG_HOME", self.path("home").join("xdg-config"));
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
-        self.server.scope(&mut cmd);
+        self.server.scope(cmd);
         cmd.env_remove("TMUX");
         cmd.env_remove("THURBOX_SOCKET_FOR");
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
+    }
+
+    fn spawn_watch(&self, mut cmd: Command) -> Watch {
+        self.scope(&mut cmd);
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -158,6 +174,78 @@ impl Env {
             }
         });
         Watch { child, lines }
+    }
+
+    #[cfg(unix)]
+    fn watch_paused_before_discovery(&self) -> (Watch, DiscoveryGate) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let real_tmux = Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .expect("locate tmux");
+        assert!(real_tmux.status.success(), "tmux is not on PATH");
+        let real_tmux = String::from_utf8(real_tmux.stdout)
+            .expect("tmux path is utf-8")
+            .trim()
+            .to_string();
+        let shim = self.path("tmux-shim");
+        std::fs::create_dir_all(&shim).expect("create shim directory");
+        let script = shim.join("tmux");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n\
+             case \" $* \" in\n\
+               *\" list-windows \"*)\n\
+                 \"$THURBOX_TEST_REAL_TMUX\" \"$@\" > \"$THURBOX_TEST_DISCOVERY_OUTPUT\"\n\
+                 status=$?\n\
+                 : > \"$THURBOX_TEST_DISCOVERY_READY\"\n\
+                 while [ ! -e \"$THURBOX_TEST_DISCOVERY_CONTINUE\" ]; do sleep 0.01; done\n\
+                 cat \"$THURBOX_TEST_DISCOVERY_OUTPUT\"\n\
+                 exit \"$status\"\n\
+                 ;;\n\
+             esac\n\
+             exec \"$THURBOX_TEST_REAL_TMUX\" \"$@\"\n",
+        )
+        .expect("write tmux shim");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make tmux shim executable");
+
+        let ready = self.path("discovery-ready");
+        let resume = self.path("discovery-continue");
+        let output = self.path("discovery-output");
+        let path = std::env::join_paths(std::iter::once(shim).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .expect("build PATH");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(["watch", "--json", "--for-secs", "120"])
+            .env("PATH", path)
+            .env("THURBOX_TEST_REAL_TMUX", real_tmux)
+            .env("THURBOX_TEST_DISCOVERY_READY", &ready)
+            .env("THURBOX_TEST_DISCOVERY_CONTINUE", &resume)
+            .env("THURBOX_TEST_DISCOVERY_OUTPUT", output);
+        let watch = self.spawn_watch(cmd);
+        // The shim captures tmux's real answer before it signals. Holding that
+        // answer back freezes the watcher after observation but before recovery.
+        let deadline = std::time::Instant::now() + WAIT;
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "watcher did not reach tmux discovery");
+        (watch, DiscoveryGate { resume })
+    }
+}
+
+#[cfg(unix)]
+struct DiscoveryGate {
+    resume: PathBuf,
+}
+
+#[cfg(unix)]
+impl DiscoveryGate {
+    fn resume(self) {
+        std::fs::write(self.resume, "").expect("resume tmux discovery");
     }
 }
 
@@ -345,5 +433,77 @@ fn two_lost_namesakes_do_not_both_recover_onto_one_unstamped_pane() {
             .count(),
         1,
         "the other namesake must remain lost"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn recovery_does_not_overwrite_a_pane_claimed_by_a_concurrent_restart() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let lost = row("duplicate", "%998".into());
+    db.upsert_session(&lost).expect("persist lost namesake");
+    assert!(db.record_session_lost(lost.id, "%998").unwrap());
+
+    let mut restarting = row("worker", "%999".into());
+    restarting.agent_session_id = Some(SessionId::default().to_string());
+    db.upsert_session(&restarting)
+        .expect("persist restarting namesake");
+    db.set_launch_recipe(
+        restarting.id,
+        &thurbox::session::LaunchRecipe {
+            command: "cat".into(),
+            args: Vec::new(),
+            env: Default::default(),
+        },
+    )
+    .expect("persist restart recipe");
+    let _server_anchor = env.window("unrelated");
+    let stale_pane = env.window("duplicate");
+
+    let (watch, discovery) = env.watch_paused_before_discovery();
+    env.crash_server();
+    let restarted = env.cli(&["session", "restart", &restarting.id.to_string()]);
+    assert!(
+        restarted.status.success(),
+        "restart failed: {}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    let pane = db
+        .get_session_by_id(restarting.id)
+        .unwrap()
+        .unwrap()
+        .backend_id;
+    assert_eq!(
+        pane, stale_pane,
+        "the fresh server must reuse the pane in recovery's stale listing"
+    );
+
+    discovery.resume();
+    let restarted_event = watch.event("the concurrent restart");
+    assert_eq!(restarted_event["session"], restarting.id.to_string());
+    assert_eq!(restarted_event["reason"], "updated");
+    drop(watch);
+
+    assert!(
+        db.load_lost_sessions().unwrap().contains_key(&lost.id),
+        "the lost row must not recover onto the concurrently restarted row's pane"
+    );
+    assert_eq!(
+        db.get_session_by_id(lost.id).unwrap().unwrap().backend_id,
+        "",
+        "the restart's pane belongs only to the row that launched it"
+    );
+    assert_eq!(
+        db.get_session_by_id(restarting.id)
+            .unwrap()
+            .unwrap()
+            .backend_id,
+        pane,
+        "the restarted row keeps its pane"
     );
 }

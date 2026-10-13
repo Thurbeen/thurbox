@@ -10,7 +10,7 @@
 //! Local sessions only. A session on a `--host` lives on that host's server,
 //! which the host's own watcher looks at.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::session::{Route, SessionId};
 use crate::storage::Database;
@@ -39,7 +39,6 @@ impl LostSweep {
         };
         let stopped = db.load_stopped_sessions().unwrap_or_default();
         let lost = db.load_lost_sessions().unwrap_or_default();
-        let mut recovered = HashSet::new();
         // One listing per backend. A backend that could not be asked proves
         // nothing about its rows: they are not missing on this look, so their
         // confirmation starts over.
@@ -82,20 +81,11 @@ impl LostSweep {
                     // A lone unstamped name is only fallback identity. Duplicate
                     // names are supported, so another live row's pane claim wins.
                     let server = super::server_key(&row.backend_type);
-                    let claimed = rows.iter().any(|other| {
-                        other.id != row.id
-                            && !stopped.contains(&other.id)
-                            && !lost.contains_key(&other.id)
-                            && other.backend_id == pane
-                            && super::server_key(&other.backend_type) == server
-                    }) || recovered.contains(&(server.clone(), pane.clone()));
-                    if claimed {
-                        continue;
-                    }
-                    match db.clear_session_lost(row.id, lost[&row.id], &pane) {
-                        Ok(()) => {
-                            recovered.insert((server, pane));
-                        }
+                    match db.clear_session_lost(row.id, lost[&row.id], &pane, |backend| {
+                        super::server_key(backend) == server
+                    }) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
                         Err(e) => {
                             tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
                         }
