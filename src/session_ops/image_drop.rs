@@ -168,7 +168,20 @@ fn file_uri_path(word: &str) -> Option<String> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    let mut path = String::from_utf8(out).ok()?;
+    // A drive URI spells its path /C:/..., which Windows reads as rooted but
+    // not absolute. Strip the URI separator only for a drive's absolute path.
+    if cfg!(windows)
+        && path.as_bytes().get(..4).is_some_and(|prefix| {
+            prefix[0] == b'/'
+                && prefix[1].is_ascii_alphabetic()
+                && prefix[2] == b':'
+                && prefix[3] == b'/'
+        })
+    {
+        path.remove(0);
+    }
+    Some(path)
 }
 
 /// The script that stores stdin as `dir/name` on the host, private to the user.
@@ -291,6 +304,16 @@ mod tests {
         let dropped = shot.display().to_string().replace(' ', "\\ ");
 
         assert_eq!(dropped_images(&dropped), Some(vec![shot]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_drive_uri_resolves_to_its_local_image() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let shot = image(dir.path(), "screen shot.png");
+        let path = shot.display().to_string().replace('\\', "/");
+        let uri = format!("file:///{}", path.replace(' ', "%20"));
+        assert_eq!(dropped_images(&uri), Some(vec![shot]));
     }
 
     #[test]
