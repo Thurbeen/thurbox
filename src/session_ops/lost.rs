@@ -76,9 +76,9 @@ impl LostSweep {
                     missing.insert(row.id, row.backend_id);
                 }
                 // Back again — however it came back, on whatever pane id — so
-                // its next death is news.
-                crate::backend::Located::At(_) if lost.contains_key(&row.id) => {
-                    if let Err(e) = db.clear_session_lost(row.id, lost[&row.id]) {
+                // its next death is news, and the row names that pane again.
+                crate::backend::Located::At(pane) if lost.contains_key(&row.id) => {
+                    if let Err(e) = db.clear_session_lost(row.id, lost[&row.id], &pane) {
                         tracing::warn!("could not clear the lost mark of {}: {e}", row.id);
                     }
                 }
