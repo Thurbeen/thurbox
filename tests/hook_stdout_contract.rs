@@ -66,6 +66,13 @@ impl Env {
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod shim");
         }
+        // cmd.exe finds a bare `thurbox-cli` through PATHEXT, not a shebang.
+        #[cfg(windows)]
+        std::fs::write(
+            root.path().join("bin").join("thurbox-cli.cmd"),
+            format!("@\"{}\" %*\r\n", env!("CARGO_BIN_EXE_thurbox-cli")),
+        )
+        .expect("write cmd shim");
         Self { root }
     }
 
@@ -103,13 +110,19 @@ impl Env {
     /// event body on stdin and **stdout captured** — the pipe that decides the
     /// CLI's output format.
     fn fire(&self, command: &str, session: SessionId, body: &str) -> Output {
+        self.fire_in(&["sh", "-c"], command, session, body)
+    }
+
+    /// [`Env::fire`] through another shell: `shell` is the program and the flag
+    /// that runs one command string.
+    fn fire_in(&self, shell: &[&str], command: &str, session: SessionId, body: &str) -> Output {
         let path = std::env::join_paths(std::iter::once(self.path("bin")).chain(
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
         ))
         .expect("join PATH");
 
-        let mut child = Command::new("sh")
-            .arg("-c")
+        let mut child = Command::new(shell[0])
+            .args(&shell[1..])
             .arg(command)
             .env("PATH", path)
             .env("HOME", self.path("home"))
@@ -300,5 +313,48 @@ fn status_hooks_say_nothing_on_stdout() {
                 "{file}/{event} wrote nothing and signalled nothing"
             );
         }
+    }
+}
+
+/// vibe runs a hook's `command` through Python's `create_subprocess_shell`:
+/// `/bin/sh -c` on POSIX, `cmd.exe /c` on Windows — one string for both. The
+/// POSIX `>/dev/null 2>&1 || true` it used to carry is a broken redirect and an
+/// unknown `true` to cmd.exe, so on Windows the signal never ran and vibe
+/// printed both errors after every hook. vibe also fails a hook that exits
+/// non-zero or leaves anything but a JSON response on stdout.
+#[test]
+fn vibe_hooks_signal_silently_in_the_shell_vibe_uses() {
+    let shell: &[&str] = if cfg!(windows) {
+        &["cmd", "/C"]
+    } else {
+        &["sh", "-c"]
+    };
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/hooks/vibe-hooks.toml"),
+    )
+    .expect("read payload");
+    let doc: toml::Value = toml::from_str(&text).expect("payload is valid TOML");
+    let env = Env::new();
+    for hook in doc["hooks"].as_array().expect("[[hooks]]") {
+        let name = hook["name"].as_str().expect("name");
+        let command = hook["command"].as_str().expect("command");
+        let state = command
+            .split("--state ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the hook signals a state");
+        let id = env.seed_session(name, "vibe");
+        let out = env.fire_in(shell, command, id, "{}");
+        assert!(
+            out.stdout.is_empty(),
+            "{name} writes to stdout, which vibe parses as its hook response:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            out.status.success(),
+            "{name} exits non-zero, which vibe reports as a failed hook:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(hook_state(&env, id).as_deref(), Some(state), "{name}");
     }
 }

@@ -2,8 +2,16 @@
 # Reinstalling or updating overwrites this file — do not edit; uninstalling
 # removes it. Reports Mistral Vibe's lifecycle state to thurbox via
 # `thurbox-cli session signal`. Identity comes from the inherited
-# $THURBOX_SESSION env var; every call is best-effort (`|| true`) so it can
+# $THURBOX_SESSION env var; every call is best-effort (`|| exit 0`) so it can
 # never break a session running outside thurbox.
+#
+# One command string serves two shells: vibe runs it through Python's
+# `create_subprocess_shell`, which is `/bin/sh -c` on POSIX and `cmd.exe /c` on
+# Windows. So it uses only what both read: `1>&2` sends the signal's receipt to
+# stderr (vibe parses stdout as the hook's JSON response, and fails a hook whose
+# stdout is anything else), and `|| exit 0` keeps a failed signal from failing
+# the hook. `>/dev/null` and `true` are POSIX only — under cmd.exe the redirect
+# failed before the signal ran and vibe printed both errors after every hook.
 #
 # Verified against vibe 2.21.0 (`vibe.core.hooks.models.HookConfig`). Vibe's
 # hook schema is TOML with one `[[hooks]]` entry per hook, each requiring a
@@ -12,7 +20,7 @@
 # env is inherited, so $THURBOX_SESSION travels). If a future vibe renames the
 # types or fields, edit this file (no code change) — a wrong name just means
 # the state isn't reported (vibe logs a per-hook config issue and skips it;
-# the `|| true` keeps vibe itself safe).
+# the `|| exit 0` keeps vibe itself safe).
 #
 # Vibe exposes only those three hook types — there is no permission/
 # notification event — so `blocked` is **not** reported. `pre_tool` fires
@@ -25,9 +33,9 @@
 [[hooks]]
 name = "thurbox-pre-tool"
 type = "pre_tool"
-command = "thurbox-cli session signal --state working >/dev/null 2>&1 || true"
+command = "thurbox-cli session signal --state working 1>&2 || exit 0"
 
 [[hooks]]
 name = "thurbox-post-agent"
 type = "post_agent"
-command = "thurbox-cli session signal --state done >/dev/null 2>&1 || true"
+command = "thurbox-cli session signal --state done 1>&2 || exit 0"
