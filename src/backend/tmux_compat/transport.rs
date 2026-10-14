@@ -56,15 +56,17 @@ impl SocketDir {
     /// (103 bytes, as `backend::instance` checks it locally), or
     /// that cannot be created, falls back to tmux's default there and then.
     /// The test is the same for every command, so all of them land on the
-    /// same side of it.
+    /// same side of it. The path is measured in bytes, as `bind()` does, by
+    /// `wc -c`: `${#s}` counts characters in a UTF-8 locale under bash. Only
+    /// that count runs in the C locale; the multiplexer keeps its own.
     pub fn shell_expr(&self, socket: &str) -> String {
         match self {
             Self::Inherited => "${TMUX_TMPDIR:-/tmp}".to_string(),
             Self::Dir(dir) => posix_quote(dir),
             Self::HostData { app } => format!(
                 "$(d=${{TMUX_TMPDIR:-${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/tmux}}; \
-                 s=$d/tmux-$(id -u)/{}; \
-                 if [ \"${{#s}}\" -le {} ] && {{ [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; }} 2>/dev/null; \
+                 b=$(printf %s \"$d/tmux-$(id -u)/{}\" | LC_ALL=C wc -c | tr -d ' '); \
+                 if [ \"$b\" -le {} ] && {{ [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; }} 2>/dev/null; \
                  then printf %s \"$d\"; else printf %s \"${{TMUX_TMPDIR:-/tmp}}\"; fi)",
                 posix_quote(app),
                 posix_quote(socket),
@@ -457,11 +459,17 @@ mod tests {
     /// What a host's shell makes of [`SocketDir::HostData`] with `env`.
     #[cfg(unix)]
     fn host_data_dir(env: &[(&str, &str)], socket: &str) -> String {
+        host_data_dir_in("sh", env, socket)
+    }
+
+    /// [`host_data_dir`], with `shell` as the host's `sh`.
+    #[cfg(unix)]
+    fn host_data_dir_in(shell: &str, env: &[(&str, &str)], socket: &str) -> String {
         let expr = SocketDir::HostData {
             app: "thurbox".into(),
         }
         .shell_expr(socket);
-        let mut cmd = Command::new("sh");
+        let mut cmd = Command::new(shell);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
         cmd.envs(env.iter().copied());
@@ -518,5 +526,46 @@ mod tests {
         assert!(!local().is_remote());
         assert!(ssh("h", vec![], "tmux").is_remote());
         assert!(wsl("Ubuntu").is_remote());
+    }
+
+    /// A socket address is bytes, and a host's `sh` in a UTF-8 locale counts
+    /// `${#s}` in characters — bash does, as macOS's `sh` and as a Linux
+    /// host's — so a data dir with non-ASCII in it is measured in bytes, or it
+    /// passes the check and fails every command with `File name too long`.
+    #[cfg(unix)]
+    #[test]
+    fn a_hosts_socket_path_is_measured_in_bytes_not_characters() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let base = base.path().to_str().expect("utf-8");
+        // SAFETY: `getuid` cannot fail and touches no memory.
+        let uid = unsafe { libc::getuid() };
+        let tail = format!("/thurbox/tmux/tmux-{uid}/thurbox");
+        // As many three-byte characters as fit in 103 *characters*: within
+        // the limit counted that way, well over it counted in bytes.
+        let Some(wide) = 103usize.checked_sub(base.len() + 1 + tail.len()) else {
+            eprintln!("skipping: the temp dir leaves no room");
+            return;
+        };
+        if wide < 10 {
+            eprintln!("skipping: the temp dir leaves no room");
+            return;
+        }
+        let deep = format!("{base}/{}", "界".repeat(wide));
+        for shell in ["sh", "bash"] {
+            if Command::new(shell).arg("-c").arg(":").output().is_err() {
+                continue;
+            }
+            for locale in ["C.UTF-8", "en_US.UTF-8"] {
+                assert_eq!(
+                    host_data_dir_in(
+                        shell,
+                        &[("HOME", base), ("XDG_DATA_HOME", &deep), ("LC_ALL", locale)],
+                        "thurbox"
+                    ),
+                    "/tmp",
+                    "{shell} under {locale}"
+                );
+            }
+        }
     }
 }

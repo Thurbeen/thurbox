@@ -66,6 +66,8 @@ impl Drop for KillDefaultServer {
             .env_remove("TMUX_TMPDIR")
             .args(["-L", &self.0, "kill-server"])
             .output();
+        // A killed server can leave its socket file; the directory is shared.
+        let _ = std::fs::remove_file(socket_path(Path::new("/tmp"), &self.0));
     }
 }
 
