@@ -770,7 +770,10 @@ has the rationale; the shape:
   after anything it delegated, and from the headless `automation tick`.
   `thurbox-cli session sync [--host <name>]` runs one pass by hand.
   What is the observer's stays the observer's: display order, the
-  companion shell. A pass that changes nothing writes nothing.
+  companion shell. A pass that changes nothing writes nothing, and a
+  host that changed nothing is not re-listed: the pass asks its
+  `session revision` first and reuses the lists it last pulled while
+  that number holds.
 - **Hosts of hosts.** A host that mirrors hosts of its own lists their
   sessions too, under *its* `ssh:`/`wsl:` names — so A reaching B, with
   B reaching C, sees C's sessions through B. A session keeps its id on
