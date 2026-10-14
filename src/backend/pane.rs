@@ -1093,6 +1093,7 @@ impl Session {
     }
 
     /// [`WiredPane::evict`] one of this session's panes.
+    ///
     /// A pane with no grid streams no output where its backend can hold it
     /// back ([`SessionBackend::hide_output`]).
     pub fn evict_pane(&self, shell: bool) -> bool {

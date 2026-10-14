@@ -2377,7 +2377,7 @@ What is left is the session on screen â€” one sixth of the before, as expected â
 plus five subscriptions reporting once a second. The traffic no longer grows
 with the sessions nobody is looking at.
 
-**Guards**: `tests/hidden_remote_output.rs` against a real tmux behind a
+**Guards**: `tests/lazy_terminals.rs` (`remote::`) against a real tmux behind a
 stand-in `ssh` that records what the control connection carries: no `%output`
 for a dormant remote pane; its title, input modes, printing and quiet, and hook
 state still arriving; the grid coming back current and streaming again once
