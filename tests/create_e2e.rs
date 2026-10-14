@@ -154,21 +154,6 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: 
     }
     let spawned = spawn_session_headless(&db, &backends, request).unwrap();
     let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
-    let read_capture = || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            if let Ok(text) = std::fs::read_to_string(&capture) {
-                if text.contains("acceptEdits") {
-                    return text;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "agent did not record its launch"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    };
     let check = |text: &str| {
         let lines: Vec<_> = text.lines().collect();
         let cwd = Path::new(lines[0]);
@@ -214,7 +199,7 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: 
             .any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert!(!text.contains("bypassPermissions"));
     };
-    let recorded = read_capture();
+    let recorded = read_launch_capture(&capture);
     check(&recorded);
     let plan =
         thurbox::session_ops::agent_launch_plan(&db, &backends, "claude", Some(&row)).unwrap();
@@ -244,8 +229,25 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: 
     check_permissions();
     std::fs::remove_file(&capture).unwrap();
     thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id).unwrap();
-    check(&read_capture());
+    check(&read_launch_capture(&capture));
     check_permissions();
+}
+
+#[cfg(unix)]
+fn read_launch_capture(capture: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(capture) {
+            if text.contains("acceptEdits") {
+                return text;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agent did not record its launch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) {
