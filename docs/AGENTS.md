@@ -56,6 +56,44 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 | `omp` | `omp` | `--resume {home}/.omp/…/thurbox-{id}.jsonl` | — (none) | **path-pinned** (`--session <file>`) | `external_files` → `~/.omp/agent/extensions/` |
 | `shell` | `bash -i` (`powershell -NoLogo` on Windows) | — (none) | — (none) | none | none (see below) |
 
+### Multi-repo directory scope
+
+The built-in Claude definition sets
+`additional_dir_args = ["--add-dir", "{dir}"]`. For a multi-repo launch,
+Thurbox repeats this group for each session member: the primary checkout,
+additional worktrees, and attached directories. It passes checkout paths,
+never their parent directories or the original repository of a worktree.
+Other CLIs can declare their own group; an empty group emits no arguments.
+`{dir}` is substituted as one argument, so spaces do not split a path.
+
+The symlink workspace remains the process cwd. Claude checks both a requested
+path and its resolved target; without explicit target scope, edits through a
+workspace link can prompt on every file. This follows the security tightening
+recorded in [Claude Code 2.1.69's changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#2169)
+and its [symlink permission rules](https://code.claude.com/docs/en/permissions#symlinks).
+Additional directories follow the selected permission mode: `acceptEdits`
+auto-accepts ordinary member edits, while Manual and Plan retain their own
+rules. Deny/ask rules and protected paths still apply. Initial workspace trust
+is separate and can still prompt.
+
+Existing `claude` definitions using `command = "claude"` gain this group in
+memory when the field is absent. An explicit `additional_dir_args = []` opts
+out. Custom Claude definitions and wrappers must set the group explicitly;
+`hook_schema` describes status hooks and does not imply CLI directory flags.
+Thurbox does not rewrite global Claude settings or change the permission mode.
+Raw `--command` recipes remain verbatim; callers supply their directory flags.
+Additional scope grants file access, without turning every member into a full
+Claude configuration root; member-local settings follow Claude's own discovery
+rules. Non-UTF8 targets receive no scope arguments, because replacing their
+bytes could grant access to another directory.
+
+After upgrading, restart affected sessions to apply the scope arguments;
+creation, restart/resume, fork, and session-context agent launch plans derive
+scope from the persisted member set. Single-repo launches emit no extra scope.
+Local POSIX member paths are canonicalized; native Windows and remote paths
+are passed in host-native form for Claude to resolve there. Most UNC paths
+cannot be added to Claude; use a mapped drive as its documentation prescribes.
+
 ### `shell` — the entry that is not a coding agent
 
 `shell` exists so a session can be something other than an agent: you run

@@ -128,13 +128,18 @@ agent knowledge — the *user* asserts the family.
 
 A session can span several repositories (the repo picker allows multiple;
 headless callers pass `--add-repo`/`--add-dir`, below). Because agent CLIs differ
-wildly in how — or whether — they accept extra directories, thurbox passes **no**
-per-agent `--add-dir`-style flags. Instead, a session with more than one member
-directory launches in a per-session **symlink workspace**:
+wildly in how — or whether — they accept extra directories, a session with more
+than one member directory launches in a per-session **symlink workspace**:
 `~/.local/share/thurbox/workspaces/<agent_session_id>/` holds one symlink per repo
 (worktree checkout or plain dir) and the agent starts there (`cwd` = the
-workspace), so every agent sees each repo as a subdirectory — agent-neutral, no
-`agents.toml` changes.
+workspace), so every agent sees each repo as a subdirectory. An optional
+`AgentDef.additional_dir_args` group is repeated per member with `{dir}`
+substituted. The built-in Claude group is `["--add-dir", "{dir}"]`, because
+Claude checks resolved symlink targets against working-directory scope. It
+grants only member checkout paths and preserves the permission mode; other
+agents emit no group unless configured. Existing built-in Claude definitions
+gain the group in memory when absent; explicit `[]` opts out. See
+`docs/AGENTS.md` → Multi-repo directory scope for restart and platform limits.
 
 `SessionInfo.cwd` keeps the **primary** repo (display / editor / git context); the
 workspace is a spawn-time process-cwd detail, derived idempotently on every launch
