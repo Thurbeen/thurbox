@@ -52,6 +52,7 @@ impl TmuxCompatible for Tmux {
     const ONE_SHOT_SPAWN_ANSWERS: bool = true;
     const CONDITIONAL_RESIZE: bool = true;
     const SERVER_SCOPE: &str = "-s";
+    const SOCKET_DIR: bool = true;
     const DISPLAY_FLAGS: &[&str] = &[PANE_STATE_UTF8_FLAG];
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = None;
 
@@ -380,6 +381,26 @@ mod tests {
                 assert!(!TmuxBackend::for_host(&HostDef::wsl("Ubuntu")).needs_liveness_poll());
             });
         }
+    }
+
+    /// tmux's socket directory is thurbox's to choose on a POSIX machine —
+    /// a host's own data dir, resolved there — and not on a Windows one.
+    #[test]
+    fn a_posix_hosts_socket_goes_in_its_data_dir_and_a_windows_hosts_does_not() {
+        use crate::backend::tmux_compat::transport::SocketDir;
+        let devbox = HostDef {
+            name: "devbox".into(),
+            destination: "me@devbox".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            TmuxBackend::for_host(&devbox).transport.socket_dir(),
+            SocketDir::HostData { .. }
+        ));
+        assert_eq!(
+            TmuxBackend::for_host(&windows_host("tmux")).socket_dir(),
+            SocketDir::Inherited
+        );
     }
 
     #[test]

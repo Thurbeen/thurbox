@@ -89,6 +89,21 @@ breadcrumb: 'FAQ'
   Session state is stored in SQLite and re-adopted on restart.
 </p>
 
+<h2 id="orphaned-tmux-server">
+  Why is a tmux server still running that <code>tmux -L thurbox ls</code> cannot see?
+</h2>
+<p>
+  tmux's default socket directory is <code>/tmp</code>, which macOS sweeps, and a
+  server whose socket file is gone keeps running with no way in. Thurbox now keeps
+  its socket under its data dir (<code>~/.local/share/thurbox/tmux/</code>) and, if a
+  socket is lost anyway, recreates it with <code>SIGUSR1</code> instead of starting a
+  second server. An older thurbox started a second one, leaving the first orphaned.
+  Find it with <code>ps -axo pid,args | grep '[t]mux -L thurbox'</code>: a server whose
+  socket file is missing is the orphan. Once a second server owns the path, killing
+  the orphan (<code>kill &lt;pid&gt;</code>) is the only option. See
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#an-orphaned-tmux-server">docs/CONFIG.md &rarr; An orphaned tmux server</a>.
+</p>
+
 <h2 id="license">Is Thurbox free and open source?</h2>
 <p>Yes. Thurbox is open source under the MIT license and free to use.</p>
 

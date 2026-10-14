@@ -2737,3 +2737,47 @@ decision before dispatch. The receipt and action event report acceptance;
 the worker's command status reports its eventual outcome. Menu choices pass
 their row target as a typed argument to the owning
 action. No visible terminal capture is part of this API.
+
+## ADR-34: A tmux server is found again before it is replaced
+
+**Choice**: a tmux server's socket lives under thurbox's data dir
+(`TMUX_TMPDIR=<data dir>/tmux`, created `0700`) on this machine and on a host,
+where the host's `sh` resolves the directory; the `-L` name (ADR-12) is
+unchanged. A `TMUX_TMPDIR` already set wins. Before a backend reads a server as
+absent — on its first command, when a listing comes back empty, when control
+mode cannot reconnect, and before any `new-session` — it runs one script where
+the server runs: a server answering in the new directory or in tmux's default
+one is adopted; failing that, a live server bound to a missing socket path in
+either is sent `SIGUSR1` (tmux's documented way to recreate a removed socket)
+and adopted. A path where a socket file exists is never signalled. A server
+that is there but out of reach — it did not answer `SIGUSR1`, or is bound to a
+socket file that does not answer — is an error through discovery and bootstrap,
+never an absence. Only when nothing is found is a server started, in the new
+directory. A host's data dir too deep for a socket path falls back to tmux's
+default, tested by the host's `sh` the same way for every command. The directory a
+server was found in is kept for as long as it runs, so a server an earlier
+build left in `/tmp` stays in use until it exits. Which process is bound to a
+path is asked of the kernel (`/proc/net/unix` and `/proc/<pid>/fd`, else
+`lsof`), not read off a command line.
+
+**Why**: macOS sweeps old entries out of `/private/tmp`, and a unix socket's
+access time is not bumped by `connect()`. One Mac's server lost its socket 3
+days 18 hours after it started, while in daily use. `has-session` then failed,
+`new-session` started a second server under the same name, and every session
+was resumed into it. Four days later the first server still held 93 processes
+and 3.1 GB of resident memory: 22 agents, 13 of them duplicates of sessions
+running in the new server and 9 of sessions since deleted, since a deletion
+reached only the server thurbox could see. Moving the socket keeps it from
+being swept; finding the server first is what keeps any other loss from
+becoming a second server. Neither half alone does both: a socket can still be
+removed from anywhere, and recovery cannot help once a second server owns the
+path — tmux unlinks the path before binding, so signalling the first would
+orphan the second. For the same reason a server that did not answer is not
+replaced: its `SIGUSR1` is still pending, and would take the path from a second
+server the moment it resumed.
+
+**Limits**: psmux has no socket directory and is untouched; RMUX is unmeasured
+and keeps tmux's default. A socket moved to a directory thurbox does not look
+in is still a server it cannot reach. The orphan left by an older build next to
+a live server is reported in the log and documented (`docs/CONFIG.md` → An
+orphaned tmux server); killing it is the only remedy.
