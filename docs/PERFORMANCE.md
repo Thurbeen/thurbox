@@ -2069,7 +2069,7 @@ change):
 
 | reader | what it needs | answer now |
 |---|---|---|
-| the reader thread | every byte, in order | unchanged: it still reads and feeds every byte |
+| the reader thread | every byte, in order | unchanged: it still reads and feeds every byte — except on an ssh host, where a pane with no grid streams no output and its signals come from a subscription (ADR-P30) |
 | `output_generation`, `millis_since_output`, `sync_printing`, the stuck-`working` quiescence (hook state), notifications | `last_output_at`, `exited` | atomics, untouched by the parser; unchanged |
 | `sync_meta` (the activity line, notification text) | OSC 0/1/2, BEL, OSC 9/777 | the two-cell parser still runs the `TermSignals` callbacks; a title and mouse modes set before the interface attached are replayed from tmux's pane formats at attach, as the full adopt does |
 | the content search (ADR-P26) | every row of history | reads the pane back from tmux on its worker (below) |
@@ -2319,6 +2319,71 @@ held diffs. `scripts/dev/perf-run.sh --focus-last -n 33 -p 20 -u 0` selects a qu
 surface while the other sessions print, so the whole-binary comparison measures
 hidden output rather than visible scrolling. Measurements use paired runs at the
 same size, session count and build profile; timing is not a test assertion.
+
+## ADR-P30: A remote session nobody is looking at sends no output (2026-10-14)
+
+**Context**: one ssh connection per host carries one control-mode client for
+all of that host's panes (`ControlMaster`), and control mode streams every
+pane's `%output` to it whether the interface shows the pane or not. What a
+host costs the link therefore grows with every busy session on it, although a
+session off screen keeps no grid (ADR-P27) and reads its output only for the
+signals in that ADR's table.
+
+**What a hidden pane's output was read for**, traced before any change:
+
+| reader | signal | while the output is held back |
+|---|---|---|
+| `sync_printing`, the stuck-`working` and latched-`blocked` folds, `millis_since_output` | `last_output_at` | stamped when the window's `#{window_activity}` moves, once a second at most |
+| `sync_meta`, the activity line | OSC 0/1/2 title | `#{pane_title}`, replayed as an OSC 2 |
+| a key encoded for the pane once shown | input modes: cursor and keypad application modes, bracketed paste, cursor visibility, mouse tracking | the pane's `*_flag` formats, replayed set or reset |
+| the hook status | `@thurbox_state` | unchanged: it already rides a subscription, not the output |
+| the content search, `output_generation` | the pane's text, and that it changed | read back from tmux, as before; activity moves the generation |
+| `needs_attention` (BEL) | — | nothing reads it any more |
+| `sync_meta`, the notification text | OSC 9/777 | **lost**: tmux parses and drops both, so nothing but the output carries them. The row falls back to `Blocked`, and an OS notification body to `Waiting for input` |
+
+**Choice**: when a pane on an ssh host drops its grid, its output is paused for
+this client (`refresh-client -A '%N:pause'`) and a format subscription of its
+own reports the rows above (`HIDDEN_FORMAT`). The control reader turns each
+report into terminal bytes for the two-cell parser: as output when the activity
+moved, which is what stamps `last_output_at`, and as a `PaneChunk::State` the
+reader parses without stamping when it did not — the first report says what the
+pane already was. Showing the pane drops the subscription and sends `continue`
+ahead of the snapshot it asks for, so the snapshot sits in the stream after
+everything it does not already show (ADR-P27's exactness argument, unchanged).
+
+`pause`, not `off`: tmux stops *reading* a pane every client has turned off, so
+the agent blocks once its pty fills — measured, the pane's counter stopped
+while off and resumed only on `on`. A paused pane is read and parsed as before;
+only this client's `%output` for it is dropped, and `continue` resumes from
+tmux's current position. The reader no longer answers a `%pause` for a pane it
+paused on purpose, which it otherwise does for flow control.
+
+Local panes stream as before (their output costs no link), as do panes on a
+server without format subscriptions (psmux, RMUX), panes another reader in the
+same process also reads, and every pane when `hidden_terminal_secs = 0`.
+
+**Measured**: a sandboxed interface (own config and data dirs, own sockets
+and `ControlPath`) with six sessions on a host reached over ssh, each running
+`top -d 1` as a stand-in for a redrawing agent, one of them on screen, at
+200x50; bytes on the one TCP connection from `ss -tinp`, over 60 s after the
+grids had settled, two paired runs:
+
+| | host → interface | interface → host |
+|---|---|---|
+| before | 4.51 MB/min | 16.9 KB/min |
+| after | 0.77–0.78 MB/min | 15.5 KB/min |
+
+What is left is the session on screen — one sixth of the before, as expected —
+plus five subscriptions reporting once a second. The traffic no longer grows
+with the sessions nobody is looking at.
+
+**Guards**: `tests/hidden_remote_output.rs` against a real tmux behind a
+stand-in `ssh` that records what the control connection carries: no `%output`
+for a dormant remote pane; its title, input modes, printing and quiet, and hook
+state still arriving; the grid coming back current and streaming again once
+shown; and a dormant local pane still streaming. `control_mode::tests` pins the
+report-to-bytes translation, a flag tmux 3.2 does not know leaving its mode
+alone, and which reports count as output.
 
 ## Measuring: the bench and the load harness (2026-08-29)
 

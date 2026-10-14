@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, warn};
 
 use super::transport::TmuxTransport;
-use crate::backend::contract::{PaneSize, PaneSnapshot, SnapshotArrived};
+use crate::backend::contract::{PaneSize, PaneSnapshot, SnapshotArrived, StateArrived};
 
 /// Per-pane output channel capacity. Sized large enough to buffer heavy output
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
@@ -54,6 +54,10 @@ pub enum PaneChunk {
     /// place in the stream, carried here only because this is where the pane's
     /// reader listens.
     SizedElsewhere(bool),
+    /// The title and input modes of a pane whose output is held back
+    /// (`ControlMode::hide_pane`), as terminal bytes to parse but not to
+    /// count as output: the arm-time report of what the pane already was.
+    State(Vec<u8>),
 }
 
 impl From<Vec<u8>> for PaneChunk {
@@ -193,6 +197,118 @@ pub const REMOTE_HOOK_STATE_OPTION: &str = "@thurbox_state";
 /// [`REMOTE_HOOK_STATE_OPTION`] changes as `%subscription-changed`
 /// notifications for every pane of the attached session.
 pub const REMOTE_HOOK_SUBSCRIPTION: &str = "thurbox-status";
+
+/// Prefix of the per-pane format subscription a pane whose output is held
+/// back reports through ([`ControlMode::hide_pane`]); the pane id follows.
+const HIDDEN_SUBSCRIPTION: &str = "thurbox-hidden";
+
+/// What a hidden pane reports, for everything the interface reads off a pane
+/// it is not showing: when its window last had output (the value moves, at
+/// tmux's ≤1/s report cadence, while it prints), its input modes, and its
+/// title — last, since only it may contain the separator. A flag a server does
+/// not know expands to nothing and is left as it was ([`hidden_state`]).
+const HIDDEN_FORMAT: &str = "#{window_activity}|\
+     #{keypad_cursor_flag},#{keypad_flag},#{bracket_paste_flag},#{cursor_flag}|\
+     #{mouse_standard_flag},#{mouse_button_flag},#{mouse_all_flag},#{mouse_any_flag},\
+     #{mouse_sgr_flag},#{mouse_utf8_flag}|#{host_short}|#{pane_title}";
+
+/// Panes whose output this connection holds back, each with the activity
+/// value its subscription last reported (`None` before the first report).
+type HiddenPanes = Arc<Mutex<HashMap<String, Option<String>>>>;
+
+/// A [`HIDDEN_FORMAT`] report as `(activity, terminal bytes)`: the bytes set
+/// each mode the report names, on or off, and the title, so a two-cell parser
+/// fed them holds what the pane's own output would have left it holding.
+/// `None` for a value that is not one of these.
+pub(in crate::backend) fn hidden_state(value: &str) -> Option<(String, Vec<u8>)> {
+    let mut fields = value.splitn(5, '|');
+    let activity = fields.next()?.to_string();
+    let modes = fields.next()?;
+    let mouse = fields.next()?;
+    let host = fields.next()?;
+    let title = fields.next()?;
+    let mut out = String::new();
+    for (flag, (on, off)) in modes.split(',').zip([
+        ("\x1b[?1h", "\x1b[?1l"),
+        ("\x1b=", "\x1b>"),
+        ("\x1b[?2004h", "\x1b[?2004l"),
+        ("\x1b[?25h", "\x1b[?25l"),
+    ]) {
+        match flag.trim() {
+            "1" => out.push_str(on),
+            "0" => out.push_str(off),
+            _ => {}
+        }
+    }
+    // Every tracking mode off, then the one tmux reports on: a terminal
+    // tracks one at a time, and the replay only ever turns one on.
+    out.push_str("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l");
+    let mut bytes = out.into_bytes();
+    bytes.extend(mouse_seed_bytes(mouse));
+    bytes.extend(title_seed_bytes(host, title));
+    Some((activity, bytes))
+}
+
+/// Longest agent activity line replayed from a pane title at adopt time.
+///
+/// A title is one line in the session list, and the value comes back from a
+/// host: bounding it here means a pane whose title is a megabyte cannot make
+/// the seed one.
+pub(in crate::backend) const MAX_TITLE_SEED_BYTES: usize = 512;
+
+/// The DECSETs that put a parser in the mouse modes tmux reports for a pane,
+/// from six comma-separated flags: `mouse_standard_flag`, `mouse_button_flag`,
+/// `mouse_all_flag`, `mouse_any_flag`, `mouse_sgr_flag`, `mouse_utf8_flag`.
+///
+/// A flag is on only when it reads `1`: a format a server does not know
+/// expands to nothing, which is off. `mouse_any_flag` is set for every
+/// tracking mode, so when it is the only one on — a server that knows it but
+/// not the mode's own flag — plain `?1000` still gets the wheel through.
+pub(in crate::backend) fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
+    let on: Vec<bool> = flags.split(',').map(|f| f.trim() == "1").collect();
+    let flag = |i: usize| on.get(i).copied().unwrap_or(false);
+    let mut out = String::new();
+    // The widest mode on wins: a terminal tracks one mode at a time.
+    let tracking = [(2, "1003"), (1, "1002"), (0, "1000"), (3, "1000")]
+        .into_iter()
+        .find_map(|(i, mode)| flag(i).then_some(mode));
+    if let Some(mode) = tracking {
+        out.push_str(&format!("\x1b[?{mode}h"));
+        if flag(4) {
+            out.push_str("\x1b[?1006h");
+        } else if flag(5) {
+            out.push_str("\x1b[?1005h");
+        }
+    }
+    out.into_bytes()
+}
+
+/// The OSC 2 that restores `title` as a pane's window title, or empty when
+/// there is nothing to restore.
+///
+/// Suppressed for a title equal to `host_short`, which is what tmux seeds a
+/// pane with and therefore means "no agent ever set one" — replaying it would
+/// put a hostname in the session list where the activity line goes. Control
+/// characters are dropped because the value is remote-controlled text and the
+/// sequence is terminated by one.
+pub(in crate::backend) fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
+    let title = title.trim();
+    if title.is_empty() || title == host_short.trim() {
+        return Vec::new();
+    }
+    let mut text = String::new();
+    for c in title.chars().filter(|c| !c.is_control()) {
+        if text.len() + c.len_utf8() > MAX_TITLE_SEED_BYTES {
+            break;
+        }
+        text.push(c);
+    }
+    let text = text.trim_end();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    format!("\x1b]2;{text}\x1b\\").into_bytes()
+}
 
 /// Who sizes a pane, as far as anybody else is concerned: the
 /// [`SIZER_OPTION`] while more than one client is attached, and nobody once a
@@ -386,6 +502,12 @@ impl Read for ControlModeReader {
                 }
                 Ok(PaneChunk::SizedElsewhere(elsewhere)) => {
                     self.size.set_sized_elsewhere(elsewhere);
+                }
+                Ok(PaneChunk::State(state)) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        StateArrived(state),
+                    ))
                 }
                 Ok(PaneChunk::Output(data)) => {
                     let n = data.len().min(buf.len());
@@ -935,6 +1057,12 @@ pub(in crate::backend) struct ControlMode {
     /// [`Self::take_sub_events`]. Bounded (drop-oldest): a short-lived
     /// connection (e.g. a headless spawn's) has no drainer.
     sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
+    /// Whether this server pushes format subscriptions, which is what a pane
+    /// whose output is held back reports through.
+    subscriptions: bool,
+    /// See [`HiddenPanes`]; shared with the reader thread, which reads
+    /// their reports and leaves them paused.
+    hidden: HiddenPanes,
     /// True while this connection lives; cleared on reader EOF and in `Drop`.
     /// The hook poller checks it each cycle so a replaced connection's
     /// poller winds down instead of writing into a dead pipe forever.
@@ -1047,6 +1175,7 @@ impl ControlMode {
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let alive = Arc::new(AtomicBool::new(true));
+        let hidden: HiddenPanes = Arc::default();
 
         let reader_stdin = Arc::clone(&stdin);
         let reader_pane_senders = Arc::clone(&pane_senders);
@@ -1056,6 +1185,7 @@ impl ControlMode {
         let reader_queue = Arc::clone(&response_queue);
         let reader_sub_events = Arc::clone(&sub_events);
         let reader_alive = Arc::clone(&alive);
+        let reader_hidden = Arc::clone(&hidden);
 
         let strict_blocks = policy.tagged_blocks;
         let confirm_close = policy.confirm_close.clone();
@@ -1070,6 +1200,7 @@ impl ControlMode {
                     reader_pane_sizes,
                     reader_queue,
                     reader_sub_events,
+                    reader_hidden,
                     strict_blocks,
                     confirm_close,
                     &reader_sizer,
@@ -1086,6 +1217,8 @@ impl ControlMode {
             response_queue,
             command_list_single_reply: policy.command_list_single_reply,
             sub_events,
+            subscriptions: policy.subscriptions,
+            hidden,
             alive,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
@@ -1270,6 +1403,7 @@ impl ControlMode {
         pane_sizes: PaneSizesMapShared,
         response_queue: ResponseQueue,
         sub_events: Arc<Mutex<VecDeque<(String, String)>>>,
+        hidden: HiddenPanes,
         strict_blocks: bool,
         confirm_close: Option<String>,
         sizer: &str,
@@ -1337,8 +1471,12 @@ impl ControlMode {
                         is_error,
                     );
                 }
+                // A pane paused on purpose (`hide_pane`) stays paused; one the
+                // server paused for falling behind is resumed.
                 Notification::Pause { pane_id } => {
-                    Self::resume_pane(&stdin, &pane_id);
+                    if !hidden.lock().is_ok_and(|h| h.contains_key(&pane_id)) {
+                        Self::resume_pane(&stdin, &pane_id);
+                    }
                 }
                 Notification::WindowClose { window_id } => match &confirm_close {
                     None => {
@@ -1379,6 +1517,8 @@ impl ControlMode {
                 } => {
                     if name == REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
                         Self::queue_sub_events(&sub_events, vec![(pane_id, value)]);
+                    } else if name.starts_with(HIDDEN_SUBSCRIPTION) {
+                        Self::dispatch_hidden(&pane_senders, &hidden, &pane_id, &value);
                     } else if name == SIZER_SUBSCRIPTION {
                         let elsewhere = !value.is_empty() && value != sizer;
                         Self::send_event(
@@ -1742,6 +1882,102 @@ impl ControlMode {
             let _ = s.write_all(cmd.as_bytes());
             let _ = s.flush();
         }
+    }
+
+    /// Hand a hidden pane's report to its reader: as output when its activity
+    /// moved since the last report, which is how a pane that streams nothing
+    /// still reads as printing, and as [`PaneChunk::State`] for the first,
+    /// which only says what the pane already was. A report for a pane no
+    /// longer hidden is one sent before it was shown, and is dropped.
+    fn dispatch_hidden(
+        pane_senders: &PaneSendersMapShared,
+        hidden: &HiddenPanes,
+        pane_id: &str,
+        value: &str,
+    ) {
+        let Some((activity, state)) = hidden_state(value) else {
+            return;
+        };
+        let moved = {
+            let Ok(mut hidden) = hidden.lock() else {
+                return;
+            };
+            let Some(last) = hidden.get_mut(pane_id) else {
+                return;
+            };
+            let moved = last.as_ref().is_some_and(|last| *last != activity);
+            *last = Some(activity);
+            moved
+        };
+        let chunk = if moved {
+            PaneChunk::Output(state)
+        } else {
+            PaneChunk::State(state)
+        };
+        Self::send_event(pane_senders, pane_id, chunk);
+    }
+
+    /// Stop streaming `pane_id`'s output and have what the interface still
+    /// reads off it reported instead ([`HIDDEN_FORMAT`]). Answers whether it
+    /// was, which needs format subscriptions and a pane this connection is
+    /// the only reader of: a second reader of the same pane may be showing it.
+    ///
+    /// `pause`, not `off`: tmux stops *reading* a pane every client has turned
+    /// off, which would stall its program once the pty filled; a paused pane is
+    /// read and parsed as before and only its `%output` is dropped (measured,
+    /// tmux 3.7c). Both commands go as one list so nothing can come between
+    /// them, and neither answer is waited for.
+    pub(in crate::backend) fn hide_pane(&self, pane_id: &str) -> Result<bool> {
+        if !self.subscriptions || !is_valid_pane_id(pane_id) {
+            return Ok(false);
+        }
+        let readers = self
+            .pane_senders
+            .lock()
+            .map_err(|e| anyhow::anyhow!("pane_senders lock: {e}"))?
+            .get(pane_id)
+            .map_or(0, Vec::len);
+        if readers != 1 {
+            return Ok(false);
+        }
+        {
+            let mut hidden = self
+                .hidden
+                .lock()
+                .map_err(|e| anyhow::anyhow!("hidden lock: {e}"))?;
+            if hidden.insert(pane_id.to_string(), None).is_some() {
+                return Ok(true);
+            }
+        }
+        let subscribe =
+            format!("refresh-client -B '{HIDDEN_SUBSCRIPTION}{pane_id}:{pane_id}:{HIDDEN_FORMAT}'");
+        let pause = format!("refresh-client -A '{pane_id}:pause'");
+        self.send_command_detached(&[&subscribe, &pause], 2)?;
+        Ok(true)
+    }
+
+    /// Stream a pane [`Self::hide_pane`] held back again, from tmux's current
+    /// position — what was dropped meanwhile is what a snapshot asked for next
+    /// rebuilds. Nothing for a pane that is not held back. Also how a pane
+    /// that is let go stops being held back: tmux keeps a pane paused across
+    /// `on`/`off`, so a later adopt of it would otherwise stream nothing.
+    pub(in crate::backend) fn show_pane(&self, pane_id: &str) -> Result<()> {
+        if !self.unhide(pane_id)? {
+            return Ok(());
+        }
+        let unsubscribe = format!("refresh-client -B '{HIDDEN_SUBSCRIPTION}{pane_id}'");
+        let resume = format!("refresh-client -A '{pane_id}:continue'");
+        self.send_command_detached(&[&unsubscribe, &resume], 2)
+    }
+
+    /// Forget `pane_id` as held back; whether it was.
+    fn unhide(&self, pane_id: &str) -> Result<bool> {
+        Ok(self
+            .hidden
+            .lock()
+            .map_err(|e| anyhow::anyhow!("hidden lock: {e}"))?
+            .remove(pane_id)
+            .is_some())
     }
 
     /// Send a command and wait for its response.
