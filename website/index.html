@@ -61,26 +61,6 @@ footer: true
             </button>
             <button
               class="install-tab"
-              id="tab-winget"
-              role="tab"
-              aria-controls="panel-winget"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              winget
-            </button>
-            <button
-              class="install-tab"
-              id="tab-choco"
-              role="tab"
-              aria-controls="panel-choco"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              Chocolatey
-            </button>
-            <button
-              class="install-tab"
               id="tab-brew"
               role="tab"
               aria-controls="panel-brew"
@@ -89,54 +69,12 @@ footer: true
             >
               Homebrew
             </button>
-            <button
-              class="install-tab"
-              id="tab-aur"
-              role="tab"
-              aria-controls="panel-aur"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              Arch (AUR)
-            </button>
-            <button
-              class="install-tab"
-              id="tab-nix"
-              role="tab"
-              aria-controls="panel-nix"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              Nix
-            </button>
-            <button
-              class="install-tab"
-              id="tab-source"
-              role="tab"
-              aria-controls="panel-source"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              From Source
-            </button>
               </div>
             </div>
 
           <div class="install-panel" role="tabpanel" id="panel-script" aria-labelledby="tab-script">
-            <p>
-              Linux &amp; macOS, and the
-              <strong>recommended</strong>
-              route. Auto-detects your platform, verifies checksums, and installs both
-              <code>thurbox</code>
-              and
-              <code>thurbox-cli</code>
-              to
-              <code>~/.local/bin</code>
-              .
-            </p>
+            <p>Linux &amp; macOS. The recommended route.</p>
             <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-            <p>Then run it:</p>
-            <pre><code class="language-bash">thurbox</code></pre>
           </div>
 
           <div
@@ -147,150 +85,22 @@ footer: true
             hidden
           >
             <p>
-              Native Windows (PowerShell 5.1+), and the
-              <strong>recommended route</strong>
-              on Windows &mdash; unlike winget and Chocolatey it always carries the newest release.
-              Verifies checksums and installs to
-              <code>%LOCALAPPDATA%\Programs\thurbox</code>
-              (added to your user
-              <code>PATH</code>
-              ). Needs
+              Native Windows. Needs
               <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
-              as the default multiplexer (installed separately).
-              <a href="docs/installation.html#rmux">RMUX 0.10.0+</a> is opt-in, tested locally on Linux.
+              installed separately.
             </p>
             <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
-            <p>Then run it:</p>
-            <pre><code class="language-powershell">thurbox</code></pre>
-          </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-winget" aria-labelledby="tab-winget" hidden>
-            <p>
-              Windows x86_64 via
-              <a href="https://learn.microsoft.com/windows/package-manager/" target="_blank" rel="noopener">
-                winget
-              </a>
-              (bundled with Windows 10/11). Installs the prebuilt
-              <code>thurbox.exe</code>
-              +
-              <code>thurbox-cli.exe</code>
-              as portable commands on your
-              <code>PATH</code>
-              . Needs
-              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
-              as the default multiplexer (installed separately).
-              <a href="docs/installation.html#rmux">RMUX 0.10.0+</a> is opt-in, tested locally on Linux.
-            </p>
-            <p>
-              <strong>Heads-up:</strong>
-              winget-pkgs is manually moderated, so this channel trails the
-              newest build by however long its manifest PR waits for review.
-              For the latest release right away, use the
-              <strong>PowerShell</strong>
-              installer.
-            </p>
-            <pre><code class="language-powershell">winget install Thurbeen.thurbox</code></pre>
-          </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-choco" aria-labelledby="tab-choco" hidden>
-            <p>
-              Windows x86_64 via the
-              <a href="https://community.chocolatey.org/packages/thurbox" target="_blank" rel="noopener">
-                Chocolatey community repository
-              </a>
-              . Installs the prebuilt
-              <code>thurbox.exe</code>
-              +
-              <code>thurbox-cli.exe</code>
-              and shims them onto your
-              <code>PATH</code>
-              . Needs
-              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
-              as the default multiplexer (installed separately).
-              <a href="docs/installation.html#rmux">RMUX 0.10.0+</a> is opt-in, tested locally on Linux.
-            </p>
-            <p>
-              <strong>Heads-up:</strong>
-              the Chocolatey community repo is moderated and rate-limited, so
-              thurbox pushes a new version there at most once every 30 days
-              &mdash; this channel trails the newest build. For the latest
-              release right away, use the
-              <strong>PowerShell</strong>
-              installer.
-            </p>
-            <pre><code class="language-powershell">choco install thurbox</code></pre>
           </div>
 
           <div class="install-panel" role="tabpanel" id="panel-brew" aria-labelledby="tab-brew" hidden>
-            <p>
-              macOS (Apple Silicon) &amp; Linux x86_64. Prebuilt binaries from the
-              <a href="https://github.com/Thurbeen/homebrew-thurbox" target="_blank" rel="noopener">
-                thurbox tap
-              </a>
-              ; pulls in
-              <code>tmux</code>
-              and
-              <code>git</code>
-              automatically.
-            </p>
+            <p>macOS &amp; Linux. Pulls in tmux and git.</p>
             <pre><code class="language-bash">brew install thurbeen/thurbox/thurbox</code></pre>
           </div>
 
-          <div class="install-panel" role="tabpanel" id="panel-aur" aria-labelledby="tab-aur" hidden>
-            <p>
-              <a
-                href="https://aur.archlinux.org/packages/thurbox-bin"
-                target="_blank"
-                rel="noopener"
-              >
-                <code>thurbox-bin</code>
-              </a>
-              (prebuilt binary) or
-              <a href="https://aur.archlinux.org/packages/thurbox" target="_blank" rel="noopener">
-                <code>thurbox</code>
-              </a>
-              (builds from source) &mdash; use
-              <code>paru</code>
-              ,
-              <code>yay</code>
-              , or your preferred AUR helper.
-            </p>
-            <pre><code class="language-bash">paru -S thurbox-bin   # prebuilt (fastest)
-paru -S thurbox       # build from source</code></pre>
-          </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-nix" aria-labelledby="tab-nix" hidden>
-            <p>
-              Linux (x86_64, aarch64) &amp; Apple Silicon macOS. The repository is a flake that
-              builds both binaries from source and puts
-              <code>tmux</code>
-              and
-              <code>git</code>
-              on their
-              <code>PATH</code>
-              . On NixOS, see the
-              <a href="docs/installation.html#nix">module setup</a>
-              .
-            </p>
-            <pre data-wrap><code class="language-bash">nix profile install github:Thurbeen/thurbox</code></pre>
-            <p>Or try it without installing:</p>
-            <pre><code class="language-bash">nix run github:Thurbeen/thurbox</code></pre>
-          </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden>
-            <p>
-              Any platform with Rust 1.75+. Builds both the
-              <code>thurbox</code>
-              TUI and the
-              <code>thurbox-cli</code>
-              headless binary into
-              <code>target/release/</code>
-              .
-            </p>
-            <pre><code class="language-bash">git clone https://github.com/Thurbeen/thurbox.git
-cd thurbox
-cargo build --release</code></pre>
-          </div>
+          <p class="install-more">
+            Also on winget, Chocolatey, the AUR and Nix, or from source &mdash;
+            <a href="docs/installation.html">installation guide &rarr;</a>
+          </p>
           </div>
 
           <div class="hero-grid__demo" id="demo">
@@ -577,65 +387,39 @@ cargo build --release</code></pre>
         </div>
 
         <p class="ui-lab__foot">
-          That last one is not shipped. <code>thurbox-cli plugin new git-status</code> writes a file
-          that already loads, and it is a pane the moment you save it. Adding or removing a pane is
-          two edits, as it is above: the plugin, and the slot in
-          <code>ui/layout.lua</code> that says where it goes.
-        </p>
-        <p class="section-lede">
-          A pane is a short Lua file, and it only ever gets what you have trusted it with.
+          That last one is not shipped &mdash; it is yours. A pane is a short Lua file, and it only
+          ever gets what you have trusted it with.
           <a href="docs/interface.html">Writing a pane &rarr;</a>
         </p>
 
-        <div class="ui-lab__demo">
-          <p class="ui-lab__demo-lede">
-            <strong>&ldquo;Stacked right&rdquo; is a demo you can run.</strong>
-            Those two panes are real, distributed panes &mdash; a tasks list, and CPU and memory read
-            from
-            <code>top</code>
-            &mdash; with an arrangement that puts them in a column beside the agent. Install them,
-            copy the arrangement, and press
-            <code>F10</code>
-            :
-          </p>
-          <pre data-wrap><code class="language-bash">thurbox-cli plugin install tasks
-thurbox-cli plugin install top
-cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
-          <p class="ui-lab__demo-note">
-            The
-            <code>top</code>
-            pane asks to run a program, so it draws nothing until you trust it &mdash; and it then
-            reads whichever machine the selected session runs on.
-            <a href="docs/interface.html#running-programs">What a pane may do &rarr;</a>
-          </p>
-        </div>
-
-        <!-- The on-ramp that needs no Lua at all. The prompts are deliberately
-             styled unlike the <pre> blocks around them, so nobody pastes one
-             into a shell. -->
-        <div class="ui-lab__demo">
-          <p class="ui-lab__demo-lede">
-            <strong>Or just ask the agent.</strong>
-            You do not have to learn Lua to change any of this. thurbox
-            <em>runs coding agents</em>, and the interface is a directory of plain text files those
-            agents can read &mdash; so point a session at it and say what you want:
-          </p>
-          <pre data-wrap><code class="language-bash">thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
-          <ul class="prompts">
-            <li>Install the info panel plugin.</li>
+        <!-- The official plugins, one line each. Setup lives in each README and
+             in the catalog, so the home page stays a list of names. -->
+        <div class="plugin-strip">
+          <p class="section-eyebrow">Plugins to start from</p>
+          <ul class="plugin-strip__list">
             <li>
-              Add a new pane on the left with CPU and RAM usage. There is a
-              <code>top</code>
-              example plugin &mdash; install it and give it a slot in the layout.
+              <a href="https://github.com/Thurbeen/thurbox-info-panel">thurbox-info-panel</a>
+              <span>Session, git, agent, account quota and system readouts beside the terminal.</span>
             </li>
-            <li>Move the search strip to the bottom, and make the session column 30% wide.</li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-code-review">thurbox-code-review</a>
+              <span>A Review tab: the session's diff against its base branch, with notes sent to the agent.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-automations">thurbox-automations</a>
+              <span>Run, switch on or off, create and edit scheduled automations, and see why a run failed.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-auto-continue">thurbox-auto-continue</a>
+              <span>When a Claude Code session hits its usage limit, waits for the reset and continues.</span>
+            </li>
+            <li>
+              <a href="https://github.com/Thurbeen/thurbox-doom">thurbox-doom</a>
+              <span>DOOM as a tab of the agent pane.</span>
+            </li>
           </ul>
-          <p class="ui-lab__demo-note">
-            The directory tells the agent how to work on itself, so these read as thurbox commands
-            rather than as guesses. Press
-            <kbd>F10</kbd>
-            and the change is on your screen.
-            <a href="docs/interface.html#ask-the-agent">The worked example &rarr;</a>
+          <p class="plugin-strip__more">
+            <a href="plugins.html">All plugins, including community ones &rarr;</a>
           </p>
         </div>
       </div>
@@ -892,8 +676,11 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
             <span class="step-number">1</span>
             <div class="step-content">
               <h3>Launch</h3>
-              <p>Start Thurbox. The session sidebar and terminal panel appear.</p>
-              <pre><code class="language-bash">thurbox</code></pre>
+              <p>
+                Run
+                <code>thurbox</code>
+                . The session sidebar and terminal panel appear.
+              </p>
             </div>
           </div>
 
@@ -926,6 +713,7 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
               <p>
                 Spin up sessions (optionally on a fresh git worktree) and start working with the
                 agent. Navigate, sync, and fork with Vim-inspired keys.
+                <a href="docs/keybindings.html">All keys &rarr;</a>
               </p>
               <div class="tui-demo">
                 <div class="terminal-header">
@@ -935,11 +723,7 @@ cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua</code></pre>
                   <pre>Ctrl+N  New session
 Ctrl+J  Next session      Ctrl+K  Previous
 Ctrl+/  Search sessions and their screens
-Ctrl+S  Sync worktrees with origin/main
-Ctrl+R  Restart active session
-Ctrl+F  Fork active session
-Ctrl+O  Open repos in editor
-Ctrl+,  Settings, incl. the Interface tab</pre>
+Ctrl+,  Settings</pre>
                 </div>
               </div>
             </div>
@@ -1166,26 +950,10 @@ Ctrl+,  Settings, incl. the Interface tab</pre>
       <div class="container">
         <div class="section-title">
           <h2>Prerequisites</h2>
-          <p>What you need before running Thurbox &mdash; plus extra install options</p>
+          <p>What you need before running Thurbox &mdash; <a href="docs/installation.html">full installation guide</a></p>
         </div>
 
         <div class="install-main">
-          <div class="install-alt">
-            <div class="install-alt-item">
-              <h4>Custom Directory</h4>
-              <p><code>export INSTALL_DIR=/usr/local/bin</code></p>
-            </div>
-            <div class="install-alt-item">
-              <h4>Pin a version</h4>
-              <p><code>export VERSION=v2.5.4</code></p>
-              <p><code>$env:THURBOX_VERSION = 'v2.5.4'</code></p>
-            </div>
-            <div class="install-alt-item">
-              <h4>Full Guide</h4>
-              <p><a href="docs/installation.html">docs/installation</a></p>
-            </div>
-          </div>
-
           <div class="prereqs">
             <h3>Prerequisites</h3>
             <ul>

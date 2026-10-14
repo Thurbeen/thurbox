@@ -639,6 +639,12 @@
   box-shadow: none;
 }
 
+.install-more {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: var(--space-md);
+}
+
 @keyframes install-fade {
   from {
     opacity: 0;
@@ -655,23 +661,6 @@
   .install-panel:not([hidden]) {
     animation: install-fade 200ms ease;
   }
-}
-
-.install-alt {
-  display: flex;
-  gap: var(--space-xl);
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-top: var(--space-xl);
-}
-
-.install-alt-item h4 {
-  margin-bottom: var(--space-sm);
-  color: var(--text-primary);
-}
-
-.install-alt-item p {
-  font-size: 0.9rem;
 }
 
 /* ---- Prerequisites ---- */
@@ -1434,6 +1423,43 @@ main {
   padding-left: 1rem;
 }
 
+/* The official plugins under the lab: name and one line each, in columns that
+   fold to one on a phone. Setup stays in each README and the catalog page. */
+.plugin-strip {
+  margin-top: 2.5rem;
+}
+
+.plugin-strip__list {
+  display: grid;
+  gap: var(--space-md) var(--space-xl);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.plugin-strip__list li {
+  border-left: 2px solid var(--border);
+  min-width: 0;
+  padding-left: 0.85rem;
+}
+
+.plugin-strip__list a {
+  display: block;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.plugin-strip__list span {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.plugin-strip__more {
+  font-size: 0.9rem;
+  margin-top: var(--space-lg);
+}
+
 @media (width <= 60rem) {
   .ui-lab {
     grid-template-columns: minmax(0, 1fr);
@@ -1540,28 +1566,6 @@ main {
 
 .ui-pane .bar__fill.is-warn {
   background: var(--yellow);
-}
-
-/* The runnable-demo callout under the lab. Bordered rather than filled: it is an
-   aside to the widget above it, not a competing panel. */
-.ui-lab__demo {
-  border-left: 2px solid var(--border);
-  margin-top: 2rem;
-  padding-left: clamp(0.85rem, 2vw, 1.5rem);
-}
-
-.ui-lab__demo-lede,
-.ui-lab__demo-note {
-  color: var(--text-secondary);
-  max-width: 68ch;
-}
-
-.ui-lab__demo-lede strong {
-  color: var(--text-primary);
-}
-
-.ui-lab__demo pre {
-  max-width: 68ch;
 }
 
 /* ---- "Just ask for it" cards ----
