@@ -1937,7 +1937,9 @@ impl LuaHost {
 
     /// Whether any pane rendered since the last call read `thurbox.diffs`, and
     /// start counting again. Asked once per painted frame, so it answers
-    /// "does a pane on screen show a diff" — only drawn panes render.
+    /// "does a pane on screen show a diff": only placed panes render, plus the
+    /// floating plugins, which render every frame to say whether they float —
+    /// one that reads the diffs while closed keeps them fetched, as before.
     pub fn take_diffs_read(&self) -> bool {
         self.rendered_reads.take() & api::READ_DIFFS != 0
     }
