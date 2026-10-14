@@ -104,4 +104,5 @@ test('homepage links each official plugin from the interface section, and stays 
   assert.equal(codeBlocks.length, 3, 'the install lines are the only code blocks');
   assert.doesNotMatch(text(home), /thurbox-cli (plugin|session) /);
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
+  assert.match(text(home.querySelector('#how-it-works')), /Run thurbox\. The session/, 'no space before the period');
 });
