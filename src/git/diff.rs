@@ -218,11 +218,16 @@ pub fn diff_fingerprint_on(
 /// The paths whose worktree content differs from the index, out of
 /// `status --porcelain=v2 -z`: modified or added in the worktree, unmerged, or
 /// untracked. A deletion has nothing to hash, and the status already records it.
+/// Untracked files stop at [`UNTRACKED_FILE_CAP`], the most the diff reads (both
+/// lists come sorted by path): hashing the rest would read files the diff never
+/// shows, and their status lines still move the fingerprint when one comes or
+/// goes.
 /// A path with a newline in it is left out, since `--stdin-paths` reads lines,
 /// and so is a directory (an untracked nested repository), which has no content
 /// to hash; the status line of each still moves with it.
 pub(super) fn worktree_changed_paths(status: &str) -> Vec<&str> {
     let mut paths = Vec::new();
+    let mut untracked = 0;
     let mut records = status.split('\0');
     while let Some(record) = records.next() {
         let (kind, fields) = match record.split_once(' ') {
@@ -230,7 +235,10 @@ pub(super) fn worktree_changed_paths(status: &str) -> Vec<&str> {
             None => continue,
         };
         let path = match kind {
-            "?" => Some(fields),
+            "?" if untracked < UNTRACKED_FILE_CAP => {
+                untracked += 1;
+                Some(fields)
+            }
             // ordinary: XY sub mH mI mW hH hI path
             "1" => worktree_side(fields, 7),
             // renamed or copied: XY sub mH mI mW hH hI Xscore path, then the

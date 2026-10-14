@@ -2377,6 +2377,24 @@ fn worktree_changed_paths_names_what_has_content_to_hash() {
 }
 
 #[test]
+fn worktree_changed_paths_hashes_no_more_untracked_files_than_the_diff_reads() {
+    // The diff reads the first UNTRACKED_FILE_CAP untracked files; hashing the
+    // rest every check would cost a read per file for nothing it shows. Their
+    // status lines still move the fingerprint when one comes or goes.
+    let mut status = String::from("1 .M N... 100644 100644 100644 h1 h1 edited.rs\0");
+    for n in 0..UNTRACKED_FILE_CAP + 50 {
+        status.push_str(&format!("? build/out-{n:04}.o\0"));
+    }
+    let paths = worktree_changed_paths(&status);
+    assert_eq!(paths.len(), 1 + UNTRACKED_FILE_CAP);
+    assert_eq!(paths[0], "edited.rs");
+    assert_eq!(
+        paths[UNTRACKED_FILE_CAP],
+        format!("build/out-{:04}.o", UNTRACKED_FILE_CAP - 1)
+    );
+}
+
+#[test]
 fn the_diff_fingerprint_moves_with_content_the_status_cannot_see() {
     // An already-modified file edited again stays ` M` in the status and keeps
     // its line counts; only its content says the diff changed.

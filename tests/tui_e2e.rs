@@ -6883,11 +6883,22 @@ fn a_remote_diff_nothing_shows_is_never_fetched() {
     };
     let since = ssh_calls(&profile, 0).len();
     std::thread::sleep(IDLE_WINDOW);
-    let reads = full_diff_reads(&ssh_calls(&profile, since));
+    let calls = ssh_calls(&profile, since);
     assert!(tui.quit().success());
-    assert_eq!(
-        reads, 0,
-        "the remote diff was fetched {reads} time(s) with no pane showing it"
+    // Nor its fingerprint: with only that, the full reads stay at zero while
+    // a check still crosses the link every few seconds. The plain `status` the
+    // session list's own stat polls with is a different call and stays.
+    let diff_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| {
+            call.ends_with("diff --no-color HEAD")
+                || call.contains(" hash-object ")
+                || call.contains("--no-optional-locks status")
+        })
+        .collect();
+    assert!(
+        diff_calls.is_empty(),
+        "the remote diff was asked for with no pane showing it:\n{diff_calls:#?}"
     );
 }
 
