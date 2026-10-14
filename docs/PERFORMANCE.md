@@ -1364,8 +1364,14 @@ timeout, six times a minute.
   number holds (`mirror::host_lists`). Reconciling still runs every pass, so a
   change on the observer's side is handled as before. A host CLI that does not
   advertise `session_revision` in `version --json` is listed in full, as
-  before. Pinned end to end over a stand-in `ssh` by
-  `tests/mirror_deltas.rs`.
+  before. Measured as a pair over a real `ssh` connection (to the same
+  machine, with the host side's data directory pointed at a seeded database
+  whose `session list --deleted` is 121 KB; no live sessions, interface idle,
+  two 120 s windows, the ControlMaster socket's `bytes_received` from
+  `ss -tinpH`): **731 KB/min** before (24 ssh execs, 24 full listings), **2.1
+  KB/min** after (12 execs, each a `session revision`, no listing). Pinned end
+  to end over a stand-in `ssh` by
+  `shared_sessions::an_idle_host_is_not_listed_again`.
 
 **Consequence**: a down host costs a bounded handful of ssh attempts a minute
 rather than a continuous stream, and the mirror stops taking the database's

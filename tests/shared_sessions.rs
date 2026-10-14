@@ -3,7 +3,8 @@
 //! directions use, the mirror's reconciliation rules over a real database, and
 //! the `if_missing` relaunch the loop asks for. The ssh half is a scripted
 //! runner in the unit tests beside `session_ops::host_cli`; here nothing is
-//! faked, so the tests stop where a host would be needed.
+//! faked but `ssh` itself, which one test replaces on `PATH` with a stand-in
+//! running the real `thurbox-cli` against a second data directory.
 
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -537,4 +538,148 @@ fn hiding_leaves_a_session_reached_directly_where_it_is() {
     let report = pass_hiding(&a, A_TO_B, &b);
     assert!(report.forgotten.is_empty(), "{report:?}");
     assert_eq!(listed_on(&a, on_c), vec![A_TO_C]);
+}
+
+#[cfg(unix)]
+fn host_row(id: SessionId, name: &str) -> SharedSession {
+    SharedSession {
+        id,
+        name: name.into(),
+        agent: "claude".into(),
+        backend_id: String::new(),
+        backend_type: "tmux".into(),
+        agent_session_id: None,
+        cwd: Some(PathBuf::from("/srv/repo")),
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+    }
+}
+
+/// An `ssh` that drops its options and destination and runs the remote
+/// command with `sh`, as the host's login shell would, inside the host's own
+/// thurbox directories.
+#[cfg(unix)]
+fn write_ssh(bin: &std::path::Path, root: &std::path::Path) {
+    let cli_dir = std::path::Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .parent()
+        .unwrap()
+        .display()
+        .to_string();
+    let script = format!(
+        r#"#!/bin/sh
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) shift 2 ;;
+        -*) shift ;;
+        *) shift; break ;;
+    esac
+done
+printf '%s\n' "$*" >> '{root}/ssh.log'
+export HOME='{root}/host-home'
+export THURBOX_CONFIG_DIR='{root}/host-config'
+export THURBOX_DATA_DIR='{root}/host-data'
+export PATH='{cli_dir}':/usr/bin:/bin
+exec sh -c "$*"
+"#,
+        root = root.display(),
+    );
+    let ssh = bin.join("ssh");
+    std::fs::write(&ssh, script).unwrap();
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// How many full listings have crossed the wire so far.
+#[cfg(unix)]
+fn listings(root: &std::path::Path) -> usize {
+    std::fs::read_to_string(root.join("ssh.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.replace('\'', "").contains("session list"))
+        .count()
+}
+
+/// The mirror over a real `ssh` round trip: an idle host is not re-listed.
+///
+/// A host's full `session list` + `session list --deleted` grows with its
+/// deleted history, and the mirror runs every few seconds per host. The
+/// stand-in logs every remote script, so the test sees what crossed the wire.
+/// It sets `PATH` and the data directories process-wide, which nextest's
+/// process per test keeps to this test.
+#[cfg(unix)]
+#[test]
+fn an_idle_host_is_not_listed_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in [
+        "bin",
+        "home",
+        "config",
+        "data",
+        "host-home",
+        "host-config",
+        "host-data",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    write_ssh(&root.join("bin"), root);
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("THURBOX_CONFIG_DIR", root.join("config"));
+    std::env::set_var("THURBOX_DATA_DIR", root.join("data"));
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}",
+            root.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    // The host: one live session and a long deleted history.
+    let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
+    let live = SessionId::default();
+    host_db.upsert_session(&host_row(live, "live")).unwrap();
+    for n in 0..50 {
+        let gone = SessionId::default();
+        host_db
+            .upsert_session(&host_row(gone, &format!("gone-{n}")))
+            .unwrap();
+        host_db.soft_delete_session(gone).unwrap();
+    }
+
+    let host = HostDef {
+        name: "probe".into(),
+        destination: "probe".into(),
+        ..Default::default()
+    };
+    let cli = match thurbox::session_ops::host_cli::usable(&host) {
+        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
+        thurbox::session_ops::host_cli::Usable::No(why) => {
+            panic!("the stand-in host is not usable: {why}")
+        }
+    };
+    let db = Database::open(&root.join("data/thurbox.db")).unwrap();
+
+    let first = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert_eq!(first.adopted, vec![live], "{first:?}");
+    let after_first = listings(root);
+    assert!(after_first > 0, "the first pass lists the host");
+
+    let idle = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert!(!idle.changed(), "{idle:?}");
+    assert_eq!(
+        listings(root),
+        after_first,
+        "a pass over a host that changed nothing pulled its full lists again"
+    );
+
+    // A change on the host is still picked up on the very next pass.
+    host_db.soft_delete_session(live).unwrap();
+    let moved = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert_eq!(moved.deleted, vec![live], "{moved:?}");
+    assert!(listings(root) > after_first);
 }
