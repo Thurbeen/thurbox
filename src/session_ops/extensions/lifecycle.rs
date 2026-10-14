@@ -86,7 +86,8 @@ impl ExtensionHealth {
 }
 
 /// Idempotently ensure every resource a manifest declares exists. Existing
-/// sessions/automations are matched by name and reused; only the missing ones
+/// sessions are matched by key when they declare one and by name otherwise,
+/// automations by name, and reused; only the missing ones
 /// are created. An existing `Send` automation whose stored target id no longer
 /// matches its session's current id is re-linked (a recreated session would
 /// otherwise orphan it). Safe to call repeatedly (this is the self-heal
@@ -113,7 +114,17 @@ pub fn ensure_extension(
         .collect();
 
     for sess in &def.sessions {
+        if let Some(key) = &sess.key {
+            crate::session_ops::names::validate_key(key)
+                .map_err(|e| format!("session '{}': {e}", sess.name))?;
+        }
+    }
+    for sess in &def.sessions {
         if let Some(id) = ensure_session(db, backends, sess, &mut report)? {
+            // Under both spellings an automation's `session_ref` may use.
+            if let Some(key) = &sess.key {
+                session_ids.insert(key.clone(), id);
+            }
             session_ids.insert(sess.name.clone(), id);
         }
     }
@@ -136,7 +147,7 @@ pub fn ensure_extension(
                 // is held by something else — already reported, and re-linking to
                 // a session that is not there is not an improvement. An existing
                 // automation keeps the target it had.
-                None if def.sessions.iter().any(|s| s.name == session_ref) => continue,
+                None if def.sessions.iter().any(|s| declares(s, session_ref)) => continue,
                 None => {
                     return Err(format!(
                         "automation '{}' references unknown session '{session_ref}'",
@@ -155,6 +166,85 @@ pub fn ensure_extension(
     }
 
     Ok(report)
+}
+
+/// Whether `session_ref` names this declared session — by its name or its key.
+fn declares(sess: &ExtensionSession, session_ref: &str) -> bool {
+    sess.name == session_ref || sess.key.as_deref() == Some(session_ref)
+}
+
+/// The backend every declared session lives on: a manifest names no host, so
+/// it is this machine's server.
+fn local_backend() -> String {
+    crate::session::Route::local(None).format()
+}
+
+/// The live session on this machine carrying `key`, if one does.
+///
+/// More than one is a database that broke the key's rule; the first is reused
+/// for the reason [`live_session_named`] gives, and logged.
+fn live_session_keyed(db: &Database, key: &str) -> Result<Option<SessionId>, String> {
+    let live = crate::session_ops::names::live_key_holders(db, key, &local_backend())?;
+    let Some(first) = live.first() else {
+        return Ok(None);
+    };
+    if live.len() > 1 {
+        tracing::warn!(
+            "key '{key}' is on {} live sessions here; reusing {}",
+            live.len(),
+            first.id
+        );
+    }
+    Ok(Some(first.id))
+}
+
+/// [`ensure_session`] for a session that declares a key: found by the key, so
+/// a rename of the live session, or a new `name` in the manifest, is still the
+/// same session.
+///
+/// The name is not consulted at all — not live, not soft-deleted: a key is
+/// what the extension's session *is*, and the name only what it is created
+/// with. The claim is the key's ([`crate::session_ops::names::claim_key`]),
+/// which a soft-deleted row does not reserve, so a deleted keyed session heals
+/// at once rather than once its undo window has closed; undoing that delete
+/// afterwards restores it without the key.
+fn ensure_keyed_session(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    sess: &ExtensionSession,
+    key: &str,
+    report: &mut EnsureReport,
+) -> Result<Option<SessionId>, String> {
+    if let Some(id) = live_session_keyed(db, key)? {
+        return Ok(Some(id));
+    }
+    let held = match crate::session_ops::names::claim_key(db, key, &local_backend())? {
+        crate::session_ops::names::KeyClaim::Held(held) => held,
+        crate::session_ops::names::KeyClaim::Taken(holder) => return Ok(Some(holder.id)),
+        crate::session_ops::names::KeyClaim::Busy => {
+            report.sessions_blocked.push(format!(
+                "session '{}' (key '{key}') was not recreated: its key is held by a creation \
+                 already in flight. A hold left behind by a creator that died mid-spawn \
+                 lapses on its own, and the next pass takes the key then",
+                sess.name
+            ));
+            return Ok(None);
+        }
+    };
+    let result = crate::session_ops::spawn::spawn_session_holding_key(
+        db,
+        backends,
+        crate::session_ops::SpawnRequest {
+            name: sess.name.clone(),
+            repo_path: sess.repo_path.clone(),
+            agent: Some(sess.agent.clone()),
+            key: Some(key.to_string()),
+            ..Default::default()
+        },
+        &held,
+    )?;
+    report.sessions_created.push(sess.name.clone());
+    Ok(Some(result.session_id))
 }
 
 /// Ensure one declared session exists, reusing it when it does. Returns its id,
@@ -181,7 +271,10 @@ fn ensure_session(
     sess: &ExtensionSession,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
-    let backend = &crate::session::Route::local(None).format();
+    if let Some(key) = &sess.key {
+        return ensure_keyed_session(db, backends, sess, key, report);
+    }
+    let backend = &local_backend();
     if let Some(id) = live_session_named(db, &sess.name, backend)? {
         return Ok(Some(id));
     }
@@ -369,7 +462,14 @@ pub fn deactivate_extension(
         .map(|row| (row.name, row.id))
         .collect();
     for sess in &def.sessions {
-        if let Some(&id) = session_ids.get(&sess.name) {
+        // A keyed session by its key, on this machine only: matching by name
+        // across every backend is how a deactivate could force-delete a remote
+        // session that merely shared the name. A keyless one as before.
+        let found = match &sess.key {
+            Some(key) => live_session_keyed(db, key)?,
+            None => session_ids.get(&sess.name).copied(),
+        };
+        if let Some(id) = found {
             crate::session_ops::delete_session_headless(db, backends, id, force)?;
             report.sessions_deleted.push(sess.name.clone());
         }
@@ -565,8 +665,16 @@ pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHe
         sessions: def
             .sessions
             .iter()
-            .map(|s| (s.name.clone(), session_names.contains(&s.name)))
-            .collect(),
+            .map(|s| {
+                // By key on this machine, as self-heal finds it; by name as
+                // before for a session that declares none.
+                let present = match &s.key {
+                    Some(key) => live_session_keyed(db, key)?.is_some(),
+                    None => session_names.contains(&s.name),
+                };
+                Ok((s.name.clone(), present))
+            })
+            .collect::<Result<_, String>>()?,
         automations: def
             .automations
             .iter()

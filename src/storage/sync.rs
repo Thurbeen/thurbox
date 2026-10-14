@@ -47,6 +47,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 

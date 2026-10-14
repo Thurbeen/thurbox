@@ -3967,6 +3967,7 @@ esac
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&session).unwrap();
     for _ in 0..thurbox::session_ops::restart::CRASH_LOOP_RELAUNCHES {

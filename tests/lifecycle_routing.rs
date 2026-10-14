@@ -203,6 +203,7 @@ fn seed_row(db: &Database, name: &str, backend_type: &str, pane: &str, cwd: &Pat
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .expect("seed a row");
     id
@@ -396,6 +397,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .expect("seed the remote row");
     far.set_reachable(false);

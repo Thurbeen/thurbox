@@ -102,6 +102,10 @@ pub struct DeletedSessionInfo {
     /// a host that was down at delete time is the whole reason the attempt
     /// failed. Cleared the moment the host answers.
     pub teardown_owed: bool,
+    /// The key the row still carries. A deleted row does **not** reserve it:
+    /// a restore gives it back only when no live session on the host took it
+    /// in the meantime (`session_ops::restore`).
+    pub key: Option<String>,
     pub worktrees: Vec<SharedWorktree>,
 }
 
@@ -165,8 +169,8 @@ impl Database {
         self.conn.execute(
             "INSERT INTO sessions (id, name, agent, backend_id, backend_type, \
              agent_session_id, cwd, additional_dirs, shell_backend_id, \
-             parent_session_id, display_order, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12) \
+             parent_session_id, display_order, key, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?13, ?12, ?12) \
              ON CONFLICT(id) DO UPDATE SET \
                  name = excluded.name, agent = excluded.agent, \
                  backend_id = excluded.backend_id, \
@@ -176,6 +180,7 @@ impl Database {
                  shell_backend_id = excluded.shell_backend_id, \
                  parent_session_id = excluded.parent_session_id, \
                  display_order = excluded.display_order, \
+                 key = excluded.key, \
                  updated_at = excluded.updated_at, deleted_at = NULL",
             params![
                 id_str,
@@ -193,6 +198,7 @@ impl Database {
                 session.parent_session_id.map(|id| id.to_string()),
                 session.display_order,
                 now,
+                session.key,
             ],
         )?;
 
@@ -472,7 +478,7 @@ impl Database {
             "SELECT s.id, s.name, s.agent, s.backend_id, s.backend_type, \
              s.agent_session_id, s.cwd, s.additional_dirs, s.shell_backend_id, \
              s.parent_session_id, s.display_order, \
-             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox \
+             w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, s.key \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id AND w.deleted_at IS NULL \
              WHERE {condition} \
@@ -998,6 +1004,91 @@ impl Database {
         )
     }
 
+    /// Every active session carrying this exact key, on any backend.
+    ///
+    /// Per-host uniqueness is the caller's question, not this one's: the host a
+    /// row is on is read off its `backend_type` through the host registry,
+    /// which storage does not see — and a mirrored host's rows may hold a stale
+    /// duplicate for one pass (`session_ops::names::live_key_holders`).
+    pub fn find_sessions_by_key(&self, key: &str) -> rusqlite::Result<Vec<SharedSession>> {
+        self.query_sessions("s.deleted_at IS NULL AND s.key = ?1", params![key])
+    }
+
+    /// Active sessions whose key **starts with** `prefix` — `session list
+    /// --key-prefix`. A key's structure means nothing to thurbox; a prefix is
+    /// the one question about it a driver can ask.
+    pub fn find_sessions_by_key_prefix(
+        &self,
+        prefix: &str,
+    ) -> rusqlite::Result<Vec<SharedSession>> {
+        // Not `LIKE`, which folds ASCII case: a key is compared exactly, so a
+        // prefix of one is too.
+        self.query_sessions(
+            "s.deleted_at IS NULL AND s.key IS NOT NULL \
+             AND substr(s.key, 1, length(?1)) = ?1",
+            params![prefix],
+        )
+    }
+
+    /// Give an **active** session a key, or take it away (`None`). False when no
+    /// active row has this id.
+    ///
+    /// A targeted UPDATE, like [`rename_session`](Self::rename_session), and
+    /// unconditional: the uniqueness question is asked by the caller under the
+    /// key's claim (`session_ops::names::claim_key`), which is the only place
+    /// that can see which host the row is on.
+    pub fn set_session_key(&self, id: SessionId, key: Option<&str>) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let Some(before) = self
+            .conn
+            .query_row(
+                "SELECT key FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        if before.as_deref() == key {
+            return Ok(true);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET key = ?1, updated_at = ?2 WHERE id = ?3",
+            params![key, current_time_millis() as i64, id_str],
+        )?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Updated,
+            Some("key"),
+            before.as_deref(),
+            key,
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Updated,
+            None,
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Take the key off a row whatever its state — the one write a restore
+    /// makes to a **deleted** row before bringing it back, when the key has
+    /// gone to another session since (`session_ops::restore`).
+    pub fn clear_session_key(&self, id: SessionId) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "UPDATE sessions SET key = NULL WHERE id = ?1",
+                params![id.to_string()],
+            )
+            .map(drop)
+    }
+
     /// Get just the name of an active session by its ID.
     pub fn get_session_name(&self, id: SessionId) -> rusqlite::Result<Option<String>> {
         Ok(self
@@ -1054,7 +1145,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at, s.teardown_owed \
+             s.host_updated_at, s.teardown_owed, s.key \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -1079,6 +1170,7 @@ impl Database {
             let wt_mine: Option<bool> = row.get(14)?;
             let host_updated_at: Option<i64> = row.get(15)?;
             let teardown_owed: i64 = row.get(16)?;
+            let key: Option<String> = row.get(17)?;
 
             let worktree = worktree_from_cols(wt_repo, wt_path, wt_branch, wt_mine);
 
@@ -1097,6 +1189,7 @@ impl Database {
                     host_updated_at: host_updated_at.map(|at| at as u64),
                     force_deleted: force_deleted != 0,
                     teardown_owed: teardown_owed != 0,
+                    key,
                     worktrees: Vec::new(),
                 },
                 worktree,
@@ -1700,6 +1793,7 @@ fn row_to_shared_session(
     let wt_path: Option<String> = row.get(12)?;
     let wt_branch: Option<String> = row.get(13)?;
     let wt_mine: Option<bool> = row.get(14)?;
+    let key: Option<String> = row.get(15)?;
 
     let additional_dirs = additional_dirs_from_db(&dirs_str);
 
@@ -1721,6 +1815,7 @@ fn row_to_shared_session(
             display_order,
             tombstone: false,
             tombstone_at: None,
+            key,
         },
         worktree,
     ))
@@ -1746,7 +1841,63 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
+    }
+
+    #[test]
+    fn a_key_is_stored_found_and_cleared() {
+        let db = Database::open_in_memory().unwrap();
+        let mut keyed = make_session("lead");
+        keyed.key = Some("fleet.acme.lead".into());
+        db.upsert_session(&keyed).unwrap();
+        db.upsert_session(&make_session("plain")).unwrap();
+
+        assert_eq!(
+            db.get_session_by_id(keyed.id).unwrap().unwrap().key,
+            keyed.key
+        );
+        assert_eq!(db.find_sessions_by_key("fleet.acme.lead").unwrap().len(), 1);
+        assert_eq!(db.find_sessions_by_key_prefix("fleet.").unwrap().len(), 1);
+        // A key is compared exactly, so a prefix of one is too — `LIKE` would
+        // have folded the case and matched this.
+        assert!(db.find_sessions_by_key_prefix("FLEET.").unwrap().is_empty());
+        assert!(db.find_sessions_by_key_prefix("fleet_").unwrap().is_empty());
+
+        // A rename leaves the key alone; it is not a label.
+        db.rename_session(keyed.id, "renamed").unwrap();
+        assert_eq!(
+            db.find_sessions_by_key("fleet.acme.lead").unwrap()[0].name,
+            "renamed"
+        );
+
+        assert!(db.set_session_key(keyed.id, None).unwrap());
+        assert!(db
+            .find_sessions_by_key("fleet.acme.lead")
+            .unwrap()
+            .is_empty());
+
+        // A deleted row keeps its key for a restore to judge, but is not found.
+        db.set_session_key(keyed.id, Some("fleet.acme.lead"))
+            .unwrap();
+        db.soft_delete_session(keyed.id).unwrap();
+        assert!(db
+            .find_sessions_by_key("fleet.acme.lead")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.get_deleted_session_by_id(keyed.id).unwrap().unwrap().key,
+            keyed.key
+        );
+        assert!(
+            !db.set_session_key(keyed.id, None).unwrap(),
+            "set_session_key is for live rows"
+        );
+        db.clear_session_key(keyed.id).unwrap();
+        assert_eq!(
+            db.get_deleted_session_by_id(keyed.id).unwrap().unwrap().key,
+            None
+        );
     }
 
     /// The bulk read the snapshot uses, and the reason it omits rather than

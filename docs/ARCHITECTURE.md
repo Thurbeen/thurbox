@@ -2781,3 +2781,33 @@ and keeps tmux's default. A socket moved to a directory thurbox does not look
 in is still a server it cannot reach. The orphan left by an older build next to
 a live server is reported in the log and documented (`docs/CONFIG.md` → An
 orphaned tmux server); killing it is the only remedy.
+
+## ADR-35: A session's key is its address; its name is a label
+
+**Choice**: a session may carry one opaque **key** (`sessions.key`, schema v53),
+given by whoever creates it and never minted, parsed or interpreted by thurbox.
+It is unique among the live sessions of one **host** — the place
+`Route::host()` names, not the multiplexer server (`server_key`) — and that is
+enforced by the host's own database under the creation claim
+(`session_ops::names::claim_key`), not by an index: a host is read off a row's
+`backend_type` through the host registry, which `storage` does not see, and a
+mirror may hold a stale duplicate for one pass. Every writer of a key goes
+through the claim — create, `set-key`, restore, `register` — and a soft-deleted
+row does not reserve its key. It is in the row's JSON, so it is mirrored with the
+host's record winning (ADR-24). References reach it only through an explicit
+`key:` prefix. An extension's `[[sessions]]` entry that declares one is matched
+by it, on this machine only (ADR-21).
+
+**Why**: the only stable handles a driver had were the UUID, which a fresh
+process does not hold, and the name, which is not unique by design (ADR-24) and
+is what the user renames. Identity therefore lived in names: extensions twinned
+a session on every rename, `--on-existing adopt` adopted by name, deactivate
+matched names across every backend, and drivers parsed name grammars in several
+languages. `session_meta` could not serve: it is not settable at create, not
+looked up, not in the JSON, not mirrored, and has no uniqueness rule.
+
+**Limits**: names keep their two jobs — a typing convenience the resolver still
+accepts, and the window label the psmux clash check (`window_namesakes`) still
+guards — and no name-uniqueness is added. Name-based `--on-existing` remains for
+keyless callers. A delegated create against a host CLI older than `--key` fails
+on the unknown flag rather than creating a keyless session.

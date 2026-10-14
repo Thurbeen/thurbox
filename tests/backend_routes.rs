@@ -183,6 +183,7 @@ fn session(id: SessionId, name: &str, backend_type: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 
@@ -320,6 +321,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
             parent: None,
             deleted,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),

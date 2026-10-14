@@ -70,7 +70,7 @@ pub(crate) fn build_restart_plan(
         .env
         .extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
     config.env.remove(super::CODEX_PICKER_ENV);
-    super::inject_thurbox_env(&mut config, &agent_session_id, None);
+    super::inject_thurbox_env(&mut config, &agent_session_id, None, session.key.as_deref());
     // Where a restart gets what to run. A registry agent is resolved by name
     // *now* rather than replayed, so an `agents.toml` edit takes effect on the
     // next restart. A command session has no entry to resolve, so its persisted
@@ -856,6 +856,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 

@@ -127,6 +127,7 @@ fn seed_session(env: &Env, name: &str, agent: &str) -> String {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&row).expect("persist");
     row.id.to_string()

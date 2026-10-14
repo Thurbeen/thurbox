@@ -165,6 +165,19 @@ Each refusal lands in `EnsureReport::sessions_blocked` and is reported beside th
 `session restore` holds and asks the same three questions, for the other end of
 the same sequence, on local rows only.
 
+A `[[sessions]]` entry that declares a **`key`** (issue #1408) is matched by the
+key instead, on this machine only — by `ensure_session`
+(`ensure_keyed_session`, under `names::claim_key`), `deactivate_extension` and
+`extension_health` alike — and `name` is only the label it is created with. So
+renaming the session, or changing `name` in the manifest, no longer twins it.
+The name is not consulted at all for such an entry, and a soft delete does not
+reserve the key, so a deleted keyed session heals on the next tick; undoing the
+delete afterwards restores the original **without** its key. An automation's
+`session_ref` may name an entry by `name` or `key`. An entry without a `key`
+behaves exactly as before. Migrating a running session: stamp it once with
+`thurbox-cli session set-key <ref> <key>`, then install the manifest that
+declares it.
+
 **Installer resolution order, payload flags, versioning/staleness
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**

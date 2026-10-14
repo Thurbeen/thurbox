@@ -178,6 +178,7 @@ fn seed_row(db: &Database, name: &str, backend_type: &str, pane: &str) -> Sessio
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .expect("seed a row");
     id

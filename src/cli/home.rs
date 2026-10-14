@@ -215,6 +215,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 
@@ -225,6 +226,8 @@ mod tests {
                 parent: None,
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),

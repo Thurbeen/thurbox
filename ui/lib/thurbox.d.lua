@@ -417,6 +417,7 @@
 ---@class (exact) thurbox.Session
 ---@field id string
 ---@field name string
+---@field key? string The address a driver gave the session (`session create --key`); opaque, and unchanged by a rename.
 ---@field agent string What the row was created as.
 ---@field reports_as? string What a driver declared this session runs (`session reports-as`).
 ---@field detected_agent? string The registered agent observed in the pane, when it is not `agent`.

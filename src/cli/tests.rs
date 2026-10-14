@@ -62,6 +62,7 @@ fn pretty_flag_is_global() {
                 parent: None,
                 deleted: false,
                 verify: false,
+                ..
             }
         }
     ));
@@ -324,6 +325,7 @@ fn parse_session_list_accepts_parent_filter() {
                 parent,
                 deleted: false,
                 verify: false,
+                ..
             },
     } = subcommand(cli)
     else {

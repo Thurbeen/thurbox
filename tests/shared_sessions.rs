@@ -47,6 +47,7 @@ fn row(id: SessionId, name: &str, backend: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 
@@ -65,6 +66,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             parent: None,
             deleted: true,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -84,6 +87,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             parent: None,
             deleted: false,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -112,6 +117,63 @@ fn the_json_a_host_prints_is_the_json_a_peer_reads() {
     assert_eq!(read.session.additional_dirs, s.additional_dirs);
     assert_eq!(read.hook_state.as_deref(), Some("done"));
     assert_eq!(read.base_branch.as_deref(), Some("main"));
+}
+
+/// The key is part of the wire format (issue #1408): a peer that mirrors a
+/// host takes each row's key with it, and a row without one stays without.
+#[test]
+fn a_key_survives_the_round_trip_through_the_wire_format() {
+    let mut s = row(SessionId::default(), "lead", "local-tmux");
+    s.key = Some("fleet.acme.mission-control".into());
+    let printed = mirror::session_to_json(&s, None, None, Some(1));
+    assert_eq!(printed["key"], "fleet.acme.mission-control");
+    let read = mirror::session_from_json(&printed, BACKEND).unwrap();
+    assert_eq!(read.session.key, s.key);
+
+    // A host older than keys prints no field, and has none.
+    let mut legacy = printed.clone();
+    legacy.as_object_mut().unwrap().remove("key");
+    assert_eq!(
+        mirror::session_from_json(&legacy, BACKEND)
+            .unwrap()
+            .session
+            .key,
+        None
+    );
+}
+
+/// The host's record of a key wins on every pass — given, changed and taken
+/// away there — and a local session with the same key is no conflict: keys are
+/// unique per host, and the two are on two machines.
+#[test]
+fn a_mirror_pass_carries_the_hosts_key_and_its_changes() {
+    let host = Database::open_in_memory().unwrap();
+    let observer = Database::open_in_memory().unwrap();
+    let id = SessionId::default();
+    let mut theirs = row(id, "lead", "local-tmux");
+    theirs.key = Some("fleet.lead".into());
+    host.upsert_session(&theirs).unwrap();
+    let mut mine = row(SessionId::default(), "lead", "local-tmux");
+    mine.key = Some("fleet.lead".into());
+    observer.upsert_session(&mine).unwrap();
+
+    let key_here = |db: &Database| db.get_session_by_id(id).unwrap().unwrap().key;
+    let report = pass(&observer, BACKEND, &host);
+    assert_eq!(report.adopted, vec![id]);
+    assert_eq!(key_here(&observer).as_deref(), Some("fleet.lead"));
+
+    host.set_session_key(id, Some("fleet.lead.v2")).unwrap();
+    assert_eq!(pass(&observer, BACKEND, &host).updated, vec![id]);
+    assert_eq!(key_here(&observer).as_deref(), Some("fleet.lead.v2"));
+
+    host.set_session_key(id, None).unwrap();
+    pass(&observer, BACKEND, &host);
+    assert_eq!(key_here(&observer), None);
+    assert_eq!(
+        observer.get_session_by_id(mine.id).unwrap().unwrap().key,
+        mine.key,
+        "the observer's own session is not the host's to re-key"
+    );
 }
 
 #[test]
@@ -334,6 +396,7 @@ fn own(db: &Database, name: &str) -> SessionId {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .unwrap();
     id
@@ -346,6 +409,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
             parent: None,
             deleted,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -557,6 +622,7 @@ fn host_row(id: SessionId, name: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 

@@ -413,6 +413,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&shared).unwrap();
         id

@@ -731,6 +731,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         for route in [
             "ssh:devbox",
@@ -1104,6 +1105,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&session).unwrap();
         // The recipient's hook reported this registry, so `gather` reads it
@@ -1160,6 +1162,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&session).unwrap();
         let id = session.id.to_string();

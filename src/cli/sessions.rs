@@ -59,8 +59,17 @@ pub enum Action {
         /// are `null` without it — see the command's own help.
         #[arg(long)]
         verify: bool,
+        /// Only the session(s) carrying exactly this key — local and mirrored
+        /// rows alike, each with its `host`.
+        #[arg(long, conflicts_with = "key_prefix")]
+        key: Option<String>,
+        /// Only the sessions whose key starts with this (e.g. `fleet.`) — how a
+        /// driver finds its own sessions without parsing names.
+        #[arg(long = "key-prefix")]
+        key_prefix: Option<String>,
     },
-    /// Get a session by name, UUID, or unique id prefix.
+    /// Get a session by name, UUID, or unique id prefix — or by key, as
+    /// `key:<key>` (this machine) or `key:<host>/<key>`.
     ///
     /// `show` is an alias: the CLI reads one thing with `get` and lists with
     /// `list` everywhere, and the other spellings other nouns grew are kept so
@@ -167,8 +176,16 @@ pub enum Action {
         /// `--repo-path`, its conversation as this.
         #[arg(long)]
         resume: Option<String>,
-        /// What to do when a session of this name is already active on this
-        /// backend.
+        /// The session's key: an opaque address of the caller's choosing,
+        /// unique among the live sessions of the target host. Held to a name's
+        /// rules. Thurbox never interprets it; `key:<key>` resolves it in every
+        /// command that takes a session, and a rename leaves it alone.
+        #[arg(long)]
+        key: Option<String>,
+        /// What to do when the session is already there. With `--key`,
+        /// "already there" means a live session with that key on the target
+        /// host, whatever its name; without it, one with this name on this
+        /// backend — the legacy match, for callers that hold no key.
         #[arg(long = "on-existing", value_enum, default_value_t = OnExisting::Allow)]
         on_existing: OnExisting,
         /// The agent this session's pane will actually run, when that is not
@@ -479,6 +496,24 @@ pub enum Action {
         #[arg(long, conflicts_with = "agent")]
         clear: bool,
     },
+    /// Give a live session a key, or take its key away with `--clear`.
+    ///
+    /// How a session created before keys (or without one) is stamped with the
+    /// address its driver will find it by. Refused when another live session
+    /// on the same host already has the key. Not `session key`, which types a
+    /// keystroke into the pane.
+    #[command(name = "set-key")]
+    SetKey {
+        /// Session name, UUID, unique id prefix, or `key:<key>`.
+        #[arg(value_name = "SESSION")]
+        session: String,
+        /// The key to give it.
+        #[arg(required_unless_present = "clear")]
+        key: Option<String>,
+        /// Remove the session's key.
+        #[arg(long, conflicts_with = "key")]
+        clear: bool,
+    },
     /// Read/write a session's metadata — the driver's own key/value space.
     Meta {
         #[command(subcommand)]
@@ -598,16 +633,20 @@ pub fn run(
     backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, CommandError> {
     match action {
-        Action::List {
-            deleted: true,
-            parent: _,
-            verify: _,
-        } => run_list_deleted(db),
+        Action::List { deleted: true, .. } => run_list_deleted(db),
         Action::List {
             parent,
             deleted: false,
             verify,
-        } => run_list_active(db, backends, parent, verify),
+            key,
+            key_prefix,
+        } => run_list_active(
+            db,
+            backends,
+            parent,
+            verify,
+            KeyFilter::from_flags(key, key_prefix),
+        ),
         Action::Get { uuid, no_verify } => run_get(db, backends, uuid, no_verify),
         Action::Create {
             name,
@@ -624,6 +663,7 @@ pub fn run(
             arg,
             env,
             resume,
+            key,
             on_existing,
             reports_as,
         } => run_create(
@@ -644,6 +684,7 @@ pub fn run(
                 arg,
                 env,
                 resume,
+                key,
                 on_existing,
                 reports_as,
             },
@@ -695,6 +736,11 @@ pub fn run(
             agent,
             clear,
         } => set_reports_as(db, &session, agent.as_deref(), clear),
+        Action::SetKey {
+            session,
+            key,
+            clear,
+        } => run_set_key(db, &session, key.as_deref().filter(|_| !clear)),
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
         Action::Signal { state, session } => run_signal(db, backends, state, session),
@@ -739,19 +785,51 @@ fn run_list_deleted(db: &Database) -> Result<CommandOutput, CommandError> {
         ]))
 }
 
+/// `session list --key` / `--key-prefix`: which keyed rows to list.
+enum KeyFilter {
+    All,
+    Exact(String),
+    Prefix(String),
+}
+
+impl KeyFilter {
+    fn from_flags(key: Option<String>, prefix: Option<String>) -> Self {
+        match (key, prefix) {
+            (Some(key), _) => Self::Exact(key),
+            (None, Some(prefix)) => Self::Prefix(prefix),
+            (None, None) => Self::All,
+        }
+    }
+
+    /// The rows to start from: the indexed lookup when a key is asked for.
+    fn rows(&self, db: &Database) -> Result<Vec<SharedSession>, CommandError> {
+        match self {
+            Self::All => db
+                .list_active_sessions()
+                .map_err(|e| format!("list_active_sessions: {e}").into()),
+            Self::Exact(key) => db
+                .find_sessions_by_key(key)
+                .map_err(|e| format!("find_sessions_by_key: {e}").into()),
+            Self::Prefix(prefix) => db
+                .find_sessions_by_key_prefix(prefix)
+                .map_err(|e| format!("find_sessions_by_key_prefix: {e}").into()),
+        }
+    }
+}
+
 fn run_list_active(
     db: &Database,
     backends: &super::Backends<'_>,
     parent: Option<String>,
     verify: bool,
+    keys: KeyFilter,
 ) -> Result<CommandOutput, CommandError> {
     let parent_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
         .transpose()?;
-    let sessions: Vec<SharedSession> = db
-        .list_active_sessions()
-        .map_err(|e| format!("list_active_sessions: {e}"))?
+    let sessions: Vec<SharedSession> = keys
+        .rows(db)?
         .into_iter()
         .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
         .collect();
@@ -788,9 +866,13 @@ fn run_list_active(
             // The id is not decoration: every follow-up command resolves a
             // session by UUID, so omitting it would only buy a second call.
             .list("sessions", &["name", "agent", "state", "id"])
-            .empty(match parent_id {
-                Some(id) => format!("0 sessions with parent {id}"),
-                None => "0 active sessions on this machine".to_string(),
+            .empty(match (parent_id, &keys) {
+                (Some(id), _) => format!("0 sessions with parent {id}"),
+                (None, KeyFilter::Exact(key)) => format!("0 sessions with key '{key}'"),
+                (None, KeyFilter::Prefix(prefix)) => {
+                    format!("0 sessions with a key starting '{prefix}'")
+                }
+                (None, KeyFilter::All) => "0 active sessions on this machine".to_string(),
             })
             .help([
                 "thurbox-cli session get <id>   the full record, worktrees included",
@@ -843,6 +925,7 @@ struct CreateArgs {
     arg: Vec<String>,
     env: Vec<String>,
     resume: Option<String>,
+    key: Option<String>,
     on_existing: OnExisting,
     reports_as: Option<String>,
 }
@@ -867,9 +950,15 @@ fn run_create(
         arg,
         env,
         resume,
+        key,
         on_existing,
         reports_as,
     } = args;
+    // Before anything else: a key that could not be stored is a usage error,
+    // and the `--on-existing` lookup below would otherwise run on it.
+    if let Some(key) = &key {
+        crate::session_ops::names::validate_key(key)?;
+    }
     let parent_session_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
@@ -895,7 +984,10 @@ fn run_create(
     let existing = resolve_existing(
         db,
         backends,
-        &name,
+        match &key {
+            Some(key) => Match::Key(key),
+            None => Match::Name(&name),
+        },
         on_existing,
         &backend,
         reports_as.as_deref(),
@@ -917,6 +1009,7 @@ fn run_create(
         args: arg,
         env,
         resume_session_id: resume,
+        key,
         ..Default::default()
     };
     let spawned = super::action::ensure_hooks_wired_for(db, backends, &req)
@@ -975,6 +1068,7 @@ fn run_create(
         json!({
             "id": res.session_id.to_string(),
             "name": res.name,
+            "key": res.key,
             "agent": res.agent,
             "agent_session_id": res.agent_session_id,
             // The pane, the checkouts and the server: everything the
@@ -1080,6 +1174,32 @@ fn run_rename(
             "session_id": row.id.to_string(),
             "session_name": name,
             "previous_name": report.previous,
+        }),
+        human,
+    ))
+}
+
+/// `session set-key` — give a live session a key (`Some`), or clear it.
+fn run_set_key(
+    db: &Database,
+    reference: &str,
+    key: Option<&str>,
+) -> Result<CommandOutput, CommandError> {
+    let row = resolve(db, reference)?;
+    let report = crate::session_ops::set_key::set_session_key_headless(db, row.id, key)?;
+    let human = match (key, report.changed) {
+        (Some(key), true) => format!("'{}' ({}) now has key '{key}'", row.name, row.id),
+        (Some(key), false) => format!("'{}' ({}) already has key '{key}'", row.name, row.id),
+        (None, true) => format!("'{}' ({}) has no key now", row.name, row.id),
+        (None, false) => format!("'{}' ({}) had no key", row.name, row.id),
+    };
+    Ok(CommandOutput::new(
+        json!({
+            "changed": report.changed,
+            "session_id": row.id.to_string(),
+            "session_name": row.name,
+            "key": key,
+            "previous_key": report.previous,
         }),
         human,
     ))
@@ -1822,10 +1942,14 @@ fn restore_deleted(
     if let Some(err) = &report.respawn_error {
         human.push_str(&format!("\n  agent not relaunched: {err}"));
     }
+    if let Some(why) = &report.key_dropped {
+        human.push_str(&format!("\n  {why}"));
+    }
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
             "restored": true,
+            "key_dropped": report.key_dropped,
             "id": id.to_string(),
             "name": report.name,
             "best_effort": report.best_effort,
@@ -2244,6 +2368,14 @@ fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
     })
 }
 
+/// What `--on-existing` looks for: the session with the caller's key on the
+/// target host, or — for a caller that gives none — the legacy name match.
+#[derive(Clone, Copy)]
+enum Match<'a> {
+    Key(&'a str),
+    Name(&'a str),
+}
+
 /// What [`resolve_existing`] decided, and what the creation still owes it.
 #[derive(Debug)]
 enum Existing {
@@ -2282,10 +2414,17 @@ enum Existing {
 /// `reports_as` is only consulted on the `adopt` arm: `replace` and `None`
 /// both flow back into the normal creation path, which already applies it to
 /// the freshly spawned session.
+///
+/// With a key ([`Match::Key`]) the question is the key's, on the target
+/// **host** (issue #1408): the session with that key, whatever it is called now
+/// — which is what lets `adopt` survive a rename. A namesake with another key or
+/// none is not "existing" for that call. Without one, the name match above is
+/// unchanged; a keyed session it finds is adopted with its key, replaced
+/// (key and all — the new session has none), or refused, like any other.
 fn resolve_existing(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
-    name: &str,
+    matching: Match<'_>,
     mode: OnExisting,
     backend: &str,
     reports_as: Option<&str>,
@@ -2293,18 +2432,35 @@ fn resolve_existing(
     if mode == OnExisting::Allow {
         return Ok(Existing::None);
     }
-    let found: Vec<SharedSession> = crate::session_ops::names::live_namesakes(db, name, backend)?;
+    let (found, what): (Vec<SharedSession>, String) = match matching {
+        Match::Key(key) => (
+            crate::session_ops::names::live_key_holders(db, key, backend)?,
+            format!("a session with key '{key}'"),
+        ),
+        Match::Name(name) => (
+            crate::session_ops::names::live_namesakes(db, name, backend)?,
+            format!("a session named '{name}'"),
+        ),
+    };
+    let name = match matching {
+        Match::Key(key) => key,
+        Match::Name(name) => name,
+    };
     match (mode, found.len()) {
         (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
         (OnExisting::Fail, _) => Err(format!(
-            "a session named '{name}' is already active on {backend} ({}). Use \
+            "{what} is already active on {backend} ({}). Use \
              `--on-existing adopt` to take it as it is, `--on-existing replace` \
-             to tear it down first, or pick another name",
+             to tear it down first, or pick another {}",
             found
                 .iter()
                 .map(|s| s.id.to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            match matching {
+                Match::Key(_) => "key",
+                Match::Name(_) => "name",
+            }
         )
         .into()),
         (OnExisting::Adopt, 1) => {
@@ -2437,6 +2593,9 @@ fn existing_session_output(
         json!({
             "id": session.id.to_string(),
             "name": session.name,
+            // Shown even to a caller that matched by name: a key it did not
+            // give is how it learns the session belongs to someone else.
+            "key": session.key,
             "agent": session.agent,
             "agent_session_id": session.agent_session_id,
             "backend_id": session.backend_id,
@@ -2682,6 +2841,7 @@ fn deleted_session_to_json(r: &crate::storage::DeletedSessionInfo) -> Value {
         "agent_session_id": r.agent_session_id,
         "cwd": r.cwd.as_ref().map(|p| p.display().to_string()),
         "parent_session_id": r.parent_session_id.map(|id| id.to_string()),
+        "key": r.key,
         "deleted_at": r.deleted_at,
         "force_deleted": r.force_deleted,
         "teardown_owed": r.teardown_owed,
@@ -2761,8 +2921,19 @@ fn register_running_session(
         &session.name,
     )?;
     session.backend_id = pane;
+    // A key comes along only when nobody on this machine has it: the row is
+    // being recorded either way — its window is already running, and refusing
+    // would leave `sync --adopt` retrying it every pass — so a taken key is
+    // dropped and said so, the way a restore drops one.
+    let (key_claim, key_dropped) =
+        crate::session_ops::names::admit_key(db, session.key.as_deref(), &session.backend_type)?;
+    let key_dropped = key_dropped.map(|why| format!("registered without its key: {why}"));
+    if key_dropped.is_some() {
+        session.key = None;
+    }
     db.upsert_session_as(&session, crate::storage::EventReason::Registered)
         .map_err(|e| format!("upsert_session: {e}"))?;
+    drop(key_claim);
     if let Some(state) = row.hook_state.as_deref() {
         let _ = db.set_hook_state(session.id, state);
     }
@@ -2774,12 +2945,20 @@ fn register_running_session(
             "registered": true,
             "id": session.id.to_string(),
             "name": session.name,
+            "key": session.key,
+            "key_dropped": key_dropped,
             "backend_id": session.backend_id,
         }),
-        format!(
-            "Registered running session '{}' ({})",
-            session.name, session.id
-        ),
+        match &key_dropped {
+            Some(why) => format!(
+                "Registered running session '{}' ({})\n  {why}",
+                session.name, session.id
+            ),
+            None => format!(
+                "Registered running session '{}' ({})",
+                session.name, session.id
+            ),
+        },
     ))
 }
 
@@ -2824,6 +3003,8 @@ mod tests {
                 parent: None,
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -2891,6 +3072,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 
@@ -2913,7 +3095,7 @@ mod tests {
                     resolve_existing(
                         &db,
                         &crate::backend::registry::inert(),
-                        "build",
+                        Match::Name("build"),
                         mode,
                         "local-tmux",
                         None
@@ -2930,7 +3112,7 @@ mod tests {
         assert!(resolve_existing(
             &db,
             &crate::backend::registry::inert(),
-            "build",
+            Match::Name("build"),
             OnExisting::Fail,
             "ssh:devbox",
             None
@@ -2949,7 +3131,7 @@ mod tests {
         let err = resolve_existing(
             &db,
             &crate::backend::registry::inert(),
-            "twin",
+            Match::Name("twin"),
             OnExisting::Adopt,
             "local-tmux",
             None,
@@ -3216,6 +3398,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         let hook = crate::session::Assessment::default();
         let rendered = render_session_list(std::slice::from_ref(&s), std::slice::from_ref(&hook));
@@ -3249,6 +3432,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&shared).unwrap();
 
@@ -3257,6 +3441,8 @@ mod tests {
                 parent: None,
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3295,6 +3481,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&parent).unwrap();
         let mut child = parent.clone();
@@ -3309,6 +3496,8 @@ mod tests {
                 parent: None,
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3328,6 +3517,8 @@ mod tests {
                 parent: Some(parent_id.to_string()),
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3345,6 +3536,8 @@ mod tests {
                 parent: Some("no-such-parent".into()),
                 deleted: false,
                 verify: false,
+                key: None,
+                key_prefix: None,
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3391,6 +3584,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&shared).unwrap();
         // Both empty and whitespace-only text are rejected (trimmed check),
@@ -3515,6 +3709,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&shared).unwrap();
         let auto = db
@@ -3688,5 +3883,184 @@ mod tests {
         assert!(!err.contains("uncommitted"), "{err}");
         assert!(err.contains("--best-effort"), "{err}");
         assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
+    }
+
+    fn keyed_test_session(name: &str, key: &str) -> SharedSession {
+        let mut s = make_test_session(name);
+        s.key = Some(key.into());
+        s
+    }
+
+    fn answered(existing: Existing) -> Value {
+        match existing {
+            Existing::Answered(output) => output.json,
+            other => panic!("expected an answer, got {other:?}"),
+        }
+    }
+
+    /// `--on-existing` with `--key`: "existing" is the session with that key
+    /// on the target host, whatever it is called now — which is what lets
+    /// `adopt` survive a rename. A namesake with another key, or none, is not
+    /// it, and neither is the same key on another host.
+    #[test]
+    fn on_existing_with_a_key_matches_the_key_and_not_the_name() {
+        let db = db();
+        let backends = crate::backend::registry::inert();
+        let mine = keyed_test_session("renamed-by-the-user", "fleet.lead");
+        db.upsert_session(&mine).unwrap();
+        db.upsert_session(&make_test_session("worker")).unwrap();
+        db.upsert_session(&keyed_test_session("worker", "fleet.other"))
+            .unwrap();
+        let mut remote = keyed_test_session("lead", "fleet.remote");
+        remote.backend_type = "ssh:devbox".into();
+        db.upsert_session(&remote).unwrap();
+
+        let adopted = answered(
+            resolve_existing(
+                &db,
+                &backends,
+                Match::Key("fleet.lead"),
+                OnExisting::Adopt,
+                "local-tmux",
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(adopted["id"], mine.id.to_string());
+        assert_eq!(adopted["key"], "fleet.lead");
+        assert_eq!(adopted["created"], false);
+
+        let err = resolve_existing(
+            &db,
+            &backends,
+            Match::Key("fleet.lead"),
+            OnExisting::Fail,
+            "local-tmux",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("key 'fleet.lead'"), "{}", err.message);
+
+        // The name `worker` is taken twice over, by a keyless session and by
+        // one with another key; neither is the session this key names.
+        for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
+            assert!(matches!(
+                resolve_existing(
+                    &db,
+                    &backends,
+                    Match::Key("fleet.worker"),
+                    mode,
+                    "local-tmux",
+                    None
+                ),
+                Ok(Existing::None)
+            ));
+            assert!(
+                matches!(
+                    resolve_existing(
+                        &db,
+                        &backends,
+                        Match::Key("fleet.remote"),
+                        mode,
+                        "local-tmux",
+                        None
+                    ),
+                    Ok(Existing::None)
+                ),
+                "{mode:?}: a key is per host"
+            );
+        }
+    }
+
+    /// Without `--key`, the legacy name match is unchanged, keyed sessions
+    /// included: `adopt` hands one back with its key showing (so the caller
+    /// sees whose it is), `fail` counts it as taken, and `replace` tears it
+    /// down, key and all.
+    #[test]
+    fn on_existing_without_a_key_still_matches_names_keyed_or_not() {
+        let db = db();
+        let backends = crate::backend::registry::inert();
+        let theirs = keyed_test_session("worker", "fleet.worker");
+        db.upsert_session(&theirs).unwrap();
+
+        let adopted = answered(
+            resolve_existing(
+                &db,
+                &backends,
+                Match::Name("worker"),
+                OnExisting::Adopt,
+                "local-tmux",
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(adopted["id"], theirs.id.to_string());
+        assert_eq!(adopted["key"], "fleet.worker", "the key stays and shows");
+        assert_eq!(
+            db.get_session_by_id(theirs.id).unwrap().unwrap().key,
+            theirs.key
+        );
+
+        assert!(resolve_existing(
+            &db,
+            &backends,
+            Match::Name("worker"),
+            OnExisting::Fail,
+            "local-tmux",
+            None
+        )
+        .is_err());
+
+        let replaced = resolve_existing(
+            &db,
+            &backends,
+            Match::Name("worker"),
+            OnExisting::Replace,
+            "local-tmux",
+            None,
+        )
+        .unwrap();
+        assert!(matches!(replaced, Existing::Replaced(id) if id == theirs.id));
+        assert!(db.find_sessions_by_key("fleet.worker").unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_filters_by_key_and_by_key_prefix_with_each_rows_host() {
+        let db = db();
+        db.upsert_session(&keyed_test_session("lead", "fleet.acme.lead"))
+            .unwrap();
+        let mut peer = keyed_test_session("lead", "fleet.zeta.lead");
+        peer.backend_type = "ssh:devbox".into();
+        db.upsert_session(&peer).unwrap();
+        db.upsert_session(&make_test_session("plain")).unwrap();
+        let list = |key: Option<&str>, key_prefix: Option<&str>| -> Vec<Value> {
+            run(
+                Action::List {
+                    parent: None,
+                    deleted: false,
+                    verify: false,
+                    key: key.map(str::to_string),
+                    key_prefix: key_prefix.map(str::to_string),
+                },
+                &db,
+                &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            )
+            .unwrap()
+            .json
+            .as_array()
+            .unwrap()
+            .clone()
+        };
+
+        let peers = list(None, Some("fleet."));
+        assert_eq!(peers.len(), 2);
+        let remote = peers.iter().find(|r| r["host"] == "devbox").unwrap();
+        assert_eq!(remote["key"], "fleet.zeta.lead");
+        let local = peers.iter().find(|r| r["host"].is_null()).unwrap();
+        assert_eq!(local["key"], "fleet.acme.lead");
+
+        assert_eq!(list(Some("fleet.acme.lead"), None).len(), 1);
+        assert!(list(Some("fleet."), None).is_empty(), "--key is exact");
+        assert_eq!(list(None, None).len(), 3);
     }
 }

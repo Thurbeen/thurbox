@@ -709,6 +709,7 @@ fn build_sessions(
         // observably in the pane right now. A row created as `zsh` with claude
         // running in it is otherwise a session the interface can only call
         // `zsh`.
+        set(&entry, "key", opt_lua_string(lua, row.key.as_deref())?)?;
         set(
             &entry,
             "reports_as",

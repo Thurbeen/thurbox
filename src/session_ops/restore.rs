@@ -32,6 +32,10 @@ pub struct RestoreReport {
     pub respawn_error: Option<String>,
     /// `session.post_restore` hooks that failed. The restore stands regardless.
     pub hook_failures: Vec<String>,
+    /// Why the session came back **without** the key it was deleted with —
+    /// another live session on its host has it now (an extension's self-heal,
+    /// typically), or is being given it. `None` when it had none or kept it.
+    pub key_dropped: Option<String>,
 }
 
 /// Restore a deleted session: the row, then its worktrees, then its agent.
@@ -247,6 +251,16 @@ pub fn restore_session_headless(
     } else {
         Some(refuse_a_taken_name(db, &deleted)?)
     };
+    // The key is not refused over, unlike the name: a soft-deleted row does not
+    // reserve it, so the session that has it now (self-heal's, as a rule) is
+    // the one that keeps it, and this one comes back without. Local rows only,
+    // for the reason the name check above gives. The claim is held until the
+    // row is active again, so nothing can be given the key in between.
+    let (key_claim, key_dropped) = match &_hold {
+        Some(_) => super::names::admit_key(db, deleted.key.as_deref(), &deleted.backend_type)?,
+        None => (None, None),
+    };
+    let key_dropped = key_dropped.map(|why| format!("restored without its key: {why}"));
 
     // The user's say, with every refusal above already made and the row still
     // deleted: a refusal here changes nothing.
@@ -263,6 +277,7 @@ pub fn restore_session_headless(
         branch: primary.map(|w| w.branch.clone()),
         host: super::lifecycle_hooks::host_name(&deleted.backend_type),
         parent_session_id: deleted.parent_session_id,
+        key: deleted.key.clone().filter(|_| key_dropped.is_none()),
         force_deleted: Some(deleted.force_deleted),
         worktrees: deleted
             .worktrees
@@ -303,11 +318,22 @@ pub fn restore_session_headless(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             hook_failures,
+            key_dropped: answer
+                .get("key_dropped")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         });
     }
 
+    // Dropped while the row is still deleted, so it is never live beside the
+    // session that has the key now — not even between two statements.
+    if key_dropped.is_some() {
+        db.clear_session_key(deleted.id)
+            .map_err(|e| format!("drop the key of '{}': {e}", deleted.name))?;
+    }
     db.restore_session(deleted.id)
         .map_err(|e| format!("restore session: {e}"))?;
+    drop(key_claim);
 
     let wanted = deleted.worktrees.len();
     let recovered = recreate_worktrees(&deleted.worktrees);
@@ -326,6 +352,7 @@ pub fn restore_session_headless(
         worktrees_recovered: recovered.len(),
         respawn_error,
         hook_failures,
+        key_dropped,
     })
 }
 
@@ -650,6 +677,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         })
         .expect("upsert");
         db.soft_delete_session(id).expect("soft delete");

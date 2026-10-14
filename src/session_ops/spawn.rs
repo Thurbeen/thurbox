@@ -97,6 +97,12 @@ pub struct SpawnRequest {
     /// sync, and looks like a session with no work in it. v1 carries the parent's
     /// worktree list onto the fork for the same reason.
     pub inherit_worktrees: Vec<SharedWorktree>,
+    /// The session's key (issue #1408), when the caller gives it one.
+    ///
+    /// Claimed for the length of the spawn and refused when a live session on
+    /// the target host already has it ([`super::names::claim_key`]). Never set
+    /// by a fork: a fork is a second session, and a key names one.
+    pub key: Option<String>,
 }
 
 /// Result returned on successful headless spawn.
@@ -104,6 +110,9 @@ pub struct SpawnRequest {
 pub struct SpawnResult {
     pub session_id: SessionId,
     pub name: String,
+    /// The key the session was created with — as the host recorded it, for a
+    /// delegated creation.
+    pub key: Option<String>,
     pub agent: String,
     pub agent_session_id: String,
     /// The spawned pane's id (`%N`), empty only where the platform can't
@@ -196,6 +205,28 @@ pub fn spawn_session_headless_with_progress(
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SpawnResult, String> {
+    spawn(db, backends, req, progress, None)
+}
+
+/// [`spawn_session_headless`] for a caller that has already claimed the
+/// request's key itself — self-heal, which has to tell "another creator holds
+/// it" (a deferred heal) apart from a failed spawn, and so asks first.
+pub(crate) fn spawn_session_holding_key(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    req: SpawnRequest,
+    held: &super::names::HeldName<'_>,
+) -> Result<SpawnResult, String> {
+    spawn(db, backends, req, None, Some(held))
+}
+
+fn spawn(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    req: SpawnRequest,
+    progress: Option<ProgressFn<'_>>,
+    key_held: Option<&super::names::HeldName<'_>>,
+) -> Result<SpawnResult, String> {
     let report = |phase: SpawnPhase| {
         if let Some(progress) = progress {
             progress(phase);
@@ -236,6 +267,21 @@ pub fn spawn_session_headless_with_progress(
     if let Some(note) = &sharing {
         tracing::warn!("'{}': {note}", req.name);
     }
+
+    // Below the delegation, because a delegated session's key is the host's to
+    // arbitrate against the rows it authors (ADR-24) — asked here, it would be
+    // asked of a mirror. Held until the row is written: until then no lookup
+    // can see this creation, and the claim is what a second creator meets.
+    let _key_claim = match (&req.key, key_held) {
+        (Some(key), None) => {
+            let claim = super::names::claim_key(db, key, &backend_type)?;
+            if let Some(refusal) = super::names::key_refusal(key, &backend_type, &claim) {
+                return Err(refusal);
+            }
+            Some(claim)
+        }
+        _ => None,
+    };
 
     // Resolve what to launch once; `agent_name` is derived from it so the
     // persisted name always matches what actually launched. A raw command is
@@ -286,6 +332,7 @@ pub fn spawn_session_headless_with_progress(
         parent_session_id: req.parent_session_id,
         task_id: req.task_id,
         fork_session_id: req.fork_session_id.clone(),
+        key: req.key.clone(),
         worktrees: req
             .inherit_worktrees
             .iter()
@@ -358,7 +405,12 @@ pub fn spawn_session_headless_with_progress(
         .env
         .extend(req.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     config.env.remove(super::CODEX_PICKER_ENV);
-    super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
+    super::inject_thurbox_env(
+        &mut config,
+        &agent_session_id,
+        req.task_id,
+        req.key.as_deref(),
+    );
 
     report(SpawnPhase::Backend);
     let member_dirs = launch_member_dirs(&primary_cwd, &worktrees, &additional_dirs, host.as_ref());
@@ -425,6 +477,7 @@ pub fn spawn_session_headless_with_progress(
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: req.key.clone(),
     };
     // The tmux window is already live. If the DB upsert fails now, no row exists
     // for the TUI to adopt and the window would be orphaned — untrackable and
@@ -476,6 +529,7 @@ pub fn spawn_session_headless_with_progress(
 
     Ok(SpawnResult {
         session_id,
+        key: req.key,
         name: req.name,
         agent: agent_name,
         agent_session_id,
@@ -493,6 +547,9 @@ pub fn spawn_session_headless_with_progress(
 /// Refuse a request that cannot be spawned, before anything is resolved.
 pub fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String> {
     crate::paths::validate_safe_name(&req.name)?;
+    if let Some(key) = &req.key {
+        super::names::validate_key(key)?;
+    }
     if req.resume_session_id.is_some() && req.command.as_deref().is_some_and(|c| !c.is_empty()) {
         return Err(
             "--resume is not supported for --command sessions: a raw command has no agent \
@@ -678,6 +735,7 @@ fn spawn_delegated(
         host: Some(host.name.clone()),
         parent_session_id: req.parent_session_id,
         task_id: req.task_id,
+        key: req.key.clone(),
         additional_dirs: req
             .extra_repos
             .iter()
@@ -710,6 +768,11 @@ fn spawn_delegated(
     }
     if let Some(parent) = req.parent_session_id {
         args.extend(["--parent".to_string(), parent.to_string()]);
+    }
+    // Forwarded, not checked here: the host enforces a key's uniqueness among
+    // its own rows, and refuses this creation itself when it is taken there.
+    if let Some(key) = &req.key {
+        args.extend(["--key".to_string(), key.clone()]);
     }
     for extra in &req.extra_repos {
         let path = extra.repo_path.to_string_lossy().into_owned();
@@ -767,6 +830,7 @@ fn spawn_delegated(
 
     Ok(SpawnResult {
         session_id,
+        key: row.key,
         name: row.name,
         agent: row.agent,
         agent_session_id: row.agent_session_id.unwrap_or_default(),
@@ -1732,6 +1796,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&parent).unwrap();
         assert!(validate_parent_session(&db, Some(parent.id)).is_ok());

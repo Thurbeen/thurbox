@@ -194,6 +194,10 @@ pub struct HookContext {
     /// The multiplexer pane (`%N`) once one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_id: Option<String>,
+    /// The session's key, when it has one — `THURBOX_SESSION_KEY`, as the
+    /// session's own pane receives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub worktrees: Vec<HookWorktree>,
     pub additional_dirs: Vec<PathBuf>,
 }
@@ -220,6 +224,7 @@ impl HookContext {
         set("THURBOX_SESSION", self.session_id.map(|id| id.to_string()));
         set("THURBOX_SESSION_ID", self.agent_session_id.clone());
         set("THURBOX_SESSION_NAME", Some(self.name.clone()));
+        set("THURBOX_SESSION_KEY", self.key.clone());
         set("THURBOX_AGENT", Some(self.agent.clone()));
         set("THURBOX_REPO", self.repo.as_deref().map(display));
         set("THURBOX_CWD", self.cwd.as_deref().map(display));

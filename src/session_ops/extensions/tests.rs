@@ -30,6 +30,7 @@ fn insert_session(db: &Database, name: &str) -> SessionId {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&shared).unwrap();
     id
@@ -55,6 +56,7 @@ fn flow_def() -> ExtensionDef {
         symlinks: Vec::new(),
         sessions: vec![ExtensionSession {
             name: "flow".into(),
+            key: None,
             agent: "flow".into(),
             repo_path: "/tmp/flow".into(),
         }],

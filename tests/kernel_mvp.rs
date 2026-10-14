@@ -188,6 +188,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         git: None,
         stopped: false,
         hook_state: None,
+        key: None,
         reports_as: None,
         detected_agent: None,
         shell_backend_id: None,
@@ -2768,6 +2769,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
+            key: None,
         },
         Some(&recorder),
     );

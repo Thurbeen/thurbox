@@ -2319,6 +2319,15 @@ four answers. `allow` (the default) creates a second session with that name;
 `adopt` returns the existing one with `created: false`; `replace` tears it down
 first; `fail` refuses and exits 1, naming the session in the way.
 
+**For a driver, this name match is legacy.** A program that has to find its own
+sessions again passes `--key` (next section): `--on-existing` then matches the
+session with that key on the target host, whatever it is called now, so `adopt`
+survives a rename. Without `--key` the name match below is unchanged — it stays
+for keyless callers — and it treats a keyed session like any other: `adopt`
+hands it back with its key showing in the answer (the sign it belongs to
+someone else), `replace` deletes it key and all and the new session has no key,
+`fail` counts it as taken.
+
 The question is asked of **the backend the creation lands on** — this machine,
 or the `--host` it names. The name namespace is wider than that (a mirrored
 host's rows share the table), and matching across it made `replace`
@@ -2375,6 +2384,52 @@ A restart holds its row for the length of the operation and a
 and one left behind would otherwise refuse the verb long after the holder died.
 What the hold cannot reach — a server already carrying such a pair — is repaired
 by retiring the loser, which ADR-25 describes.
+
+### A session's key: the address a driver finds it by
+
+A session may carry one **key** (`session create --key`, `session set-key`,
+`key` on an extension's `[[sessions]]`): an opaque string chosen by whoever
+creates it — `fleet.acme.mission-control`, say. Thurbox never mints, parses or
+interprets one. It stores it, compares it for equality, keeps it unique, resolves
+it and shows it (`key` in `list`/`get`/`create` JSON and so in the mirror format,
+`key` on the Lua `thurbox.Session`, `THURBOX_SESSION_KEY` in the pane and in
+lifecycle hooks). The name stays a label, free to change; a rename never touches
+the key.
+
+**One live session per key per host.** The scope is the host
+(`names::key_host`: `None` here, the `hosts.toml` name otherwise), not the
+multiplexer server — a key names a role, and one role under tmux and under psmux
+on one machine is still a twin. Each host's own database enforces it (ADR-24), so
+two machines may each have `fleet.acme.mission-control`, and a mirrored copy that
+briefly disagrees is a stale snapshot the next pass corrects, not a conflict.
+Every path that gives a row a key asks under the same claim the name guard uses
+(`names::claim_key`, an expiring `metadata` claim in a `key@<host>` scope held
+across the write): `create --key` and `set-key` refuse a taken key; `register`
+and an undo/`session restore` record the row **without** its key when another
+live session has it, and say so (`key_dropped`); `sync --adopt` registers through
+the host's `register`; `fork` never copies a key. A soft-deleted row does **not**
+reserve its key the way an undoable delete reserves a name — otherwise an
+extension could not self-heal its keyed session until the undo window closed —
+which is exactly why the undo that follows a heal comes back keyless.
+
+**Addressing.** `key:<key>` resolves to the session with that key on this machine
+only, never silently a remote one; `key:<host>/<key>` to the one on that host,
+through the mirrored rows (the first `/` is the host's, which is why a key is
+held to a name's rules: 1-64 bytes, no `/` or `\`, no `..`, no leading `.`). A
+key not found is exit 1, not ambiguous; two live holders — which no writer can
+make — still exit 3. Keys are **not** part of the implicit UUID → name → prefix
+order. A session whose *name* is spelled `key:x` — legal before keys existed —
+still resolves by that exact name when no key answers. `session list --key K` /
+`--key-prefix P` list across local and mirrored rows, each with its `host`.
+
+**Extensions.** A `[[sessions]]` entry with a `key` is ensured, deactivated and
+reported by that key, on this machine only; its `name` is only the label it is
+created with, so renaming the session — or changing `name` in the manifest — no
+longer spawns a twin. An automation's `session_ref` may name the entry by its
+`name` or its `key`, and reaches the live session by key either way. An entry
+without a `key` behaves exactly as before; thurbox never derives one. A session
+an extension already runs is migrated by stamping it once with `session set-key`
+before (or with) the manifest that declares the key.
 
 A restore refuses a name a live session now answers to, matched on the sanitised
 *window* name as `rename` matches it, since `deploy prod` and `deploy.prod` are

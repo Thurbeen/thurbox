@@ -88,6 +88,7 @@ pub fn context_for(session: &SharedSession) -> HookContext {
         branch: primary.map(|w| w.branch.clone()),
         host: host_name(&session.backend_type),
         parent_session_id: session.parent_session_id,
+        key: session.key.clone(),
         backend_id: Some(session.backend_id.clone()).filter(|id| !id.is_empty()),
         worktrees: session.worktrees.iter().map(worktree).collect(),
         additional_dirs: session.additional_dirs.clone(),
@@ -457,6 +458,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         let ctx = context_for(&session);
         assert_eq!(ctx.session_id, Some(sid));

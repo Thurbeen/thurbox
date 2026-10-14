@@ -192,6 +192,7 @@ fn spawn(
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
+            key: None,
         },
     );
     match result {

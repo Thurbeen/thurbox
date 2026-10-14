@@ -37,7 +37,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
 `schema` (CLI command tree plus that instance's live UI action catalog),
 `agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
-[`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/revision/register —
+[`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/set-key/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/revision/register —
 `sync`/`revision`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:
@@ -123,7 +123,7 @@ A failure to *launch* the multiplexer goes through
 and leaves every other io error alone — a permission error is not something an
 install fixes.
 
-### A session reference is a name, a UUID, or an id prefix
+### A session reference is a name, a UUID, an id prefix — or `key:`
 
 Every session verb takes the same reference, resolved in that order: a full
 UUID first (unambiguous by construction), then an exact name, then a unique id
@@ -135,9 +135,20 @@ one and can only escalate "several answer to that name". `--parent` and
 `session restore` resolve the same way; restore resolves against the *deleted*
 rows, since that is where its subject now is.
 
-`session create --on-existing <allow|adopt|replace|fail>` answers "a session of
-this name already exists" — one question, four answers, because none of them is
+A fourth spelling is never tried implicitly: `key:<key>` is the session carrying
+that key **on this machine**, `key:<host>/<key>` the one on that `hosts.toml`
+host via the mirrored rows. Not found is exit 1 (never a remote session, never
+ambiguous); two live holders, which no writer can make, exit 3.
+
+`session create --on-existing <allow|adopt|replace|fail>` answers "this session already exists" — one question, four answers, because none of them is
 safe to assume:
+
+With `--key`, "exists" means **the session with that key on the target host**,
+whatever its name — so `adopt` survives a rename, and a namesake with another
+key or none is not it. Without `--key` the name match below applies, keyed
+sessions included (`adopt` returns one with its `key` showing; `replace` deletes
+it and the new session has no key; `fail` counts it). For a driver, the name
+match is **legacy**: pass `--key`.
 
 | Mode | Behaviour |
 |---|---|
@@ -285,6 +296,23 @@ shipped there), and the env carries the `THURBOX_SESSION` the agent's
 `session signal` will report under. Without it the env names only this instance
 (config dir, data dir, socket). Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.
+
+### Session keys — the address a driver finds its sessions by
+
+One opaque **key** per session (issue #1408, ADR-35): `session create --key K`
+(validated like a name; forwarded to a `--host` create), `session set-key
+<ref> K` / `--clear` to stamp or unstamp a live session — **not** `session
+key`, which types a keystroke — and `session list --key K` / `--key-prefix P`
+across local and mirrored rows, each with its `host`. Thurbox never interprets
+it: it is unique among the **live sessions of one host** (`names::key_host`,
+not the multiplexer server), enforced under `names::claim_key` by every writer.
+`create`/`set-key` refuse a taken key; `register` and an undo/`restore` record
+the row without it and say so (`key_dropped`); `fork` never copies it; a
+soft-deleted row does not reserve it. It is `key` in `list`/`get`/`create` JSON
+(and the mirror format, the host's record winning), `key` on the Lua
+`thurbox.Session`, and `THURBOX_SESSION_KEY` in the pane and in lifecycle
+hooks. An extension `[[sessions]]` entry with a `key` is matched by it — see the
+thurbox-extensions skill.
 
 ### `session meta` — the driver's key/value space
 
@@ -709,7 +737,7 @@ the pre-create hooks run, so the placeholder row says so.
 
 - **Data**: `session::hook_def` — `HookEvent` (closed enum, serde-spelled
   as the dotted names), `LifecycleHook`, `HooksFile`, and `HookContext` with
-  `env()` (the `THURBOX_*` set — unset, never empty, for an unknown fact),
+  `env()` (the `THURBOX_*` set, `THURBOX_SESSION_KEY` included — unset, never empty, for an unknown fact),
   `json()` (the stdin document) and `workdir()`.
 - **File**: `agent::hooks_config` mirrors `host_config` — seed, strict
   parse through `parse_toml_reporting_unknown`, empty-with-warning on
