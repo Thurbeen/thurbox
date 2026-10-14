@@ -634,6 +634,7 @@ prompt = "tick"
                 new_session_args: vec![],
                 resume_latest: false,
                 hook_schema: None,
+                additional_dir_args: Vec::new(),
             }],
             files: vec![ExtensionFile {
                 path: "FLOW.md".into(),

@@ -115,12 +115,21 @@ pub(crate) fn build_restart_plan(
         ));
     }
 
-    let (command, mut args) = super::build_agent_invocation(&def, &config);
+    let member_dirs = session.cwd.as_ref().map_or_else(Vec::new, |primary| {
+        super::spawn::launch_member_dirs(
+            primary,
+            &session.worktrees,
+            &session.additional_dirs,
+            host,
+        )
+    });
+    let (command, mut args) = super::build_agent_invocation(&def, &config, &member_dirs);
     if codex_builtin && codex_id.is_none() {
         // An old row has only Thurbox's generated id. The interactive picker
         // can recover its real conversation without guessing from the CWD.
         args = std::iter::once("resume".to_string())
             .chain(def.args.iter().cloned())
+            .chain(def.build_directory_args(&member_dirs))
             .collect();
         config
             .env

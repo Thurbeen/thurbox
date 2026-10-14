@@ -361,13 +361,15 @@ pub fn spawn_session_headless_with_progress(
     super::inject_thurbox_env(&mut config, &agent_session_id, req.task_id);
 
     report(SpawnPhase::Backend);
-    let (command, mut args) = super::build_agent_invocation(&agent_def, &config);
+    let member_dirs = launch_member_dirs(&primary_cwd, &worktrees, &additional_dirs, host.as_ref());
+    let (command, mut args) = super::build_agent_invocation(&agent_def, &config, &member_dirs);
     if agent_def.name == "codex"
         && agent_def.fork_args == ["fork", "{id}"]
         && req.fork_session_id.as_deref() == Some("")
     {
         args = std::iter::once("fork".to_string())
             .chain(agent_def.args.iter().cloned())
+            .chain(agent_def.build_directory_args(&member_dirs))
             .collect();
     }
 
@@ -1015,6 +1017,39 @@ pub(crate) fn resolve_launch_cwd(
         .unwrap_or_else(|| primary_cwd.to_path_buf())
 }
 
+/// Explicit scope for symlink targets, without granting their parent dirs.
+/// Remote paths must be resolved by the agent on its own host, never locally.
+pub(crate) fn launch_member_dirs(
+    primary_cwd: &std::path::Path,
+    worktrees: &[SharedWorktree],
+    additional_dirs: &[PathBuf],
+    host: Option<&HostDef>,
+) -> Vec<PathBuf> {
+    let mut dirs = if worktrees.is_empty() {
+        vec![primary_cwd.to_path_buf()]
+    } else {
+        worktrees.iter().map(|w| w.worktree_path.clone()).collect()
+    };
+    dirs.extend_from_slice(additional_dirs);
+    if dirs.len() < 2 {
+        return Vec::new();
+    }
+    let mut members = Vec::new();
+    for dir in dirs {
+        // Windows canonicalize returns extended-length paths; leave native
+        // paths to the CLI, which resolves symlinks and junctions itself.
+        let dir = if host.is_none() && !cfg!(windows) {
+            dir.canonicalize().unwrap_or(dir)
+        } else {
+            dir
+        };
+        if !members.contains(&dir) {
+            members.push(dir);
+        }
+    }
+    members
+}
+
 /// Build the per-session multi-repo symlink workspace — on the *remote* host
 /// when one is given (a local symlink dir wouldn't exist there), else with the
 /// local builder. `None` (error already logged) tells the caller to fall back
@@ -1284,7 +1319,11 @@ pub(crate) fn resolve_launch_home(host: &HostDef) -> Option<String> {
 /// Whether any of `def`'s arg groups still carries an unexpanded `{home}`.
 fn def_references_home(def: &crate::session::AgentDef) -> bool {
     let has = |v: &[String]| v.iter().any(|t| t.contains(super::HOME_PLACEHOLDER));
-    has(&def.args) || has(&def.resume_args) || has(&def.fork_args) || has(&def.new_session_args)
+    has(&def.args)
+        || has(&def.resume_args)
+        || has(&def.fork_args)
+        || has(&def.new_session_args)
+        || has(&def.additional_dir_args)
 }
 
 /// Why no thurbox-managed agent config may be shipped to `host`, or `None`
@@ -2304,6 +2343,29 @@ mod tests {
         // No worktrees, no extra dirs → 1 member → primary cwd, no workspace.
         let got = resolve_launch_cwd("sid-1", &primary, &[], &[], None);
         assert_eq!(got, primary);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn member_scope_resolves_local_aliases_but_never_resolves_remote_paths_here() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("member space");
+        std::fs::create_dir(&target).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let other = temp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let canonical = target.canonicalize().unwrap();
+        assert_eq!(
+            launch_member_dirs(&alias, &[], &[other.clone(), target], None),
+            [canonical, other.canonicalize().unwrap()]
+        );
+        let host: HostDef = toml::from_str("name = 'test'\ndestination = 'test'\n").unwrap();
+        assert_eq!(
+            launch_member_dirs(&alias, &[], std::slice::from_ref(&other), Some(&host)),
+            [alias.clone(), other]
+        );
+        assert!(launch_member_dirs(&alias, &[], &[], Some(&host)).is_empty());
     }
 
     #[test]

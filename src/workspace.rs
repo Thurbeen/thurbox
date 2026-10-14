@@ -5,7 +5,8 @@
 //! `cwd`. Rather than teach every agent CLI a different `--add-dir`-style flag
 //! (many have none), thurbox builds one workspace directory full of symlinks —
 //! one per member dir — and launches the agent there. The agent then sees every
-//! repo as a subdirectory, with no per-agent configuration.
+//! repo as a subdirectory. Agents that check resolved symlink targets also
+//! receive their declarative directory-scope arguments at launch.
 //!
 //! ```text
 //! ~/.local/share/thurbox/workspaces/<agent_session_id>/

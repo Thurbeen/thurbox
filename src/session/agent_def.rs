@@ -34,6 +34,10 @@ pub struct AgentDef {
     /// model or any other flag here if you want one (e.g. `["--model", "opus"]`).
     #[serde(default)]
     pub args: Vec<String>,
+    /// Repeated for each multi-repo member, substituting `{dir}` with its
+    /// launch-host path. Empty for CLIs that need no explicit directory scope.
+    #[serde(default)]
+    pub additional_dir_args: Vec<String>,
     /// Emitted when resuming a known session; `{id}` is substituted.
     #[serde(default)]
     pub resume_args: Vec<String>,
@@ -98,6 +102,13 @@ impl AgentDef {
     pub fn resumes_latest(&self) -> bool {
         self.resume_latest && !self.resume_args.is_empty()
     }
+
+    /// Directory-scope arguments, separate from conversation-selection args.
+    pub fn build_directory_args(&self, dirs: &[std::path::PathBuf]) -> Vec<String> {
+        dirs.iter()
+            .flat_map(|dir| subst(&self.additional_dir_args, "{dir}", &dir.to_string_lossy()))
+            .collect()
+    }
 }
 
 /// Replace `placeholder` with `value` in every token of `tokens`.
@@ -155,6 +166,29 @@ impl AgentRegistry {
 mod tests {
     use super::*;
 
+    #[test]
+    fn directory_scope_keeps_native_paths_as_individual_arguments() {
+        let def = AgentDef {
+            additional_dir_args: vec!["--add-dir".into(), "{dir}".into()],
+            ..Default::default()
+        };
+        let paths = [
+            std::path::PathBuf::from(r"C:\projects\member space"),
+            std::path::PathBuf::from("/repos/member space"),
+        ];
+        assert_eq!(
+            def.build_directory_args(&paths),
+            [
+                "--add-dir",
+                r"C:\projects\member space",
+                "--add-dir",
+                "/repos/member space"
+            ]
+        );
+        assert!(def.build_directory_args(&[]).is_empty());
+        assert!(AgentDef::default().build_directory_args(&paths).is_empty());
+    }
+
     fn claude() -> AgentDef {
         AgentDef {
             name: "claude".into(),
@@ -165,6 +199,7 @@ mod tests {
             new_session_args: vec!["--session-id".into(), "{id}".into()],
             resume_latest: false,
             hook_schema: None,
+            additional_dir_args: Vec::new(),
         }
     }
 
@@ -202,6 +237,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: None,
+            additional_dir_args: Vec::new(),
         };
         let args = d.build_args(None, None, Some("ignored"));
         assert_eq!(args, vec!["--quiet"]);
@@ -219,6 +255,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            additional_dir_args: Vec::new(),
         };
         // resume id present, but no {id} token -> tokens unchanged.
         assert_eq!(
@@ -244,6 +281,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            additional_dir_args: Vec::new(),
         };
         // Flag set but no resume_args -> nothing to emit, so not "resumes latest".
         assert!(!d.resumes_latest());
@@ -269,6 +307,7 @@ mod tests {
                     new_session_args: vec![],
                     resume_latest: false,
                     hook_schema: None,
+                    additional_dir_args: Vec::new(),
                 },
             ],
         };

@@ -1238,6 +1238,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: hook_schema.map(str::to_string),
+            additional_dir_args: Vec::new(),
         }
     }
 

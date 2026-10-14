@@ -592,7 +592,12 @@ pub fn agent_launch_plan(
         _ => None,
     };
     let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), hooks);
-    let (command, args) = build_agent_invocation(&def, &config);
+    let member_dirs = session
+        .and_then(|s| s.cwd.as_ref().map(|primary| (s, primary)))
+        .map_or_else(Vec::new, |(s, primary)| {
+            spawn::launch_member_dirs(primary, &s.worktrees, &s.additional_dirs, host.as_ref())
+        });
+    let (command, args) = build_agent_invocation(&def, &config, &member_dirs);
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -814,7 +819,7 @@ pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::Agen
 pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
 
 /// Rewrite every `{home}` token in `def`'s arg groups (`args`, `resume_args`,
-/// `fork_args`, `new_session_args`) to `home`, in place.
+/// `fork_args`, `new_session_args`, `additional_dir_args`) to `home`, in place.
 ///
 /// `home` is the target's home dir: the *local* home for a local launch/restart
 /// (via [`crate::paths::home_dir`]), or the *remote* home for an SSH/WSL host
@@ -833,6 +838,7 @@ pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str)
     subst(&mut def.resume_args);
     subst(&mut def.fork_args);
     subst(&mut def.new_session_args);
+    subst(&mut def.additional_dir_args);
 }
 
 /// Build the `(command, args)` invocation for an already-resolved [`AgentDef`].
@@ -843,6 +849,7 @@ pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str)
 pub(crate) fn build_agent_invocation(
     def: &crate::session::AgentDef,
     config: &SessionConfig,
+    member_dirs: &[std::path::PathBuf],
 ) -> (String, Vec<String>) {
     let provider = crate::agent::GenericProvider::new(def.clone());
     // Reach the provider trait methods via fully-qualified call syntax so this
@@ -851,9 +858,10 @@ pub(crate) fn build_agent_invocation(
     let command =
         <crate::agent::GenericProvider as crate::agent::AgentProvider>::command(&provider)
             .to_string();
-    let args = <crate::agent::GenericProvider as crate::agent::AgentProvider>::build_args(
+    let mut args = <crate::agent::GenericProvider as crate::agent::AgentProvider>::build_args(
         &provider, config,
     );
+    args.extend(def.build_directory_args(member_dirs));
     (command, args)
 }
 
