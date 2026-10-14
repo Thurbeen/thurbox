@@ -20,17 +20,18 @@ pub const ID_PLACEHOLDER: &str = "{id}";
 
 /// One coding-agent CLI definition.
 ///
-/// Each `*_args` group is appended to the final argument list **only** when its
-/// driving value is present (the session is being resumed/forked, etc.), with
+/// Resume, fork and new-session groups are appended **only** when their
+/// driving id is present, with
 /// `{id}` substituted token-by-token. This avoids any "unresolved placeholder"
-/// heuristics: a group with no value is simply omitted.
+/// heuristics: a group with no value is simply omitted. Directory arguments
+/// expand separately for the selected members, substituting `{dir}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDef {
     /// Display + lookup name (e.g. `"claude"`). Unique within a registry.
     pub name: String,
     /// CLI executable to run (e.g. `"claude"`, `"opencode"`).
     pub command: String,
-    /// Static arguments always passed, before any templated group. Bake a
+    /// Static arguments always passed. Bake a
     /// model or any other flag here if you want one (e.g. `["--model", "opus"]`).
     #[serde(default)]
     pub args: Vec<String>,

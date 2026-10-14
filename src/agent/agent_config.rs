@@ -30,8 +30,9 @@ use crate::session::{AgentDef, AgentRegistry};
 const BUILTIN_AGENTS_HEAD: &str = r#"# Thurbox coding-agent definitions.
 #
 # Each [[agents]] entry describes how to launch one coding-agent CLI. The
-# `*_args` groups are appended only when their value is present, with {id}
-# substituted. `args` is always passed — put any extra flags (e.g. a model)
+# resume/fork/new-session groups are appended when their id is present, with
+# {id} substituted. additional_dir_args repeats per multi-repo member, with
+# {dir} substituted. `args` is always passed — put extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
 #
 # Unknown keys are reported on startup (and fail `thurbox-cli config

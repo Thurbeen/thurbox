@@ -414,7 +414,7 @@ automatically. Work the checklist top to bottom:
    the resume/fork/new-session groups, and `resume_latest` per the ID model
    above. Add a short comment explaining the CLI's resume/fork semantics, as the
    existing entries do. **Decide the ID model first** — whether the CLI can pin a
-   session id — because it determines every `*_args` group.
+   session id — because it determines the conversation argument groups.
 
 2. **Status hooks** — add the wiring to
    [`extensions/hooks/extension.toml`](../extensions/hooks/extension.toml) and

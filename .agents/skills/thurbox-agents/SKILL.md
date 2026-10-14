@@ -39,6 +39,7 @@ args = []                               # always passed; bake a model here if yo
 resume_args = ["--resume", "{id}"]      # emitted when resuming
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]  # emitted on a fresh spawn
+additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
 
 [[agents]]
 name = "codex"
@@ -47,7 +48,7 @@ resume_args = ["resume", "{id}"]
 fork_args = ["fork", "{id}"]
 ```
 
-Each `*_args` group is appended only when its driving value is
+Each conversation argument group is appended only when its driving id is
 present, with `{id}` substituted; `args` is always passed. No
 model is ever passed — each agent uses its own default config
 (put `["--model", "opus"]` in `args` if you want to pin one).
