@@ -63,7 +63,19 @@ pub enum Diff {
 struct Computed {
     session: String,
     request: u64,
-    diff: Diff,
+    /// `None` when the fingerprint matched the held answer's: it still stands,
+    /// and only its age moves.
+    diff: Option<Diff>,
+    fingerprint: Option<String>,
+}
+
+/// Whether a session's backend reaches its worktree over ssh — where a diff
+/// costs network bytes, so it is fetched only while a pane shows it
+/// ([`DiffStore::request`]'s caller) and re-read only when its fingerprint
+/// moves. Every other backend keeps the plain TTL.
+pub fn over_ssh(backend: &str) -> bool {
+    crate::session::Route::parse(backend)
+        .is_ok_and(|route| route.via() == Some(crate::session::Via::Ssh))
 }
 
 /// How long a settled diff is trusted before a request recomputes it, and how
@@ -94,6 +106,10 @@ struct Held {
     /// answer stands until the fresh one lands in [`DiffStore::poll`] — the
     /// same old-value-while-refreshing shape the git stats use.
     refreshing: bool,
+    /// What [`crate::git::diff_fingerprint_on`] said when `diff` was read —
+    /// ssh sessions only. A refresh that reads the same fingerprint keeps
+    /// `diff` instead of fetching the body again.
+    fingerprint: Option<String>,
 }
 
 impl Held {
@@ -185,6 +201,10 @@ impl DiffStore {
         }
         self.next_request = self.next_request.wrapping_add(1);
         let request = self.next_request;
+        let previous = self.diffs.get(session).and_then(|held| match held.diff {
+            Diff::Ready { .. } => held.fingerprint.clone(),
+            _ => None,
+        });
         match self.diffs.get_mut(session) {
             // A settled answer past its age: keep publishing it, mark the
             // recompute in flight, and dispatch below.
@@ -201,6 +221,7 @@ impl DiffStore {
                         at: std::time::Instant::now(),
                         diff: Diff::Pending,
                         refreshing: false,
+                        fingerprint: None,
                     },
                 );
             }
@@ -213,19 +234,31 @@ impl DiffStore {
         // backend is reported as a failed diff instead of a silent local read.
         let host = crate::session_ops::resolve_host(backend).flatten();
         let unreachable = host.is_none() && crate::session::Route::is_remote_key(backend);
+        let fingerprinted = over_ssh(backend);
 
         let tx = self.tx.clone();
         let session = session.to_string();
         std::thread::spawn(move || {
+            // Read before the diff, so a change landing between the two leaves
+            // an older fingerprint beside a newer diff: the next check then
+            // differs and reads again, rather than holding a stale body.
+            let fingerprint = (fingerprinted && !unreachable)
+                .then(|| crate::git::diff_fingerprint_on(host.as_ref(), &worktree, base.as_deref()))
+                .flatten();
             let diff = if unreachable {
-                Diff::Failed("this session's host is not in hosts.toml".to_string())
+                Some(Diff::Failed(
+                    "this session's host is not in hosts.toml".to_string(),
+                ))
+            } else if fingerprint.is_some() && fingerprint == previous {
+                None
             } else {
-                compute(&worktree, base.as_deref(), host.as_ref())
+                Some(compute(&worktree, base.as_deref(), host.as_ref()))
             };
             let _ = tx.send(Computed {
                 session,
                 request,
                 diff,
+                fingerprint,
             });
         });
     }
@@ -234,19 +267,20 @@ impl DiffStore {
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
-            if self.diffs.get(&done.session).map(|held| held.request) != Some(done.request) {
+            let Some(held) = self.diffs.get_mut(&done.session) else {
+                continue;
+            };
+            if held.request != done.request {
                 continue;
             }
-            let moved = self.get(&done.session) != Some(&done.diff);
-            self.diffs.insert(
-                done.session,
-                Held {
-                    request: done.request,
-                    at: std::time::Instant::now(),
-                    diff: done.diff,
-                    refreshing: false,
-                },
-            );
+            held.at = std::time::Instant::now();
+            held.refreshing = false;
+            held.fingerprint = done.fingerprint;
+            let Some(diff) = done.diff else {
+                continue;
+            };
+            let moved = held.diff != diff;
+            held.diff = diff;
             changed |= moved;
         }
         if changed {
@@ -269,6 +303,7 @@ impl DiffStore {
                 at: std::time::Instant::now(),
                 diff,
                 refreshing: false,
+                fingerprint: None,
             },
         );
     }
@@ -507,6 +542,7 @@ mod tests {
             at: std::time::Instant::now() - age,
             diff,
             refreshing: false,
+            fingerprint: None,
         }
     }
 
@@ -615,7 +651,8 @@ mod tests {
             .send(Computed {
                 session: "evicted".into(),
                 request: 1,
-                diff: empty_ready(),
+                diff: Some(empty_ready()),
+                fingerprint: None,
             })
             .unwrap();
         store
@@ -623,7 +660,8 @@ mod tests {
             .send(Computed {
                 session: "current".into(),
                 request: 99,
-                diff: Diff::Failed("obsolete".into()),
+                diff: Some(Diff::Failed("obsolete".into())),
+                fingerprint: None,
             })
             .unwrap();
         assert!(!store.poll());
@@ -642,12 +680,47 @@ mod tests {
             .send(Computed {
                 session: "current".into(),
                 request: 0,
-                diff: empty_ready(),
+                diff: Some(empty_ready()),
+                fingerprint: None,
             })
             .unwrap();
         assert!(!store.poll());
         assert_eq!(store.version(), version);
         assert!(!store.diffs["current"].refreshing);
+    }
+
+    #[test]
+    fn an_unchanged_fingerprint_keeps_the_held_diff_and_renews_its_age() {
+        let mut store = DiffStore::new();
+        store
+            .diffs
+            .insert("s1".into(), held(empty_ready(), DIFF_TTL));
+        let held_at = store.diffs["s1"].at;
+        let version = store.version();
+        store
+            .tx
+            .send(Computed {
+                session: "s1".into(),
+                request: 0,
+                diff: None,
+                fingerprint: Some("same".into()),
+            })
+            .unwrap();
+        assert!(!store.poll());
+        assert_eq!(store.version(), version);
+        let renewed = &store.diffs["s1"];
+        assert_eq!(renewed.diff, empty_ready());
+        assert!(renewed.at > held_at && !renewed.stale());
+        assert_eq!(renewed.fingerprint.as_deref(), Some("same"));
+    }
+
+    #[test]
+    fn only_ssh_backends_are_fingerprinted() {
+        assert!(over_ssh("ssh:devbox"));
+        assert!(over_ssh("ssh:devbox:rmux"));
+        assert!(!over_ssh("tmux"));
+        assert!(!over_ssh("local-tmux"));
+        assert!(!over_ssh("wsl:Ubuntu"));
     }
 
     /// The property the file list was changed for: **the body is capped and the list

@@ -468,6 +468,21 @@ about it are worth stating because each was wrong once:
   process and never again — a diff frozen at first sight while the agent kept
   writing, which is exactly the "cached answer with no age" mistake this document
   warns about two sections down.
+- **Over ssh a diff is fetched only while it is shown, and re-read only when it
+  moved.** The selection alone asked for one, so the selected remote session's whole
+  working diff crossed the link every `DIFF_TTL` with no pane drawing it — no bundled
+  pane reads `thurbox.diffs`. Measured: a ~100 KB uncommitted diff made one idle remote
+  session cost about 1.3 MB/min. Now the published `thurbox` table notes a read of
+  `diffs` the way it notes `metrics` (a cached pure tree counts with the flags of the
+  render that built it), the frame records whether any pane it drew read it, and an
+  ssh session's diff is requested only while one did. While shown, an expired answer
+  first reads `git::diff_fingerprint_on` — `status --porcelain=v2` plus `hash-object`
+  of every path that differs in the worktree, or the range's two commits — and keeps
+  the held diff when that has not moved. The status alone is not enough: a file
+  already modified keeps the same status entry however often it is edited again. Local and WSL sessions
+  keep the plain TTL; their diff costs no network. Pinned by `tui_e2e`'s
+  `a_remote_diff_nothing_shows_is_never_fetched` and
+  `a_shown_remote_diff_is_fetched_again_only_when_the_worktree_changes`.
 
 ---
 

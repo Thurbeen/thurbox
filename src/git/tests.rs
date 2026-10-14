@@ -2354,3 +2354,54 @@ fn worktree_stats_on_a_host_asks_the_host_and_never_the_local_disk() {
         "the host was asked, not this machine's disk"
     );
 }
+
+#[test]
+fn worktree_changed_paths_names_what_has_content_to_hash() {
+    let status = "# branch.oid abc\0\
+                  1 .M N... 100644 100644 100644 h1 h1 edited.rs\0\
+                  1 M. N... 100644 100644 100644 h1 h2 staged only.rs\0\
+                  1 .D N... 100644 100644 000000 h1 h1 gone.rs\0\
+                  2 RM N... 100644 100644 100644 h1 h1 R100 new name.rs\0old name.rs\0\
+                  u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict.rs\0\
+                  ? untracked file.txt\0\
+                  ? nested/\0";
+    assert_eq!(
+        worktree_changed_paths(status),
+        [
+            "edited.rs",
+            "new name.rs",
+            "conflict.rs",
+            "untracked file.txt"
+        ]
+    );
+}
+
+#[test]
+fn the_diff_fingerprint_moves_with_content_the_status_cannot_see() {
+    // An already-modified file edited again stays ` M` in the status and keeps
+    // its line counts; only its content says the diff changed.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git_in(dir, &["init", "-q", "--initial-branch=main"]);
+    git_in(dir, &["config", "user.email", "t@example.com"]);
+    git_in(dir, &["config", "user.name", "t"]);
+    git_in(dir, &["config", "commit.gpgsign", "false"]);
+    commit_file(dir, "a.txt", "one\n", "init");
+
+    std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+    let first = diff_fingerprint_on(None, dir, None).expect("fingerprint");
+    assert_eq!(diff_fingerprint_on(None, dir, None).as_ref(), Some(&first));
+
+    std::fs::write(dir.join("a.txt"), "six\n").unwrap();
+    let edited = diff_fingerprint_on(None, dir, None).expect("fingerprint");
+    assert_ne!(edited, first, "an edit with the same counts must move it");
+
+    std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+    let untracked = diff_fingerprint_on(None, dir, None).expect("fingerprint");
+    assert_ne!(untracked, edited, "a new untracked file must move it");
+
+    // Against a base, the range's two ends.
+    let ranged = diff_fingerprint_on(None, dir, Some("main")).expect("fingerprint");
+    commit_file(dir, "c.txt", "c\n", "more");
+    assert_ne!(diff_fingerprint_on(None, dir, Some("main")), Some(ranged));
+}

@@ -6618,6 +6618,7 @@ fn fake_ssh(profile: &Profile) -> Link {
              [ \"$#\" -gt 0 ] && shift\n\
              [ \"$#\" -eq 0 ] && exit 0\n\
              printf '%s\\n' \"$$\" >> {pids}\n\
+             printf '%s\\n' \"$*\" >> {calls}\n\
              case \" $* \" in\n\
              \x20 *\" -C attach-session \"*)\n\
              \x20   d=$(mktemp -d {root}/link.XXXXXX) || exit 1\n\
@@ -6631,6 +6632,7 @@ fn fake_ssh(profile: &Profile) -> Link {
              eval \"exec $*\"\n",
             pids = shell_word(&pids),
             root = shell_word(profile.root.path()),
+            calls = shell_word(&profile.root.path().join("ssh-calls")),
         ),
     )
     .expect("write the ssh stand-in");
@@ -6812,6 +6814,117 @@ fn connected_host_markers_keep_arrows_without_a_circle() {
         redundant_markers.is_empty(),
         "connected hosts should show only their arrow and host glyph: {redundant_markers:?}"
     );
+}
+
+/// A remote session whose worktree carries ~100 KB of uncommitted change: the
+/// shape that made one idle remote session cost 1.3 MB/min, all of it the
+/// selected session's working diff fetched again over ssh every few seconds.
+/// `pane`, when given, is installed as a strip before the interface starts.
+fn remote_session_with_a_large_diff(pane: Option<&str>) -> Option<(Profile, Link, Tui)> {
+    remote_shell_session_with(|profile, _| {
+        let body: String = (0..2000)
+            .map(|n| format!("line {n:05} of a large uncommitted change, padded out\n"))
+            .collect();
+        std::fs::write(profile.path("repo/README.md"), body).expect("write the change");
+        if let Some(pane) = pane {
+            let ui = profile.path("config/ui/plugins");
+            std::fs::create_dir_all(&ui).expect("mkdir plugins");
+            std::fs::write(ui.join("95_diff_probe.lua"), pane).expect("write the pane");
+        }
+    })
+}
+
+/// A strip that shows the selected session's diff, which is all it takes to be
+/// "a pane that displays it": it reads `thurbox.diffs`.
+const DIFF_PROBE: &str = r#"return {
+  name = "diff_probe", slot = "diff_probe", strip = true, size = { len = 1 },
+  focusable = false,
+  render = function()
+    local text = "diff-probe=none"
+    for _, diff in pairs(thurbox.diffs or {}) do
+      local added = 0
+      for _, file in ipairs(diff.files or {}) do
+        added = added + file.added
+      end
+      text = "diff-probe=" .. diff.state .. ";added=" .. added
+    end
+    return { type = "text", text = text }
+  end,
+}
+"#;
+
+/// The calls the `ssh` stand-in has carried, from line `since` on.
+fn ssh_calls(profile: &Profile, since: usize) -> Vec<String> {
+    std::fs::read_to_string(profile.path("ssh-calls"))
+        .unwrap_or_default()
+        .lines()
+        .skip(since)
+        .map(|line| line.replace('\'', ""))
+        .collect()
+}
+
+/// How many times the full working diff body was read in `calls`.
+fn full_diff_reads(calls: &[String]) -> usize {
+    calls
+        .iter()
+        .filter(|call| call.ends_with("diff --no-color HEAD"))
+        .count()
+}
+
+/// Long enough for two expiries of the diff's five-second age.
+const IDLE_WINDOW: Duration = Duration::from_secs(12);
+
+#[test]
+fn a_remote_diff_nothing_shows_is_never_fetched() {
+    // No bundled pane reads `thurbox.diffs`, so the selected remote session's
+    // diff is bytes over the link that nothing ever draws.
+    let Some((profile, _link, mut tui)) = remote_session_with_a_large_diff(None) else {
+        return;
+    };
+    let since = ssh_calls(&profile, 0).len();
+    std::thread::sleep(IDLE_WINDOW);
+    let reads = full_diff_reads(&ssh_calls(&profile, since));
+    assert!(tui.quit().success());
+    assert_eq!(
+        reads, 0,
+        "the remote diff was fetched {reads} time(s) with no pane showing it"
+    );
+}
+
+#[test]
+fn a_shown_remote_diff_is_fetched_again_only_when_the_worktree_changes() {
+    let Some((profile, _link, mut tui)) = remote_session_with_a_large_diff(Some(DIFF_PROBE)) else {
+        return;
+    };
+    tui.wait_for("diff-probe=ready;added=2000");
+    assert!(
+        full_diff_reads(&ssh_calls(&profile, 0)) >= 1,
+        "a shown diff is read in full at least once"
+    );
+
+    // Unchanged: the diff ages out twice, and each time a cheap check must
+    // stand in for the 100 KB body.
+    let since = ssh_calls(&profile, 0).len();
+    std::thread::sleep(IDLE_WINDOW);
+    let idle = ssh_calls(&profile, since);
+    assert_eq!(
+        full_diff_reads(&idle),
+        0,
+        "an unchanged remote diff was read in full again:\n{}",
+        idle.join("\n")
+    );
+    assert!(
+        idle.iter().any(|call| call.contains(" hash-object ")),
+        "a shown remote diff must still be checked for change:\n{}",
+        idle.join("\n")
+    );
+
+    // Changed: the next check notices, and the pane shows the new diff.
+    let mut more = std::fs::read_to_string(profile.path("repo/README.md")).expect("read");
+    more.push_str("one more line\n");
+    std::fs::write(profile.path("repo/README.md"), more).expect("write");
+    tui.wait_for("diff-probe=ready;added=2001");
+    assert!(tui.quit().success());
 }
 
 #[test]
