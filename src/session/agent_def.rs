@@ -104,9 +104,11 @@ impl AgentDef {
     }
 
     /// Directory-scope arguments, separate from conversation-selection args.
+    /// Omit non-UTF8 paths rather than granting a different, lossy path.
     pub fn build_directory_args(&self, dirs: &[std::path::PathBuf]) -> Vec<String> {
         dirs.iter()
-            .flat_map(|dir| subst(&self.additional_dir_args, "{dir}", &dir.to_string_lossy()))
+            .filter_map(|dir| dir.to_str())
+            .flat_map(|dir| subst(&self.additional_dir_args, "{dir}", dir))
             .collect()
     }
 }

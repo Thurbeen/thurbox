@@ -31,30 +31,37 @@ fn have_tmux() -> bool {
 #[test]
 #[cfg(unix)]
 fn multi_repo_launch_grants_only_member_targets_and_keeps_them_on_restart() {
-    scoped_launch_case(true, true, false);
+    scoped_launch_case(true, true, false, false);
 }
 
 #[test]
 #[cfg(unix)]
 fn in_place_multi_repo_launch_grants_canonical_members() {
-    scoped_launch_case(false, true, false);
+    scoped_launch_case(false, true, false, false);
 }
 
 #[test]
 #[cfg(unix)]
 fn single_repo_launch_keeps_its_original_scope() {
-    scoped_launch_case(false, false, false);
+    scoped_launch_case(false, false, false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_non_utf8_member_never_grants_a_different_directory() {
+    scoped_launch_case(false, true, false, true);
 }
 
 #[test]
 #[cfg(unix)]
 #[ignore = "requires THURBOX_TEST_CLAUDE pointing to the installed Claude CLI and python3"]
 fn installed_claude_edits_members_but_refuses_an_outside_symlink() {
-    scoped_launch_case(true, true, true);
+    scoped_launch_case(true, true, true, false);
 }
 
 #[cfg(unix)]
-fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool) {
+fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: bool) {
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use thurbox::session::ExtraRepo;
     use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
@@ -67,7 +74,16 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool) {
     let primary = repo();
     let extra = repo();
     let attached = home.path().join("attached space");
-    std::fs::create_dir(&attached).unwrap();
+    if non_utf8 {
+        let target = home
+            .path()
+            .join(std::ffi::OsString::from_vec(b"member\xff".to_vec()));
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(home.path().join("member\u{fffd}")).unwrap();
+        symlink(target, &attached).unwrap();
+    } else {
+        std::fs::create_dir(&attached).unwrap();
+    }
     let alias = home.path().join("primary alias");
     symlink(primary.path(), &alias).unwrap();
     let capture = home.path().join("launch");
@@ -161,7 +177,7 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool) {
             .filter(|w| w[0] == "--add-dir")
             .map(|w| w[1])
             .collect();
-        let expected: Vec<_> = if !multi {
+        let mut expected: Vec<_> = if !multi {
             assert_eq!(cwd, primary.path().canonicalize().unwrap());
             Vec::new()
         } else {
@@ -181,6 +197,7 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool) {
                 ]
             }
         };
+        expected.retain(|dir| dir.to_str().is_some());
         assert_eq!(
             dirs.len(),
             expected.len(),
