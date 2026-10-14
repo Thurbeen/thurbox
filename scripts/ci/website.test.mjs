@@ -86,3 +86,23 @@ test('extensions page describes Fleet as it ships today', () => {
   for (const stale of retiredFleet) assert.doesNotMatch(copy, stale);
   assert.doesNotMatch(copy, /fleet ships none on purpose/);
 });
+
+test('homepage links each official plugin from the interface section, and stays light on commands', () => {
+  const home = built('index.html');
+  const section = home.querySelector('#customizable');
+  const plugins = ['info-panel', 'code-review', 'automations', 'auto-continue', 'doom'];
+  for (const name of plugins) {
+    const repo = `https://github.com/Thurbeen/thurbox-${name}`;
+    const link = section.querySelector(`a[href="${repo}"]`);
+    assert.ok(link, `links ${repo}`);
+    assert.ok(text(link.parentNode).trim().length > `thurbox-${name}`.length, `${name} says what it does`);
+  }
+  assert.ok(section.querySelector('a[href="plugins.html"]'), 'points at the full catalog');
+  assert.doesNotMatch(home.innerHTML, /thurbox-discord|thurbox-plugin-orchestrator|thurbox-ask/);
+  // An install line is enough for a first visit; the rest lives in the docs.
+  const codeBlocks = home.querySelectorAll('pre').filter((pre) => /language-/.test(pre.innerHTML));
+  assert.equal(codeBlocks.length, 3, 'the install lines are the only code blocks');
+  assert.doesNotMatch(text(home), /thurbox-cli (plugin|session) /);
+  assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
+  assert.match(text(home.querySelector('#how-it-works')), /Run thurbox\. The session/, 'no space before the period');
+});
