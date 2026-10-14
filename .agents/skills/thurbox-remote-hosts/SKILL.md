@@ -296,7 +296,9 @@ session), never on the loop, ADR-P12).
   run, since a `Yes` verdict is cached for the process lifetime and a host that
   has since gone down would otherwise run its ssh out to the connect timeout six
   times a minute — right after anything it delegated, and from `automation
-  tick`), and performs create/delete/restart/restore by
+  tick`; a pass asks the host's `session revision` — its `rows_version` — first
+  and reuses the lists it last pulled while that holds, so an idle host is not
+  re-listed), and performs create/delete/restart/restore by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
   branched inside the four pipelines so every caller delegates). A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the

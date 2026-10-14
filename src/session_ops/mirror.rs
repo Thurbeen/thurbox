@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
@@ -593,8 +594,7 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
 /// One mirror pass for `host` through its usable CLI.
 pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<MirrorReport, String> {
     let backend = host.backend_name();
-    let active = host_cli::run(host, cli, &["session", "list"])?;
-    let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
+    let (active, deleted) = host_lists(host, cli, &backend)?;
     let transitive = if crate::agent::settings_config::load_quiet()
         .remote
         .transitive_sessions
@@ -606,6 +606,59 @@ pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<Mirro
     let report = reconcile_with(db, &backend, &active, &deleted, transitive);
     push_tombstones(db, host, cli, &report.tombstoned);
     Ok(report)
+}
+
+/// A host's two lists as it last answered them, and the `session revision` it
+/// reported just before.
+struct Listed {
+    revision: i64,
+    active: Value,
+    deleted: Value,
+}
+
+/// The last [`Listed`] per backend name. The revision is the generation: the
+/// host's own triggers move it on every write that could change either list,
+/// so an entry is current exactly while the host still reports its number.
+fn listed() -> &'static Mutex<HashMap<String, Listed>> {
+    static LISTED: OnceLock<Mutex<HashMap<String, Listed>>> = OnceLock::new();
+    LISTED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The host's `session list` and `session list --deleted` answers.
+///
+/// Both grow with the host's history and the mirror asks every few seconds,
+/// so a host that understands `session revision` is asked that first, and the
+/// lists it answered last time are reused while the number has not moved.
+/// The revision is read *before* the lists: a write landing between the two
+/// moves it past what is cached, so the next pass lists again rather than
+/// keeping an answer older than its number. Reconciling still runs every
+/// pass, against the reused lists, so a change on this side is handled exactly
+/// as before.
+fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Value), String> {
+    let revision = cli
+        .session_revision
+        .then(|| host_cli::run(host, cli, &["session", "revision"]).ok())
+        .flatten()
+        .and_then(|answer| answer.get("revision")?.as_i64());
+    if let Some(revision) = revision {
+        let cache = listed().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache.get(backend).filter(|l| l.revision == revision) {
+            return Ok((hit.active.clone(), hit.deleted.clone()));
+        }
+    }
+    let active = host_cli::run(host, cli, &["session", "list"])?;
+    let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
+    if let Some(revision) = revision {
+        listed().lock().unwrap_or_else(|e| e.into_inner()).insert(
+            backend.to_string(),
+            Listed {
+                revision,
+                active: active.clone(),
+                deleted: deleted.clone(),
+            },
+        );
+    }
+    Ok((active, deleted))
 }
 
 /// What a mirror pass does with a host's **transitive** rows: the sessions it

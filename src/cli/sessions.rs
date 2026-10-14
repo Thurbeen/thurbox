@@ -275,6 +275,14 @@ pub enum Action {
         #[arg(long)]
         adopt: bool,
     },
+    /// Print the generation of this database's session rows — what a peer
+    /// mirroring this machine compares before pulling the full lists.
+    ///
+    /// It moves on every write that could change `session list` or `session
+    /// list --deleted`, and on nothing else (hook liveness stamps and perf
+    /// telemetry leave it alone), so an unchanged number means both lists are
+    /// unchanged.
+    Revision,
     /// Record a session that is already running on this machine's server
     /// — a row for a window a peer created before sharing existed. Takes the
     /// JSON `session get` prints; launches nothing.
@@ -672,6 +680,7 @@ pub fn run(
         }
         Action::Focus { uuid } => run_focus(db, uuid),
         Action::Sync { host, adopt } => run_sync(db, host, adopt),
+        Action::Revision => run_revision(db),
         Action::Register { json_row } => run_register(db, backends.get(), json_row),
         Action::Stop { session } => run_stop(db, backends.get(), session),
         Action::Start { session } => run_start(db, backends.get(), session),
@@ -1311,6 +1320,16 @@ fn run_sync(
             .join("\n")
     };
     Ok(CommandOutput::new(json, human))
+}
+
+fn run_revision(db: &Database) -> Result<CommandOutput, CommandError> {
+    let (rows, _) = db
+        .snapshot_versions()
+        .map_err(|e| format!("snapshot_versions: {e}"))?;
+    Ok(CommandOutput::new(
+        json!({ "revision": rows }),
+        format!("revision {rows}"),
+    ))
 }
 
 fn run_register(

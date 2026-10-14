@@ -1355,6 +1355,23 @@ timeout, six times a minute.
 - **A mirror pass that could not run backs off to `MIRROR_RETRY_INTERVAL`**
   (60 s). The verdict cache and the pass cadence are separate questions; the
   pass is the one that pays for an unreachable host.
+- **An idle host is not re-listed** (2026-10-14). A pass used to pull the
+  host's full `session list` and `session list --deleted` every time, and the
+  deleted list only grows: a long-lived host cost ~122 KB a pass, ~0.74 MB a
+  minute, with nothing happening. The pass now asks `session revision` first —
+  the host's `rows_version` (schema v49), which its own triggers move on every
+  write either list could show — and reuses the lists it last pulled while the
+  number holds (`mirror::host_lists`). Reconciling still runs every pass, so a
+  change on the observer's side is handled as before. A host CLI that does not
+  advertise `session_revision` in `version --json` is listed in full, as
+  before. Measured as a pair over a real `ssh` connection (to the same
+  machine, with the host side's data directory pointed at a seeded database
+  whose `session list --deleted` is 121 KB; no live sessions, interface idle,
+  two 120 s windows, the ControlMaster socket's `bytes_received` from
+  `ss -tinpH`): **731 KB/min** before (24 ssh execs, 24 full listings), **2.1
+  KB/min** after (12 execs, each a `session revision`, no listing). Pinned end
+  to end over a stand-in `ssh` by
+  `shared_sessions::an_idle_host_is_not_listed_again`.
 
 **Consequence**: a down host costs a bounded handful of ssh attempts a minute
 rather than a continuous stream, and the mirror stops taking the database's

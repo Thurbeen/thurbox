@@ -88,6 +88,9 @@ pub struct CliInfo {
     pub multiplexer_choice: bool,
     /// Whether `session delete --soft` is understood; older peers always soft-delete.
     pub soft_delete_choice: bool,
+    /// Whether `session revision` is understood, so the mirror can skip the
+    /// full lists while the host's rows have not moved.
+    pub session_revision: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -689,6 +692,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         soft_delete_choice: json
             .get("soft_delete_choice")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        session_revision: json
+            .get("session_revision")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }))
@@ -1320,6 +1327,7 @@ pub(crate) mod fake {
             schema_version: Some(crate::storage::SCHEMA_VERSION),
             multiplexer_choice: false,
             soft_delete_choice: true,
+            session_revision: false,
         }
     }
 }
@@ -1450,6 +1458,7 @@ mod tests {
             schema_version: schema,
             multiplexer_choice: false,
             soft_delete_choice: false,
+            session_revision: false,
         }
     }
 
