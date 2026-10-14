@@ -594,8 +594,11 @@ how (or whether) to accept extra directories, so thurbox stays
 agent-neutral: a multi-repo session is launched in a per-session
 **symlink workspace** (`~/.local/share/thurbox/workspaces/<id>/`)
 holding one symlink per repo, with the agent's cwd set there. Every
-agent then sees each repo as a subdirectory — no per-agent flags and
-no `agents.toml` changes. The workspace is only symlinks, rebuilt
+agent then sees each repo as a subdirectory. Agents that check resolved symlink
+targets can declare `additional_dir_args` in `agents.toml`; Claude's built-in
+definition grants each member's checkout path with `--add-dir`, preserving the
+selected permission mode (see [directory scope](AGENTS.md#multi-repo-directory-scope)).
+The workspace is only symlinks, rebuilt
 idempotently on each launch and removed (without touching the repos)
 when the session is deleted. Single-repo sessions launch directly in
 the repo as before.

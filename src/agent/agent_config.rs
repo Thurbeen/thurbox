@@ -30,8 +30,9 @@ use crate::session::{AgentDef, AgentRegistry};
 const BUILTIN_AGENTS_HEAD: &str = r#"# Thurbox coding-agent definitions.
 #
 # Each [[agents]] entry describes how to launch one coding-agent CLI. The
-# `*_args` groups are appended only when their value is present, with {id}
-# substituted. `args` is always passed — put any extra flags (e.g. a model)
+# resume/fork/new-session groups are appended when their id is present, with
+# {id} substituted. additional_dir_args repeats per multi-repo member, with
+# {dir} substituted. `args` is always passed — put extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
 #
 # Unknown keys are reported on startup (and fail `thurbox-cli config
@@ -43,6 +44,7 @@ default = "claude"
 [[agents]]
 name = "claude"
 command = "claude"
+additional_dir_args = ["--add-dir", "{dir}"]
 resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]
@@ -182,6 +184,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # resume_args = []              # appended on restart/resume, with {id} substituted
 # fork_args = []                # appended on Ctrl+F fork, with {id} substituted
 # new_session_args = []         # appended on a fresh spawn, with {id} substituted
+# additional_dir_args = []      # repeated per multi-repo member, with {dir} substituted
 # resume_latest = false         # true ⇒ resume "the last session in this dir"
 #                               #   (id-less flags); leave false to pin by {id}
 # hook_schema = "claude"        # OPTIONAL: name the hook FAMILY this CLI speaks
@@ -213,6 +216,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # resume_args = ["--resume", "{id}"]
 # fork_args = ["--resume", "{id}", "--fork-session"]
 # new_session_args = ["--session-id", "{id}"]
+# additional_dir_args = ["--add-dir", "{dir}"]
 #
 # Set `default = "claude-opus"` at the top of this file to make it the default.
 "#;
@@ -388,6 +392,14 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         Some(toml::Value::Array(entries)) => {
             for (index, entry) in entries.iter().enumerate() {
                 if let Some(mut agent) = deserialize_agent(entry, index, &mut warnings) {
+                    // Existing registries predate explicit symlink-target scope.
+                    // An explicit empty group opts out; custom CLIs opt in as data.
+                    if entry.get("additional_dir_args").is_none()
+                        && agent.name == "claude"
+                        && agent.command == "claude"
+                    {
+                        agent.additional_dir_args = vec!["--add-dir".into(), "{dir}".into()];
+                    }
                     // Upgrade the former seeded Codex address without changing
                     // other definitions or user-supplied launch arguments.
                     if agent.name == "codex"
@@ -497,6 +509,71 @@ pub(crate) fn compact_toml_error(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_directory_scope_upgrades_missing_groups_and_preserves_explicit_choices() {
+        let (registry, warnings) = parse_agents_toml(
+            r#"
+[[agents]]
+name = "claude"
+command = "claude"
+args = ["--permission-mode", "plan"]
+[[agents]]
+name = "family"
+command = "wrapper"
+hook_schema = "claude"
+[[agents]]
+name = "opt-out"
+command = "claude"
+hook_schema = "claude"
+additional_dir_args = []
+[[agents]]
+name = "custom"
+command = "claude"
+[[agents]]
+name = "other"
+command = "other"
+additional_dir_args = ["--directory={dir}"]
+"#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            registry.get("claude").unwrap().additional_dir_args,
+            ["--add-dir", "{dir}"]
+        );
+        assert_eq!(
+            registry.get("claude").unwrap().args,
+            ["--permission-mode", "plan"]
+        );
+        assert!(registry
+            .get("family")
+            .unwrap()
+            .additional_dir_args
+            .is_empty());
+        assert!(registry
+            .get("opt-out")
+            .unwrap()
+            .additional_dir_args
+            .is_empty());
+        assert!(registry
+            .get("custom")
+            .unwrap()
+            .additional_dir_args
+            .is_empty());
+        assert_eq!(
+            registry.get("other").unwrap().additional_dir_args,
+            ["--directory={dir}"]
+        );
+        let (opt_out, warnings) = parse_agents_toml(
+            "[[agents]]\nname = 'claude'\ncommand = 'claude'\nadditional_dir_args = []\n",
+        );
+        assert!(warnings.is_empty());
+        assert!(opt_out
+            .get("claude")
+            .unwrap()
+            .additional_dir_args
+            .is_empty());
+    }
 
     #[test]
     fn builtin_registry_parses_and_has_claude_default() {

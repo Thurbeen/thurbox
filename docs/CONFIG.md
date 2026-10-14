@@ -139,11 +139,21 @@ args = []                   # always passed; bake a model here if you want one
 resume_args = ["--resume", "{id}"]            # emitted when resuming
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
+additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
 resume_latest = false       # true = id-less "resume last session in cwd"
 # hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
                             #   the built-in hooks extension wires its status
                             #   hooks under this custom agent's name too
 ```
+
+`additional_dir_args` is optional and normally empty. It scopes each resolved
+member checkout of a multi-repo session, with `{dir}` substituted as one
+argument; single-repo launches emit none. The built-in `claude` group above is
+also supplied in memory to existing `name = "claude"`, `command = "claude"`
+entries that omit it. Explicit `[]` opts out, and custom definitions can declare
+their own group. Restart affected sessions after upgrading. This changes
+directory scope, preserving the permission mode and deny/ask rules; see
+[Multi-repo directory scope](AGENTS.md#multi-repo-directory-scope).
 
 `{id}` is substituted with the thurbox-generated session UUID. `{home}`
 is substituted with the resolved home dir at spawn time (the remote home

@@ -28,18 +28,244 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
+#[test]
+#[cfg(unix)]
+fn multi_repo_launch_grants_only_member_targets_and_keeps_them_on_restart() {
+    scoped_launch_case(true, true, false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn in_place_multi_repo_launch_grants_canonical_members() {
+    scoped_launch_case(false, true, false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn single_repo_launch_keeps_its_original_scope() {
+    scoped_launch_case(false, false, false, false);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_non_utf8_member_never_grants_a_different_directory() {
+    scoped_launch_case(false, true, false, true);
+}
+
+#[test]
+#[cfg(unix)]
+#[ignore = "requires THURBOX_TEST_CLAUDE pointing to the installed Claude CLI and python3"]
+fn installed_claude_edits_members_but_refuses_an_outside_symlink() {
+    scoped_launch_case(true, true, true, false);
+}
+
+#[cfg(unix)]
+fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: bool) {
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use thurbox::session::ExtraRepo;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    let primary = repo();
+    let extra = repo();
+    let attached = home.path().join("attached space");
+    if non_utf8 {
+        let target = home
+            .path()
+            .join(std::ffi::OsString::from_vec(b"member\xff".to_vec()));
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(home.path().join("member\u{fffd}")).unwrap();
+        symlink(target, &attached).unwrap();
+    } else {
+        std::fs::create_dir(&attached).unwrap();
+    }
+    let alias = home.path().join("primary alias");
+    symlink(primary.path(), &alias).unwrap();
+    let capture = home.path().join("launch");
+    let agent = home.path().join("record-agent");
+    std::fs::write(
+        &agent,
+        "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\"; } > \"$CAPTURE\"\nif [ -n \"$PERMISSION_PROBE\" ]; then python3 \"$PERMISSION_PROBE\" \"$@\" > \"$CAPTURE.permissions\" 2>&1; fi\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut def = thurbox::agent::agent_config::builtin_registry()
+        .get("claude")
+        .unwrap()
+        .clone();
+    def.command = agent.display().to_string();
+    def.args = vec!["--permission-mode".into(), "acceptEdits".into()];
+    std::fs::write(
+        config.join("agents.toml"),
+        format!(
+            "default = \"claude\"\n[[agents]]\n{}",
+            toml::to_string(&def).unwrap()
+        ),
+    )
+    .unwrap();
+    let db = thurbox::storage::Database::open_in_memory().unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let mut request = SpawnRequest {
+        name: "scoped".into(),
+        repo_path: alias,
+        agent: Some("claude".into()),
+        env: [("CAPTURE".into(), capture.display().to_string())].into(),
+        extra_repos: if multi {
+            vec![
+                ExtraRepo {
+                    repo_path: extra.path().to_path_buf(),
+                    worktree,
+                    base_branch: Some("main".into()),
+                },
+                ExtraRepo {
+                    repo_path: attached.clone(),
+                    worktree: false,
+                    base_branch: None,
+                },
+            ]
+        } else {
+            Vec::new()
+        },
+        worktree_branch: worktree.then(|| "fix/scoped".into()),
+        base_branch: worktree.then(|| "main".into()),
+        ..Default::default()
+    };
+    if real_claude {
+        request.env.insert(
+            "THURBOX_TEST_CLAUDE".into(),
+            std::env::var("THURBOX_TEST_CLAUDE")
+                .expect("set THURBOX_TEST_CLAUDE to an absolute CLI path"),
+        );
+        request.env.insert(
+            "PERMISSION_PROBE".into(),
+            format!(
+                "{}/tests/fixtures/claude_permissions/probe.py",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+        );
+        request
+            .env
+            .insert("PROBE_HOME".into(), home.path().display().to_string());
+    }
+    let spawned = spawn_session_headless(&db, &backends, request).unwrap();
+    let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    let check = |text: &str| {
+        let lines: Vec<_> = text.lines().collect();
+        let cwd = Path::new(lines[0]);
+        let dirs: Vec<_> = lines
+            .windows(2)
+            .filter(|w| w[0] == "--add-dir")
+            .map(|w| w[1])
+            .collect();
+        let mut expected: Vec<_> = if !multi {
+            assert_eq!(cwd, primary.path().canonicalize().unwrap());
+            Vec::new()
+        } else {
+            assert_ne!(cwd, row.cwd.as_ref().unwrap());
+            assert_eq!(std::fs::read_dir(cwd).unwrap().count(), 3);
+            if worktree {
+                row.worktrees
+                    .iter()
+                    .map(|w| w.worktree_path.canonicalize().unwrap())
+                    .chain([attached.canonicalize().unwrap()])
+                    .collect()
+            } else {
+                vec![
+                    primary.path().canonicalize().unwrap(),
+                    extra.path().canonicalize().unwrap(),
+                    attached.canonicalize().unwrap(),
+                ]
+            }
+        };
+        expected.retain(|dir| dir.to_str().is_some());
+        assert_eq!(
+            dirs.len(),
+            expected.len(),
+            "resolved session members must be explicitly in scope: {text}"
+        );
+        for dir in expected {
+            assert!(
+                dirs.contains(&dir.to_str().unwrap()),
+                "missing {dir:?}: {text}"
+            );
+        }
+        assert!(lines
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"]));
+        assert!(!text.contains("bypassPermissions"));
+    };
+    let recorded = read_launch_capture(&capture);
+    check(&recorded);
+    let plan =
+        thurbox::session_ops::agent_launch_plan(&db, &backends, "claude", Some(&row)).unwrap();
+    check(&format!(
+        "{}\n{}\n",
+        recorded.lines().next().unwrap(),
+        plan.args.join("\n")
+    ));
+    let check_permissions = || {
+        if real_claude {
+            let result_path = capture.with_extension("permissions");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(50);
+            loop {
+                let text = std::fs::read_to_string(&result_path).unwrap_or_default();
+                if text.contains("\"passed\": true") {
+                    break;
+                }
+                assert!(
+                    !text.contains("Traceback") && std::time::Instant::now() < deadline,
+                    "Claude permission probe failed: {text}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            std::fs::remove_file(result_path).unwrap();
+        }
+    };
+    check_permissions();
+    std::fs::remove_file(&capture).unwrap();
+    thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id).unwrap();
+    check(&read_launch_capture(&capture));
+    check_permissions();
+}
+
+#[cfg(unix)]
+fn read_launch_capture(capture: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(capture) {
+            if text.contains("acceptEdits") {
+                return text;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agent did not record its launch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        // Scrubbed so an inherited GIT_* var cannot reach into this repo.
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .expect("run git")
-        .status
-        .success();
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(dir);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ] {
+        cmd.env_remove(var);
+    }
+    let ok = cmd.output().expect("run git").status.success();
     assert!(ok, "git {args:?} failed");
 }
 

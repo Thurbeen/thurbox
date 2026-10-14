@@ -272,6 +272,21 @@ instead.
 
 ### Session-backend e2e harnesses
 
+`tests/create_e2e.rs` checks multi-repo directory scope through the real spawn
+and restart pipeline using a recording agent. An opt-in test also runs the
+installed Claude CLI against a loopback fake API: no model calls or real
+credentials. It verifies member edits through workspace and canonical paths,
+resume, and denial of a nested symlink to a non-member directory:
+
+```bash
+THURBOX_TEST_CLAUDE="$(command -v claude)" cargo nextest run --test create_e2e \
+  --run-ignored all -E 'test(installed_claude_edits_members)'
+```
+
+This test requires Python 3 and Claude Code with `--bare` support. It is Unix
+only; native Windows directory arguments are covered by the portable registry
+tests, but this does not attest live psmux/rmux permission behavior.
+
 On native Windows, `tests/session_lifetime.rs` runs
 `scripts/dev/e2e/psmux-exit-control.ps1` when psmux is installed. It creates a
 random socket and disposable config/data profile, opts out of agent wiring in
