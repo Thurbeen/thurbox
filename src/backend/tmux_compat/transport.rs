@@ -58,14 +58,18 @@ impl SocketDir {
     /// The test is the same for every command, so all of them land on the
     /// same side of it. The path is measured in bytes, as `bind()` does, by
     /// `wc -c`: `${#s}` counts characters in a UTF-8 locale under bash. Only
-    /// that count runs in the C locale; the multiplexer keeps its own.
+    /// that count runs in the C locale; the multiplexer keeps its own. The
+    /// socket name is assigned before it is measured, never spliced into the
+    /// double-quoted `printf` argument, where its single quotes would not
+    /// apply.
     pub fn shell_expr(&self, socket: &str) -> String {
         match self {
             Self::Inherited => "${TMUX_TMPDIR:-/tmp}".to_string(),
             Self::Dir(dir) => posix_quote(dir),
             Self::HostData { app } => format!(
                 "$(d=${{TMUX_TMPDIR:-${{XDG_DATA_HOME:-$HOME/.local/share}}/{}/tmux}}; \
-                 b=$(printf %s \"$d/tmux-$(id -u)/{}\" | LC_ALL=C wc -c | tr -d ' '); \
+                 s=$d/tmux-$(id -u)/{}; \
+                 b=$(printf %s \"$s\" | LC_ALL=C wc -c | tr -d ' '); \
                  if [ \"$b\" -le {} ] && {{ [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; }} 2>/dev/null; \
                  then printf %s \"$d\"; else printf %s \"${{TMUX_TMPDIR:-/tmp}}\"; fi)",
                 posix_quote(app),
@@ -518,6 +522,47 @@ mod tests {
             ),
             "/x",
             "a TMUX_TMPDIR already set wins"
+        );
+    }
+
+    /// The socket name reaches the host already quoted for the shell, so it
+    /// has to land where that quoting applies: a name with `"` in it must not
+    /// end the string it sits in, one with a backquote must not run it, and
+    /// the quotes themselves must not count toward the path's length.
+    #[cfg(unix)]
+    #[test]
+    fn a_hosts_socket_name_is_measured_as_the_name_it_is() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let base = base.path().to_str().expect("utf-8");
+        for (i, socket) in ["a\"b", "a$HOME"].into_iter().enumerate() {
+            let data = format!("{base}/{i}");
+            assert_eq!(
+                host_data_dir(&[("HOME", base), ("XDG_DATA_HOME", &data)], socket),
+                format!("{data}/thurbox/tmux"),
+                "{socket}"
+            );
+        }
+        host_data_dir(&[("HOME", base)], "a`touch $HOME/ran`b");
+        assert!(
+            !std::path::Path::new(&format!("{base}/ran")).exists(),
+            "nothing ran"
+        );
+
+        // A name `posix_quote` wraps, on a path exactly at the limit: the
+        // path fits, so the data dir is kept.
+        // SAFETY: `getuid` cannot fail and touches no memory.
+        let uid = unsafe { libc::getuid() };
+        let socket = "a b";
+        let tail = format!("/thurbox/tmux/tmux-{uid}/{socket}");
+        let Some(pad) = SOCKET_PATH_MAX.checked_sub(base.len() + 1 + tail.len()) else {
+            eprintln!("skipping: the temp dir leaves no room");
+            return;
+        };
+        let data = format!("{base}/{}", "d".repeat(pad));
+        assert_eq!(data.len() + tail.len(), SOCKET_PATH_MAX);
+        assert_eq!(
+            host_data_dir(&[("HOME", base), ("XDG_DATA_HOME", &data)], socket),
+            format!("{data}/thurbox/tmux")
         );
     }
 

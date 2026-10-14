@@ -71,6 +71,21 @@ impl Drop for KillDefaultServer {
     }
 }
 
+/// Kills the server listening at a socket path when dropped — for a host
+/// server started in its data dir, which no [`TmuxServer`] pins. Declared
+/// after the guard whose directory holds the socket, so it runs first.
+struct KillServerAt(PathBuf);
+
+impl Drop for KillServerAt {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(&self.0)
+            .arg("kill-server")
+            .output();
+    }
+}
+
 /// The destination the stand-in `ssh` answers for.
 const DEST: &str = "e2e@sockrec.invalid";
 
@@ -375,6 +390,38 @@ fn a_host_whose_data_dir_is_too_deep_starts_its_server_in_the_default() {
         "the server is in tmux's default directory"
     );
     assert!(!deep.exists(), "nothing was made under the deep data dir");
+    assert!(
+        backend.discover().is_ok(),
+        "and later commands reach it there"
+    );
+    backend.shutdown();
+}
+
+/// A host's socket name reaches its shell quoted, and stays quoted through
+/// the data-dir test every command makes: one with a `"` in it starts and is
+/// reached in the host's data dir instead of failing every command.
+#[test]
+fn a_hosts_socket_name_with_a_quote_in_it_starts_in_its_data_dir() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = TmuxServer::pin("tbx-sockrec-quote");
+    let socket = format!("tbx-sockrec-\"q-{}", std::process::id());
+    let _bin = stand_in_ssh();
+    let data = server.tmpdir().join("xdg");
+    std::env::set_var("XDG_DATA_HOME", &data);
+    std::env::remove_var("TMUX_TMPDIR");
+
+    let at = socket_path(
+        &data.join(thurbox::paths::app_dir_name()).join("tmux"),
+        &socket,
+    );
+    let _kill = KillServerAt(at.clone());
+
+    let backend = host_backend(&socket, "tbx-sockrec");
+    backend.ensure_ready().expect("start over ssh");
+    assert!(at.exists(), "the server is in the host's data dir");
     assert!(
         backend.discover().is_ok(),
         "and later commands reach it there"
