@@ -91,6 +91,7 @@ fn session_row(name: &str, backend_type: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 

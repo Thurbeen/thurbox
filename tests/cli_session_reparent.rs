@@ -31,6 +31,7 @@ fn seed(db: &Database, name: &str, parent: Option<SessionId>) -> SessionId {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&row).expect("seed a session row");
     row.id

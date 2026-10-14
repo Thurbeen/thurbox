@@ -119,6 +119,10 @@ pub fn session_to_json(
         "id": s.id.to_string(),
         "updated_at": updated_at,
         "name": s.name,
+        // The session's address, in the wire format because the host's record
+        // of it is the one that counts (ADR-24): a peer mirroring this row takes
+        // the key with it, and `session register` gives it back.
+        "key": s.key,
         "agent": s.agent,
         "backend_type": s.backend_type,
         "backend_id": s.backend_id,
@@ -160,6 +164,11 @@ pub fn session_to_json_assessed(
     let mut put = |key: &str, v: Value| {
         obj.insert(key.to_string(), v);
     };
+    // Which machine the row is on, by the `hosts.toml` name (`null` here):
+    // what `key:<host>/<key>` is spelled with, so a row found by `list --key`
+    // carries its own address. Not in the mirror shape — a host's own rows are
+    // all `null` there, and the observer places them itself.
+    put("host", json!(super::names::key_host(&s.backend_type)));
     put("hook_state_at", json!(hook.state_at));
     put("hook_state_age_secs", json!(hook.age_secs));
     put("hook_reported", json!(hook.reported));
@@ -267,6 +276,8 @@ pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, S
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            // Absent from a host older than keys, which therefore has none.
+            key: string("key"),
         },
         hook_state: string("hook_state"),
         base_branch: string("base_branch"),
@@ -588,6 +599,9 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
         display_order: local.display_order,
         tombstone: local.tombstone,
         tombstone_at: local.tombstone_at,
+        // The host's: it enforced the key's uniqueness among its own rows, so a
+        // duplicate this pass makes beside a stale one is gone next pass.
+        key: host.key.clone(),
     }
 }
 
@@ -991,6 +1005,7 @@ mod tests {
             display_order: Some(5),
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 

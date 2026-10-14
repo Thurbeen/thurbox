@@ -223,6 +223,126 @@ pub fn hold<'a>(
     }))
 }
 
+/// Refuse a key that is not one: held to a name's rules (1-64 bytes, no `/` or
+/// `\`, no `..`, no leading `.`), so `key:<host>/<key>` stays parseable — the
+/// first `/` is the host's.
+pub fn validate_key(key: &str) -> Result<(), String> {
+    crate::paths::validate_safe_name(key).map_err(|e| format!("invalid key '{key}': {e}"))
+}
+
+/// The scope a key is unique in: the host a session on `backend` runs on.
+///
+/// The host, not [`super::server_key`]: a key names a role, so the same key
+/// under tmux and under psmux on one machine would be the twin the key exists
+/// to rule out. `None` is this machine.
+pub fn key_host(backend: &str) -> Option<String> {
+    crate::session::Route::parse(backend)
+        .ok()
+        .and_then(|route| route.host().map(str::to_string))
+}
+
+/// The live sessions on `backend`'s host already carrying `key`.
+///
+/// One at most in a database that has only ever written keys through
+/// [`claim_key`]; a list because a mirrored host's rows may hold a stale
+/// duplicate for one pass, and because reporting what is there beats assuming
+/// what should be.
+pub fn live_key_holders(
+    db: &Database,
+    key: &str,
+    backend: &str,
+) -> Result<Vec<SharedSession>, String> {
+    Ok(db
+        .find_sessions_by_key(key)
+        .map_err(|e| format!("find_sessions_by_key: {e}"))?
+        .into_iter()
+        .filter(|s| super::same_machine(&s.backend_type, backend))
+        .collect())
+}
+
+/// The outcome of [`claim_key`].
+pub enum KeyClaim<'a> {
+    /// Nobody on the host has the key and nobody else is deciding it: give it to
+    /// a row while this lives.
+    Held(HeldName<'a>),
+    /// Another creator is mid-way through giving the key to a row.
+    Busy,
+    /// A live session on the host already carries it.
+    Taken(Box<SharedSession>),
+}
+
+/// Claim `key` on `backend`'s host for the length of an operation that gives it
+/// to a row, and say whether it is free.
+///
+/// The same claim [`hold`] takes for a name, in a scope of its own (`key@<host>`,
+/// which no server key spells), so "look, then write" is one decision for every
+/// path that writes a key: create, `set-key`, restore, `register`. A
+/// soft-deleted row does not reserve its key the way [`undoable_namesake`]
+/// reserves a name — otherwise an extension could not self-heal its keyed
+/// session until the undo window had closed.
+pub fn claim_key<'a>(db: &'a Database, key: &str, backend: &str) -> Result<KeyClaim<'a>, String> {
+    let scope = format!("key@{}", key_host(backend).unwrap_or_default());
+    let now = current_time_millis();
+    let expires_at = now.saturating_add(hold_ttl_ms());
+    let won = db
+        .claim_session_name(&scope, key, expires_at, now)
+        .map_err(|e| format!("claim_session_name: {e}"))?;
+    if !won {
+        return Ok(KeyClaim::Busy);
+    }
+    let held = HeldName {
+        db,
+        claim: Some(NameClaim {
+            backend: scope,
+            name: key.to_string(),
+            expires_at,
+        }),
+    };
+    Ok(
+        match live_key_holders(db, key, backend)?.into_iter().next() {
+            Some(holder) => KeyClaim::Taken(Box::new(holder)),
+            None => KeyClaim::Held(held),
+        },
+    )
+}
+
+/// Why `key` could not be given to a session on `backend`, for a caller that
+/// refuses rather than chooses.
+pub fn key_refusal(key: &str, backend: &str, claim: &KeyClaim<'_>) -> Option<String> {
+    let place = key_host(backend).unwrap_or_else(|| "this machine".to_string());
+    match claim {
+        KeyClaim::Held(_) => None,
+        KeyClaim::Busy => Some(format!(
+            "key '{key}' is being given to a session on {place} right now; try again once \
+             that has finished"
+        )),
+        KeyClaim::Taken(holder) => Some(format!(
+            "key '{key}' already belongs to session '{}' ({}) on {place}",
+            holder.name, holder.id
+        )),
+    }
+}
+
+/// The key a row that is being recorded **anyway** may keep — for a writer
+/// that does not refuse over a key: a restore (the session that has the key now
+/// keeps it) and `session register` (the window is already running).
+///
+/// Returns the claim to hold until the row is written, and — when the key is
+/// taken or being given out — why the row must be written without it. `None`
+/// for both when there is no key to admit.
+pub fn admit_key<'a>(
+    db: &'a Database,
+    key: Option<&str>,
+    backend: &str,
+) -> Result<(Option<KeyClaim<'a>>, Option<String>), String> {
+    let Some(key) = key else {
+        return Ok((None, None));
+    };
+    let claim = claim_key(db, key, backend)?;
+    let refusal = key_refusal(key, backend, &claim);
+    Ok((Some(claim), refusal))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +369,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         })
         .expect("upsert");
         id
@@ -440,5 +561,87 @@ mod tests {
             "the successor still holds it"
         );
         release(&db, successor);
+    }
+
+    fn insert_keyed(db: &Database, name: &str, backend: &str, key: &str) -> SessionId {
+        let id = insert(db, name, backend);
+        assert!(db.set_session_key(id, Some(key)).expect("set key"));
+        id
+    }
+
+    fn is_held(claim: &KeyClaim<'_>) -> bool {
+        matches!(claim, KeyClaim::Held(_))
+    }
+
+    #[test]
+    fn a_key_is_held_to_a_names_rules_so_its_host_form_stays_parseable() {
+        assert!(validate_key("fleet.acme.mission-control").is_ok());
+        for bad in ["", "a/b", "a\\b", "..", ".hidden", &"k".repeat(65)] {
+            assert!(validate_key(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    /// The scope is the host, not the server: one machine under two
+    /// multiplexers is one place for a role to be twinned in.
+    #[test]
+    fn a_key_is_unique_per_host_whatever_multiplexer_serves_it() {
+        let db = db();
+        let holder = insert_keyed(&db, "lead", "local-tmux", "fleet.lead");
+
+        match claim_key(&db, "fleet.lead", "local-psmux").expect("claim") {
+            KeyClaim::Taken(found) => assert_eq!(found.id, holder),
+            _ => panic!("a live session on this machine has the key"),
+        }
+        assert!(
+            is_held(&claim_key(&db, "fleet.lead", "ssh:devbox").expect("claim")),
+            "another host's database is the one that rules on its keys"
+        );
+        assert_eq!(key_host("ssh:devbox:rmux").as_deref(), Some("devbox"));
+        assert_eq!(key_host("local-tmux"), None);
+    }
+
+    #[test]
+    fn a_held_key_is_busy_to_everyone_else_until_the_hold_ends() {
+        let db = db();
+        let first = claim_key(&db, "fleet.lead", "local-tmux").expect("claim");
+        assert!(is_held(&first));
+        assert!(matches!(
+            claim_key(&db, "fleet.lead", "local-tmux").expect("claim"),
+            KeyClaim::Busy
+        ));
+        assert!(key_refusal("fleet.lead", "local-tmux", &KeyClaim::Busy)
+            .is_some_and(|why| why.contains("right now")),);
+        drop(first);
+        assert!(is_held(
+            &claim_key(&db, "fleet.lead", "local-tmux").expect("claim")
+        ));
+    }
+
+    /// Unlike a name, a soft-deleted row's key is not spoken for: an extension
+    /// has to be able to heal its keyed session inside the undo window.
+    #[test]
+    fn a_deleted_row_does_not_reserve_its_key() {
+        let db = db();
+        let gone = insert_keyed(&db, "lead", "local-tmux", "fleet.lead");
+        db.soft_delete_session(gone).expect("soft delete");
+        assert!(is_held(
+            &claim_key(&db, "fleet.lead", "local-tmux").expect("claim")
+        ));
+    }
+
+    #[test]
+    fn a_row_recorded_anyway_keeps_its_key_only_when_it_is_free() {
+        let db = db();
+        let (claim, dropped) = admit_key(&db, Some("fleet.lead"), "local-tmux").expect("admit");
+        assert!(claim.is_some_and(|c| is_held(&c)) && dropped.is_none());
+
+        insert_keyed(&db, "lead", "local-tmux", "fleet.lead");
+        let (_, dropped) = admit_key(&db, Some("fleet.lead"), "local-tmux").expect("admit");
+        assert!(
+            dropped.is_some_and(|why| why.contains("lead")),
+            "says which session has it"
+        );
+        let (claim, dropped) = admit_key(&db, None, "local-tmux").expect("admit");
+        assert!(claim.is_none() && dropped.is_none());
     }
 }

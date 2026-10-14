@@ -100,6 +100,7 @@ fn live_session_running(db: &Database, program: &str) -> Option<SharedSession> {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&session).expect("persist the row");
     Some(session)

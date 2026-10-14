@@ -76,6 +76,7 @@ fn row(id: &str, name: &str, backend: &str, pane: Option<&str>) -> SessionRow {
         git: None,
         stopped: false,
         hook_state: None,
+        key: None,
         reports_as: None,
         detected_agent: None,
         shell_backend_id: None,

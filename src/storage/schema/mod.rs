@@ -15,9 +15,9 @@ use migrations::{
     migrate_v44_reports_as, migrate_v45_host_updated_at, migrate_v46_teardown_owed,
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
-    migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v5_session_commands,
-    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
-    migrate_v9_agent_session_id,
+    migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
+    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
+    migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -97,7 +97,13 @@ use rusqlite::Connection;
 /// `sessions.relaunch_held_at` (the hold, until a pane is recorded again).
 /// v52 empties `backend_id` on rows already marked lost: a loss now forgets the
 /// dead pane, whose id the server may have reissued to another session since.
-pub const SCHEMA_VERSION: u32 = 52;
+/// v53 adds `key` to `sessions` and the partial index `idx_sessions_key`: an
+/// opaque address a driver gives a session (issue #1408). Not a unique index —
+/// uniqueness is per *host*, a fact the row's `backend_type` encodes only
+/// through the host registry, and a mirrored host's rows may briefly hold a
+/// stale duplicate — so it is enforced under the creation claim instead
+/// (`session_ops::names::claim_key`).
+pub const SCHEMA_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -204,6 +210,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             teardown_owed     INTEGER NOT NULL DEFAULT 0,
             lost_at           INTEGER,
             relaunch_held_at  INTEGER,
+            key               TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -476,6 +483,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (50, migrate_v50_lost_at, Reapply::WhenMissing),
         (51, migrate_v51_event_exit, Reapply::WhenMissing),
         (52, migrate_v52_lost_rows_forget_pane, Reapply::Never),
+        (53, migrate_v53_session_key, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -961,6 +969,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// v53 adds the key column and its index to a database that has neither;
+    /// every existing row has no key.
+    #[test]
+    fn migrate_from_v52_adds_the_session_key() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO metadata (key, value) VALUES ('schema_version', '52');
+             CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                deleted_at INTEGER
+             );
+             INSERT INTO sessions (id, name, created_at, updated_at)
+                VALUES ('old', 'old', 0, 0);",
+        )
+        .unwrap();
+
+        migrate_v53_session_key(&conn).unwrap();
+        migrate_v53_session_key(&conn).unwrap();
+
+        assert!(column_exists(&conn, "sessions", "key").unwrap());
+        let key: Option<String> = conn
+            .query_row("SELECT key FROM sessions WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key, None);
+        let indexed: bool = conn
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_key'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(indexed);
     }
 
     /// v52 forgets the pane of a row already marked lost, and of no other: a

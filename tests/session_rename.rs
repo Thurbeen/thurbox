@@ -110,6 +110,7 @@ impl Env {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         self.db().upsert_session(&row).expect("persist");
         row.id

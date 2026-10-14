@@ -13,6 +13,13 @@
 //! 2. an exact name;
 //! 3. a UUID prefix, for typing the first few characters of an id.
 //!
+//! A fourth spelling is never tried implicitly: **`key:<key>`** names the
+//! session carrying that key on this machine, and **`key:<host>/<key>`** the one
+//! on host `<host>` (the `hosts.toml` name), read from the mirrored rows. Keys
+//! are opaque addresses a driver gives its sessions (issue #1408); the prefix is
+//! what keeps them out of the order above, so no key can shadow a name or an
+//! id, and an unqualified key never silently answers with a remote session.
+//!
 //! **Ambiguity is an error, never a guess.** Names are not unique (thurbox does
 //! not enforce it, and a mirrored host contributes rows that legitimately
 //! collide), so a reference matching more than one session is refused with
@@ -54,6 +61,17 @@ pub fn resolve_detailed(
     db: &Database,
     reference: &str,
 ) -> Result<SharedSession, (String, Ambiguity)> {
+    if let Some(addressed) = reference.strip_prefix(KEY_PREFIX) {
+        return match resolve_key(db, addressed) {
+            // A name may contain `:`, and one spelled like a key reference
+            // resolved by that name before keys existed. It still does, but
+            // only by the exact name and only when no key answers.
+            Err((reason, Ambiguity::NotFound)) => {
+                exact_name(db, reference).ok_or((reason, Ambiguity::NotFound))
+            }
+            other => other,
+        };
+    }
     if let Ok(id) = reference.parse::<SessionId>() {
         if let Some(found) = db
             .get_session_by_id(id)
@@ -95,6 +113,59 @@ pub fn resolve_detailed(
             Ambiguity::NotFound,
         )),
         _ => Err((ambiguous(reference, &by_prefix), Ambiguity::Many(by_prefix))),
+    }
+}
+
+/// The one active session with exactly this name, if exactly one has it.
+fn exact_name(db: &Database, name: &str) -> Option<SharedSession> {
+    let mut found = db.find_sessions_by_name(name).ok()?;
+    (found.len() == 1).then(|| found.remove(0))
+}
+
+/// The prefix that makes a reference a key rather than a name.
+pub const KEY_PREFIX: &str = "key:";
+
+/// `key:<key>` or `key:<host>/<key>` — the part after the prefix.
+///
+/// The first `/` separates the host, which a key cannot contain
+/// (`names::validate_key`). One live session per key per host is what every
+/// writer enforces, so a second candidate is a database that broke that rule
+/// (or a mirror one pass stale): refused as ambiguous all the same, because
+/// acting on either would be a guess.
+fn resolve_key(db: &Database, addressed: &str) -> Result<SharedSession, (String, Ambiguity)> {
+    // The host a row is on, read off its route here rather than through
+    // `session_ops::names::key_host`: the message path resolves references too,
+    // and must not reach the module that drives the multiplexer.
+    let (host, key) = match addressed.split_once('/') {
+        Some((host, key)) => (Some(host), key),
+        None => (None, addressed),
+    };
+    let found: Vec<SharedSession> = db
+        .find_sessions_by_key(key)
+        .map_err(|e| (format!("find_sessions_by_key: {e}"), Ambiguity::NotFound))?
+        .into_iter()
+        .filter(|s| {
+            crate::session::Route::parse(&s.backend_type)
+                .ok()
+                .and_then(|route| route.host().map(str::to_string))
+                .as_deref()
+                == host
+        })
+        .collect();
+    let place = match host {
+        Some(host) => format!("host '{host}'"),
+        None => "this machine".to_string(),
+    };
+    match found.len() {
+        1 => Ok(found.into_iter().next().expect("length checked")),
+        0 => Err((
+            format!("No session with key '{key}' on {place}"),
+            Ambiguity::NotFound,
+        )),
+        _ => Err((
+            ambiguous(&format!("{KEY_PREFIX}{addressed}"), &found),
+            Ambiguity::Many(found),
+        )),
     }
 }
 
@@ -196,6 +267,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         }
     }
 
@@ -268,6 +340,86 @@ mod tests {
         assert_eq!(
             resolve(&db, "solo").unwrap_err().exit_code,
             crate::cli::EXIT_ERROR
+        );
+    }
+
+    fn keyed(name: &str, backend: &str, key: &str) -> SharedSession {
+        let mut s = row(name);
+        s.backend_type = backend.into();
+        s.key = Some(key.into());
+        s
+    }
+
+    #[test]
+    fn a_key_reference_resolves_on_this_machine_only() {
+        let db = db();
+        let remote = keyed("lead", "ssh:devbox", "fleet.lead");
+        db.upsert_session(&remote).unwrap();
+
+        // The only session with the key is remote: an unqualified key is "not
+        // found", exit 1 — never silently the remote one, and not ambiguous.
+        let err = resolve(&db, "key:fleet.lead").unwrap_err();
+        assert_eq!(err.exit_code, crate::cli::EXIT_ERROR, "{}", err.message);
+        assert!(err.message.contains("this machine"), "{}", err.message);
+
+        let local = keyed("renamed-lead", "local-tmux", "fleet.lead");
+        db.upsert_session(&local).unwrap();
+        assert_eq!(resolve(&db, "key:fleet.lead").unwrap().id, local.id);
+    }
+
+    #[test]
+    fn a_host_qualified_key_resolves_through_the_mirrored_rows() {
+        let db = db();
+        let local = keyed("lead", "local-tmux", "fleet.lead");
+        let remote = keyed("lead", "ssh:devbox:rmux", "fleet.lead");
+        db.upsert_session(&local).unwrap();
+        db.upsert_session(&remote).unwrap();
+
+        assert_eq!(resolve(&db, "key:devbox/fleet.lead").unwrap().id, remote.id);
+        assert_eq!(resolve(&db, "key:fleet.lead").unwrap().id, local.id);
+        let err = resolve(&db, "key:elsewhere/fleet.lead").unwrap_err();
+        assert_eq!(err.exit_code, crate::cli::EXIT_ERROR);
+        assert!(err.message.contains("elsewhere"), "{}", err.message);
+    }
+
+    /// A key is never one of the implicit spellings: a session *named* like a
+    /// key is not found by `key:`, and a key does not answer to its bare text.
+    #[test]
+    fn keys_are_not_part_of_the_implicit_order() {
+        let db = db();
+        db.upsert_session(&keyed("lead", "local-tmux", "fleet.lead"))
+            .unwrap();
+        assert_eq!(
+            resolve(&db, "fleet.lead").unwrap_err().exit_code,
+            crate::cli::EXIT_ERROR
+        );
+    }
+
+    /// A session named like a key reference predates keys and must stay
+    /// reachable by that name — but a key always wins over it.
+    #[test]
+    fn a_name_spelled_like_a_key_reference_still_resolves_when_no_key_answers() {
+        let db = db();
+        let named = row("key:legacy");
+        db.upsert_session(&named).unwrap();
+        assert_eq!(resolve(&db, "key:legacy").unwrap().id, named.id);
+
+        let keyed_one = keyed("other", "local-tmux", "legacy");
+        db.upsert_session(&keyed_one).unwrap();
+        assert_eq!(resolve(&db, "key:legacy").unwrap().id, keyed_one.id);
+    }
+
+    /// Every writer keeps a key unique per host, so two live holders is a
+    /// broken database — refused as ambiguous rather than guessed between.
+    #[test]
+    fn two_holders_of_one_key_are_refused_as_ambiguous() {
+        let db = db();
+        db.upsert_session(&keyed("a", "local-tmux", "dup")).unwrap();
+        db.upsert_session(&keyed("b", "local-psmux", "dup"))
+            .unwrap();
+        assert_eq!(
+            resolve(&db, "key:dup").unwrap_err().exit_code,
+            crate::cli::EXIT_AMBIGUOUS
         );
     }
 }

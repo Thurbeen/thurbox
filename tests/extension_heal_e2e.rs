@@ -117,6 +117,7 @@ fn probe_def(repo: &Path) -> ExtensionDef {
         symlinks: Vec::new(),
         sessions: vec![ExtensionSession {
             name: DECLARED.into(),
+            key: None,
             agent: "shell".into(),
             repo_path: repo.to_path_buf(),
         }],
@@ -381,6 +382,7 @@ fn a_namesake_on_another_backend_does_not_answer_for_the_local_session() {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .expect("upsert");
 
@@ -541,5 +543,85 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
     assert!(
         !err.contains("session rename"),
         "renaming loses a race with the keeper here: {err}"
+    );
+}
+
+/// The key the keyed manifest below declares.
+const KEY: &str = "probe.mission-control";
+
+/// The live local sessions carrying [`KEY`].
+fn local_keyed(db: &Database) -> Vec<thurbox::sync::SharedSession> {
+    db.find_sessions_by_key(KEY)
+        .expect("find_sessions_by_key")
+        .into_iter()
+        .filter(|s| !thurbox::session::Route::is_remote_key(&s.backend_type))
+        .collect()
+}
+
+/// Issue #1408. A declared session matched by name was twinned by every rename:
+/// the next heal found no session of that name and made another. Matched by its
+/// key, a rename of the live session — and a new `name` in the manifest — is
+/// still the same session, and `deactivate`/`status` find it the same way.
+#[test]
+fn a_keyed_session_survives_a_rename_and_a_new_name_in_the_manifest() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let repo = repo();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _server = TmuxServer::pin(SOCKET);
+    isolate_paths(home.path());
+    let db = Database::open_in_memory().expect("db");
+    let backends = thurbox::backend::wiring::configured().0;
+    let mut def = probe_def(repo.path());
+    def.sessions[0].key = Some(KEY.into());
+
+    let Some(first) = heal(&db, &def) else { return };
+    assert_eq!(first.sessions_created, [DECLARED]);
+    let original = local_keyed(&db)[0].id;
+
+    thurbox::session_ops::rename::rename_session_headless(&db, &backends, original, "renamed")
+        .expect("rename");
+    let Some(second) = heal(&db, &def) else {
+        return;
+    };
+    assert!(
+        second.sessions_created.is_empty(),
+        "a rename spawned a twin: {second:?}"
+    );
+
+    def.sessions[0].name = "📡 Mission Control".into();
+    let Some(third) = heal(&db, &def) else { return };
+    assert!(third.sessions_created.is_empty(), "{third:?}");
+    let keyed = local_keyed(&db);
+    assert_eq!(keyed.len(), 1);
+    assert_eq!(keyed[0].id, original);
+    assert_eq!(keyed[0].name, "renamed", "the key does not rename it back");
+
+    let health = thurbox::session_ops::extension_health(&db, &def).expect("health");
+    assert_eq!(
+        health.sessions,
+        vec![("📡 Mission Control".to_string(), true)]
+    );
+
+    // A mirrored row on another machine with the same key and name is not
+    // this extension's to delete.
+    let mut remote = local_keyed(&db).remove(0);
+    remote.id = thurbox::session::SessionId::default();
+    remote.backend_type = "ssh:elsewhere".into();
+    remote.name = "📡 Mission Control".into();
+    db.upsert_session(&remote).expect("upsert");
+
+    let gone =
+        thurbox::session_ops::deactivate_extension(&db, &backends, &def, true).expect("deactivate");
+    assert_eq!(gone.sessions_deleted.len(), 1);
+    assert!(
+        local_keyed(&db).is_empty(),
+        "the local keyed session is gone"
+    );
+    assert!(
+        db.get_session_by_id(remote.id).expect("get").is_some(),
+        "the remote one is not this machine's"
     );
 }

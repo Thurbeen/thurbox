@@ -443,6 +443,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
+            key: None,
         },
     );
 
@@ -1960,6 +1961,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
+            key: None,
         },
     );
     let spawned = match result {
@@ -2110,6 +2112,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
             extra_repos: Vec::new(),
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
+            key: None,
         },
     );
     let spawned = match result {

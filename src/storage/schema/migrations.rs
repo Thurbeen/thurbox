@@ -970,6 +970,21 @@ pub(super) fn migrate_v52_lost_rows_forget_pane(conn: &Connection) -> rusqlite::
     .map(drop)
 }
 
+/// See [`super::SCHEMA_VERSION`] v53: NULL on every existing row — no session
+/// had an address before this version. The index is created here rather than
+/// in `initialize` because a database from before v53 reaches `initialize`
+/// with a `sessions` table that has no `key` column yet.
+pub(super) fn migrate_v53_session_key(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "sessions")? {
+        return Ok(());
+    }
+    add_column_if_absent(conn, "sessions", "key", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_key
+            ON sessions(key) WHERE key IS NOT NULL;",
+    )
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.

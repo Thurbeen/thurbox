@@ -293,6 +293,7 @@ fn row(name: &str, pane: String) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 

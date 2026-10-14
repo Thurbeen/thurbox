@@ -112,6 +112,7 @@ fn seed_as(db: &Database, name: &str, agent: &str) -> SessionId {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&row).expect("upsert");
     row.id

@@ -47,6 +47,7 @@ fn codex_row(agent_session_id: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 

@@ -59,6 +59,7 @@ fn store_with_working_session() -> (tempfile::TempDir, SnapshotStore, String) {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     let database = Database::open(&path).expect("db");
     database.upsert_session(&row).expect("upsert");
@@ -271,6 +272,7 @@ fn an_agent_a_driver_started_is_seen_and_named_by_the_interface() {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     let path = home.path().join("thurbox.db");
     Database::open(&path)

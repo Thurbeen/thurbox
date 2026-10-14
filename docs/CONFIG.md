@@ -608,6 +608,7 @@ empty) when the fact is not known at that moment:
 | `THURBOX_SESSION` | the thurbox session id (at `pre_create`: the id it will have if creation succeeds) |
 | `THURBOX_SESSION_ID` | the agent's own conversation id |
 | `THURBOX_SESSION_NAME` | the session name |
+| `THURBOX_SESSION_KEY` | the session's key (`session create --key`); unset when it has none |
 | `THURBOX_AGENT` | the agent name |
 | `THURBOX_REPO` | the primary repository path |
 | `THURBOX_CWD` | the directory the agent runs in (the worktree, or the symlink workspace of a multi-repo session); unset at `pre_create` |
@@ -1325,6 +1326,7 @@ these to prove its own identity without scraping panes or names:
 | `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity, and by `session signal` — see below |
 | `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
+| `THURBOX_SESSION_KEY` | the session's key (`session create --key`, issue #1408), so a process in the pane knows which role it plays without a lookup; unset when it has none, and never taken from `--env` |
 | `THURBOX_METRICS_DIR` | metrics output dir |
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
 | `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
@@ -1375,6 +1377,7 @@ Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
 |----------|-----------------------|
 | `THURBOX_HOOK_EVENT` | the event, e.g. `session.pre_delete` |
 | `THURBOX_SESSION_NAME`, `THURBOX_AGENT` | the session's name and agent |
+| `THURBOX_SESSION_KEY` | the session's key, when it has one |
 | `THURBOX_REPO`, `THURBOX_CWD` | the primary repository, and the directory the agent runs in |
 | `THURBOX_BRANCH`, `THURBOX_BASE_BRANCH` | the worktree branch and its base |
 | `THURBOX_HOST` | the remote host name (local: unset) |

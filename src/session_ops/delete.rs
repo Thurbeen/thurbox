@@ -1230,6 +1230,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&shared).unwrap();
         id
@@ -1820,6 +1821,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
 
         let mut report = ForceDeleteReport::default();
@@ -1861,6 +1863,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
 
         let mut report = ForceDeleteReport::default();
@@ -1898,6 +1901,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
 
         let mut report = ForceDeleteReport::default();
@@ -1934,6 +1938,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&fresh).unwrap();
         db.soft_delete_session(fresh.id).unwrap();
@@ -1974,6 +1979,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         db.upsert_session(&stale).unwrap();
         db.soft_delete_session(stale.id).unwrap();

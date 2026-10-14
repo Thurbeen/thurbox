@@ -13,6 +13,8 @@ pub mod delete;
 pub mod extensions;
 pub mod host_cli;
 pub mod image_drop;
+#[cfg(test)]
+mod key_tests;
 pub mod lifecycle_hooks;
 pub mod lost;
 pub mod mirror;
@@ -22,6 +24,7 @@ pub mod rename;
 pub mod reparent;
 pub mod restart;
 pub mod restore;
+pub mod set_key;
 #[cfg(test)]
 mod shared_tests;
 pub mod spawn;
@@ -640,6 +643,7 @@ pub fn session_process_env(
         &mut config,
         session.agent_session_id.as_deref().unwrap_or_default(),
         None,
+        session.key.as_deref(),
     );
     if session.agent_session_id.is_none() {
         config.env.remove("THURBOX_SESSION_ID");
@@ -746,6 +750,9 @@ pub fn fork_session_headless(
         fork_session_id,
         // Shared, not created — so the fork shows its branch and can be synced.
         inherit_worktrees: source.worktrees.clone(),
+        // Never the source's key: a key names one session, and the fork is a
+        // second one beside it (issue #1408).
+        key: None,
         ..Default::default()
     };
     spawn::spawn_session_headless(db, backends, request)
@@ -927,6 +934,8 @@ pub fn same_machine(a: &str, b: &str) -> bool {
 ///   Requires `config.session_id` to be set before calling.
 /// - `THURBOX_SESSION_ID` — the *agent's* conversation id (`agent_session_id`),
 ///   consumed by the metrics statusline. Distinct from `THURBOX_SESSION`.
+/// - `THURBOX_SESSION_KEY` — the session's key (issue #1408), when it has one,
+///   so a process in the pane knows which role it plays without a lookup.
 /// - `THURBOX_TASK` — the originating task id, when this session was spawned for
 ///   a task (so messages auto-tag `from_task_id`). Headless `task run` only; the
 ///   TUI task-spawn path tracks the link in-memory instead.
@@ -943,7 +952,7 @@ pub fn same_machine(a: &str, b: &str) -> bool {
 /// and a remote `thurbox-cli` pinned to them would resolve garbage instead of
 /// its own defaults. The
 /// identity vars (`THURBOX_SESSION`/`THURBOX_SESSION_ID`/`THURBOX_TASK`) are
-/// opaque and travel everywhere.
+/// opaque and travel everywhere, the key with them.
 ///
 /// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
 /// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
@@ -955,6 +964,7 @@ pub(crate) fn inject_thurbox_env(
     config: &mut SessionConfig,
     agent_session_id: &str,
     task_id: Option<i64>,
+    key: Option<&str>,
 ) {
     config
         .env
@@ -962,6 +972,14 @@ pub(crate) fn inject_thurbox_env(
     if let Some(id) = config.session_id {
         config.env.insert("THURBOX_SESSION".into(), id.to_string());
     }
+    // Removed when absent rather than left alone: the caller's `--env` went in
+    // first, and a session must not be able to claim a role it was not given.
+    match key {
+        Some(key) => config
+            .env
+            .insert("THURBOX_SESSION_KEY".into(), key.to_string()),
+        None => config.env.remove("THURBOX_SESSION_KEY"),
+    };
     if let Some(task_id) = task_id {
         config
             .env
@@ -1016,7 +1034,7 @@ mod tests {
             session_id: Some(sid),
             ..SessionConfig::default()
         };
-        inject_thurbox_env(&mut config, "agent-conv-uuid", Some(42));
+        inject_thurbox_env(&mut config, "agent-conv-uuid", Some(42), None);
         // The thurbox session key and the agent conversation id are distinct.
         assert_eq!(config.env.get("THURBOX_SESSION"), Some(&sid.to_string()));
         assert_eq!(
@@ -1037,7 +1055,7 @@ mod tests {
             session_id: Some(SessionId::default()),
             ..SessionConfig::default()
         };
-        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None, None);
 
         let cfg_dir = config
             .env
@@ -1080,7 +1098,7 @@ mod tests {
             backend: Some("ssh:devbox".into()),
             ..SessionConfig::default()
         };
-        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None, None);
         assert!(config.env.contains_key("THURBOX_SESSION"));
         assert!(config.env.contains_key("THURBOX_SESSION_ID"));
         assert!(!config.env.contains_key("THURBOX_METRICS_DIR"));
@@ -1101,7 +1119,7 @@ mod tests {
             session_id: Some(SessionId::default()),
             ..SessionConfig::default()
         };
-        inject_thurbox_env(&mut config, "agent-conv-uuid", None);
+        inject_thurbox_env(&mut config, "agent-conv-uuid", None, None);
         assert!(config.env.contains_key("THURBOX_SESSION"));
         assert!(!config.env.contains_key("THURBOX_TASK"));
     }

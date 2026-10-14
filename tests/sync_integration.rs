@@ -27,6 +27,7 @@ fn make_session(id: SessionId, name: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 
@@ -242,6 +243,7 @@ fn db_session_metadata_preserved_across_instances() {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db_a.upsert_session(&session).unwrap();
 

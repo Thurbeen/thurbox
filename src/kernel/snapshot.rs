@@ -126,6 +126,9 @@ pub struct SessionRow {
     /// or an acknowledged `done` (derived `idle`) would be written back and
     /// resurrected on every reconnect.
     pub hook_state: Option<String>,
+    /// The session's key (issue #1408): the address its driver gave it, for a
+    /// pane that wants to tell a role apart from a label the user can rename.
+    pub key: Option<String>,
     /// The agent a driver **declared** this session runs (`session reports-as`),
     /// when it declared one. A durable statement about the row.
     pub reports_as: Option<String>,
@@ -1697,6 +1700,7 @@ impl SnapshotStore {
                     shell_backend_id: session.shell_backend_id.clone(),
                     stopped: stopped.contains(&session.id),
                     hook_state,
+                    key: session.key,
                     reports_as: declared,
                     detected_agent,
                     member_dirs,
@@ -2514,6 +2518,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         database.upsert_session(&row).expect("upsert");
         let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
@@ -2613,6 +2618,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         database.upsert_session(&row).expect("upsert");
         database.set_hook_state(row.id, "blocked").expect("signal");
@@ -2684,6 +2690,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "idle").expect("idle");
@@ -2755,6 +2762,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "working").expect("working");
@@ -2814,6 +2822,7 @@ mod tests {
             display_order: None,
             tombstone: false,
             tombstone_at: None,
+            key: None,
         };
         database.upsert_session(&row).expect("upsert");
         let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());

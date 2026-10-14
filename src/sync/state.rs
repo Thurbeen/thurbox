@@ -82,6 +82,15 @@ pub struct SharedSession {
 
     /// Timestamp when this session was tombstoned (millis since epoch).
     pub tombstone_at: Option<u64>,
+
+    /// The opaque address whoever created the session gave it (issue #1408).
+    ///
+    /// Thurbox never mints, parses or interprets one: it stores it, compares
+    /// it for equality, keeps it unique among the live sessions of one host
+    /// (`session_ops::names::claim_key`) and resolves `key:<K>` to it. Unlike
+    /// the name, it is not something the user renames, so it is what a driver
+    /// finds its own sessions by.
+    pub key: Option<String>,
 }
 
 /// Worktree information embedded in shared session.

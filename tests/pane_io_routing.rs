@@ -212,6 +212,7 @@ fn seed_row(db: &Database, id: SessionId, name: &str, backend_type: &str, pane: 
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     })
     .expect("seed a row");
 }

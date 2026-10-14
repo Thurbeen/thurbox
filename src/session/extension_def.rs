@@ -177,12 +177,21 @@ pub struct ExtensionSymlink {
     pub target: String,
 }
 
-/// A session an extension wants kept alive. Identified by `name`, so an existing
-/// active session of that name is reused rather than duplicated.
+/// A session an extension wants kept alive. Identified by its `key` when it
+/// declares one, else by `name`, so an existing active session is reused rather
+/// than duplicated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionSession {
-    /// Session name (also the tmux window `tb-<name>`). Used to find/reuse it.
+    /// Session name (also the tmux window `tb-<name>`). Used to find/reuse it
+    /// when the session declares no `key`; only the label it is created with
+    /// when it does.
     pub name: String,
+    /// The session's key (issue #1408): what self-heal, `deactivate` and
+    /// `status` find it by on this machine, so renaming the session — or
+    /// changing `name` here — no longer spawns a twin. Opaque to thurbox, and
+    /// never derived: a manifest without one is matched by name, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// Agent name to launch (an `agents.toml` entry the installer registers).
     pub agent: String,
     /// Directory the agent runs in: absolute, `~`-relative, or containing
@@ -205,8 +214,10 @@ pub struct ExtensionAutomation {
     /// Trigger spec, same grammar as `thurbox-cli automation create --trigger`
     /// (`hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<ms>`).
     pub trigger: String,
-    /// Name of the extension session this automation sends its prompt to. Must
-    /// match one of the manifest's `[[sessions]]` entries. Omitted for `command`.
+    /// The extension session this automation sends its prompt to: one of the
+    /// manifest's `[[sessions]]` entries, by its `name` or its `key`. Resolved
+    /// to the live session by key when that entry declares one. Omitted for
+    /// `command`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_ref: Option<String>,
     /// Prompt text delivered on each fire (e.g. `tick`). Omitted for `command`.
@@ -652,6 +663,7 @@ prompt = "tick"
             }],
             sessions: vec![ExtensionSession {
                 name: "flow".into(),
+                key: None,
                 agent: "flow".into(),
                 repo_path: PathBuf::from("{home}"),
             }],

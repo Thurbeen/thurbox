@@ -35,6 +35,7 @@ fn host_session(id: SessionId, name: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 
@@ -89,8 +90,14 @@ fn rig() -> Rig {
                     .find(|w| w[0] == "--name")
                     .map(|w| w[1])
                     .unwrap_or("unnamed");
+                let key = rest
+                    .windows(2)
+                    .find(|w| w[0] == "--key")
+                    .map(|w| w[1].to_string());
                 let id = SessionId::default();
-                host.active.push(host_session(id, name));
+                let mut created = host_session(id, name);
+                created.key = key;
+                host.active.push(created);
                 Ok(json!({ "id": id.to_string(), "name": name }))
             }
             ["session", "list", "--deleted"] => Ok(Value::Array(
@@ -196,6 +203,40 @@ fn a_create_on_a_shareable_host_is_the_hosts_and_lands_with_its_id() {
             .state
             .as_deref(),
         Some("working")
+    );
+}
+
+/// A key is the host's to arbitrate (ADR-24): it is forwarded as `--key`, not
+/// checked against the mirror, and the row lands with the key the host gave it.
+#[test]
+fn a_key_is_forwarded_to_the_host_and_lands_with_the_row() {
+    let rig = rig();
+    // A stale mirror row holding the key must not refuse a creation the host
+    // itself decides.
+    let mut stale = host_session(SessionId::default(), "old-lead");
+    stale.backend_type = BACKEND.into();
+    stale.key = Some("fleet.lead".into());
+    rig.db.upsert_session(&stale).unwrap();
+
+    let mut req = create_request("lead");
+    req.key = Some("fleet.lead".into());
+    let result = super::spawn_session_headless(&rig.db, &rig.backends, req).unwrap();
+
+    let create = &fake::calls()[0];
+    let at = create
+        .iter()
+        .position(|w| w == "--key")
+        .expect("--key forwarded");
+    assert_eq!(create[at + 1], "fleet.lead");
+    assert_eq!(result.key.as_deref(), Some("fleet.lead"));
+    assert_eq!(
+        rig.db
+            .get_session_by_id(result.session_id)
+            .unwrap()
+            .unwrap()
+            .key
+            .as_deref(),
+        Some("fleet.lead")
     );
 }
 
@@ -436,6 +477,7 @@ fn a_sync_pass_adopts_what_the_host_holds_and_registers_what_it_does_not() {
     let legacy = SessionId::default();
     let mut mine = host_session(legacy, "legacy");
     mine.backend_type = BACKEND.into();
+    mine.key = Some("fleet.legacy".into());
     rig.db.upsert_session(&mine).unwrap();
 
     let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
@@ -457,6 +499,9 @@ fn a_sync_pass_adopts_what_the_host_holds_and_registers_what_it_does_not() {
     let body: Value = serde_json::from_str(&register[3]).unwrap();
     assert_eq!(body["id"], legacy.to_string());
     assert_eq!(body["name"], "legacy");
+    // The key goes with it, for the host's `register` to admit or drop under
+    // its own claim — the one path by which `sync --adopt` gives a row a key.
+    assert_eq!(body["key"], "fleet.legacy");
     assert!(reports[0].registered.is_empty());
 }
 

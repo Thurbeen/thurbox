@@ -180,6 +180,7 @@ fn seed_on(db: &Database, name: &str, backend_type: &str) -> SessionId {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     };
     db.upsert_session(&row).expect("seed a session row");
     row.id

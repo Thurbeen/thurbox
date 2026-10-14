@@ -135,6 +135,7 @@ fn session_row(name: &str, agent: &str, backend_type: &str) -> SharedSession {
         display_order: None,
         tombstone: false,
         tombstone_at: None,
+        key: None,
     }
 }
 
@@ -638,6 +639,8 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
             parent: None,
             deleted: false,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
@@ -874,6 +877,8 @@ fn a_parked_session_says_so_on_get_and_on_list() {
             parent: None,
             deleted: false,
             verify: false,
+            key: None,
+            key_prefix: None,
         },
         &db,
         &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
