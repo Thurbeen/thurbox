@@ -148,6 +148,128 @@ pub(super) fn run_diff(host: Option<&HostDef>, worktree: &Path, args: &[&str]) -
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// A cheap stand-in for the diff [`working_diff_on`] or [`diff_against_on`]
+/// would read: equal answers mean an unchanged diff, so a caller holding one can
+/// skip reading the body again. `None` when it could not be read, which a caller
+/// treats as "changed".
+///
+/// Against a base it is the two commits the range names. For the working tree
+/// it is `status --porcelain=v2` — HEAD, every changed path, and the index's
+/// object for each — plus the content hash of every path that differs in the
+/// worktree, because the status of a file that is already modified stays ` M`
+/// however often it is edited again. `hash-object` without `-w` writes nothing,
+/// and `--no-optional-locks` keeps `status` from refreshing the index: a reader
+/// polling a worktree an agent is editing must not write to it.
+///
+/// Two or three short round trips that answer in bytes, where the diff is five
+/// or more that answer in up to [`MAX_DIFF_BYTES`](crate::kernel::diff::MAX_DIFF_BYTES).
+pub fn diff_fingerprint_on(
+    host: Option<&HostDef>,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Option<String> {
+    if let Some(base) = base {
+        return run_diff(host, worktree, &["rev-parse", base, "HEAD"]);
+    }
+    let status = run_diff(
+        host,
+        worktree,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--branch",
+            "--untracked-files=all",
+        ],
+    )?;
+    let paths = worktree_changed_paths(&status);
+    if paths.is_empty() {
+        return Some(status);
+    }
+    let mut command = git_command(
+        host,
+        worktree,
+        &["hash-object", "--no-filters", "--stdin-paths"],
+    );
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    let mut input = paths.join("\n");
+    input.push('\n');
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write as _;
+        stdin.write_all(input.as_bytes()).ok()?;
+    }
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        let stderr = reportable_stderr(&output.stderr);
+        warn!("git hash-object failed: {stderr}");
+        return None;
+    }
+    Some(format!(
+        "{status}\0\0{}",
+        String::from_utf8_lossy(&output.stdout)
+    ))
+}
+
+/// The paths whose worktree content differs from the index, out of
+/// `status --porcelain=v2 -z`: modified or added in the worktree, unmerged, or
+/// untracked. A deletion has nothing to hash, and the status already records it.
+/// Untracked files stop at [`UNTRACKED_FILE_CAP`], the most the diff reads (both
+/// lists come sorted by path): hashing the rest would read files the diff never
+/// shows, and their status lines still move the fingerprint when one comes or
+/// goes.
+/// A path with a newline in it is left out, since `--stdin-paths` reads lines,
+/// and so is a directory (an untracked nested repository), which has no content
+/// to hash; the status line of each still moves with it.
+pub(super) fn worktree_changed_paths(status: &str) -> Vec<&str> {
+    let mut paths = Vec::new();
+    let mut untracked = 0;
+    let mut records = status.split('\0');
+    while let Some(record) = records.next() {
+        let (kind, fields) = match record.split_once(' ') {
+            Some(split) => split,
+            None => continue,
+        };
+        let path = match kind {
+            "?" if untracked < UNTRACKED_FILE_CAP => {
+                untracked += 1;
+                Some(fields)
+            }
+            // ordinary: XY sub mH mI mW hH hI path
+            "1" => worktree_side(fields, 7),
+            // renamed or copied: XY sub mH mI mW hH hI Xscore path, then the
+            // original path as a record of its own
+            "2" => {
+                records.next();
+                worktree_side(fields, 8)
+            }
+            // unmerged: XY sub m1 m2 m3 mW h1 h2 h3 path
+            "u" => fields.splitn(10, ' ').nth(9),
+            _ => None,
+        };
+        if let Some(path) =
+            path.filter(|path| !path.is_empty() && !path.contains('\n') && !path.ends_with('/'))
+        {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// The path of a `1`/`2` record whose worktree side (`Y` of `XY`) is a change
+/// with content: not unchanged (`.`) and not deleted (`D`).
+fn worktree_side(fields: &str, before_path: usize) -> Option<&str> {
+    let y = fields.chars().nth(1)?;
+    if y == '.' || y == 'D' {
+        return None;
+    }
+    fields.splitn(before_path + 1, ' ').nth(before_path)
+}
+
 /// How many untracked files a working-tree diff represents.
 ///
 /// Each costs a process, so an un-ignored build directory in a scratch worktree

@@ -53,12 +53,18 @@ pub(super) fn install_api(
 
 pub(super) const READ_TAKEN_AT: u8 = 1;
 pub(super) const READ_METRICS: u8 = 2;
+/// Not a cache key: read by the loop, which fetches a remote session's diff
+/// only while some pane drawn on screen reads `thurbox.diffs`.
+pub(super) const READ_DIFFS: u8 = 4;
+/// What iterating the published table reads: all of it.
+const READ_ALL: u8 = READ_TAKEN_AT | READ_METRICS | READ_DIFFS;
 const PUBLISHED_TABLES: &str = "__published_tables";
 
 fn note_sample_read(read: &std::cell::Cell<u8>, key: &Value) {
     let flag = match key.as_string() {
         Some(key) if key == "taken_at_ms" => READ_TAKEN_AT,
         Some(key) if key == "metrics" => READ_METRICS,
+        Some(key) if key == "diffs" => READ_DIFFS,
         _ => 0,
     };
     read.set(read.get() | flag);
@@ -106,7 +112,7 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
         "next",
         lua.create_function(move |_, (table, key): (Table, Value)| {
             let table = if let Some(backing) = tables.raw_get::<Option<Table>>(table.clone())? {
-                read.set(read.get() | READ_TAKEN_AT | READ_METRICS);
+                read.set(read.get() | READ_ALL);
                 backing
             } else {
                 table
@@ -146,7 +152,7 @@ pub(super) fn observe_samples(
     meta.raw_set(
         "__pairs",
         lua.create_function(move |_, _: Table| {
-            read.set(read.get() | READ_TAKEN_AT | READ_METRICS);
+            read.set(read.get() | READ_ALL);
             Ok((next.clone(), backing.clone(), Value::Nil))
         })?,
     )?;

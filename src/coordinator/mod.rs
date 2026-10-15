@@ -570,7 +570,11 @@ impl App {
         }
         if let Some(id) = wanted {
             if let Some(row) = self.snapshots.current().session(&id) {
-                if let Some(cwd) = row.cwd.clone() {
+                // Over ssh a diff is network bytes — up to MAX_DIFF_BYTES a
+                // read — so it is fetched only while a pane on screen reads
+                // it. The held answer stays, aging, for when one does again.
+                let shown = self.diffs_shown || !thurbox::kernel::diff::over_ssh(&row.backend);
+                if let (true, Some(cwd)) = (shown, row.cwd.clone()) {
                     // `base_branch`, never `branch`. Against its own branch a
                     // session diffs to nothing, and publishing that as `ready`
                     // is a confident wrong answer.

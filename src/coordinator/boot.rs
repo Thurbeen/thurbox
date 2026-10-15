@@ -330,6 +330,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         tracked_commands: std::collections::HashMap::new(),
         band_targets: Vec::new(),
         focused_session: None,
+        diffs_shown: false,
         focused_surface: None,
         focused_typing: false,
         last_selected_session: None,

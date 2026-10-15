@@ -476,6 +476,9 @@ struct App {
     /// Read off the tree that was just painted, so the kernel never needs to
     /// know which plugin is "the terminal".
     focused_session: Option<String>,
+    /// Whether the last painted frame drew a pane that reads `thurbox.diffs`.
+    /// A diff over ssh is fetched only while one does (`serve_worker_stores`).
+    diffs_shown: bool,
     /// The surface the focused pane is showing, of either kind — a session's
     /// terminal or a program a plugin owns.
     ///

@@ -776,6 +776,9 @@ pub struct LuaHost {
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
     sample_read: Rc<std::cell::Cell<u8>>,
+    /// Every render's `sample_read` since [`Self::take_diffs_read`] last asked,
+    /// a cached tree counting with the flags of the render that built it.
+    rendered_reads: std::cell::Cell<u8>,
     /// Published groups, each with the epoch it was built at.
     ///
     /// The outer `thurbox` table is still assembled fresh every frame from
@@ -938,6 +941,7 @@ impl LuaHost {
             clock: Rc::new(std::cell::Cell::new(0.0)),
             clock_read: Rc::new(std::cell::Cell::new(false)),
             sample_read: Rc::new(std::cell::Cell::new(0)),
+            rendered_reads: std::cell::Cell::new(0),
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
@@ -1931,6 +1935,15 @@ impl LuaHost {
         stats.failures += u64::from(failed);
     }
 
+    /// Whether any pane rendered since the last call read `thurbox.diffs`, and
+    /// start counting again. Asked once per painted frame, so it answers
+    /// "does a pane on screen show a diff": only placed panes render, plus the
+    /// floating plugins, which render every frame to say whether they float —
+    /// one that reads the diffs while closed keeps them fetched, as before.
+    pub fn take_diffs_read(&self) -> bool {
+        self.rendered_reads.take() & api::READ_DIFFS != 0
+    }
+
     /// The epoch of the most recent publish, which a pure pane's tree is keyed
     /// on. `None` before anything has been published.
     fn published_epoch(&self) -> Option<Epoch> {
@@ -1966,6 +1979,8 @@ impl LuaHost {
             if let Some(key) = key {
                 if let Some(cached) = self.trees.borrow().get(&index) {
                     if cached.answers(&key) {
+                        self.rendered_reads
+                            .set(self.rendered_reads.get() | cached.reads_sample);
                         self.skipped_renders.set(self.skipped_renders.get() + 1);
                         if self.perf_timing.get() {
                             self.plugin_perf.borrow_mut().stats_mut(&plugin.path).reused += 1;
@@ -1979,6 +1994,8 @@ impl LuaHost {
         let start = self.call_started();
         let writes = self.store_writes.get();
         let result = self.render_lua(index, plugin, ctx, key);
+        self.rendered_reads
+            .set(self.rendered_reads.get() | self.sample_read.get());
         if let Some(took) = self.call_finished(plugin, start) {
             let (all, tables) = self.store_writes.get();
             let mut table = self.plugin_perf.borrow_mut();

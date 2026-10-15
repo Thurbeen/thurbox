@@ -334,6 +334,7 @@ impl App {
         //     frames it returns a float node, so a modal opens and closes with
         //     no separate channel for the kernel to keep in sync.
         self.draw_floats(frame, area);
+        self.diffs_shown = self.host.take_diffs_read();
 
         // System modals, above the arrangement and above every plugin float —
         // they are not in the layout, so nothing below could shrink them and
