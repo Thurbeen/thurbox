@@ -90,7 +90,7 @@ exist yet, and `upgrade_seeded_omp_args` rewrites that legacy seeded pair on
 load). Neither id-pinned nor `resume_latest`: `resume_trigger_for` resumes it
 iff that directory exists (`session_file_template` — agent-neutral, keyed on a
 `new_session_args` token that is a path *and* carries `{id}`, not on the agent
-name); a remote-omp restart can't stat the host file from the UI thread, so it
+name); a remote-omp restart can't stat the host directory from the UI thread, so it
 starts fresh (documented fallback). Caveats: agents without `fork_args`
 (`antigravity`, `aider`, `copilot`, `omp`) start fresh on `Ctrl+F`; and a
 **multi-repo** fork of a cwd-scoped agent lands in a fresh symlink workspace, so

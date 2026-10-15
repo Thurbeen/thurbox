@@ -137,7 +137,9 @@ whether resume/fork can target *this* session or only *the last* one.
   only a file that already holds entries (`Session "…" not found`, exit 1, as of
   18.10), so an older seed that passed `--session <file>.jsonl` killed every new
   omp session at launch; the loader swaps that exact legacy pair for the
-  current one in memory, so an existing `agents.toml` needs no edit. The new `{home}` token is expanded
+  current one in memory, so an existing `agents.toml` needs no edit. A
+  conversation an older OMP did write to a legacy `thurbox-{id}.jsonl` file is
+  not reopened after that swap: the restart looks only in the directory. The new `{home}` token is expanded
   to the resolved home dir **at spawn time by thurbox** (args are POSIX-quoted, so
   a literal `~` would never expand), and it translates onto the remote/WSL home.
   It has no `fork_args` (OMP can't pin a fork's target file to a thurbox UUID), so
