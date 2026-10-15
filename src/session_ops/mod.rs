@@ -398,10 +398,11 @@ pub(crate) fn resume_trigger_for(
     if def.resumes_latest() {
         return Some(agent_session_id.to_string());
     }
-    // A path-pinned agent (omp) records its conversation at a deterministic file
-    // thurbox chose — `--session {home}/.../thurbox-{id}.jsonl`. If that file
-    // exists, resume it; the `resume_args` (`--resume <same path>`) reopen it
-    // exactly. This must run before the claude-transcript check, which only
+    // A path-pinned agent (omp) records its conversation under a deterministic
+    // directory thurbox chose — `--session-dir {home}/.../thurbox-{id}`. If that
+    // directory exists, resume it; the `resume_args` (`--session-dir <same path>
+    // --continue`) reopen its latest session, or start fresh when the agent never
+    // wrote one there. This must run before the claude-transcript check, which only
     // knows claude's `~/.claude` layout. The check is inherently *local* — it
     // stats the local FS — so `{home}` resolves to the local home even for a
     // caller that hasn't expanded it. A remote session's file can't be stat'd
@@ -417,7 +418,7 @@ pub(crate) fn resume_trigger_for(
         if std::path::Path::new(&file).exists() {
             return Some(agent_session_id.to_string());
         }
-        // The template exists but the file doesn't (never launched, remote, or
+        // The template exists but the path doesn't (never launched, remote, or
         // gone) → a fresh session, not the claude fallback (which would
         // false-positive on a coincident claude transcript for the same id).
         return None;
@@ -425,11 +426,11 @@ pub(crate) fn resume_trigger_for(
     resume_id_if_transcript_exists(agent_session_id, env)
 }
 
-/// The session *file* template of a path-pinned agent — a `new_session_args`
+/// The session *path* template of a path-pinned agent — a `new_session_args`
 /// token that both names a filesystem path (has a separator) and carries the
-/// `{id}` placeholder (e.g. omp's `{home}/.omp/.../thurbox-{id}.jsonl`).
+/// `{id}` placeholder (e.g. omp's `{home}/.omp/.../thurbox-{id}` directory).
 /// `None` for id-only agents (claude/pi pass a bare `{id}`, not a path). Used to
-/// decide resume-vs-fresh by that file's existence. Agent-neutral: it reads the
+/// decide resume-vs-fresh by that path's existence. Agent-neutral: it reads the
 /// def's own args rather than matching an agent name.
 fn session_file_template(def: &crate::session::AgentDef) -> Option<String> {
     def.new_session_args
@@ -821,7 +822,7 @@ pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::Agen
 /// UUID substituted in `build_args`), `{home}` needs a filesystem side effect
 /// — the home dir — so it is resolved here in `session_ops`, not in the pure
 /// `session` layer. Used by agents that want a session *file path* rather than
-/// a bare id (e.g. omp's `--session {home}/.omp/…/thurbox-{id}.jsonl`); the
+/// a bare id (e.g. omp's `--session-dir {home}/.omp/…/thurbox-{id}`); the
 /// path can't rely on the shell to expand `~`, since args are POSIX-quoted.
 pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
 
@@ -1198,16 +1199,14 @@ mod tests {
         expand_home_in_def(&mut omp, "/home/me");
         assert_eq!(
             omp.new_session_args,
-            vec![
-                "--session".to_string(),
-                "/home/me/.omp/agent/sessions/thurbox-{id}.jsonl".to_string()
-            ]
+            ["--session-dir", "/home/me/.omp/agent/sessions/thurbox-{id}"]
         );
         assert_eq!(
             omp.resume_args,
-            vec![
-                "--resume".to_string(),
-                "/home/me/.omp/agent/sessions/thurbox-{id}.jsonl".to_string()
+            [
+                "--session-dir",
+                "/home/me/.omp/agent/sessions/thurbox-{id}",
+                "--continue"
             ]
         );
         // `{id}` is left for build_args; only `{home}` was touched.
@@ -1226,11 +1225,11 @@ mod tests {
     #[test]
     fn session_file_template_only_for_path_pinned_agents() {
         let reg = crate::agent::agent_config::builtin_registry();
-        // omp pins a session file path (has a separator + `{id}`).
+        // omp pins a session directory path (has a separator + `{id}`).
         let omp = reg.get("omp").unwrap();
         assert_eq!(
             session_file_template(omp).as_deref(),
-            Some("{home}/.omp/agent/sessions/thurbox-{id}.jsonl")
+            Some("{home}/.omp/agent/sessions/thurbox-{id}")
         );
         // claude/pi pass a bare `{id}`, not a path → no template.
         assert_eq!(session_file_template(reg.get("claude").unwrap()), None);
@@ -1238,8 +1237,8 @@ mod tests {
     }
 
     #[test]
-    fn resume_trigger_omp_resumes_only_when_session_file_exists() {
-        // omp is path-pinned: it resumes iff its deterministic JSONL exists.
+    fn resume_trigger_omp_resumes_only_when_session_dir_exists() {
+        // omp is path-pinned: it resumes iff its deterministic directory exists.
         let tmp = tempfile::tempdir().unwrap();
         let sid = "99999999-aaaa-bbbb-cccc-dddddddddddd";
         let mut omp = crate::agent::agent_config::builtin_registry()
@@ -1251,16 +1250,16 @@ mod tests {
         expand_home_in_def(&mut omp, &tmp.path().display().to_string());
         let env = HashMap::new();
 
-        // No file yet → fresh session.
+        // No directory yet → fresh session.
         assert_eq!(resume_trigger_for(&omp, sid, &env), None);
 
-        // Create the exact JSONL thurbox would launch against → resume triggers.
-        let file = tmp
+        // Create the exact directory thurbox would launch against → resume
+        // triggers.
+        let dir = tmp
             .path()
             .join(".omp/agent/sessions")
-            .join(format!("thurbox-{sid}.jsonl"));
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, b"").unwrap();
+            .join(format!("thurbox-{sid}"));
+        std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(resume_trigger_for(&omp, sid, &env), Some(sid.to_string()));
     }
 

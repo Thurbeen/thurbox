@@ -1,6 +1,6 @@
 ---
 name: thurbox-agents
-description: The declarative coding-agent registry (agents.toml / AgentDef): the *_args groups, {id} and {home} substitution, session-id pinning vs resume_latest, the omp session-file kind, custom-agent status hooks via hook_schema, and multi-repo sessions with the symlink workspace. Use when adding or debugging a built-in or custom agent, changing spawn/resume/fork args, or working on multi-repo sessions.
+description: The declarative coding-agent registry (agents.toml / AgentDef): the *_args groups, {id} and {home} substitution, session-id pinning vs resume_latest, the omp session-directory kind, custom-agent status hooks via hook_schema, and multi-repo sessions with the symlink workspace. Use when adding or debugging a built-in or custom agent, changing spawn/resume/fork args, or working on multi-repo sessions.
 ---
 
 # Thurbox agent definitions
@@ -81,12 +81,14 @@ reuses the session's cwd and a single-repo fork reuses the parent's.
 `resume_latest` only changes *when* the resume group fires
 (`session_ops::resume_trigger_for`): for these agents restart always resumes; for
 claude it defers to an on-disk transcript check. **`omp`** (Oh My Pi) is a third
-kind: it generates its own internal id and won't take thurbox's, but its
-`--session <path>` creates a fresh session at a missing path, so thurbox maps its
-UUID to a deterministic file (`--session
-{home}/.omp/agent/sessions/thurbox-{id}.jsonl` on create, `--resume` the same on
-restart). Neither id-pinned nor `resume_latest`: `resume_trigger_for` resumes it
-iff that JSONL exists (`session_file_template` — agent-neutral, keyed on a
+kind: it generates its own internal id and won't take thurbox's, but
+`--session-dir <dir>` keeps its session in a directory thurbox chooses, so
+thurbox maps its UUID to a deterministic directory (`--session-dir
+{home}/.omp/agent/sessions/thurbox-{id}` on create, the same plus `--continue` on
+restart; `--session <file>` is not an option — OMP refuses a file that does not
+exist yet, and `upgrade_seeded_omp_args` rewrites that legacy seeded pair on
+load). Neither id-pinned nor `resume_latest`: `resume_trigger_for` resumes it
+iff that directory exists (`session_file_template` — agent-neutral, keyed on a
 `new_session_args` token that is a path *and* carries `{id}`, not on the agent
 name); a remote-omp restart can't stat the host file from the UI thread, so it
 starts fresh (documented fallback). Caveats: agents without `fork_args`

@@ -19,10 +19,10 @@ use crate::session::{AgentDef, AgentRegistry};
 /// Kept deliberately small per agent: just the command, plus resume/fork/
 /// session-id groups. `claude` and `pi` pin a thurbox-generated id
 /// (`--session-id`) so they can resume/fork by that exact id; `omp` pins the
-/// same id as a session-file path (`--session {home}/…/thurbox-{id}.jsonl`)
-/// since it generates its own id but accepts a file. Codex reports its id through
-/// `SessionStart`. The remaining built-ins use `resume_latest = true` with
-/// id-less, cwd-scoped flags (`opencode --continue`, …):
+/// same id as a session directory (`--session-dir {home}/…/thurbox-{id}`)
+/// since it generates its own id but accepts a directory. Codex reports its id
+/// through `SessionStart`. The remaining built-ins use `resume_latest = true`
+/// with id-less, cwd-scoped flags (`opencode --continue`, …):
 /// the agent resolves "the last session in this directory" itself. Agents
 /// without any resume group simply start fresh on restart. No model is passed —
 /// each agent uses its own default config. Bake extra flags (including a model)
@@ -106,10 +106,12 @@ fork_args = ["--fork", "{id}"]
 new_session_args = ["--session-id", "{id}"]
 
 # omp (Oh My Pi, https://github.com/can1357/oh-my-pi) is Pi-compatible but
-# generates its own internal session id and won't accept thurbox's UUID as one.
-# Its `--session <path>` flag creates a fresh session at a missing path (and
-# reopens an existing one), so thurbox maps its UUID to a deterministic JSONL
-# under OMP's default root (~/.omp/agent/sessions/). The `{home}` token is
+# generates its own internal session id and won't accept thurbox's UUID as one,
+# and it only opens a session file that already holds entries. So thurbox maps
+# its UUID to a session *directory* under OMP's default root
+# (~/.omp/agent/sessions/): `--session-dir` starts a fresh session there, and
+# `--session-dir … --continue` reopens the latest one in it (or starts fresh if
+# none was ever written). The `{home}` token is
 # expanded to the resolved home dir at spawn time (thurbox, not the shell —
 # args are POSIX-quoted, so a literal `~` would never expand); it also
 # translates onto the remote/WSL home. No fork_args: OMP has no way to pin a
@@ -118,8 +120,8 @@ new_session_args = ["--session-id", "{id}"]
 [[agents]]
 name = "omp"
 command = "omp"
-resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
-new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
+resume_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}", "--continue"]
+new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
 "#;
 
 /// The `shell` built-in, spelled for the platform's own interactive shell.
@@ -412,6 +414,7 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
                         agent.fork_args = vec!["fork".into(), "{id}".into()];
                         agent.resume_latest = false;
                     }
+                    upgrade_seeded_omp_args(&mut agent);
                     agents.push(agent);
                 }
             }
@@ -473,6 +476,44 @@ fn deserialize_agent(
     }
 }
 
+/// The omp arg groups an older thurbox seeded into `agents.toml`: a session
+/// *file* under `--session`. OMP 18.10 refuses a file that does not exist yet
+/// (`Session "…" not found`, exit 1), so every new omp session died at launch.
+const LEGACY_OMP_NEW_SESSION_ARGS: [&str; 2] =
+    ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"];
+const LEGACY_OMP_RESUME_ARGS: [&str; 2] =
+    ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"];
+
+/// Swap the legacy seeded omp arg groups for the current built-in ones.
+///
+/// `agents.toml` is seeded once and then owned by the user, so a fixed built-in
+/// never reaches an existing install on its own. Only an entry still carrying
+/// *both* legacy groups verbatim is rewritten — that pair is what the seed
+/// wrote, so it is the seed and not a user's choice; any edit to either group
+/// leaves the entry alone. Matched on the args rather than the agent name, so a
+/// renamed copy of the seeded entry is upgraded too. In memory only: the file is
+/// never rewritten behind the user's back.
+fn upgrade_seeded_omp_args(agent: &mut AgentDef) {
+    if agent.new_session_args != LEGACY_OMP_NEW_SESSION_ARGS
+        || agent.resume_args != LEGACY_OMP_RESUME_ARGS
+    {
+        return;
+    }
+    let Some(omp) = builtin_registry()
+        .agents
+        .into_iter()
+        .find(|a| a.name == "omp")
+    else {
+        return;
+    };
+    tracing::info!(
+        agent = %agent.name,
+        "agents.toml: upgraded the legacy omp --session/--resume file args to --session-dir"
+    );
+    agent.new_session_args = omp.new_session_args;
+    agent.resume_args = omp.resume_args;
+}
+
 /// Parse a TOML config document leniently, reporting every unknown field by
 /// path instead of failing on it. Stale keys from older thurbox versions and
 /// typos both surface as warnings without stranding the user on defaults; a
@@ -509,6 +550,61 @@ pub(crate) fn compact_toml_error(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OMP_NEW_SESSION_ARGS: [&str; 2] =
+        ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"];
+    const OMP_RESUME_ARGS: [&str; 3] = [
+        "--session-dir",
+        "{home}/.omp/agent/sessions/thurbox-{id}",
+        "--continue",
+    ];
+
+    fn omp_entry(new_session: &str, resume: &str) -> String {
+        format!(
+            "default = \"omp\"\n[[agents]]\nname = \"omp\"\ncommand = \"omp\"\n\
+             resume_args = {resume}\nnew_session_args = {new_session}\n"
+        )
+    }
+
+    #[test]
+    fn legacy_seeded_omp_args_are_upgraded_on_load() {
+        // The exact pair an older thurbox seeded: an existing install keeps it
+        // in agents.toml forever, so the loader has to replace it.
+        let toml = omp_entry(
+            r#"["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
+            r#"["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
+        );
+        let (reg, warnings) = parse_agents_toml(&toml);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let omp = reg.get("omp").unwrap();
+        assert_eq!(omp.new_session_args, OMP_NEW_SESSION_ARGS);
+        assert_eq!(omp.resume_args, OMP_RESUME_ARGS);
+    }
+
+    #[test]
+    fn edited_omp_args_are_left_alone() {
+        // Either group changed by hand → the user's choice, not the seed.
+        let toml = omp_entry(
+            r#"["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
+            r#"["--resume", "/elsewhere/thurbox-{id}.jsonl"]"#,
+        );
+        let (reg, _) = parse_agents_toml(&toml);
+        let omp = reg.get("omp").unwrap();
+        assert_eq!(omp.new_session_args, LEGACY_OMP_NEW_SESSION_ARGS);
+        assert_eq!(
+            omp.resume_args,
+            ["--resume", "/elsewhere/thurbox-{id}.jsonl"]
+        );
+    }
+
+    #[test]
+    fn the_seed_round_trips_through_the_loader_unchanged() {
+        // What the seed writes is what the loader yields — the upgrade must not
+        // fire on (or mangle) the current built-in.
+        let (reg, warnings) = parse_agents_toml(&builtin_agents_toml());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(reg, builtin_registry());
+    }
 
     #[test]
     fn claude_directory_scope_upgrades_missing_groups_and_preserves_explicit_choices() {
@@ -603,19 +699,14 @@ additional_dir_args = ["--directory={dir}"]
         assert_eq!(pi.resume_args, ["--session-id", "{id}"]);
         assert_eq!(pi.fork_args, ["--fork", "{id}"]);
 
-        // omp (Oh My Pi) pins by a deterministic session-file PATH, not a bare
-        // id: `--session {home}/…/thurbox-{id}.jsonl` on create, `--resume` the
-        // same on restart. It has no native fork (Ctrl+F → fresh session).
+        // omp (Oh My Pi) pins by a deterministic session DIRECTORY, not a bare
+        // id: `--session-dir {home}/…/thurbox-{id}` on create, the same plus
+        // `--continue` on restart. It has no native fork (Ctrl+F → fresh
+        // session).
         let omp = reg.get("omp").unwrap();
         assert!(!omp.resume_latest);
-        assert_eq!(
-            omp.new_session_args,
-            ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
-        );
-        assert_eq!(
-            omp.resume_args,
-            ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
-        );
+        assert_eq!(omp.new_session_args, OMP_NEW_SESSION_ARGS);
+        assert_eq!(omp.resume_args, OMP_RESUME_ARGS);
         assert!(omp.fork_args.is_empty(), "omp has no native fork target");
 
         // Codex resumes by its hook-reported id; opencode is cwd-scoped.
@@ -882,5 +973,30 @@ command = "missing-name"
         let custom = registry.get("custom").unwrap();
         assert_eq!(custom.resume_args, ["resume", "--last"]);
         assert!(custom.resume_latest);
+    }
+
+    #[test]
+    fn legacy_codex_and_omp_seeds_in_one_file_are_both_upgraded() {
+        // An install seeded before either fix carries both legacy entries side
+        // by side; each upgrade must fire on its own entry and only on it.
+        let (registry, warnings) = parse_agents_toml(
+            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = 'codex'\n\
+             resume_args = ['resume', '--last']\nfork_args = ['fork', '--last']\n\
+             resume_latest = true\n\
+             [[agents]]\nname = 'omp'\ncommand = 'omp'\n\
+             resume_args = ['--resume', '{home}/.omp/agent/sessions/thurbox-{id}.jsonl']\n\
+             new_session_args = ['--session', '{home}/.omp/agent/sessions/thurbox-{id}.jsonl']\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let codex = registry.get("codex").unwrap();
+        assert_eq!(codex.resume_args, ["resume", "{id}"]);
+        assert_eq!(codex.fork_args, ["fork", "{id}"]);
+        assert!(!codex.resume_latest);
+        assert!(codex.new_session_args.is_empty());
+        let omp = registry.get("omp").unwrap();
+        assert_eq!(omp.new_session_args, OMP_NEW_SESSION_ARGS);
+        assert_eq!(omp.resume_args, OMP_RESUME_ARGS);
+        assert!(omp.fork_args.is_empty());
+        assert!(!omp.resume_latest);
     }
 }
