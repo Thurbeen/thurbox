@@ -13,7 +13,7 @@ use tracing::{debug, error};
 
 use crate::backend::contract::{
     pack_size, unpack_size, AdoptedSession, PaneSize, PaneSnapshot, SessionBackend,
-    SnapshotArrived, SpawnedSession,
+    SnapshotArrived, SpawnedSession, StateArrived,
 };
 use crate::backend::osc8;
 use crate::backend::WindowRole;
@@ -1063,6 +1063,7 @@ impl Session {
             backend,
             "Session",
         );
+        backend.hide_output(backend_id);
         Ok(Self {
             info,
             wired,
@@ -1092,8 +1093,18 @@ impl Session {
     }
 
     /// [`WiredPane::evict`] one of this session's panes.
+    ///
+    /// A pane with no grid streams no output where its backend can hold it
+    /// back ([`SessionBackend::hide_output`]).
     pub fn evict_pane(&self, shell: bool) -> bool {
-        self.supports_snapshots() && self.wired_pane(shell).is_some_and(WiredPane::evict)
+        let Some(pane) = self.wired_pane(shell) else {
+            return false;
+        };
+        if !self.supports_snapshots() || !pane.evict() {
+            return false;
+        }
+        self.backend.hide_output(pane.backend_id());
+        true
     }
 
     /// [`WiredPane::restore`] one of this session's panes, reporting whether
@@ -1361,6 +1372,15 @@ impl Session {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    // A hidden pane's title and modes: parsed, never taken for
+                    // output, since what they say is state the pane already had.
+                    let e = match StateArrived::take(e) {
+                        Ok(state) => {
+                            Self::feed_parser(&parser, &state);
+                            continue;
+                        }
+                        Err(e) => e,
+                    };
                     if let Some(snapshot) = SnapshotArrived::take(e) {
                         Self::install(&parser, &residency, &snapshot);
                         // A rebuilt grid is new content to paint, like output.

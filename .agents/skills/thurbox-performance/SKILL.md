@@ -195,6 +195,16 @@ surface or handle a non-resident pane (the search's `Source::restore`), and
 anything keyed on what was read off a grid keys on `content_stamp`, which moves
 on a rebuild, not `last_output_at`.
 
+**On an ssh host such a pane streams no output at all** (ADR-P30): dropping its
+grid pauses its `%output` (`refresh-client -A '%N:pause'` — never `off`, which
+makes tmux stop reading the pane and stalls the agent) and arms a per-pane
+format subscription (`HIDDEN_FORMAT`) whose reports the control reader turns
+into the title and input-mode bytes the two cells need, as output when
+`#{window_activity}` moved. `request_snapshot` sends `continue` first. OSC
+9/777 text is the one signal tmux cannot report, so a hidden remote pane loses
+it. Local panes, psmux/RMUX and a pane read twice in one process keep
+streaming.
+
 **A vt100 grid is never given fewer than two rows or two columns**
 (`backend::pane::vt_floor`). A cramped layout really does compute a one-cell pane,
 and vt100 underflows on the next byte written into one — in `row_inc_scroll` when a

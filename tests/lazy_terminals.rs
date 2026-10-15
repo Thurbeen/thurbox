@@ -14,8 +14,10 @@
 //! never dropped, output that arrives while it is gone is neither lost nor
 //! doubled, the first frame after coming back is the current screen, a search
 //! still finds history nobody is looking at, a session off screen still
-//! reports its title and its output, and non-ASCII text printed while a grid
-//! is live reaches it with every character intact.
+//! reports its title and its output, non-ASCII text printed while a grid is
+//! live reaches it with every character intact, and — on an ssh host — a
+//! session off screen sends no output at all yet loses none of those
+//! signals (`remote`).
 
 use std::path::Path;
 use std::process::Command;
@@ -754,4 +756,289 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
         lines.len(),
         &damaged[..damaged.len().min(3)]
     );
+}
+
+// --- A remote session off screen sends no output (ADR-P30) ---
+//
+// Control mode streams every pane's `%output`, so what a host costs the link
+// grows with every busy session on it. On an ssh host a pane with no grid has
+// its output paused, and what the interface reads off it arrives through a
+// tmux format subscription instead. These run the real server behind a
+// stand-in `ssh` that records what the control connection carries.
+
+#[cfg(unix)]
+mod remote {
+    use super::*;
+
+    use std::collections::HashMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    use thurbox::backend::tmux::TmuxBackend;
+    use thurbox::backend::{Session, SessionBackend};
+    use thurbox::session::{HostDef, Platform};
+    use thurbox::shell::HostLauncher;
+
+    /// The destination the stand-in `ssh` answers for.
+    const DEST: &str = "e2e@hidden.invalid";
+
+    const REMOTE_SESSION: &str = "tbx-hidden";
+
+    /// Put a stand-in `ssh` first on `PATH` that runs the remote command here,
+    /// copying what a control-mode connection sends back into `log`.
+    fn stand_in_ssh(log: &Path) -> tempfile::TempDir {
+        let bin = tempfile::tempdir().expect("tempdir");
+        let ssh = bin.path().join("ssh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\n\
+                 while [ \"$1\" != '{DEST}' ]; do shift; done; shift\n\
+                 case \"$*\" in\n\
+                 *' -C '*) sh -c \"$*\" | tee -a '{log}' ;;\n\
+                 *) exec sh -c \"$*\" ;;\n\
+                 esac\n",
+                log = log.display()
+            ),
+        )
+        .expect("ssh stand-in");
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin.path().to_path_buf()];
+        dirs.extend(std::env::split_paths(&path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+        bin
+    }
+
+    fn host_backend(socket: &str) -> Arc<dyn SessionBackend> {
+        let host = HostDef {
+            name: "hidden".into(),
+            destination: DEST.into(),
+            socket: Some(socket.into()),
+            session: Some(REMOTE_SESSION.into()),
+            share_sessions: false,
+            ..Default::default()
+        };
+        Arc::new(TmuxBackend::on_host(
+            &host,
+            HostLauncher::Ssh {
+                destination: DEST.into(),
+                ssh_opts: Vec::new(),
+            },
+            Platform::Posix,
+        ))
+    }
+
+    async fn wait_within(what: &str, secs: u64, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if ready() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// `%output` / `%extended-output` lines for `pane` in what the connection
+    /// carried after byte `from`.
+    fn output_lines(log: &Path, from: usize, pane: &str) -> usize {
+        let bytes = std::fs::read(log).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes[from.min(bytes.len())..]).into_owned();
+        let plain = format!("%output {pane} ");
+        let extended = format!("%extended-output {pane} ");
+        text.lines()
+            .filter(|line| line.starts_with(&plain) || line.starts_with(&extended))
+            .count()
+    }
+
+    fn log_len(log: &Path) -> usize {
+        std::fs::metadata(log).map_or(0, |m| m.len() as usize)
+    }
+
+    /// A pane that prints a numbered line twenty times a second until `stop`
+    /// exists, sets its title and two input modes on the way, then prints `FINAL`
+    /// and waits for `go` before printing `AFTER`.
+    fn busy_pane(server: &TmuxServer, dir: &Path, session: &str) -> String {
+        let stop = dir.join("stop");
+        let go = dir.join("go");
+        let script = format!(
+            "i=0; while [ ! -e '{stop}' ]; do i=$((i+1)); printf 'MARK %s\\n' $i; \
+             [ $i = 30 ] && printf '\\033]2;hidden-title\\007\\033[?1h\\033[?2004h'; \
+             sleep 0.05; done; printf 'FINAL\\n'; \
+             while [ ! -e '{go}' ]; do sleep 0.05; done; printf 'AFTER\\n'; exec sleep 600",
+            stop = stop.display(),
+            go = go.display(),
+        );
+        let out = server.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "-n",
+            "idle",
+            "sh",
+        ]);
+        assert!(out.status.success(), "new-session");
+        let out = server.tmux(&[
+            "new-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            session,
+            "-n",
+            "tb-hidden",
+            &script,
+        ]);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn session_text(session: &Session) -> String {
+        let parser = session.parser.lock().expect("parser");
+        parser.screen().contents()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hidden_remote_pane_sends_no_output_and_keeps_its_signals() {
+        if !have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let server = TmuxServer::pin("tbx-hidden-out");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log: PathBuf = dir.path().join("control.log");
+        let _bin = stand_in_ssh(&log);
+        let pane = busy_pane(&server, dir.path(), REMOTE_SESSION);
+        assert!(pane.starts_with('%'), "a pane id: {pane:?}");
+
+        let backend = host_backend(server.socket());
+        backend.ensure_ready().expect("attach over ssh");
+        let session =
+            Session::adopt_dormant("hidden".into(), 24, 80, &pane, &backend, HashMap::new())
+                .expect("adopt");
+        assert!(!session.is_resident(), "adopted without a grid");
+
+        // The pane goes on printing; what reaches the interface for it must not.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let mark = log_len(&log);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            output_lines(&log, mark, &pane),
+            0,
+            "a hidden remote pane's output still crossed the link"
+        );
+
+        // What the interface reads off a hidden pane still arrives: the title …
+        wait_within("the title set while hidden", 10, || {
+            session.agent_title().as_deref() == Some("hidden-title")
+        })
+        .await;
+        // … and that it is printing.
+        assert!(
+            session.millis_since_last_output() < 3_000,
+            "a printing hidden pane reads as quiet: {} ms",
+            session.millis_since_last_output()
+        );
+
+        // Its hook state, which rides its own subscription.
+        let out = server.tmux(&["set-option", "-p", "-t", &pane, "@thurbox_state", "blocked"]);
+        assert!(out.status.success(), "set the hook option");
+        wait_within("the hook state of a hidden pane", 10, || {
+            backend
+                .take_hook_state_events()
+                .iter()
+                .any(|(id, state)| id == &pane && state == "blocked")
+        })
+        .await;
+
+        // Once it stops, it reads as quiet — the stuck-`working` fallback's input.
+        std::fs::write(dir.path().join("stop"), "").expect("stop");
+        wait_within("the hidden pane to read as quiet", 15, || {
+            session.millis_since_last_output() > 2_500
+        })
+        .await;
+
+        // Shown again: the grid is the current screen, with the modes set while
+        // nothing was streamed, and output flows again.
+        assert!(session.restore_pane(false), "asked for the grid");
+        assert!(
+            session.wait_resident(Duration::from_secs(10)),
+            "the grid came back"
+        );
+        let text = session_text(&session);
+        assert!(text.contains("FINAL"), "the current screen: {text}");
+        // A tmux that has no `bracket_paste_flag` (3.2) cannot report the mode,
+        // and the unit tests pin that it is then left alone.
+        let knows_bracket_paste = !String::from_utf8_lossy(
+            &server
+                .tmux(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &pane,
+                    "#{bracket_paste_flag}",
+                ])
+                .stdout,
+        )
+        .trim()
+        .is_empty();
+        {
+            let parser = session.parser.lock().expect("parser");
+            let screen = parser.screen();
+            assert!(screen.application_cursor(), "DECCKM set while hidden");
+            if knows_bracket_paste {
+                assert!(screen.bracketed_paste(), "bracketed paste set while hidden");
+            }
+        }
+        let mark = log_len(&log);
+        std::fs::write(dir.path().join("go"), "").expect("go");
+        wait_within("output after the pane is shown", 10, || {
+            session_text(&session).contains("AFTER")
+        })
+        .await;
+        assert!(
+            output_lines(&log, mark, &pane) > 0,
+            "output of a shown pane crosses the link"
+        );
+
+        session.detach();
+        backend.shutdown();
+    }
+
+    /// A local pane's output costs no link, and streams as it always has.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hidden_local_pane_still_streams_its_output() {
+        if !have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let server = TmuxServer::pin("tbx-hidden-local");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pane = busy_pane(&server, dir.path(), SESSION);
+        let backend = thurbox::backend::tmux::local();
+        backend.ensure_ready().expect("attach");
+        let session =
+            Session::adopt_dormant("local".into(), 24, 80, &pane, &backend, HashMap::new())
+                .expect("adopt");
+        wait_within("the title set while hidden", 10, || {
+            session.agent_title().as_deref() == Some("hidden-title")
+        })
+        .await;
+        // Twenty lines a second, each its own chunk: streamed, that is dozens of
+        // chunks in two seconds; reported instead, it would be two.
+        let before = session.output_seq();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let chunks = session.output_seq() - before;
+        assert!(
+            chunks >= 10,
+            "a hidden local pane's output stopped streaming: {chunks} chunks in 2 s"
+        );
+        session.detach();
+        backend.shutdown();
+    }
 }

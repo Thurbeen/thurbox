@@ -25,8 +25,9 @@ use crate::backend::contract::{
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
 use crate::backend::tmux_compat::control_mode::{
-    self, is_broken_pipe, is_recv_timeout, shell_escape, ControlMode, ControlModeReader,
-    ControlModeWriter, ControlPolicy, PaneInput, PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
+    self, is_broken_pipe, is_recv_timeout, mouse_seed_bytes, shell_escape, title_seed_bytes,
+    ControlMode, ControlModeReader, ControlModeWriter, ControlPolicy, PaneInput,
+    PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
 };
 use crate::backend::tmux_compat::transport::{SocketDir, TmuxTransport};
 use crate::session::{HostDef, Multiplexer, Platform};
@@ -686,13 +687,6 @@ fn snapshot_history() -> usize {
         .scrollback_lines
         .min(MAX_CAPTURE_LINES as usize)
 }
-
-/// Longest agent activity line replayed from a pane title at adopt time.
-///
-/// A title is one line in the session list, and the value comes back from a
-/// host: bounding it here means a pane whose title is a megabyte cannot make
-/// the seed one.
-const MAX_TITLE_SEED_BYTES: usize = 512;
 
 /// A server of the tmux-compatible multiplexer `M` — sessions persist in `<mux>
 /// -L <socket>` on this machine or on a host reached over SSH or in a WSL
@@ -2210,6 +2204,10 @@ impl<M: TmuxCompatible> Server<M> {
     /// unregistration, we would need to track which sender belongs to which instance.
     fn unregister_pane(&self, pane_id: &str) -> Result<()> {
         self.with_control(|ctrl| {
+            // A pane left paused would stream nothing to whoever adopts it next.
+            if let Err(e) = ctrl.show_pane(pane_id) {
+                debug!(pane = %pane_id, "could not resume a hidden pane: {e:#}");
+            }
             let mut senders = ctrl
                 .pane_senders
                 .lock()
@@ -2261,6 +2259,9 @@ impl<M: TmuxCompatible> Server<M> {
         // unclaimed %begin/%end response in the stream that steals the next
         // send_command waiter.
         if M::PANE_MONITORING {
+            // A pane this connection holds back stays paused through `on`, and
+            // this reader wants its output.
+            self.with_control(|ctrl| ctrl.show_pane(pane_id))?;
             self.ctrl_command(&format!(
                 "refresh-client -A '{}:on'",
                 pane_id.replace('\'', "'\\''")
@@ -2617,10 +2618,31 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             );
         }
         // Asked on the loop, so it waits for the lock no longer than any other
-        // loop command, and not at all for the answer.
+        // loop command, and not at all for the answer. A pane whose output was
+        // held back streams again first, so the snapshot sits in its stream
+        // ahead of everything it does not already show.
         self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+            ctrl.show_pane(backend_id)?;
             ctrl.request_snapshot(backend_id, snapshot_history())
         })
+    }
+
+    /// Only over a network, where a pane's output is what the link carries;
+    /// a local pane streams as it always has. Needs a snapshot to come back
+    /// from ([`TmuxCompatible::SNAPSHOTS`]) and pane output that can be paused
+    /// ([`TmuxCompatible::PANE_MONITORING`]); the connection checks for format
+    /// subscriptions, which carry what the pane would have printed.
+    fn hide_output(&self, backend_id: &str) {
+        if !(M::PANE_MONITORING && M::SNAPSHOTS && self.transport.is_remote()) {
+            return;
+        }
+        let hidden = self
+            .with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+                ctrl.hide_pane(backend_id)
+            });
+        if let Err(e) = hidden {
+            debug!(pane = %backend_id, "output of a hidden pane still streams: {e:#}");
+        }
     }
 
     fn snapshot(&self, backend_id: &str) -> Result<crate::backend::contract::PaneSnapshot> {
@@ -3778,59 +3800,6 @@ fn heartbeat_loop_command(
 const MOUSE_FLAGS_FORMAT_THEN_TITLE: &str = "#{mouse_standard_flag},#{mouse_button_flag},\
      #{mouse_all_flag},#{mouse_any_flag},#{mouse_sgr_flag},#{mouse_utf8_flag}|\
      #{host_short}|#{pane_title}";
-
-/// The DECSETs that put a parser in the mouse modes tmux reports for a pane,
-/// from the flags in [`MOUSE_FLAGS_FORMAT_THEN_TITLE`] order.
-///
-/// A flag is on only when it reads `1`: a format a server does not know
-/// expands to nothing, which is off. `mouse_any_flag` is set for every
-/// tracking mode, so when it is the only one on — a server that knows it but
-/// not the mode's own flag — plain `?1000` still gets the wheel through.
-fn mouse_seed_bytes(flags: &str) -> Vec<u8> {
-    let on: Vec<bool> = flags.split(',').map(|f| f.trim() == "1").collect();
-    let flag = |i: usize| on.get(i).copied().unwrap_or(false);
-    let mut out = String::new();
-    // The widest mode on wins: a terminal tracks one mode at a time.
-    let tracking = [(2, "1003"), (1, "1002"), (0, "1000"), (3, "1000")]
-        .into_iter()
-        .find_map(|(i, mode)| flag(i).then_some(mode));
-    if let Some(mode) = tracking {
-        out.push_str(&format!("\x1b[?{mode}h"));
-        if flag(4) {
-            out.push_str("\x1b[?1006h");
-        } else if flag(5) {
-            out.push_str("\x1b[?1005h");
-        }
-    }
-    out.into_bytes()
-}
-
-/// The OSC 2 that restores `title` as a pane's window title, or empty when
-/// there is nothing to restore.
-///
-/// Suppressed for a title equal to `host_short`, which is what tmux seeds a
-/// pane with and therefore means "no agent ever set one" — replaying it would
-/// put a hostname in the session list where the activity line goes. Control
-/// characters are dropped because the value is remote-controlled text and the
-/// sequence is terminated by one.
-fn title_seed_bytes(host_short: &str, title: &str) -> Vec<u8> {
-    let title = title.trim();
-    if title.is_empty() || title == host_short.trim() {
-        return Vec::new();
-    }
-    let mut text = String::new();
-    for c in title.chars().filter(|c| !c.is_control()) {
-        if text.len() + c.len_utf8() > MAX_TITLE_SEED_BYTES {
-            break;
-        }
-        text.push(c);
-    }
-    let text = text.trim_end();
-    if text.is_empty() {
-        return Vec::new();
-    }
-    format!("\x1b]2;{text}\x1b\\").into_bytes()
-}
 
 /// Separator for the one-shot `display-message` that reads a pane's whole
 /// state. ASCII unit separator: paths and command names may contain spaces,
@@ -6105,7 +6074,11 @@ mod tests {
         let seed = title_seed_bytes("h", &"\u{00e9}".repeat(4_000));
         // The budget is the payload's; the introducer and terminator sit
         // outside it. Multi-byte chars must not be split to reach it either.
-        assert!(seed.len() <= MAX_TITLE_SEED_BYTES + 6, "{}", seed.len());
+        assert!(
+            seed.len() <= control_mode::MAX_TITLE_SEED_BYTES + 6,
+            "{}",
+            seed.len()
+        );
         assert!(std::str::from_utf8(&seed).is_ok());
     }
 

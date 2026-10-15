@@ -142,6 +142,39 @@ impl SnapshotArrived {
     }
 }
 
+/// Terminal state for a pane whose output is not being streamed — its title
+/// and input modes, as the multiplexer holds them — handed to the reader the
+/// way a [`SnapshotArrived`] is: an [`std::io::ErrorKind::Interrupted`] error
+/// carrying it, so the reader parses it without taking it for output (see
+/// [`SessionBackend::hide_output`]).
+#[derive(Debug)]
+pub struct StateArrived(pub Vec<u8>);
+
+impl std::fmt::Display for StateArrived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a pane's terminal state arrived in the output stream")
+    }
+}
+
+impl std::error::Error for StateArrived {}
+
+impl StateArrived {
+    /// The bytes an error carries if it is one of these, or the error back.
+    pub fn take(err: std::io::Error) -> Result<Vec<u8>, std::io::Error> {
+        let kind = err.kind();
+        if kind != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+        match err.into_inner() {
+            Some(inner) => inner
+                .downcast::<StateArrived>()
+                .map(|state| state.0)
+                .map_err(|other| std::io::Error::new(kind, other)),
+            None => Err(kind.into()),
+        }
+    }
+}
+
 /// What a thurbox window holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WindowRole {
@@ -535,6 +568,17 @@ pub trait SessionBackend: Send + Sync {
     fn snapshot(&self, _backend_id: &str) -> Result<PaneSnapshot> {
         anyhow::bail!("this backend cannot snapshot a pane")
     }
+
+    /// Stop sending `backend_id`'s output to this interface while it has no
+    /// grid ([`WiredPane::evict`](crate::backend::pane::WiredPane::evict)),
+    /// keeping what the interface still reads off it — its title, input modes
+    /// and when it last printed — arriving another way. The next
+    /// [`Self::request_snapshot`] streams it again. Best-effort: a pane whose
+    /// output cannot be held back keeps streaming. Default: it keeps streaming.
+    ///
+    /// Only worth doing where the output crosses a network: a pane's output is
+    /// what a remote session costs the link, shown or not.
+    fn hide_output(&self, _backend_id: &str) {}
 
     /// The pane's current title and mouse modes replayed as terminal bytes, or
     /// nothing — the part of [`Self::capture_history`] that is not history, for

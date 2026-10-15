@@ -1849,3 +1849,91 @@ fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
     let n = reader.read(&mut buf).unwrap();
     assert_eq!(&buf[..n], b"after");
 }
+
+// --- hidden panes (`ControlMode::hide_pane`) ---
+
+/// A two-cell parser fed a hidden pane's report.
+fn after_report(before: &[u8], value: &str) -> vt100::Parser {
+    let (_, bytes) = hidden_state(value).expect("a report");
+    let mut parser = vt100::Parser::new(2, 2, 0);
+    parser.process(before);
+    parser.process(&bytes);
+    parser
+}
+
+#[test]
+fn a_hidden_report_sets_the_modes_it_names_on_and_off() {
+    let on = after_report(b"", "1792|1,1,1,0|0,0,0,1,1,0|host|working on it");
+    let screen = on.screen();
+    assert!(screen.application_cursor());
+    assert!(screen.application_keypad());
+    assert!(screen.bracketed_paste());
+    assert!(screen.hide_cursor());
+    assert_eq!(
+        screen.mouse_protocol_mode(),
+        vt100::MouseProtocolMode::PressRelease
+    );
+    assert_eq!(
+        screen.mouse_protocol_encoding(),
+        vt100::MouseProtocolEncoding::Sgr
+    );
+
+    let off = after_report(
+        b"\x1b[?1h\x1b=\x1b[?2004h\x1b[?25l\x1b[?1003h\x1b[?1006h",
+        "1793|0,0,0,1|0,0,0,0,0,0|host|",
+    );
+    let screen = off.screen();
+    assert!(!screen.application_cursor());
+    assert!(!screen.application_keypad());
+    assert!(!screen.bracketed_paste());
+    assert!(!screen.hide_cursor());
+    assert_eq!(screen.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+}
+
+/// tmux 3.2 has no `bracket_paste_flag`: a flag that expands to nothing says
+/// nothing, so the mode the pane last set stands.
+#[test]
+fn a_flag_the_server_does_not_know_leaves_the_mode_alone() {
+    let parser = after_report(b"\x1b[?2004h", "1792|0,0,,1|0,0,0,0,0,0|host|");
+    assert!(parser.screen().bracketed_paste());
+}
+
+#[test]
+fn a_hidden_report_carries_its_activity_and_a_title_with_separators() {
+    let (activity, bytes) =
+        hidden_state("1792003771|0,0,0,1|0,0,0,0,0,0|host|a | title: here").expect("report");
+    assert_eq!(activity, "1792003771");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("\x1b]2;a | title: here"), "{text:?}");
+    // tmux's default title is the host's name, not an agent's line.
+    let (_, bytes) = hidden_state("1|0,0,0,1|0,0,0,0,0,0|host|host").expect("report");
+    assert!(!String::from_utf8_lossy(&bytes).contains("\x1b]2;"));
+    assert!(hidden_state("not a report").is_none());
+}
+
+/// The first report says what the pane already was; a report whose activity
+/// moved is output; a report for a pane no longer hidden is dropped.
+#[test]
+fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
+    let (tx, rx) = sync_channel(16);
+    let senders: PaneSendersMapShared =
+        Arc::new(Mutex::new(HashMap::from([("%7".to_string(), vec![tx])])));
+    let hidden: HiddenPanes = Arc::new(Mutex::new(HashMap::from([("%7".to_string(), None)])));
+    let report = |activity: &str| format!("{activity}|0,0,0,1|0,0,0,0,0,0|host|t");
+    let kind = |chunk: PaneChunk| match chunk {
+        PaneChunk::Output(_) => "output",
+        PaneChunk::State(_) => "state",
+        _ => "other",
+    };
+
+    ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("100"));
+    assert_eq!(kind(rx.try_recv().expect("a chunk")), "state");
+    ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("100"));
+    assert_eq!(kind(rx.try_recv().expect("a chunk")), "state");
+    ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("101"));
+    assert_eq!(kind(rx.try_recv().expect("a chunk")), "output");
+
+    hidden.lock().unwrap().clear();
+    ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("102"));
+    assert!(rx.try_recv().is_err(), "a pane shown again takes no report");
+}
