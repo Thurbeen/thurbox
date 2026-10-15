@@ -161,15 +161,17 @@ impl std::error::Error for StateArrived {}
 impl StateArrived {
     /// The bytes an error carries if it is one of these, or the error back.
     pub fn take(err: std::io::Error) -> Result<Vec<u8>, std::io::Error> {
-        if err.kind() != std::io::ErrorKind::Interrupted
-            || !err
-                .get_ref()
-                .is_some_and(|inner| inner.is::<StateArrived>())
-        {
+        let kind = err.kind();
+        if kind != std::io::ErrorKind::Interrupted {
             return Err(err);
         }
-        let inner = err.into_inner().expect("checked above");
-        Ok(inner.downcast::<StateArrived>().expect("checked above").0)
+        match err.into_inner() {
+            Some(inner) => inner
+                .downcast::<StateArrived>()
+                .map(|state| state.0)
+                .map_err(|other| std::io::Error::new(kind, other)),
+            None => Err(kind.into()),
+        }
     }
 }
 

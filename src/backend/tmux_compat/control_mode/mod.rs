@@ -1471,12 +1471,8 @@ impl ControlMode {
                         is_error,
                     );
                 }
-                // A pane paused on purpose (`hide_pane`) stays paused; one the
-                // server paused for falling behind is resumed.
                 Notification::Pause { pane_id } => {
-                    if !hidden.lock().is_ok_and(|h| h.contains_key(&pane_id)) {
-                        Self::resume_pane(&stdin, &pane_id);
-                    }
+                    Self::on_pause(&stdin, &hidden, &pane_id);
                 }
                 Notification::WindowClose { window_id } => match &confirm_close {
                     None => {
@@ -1515,18 +1511,15 @@ impl ControlMode {
                     pane_id,
                     value,
                 } => {
-                    if name == REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
-                        Self::queue_sub_events(&sub_events, vec![(pane_id, value)]);
-                    } else if name.starts_with(HIDDEN_SUBSCRIPTION) {
-                        Self::dispatch_hidden(&pane_senders, &hidden, &pane_id, &value);
-                    } else if name == SIZER_SUBSCRIPTION {
-                        let elsewhere = !value.is_empty() && value != sizer;
-                        Self::send_event(
-                            &pane_senders,
-                            &pane_id,
-                            PaneChunk::SizedElsewhere(elsewhere),
-                        );
-                    }
+                    Self::on_subscription(
+                        &pane_senders,
+                        &sub_events,
+                        &hidden,
+                        sizer,
+                        &name,
+                        pane_id,
+                        value,
+                    );
                 }
                 Notification::Other(text) => {
                     if let Some((_, lines)) = &mut collecting {
@@ -1881,6 +1874,34 @@ impl ControlMode {
         if let Ok(mut s) = stdin.lock() {
             let _ = s.write_all(cmd.as_bytes());
             let _ = s.flush();
+        }
+    }
+
+    /// A pane paused on purpose (`hide_pane`) stays paused; one the server
+    /// paused for falling behind is resumed.
+    fn on_pause(stdin: &Arc<Mutex<ChildStdin>>, hidden: &HiddenPanes, pane_id: &str) {
+        if !hidden.lock().is_ok_and(|h| h.contains_key(pane_id)) {
+            Self::resume_pane(stdin, pane_id);
+        }
+    }
+
+    /// Route a `%subscription-changed` report by the subscription it is for.
+    fn on_subscription(
+        pane_senders: &PaneSendersMapShared,
+        sub_events: &Arc<Mutex<VecDeque<(String, String)>>>,
+        hidden: &HiddenPanes,
+        sizer: &str,
+        name: &str,
+        pane_id: String,
+        value: String,
+    ) {
+        if name == REMOTE_HOOK_SUBSCRIPTION && !value.is_empty() {
+            Self::queue_sub_events(sub_events, vec![(pane_id, value)]);
+        } else if name.starts_with(HIDDEN_SUBSCRIPTION) {
+            Self::dispatch_hidden(pane_senders, hidden, &pane_id, &value);
+        } else if name == SIZER_SUBSCRIPTION {
+            let elsewhere = !value.is_empty() && value != sizer;
+            Self::send_event(pane_senders, &pane_id, PaneChunk::SizedElsewhere(elsewhere));
         }
     }
 

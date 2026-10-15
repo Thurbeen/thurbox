@@ -828,13 +828,13 @@ mod remote {
         ))
     }
 
-    fn wait_within(what: &str, secs: u64, mut ready: impl FnMut() -> bool) {
+    async fn wait_within(what: &str, secs: u64, mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(secs);
         while Instant::now() < deadline {
             if ready() {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out waiting for {what}");
     }
@@ -923,9 +923,9 @@ mod remote {
         assert!(!session.is_resident(), "adopted without a grid");
 
         // The pane goes on printing; what reaches the interface for it must not.
-        std::thread::sleep(Duration::from_millis(1500));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         let mark = log_len(&log);
-        std::thread::sleep(Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_secs(2)).await;
         assert_eq!(
             output_lines(&log, mark, &pane),
             0,
@@ -935,7 +935,8 @@ mod remote {
         // What the interface reads off a hidden pane still arrives: the title …
         wait_within("the title set while hidden", 10, || {
             session.agent_title().as_deref() == Some("hidden-title")
-        });
+        })
+        .await;
         // … and that it is printing.
         assert!(
             session.millis_since_last_output() < 3_000,
@@ -951,13 +952,15 @@ mod remote {
                 .take_hook_state_events()
                 .iter()
                 .any(|(id, state)| id == &pane && state == "blocked")
-        });
+        })
+        .await;
 
         // Once it stops, it reads as quiet — the stuck-`working` fallback's input.
         std::fs::write(dir.path().join("stop"), "").expect("stop");
         wait_within("the hidden pane to read as quiet", 15, || {
             session.millis_since_last_output() > 2_500
-        });
+        })
+        .await;
 
         // Shown again: the grid is the current screen, with the modes set while
         // nothing was streamed, and output flows again.
@@ -995,7 +998,8 @@ mod remote {
         std::fs::write(dir.path().join("go"), "").expect("go");
         wait_within("output after the pane is shown", 10, || {
             session_text(&session).contains("AFTER")
-        });
+        })
+        .await;
         assert!(
             output_lines(&log, mark, &pane) > 0,
             "output of a shown pane crosses the link"
@@ -1022,11 +1026,12 @@ mod remote {
                 .expect("adopt");
         wait_within("the title set while hidden", 10, || {
             session.agent_title().as_deref() == Some("hidden-title")
-        });
+        })
+        .await;
         // Twenty lines a second, each its own chunk: streamed, that is dozens of
         // chunks in two seconds; reported instead, it would be two.
         let before = session.output_seq();
-        std::thread::sleep(Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let chunks = session.output_seq() - before;
         assert!(
             chunks >= 10,
