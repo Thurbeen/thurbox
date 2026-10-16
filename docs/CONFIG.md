@@ -909,9 +909,12 @@ running from the last update's backup — a hook or heartbeat `thurbox-cli.exe`
 that has not exited — keeps that file, so the next update moves the binary to
 `.thurbox.exe.1.old` (and so on) instead, and deletes every backup nothing runs
 from any more. The two binaries are committed together: if either cannot be
-swapped, the one already swapped is put back, so the TUI and CLI are never left
-on different versions (issue #1432). Re-running `install.ps1` over a running thurbox
-works the same way: it renames each installed binary to `.<name>.old` rather
+swapped, the one already swapped is put back from its backup, so a failed update
+normally leaves the TUI and CLI on the version they had (issue #1432). The
+put-back is best effort: if it is refused too — say a process has just started
+from the new binary — that binary stays on the new version, and the update
+fails with an error saying it may be partial. Re-running `install.ps1` over a
+running thurbox works the same way: it renames each installed binary to `.<name>.old` rather
 than deleting it, and names the process to close when even that is refused.
 
 **Auto-update never crosses a major version.** A 1.x install is told that 2.x
