@@ -44,6 +44,21 @@ pub const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// first success resets the count.
 pub const PROBE_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
 
+/// How long a probe — "is there a CLI, what version, what platform" — may take
+/// before the host counts as not answering. Every answer is a line or two, so
+/// anything past a few seconds is a transport that hung: a degraded `wsl.exe`
+/// waiting on a service that never replies, an ssh stalled after connect. With
+/// no deadline that one host held the headless heartbeat's tick for over an
+/// hour (#1431).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The deadline for everything else run on a host: a delegated `thurbox-cli`
+/// command, unpacking a provisioned binary. Far looser than [`PROBE_TIMEOUT`]
+/// because a delegated create or delete does real work there — a worktree, the
+/// user's own lifecycle hooks — but still a bound, so a host that wedges after
+/// answering its probe cannot hold the caller forever either.
+const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// How long to leave a host alone after `failures` consecutive `No`s:
 /// [`PROBE_RETRY`] doubled once per failure, capped at [`PROBE_RETRY_MAX`].
 ///
@@ -557,8 +572,8 @@ pub fn probe(host: &HostDef) -> Result<Option<CliInfo>, ProbeFailure> {
     } else {
         probe_script_posix()
     };
-    let stdout =
-        run_script(host, &script, "thurbox-cli probe").map_err(ProbeFailure::unreadable)?;
+    let stdout = run_script(host, &script, "thurbox-cli probe", PROBE_TIMEOUT)
+        .map_err(ProbeFailure::unreadable)?;
     parse_probe(&stdout)
 }
 
@@ -576,8 +591,8 @@ fn probe_at(host: &HostDef, path: &str) -> Result<Option<CliInfo>, ProbeFailure>
             run = probe_run_posix(&crate::shell::posix_quote(path))
         )
     };
-    let stdout =
-        run_script(host, &script, "thurbox-cli probe").map_err(ProbeFailure::unreadable)?;
+    let stdout = run_script(host, &script, "thurbox-cli probe", PROBE_TIMEOUT)
+        .map_err(ProbeFailure::unreadable)?;
     parse_probe(&stdout)
 }
 
@@ -785,7 +800,7 @@ pub fn run_classified(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Va
     } else {
         cli_script_posix(&cli.path, args)
     };
-    let stdout = run_script_classified(host, &script, "thurbox-cli")?;
+    let stdout = run_script_classified(host, &script, "thurbox-cli", SCRIPT_TIMEOUT)?;
     serde_json::from_str(&stdout).map_err(|e| {
         // It ran and said something; that something is not what this build
         // knows how to read. The host may well have done the thing.
@@ -826,8 +841,13 @@ pub(crate) fn cli_script_windows(cli: &str, args: &[&str]) -> String {
 
 /// Run a script on the host in its own dialect and return stdout, with a
 /// failure carrying the host's cleaned stderr.
-fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, String> {
-    run_script_classified(host, script, action).map_err(String::from)
+fn run_script(
+    host: &HostDef,
+    script: &str,
+    action: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    run_script_classified(host, script, action, timeout).map_err(String::from)
 }
 
 /// [`run_script`] keeping the layer that failed. See [`Reach`].
@@ -852,12 +872,21 @@ fn run_script(host: &HostDef, script: &str, action: &str) -> Result<String, Stri
 /// start. That is the honest limit rather than a guess, and it costs little:
 /// `wsl.exe` runs on this machine, so "could not reach it" is a far narrower
 /// condition there than it is over a network.
-fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<String, RunFailure> {
+///
+/// A launcher still running at `timeout` is killed and the run is
+/// `Undetermined`: the script may have started on the host before the
+/// transport stalled, so nothing says the question did not arrive.
+fn run_script_classified(
+    host: &HostDef,
+    script: &str,
+    action: &str,
+    timeout: Duration,
+) -> Result<String, RunFailure> {
     #[cfg(test)]
     if let Some(answer) = fake::script_override(host, script) {
         return answer;
     }
-    let mut command = if host.is_windows() {
+    let command = if host.is_windows() {
         crate::git::host_powershell_c(host, script)
     } else {
         // The launcher's environment is a non-login one, and a `session
@@ -870,14 +899,21 @@ fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<S
         };
         crate::git::host_shell_c(host, &script)
     };
-    let output = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
+    let output = output_within(command, timeout)
         .map_err(|e| {
             RunFailure::new(
                 format!("could not start {action} on '{}': {e}", host.name),
                 Reach::Unreached,
+            )
+        })?
+        .ok_or_else(|| {
+            RunFailure::new(
+                format!(
+                    "{action} on '{}' did not answer within {}s",
+                    host.name,
+                    timeout.as_secs()
+                ),
+                Reach::Undetermined,
             )
         })?;
     if !output.status.success() {
@@ -913,6 +949,70 @@ fn run_script_classified(host: &HostDef, script: &str, action: &str) -> Result<S
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// [`std::process::Command::output`] with a deadline: `Ok(None)` when the
+/// launcher is still running at `timeout`, which is then killed.
+///
+/// The deadline covers the pipes as well as the process. Both are drained on
+/// threads of their own — a read here would block until EOF and the deadline
+/// could never fire — and those threads are abandoned rather than joined when
+/// it passes: killing ssh can leave its `ProxyCommand` holding stderr open, and
+/// a join would wait on that instead. They end when the pipe finally closes.
+fn output_within(
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    use std::process::Stdio;
+
+    /// How often the launcher is checked for an exit — coarse enough to cost
+    /// nothing next to a process start, fine enough not to add to an answer.
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+    fn drain(
+        pipe: Option<impl std::io::Read + Send + 'static>,
+    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                let _ = tx.send(bytes);
+            });
+        }
+        rx
+    }
+
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    };
+    Ok(collect(stdout)
+        .zip(collect(stderr))
+        .map(|(stdout, stderr)| std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }))
 }
 
 /// `ssh`'s own failure code. ssh(1): "exits with the exit status of the remote
@@ -986,7 +1086,7 @@ fn host_platform(host: &HostDef) -> Result<(String, String), String> {
     } else {
         "uname -sm".to_string()
     };
-    let out = run_script(host, &script, "platform probe")?;
+    let out = run_script(host, &script, "platform probe", PROBE_TIMEOUT)?;
     let mut words = out.split_whitespace();
     match (words.next(), words.next()) {
         (Some(os), Some(arch)) => Ok((os.to_string(), arch.to_string())),
@@ -1099,6 +1199,7 @@ fn install(host: &HostDef) -> Result<String, String> {
                 host,
                 &format!("chmod +x {}", crate::shell::posix_quote(&dest)),
                 "chmod",
+                SCRIPT_TIMEOUT,
             )?;
         }
         return Ok(dest);
@@ -1119,7 +1220,7 @@ fn install(host: &HostDef) -> Result<String, String> {
             a = crate::shell::posix_quote(&archive.name)
         )
     };
-    run_script(host, &extract, "thurbox-cli extraction")?;
+    run_script(host, &extract, "thurbox-cli extraction", SCRIPT_TIMEOUT)?;
     Ok(dest)
 }
 
