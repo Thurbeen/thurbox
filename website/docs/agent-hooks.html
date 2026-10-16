@@ -263,7 +263,19 @@ breadcrumb: 'Agent hooks'
               <code>permission.asked</code>
               &rarr; blocked,
               <code>session.idle</code>
-              &rarr; done.
+              &rarr; done. The same file loads on opencode 2.x, which reports
+              <code>session.execution.started</code>
+              &rarr; working and the end of an execution &rarr; done, but only in a session launched
+              with
+              <code>--standalone</code>
+              : the background server opencode 2.x shares between sessions by default cannot tell
+              them apart, so add
+              <code>args = ["--standalone"]</code>
+              to the
+              <code>opencode</code>
+              agent in
+              <code>agents.toml</code>
+              (opencode 1.x rejects the flag, so thurbox leaves it to you).
             </li>
             <li>
               <strong>codex</strong>

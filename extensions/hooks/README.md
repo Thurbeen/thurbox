@@ -62,10 +62,25 @@ below), do the same.
 - **aider** — `--notifications-command` reports the only edge aider exposes:
   blocked (waiting for input).
 - **opencode** — a plugin dropped into `~/.config/opencode/plugin/` (only when
-  opencode is installed). Events: `session.created` → idle, `chat.message` →
-  working, `permission.asked` → blocked, `permission.replied` → working
-  (allowed or denied, the turn is opencode's again — it is the only agent here
-  with a real permission-reply event), `session.idle` → done.
+  opencode is installed). One module serves both plugin APIs opencode ships:
+  1.x reads `server` off its default export, 2.x refuses anything but a default
+  export with `id` + `setup`. Events on 1.x: `session.created` → idle,
+  `chat.message` → working, `permission.asked` → blocked, `permission.replied` →
+  working (allowed or denied, the turn is opencode's again — it is the only
+  agent here with a real permission-reply event), `session.idle` → done. On
+  2.x: `session.created` → idle, `session.execution.started` → working,
+  `permission.asked` → blocked, `permission.replied` → working,
+  `session.execution.succeeded`/`failed`/`interrupted` → done; a subagent's
+  child session never reports idle or done for its parent.
+
+  **opencode 2.x reports only from a `--standalone` session.** By default its
+  TUI connects to one background server (`serve --service`) that every opencode
+  on the machine shares, started with the environment of whichever launch came
+  first, so the plugin there cannot tell which thurbox session a turn belongs
+  to and reports nothing. Add the flag to the agent in `agents.toml`
+  (`args = ["--standalone"]` on the `opencode` entry) to give each session a
+  private server that inherits its `$THURBOX_SESSION`. thurbox does not add it
+  itself because opencode 1.x refuses it as an unknown argument.
 - **codex** — codex's `hooks.json` is claude-shaped, loaded from
   `~/.codex/hooks.json`. We **JSON-merge** our entries in (a `[[config_merges]]`,
   guarded by `requires_dir`) so your own hooks are preserved; uninstall prunes

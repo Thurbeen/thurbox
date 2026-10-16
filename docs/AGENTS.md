@@ -293,7 +293,12 @@ embedded hook assets live in
   - `opencode`: a plugin at `~/.config/opencode/plugin/thurbox-status.js`
     (idle/working/blocked/done). The only agent with a real permission-*reply*
     event, so `permission.replied`→working clears the block exactly when it
-    ends rather than at the next tool boundary.
+    ends rather than at the next tool boundary. One module for both plugin
+    APIs: 1.x reads `server` off the default export, 2.x `id` + `setup`
+    (verified against 1.19.2 and 2.0.30). On 2.x it reports only from a
+    session launched with `--standalone` — the default shared background
+    server never saw the session's `$THURBOX_SESSION` — and the flag is left
+    to the user's `agents.toml` because 1.x rejects it.
   - `copilot`: `~/.copilot/hooks/thurbox-status.json`
     (sessionStart→idle, userPromptSubmitted/preToolUse/postToolUse→working,
     agentStop→done, notification matched to `permission_prompt`→blocked). Ships

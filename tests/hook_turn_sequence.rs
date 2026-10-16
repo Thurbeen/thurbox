@@ -23,11 +23,12 @@
 //! `thurbox-cli` they call is a stub that records the state
 //! word. The script payloads (opencode, pi, omp) are run too, under Node's
 //! own (type-stripped for the two TypeScript ones) ESM loader: each is
-//! imported for real and driven through its actual `pi.on`/`ThurboxStatus`
-//! registration, with only the one thing outside the module's own control —
-//! `pi`'s injected API, or opencode's shell tag — stood in for. The `pi`/`omp`
-//! stand-in still runs `report()`'s real `exec()` against the same stub
-//! `thurbox-cli`, on `PATH`, that the JSON turns use.
+//! imported for real and driven through its actual `pi.on` registration, or
+//! opencode's default export (1.x's `server` and 2.x's `setup`), with only the
+//! one thing outside the module's own control — `pi`'s injected API, or
+//! opencode's hook and event hosts — stood in for. Each still runs its real
+//! `exec()` against the same stub `thurbox-cli`, on `PATH`, that the JSON
+//! turns use.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -490,11 +491,9 @@ for (const { event, toolName } of events) {
 }
 "#;
 
-/// Same idea for opencode's `ThurboxStatus({ $ })`: `$` is opencode's own
-/// shell tag, so the stand-in builds the same command string a real one would
-/// and actually runs it, against the same stub `thurbox-cli`.
-const OPENCODE_DRIVER: &str = r#"
-import { exec } from "node:child_process";
+/// The part of the opencode drivers both API generations share: the stub
+/// `thurbox-cli`'s line count, and waiting for (or ruling out) one more signal.
+const OPENCODE_DRIVER_PRELUDE: &str = r#"
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -515,18 +514,29 @@ async function waitForSignal(before) {
   throw new Error("timed out waiting for a thurbox-cli signal");
 }
 
-function $(strings, ...values) {
-  let command = strings[0];
-  for (let i = 0; i < values.length; i++) command += String(values[i]) + strings[i + 1];
-  const promise = new Promise((resolve) => exec(command, () => resolve()));
-  promise.quiet = () => promise;
-  promise.nothrow = () => promise;
-  return promise;
+async function expectNoSignal(before, what) {
+  await new Promise((r) => setTimeout(r, 300));
+  if (lineCount() !== before) throw new Error(`${what} signalled a state`);
 }
 
 const mod = await import(pathToFileURL(modulePath).href);
-const handlers = await mod.ThurboxStatus({ $ });
+"#;
 
+/// opencode 1.x: a default export carrying `id` and `server(input)`, which
+/// returns the V1 hooks (`chat.message`, `event`). 1.x *also* calls a module's
+/// `setup` through its partial V2 bridge, whose context has neither `event` nor
+/// `session` — so that call is made here too, and must neither throw nor
+/// signal, or every 1.x turn would report twice.
+const OPENCODE_V1_DRIVER: &str = r#"
+const plugin = mod.default;
+if (!plugin || typeof plugin.id !== "string" || typeof plugin.server !== "function")
+  throw new Error("opencode 1.x needs a default export with an id and server()");
+
+const before = lineCount();
+await plugin.setup({ options: {}, agent: {}, command: {}, plugin: {}, skill: {} });
+await expectNoSignal(before, "setup on the 1.x bridge");
+
+const handlers = await plugin.server({});
 for (const step of events) {
   const before = lineCount();
   if (step.kind === "chat.message") {
@@ -536,6 +546,50 @@ for (const step of events) {
   }
   await waitForSignal(before);
 }
+"#;
+
+/// opencode 2.x: the loader decodes the module's `default` as `{ id, setup }`
+/// (or `{ id, effect }`) and refuses anything else with "Plugin must export a
+/// default definition with an id and an effect or setup function." — the
+/// check below is that schema. `setup` then gets a context whose `event`
+/// domain is an async-iterable subscription over `{ type, data }` events.
+const OPENCODE_V2_DRIVER: &str = r#"
+const plugin = mod.default;
+if (
+  !plugin ||
+  typeof plugin.id !== "string" ||
+  (typeof plugin.setup !== "function" && typeof plugin.effect !== "function")
+)
+  throw new Error(
+    "Plugin must export a default definition with an id and an effect or setup function.",
+  );
+
+const queue = [];
+let wake = () => {};
+const ctx = {
+  session: { hook: async () => ({ dispose: async () => {} }) },
+  event: {
+    subscribe: () => ({
+      async *[Symbol.asyncIterator]() {
+        for (;;) {
+          while (queue.length) yield queue.shift();
+          await new Promise((r) => (wake = r));
+        }
+      },
+    }),
+  },
+};
+await plugin.setup(ctx);
+
+for (const step of events) {
+  const before = lineCount();
+  queue.push({ type: step.type, data: step.data });
+  wake();
+  if (step.silent) await expectNoSignal(before, step.type);
+  else await waitForSignal(before);
+}
+// The subscription never ends on its own; the turn is over.
+process.exit(0);
 "#;
 
 fn run_node_driver(dir: &Path, driver: &str, module: &str, events_json: &str, log: &Path) {
@@ -610,7 +664,7 @@ fn the_script_payloads_report_working_when_the_block_clears() {
     .to_string();
     run_node_driver(
         dir.path(),
-        OPENCODE_DRIVER,
+        &format!("{OPENCODE_DRIVER_PRELUDE}{OPENCODE_V1_DRIVER}"),
         "opencode-status.js",
         &events,
         &log,
@@ -621,6 +675,81 @@ fn the_script_payloads_report_working_when_the_block_clears() {
             .lines()
             .collect::<Vec<_>>(),
         vec!["idle", "working", "blocked", "working", "done"],
-        "opencode-status.js: the turn's signalled states"
+        "opencode-status.js (1.x): the turn's signalled states"
     );
+}
+
+/// The same turn on opencode 2.x, which refuses the 1.x module shape outright
+/// (issue #1417): the plugin has to load under its schema, and then report the
+/// turn from the 2.x event stream. A subagent runs in a child session of its
+/// own, whose creation and completion are not the session's — signalling them
+/// would put the dot at `idle`/`done` while the parent is still working.
+#[test]
+fn the_opencode_plugin_loads_and_reports_a_turn_on_opencode_2() {
+    if !have_node() {
+        eprintln!("skipping: node is not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = stub_cli(dir.path());
+    let root = serde_json::json!({"sessionID": "ses_root"});
+    let child = serde_json::json!({"sessionID": "ses_child", "parentID": "ses_root"});
+    let events = serde_json::json!([
+        {"type": "session.created", "data": root},
+        {"type": "session.execution.started", "data": root},
+        {"type": "permission.asked", "data": root},
+        {"type": "permission.replied", "data": root},
+        {"type": "session.created", "data": child, "silent": true},
+        {"type": "session.execution.succeeded", "data": {"sessionID": "ses_child"}, "silent": true},
+        {"type": "session.execution.succeeded", "data": root},
+    ])
+    .to_string();
+    run_node_driver(
+        dir.path(),
+        &format!("{OPENCODE_DRIVER_PRELUDE}{OPENCODE_V2_DRIVER}"),
+        "opencode-status.js",
+        &events,
+        &log,
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["idle", "working", "blocked", "working", "done"],
+        "opencode-status.js (2.x): the turn's signalled states"
+    );
+}
+
+/// opencode 2.x's TUI connects by default to one background server
+/// (`serve --service`) that every opencode on the machine shares, started with
+/// the environment of whichever launch came first. Its `$THURBOX_SESSION` is no
+/// particular session's, so a plugin hosted there must report nothing at all
+/// rather than every session's turns as that one's.
+#[test]
+fn the_opencode_plugin_is_silent_in_the_shared_opencode_2_server() {
+    if !have_node() {
+        eprintln!("skipping: node is not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = stub_cli(dir.path());
+    let root = serde_json::json!({"sessionID": "ses_root"});
+    let events = serde_json::json!([
+        {"type": "session.created", "data": root, "silent": true},
+        {"type": "session.execution.started", "data": root, "silent": true},
+        {"type": "permission.asked", "data": root, "silent": true},
+        {"type": "session.execution.succeeded", "data": root, "silent": true},
+    ])
+    .to_string();
+    run_node_driver(
+        dir.path(),
+        &format!(
+            "{OPENCODE_DRIVER_PRELUDE}process.argv.push(\"serve\", \"--service\");\n{OPENCODE_V2_DRIVER}"
+        ),
+        "opencode-status.js",
+        &events,
+        &log,
+    );
+    assert!(!log.exists(), "the shared server reported a state");
 }
