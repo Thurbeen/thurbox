@@ -7,6 +7,10 @@
 //! comes, exactly as a degraded `wsl.exe` waits on a service that never
 //! answers. Before the fix the delegation probe waited with it, for as long as
 //! the transport cared to hang.
+//!
+//! A file of its own because the host-routing suites stand in for ssh with
+//! shell scripts and so run on POSIX only; this one drives the real client and
+//! runs on Windows too, where the wedge was seen.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -25,7 +29,10 @@ const SILENT_PROXY: &str = "powershell -NoProfile -Command Start-Sleep 120";
 
 #[test]
 fn a_host_that_never_answers_does_not_wedge_the_automation_tick() {
-    if thurbox::paths::resolve_on_path("ssh").is_none() {
+    // With its suffix: on Windows the file on PATH is `ssh.exe`, and a bare
+    // `ssh` finds nothing there, so the test would skip where it matters most.
+    let ssh = format!("ssh{}", std::env::consts::EXE_SUFFIX);
+    if thurbox::paths::resolve_on_path(&ssh).is_none() {
         eprintln!("skipping: no ssh client on PATH");
         return;
     }
