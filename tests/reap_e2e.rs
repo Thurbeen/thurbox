@@ -281,6 +281,64 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     );
 }
 
+/// The same sequence on a server that stamps nothing — every psmux window. A
+/// lone unstamped `tb-<name>` resolves to any row of that name, the deleted one
+/// included, so a stamp cannot be what spares the replacement here: the live
+/// namesake is. An extension session that self-heals under its old name was
+/// killed this way on every sweep, and never stayed up on Windows.
+#[test]
+fn reaping_a_stale_row_spares_an_unstamped_live_namesake() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().expect("db");
+    let _server = TmuxServer::pin(SOCKET);
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate_paths(home.path());
+
+    let Some(stale) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    thurbox::session_ops::delete_session_headless(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+        false,
+    )
+    .expect("delete");
+    let _ = tmux(&["kill-pane", "-t", &stale.backend_id]);
+
+    let Some(live) = spawn(&db, repo.path(), "fleet") else {
+        return;
+    };
+    for option in ["@thurbox_session", "@thurbox_role"] {
+        let out = tmux(&["set-option", "-w", "-u", "-t", &live.backend_id, option]);
+        assert!(
+            out.status.success(),
+            "unstamp {option}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let reaped = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured().0,
+        stale.session_id,
+    )
+    .expect("reap");
+
+    assert!(
+        pane_alive(&live.backend_id),
+        "reaping the stale 'fleet' row killed its unstamped live namesake {} \
+         (reaped={reaped}); windows left: {:?}",
+        live.backend_id,
+        windows()
+    );
+}
+
 /// The other half of the contract. Sparing a same-named window must not have
 /// been bought by making the reap a no-op: while the row's *own* pane still
 /// resolves, reaping it has to take the window down, or a soft-deleted session

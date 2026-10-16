@@ -124,8 +124,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   exit, recent work, legacy names, malformed ownership, and symlinks / Windows junctions.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
   throwaway socket (skipped when tmux is absent), because the bug it pins only
-  exists in how tmux resolves a target. 13 tests. Six pin the reap itself: a
-  stale row's reap spares a live namesake's window, a namesake's pane the stale
+  exists in how tmux resolves a target. 15 tests. Seven pin the reap itself: a
+  stale row's reap spares a live namesake's window (stamped, and unstamped as
+  every psmux window is), a namesake's pane the stale
   row still remembers, a live window whose name only collides after
   `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`), and a
   soft-deleted namesake still inside its undo window — while a row whose own

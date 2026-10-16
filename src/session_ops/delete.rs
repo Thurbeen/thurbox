@@ -593,7 +593,7 @@ pub fn reap_overdue_soft_deletes(
         let index = windows
             .entry(row.backend_type.clone())
             .or_insert_with(|| window_index_on(db, backends, &row.backend_type));
-        if owned_windows_in(index, &row).is_empty() {
+        if owned_windows_in(index, &row, has_live_namesake(db, &row)).is_empty() {
             continue;
         }
         if !claim_reap(db, row.id, now) {
@@ -818,7 +818,7 @@ pub fn reap_soft_deleted(
         // that is how deleting a frozen session came to kill its replacement
         // 30-60s later, and why each delete-and-recreate made the next one die
         // sooner.
-        let owned = owned_windows(backend.as_ref(), &row);
+        let owned = owned_windows(db, backend.as_ref(), &row);
         if owned.is_empty() {
             // The windows may already be gone — the agent exited, or a previous
             // reap got there first. Logged rather than silent: owning nothing is
@@ -870,6 +870,7 @@ pub fn reap_soft_deleted(
 /// Conservatively owns nothing when the listing fails or cannot tell: leaking a
 /// window costs a stale agent, killing the wrong one costs live work.
 fn owned_windows(
+    db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     row: &DeletedSessionInfo,
 ) -> Vec<String> {
@@ -877,9 +878,18 @@ fn owned_windows(
         Ok(listing) => owned_windows_in(
             &crate::backend::identity::WindowIndex::from_listing(listing),
             row,
+            has_live_namesake(db, row),
         ),
         Err(_) => Vec::new(),
     }
+}
+
+/// Whether a live session answers to `row`'s name on `row`'s server. A failed
+/// read counts as one, for the reason [`owned_windows`] owns nothing when it
+/// cannot tell.
+fn has_live_namesake(db: &Database, row: &DeletedSessionInfo) -> bool {
+    super::names::live_namesakes(db, &row.name, &row.backend_type)
+        .map_or(true, |live| !live.is_empty())
 }
 
 /// The windows a soft-deleted row owns, against a listing the caller already
@@ -888,9 +898,16 @@ fn owned_windows(
 ///
 /// A window whose pane has already exited still counts: `remain-on-exit` keeps
 /// it on the server, and leaving it there is the leak the reap exists to stop.
+///
+/// A window found by name alone is the row's only while no live session shares
+/// that name (`live_namesake`). A server without window options (psmux) stamps
+/// nothing, so a lone `tb-<name>` resolves to *every* row of that name, and the
+/// reap of a deleted row then killed its live replacement on every sweep — an
+/// extension session that self-heals under the same name never stayed up.
 pub fn owned_windows_in(
     index: &crate::backend::identity::WindowIndex,
     row: &DeletedSessionInfo,
+    live_namesake: bool,
 ) -> Vec<String> {
     let id = row.id.to_string();
     [
@@ -899,6 +916,7 @@ pub fn owned_windows_in(
     ]
     .into_iter()
     .filter_map(crate::backend::identity::Located::pane)
+    .filter(|pane| !live_namesake || index.is_stamped(pane))
     .collect()
 }
 
@@ -2003,6 +2021,33 @@ mod tests {
             db.get_deleted_session_by_id(stale.id).unwrap().is_some(),
             "and is left soft-deleted rather than reported collected"
         );
+    }
+
+    /// An unstamped window — every psmux window — is a deleted row's only while
+    /// no live session shares its name; a stamped one is its own either way.
+    #[test]
+    fn an_unstamped_window_is_a_deleted_rows_only_without_a_live_namesake() {
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session(&db, "📡 Mission Control");
+        db.soft_delete_session(id).unwrap();
+        let row = db.get_deleted_session_by_id(id).unwrap().unwrap();
+        let window = |stamp: &str| crate::backend::DiscoveredSession {
+            backend_id: "%7".into(),
+            name: "tb-__Mission_Control".into(),
+            is_alive: true,
+            session: stamp.into(),
+            role: crate::backend::WindowRole::Agent,
+        };
+        let unstamped = crate::backend::identity::WindowIndex::from_listing([window("")]);
+        let stamped =
+            crate::backend::identity::WindowIndex::from_listing([window(&id.to_string())]);
+
+        assert_eq!(owned_windows_in(&unstamped, &row, false), vec!["%7"]);
+        assert!(owned_windows_in(&unstamped, &row, true).is_empty());
+        assert_eq!(owned_windows_in(&stamped, &row, true), vec!["%7"]);
+
+        insert_session(&db, "📡 Mission Control");
+        assert!(has_live_namesake(&db, &row));
     }
 
     /// A force delete's teardown destroys worktrees. If the row were marked
