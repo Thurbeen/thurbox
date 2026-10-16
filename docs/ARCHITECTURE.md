@@ -1844,6 +1844,20 @@ paths (`git::stream_into_child`, killing it first when the write failed):
 peer's own stderr in preference to that `EPIPE`, which is the symptom of the
 remote dying and never the reason.
 
+**Nor may the transfer wait unboundedly**, because it runs inside the
+automation tick and the heartbeat starts no tick until the last one ends. The
+Windows upload, while it still opened stdin itself, stopped reading part-way
+without exiting, and the blocked write kept every scheduled job from firing for
+hours while the heartbeat still reported itself alive; a link that drops
+without a reset does the same to any host. So the write runs on its own thread
+and the peer is killed once it has gone `STREAM_STALL` (60 s) without taking a
+16 KiB chunk — or, with the payload in, without exiting. Progress is measured
+rather than the total, so a slow link that keeps moving is not cut off. The
+pipes are read on threads too and abandoned two seconds after the peer exits:
+an ssh connection master (`ControlPersist`) forked by the killed ssh holds its
+stderr for as long as the master lives, which turned the reap that followed the
+kill into a second hang.
+
 **A host whose CLI does not run is not a host that is down**, and folding the
 two together is what made such a host permanently broken: the failed probe
 cached a `No`, an unusable host's mirror pass is skipped, and that mirror is
