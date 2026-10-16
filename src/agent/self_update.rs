@@ -32,8 +32,8 @@
 //! - the release artifact is the `.zip` `install.ps1` extracts, not a tarball,
 //!   so `extractor_for` picks the unpacker from the archive's own extension;
 //! - a rename cannot replace an executable a process is running from, so
-//!   `commit_binary` swaps with Win32 `ReplaceFile` there instead, which can.
-//!   Its doc comment is where the interrupted-swap guarantee is written down.
+//!   `commit_binary` moves the old one aside first, which Windows allows. Its
+//!   doc comment is where the interrupted-swap guarantee is written down.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -508,72 +508,68 @@ fn replace_failed(dest: &Path, e: impl std::fmt::Display) -> String {
 /// Rename `staged` over `dest`.
 ///
 /// Unix replaces a running binary happily — the running process keeps the inode
-/// it already opened — so this is the plain rename it has always been.
+/// it already opened — so this is the plain rename it has always been, and it
+/// keeps no backup to roll back to.
 #[cfg(not(windows))]
-fn commit_binary(staged: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))
+fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
+    std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))?;
+    Ok(None)
 }
 
-/// Swap `staged` into `dest` with Win32 `ReplaceFile`, keeping the image it
-/// replaces as `.{name}.old`.
+/// Move `dest` aside to a free backup name, then move `staged` in. Returns the
+/// backup, so [`install_binaries`] can put it back if a later binary fails.
 ///
-/// **Why not a rename.** `std::fs::rename` is `MoveFileEx(REPLACE_EXISTING)`,
-/// which has to delete the destination, and Windows will not delete an image a
-/// process has mapped: replacing the binary thurbox is running from comes back
-/// *Access is denied*. `ReplaceFile` does not delete the destination — it
-/// renames it to the backup name, which a mapped image permits — so the swap
-/// succeeds while thurbox runs, and the running process keeps its old image
-/// just as it keeps its inode on Unix. Without a backup name `ReplaceFile` has
-/// to delete after all, and fails the same way the rename does.
+/// **Why two renames.** Windows will not delete an image a process has mapped,
+/// and a rename *over* `dest` has to delete it. Renaming the mapped image
+/// itself is allowed, so it is moved aside first and the running process keeps
+/// its old image, as it keeps its inode on Unix — the same swap `install.ps1`
+/// and the host-CLI install use.
 ///
-/// **What an interrupted replace leaves.** Download, verification and staging
-/// all happen before this, so an interruption anywhere up to here leaves the
-/// installed binary untouched. The swap is one system call: a thurbox killed,
-/// crashed or closed while it runs cannot stop the kernel halfway through, so
-/// `dest` names the old binary or the new one. The old image is kept in every
-/// case, which is also what would make a power loss inside the call recoverable
-/// by a rename rather than a reinstall. A second update while some thurbox is
-/// still running from that backup is refused by `ReplaceFile` before it touches
-/// `dest`, and reported here as the failure it is.
+/// **Why a free name.** A process started before the last update is still
+/// running from that update's backup, and nothing can delete it until it
+/// exits. With one fixed backup name the swap then had nowhere to put `dest`,
+/// and the update stopped part-way (issue #1432); [`backup_path`] picks a name
+/// nothing holds instead.
 ///
-/// Reached through PowerShell's `[System.IO.File]::Replace` rather than a
-/// hand-written `extern "system"` binding: the zip path already needs
-/// PowerShell, and this crate carries no Win32 FFI of its own.
+/// **What an interrupted swap leaves.** Download, verification and staging all
+/// happen before this, so an interruption up to here leaves the installed
+/// binary untouched. Between the two renames `dest` is briefly absent; a failed
+/// second rename moves the backup straight back.
 #[cfg(windows)]
-fn commit_binary(staged: &Path, dest: &Path) -> Result<(), String> {
-    let out = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command"])
-        .arg(replace_file_script(staged, dest, &backup_path(dest)))
-        .output()
-        .map_err(|e| replace_failed(dest, e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(replace_failed(
-            dest,
-            String::from_utf8_lossy(&out.stderr).trim(),
-        ))
+fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
+    let backup = backup_path(dest)?;
+    std::fs::rename(dest, &backup).map_err(|e| replace_failed(dest, e))?;
+    if let Err(e) = std::fs::rename(staged, dest) {
+        let _ = std::fs::rename(&backup, dest);
+        return Err(replace_failed(dest, e));
     }
+    Ok(Some(backup))
 }
 
-/// `.{name}.old` beside `dest`: where [`commit_binary`] keeps the image it
-/// replaces on Windows.
+/// How many backups of one binary may be held by processes still running from
+/// them before an update gives up.
 #[cfg(windows)]
-fn backup_path(dest: &Path) -> PathBuf {
-    let name = dest.file_name().unwrap_or_default().to_string_lossy();
-    dest.with_file_name(format!(".{name}.old"))
-}
+const BACKUP_SLOTS: usize = 16;
 
-/// The PowerShell that performs [`commit_binary`]'s swap on Windows.
-///
-/// A single statement on purpose: `-Command` exits non-zero when its last
-/// statement fails, so a refused `Replace` reaches the exit code with nothing
-/// more said.
-#[cfg(any(windows, test))]
-fn replace_file_script(staged: &Path, dest: &Path, backup: &Path) -> String {
-    let [staged, dest, backup] =
-        [staged, dest, backup].map(|p| crate::shell::powershell_quote(&p.to_string_lossy()));
-    format!("[System.IO.File]::Replace({staged}, {dest}, {backup})")
+/// The first free name of `.{name}.old`, `.{name}.1.old`, … beside `dest`,
+/// deleting every backup no process still runs from on the way, so old ones do
+/// not pile up.
+#[cfg(windows)]
+fn backup_path(dest: &Path) -> Result<PathBuf, String> {
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    let mut free = None;
+    for slot in 0..BACKUP_SLOTS {
+        let candidate = if slot == 0 {
+            dest.with_file_name(format!(".{name}.old"))
+        } else {
+            dest.with_file_name(format!(".{name}.{slot}.old"))
+        };
+        let _ = std::fs::remove_file(&candidate);
+        if free.is_none() && !candidate.exists() {
+            free = Some(candidate);
+        }
+    }
+    free.ok_or_else(|| replace_failed(dest, "every backup name is held by a running thurbox"))
 }
 
 /// Replace the installed binaries in `install_dir` with the ones extracted into
@@ -612,23 +608,37 @@ fn install_binaries(
             skipped.push(name);
             continue;
         }
-        // The last update's backup, kept because a thurbox was running from it.
-        // That one has normally exited by now; if it has not, the delete fails,
-        // and `ReplaceFile` refuses the swap below and says why.
-        #[cfg(windows)]
-        let _ = std::fs::remove_file(backup_path(&dest));
-        let s = stage_binary(&src, &dest)?;
+        let s = match stage_binary(&src, &dest) {
+            Ok(s) => s,
+            Err(e) => {
+                discard_staged(&staged);
+                return Err(e);
+            }
+        };
         staged.push((s, dest, name));
     }
     if staged.is_empty() {
         return Err("no installed binaries to replace in the install directory".to_string());
     }
-    // Phase 2: commit staged files back-to-back (`commit_binary` says how).
-    let mut replaced = Vec::new();
-    for (s, dest, name) in &staged {
-        commit_binary(s, dest)?;
-        replaced.push(name.clone());
+    // Phase 2: commit staged files back-to-back (`commit_binary` says how). A
+    // failure puts back every binary already swapped, so the install is never
+    // left on two versions at once.
+    let mut committed: Vec<(&Path, Option<PathBuf>)> = Vec::new();
+    for (i, (s, dest, _)) in staged.iter().enumerate() {
+        match commit_binary(s, dest) {
+            Ok(backup) => committed.push((dest, backup)),
+            Err(e) => {
+                for (dest, backup) in committed.into_iter().rev() {
+                    if let Some(backup) = backup {
+                        let _ = std::fs::rename(backup, dest);
+                    }
+                }
+                discard_staged(&staged[i..]);
+                return Err(e);
+            }
+        }
     }
+    let replaced = staged.into_iter().map(|(_, _, name)| name).collect();
     if !skipped.is_empty() {
         tracing::warn!(
             "auto-update: skipped {} (not in install dir)",
@@ -636,6 +646,14 @@ fn install_binaries(
         );
     }
     Ok(replaced)
+}
+
+/// Remove staged `.new` files an update will not commit, so the next one does
+/// not find them.
+fn discard_staged(staged: &[(PathBuf, PathBuf, String)]) {
+    for (s, _, _) in staged {
+        let _ = std::fs::remove_file(s);
+    }
 }
 
 /// Download, verify, extract, and install the latest release in place.
@@ -1136,26 +1154,6 @@ mod tests {
         assert_eq!(extractor_for(Path::new("a.ZIP"), into).0, "powershell.exe");
     }
 
-    /// Windows cannot rename over an executable a process is running from, so
-    /// the swap there is `ReplaceFile`, which moves the old image to a backup
-    /// name inside the one call instead of deleting it. Asserted on the script
-    /// because running it needs Windows.
-    #[test]
-    fn replace_file_script_keeps_the_old_image_as_a_backup() {
-        let script = replace_file_script(
-            Path::new(r"C:\bin\.thurbox.exe.new"),
-            Path::new(r"C:\bin\thurbox.exe"),
-            Path::new(r"C:\bin\.thurbox.exe.old"),
-        );
-        // .NET's order is (replacement, replaced, backup). The backup is not
-        // optional: Windows PowerShell rejects `$null` there, and a backup-less
-        // `ReplaceFile` has to delete the destination — what a mapped image
-        // forbids. One statement, so a refused swap is the exit code `-Command`
-        // returns.
-        let call = r"[System.IO.File]::Replace('C:\bin\.thurbox.exe.new', 'C:\bin\thurbox.exe', 'C:\bin\.thurbox.exe.old')";
-        assert_eq!(script, call);
-    }
-
     #[test]
     fn parse_checksum_picks_the_matching_line() {
         let body = "\
@@ -1263,13 +1261,109 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             );
             // No staging files left behind.
             assert!(!install.path().join(format!(".{name}.new")).exists());
-            // On Windows the commit is `ReplaceFile` through PowerShell, which
-            // keeps what it replaced; this is where that path runs for real.
+            // On Windows the commit moves what it replaced aside rather than
+            // deleting it; this is where that path runs for real.
             #[cfg(windows)]
             assert_eq!(
                 std::fs::read_to_string(install.path().join(format!(".{name}.old"))).unwrap(),
                 "OLD"
             );
+        }
+    }
+
+    /// A process killed on drop, so a failed assertion leaves nothing running
+    /// from the test's install directory.
+    #[cfg(windows)]
+    struct Running(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Start `exe` and keep it running, so Windows holds its image mapped the
+    /// way it does for a `thurbox-cli.exe` the heartbeat or a hook started.
+    #[cfg(windows)]
+    fn run_from(exe: &Path) -> Running {
+        let child = Command::new(exe)
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // Give the loader time to map the image.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        Running(child)
+    }
+
+    /// Issue #1432: the first update moves a running `thurbox-cli.exe` aside
+    /// to `.thurbox-cli.exe.old`, and the process keeps running from there.
+    /// The next update could not delete that backup, `ReplaceFile` refused to
+    /// reuse its name, and the update stopped after `thurbox.exe` — a TUI and
+    /// CLI on different versions and a stale `.new` behind. A real process
+    /// holds the image, because only the loader's mapping reproduces it.
+    #[cfg(windows)]
+    #[test]
+    fn update_succeeds_while_a_process_runs_from_the_last_backup() {
+        let install = tempfile::TempDir::new().unwrap();
+        let ping = Path::new(&std::env::var("SystemRoot").unwrap()).join(r"System32\PING.EXE");
+        for stem in BINARIES {
+            std::fs::copy(&ping, install.path().join(format!("{stem}.exe"))).unwrap();
+        }
+        let _cli = run_from(&install.path().join("thurbox-cli.exe"));
+
+        for version in ["V2", "V3"] {
+            let extract = tempfile::TempDir::new().unwrap();
+            for stem in BINARIES {
+                std::fs::write(extract.path().join(format!("{stem}.exe")), version).unwrap();
+            }
+            let replaced = install_binaries(extract.path(), install.path(), ".exe")
+                .unwrap_or_else(|e| panic!("update to {version}: {e}"));
+            assert_eq!(replaced.len(), BINARIES.len());
+            for stem in BINARIES {
+                let name = format!("{stem}.exe");
+                assert_eq!(
+                    std::fs::read_to_string(install.path().join(&name)).unwrap(),
+                    version,
+                    "{name} after the update to {version}"
+                );
+                assert!(!install.path().join(format!(".{name}.new")).exists());
+            }
+        }
+    }
+
+    /// When one binary cannot be committed the other is put back, so a failed
+    /// update leaves the install on one version rather than split across two,
+    /// and leaves no staged `.new` for the next update to trip over.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_commit_rolls_back_the_binaries_already_swapped() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        for stem in BINARIES {
+            std::fs::write(install.path().join(format!("{stem}.exe")), "OLD").unwrap();
+            std::fs::write(extract.path().join(format!("{stem}.exe")), "NEW").unwrap();
+        }
+        // Opened without FILE_SHARE_DELETE, so no rename can move it.
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ
+            .open(install.path().join("thurbox-cli.exe"))
+            .unwrap();
+
+        install_binaries(extract.path(), install.path(), ".exe").unwrap_err();
+        for stem in BINARIES {
+            let name = format!("{stem}.exe");
+            assert_eq!(
+                std::fs::read_to_string(install.path().join(&name)).unwrap(),
+                "OLD",
+                "{name} after the failed update"
+            );
+            assert!(!install.path().join(format!(".{name}.new")).exists());
         }
     }
 
