@@ -262,7 +262,7 @@ session), never on the loop, ADR-P12).
   reconnects and runs out again. The two the loop makes are bounded or removed:
   the pane resize behind a paint is **sent, not asked**
   (`ControlMode::send_command_detached` — a place kept in the waiter queue with
-  the receiver dropped, which is what `send_command_nowait` lacks), and the
+  the receiver dropped, as every line written down the connection keeps one), and the
   passthrough gate's deadness question gets `LOOP_COMMAND_BUDGET`. Both go through
   `tmux_compat::Server::ctrl_command_within`, which bounds the wait for the **control lock** as well
   as for the answer — one backend is one connection is one serialized queue,

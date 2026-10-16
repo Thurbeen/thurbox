@@ -1754,10 +1754,10 @@ is unmeasured".
   otherwise a refused resize would be remembered as done and nothing would ask
   again. The command still takes a place in the waiter queue and drops the
   receiver, so `deliver_response` discards the answer
-  — that kept place is what distinguishes it from the pre-existing
-  `send_command_nowait`, whose documented hazard is exactly its absence (with no
-  place of its own, an answer is handed to the next waiter in line and every
-  later response is delivered one command off for the life of the connection).
+  — every line written down the connection keeps such a place (with none, an
+  answer is handed to the next waiter in line and every later response is
+  delivered one command off; ADR-12's *Command synchronization* in
+  `docs/ARCHITECTURE.md`).
   Since ADR-27 (`docs/ARCHITECTURE.md`) the same list also has tmux decide
   whether this instance may size the pane at all — a `set-option -F` and two
   `if-shell`s, still one list, still sent. Its answer is five blocks whichever

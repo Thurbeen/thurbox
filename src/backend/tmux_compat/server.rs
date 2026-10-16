@@ -2062,21 +2062,6 @@ impl<M: TmuxCompatible> Server<M> {
         f(ctrl)
     }
 
-    /// Send a command via control mode without waiting for a response.
-    /// On broken pipe, reconnects control mode and retries once.
-    fn ctrl_command_nowait(&self, cmd: &str) -> Result<()> {
-        let result = self.with_control(|ctrl| ctrl.send_command_nowait(cmd));
-        match result {
-            Ok(()) => Ok(()),
-            Err(err) if is_broken_pipe(&err) => {
-                warn!("Control mode broken pipe (nowait), reconnecting: {err:#}");
-                self.reconnect_control()?;
-                self.with_control(|ctrl| ctrl.send_command_nowait(cmd))
-            }
-            Err(err) => Err(err),
-        }
-    }
-
     /// Register a pane sender and return the corresponding reader.
     /// Multiple instances can register the same pane; output will be broadcast to all.
     ///
@@ -2236,13 +2221,7 @@ impl<M: TmuxCompatible> Server<M> {
         // The writer's only use of the id is as a `-t` target, and psmux's
         // paste is a one-shot client that the server routes (`PsmuxPaste`).
         let target = self.target(pane_id).into_owned();
-        self.with_control(|ctrl| {
-            Ok(ControlModeWriter {
-                stdin: Arc::clone(&ctrl.stdin),
-                pane_id: target,
-                input,
-            })
-        })
+        self.with_control(|ctrl| Ok(ctrl.writer(target, input)))
     }
 
     /// Connect I/O to an existing pane: start monitoring, resize to correct
@@ -3145,10 +3124,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn detach(&self, backend_id: &str) -> Result<()> {
         // Disable output monitoring for this pane.
         if M::PANE_MONITORING {
-            if let Err(e) = self.ctrl_command_nowait(&format!(
+            let off = format!(
                 "refresh-client -A '{}:off'",
                 backend_id.replace('\'', "'\\''")
-            )) {
+            );
+            if let Err(e) = self.ctrl_command_detached(&[&off], 1) {
                 warn!("Failed to disable output monitoring during detach: {e}");
             }
         }

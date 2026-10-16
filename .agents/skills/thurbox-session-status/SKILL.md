@@ -66,7 +66,12 @@ status goes back to what the hooks say.
 The same treatment covers **mid-session host loss**: `drop_lost_panes` (per tick)
 spots a *live* remote session whose pane is gone, lets it go, and clears the
 readied-backend cache — the connection that session died with is the one every
-other session on that host shares. The signal is `has_exited()`, and what it
+other session on that host shares. Such a session is tried again on the **next
+frame**, not after `ATTACH_RETRY_INTERVAL`, and says "lost the connection to its
+host; reconnecting" meanwhile: the connection is re-opened on demand, and a
+command that timed out has usually replaced it already, so holding every session
+on a working host as unreachable for 20 s is what made it read as down. Only an
+attempt that fails records its own error and waits the interval. The signal is `has_exited()`, and what it
 means has narrowed: it now says the pane's stream ended. On a remote backend
 that is either the host/SSH connection going or that pane's own window closing —
 `remain-on-exit=on` keeps a clean agent exit from ending the stream, but a

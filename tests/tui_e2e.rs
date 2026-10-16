@@ -6694,6 +6694,16 @@ impl Link {
     fn heal(&self) {
         self.signal(libc::SIGCONT);
     }
+
+    /// Cut the link: the control connection ends, as it does when an ssh
+    /// master dies under it.
+    fn cut(&self) {
+        assert_eq!(
+            self.signal(libc::SIGKILL),
+            2,
+            "a cut needs both of the control connection's pumps"
+        );
+    }
 }
 
 impl Drop for Link {
@@ -7024,6 +7034,131 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
     );
 
     link.heal();
+    assert!(tui.quit().success());
+}
+
+/// How long a host whose connection ended may take to be typed into again.
+///
+/// The connection is re-opened on demand, in well under a second here; what
+/// this bounds is the interface holding every session on the host as
+/// unreachable for the attach retry interval (20 s) after the host is back.
+const RECOVERY: Duration = Duration::from_secs(10);
+
+/// Type `echo <marker>` into the focused pane until the shell answers, giving
+/// up after `budget`. Retyped every couple of seconds: keys pressed while the
+/// pane is detached go nowhere.
+fn echo_within(tui: &mut Tui, marker: &str, budget: Duration) {
+    let (head, tail) = marker.split_at(marker.len() / 2);
+    let until = Instant::now() + budget;
+    while Instant::now() < until {
+        tui.send(format!("echo {head}\"\"{tail}\r").as_bytes());
+        let retype = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < retype.min(until) {
+            if tui.frame().contains(marker) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    tui.give_up(&format!("{marker:?} to be echoed within {budget:?}"));
+}
+
+/// The remote session, plus a second one on the same host that is off screen
+/// long enough for its output to be held back.
+fn two_remote_sessions_one_hidden() -> Option<(Profile, Link, Tui)> {
+    let (profile, link, tui) = remote_shell_session_with(|profile, _| {
+        let settings = profile.path("config/settings.toml");
+        let seeded = std::fs::read_to_string(&settings).expect("read settings");
+        std::fs::write(&settings, format!("hidden_terminal_secs = 1\n{seeded}"))
+            .expect("seed settings");
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            "afar-second",
+            "--repo-path",
+            profile.path("repo").to_str().expect("utf-8 path"),
+            "--agent",
+            "shell",
+            "--host",
+            "devbox",
+        ]);
+    })?;
+    tui.wait_for("afar-second");
+    // Past the setting, and past the snapshot tick that drops the grid.
+    std::thread::sleep(Duration::from_secs(4));
+    Some((profile, link, tui))
+}
+
+/// Show `name`'s agent pane, with the keyboard in it.
+fn show_session(tui: &mut Tui, name: &str) {
+    // The row, not the header, which names the selected session too.
+    tui.press(0, tui.find(&format!("⇅ {name}")));
+    tui.wait_until("the click to select the session", |frame| {
+        frame.contains(&format!("{name} (shell)"))
+    });
+    tui.send(b"\x0c");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+}
+
+/// Both sessions on the host answer again within [`RECOVERY`] of `from` —
+/// the one that was off screen first, then the one that was not.
+fn both_sessions_answer(tui: &mut Tui, from: Instant) {
+    show_session(tui, "afar-second");
+    echo_within(
+        tui,
+        "tb-second-back",
+        RECOVERY.saturating_sub(from.elapsed()),
+    );
+    show_session(tui, REMOTE_NAME);
+    echo_within(tui, "tb-first-back", RECOVERY);
+}
+
+#[test]
+fn a_remote_session_comes_back_at_once_after_its_link_is_cut() {
+    // Every pane on a host shares one control connection, so when it ends every
+    // session on that host goes with it — and the host itself is fine: a fresh
+    // ssh reaches it at once, as it does when an ssh master dies under a
+    // connection that was otherwise healthy.
+    let Some((_profile, link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+
+    link.cut();
+    echo_within(&mut tui, "tb-back-42", RECOVERY);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn every_session_on_a_host_comes_back_at_once_after_its_link_is_cut() {
+    let Some((_profile, link, mut tui)) = two_remote_sessions_one_hidden() else {
+        return;
+    };
+
+    link.cut();
+    both_sessions_answer(&mut tui, Instant::now());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn every_session_on_a_host_comes_back_once_a_wedged_link_heals() {
+    // A link that carries nothing for longer than one command may wait
+    // (`COMMAND_TIMEOUT`) and then carries again — a lid closed and opened, a
+    // network that re-routes. The timeout replaces the connection; the
+    // sessions it carried must follow it as soon as the old one lets go.
+    let Some((_profile, link, mut tui)) = two_remote_sessions_one_hidden() else {
+        return;
+    };
+
+    link.wedge();
+    std::thread::sleep(Duration::from_secs(15));
+    link.heal();
+    both_sessions_answer(&mut tui, Instant::now());
     assert!(tui.quit().success());
 }
 

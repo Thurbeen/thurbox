@@ -53,6 +53,8 @@ struct Failure {
     message: String,
     /// When it failed, so the same attempt is made again eventually rather than
     /// never: a host that was down comes back, and nothing else would notice.
+    /// Set one retry interval earlier for a failure that is to be retried at
+    /// once (see `drop_lost_panes`).
     at: std::time::Instant,
 }
 
@@ -113,6 +115,9 @@ const REMOTE_DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from
 /// it a session whose host was offline at startup stays dead for the life of the
 /// process, because the candidate pane never changes.
 const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What a remote session shows while the connection it lost is re-opened.
+const LOST_CONNECTION: &str = "lost the connection to its host; reconnecting";
 
 /// How often a shareable host's database is mirrored into local rows. One
 /// multiplexed ssh round trip per host per interval, on a worker; the
@@ -835,7 +840,20 @@ impl Terminals {
                 // adopt anything: the connection this session died with is the
                 // one every other session on that host shares.
                 self.ready.borrow_mut().clear();
-                self.fail(&id, pane, "host unreachable".to_string());
+                self.fail(&id, pane, LOST_CONNECTION.to_string());
+                // And tried again on the next frame rather than after
+                // `ATTACH_RETRY_INTERVAL`. The connection ending says nothing
+                // about the host: it is re-opened on demand, usually at once
+                // (a command that timed out has often replaced it already), and
+                // holding every session on the host as unreachable for the
+                // interval is what made a working host read as down. An attempt
+                // that does fail records its own error and waits as usual.
+                if let Some(failure) = self.failed.get_mut(&id) {
+                    failure.at = failure
+                        .at
+                        .checked_sub(ATTACH_RETRY_INTERVAL)
+                        .unwrap_or(failure.at);
+                }
             } else {
                 // Locally the pane is simply gone. Recorded against the pane that
                 // died, so the retry rule treats a *different* candidate — the
