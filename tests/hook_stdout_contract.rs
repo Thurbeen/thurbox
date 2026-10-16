@@ -279,7 +279,6 @@ fn status_hooks_say_nothing_on_stdout() {
             // signal` receipt on stdout is not one of them.
             "copilot-hooks.json",
             &[
-                "sessionStart",
                 "userPromptSubmitted",
                 "preToolUse",
                 "postToolUse",

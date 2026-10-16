@@ -128,13 +128,15 @@ below), do the same.
   hooks from its own dir, `~/.copilot/hooks/*.json`. We drop a managed standalone
   file in (an `[[external_files]]`, guarded by `requires_dir`, only when copilot is
   installed), so your other hook files are never touched. Events (copilot's own
-  schema): `sessionStart` → idle,
-  `userPromptSubmitted`/`preToolUse`/`postToolUse` → working, `agentStop` → done,
+  schema): `userPromptSubmitted`/`preToolUse`/`postToolUse` → working,
+  `agentStop` → done,
   and `notification` matched to `permission_prompt` → blocked (so an
   `agent_idle`/`shell_completed` notification doesn't flip the dot red).
   `postToolUse` is what clears that block — copilot has no "permission granted"
   event, so the tool completing is the first thing it reports once the prompt is
-  answered.
+  answered. `sessionStart` is deliberately not wired: copilot fires it with the
+  first prompt, *after* `userPromptSubmitted` (verified against copilot 1.0.98),
+  so an `idle` there turned every session's first turn idle until it ended.
   Both `bash` and `powershell` commands are shipped, so status works on Windows
   too. **Caveat:** if a future `copilot` changes the hook schema, edit
   `copilot-hooks.json` (no code change).

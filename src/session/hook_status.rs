@@ -166,7 +166,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
     },
     AgentHookCoverage {
         agent: "copilot",
-        states: &["working", "blocked", "done", "idle"],
+        states: &["working", "blocked", "done"],
         delivery: HookDelivery::File,
         hook_file: Some("~/.copilot/hooks/thurbox-status.json"),
         blocked_is_heuristic: false,
