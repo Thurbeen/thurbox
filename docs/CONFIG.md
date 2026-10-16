@@ -902,14 +902,15 @@ outright, which made a default-on `auto_update` silently mean nothing there
 (issue #1172). The release artifact is the `.zip` `install.ps1` extracts, so the
 unpacker is chosen by the archive's extension. And a rename cannot replace an
 executable a process is running from — Windows keeps its image mapped — so the
-swap there is Win32 `ReplaceFile` (through PowerShell's
-`[System.IO.File]::Replace`), which moves the replaced binary aside to
-`.thurbox.exe.old` instead of deleting it. That works while thurbox runs, and the
-running process keeps its old image until the next launch, as on Unix. The swap
-is one system call, so a thurbox killed or closed mid-update leaves the old
-binary or the new one, never neither. The `.old` file is removed by the next
-update, once nothing runs from it; updating again while a thurbox still does is
-refused with nothing changed. Re-running `install.ps1` over a running thurbox
+swap there moves each installed binary aside to `.thurbox.exe.old` first (which
+Windows allows for a running image) and then moves the new one in. The running
+process keeps its old image until the next launch, as on Unix. A thurbox still
+running from the last update's backup — a hook or heartbeat `thurbox-cli.exe`
+that has not exited — keeps that file, so the next update moves the binary to
+`.thurbox.exe.1.old` (and so on) instead, and deletes every backup nothing runs
+from any more. The two binaries are committed together: if either cannot be
+swapped, the one already swapped is put back, so the TUI and CLI are never left
+on different versions (issue #1432). Re-running `install.ps1` over a running thurbox
 works the same way: it renames each installed binary to `.<name>.old` rather
 than deleting it, and names the process to close when even that is refused.
 
