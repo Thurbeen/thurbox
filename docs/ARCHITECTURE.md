@@ -1828,6 +1828,14 @@ onto the host's multiplexer with the row only in its own database, a session
 the host's thurbox never saw. An older host schema is still refused, and
 provisioning this binary's version is what brings that host up to it.
 
+Every script sent to a shareable host has a **deadline**, and its launcher is
+killed when it passes: 30 s for a probe, 10 min for a delegated command or an
+extraction, which do real work there. ssh's own `ConnectTimeout` covers only
+the connect, and `wsl.exe` has nothing comparable, so a transport that hung
+after that point held its caller for as long as it hung — a degraded `wsl.exe`
+kept the headless heartbeat's `automation tick` waiting for over an hour
+(#1431). A timeout counts as not answering, so it backs off like any other.
+
 The verdict is cached per host, and a failing one **backs off**:
 `host_cli::retry_after` doubles `PROBE_RETRY` (60 s) per consecutive failure
 up to `PROBE_RETRY_MAX` (15 min), the count reset by the first usable answer
