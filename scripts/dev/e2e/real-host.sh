@@ -37,6 +37,9 @@
 #                   THURBOX_* env asserted intact) and thurbox.exe boots to a
 #                   frame that shows it. Scoped via THURBOX_SOCKET (needs a
 #                   deploy of a build that supports it). Default agent: claude
+#   transfer-test   ship a 1 MiB binary to the host the way session sharing
+#                   provisions its thurbox-cli, and check it arrived intact
+#                   (tests/windows_host_transfer.rs; fails rather than hangs)
 #   test-suite      run the full nextest suite on the host (cross-built
 #                   archive; installs cargo-nextest.exe there if missing)
 #   wsl-setup [distro]   install WSL + <distro> (default Debian) and provision
@@ -397,6 +400,13 @@ EOF
   printf '  (WSL distros on the machine appear in its host picker as wsl:<distro>)\n'
 }
 
+cmd_transfer_test() {
+  require_windows
+  log "shipping a 1 MiB payload to $DEST through thurbox's own Windows copy"
+  (cd "$REPO_ROOT" && THURBOX_E2E_WINDOWS_HOST="$DEST" \
+    cargo test -q --test windows_host_transfer -- --ignored)
+}
+
 cmd_run() {
   require_windows
   ssh_host 'powershell -NoProfile -Command "Test-Path C:/Tools/thurbox/thurbox.exe"' 2> /dev/null \
@@ -647,6 +657,7 @@ case "$VERB" in
   deploy)     cmd_deploy ;;
   run)        cmd_run ;;
   native-test) cmd_native_test "$@" ;;
+  transfer-test) cmd_transfer_test ;;
   test-suite) cmd_test_suite ;;
   wsl-setup)  cmd_wsl_setup "$@" ;;
   wsl-check)  cmd_wsl_check "$@" ;;
