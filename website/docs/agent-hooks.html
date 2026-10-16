@@ -249,7 +249,12 @@ breadcrumb: 'Agent hooks'
               &rarr; blocked
               <em>only</em>
               for permission/approval prompts (an idle nudge is ignored so a session never flips to
-              a false red).
+              a false red). A tool call from the background agent claude starts on its own after a
+              turn (one with an
+              <code>agent_id</code>
+              and no
+              <code>agent_type</code>
+              ) is ignored too, so a finished turn stays done.
             </li>
             <li>
               <strong>opencode</strong>

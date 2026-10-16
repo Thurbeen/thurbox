@@ -242,7 +242,7 @@ mod tests {
         }
         assert_eq!(
             CLAUDE_SETTINGS.matches(SIGNAL_MARKER).count(),
-            6,
+            8,
             "claude.json hook count changed — review the rewrite"
         );
     }

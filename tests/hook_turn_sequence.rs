@@ -410,6 +410,54 @@ fn an_async_question_is_not_a_block() {
     );
 }
 
+/// After a turn ends, claude can start a background agent of its own (the one
+/// that writes the project's memory) whose tool calls fire the session's
+/// `PreToolUse`/`PostToolUse` — with an `agent_id` and no `agent_type` — and
+/// nothing reports when it finishes. Verified against Claude Code 2.1.301: on a
+/// fresh session its `PreToolUse` landed 2.4s after `Stop`, and the session
+/// read `working` until the next turn. A subagent the turn starts through the
+/// Agent tool carries an `agent_type`, and its tool calls are work the session
+/// is doing.
+#[test]
+fn claudes_background_agent_does_not_undo_done() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = payload_json("claude.json");
+    let log = stub_cli(dir.path());
+    let tool_body = |event: &str, extra: serde_json::Value| {
+        let mut body = serde_json::json!({
+            "session_id": "abc",
+            "hook_event_name": event,
+            "tool_name": "Bash",
+        });
+        body.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        body.to_string()
+    };
+
+    fire(&payload, dir.path(), "Stop", &body("Stop", ""), None);
+    for event in ["PreToolUse", "PostToolUse"] {
+        let background = tool_body(event, serde_json::json!({ "agent_id": "a74b3db0" }));
+        fire(&payload, dir.path(), event, &background, Some("Bash"));
+        assert_eq!(
+            current(&log),
+            "done",
+            "claude: its background agent's {event} undid the turn's done"
+        );
+    }
+
+    let subagent = tool_body(
+        "PreToolUse",
+        serde_json::json!({ "agent_id": "a9096816", "agent_type": "general-purpose" }),
+    );
+    fire(&payload, dir.path(), "PreToolUse", &subagent, Some("Bash"));
+    assert_eq!(
+        current(&log),
+        "working",
+        "claude: a subagent's tool is work"
+    );
+}
+
 /// The other reason claude fires a notification: nobody has typed for 60s.
 /// That is the session at rest, not a block, and the payload's own matcher is
 /// the only thing that tells the two apart (copilot's agent matches for it).
