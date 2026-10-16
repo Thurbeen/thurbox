@@ -53,6 +53,8 @@ struct Failure {
     message: String,
     /// When it failed, so the same attempt is made again eventually rather than
     /// never: a host that was down comes back, and nothing else would notice.
+    /// Set one retry interval earlier for a failure that is to be retried at
+    /// once (see `drop_lost_panes`).
     at: std::time::Instant,
 }
 

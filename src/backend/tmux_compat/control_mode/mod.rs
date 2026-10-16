@@ -703,8 +703,10 @@ impl Write for ControlModeWriter {
         } else {
             self.input.send_keys(&self.pane_id, buf)
         };
-        ControlMode::write_unanswered(&self.stdin, &self.replies, &cmds)
-            .map_err(std::io::Error::other)?;
+        ControlMode::write_unanswered(&self.stdin, &self.replies, &cmds).map_err(|e| {
+            e.downcast::<std::io::Error>()
+                .unwrap_or_else(std::io::Error::other)
+        })?;
         Ok(buf.len())
     }
 
