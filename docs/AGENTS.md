@@ -199,6 +199,10 @@ embedded hook assets live in
   command, reversibly.
   - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's
     own settings, never clobbering). Full lifecycle: idle/working/blocked/done.
+    Its tool hooks skip a call from an agent with an `agent_id` and no
+    `agent_type`: the background agent claude starts after a turn (it writes
+    the project memory) would otherwise turn `done` back into `working`, and
+    nothing reports its end (verified against Claude Code 2.1.301).
   - `aider`: `--notifications-command "thurbox-cli session signal --state
     blocked"`. aider has only a "waiting for input" callback, so **blocked is the
     only state it can report**.
