@@ -546,12 +546,20 @@ pub(crate) fn copy_bytes_to_remote_windows(
 }
 
 /// [`copy_bytes_to_remote`] for a **native-Windows** host and a payload too
-/// large for a command line — a binary. The bytes travel on **stdin**, which
-/// ssh passes through to the PowerShell the encoded script runs in; the script
-/// copies the standard input stream into the file. Unlike
-/// `copy_bytes_to_remote_windows` there is no size budget, and unlike `cat >`
-/// there is no shell to quote for — the path is single-quoted inside the
-/// script. Delivery is probed by `scripts/dev/e2e/windows-vm.sh test`.
+/// large for a command line — a binary. The bytes travel on **stdin** as
+/// base64 lines, which the encoded script reads through PowerShell's own
+/// `$input`, decodes and writes. Unlike `copy_bytes_to_remote_windows` there is
+/// no size budget, and unlike `cat >` there is no shell to quote for — the
+/// path is single-quoted inside the script.
+///
+/// Not raw bytes through `[Console]::OpenStandardInput()`: Windows PowerShell
+/// 5.1's console host reads redirected stdin itself, so a script that opens the
+/// stream as well gets the first 4096 bytes and then waits forever. The copy
+/// never returned, and the PowerShell it left on the host kept the half-written
+/// file open, so every later attempt failed on "being used by another process".
+/// `$input` is what the host reads stdin *into*, and text survives it where
+/// bytes would not. Delivery is checked by `scripts/dev/e2e/real-host.sh <host>
+/// transfer-test`.
 pub fn copy_stream_to_remote_windows(
     host: &HostDef,
     bytes: &[u8],
@@ -563,9 +571,7 @@ pub fn copy_stream_to_remote_windows(
         .unwrap_or_default();
     let script = format!(
         "New-Item -ItemType Directory -Force -Path {parent} | Out-Null; \
-         $in = [Console]::OpenStandardInput(); \
-         $out = [IO.File]::Create({path}); \
-         $in.CopyTo($out); $out.Close()",
+         [IO.File]::WriteAllBytes({path}, [Convert]::FromBase64String((@($input) -join '')))",
         parent = powershell_quote(&parent),
         path = powershell_quote(remote_path),
     );
@@ -574,7 +580,21 @@ pub fn copy_stream_to_remote_windows(
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn windows remote stream-copy")?;
-    stream_into_child(child, bytes, "windows stream-copy").map(|_| ())
+    stream_into_child(child, &base64_lines(bytes), "windows stream-copy").map(|_| ())
+}
+
+/// `bytes` as base64 in 76-column lines: `$input` hands a script its stdin a
+/// line at a time, so one unbroken multi-megabyte line would be one string
+/// the size of the payload before it is even joined.
+fn base64_lines(bytes: &[u8]) -> Vec<u8> {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mut out = Vec::with_capacity(encoded.len() + encoded.len() / 76 + 1);
+    for line in encoded.as_bytes().chunks(76) {
+        out.extend_from_slice(line);
+        out.push(b'\n');
+    }
+    out
 }
 
 /// Write `bytes` into `child`'s stdin and collect what it said, reaping it

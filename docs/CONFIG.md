@@ -235,9 +235,13 @@ early is worth something:
   launcher's errno or the multiplexer's exit code.
 - `thurbox-cli doctor` answers the whole question directly: the multiplexer and
   its version, every registered agent's `command`, the launcher for each
-  configured host, and the full search path. It is the companion to `thurbox-cli
-  session doctor`, which asks whether an *existing* session's status hooks are
-  wired.
+  configured host, and the full search path. For a host that shares sessions it
+  also asks the host's `thurbox-cli` for its version (one round trip, never an
+  install) and warns when sharing cannot work — a CLI behind this one's schema,
+  none at all, or no answer — naming `thurbox-cli session sync --host <name>`,
+  which installs a matching one or reports why it cannot. It is the companion to
+  `thurbox-cli session doctor`, which asks whether an *existing* session's status
+  hooks are wired.
 
 The probe is a `stat` per absolute `PATH` entry per binary — no process spawn —
 and it runs on the kernel's own schedule behind a 10-second window, never on a

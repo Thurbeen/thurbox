@@ -165,41 +165,103 @@ fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
     }
 }
 
-/// One row per configured host, about the launcher only.
+/// One row per configured host about the launcher, and for a host that
+/// shares sessions a second about the `thurbox-cli` there.
 ///
-/// A remote host's own binaries are on the host and are not probed here: the
-/// answer would be a round trip per host, and `session doctor` is what reports
-/// on a session once one exists there. What *is* checkable from here is the
-/// launcher that would carry the request.
+/// The multiplexer and agents on a host are not probed here: `session doctor`
+/// reports on a session once one exists there. The CLI is, because sharing
+/// rests on it and nothing else says when it cannot work — the mirror skips the
+/// host and logs why at debug level, and the host's sessions simply never
+/// appear. That costs one round trip per shareable host, bounded by the ssh
+/// connect timeout.
 fn host_findings() -> Vec<Finding> {
     let (hosts, _warnings) = crate::agent::host_config::cached_registry();
-    hosts
-        .hosts
-        .iter()
-        .map(|host| {
-            let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
-            let present = crate::agent::preflight::look_up(launcher)
-                == crate::agent::preflight::Presence::Present;
-            Finding {
-                key: format!("host:{}", host.name),
-                level: if present { Level::Ok } else { Level::Fail },
-                detail: if present {
-                    format!(
-                        "{} is reached with {launcher}, which is installed (the multiplexer and \
-                         agents on {} are not probed from here)",
-                        host.name, host.name
-                    )
-                } else {
-                    crate::agent::preflight::Dependency::Launcher(launcher).missing_summary()
-                },
-            }
-        })
-        .collect()
+    let mut findings = Vec::new();
+    for host in &hosts.hosts {
+        let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
+        let present = crate::agent::preflight::look_up(launcher)
+            == crate::agent::preflight::Presence::Present;
+        findings.push(Finding {
+            key: format!("host:{}", host.name),
+            level: if present { Level::Ok } else { Level::Fail },
+            detail: if present {
+                format!(
+                    "{} is reached with {launcher}, which is installed (the multiplexer and \
+                     agents on {} are not probed from here)",
+                    host.name, host.name
+                )
+            } else {
+                crate::agent::preflight::Dependency::Launcher(launcher).missing_summary()
+            },
+        });
+        if present && host.shareable() {
+            findings.push(sharing_finding(
+                &host.name,
+                launcher,
+                &crate::session_ops::host_cli::probe(host),
+            ));
+        }
+    }
+    findings
 }
 
-/// The report as a terminal reads it: the verdict, one line per check, then
-/// every directory searched — in full here, because this is the surface that
-/// has room for it.
+/// What a host's `thurbox-cli` probe means for sharing its sessions.
+///
+/// Never a `fail`: a host being down or behind is not this machine missing
+/// something. A probe never provisions — doctor reads, it never installs — so
+/// a host that needs a new CLI names the command that installs one and reports
+/// why it could not.
+fn sharing_finding(
+    name: &str,
+    launcher: &str,
+    probe: &Result<
+        Option<crate::session_ops::host_cli::CliInfo>,
+        crate::session_ops::host_cli::ProbeFailure,
+    >,
+) -> Finding {
+    let sync = format!("`thurbox-cli session sync --host {name}`");
+    let (level, detail) = match probe {
+        Ok(Some(cli)) => match crate::session_ops::host_cli::compatible(cli) {
+            Ok(()) => (
+                Level::Ok,
+                format!(
+                    "{name} shares sessions through thurbox-cli {} at {}",
+                    cli.version, cli.path
+                ),
+            ),
+            Err(mismatch) => (
+                Level::Warn,
+                format!(
+                    "{name}'s thurbox-cli {} at {} {mismatch}, so its sessions are not shared \
+                     until a matching one is installed there — {sync} installs it, or says why \
+                     it cannot",
+                    cli.version, cli.path
+                ),
+            ),
+        },
+        Ok(None) => (
+            Level::Warn,
+            format!(
+                "{name} has no thurbox-cli, so its sessions are not shared until one is \
+                 installed there — {sync} installs it, or says why it cannot"
+            ),
+        ),
+        Err(e) => (
+            Level::Warn,
+            format!(
+                "{name} did not answer the thurbox-cli probe over {launcher}, so its sessions are \
+                 not shared: {}",
+                e.message.lines().next().unwrap_or_default()
+            ),
+        ),
+    };
+    Finding {
+        key: format!("sharing:{name}"),
+        level,
+        detail,
+    }
+}
+
 fn render(findings: &[Finding], verdict: Level) -> String {
     let mut human = format!("This machine — {}\n", verdict.as_str().to_uppercase());
     for f in findings {
@@ -295,5 +357,55 @@ mod tests {
         };
         let finding = agent_finding(&agent);
         assert_eq!(finding.level, Level::Warn, "{}", finding.detail);
+    }
+
+    fn cli(schema: u32) -> crate::session_ops::host_cli::CliInfo {
+        crate::session_ops::host_cli::CliInfo {
+            path: "thurbox-cli".into(),
+            version: crate::agent::version_check::current_version().into(),
+            tmux_socket: None,
+            data_dir: None,
+            tmux_tmpdir: None,
+            schema_version: Some(schema),
+            multiplexer_choice: true,
+            soft_delete_choice: true,
+            session_revision: true,
+        }
+    }
+
+    /// A host whose CLI is behind used to read `ok` here — doctor looked only
+    /// at the local `ssh` — while every attempt to share with it failed and
+    /// said so nowhere but a debug log.
+    #[test]
+    fn a_host_whose_cli_cannot_share_is_a_warning_naming_the_repair() {
+        let behind = sharing_finding("box", "ssh", &Ok(Some(cli(1))));
+        assert_eq!(behind.level, Level::Warn, "{}", behind.detail);
+        assert_eq!(behind.key, "sharing:box");
+        assert!(
+            behind
+                .detail
+                .contains("`thurbox-cli session sync --host box`"),
+            "{}",
+            behind.detail
+        );
+
+        let current = sharing_finding("box", "ssh", &Ok(Some(cli(crate::storage::SCHEMA_VERSION))));
+        assert_eq!(current.level, Level::Ok, "{}", current.detail);
+    }
+
+    #[test]
+    fn a_host_that_did_not_answer_says_why_on_one_line() {
+        let failure = crate::session_ops::host_cli::ProbeFailure {
+            message: "ssh: connect to host box port 22: Connection refused\nsecond line".into(),
+            broken_cli: false,
+        };
+        let finding = sharing_finding("box", "ssh", &Err(failure));
+        assert_eq!(finding.level, Level::Warn);
+        assert!(finding.detail.contains("over ssh"), "{}", finding.detail);
+        assert!(
+            finding.detail.ends_with("Connection refused"),
+            "{}",
+            finding.detail
+        );
     }
 }

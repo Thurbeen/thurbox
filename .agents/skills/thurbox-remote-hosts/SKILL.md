@@ -169,7 +169,13 @@ are cleaned in one place (`git::reportable_stderr`): OpenSSH ≥ 10's three-line
 post-quantum advisory is dropped (it is informational, on stderr, and **first**,
 so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
 envelope is decoded to the message inside it. See the two subsections after
-"psmux divergences" in ADR-13.
+"psmux divergences" in ADR-13. A file too big for a command line (the
+provisioned CLI's archive) travels on stdin as **base64 lines read through
+`$input`** (`git::copy_stream_to_remote_windows`): Windows PowerShell 5.1's
+console host reads redirected stdin itself, so a script opening
+`[Console]::OpenStandardInput()` got 4096 bytes and waited forever, leaving a
+PowerShell on the host holding the half-written file open. Checked against a
+real host by `scripts/dev/e2e/real-host.sh <host> transfer-test`.
 
 Each host registers one backend per adapter, named by its route
 (`ssh:<name>:<mux>` / `wsl:<name>:<mux>`, `backend::wiring`'s table, built from a
