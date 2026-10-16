@@ -628,7 +628,8 @@ fn host_row(id: SessionId, name: &str) -> SharedSession {
 
 /// An `ssh` that drops its options and destination and runs the remote
 /// command with `sh`, as the host's login shell would, inside the host's own
-/// thurbox directories.
+/// thurbox directories. `host-bin` comes first on the host's `PATH`, so a test
+/// can stand a different `thurbox-cli` in front of the real one.
 #[cfg(unix)]
 fn write_ssh(bin: &std::path::Path, root: &std::path::Path) {
     let cli_dir = std::path::Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
@@ -649,7 +650,7 @@ printf '%s\n' "$*" >> '{root}/ssh.log'
 export HOME='{root}/host-home'
 export THURBOX_CONFIG_DIR='{root}/host-config'
 export THURBOX_DATA_DIR='{root}/host-data'
-export PATH='{cli_dir}':/usr/bin:/bin
+export PATH='{root}/host-bin':'{cli_dir}':/usr/bin:/bin
 exec sh -c "$*"
 "#,
         root = root.display(),
@@ -748,4 +749,76 @@ fn an_idle_host_is_not_listed_again() {
     let moved = mirror::mirror_host(&db, &host, &cli).unwrap();
     assert_eq!(moved.deleted, vec![live], "{moved:?}");
     assert!(listings(root) > after_first);
+}
+
+/// A host that upgraded first is still shared with (#1429). Its CLI is a minor
+/// release ahead — same major, one schema ahead — and an exact schema match
+/// rejected it, so the peer tried to provision its own older CLI over the
+/// host's and, where that failed (it does on Windows), fell back to spawning
+/// straight onto the host's multiplexer with the row in its own database only:
+/// a session the host's own thurbox never saw.
+#[cfg(unix)]
+#[test]
+fn a_host_a_schema_ahead_in_the_same_major_is_delegated_to() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in [
+        "bin",
+        "home",
+        "config",
+        "data",
+        "host-bin",
+        "host-home",
+        "host-config",
+        "host-data",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    write_ssh(&root.join("bin"), root);
+    // The host's own CLI, reporting the schema of the next minor release.
+    let ours = thurbox::storage::SCHEMA_VERSION;
+    let newer = root.join("host-bin/thurbox-cli");
+    std::fs::write(
+        &newer,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = version ]; then\n\
+             '{real}' \"$@\" | sed 's/\"schema_version\":{ours}/\"schema_version\":{next}/'\n\
+             exit\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            real = env!("CARGO_BIN_EXE_thurbox-cli"),
+            next = ours + 1,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&newer, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("THURBOX_CONFIG_DIR", root.join("config"));
+    std::env::set_var("THURBOX_DATA_DIR", root.join("data"));
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}",
+            root.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    let host = HostDef {
+        name: "probe".into(),
+        destination: "probe".into(),
+        ..Default::default()
+    };
+    match thurbox::session_ops::host_cli::usable(&host) {
+        thurbox::session_ops::host_cli::Usable::Yes(cli) => {
+            assert_eq!(cli.schema_version, Some(ours + 1), "{cli:?}");
+            // The host's own CLI, not a copy of this peer's provisioned
+            // over it to open the host's newer database.
+            assert_eq!(cli.path, newer.display().to_string(), "{cli:?}");
+        }
+        thurbox::session_ops::host_cli::Usable::No(why) => {
+            panic!("a host one minor release ahead is not shared with: {why}")
+        }
+    }
 }
