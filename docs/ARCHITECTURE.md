@@ -2136,7 +2136,12 @@ Migration is the sole-namesake rule — an unstamped window is adoptable only
 while it is the only one with that name, and it is stamped on adoption
 (`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
 first use. psmux (ADR-13) has no usable window options, so a lone namesake
-resolves to its listed pane. Local recovery can also select the sole live pane
+resolves to its listed pane — to every row of that name, a soft-deleted one
+included. The reap therefore takes an unstamped window only while no live
+session answers to the row's name: without that guard a deleted row's reap
+killed its live replacement on every sweep, so an extension session that
+self-heals under its old name never stayed up on Windows. Local recovery can
+also select the sole live pane
 among exited namesakes from a fresh listing. Multiple live namesakes stay
 unknown locally; remote duplicates stay unknown even when a remembered pane
 currently has the expected name. A restarted server can reissue that id to

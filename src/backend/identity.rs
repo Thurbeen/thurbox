@@ -213,6 +213,14 @@ impl WindowIndex {
             }
     }
 
+    /// Whether the listing places `pane` in a window that carries a stamp —
+    /// the proof of ownership a match by name alone lacks.
+    pub fn is_stamped(&self, pane: &str) -> bool {
+        self.by_pane
+            .get(pane)
+            .is_some_and(|(_, stamp, _)| !stamp.is_empty())
+    }
+
     /// The resolution rule, in one place.
     ///
     /// A stamp is proof and is taken first. Without one the *name* is all
