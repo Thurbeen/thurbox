@@ -586,7 +586,7 @@ pub fn copy_stream_to_remote_windows(
 /// `bytes` as base64 in 76-column lines: `$input` hands a script its stdin a
 /// line at a time, so one unbroken multi-megabyte line would be one string
 /// the size of the payload before it is even joined.
-fn base64_lines(bytes: &[u8]) -> Vec<u8> {
+pub(super) fn base64_lines(bytes: &[u8]) -> Vec<u8> {
     use base64::Engine as _;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     let mut out = Vec::with_capacity(encoded.len() + encoded.len() / 76 + 1);

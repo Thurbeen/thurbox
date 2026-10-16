@@ -246,12 +246,20 @@ fn sharing_finding(
                  installed there — {sync} installs it, or says why it cannot"
             ),
         ),
+        Err(e) if e.broken_cli => (
+            Level::Warn,
+            format!(
+                "{name}'s thurbox-cli does not work ({}), so its sessions are not shared until it \
+                 is replaced — {sync} replaces it, or says why it cannot",
+                first_line(&e.message)
+            ),
+        ),
         Err(e) => (
             Level::Warn,
             format!(
                 "{name} did not answer the thurbox-cli probe over {launcher}, so its sessions are \
                  not shared: {}",
-                e.message.lines().next().unwrap_or_default()
+                first_line(&e.message)
             ),
         ),
     };
@@ -260,6 +268,10 @@ fn sharing_finding(
         level,
         detail,
     }
+}
+
+fn first_line(message: &str) -> &str {
+    message.lines().next().unwrap_or_default()
 }
 
 fn render(findings: &[Finding], verdict: Level) -> String {
@@ -391,6 +403,31 @@ mod tests {
 
         let current = sharing_finding("box", "ssh", &Ok(Some(cli(crate::storage::SCHEMA_VERSION))));
         assert_eq!(current.level, Level::Ok, "{}", current.detail);
+    }
+
+    /// A host that answered with a CLI that crashes is not a host that did
+    /// not answer: the repair is a reinstall, which `session sync` performs.
+    #[test]
+    fn a_host_with_a_broken_cli_is_not_reported_as_silent() {
+        let failure = crate::session_ops::host_cli::ProbeFailure {
+            message: "thurbox-cli died on signal 11 (SIGSEGV)".into(),
+            broken_cli: true,
+        };
+        let finding = sharing_finding("box", "ssh", &Err(failure));
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            !finding.detail.contains("did not answer"),
+            "{}",
+            finding.detail
+        );
+        assert!(finding.detail.contains("SIGSEGV"), "{}", finding.detail);
+        assert!(
+            finding
+                .detail
+                .contains("`thurbox-cli session sync --host box`"),
+            "{}",
+            finding.detail
+        );
     }
 
     #[test]

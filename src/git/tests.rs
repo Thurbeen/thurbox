@@ -2423,3 +2423,23 @@ fn the_diff_fingerprint_moves_with_content_the_status_cannot_see() {
     commit_file(dir, "c.txt", "c\n", "more");
     assert_ne!(diff_fingerprint_on(None, dir, Some("main")), Some(ranged));
 }
+
+/// What the Windows stream-copy sends: every line short enough for `$input`
+/// to hand over as one ordinary string, and the lines joined back together —
+/// what the host's script does — decode to exactly the bytes shipped,
+/// including a final partial line.
+#[test]
+fn a_windows_payload_is_base64_lines_that_join_back_to_the_bytes() {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = (0..10_000u32).map(|i| (i * 31 % 256) as u8).collect();
+    let sent = base64_lines(&bytes);
+    let text = String::from_utf8(sent).expect("ascii");
+    assert!(text.ends_with('\n'));
+    assert!(text.lines().all(|l| !l.is_empty() && l.len() <= 76));
+    let joined: String = text.lines().collect();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(joined)
+        .expect("decodes");
+    assert_eq!(decoded, bytes);
+    assert!(base64_lines(&[]).is_empty());
+}
