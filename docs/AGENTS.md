@@ -304,9 +304,12 @@ embedded hook assets live in
     server never saw the session's `$THURBOX_SESSION` — and the flag is left
     to the user's `agents.toml` because 1.x rejects it.
   - `copilot`: `~/.copilot/hooks/thurbox-status.json`
-    (sessionStart→idle, userPromptSubmitted/preToolUse/postToolUse→working,
-    agentStop→done, notification matched to `permission_prompt`→blocked). Ships
-    both `bash` and `powershell` commands.
+    (userPromptSubmitted/preToolUse/postToolUse→working, agentStop→done,
+    notification matched to `permission_prompt`→blocked; **no idle** —
+    copilot fires `sessionStart` only with the first prompt and after
+    `userPromptSubmitted`, so an idle there overwrote the turn's working;
+    verified against copilot 1.0.98). Ships both `bash` and `powershell`
+    commands.
     *Experimental.*
   - `vibe`: a managed `~/.vibe/hooks.toml` (pre_tool→working, post_agent→done;
     **no blocked** — vibe has no permission/notification hook). Verified against

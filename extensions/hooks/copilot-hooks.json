@@ -1,19 +1,11 @@
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [
-      {
-        "type": "command",
-        "bash": "thurbox-cli session signal --state idle >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
-        "powershell": "thurbox-cli session signal --state idle > $null 2>&1; exit 0  # managed by thurbox `extension install`",
-        "timeoutSec": 10
-      }
-    ],
     "userPromptSubmitted": [
       {
         "type": "command",
-        "bash": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
-        "powershell": "thurbox-cli session signal --state working > $null 2>&1; exit 0",
+        "bash": "thurbox-cli session signal --state working >/dev/null 2>&1 || true  # managed by thurbox `extension install` — do not edit",
+        "powershell": "thurbox-cli session signal --state working > $null 2>&1; exit 0  # managed by thurbox `extension install`",
         "timeoutSec": 10
       }
     ],

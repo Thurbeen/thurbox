@@ -458,6 +458,37 @@ fn claudes_background_agent_does_not_undo_done() {
     );
 }
 
+/// copilot fires `sessionStart` lazily: not when the CLI opens, nor when
+/// `--continue` reopens a conversation, but as part of the first prompt — and
+/// *after* `userPromptSubmitted` (verified against copilot 1.0.98: on three
+/// separate launches `working` arrived, then `sessionStart` ~60ms later). A
+/// `sessionStart` that signals `idle` therefore overwrote the turn's `working`,
+/// and a first turn that ran no tool showed idle until it ended.
+#[test]
+fn copilots_first_turn_reads_as_working() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = payload_json("copilot-hooks.json");
+    let log = stub_cli(dir.path());
+
+    for event in ["userPromptSubmitted", "sessionStart"] {
+        fire(&payload, dir.path(), event, &body(event, ""), None);
+    }
+    assert_eq!(
+        current(&log),
+        "working",
+        "copilot: the first turn read as idle"
+    );
+
+    fire(
+        &payload,
+        dir.path(),
+        "agentStop",
+        &body("agentStop", ""),
+        None,
+    );
+    assert_eq!(current(&log), "done", "copilot: the turn ended");
+}
+
 /// The other reason claude fires a notification: nobody has typed for 60s.
 /// That is the session at rest, not a block, and the payload's own matcher is
 /// the only thing that tells the two apart (copilot's agent matches for it).

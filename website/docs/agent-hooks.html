@@ -188,7 +188,7 @@ breadcrumb: 'Agent hooks'
               </tr>
               <tr>
                 <td>copilot <sup>*</sup></td>
-                <td>&#x2713;</td>
+                <td>&mdash;</td>
                 <td>&#x2713;</td>
                 <td>&#x2713;</td>
                 <td>&#x2713;</td>
@@ -369,11 +369,11 @@ breadcrumb: 'Agent hooks'
               <code>~/.copilot/hooks/</code>
               dir, so Thurbox drops a managed standalone file in (only when copilot is installed),
               never touching your other hook files.
-              <code>sessionStart</code>
-              &rarr; idle,
               <code>userPromptSubmitted</code>
               /
               <code>preToolUse</code>
+              /
+              <code>postToolUse</code>
               &rarr; working,
               <code>agentStop</code>
               &rarr; done, and
@@ -384,7 +384,11 @@ breadcrumb: 'Agent hooks'
               <code>bash</code>
               and
               <code>powershell</code>
-              commands ship, so status works on Windows too.
+              commands ship, so status works on Windows too. No idle: copilot fires
+              <code>sessionStart</code>
+              only with the first prompt, after
+              <code>userPromptSubmitted</code>
+              , so it is not wired.
             </li>
             <li>
               <strong>pi</strong>

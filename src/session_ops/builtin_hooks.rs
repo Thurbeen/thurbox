@@ -597,7 +597,6 @@ mod tests {
         let copilot_payload: serde_json::Value =
             serde_json::from_str(COPILOT_HOOKS).expect("copilot payload is valid JSON");
         for event in [
-            "sessionStart",
             "userPromptSubmitted",
             "preToolUse",
             "notification",
@@ -608,6 +607,12 @@ mod tests {
                 "copilot hook event {event} missing"
             );
         }
+        // copilot fires sessionStart after the first prompt, so an idle signal
+        // there overwrote the turn's working (see hook_turn_sequence.rs).
+        assert!(
+            copilot_payload["hooks"].get("sessionStart").is_none(),
+            "copilot's sessionStart must not signal"
+        );
     }
 
     #[test]
