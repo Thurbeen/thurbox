@@ -489,6 +489,37 @@ fn copilots_first_turn_reads_as_working() {
     assert_eq!(current(&log), "done", "copilot: the turn ended");
 }
 
+/// The background-agent check reads only the payload's own fields, never the
+/// tool's: a main-agent call whose `tool_input` or `tool_response` carries an
+/// `agent_id` (an Agent-tool call reporting the subagent it started, a JSON
+/// file the tool wrote) is still the turn working. The bodies are spelled in
+/// claude's own key order, which puts `agent_id`/`agent_type` ahead of
+/// `tool_input` and `tool_response`.
+#[test]
+fn an_agent_id_inside_the_tool_payload_is_still_work() {
+    let payload = payload_json("claude.json");
+    for (event, tool_call) in [
+        (
+            "PreToolUse",
+            r#"{"session_id":"abc","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat state.json","agent_id":"a1"}}"#,
+        ),
+        (
+            "PostToolUse",
+            r#"{"session_id":"abc","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"prompt":"ls"},"tool_response":{"agent_id":"a9096816","agent_type":""}}"#,
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = stub_cli(dir.path());
+        fire(&payload, dir.path(), "Stop", &body("Stop", ""), None);
+        fire(&payload, dir.path(), event, tool_call, Some("Bash"));
+        assert_eq!(
+            current(&log),
+            "working",
+            "claude: an agent_id inside the tool payload hid the main agent's {event}"
+        );
+    }
+}
+
 /// The other reason claude fires a notification: nobody has typed for 60s.
 /// That is the session at rest, not a block, and the payload's own matcher is
 /// the only thing that tells the two apart (copilot's agent matches for it).
