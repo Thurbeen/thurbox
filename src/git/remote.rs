@@ -610,10 +610,10 @@ pub(super) fn base64_lines(bytes: &[u8]) -> Vec<u8> {
 /// peer is already gone, so there is nothing left to collect but the stderr it
 /// managed to write before it went.
 ///
-/// A peer can also stop reading without dying: a PowerShell 5.1 upload over
-/// Windows sshd took 132 KiB of a binary and then nothing, and the blocked
-/// write held the automation tick — and every scheduled job behind it — for
-/// hours. So the write runs on its own thread and the peer is killed after
+/// A peer can also stop reading without dying — the Windows upload did, before
+/// [`copy_stream_to_remote_windows`] stopped opening stdin itself, and so can a
+/// link that drops without a reset — and the blocked write held the automation
+/// tick, and every scheduled job behind it, for hours. So the write runs on its own thread and the peer is killed after
 /// [`STREAM_STALL`] without progress. Its pipes are read on threads too and
 /// abandoned [`PIPE_GRACE`] after it exits: an ssh connection master it forked
 /// keeps stderr open for as long as the master lives.
