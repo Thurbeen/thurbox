@@ -159,10 +159,13 @@ directory scope, preserving the permission mode and deny/ask rules; see
 is substituted with the resolved home dir at spawn time (the remote home
 for an SSH/WSL host) — for an agent that wants a session *file path*
 rather than a bare id. The built-in `omp` (Oh My Pi) uses it: it generates
-its own internal id and won't take thurbox's, but its `--session <path>`
-creates a fresh session at a missing path, so thurbox maps its UUID to a
-deterministic `--session {home}/.omp/agent/sessions/thurbox-{id}.jsonl`
-(creation) / `--resume` the same (restart). `{home}` is expanded by
+its own internal id and won't take thurbox's, but its `--session-dir <dir>`
+keeps a session in a directory of thurbox's choosing, so thurbox maps its
+UUID to a deterministic `--session-dir {home}/.omp/agent/sessions/thurbox-{id}`
+(creation) / the same plus `--continue` (restart). An `agents.toml` seeded
+by an older thurbox still carries `--session`/`--resume` on a `.jsonl` file,
+which OMP refuses for a file that does not exist yet; the loader replaces
+that exact pair in memory, and any hand-edited omp entry is left as is. `{home}` is expanded by
 thurbox, not the shell — args are POSIX-quoted, so a literal `~` would
 never expand. `omp` ships no `fork_args`, so `Ctrl+F` starts a fresh
 session (OMP has no way to pin a fork's target file to a thurbox UUID).

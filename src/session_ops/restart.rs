@@ -81,7 +81,7 @@ pub(crate) fn build_restart_plan(
     };
     // The same adaptation a spawn does, so a restart lands the agent exactly
     // where the spawn did: `{home}` resolved against the machine it runs on
-    // (omp's `--resume {home}/…` must reopen the same JSONL) and hook configs
+    // (omp's `--session-dir {home}/…` must reopen the same directory) and hook configs
     // shipped to the host rather than pointing at local paths that do not exist
     // there. Identity for a local restart.
     let (def, degraded) = super::spawn::adapt_def_for_launch(def, host, signal, hooks_enabled);

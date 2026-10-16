@@ -403,12 +403,12 @@ new_session_args = ["--session-id", "{id}"]</code></pre>
             command) is Pi-compatible but generates its
             <strong>own</strong>
             internal session id, so it can't accept thurbox's. Instead it takes a session
-            <strong>file path</strong>
-            : thurbox maps its UUID to a deterministic JSONL under OMP's default root
-            (<code>--session &lt;file&gt;</code>
-            on create,
-            <code>--resume</code>
-            on the same path to restore), so restart reattaches the exact session. The
+            <strong>directory</strong>
+            : thurbox maps its UUID to a deterministic directory under OMP's default root
+            (<code>--session-dir &lt;dir&gt;</code>
+            on create, the same plus
+            <code>--continue</code>
+            to restore), so restart reattaches the exact session. The
             <code>{home}</code>
             token expands to the resolved home dir at spawn time (thurbox, not the shell &mdash;
             args are POSIX-quoted, so a literal
@@ -419,15 +419,15 @@ new_session_args = ["--session-id", "{id}"]</code></pre>
             starts fresh.
           </p>
           <p>
-            <span class="badge">Resume: by session file</span>
+            <span class="badge">Resume: by session directory</span>
             <span class="badge">Fork: &mdash;</span>
             <span class="badge badge-green">Status: full (experimental)</span>
           </p>
           <pre data-title="agents.toml"><code class="language-toml">[[agents]]
 name = "omp"
 command = "omp"
-resume_args = ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]
-new_session_args = ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]</code></pre>
+resume_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}", "--continue"]
+new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]</code></pre>
 
           <h2 id="shell">
             shell

@@ -53,7 +53,7 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 | `copilot` | `copilot` | `--continue` | — (none) | id-less (`resume_latest`) | `external_files` → `~/.copilot/hooks/` |
 | `vibe` | `vibe` | — (starts fresh) | — (none) | none | `external_files` → `~/.vibe/hooks.toml` |
 | `pi` | `pi` | `--session-id {id}` | `--fork {id}` | **pinned** (`--session-id {id}`) | `external_files` → `~/.pi/agent/extensions/` |
-| `omp` | `omp` | `--resume {home}/.omp/…/thurbox-{id}.jsonl` | — (none) | **path-pinned** (`--session <file>`) | `external_files` → `~/.omp/agent/extensions/` |
+| `omp` | `omp` | `--session-dir {home}/.omp/…/thurbox-{id} --continue` | — (none) | **path-pinned** (`--session-dir <dir>`) | `external_files` → `~/.omp/agent/extensions/` |
 | `shell` | `bash -i` (`powershell -NoLogo` on Windows) | — (none) | — (none) | none | none (see below) |
 
 ### Multi-repo directory scope
@@ -129,11 +129,17 @@ whether resume/fork can target *this* session or only *the last* one.
   creation via `new_session_args = ["--session-id", "{id}"]`, so it can
   resume/fork **that exact session** by id. `resume_latest` stays `false`.
 - **Path-pinned** (`omp`) — the CLI generates its *own* internal session id and
-  can't accept thurbox's, but it takes a session **file path**. thurbox maps its
-  UUID to a deterministic JSONL under OMP's default root
-  (`--session {home}/.omp/agent/sessions/thurbox-{id}.jsonl` on create,
-  `--resume` on the same path to restore), so restart reattaches the exact
-  session even though the id itself is opaque. The new `{home}` token is expanded
+  can't accept thurbox's, but it takes a session **directory**. thurbox maps its
+  UUID to a deterministic directory under OMP's default root
+  (`--session-dir {home}/.omp/agent/sessions/thurbox-{id}` on create, the same
+  plus `--continue` to restore), so restart reattaches the exact session even
+  though the id itself is opaque. A session *file* does not work: OMP opens
+  only a file that already holds entries (`Session "…" not found`, exit 1, as of
+  18.10), so an older seed that passed `--session <file>.jsonl` killed every new
+  omp session at launch; the loader swaps that exact legacy pair for the
+  current one in memory, so an existing `agents.toml` needs no edit. A
+  conversation an older OMP did write to a legacy `thurbox-{id}.jsonl` file is
+  not reopened after that swap: the restart looks only in the directory. The new `{home}` token is expanded
   to the resolved home dir **at spawn time by thurbox** (args are POSIX-quoted, so
   a literal `~` would never expand), and it translates onto the remote/WSL home.
   It has no `fork_args` (OMP can't pin a fork's target file to a thurbox UUID), so
