@@ -3,9 +3,6 @@
 //! only its own tests would prove nothing about routing; one that passes the
 //! adapter's is a stand-in for it.
 
-use std::collections::HashMap;
-use std::io::Write;
-
 use thurbox::backend::identity::WindowIndex;
 use thurbox::backend::rmux::Rmux;
 use thurbox::backend::tmux::TmuxBackend;
@@ -511,6 +508,9 @@ fn the_tmux_backend_refuses_an_exited_pane_and_delivers_a_deferred_prompt() {
 #[cfg(unix)]
 #[test]
 fn a_keystroke_never_answers_the_next_command() {
+    use std::collections::HashMap;
+    use std::io::Write;
+
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
