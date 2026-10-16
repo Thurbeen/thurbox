@@ -2107,7 +2107,8 @@ resolves to its listed pane — to every row of that name, a soft-deleted one
 included. The reap therefore takes an unstamped window only while no live
 session answers to the row's name: without that guard a deleted row's reap
 killed its live replacement on every sweep, so an extension session that
-self-heals under its old name never stayed up on Windows. Local recovery can also select the sole live pane
+self-heals under its old name never stayed up on Windows. Local recovery can
+also select the sole live pane
 among exited namesakes from a fresh listing. Multiple live namesakes stay
 unknown locally; remote duplicates stay unknown even when a remembered pane
 currently has the expected name. A restarted server can reissue that id to
