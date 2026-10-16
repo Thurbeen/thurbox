@@ -1358,6 +1358,83 @@ mod stream_into_child {
     }
 }
 
+/// A peer that stops taking the payload, or exits while something it started
+/// still holds its stderr, must not hold the caller with it. Both stopped the
+/// automation heartbeat: a binary upload to a Windows host stalled mid-write,
+/// and once that ssh was killed, the connection master it had forked kept the
+/// stderr pipe open, so the wait that followed never ended either.
+mod stream_into_child_bounded {
+    use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    const STALL: Duration = Duration::from_secs(1);
+    const WATCHDOG: Duration = Duration::from_secs(20);
+
+    #[cfg(unix)]
+    fn peer(script: &str) -> Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the test peer")
+    }
+
+    #[cfg(windows)]
+    fn peer(script: &str) -> Child {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .raw_arg(format!("/d /c \"{script}\""))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the test peer")
+    }
+
+    /// Run the stream on a thread so a regression fails this test instead of
+    /// hanging the suite.
+    fn bounded(child: Child, bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(super::super::stream_into_child_within(
+                child,
+                &bytes,
+                "test-copy",
+                STALL,
+            ));
+        });
+        rx.recv_timeout(WATCHDOG)
+            .unwrap_or_else(|_| panic!("stream_into_child still blocked after {WATCHDOG:?}"))
+    }
+
+    #[test]
+    fn a_peer_that_stops_reading_fails_once_the_stall_bound_passes() {
+        #[cfg(unix)]
+        let child = peer("sleep 30");
+        #[cfg(windows)]
+        let child = peer("ping -n 30 127.0.0.1 >nul");
+        let started = Instant::now();
+        let error = bounded(child, vec![b'x'; 8 << 20]).expect_err("a stalled peer fails");
+        assert!(format!("{error:#}").contains("stalled"), "{error:#}");
+        assert!(started.elapsed() >= STALL, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_peer_whose_stderr_outlives_it_still_returns() {
+        #[cfg(unix)]
+        let child = peer("sleep 30 >/dev/null & cat >/dev/null; echo done");
+        #[cfg(windows)]
+        let child = peer("start /b ping -n 30 127.0.0.1 >nul & find /v \"\" >nul & echo done");
+        let out =
+            bounded(child, b"line\n".repeat(1 << 16)).expect("the peer read it all and exited 0");
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "done");
+    }
+}
+
 // ── listing the worktrees a repo already has ───────────────────────────────
 
 #[test]

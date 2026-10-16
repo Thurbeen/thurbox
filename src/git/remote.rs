@@ -18,7 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -598,7 +599,7 @@ pub(super) fn base64_lines(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Write `bytes` into `child`'s stdin and collect what it said, reaping it
-/// whichever way that goes.
+/// whichever way that goes, and never waiting on it unboundedly.
 ///
 /// The write is the half that fails in practice: the peer dies mid-payload — a
 /// remote shell that will not take one that size, a dropped connection — and
@@ -609,32 +610,134 @@ pub(super) fn base64_lines(bytes: &[u8]) -> Vec<u8> {
 /// peer is already gone, so there is nothing left to collect but the stderr it
 /// managed to write before it went.
 ///
+/// A peer can also stop reading without dying: a PowerShell 5.1 upload over
+/// Windows sshd took 132 KiB of a binary and then nothing, and the blocked
+/// write held the automation tick — and every scheduled job behind it — for
+/// hours. So the write runs on its own thread and the peer is killed after
+/// [`STREAM_STALL`] without progress. Its pipes are read on threads too and
+/// abandoned [`PIPE_GRACE`] after it exits: an ssh connection master it forked
+/// keeps stderr open for as long as the master lives.
+///
 /// A broken pipe is the *symptom* and never the cause, so the remote's own
 /// stderr is preferred as the reported error; ours is the fallback for a peer
 /// that died silently.
 pub(super) fn stream_into_child(
-    mut child: std::process::Child,
+    child: std::process::Child,
     bytes: &[u8],
     action: &str,
 ) -> Result<Vec<u8>> {
+    stream_into_child_within(child, bytes, action, STREAM_STALL)
+}
+
+/// How long a stream may go without the peer taking a byte — or, once the
+/// payload is in, without the peer exiting — before it is killed. Progress is
+/// what is measured, not the total, so a slow link is never cut off.
+pub(super) const STREAM_STALL: Duration = Duration::from_secs(60);
+
+/// How long a peer's stdout and stderr are still read after it has exited.
+/// Only a process it left behind holds them open past that.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// [`stream_into_child`] with the stall bound given, which is what lets a test
+/// stall a peer in a second rather than a minute.
+pub(super) fn stream_into_child_within(
+    mut child: std::process::Child,
+    bytes: &[u8],
+    action: &str,
+    stall: Duration,
+) -> Result<Vec<u8>> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     let mut stdin = child
         .stdin
         .take()
         .with_context(|| format!("remote {action} stdin unavailable"))?;
-    let written = stdin.write_all(bytes);
-    // Before the wait, not at the end of the scope: the peer reads to EOF, so a
-    // handle still held here is a deadlock on the success path.
-    drop(stdin);
-    if written.is_err() {
-        let _ = child.kill();
+    let started = Instant::now();
+    let since_start = move || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Milliseconds after `started` at which the peer last made progress.
+    let progress = Arc::new(AtomicU64::new(0));
+    let (written_tx, written_rx) = mpsc::channel();
+    {
+        let payload = bytes.to_vec();
+        let progress = Arc::clone(&progress);
+        // Detached rather than joined: a write the peer stopped reading returns
+        // only once nothing holds the pipe's read end, which a process the peer
+        // forked can keep from happening.
+        std::thread::spawn(move || {
+            let mut result = Ok(());
+            for chunk in payload.chunks(64 << 10) {
+                if let Err(e) = stdin.write_all(chunk) {
+                    result = Err(e);
+                    break;
+                }
+                progress.store(since_start(), Ordering::Relaxed);
+            }
+            // The peer reads to EOF, so a handle still held is a deadlock on
+            // the success path.
+            drop(stdin);
+            let _ = written_tx.send(result);
+        });
     }
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("failed to wait on remote {action}"))?;
+    let stdout = child.stdout.take().map(drain_pipe);
+    let stderr = child.stderr.take().map(drain_pipe);
+
+    let mut written = None;
+    let mut stalled = false;
+    let status = loop {
+        if written.is_none() {
+            if let Ok(result) = written_rx.try_recv() {
+                if result.is_err() {
+                    let _ = child.kill();
+                }
+                // Waiting for the peer to exit is a phase of its own: the
+                // clock restarts once the last byte is in.
+                progress.store(since_start(), Ordering::Relaxed);
+                written = Some(result);
+            }
+        }
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("failed to wait on remote {action}"))?
+        {
+            break status;
+        }
+        let last = Duration::from_millis(progress.load(Ordering::Relaxed));
+        if started.elapsed().saturating_sub(last) >= stall {
+            let _ = child.kill();
+            stalled = true;
+            break child
+                .wait()
+                .with_context(|| format!("failed to wait on remote {action}"))?;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let written = written.unwrap_or_else(|| {
+        written_rx.recv_timeout(PIPE_GRACE).unwrap_or_else(|_| {
+            Err(std::io::Error::other(
+                "the peer exited before it took the whole payload",
+            ))
+        })
+    });
+    let deadline = Instant::now() + PIPE_GRACE;
+    let output = std::process::Output {
+        status,
+        stdout: collect_pipe(stdout, deadline),
+        stderr: collect_pipe(stderr, deadline),
+    };
+    let detail = reportable_stderr(&output.stderr);
+    if stalled {
+        let reason = format!(
+            "remote {action} stalled: no progress for {}s",
+            stall.as_secs_f32()
+        );
+        if detail.is_empty() {
+            anyhow::bail!("{reason}");
+        }
+        anyhow::bail!("{reason}: {detail}");
+    }
     if let Err(e) = written {
-        let detail = reportable_stderr(&output.stderr);
         if detail.is_empty() {
             return Err(e)
                 .with_context(|| format!("failed to stream the payload for remote {action}"));
@@ -642,6 +745,34 @@ pub(super) fn stream_into_child(
         anyhow::bail!("remote {action} failed: {detail}");
     }
     remote_output_or_stderr(output, action)
+}
+
+/// Read `pipe` to EOF on a thread of its own, handing over each chunk as it
+/// arrives, so what a peer said can be taken without waiting for an EOF that a
+/// process it forked may never let come.
+fn drain_pipe(mut pipe: impl std::io::Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0; 8192];
+        while let Ok(n) = pipe.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// What [`drain_pipe`] read by EOF or `deadline`, whichever comes first.
+fn collect_pipe(pipe: Option<mpsc::Receiver<Vec<u8>>>, deadline: Instant) -> Vec<u8> {
+    let mut out = Vec::new();
+    let Some(pipe) = pipe else {
+        return out;
+    };
+    while let Ok(chunk) = pipe.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        out.extend(chunk);
+    }
+    out
 }
 
 /// Expand a leading `~` in a remote path against the host's `$HOME`. Remote
