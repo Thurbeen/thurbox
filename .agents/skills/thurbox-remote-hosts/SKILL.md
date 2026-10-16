@@ -333,8 +333,8 @@ session), never on the loop, ADR-P12).
   every multiplexer there runs under.
   Everything below this bullet — the hooks rewrite, remote provisioning, the
   pane-option status channel — is the **legacy path** for a host that cannot
-  be delegated to (no artifact, no network, schema mismatch, `share_sessions =
-  false`); `session create` then reports `sharing` and `session sync --adopt`
+  be delegated to (no artifact, no network, a host schema older than ours that
+  provisioning cannot upgrade, `share_sessions = false`); `session create` then reports `sharing` and `session sync --adopt`
   registers such rows on the host later. `session signal` also sets the pane
   option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
   host's (`session restart --if-missing`). A fork stays on the legacy path.

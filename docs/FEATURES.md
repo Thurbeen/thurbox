@@ -827,8 +827,8 @@ has the rationale; the shape:
   that was 54% of itself was installed, logged as provisioned and left
   to segfault.
 - **When it cannot.** No CLI and no artifact (a dev build on a foreign
-  platform, no network, a schema mismatch), or `share_sessions =
-  false`: the host is used exactly as before — worktree over ssh, the
+  platform, no network, a host schema older than this binary's), or
+  `share_sessions = false`: the host is used exactly as before — worktree over ssh, the
   hooks rewrite, the pane-option status channel — and `session create`
   says so (`sharing` in its JSON, a line in `thurbox.log`). Sessions
   created that way are listed by `session sync` as unknown to the host;

@@ -1813,9 +1813,20 @@ host, so a `thurbox-cli` that was 54% of itself was installed, logged as
 `provisioned thurbox-cli <version>` and left to segfault under every later
 probe. A
 host where that cannot be done (a dev build on a foreign platform, no
-network, a different schema) or with `share_sessions = false` is used exactly
+network) or with `share_sessions = false` is used exactly
 as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
 status channel, which are now the **legacy path for non-shareable hosts**.
+
+**A host CLI is compatible when its major matches and its schema is no older
+than ours** (`host_cli::compatible`). A newer schema within one major is a host
+that upgraded first: its CLI takes every flag an older peer sends, and what it
+adds to the JSON is negotiated by the capability flags `version --json` already
+reports. Requiring the exact schema turned every minor-release skew into a
+fallback (#1429): the peer provisioned its own older CLI over the host's — to
+open a database newer than it understands — and, where that failed, spawned
+onto the host's multiplexer with the row only in its own database, a session
+the host's thurbox never saw. An older host schema is still refused, and
+provisioning this binary's version is what brings that host up to it.
 
 The verdict is cached per host, and a failing one **backs off**:
 `host_cli::retry_after` doubles `PROBE_RETRY` (60 s) per consecutive failure

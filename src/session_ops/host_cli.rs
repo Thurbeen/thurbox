@@ -404,8 +404,18 @@ fn establish(host: &HostDef) -> Usable {
     }
 }
 
-/// Whether a host CLI speaks this binary's JSON and database: same major
-/// version, same schema. `Err` names the mismatch.
+/// Whether a host CLI speaks this binary's JSON: same major version, and a
+/// schema no older than ours. `Err` names the mismatch.
+///
+/// A newer schema within one major is a host that upgraded first. Its CLI
+/// takes every flag ours sends (a removal would be a new major) and what is new
+/// in its JSON is additive, which the capability flags in [`CliInfo`] already
+/// negotiate. Refusing it was worse than useless (#1429): the peer then
+/// provisioned its own older CLI to open the host's newer database, and where
+/// that failed spawned onto the host's multiplexer with the row in this
+/// database only — a session the host's own thurbox never saw. An *older*
+/// host schema is still refused: it may not know what we send, and
+/// provisioning our version is what upgrades it.
 pub fn compatible(cli: &CliInfo) -> Result<(), String> {
     let ours = crate::agent::version_check::current_version();
     let (ours_major, theirs_major) = (major_of(ours), major_of(&cli.version));
@@ -415,9 +425,9 @@ pub fn compatible(cli: &CliInfo) -> Result<(), String> {
         ));
     }
     match cli.schema_version {
-        Some(schema) if schema == crate::storage::SCHEMA_VERSION => Ok(()),
+        Some(schema) if schema >= crate::storage::SCHEMA_VERSION => Ok(()),
         Some(schema) => Err(format!(
-            "uses database schema v{schema} where this thurbox uses v{}",
+            "uses database schema v{schema}, older than this thurbox's v{}",
             crate::storage::SCHEMA_VERSION
         )),
         None => Err("predates session sharing (reports no schema version)".to_string()),
@@ -1578,15 +1588,17 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_needs_the_same_major_and_the_same_schema() {
+    fn compatibility_needs_the_same_major_and_a_schema_no_older() {
         let ours = crate::agent::version_check::current_version();
         let schema = crate::storage::SCHEMA_VERSION;
         assert!(compatible(&cli(ours, Some(schema))).is_ok());
+        // A host that upgraded first (#1429).
+        assert!(compatible(&cli(ours, Some(schema + 1))).is_ok());
         let other_major = format!("{}.0.0", major_of(ours) + 1);
         let err = compatible(&cli(&other_major, Some(schema))).unwrap_err();
         assert!(err.contains("major"), "{err}");
-        let err = compatible(&cli(ours, Some(schema + 1))).unwrap_err();
-        assert!(err.contains("schema"), "{err}");
+        let err = compatible(&cli(ours, Some(schema - 1))).unwrap_err();
+        assert!(err.contains("older"), "{err}");
         let err = compatible(&cli(ours, None)).unwrap_err();
         assert!(err.contains("predates"), "{err}");
     }
