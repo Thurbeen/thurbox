@@ -250,11 +250,12 @@ breadcrumb: 'Agent hooks'
               <em>only</em>
               for permission/approval prompts (an idle nudge is ignored so a session never flips to
               a false red). A tool call from the background agent claude starts on its own after a
-              turn (one with an
+              turn (a payload with a top-level
               <code>agent_id</code>
               and no
               <code>agent_type</code>
-              ) is ignored too, so a finished turn stays done.
+              ; one inside the tool's own input or output does not count) is ignored too, so a
+              finished turn stays done.
             </li>
             <li>
               <strong>opencode</strong>

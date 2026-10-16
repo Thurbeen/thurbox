@@ -58,8 +58,9 @@ below), do the same.
   that block: claude has no "permission granted" event, so the tool finishing is
   the first thing it reports after the prompt is answered — without it an
   approved session stayed red until the *next* tool call, or until `Stop` if the
-  turn had no more. The tool hooks skip a call that carries an `agent_id` and no
-  `agent_type`: that is the background agent claude starts on its own after a
+  turn had no more. The tool hooks skip a call whose payload has a top-level
+  `agent_id` and no `agent_type` (one inside `tool_input`/`tool_response` does
+  not count): that is the background agent claude starts on its own after a
   turn (it writes the project memory), and its tool call otherwise turned `done`
   back into `working` with nothing to end it (verified against Claude Code
   2.1.301). A subagent the turn starts through the Agent tool carries an

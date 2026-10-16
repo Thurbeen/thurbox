@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$(cat)\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
+            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
             "timeout": 10
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$(cat)\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
+            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
             "timeout": 10
           }
         ]
