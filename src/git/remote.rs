@@ -629,9 +629,10 @@ pub(super) fn stream_into_child(
     stream_into_child_within(child, bytes, action, STREAM_STALL)
 }
 
-/// How long a stream may go without the peer taking a byte — or, once the
-/// payload is in, without the peer exiting — before it is killed. Progress is
-/// what is measured, not the total, so a slow link is never cut off.
+/// How long a stream may go without the peer taking a 16 KiB chunk — or, once
+/// the payload is in, without the peer exiting — before it is killed. Progress
+/// is what is measured, not the total, so a slow link that keeps moving is not
+/// cut off.
 pub(super) const STREAM_STALL: Duration = Duration::from_secs(60);
 
 /// How long a peer's stdout and stderr are still read after it has exited.
@@ -667,7 +668,7 @@ pub(super) fn stream_into_child_within(
         // forked can keep from happening.
         std::thread::spawn(move || {
             let mut result = Ok(());
-            for chunk in payload.chunks(64 << 10) {
+            for chunk in payload.chunks(16 << 10) {
                 if let Err(e) = stdin.write_all(chunk) {
                     result = Err(e);
                     break;

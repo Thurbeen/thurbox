@@ -1839,9 +1839,9 @@ PowerShell 5.1 upload over Windows sshd measurably took 132 KiB of a binary and
 then stopped reading without exiting, and the blocked write kept every
 scheduled job from firing for hours while the heartbeat still reported itself
 alive. So the write runs on its own thread and the peer is killed once it has
-gone `STREAM_STALL` (60 s) without taking a byte — or, with the payload in,
-without exiting. Progress is measured rather than the total, so a slow link
-is never cut off. The pipes are read on threads too and abandoned two seconds
+gone `STREAM_STALL` (60 s) without taking a 16 KiB chunk — or, with the
+payload in, without exiting. Progress is measured rather than the total, so a
+slow link that keeps moving is not cut off. The pipes are read on threads too and abandoned two seconds
 after the peer exits: an ssh connection master (`ControlPersist`) forked by
 the killed ssh holds its stderr for as long as the master lives, which turned
 the reap that followed the kill into a second hang.
