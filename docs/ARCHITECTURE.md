@@ -606,13 +606,18 @@ support, and sends a **paste** out of control mode entirely through psmux's own
 `send-paste` — see "psmux divergences from tmux" under ADR-13 below, and
 `backend::psmux`'s `PsmuxPaste`.
 
-**Command synchronization**: All commands that precede a
-`send_command` (waited) call must themselves be waited. A
-fire-and-forget (`send_command_nowait`) leaves an unclaimed
-`%begin`/`%end` response in the stream that can steal the next
-waiter. `send_command_nowait` is only safe when nothing follows
-(e.g., `detach`) or when issued from the reader thread itself
-(e.g., pause resume).
+**Command synchronization**: tmux answers every command with a
+`%begin`/`%end` block, and the reader hands blocks to waiters strictly in
+the order the lines were written. So **every** line written down the
+connection takes a place in the waiter queue, whether or not anyone reads
+its answer: a command nobody waits for keeps its place with the receiver
+dropped (`ControlMode::send_command_detached`, and `write_unanswered` for
+keystrokes and the reader thread's own resume of a paused pane). A line
+written without one hands its answer to whichever command was queued next,
+and every later answer arrives one command off until the queue runs dry. That
+is how typing into a remote pane used to answer the pid lookup or window
+listing asked a round trip later with an empty block — a host read as holding
+no windows while its link was fine.
 
 A command list (`a ; b ; c`, sent by `ControlMode::send_command_list`) answers
 with one `%begin`/`%end` block per command it runs — each gets its own command

@@ -666,8 +666,13 @@ fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
 /// line it holds. It goes to the server's own paste path instead, which frames
 /// it only for an app that asked; one that is not a single clean frame, or that
 /// the server could not take, is dropped with a warning.
+///
+/// Every line it writes is a command the server answers, so each one takes its
+/// place in the connection's reply queue like any other — see
+/// `ControlMode::write_unanswered`.
 pub struct ControlModeWriter {
-    pub stdin: Arc<Mutex<std::process::ChildStdin>>,
+    stdin: Arc<Mutex<std::process::ChildStdin>>,
+    replies: ResponseQueue,
     pub pane_id: String,
     pub input: Arc<dyn PaneInput>,
 }
@@ -698,14 +703,8 @@ impl Write for ControlModeWriter {
         } else {
             self.input.send_keys(&self.pane_id, buf)
         };
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|e| std::io::Error::other(format!("stdin lock: {e}")))?;
-        for cmd in cmds {
-            stdin.write_all(cmd.as_bytes())?;
-        }
-        stdin.flush()?;
+        ControlMode::write_unanswered(&self.stdin, &self.replies, &cmds)
+            .map_err(std::io::Error::other)?;
         Ok(buf.len())
     }
 
@@ -1032,9 +1031,9 @@ const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::fr
 ///
 /// Commands are sent serially (stdin lock ensures ordering) and responses arrive
 /// in the same order. We use a FIFO queue instead of matching command numbers,
-/// which avoids numbering mismatches between our counter and tmux's internal
-/// counter (e.g., from `send_command_nowait` calls that still consume a tmux
-/// command number).
+/// so **every** line written takes a place in it, whether or not its answer is
+/// read: tmux answers each command, and an answer with no place of its own is
+/// handed to whichever command was queued after it.
 pub(in crate::backend) struct ControlMode {
     pub(in crate::backend) stdin: Arc<Mutex<ChildStdin>>,
     pub(in crate::backend) pane_senders: PaneSendersMapShared,
@@ -1391,9 +1390,6 @@ impl ControlMode {
     /// lines → `%end`/`%error`), then hand it to the waiter at the front of
     /// the queue, which a command list keeps for as many blocks as it has
     /// commands (see [`Self::deliver_response`]).
-    /// Commands sent via `send_command_nowait()` also produce `%begin`/`%end`
-    /// blocks, but no waiter is in the queue for them — those responses are
-    /// simply discarded.
     #[allow(clippy::too_many_arguments)]
     fn reader_thread(
         mut reader: BufReader<std::process::ChildStdout>,
@@ -1472,7 +1468,7 @@ impl ControlMode {
                     );
                 }
                 Notification::Pause { pane_id } => {
-                    Self::on_pause(&stdin, &hidden, &pane_id);
+                    Self::on_pause(&stdin, &response_queue, &hidden, &pane_id);
                 }
                 Notification::WindowClose { window_id } => match &confirm_close {
                     None => {
@@ -1813,8 +1809,9 @@ impl ControlMode {
     /// once its last block is in, or at an error: tmux drops the rest of a list
     /// at its first failing command, so no more blocks of it will come.
     ///
-    /// Responses with no waiter in the queue (e.g. from `send_command_nowait`)
-    /// are simply discarded.
+    /// A response with no waiter in the queue is discarded. Every sender keeps
+    /// a place, so that is only a reply the connection was told nothing about
+    /// — never one belonging to a command that is still waiting.
     fn deliver_response(
         response_queue: &ResponseQueue,
         pane_senders: &PaneSendersMapShared,
@@ -1866,22 +1863,28 @@ impl ControlMode {
     }
 
     /// Respond to a `%pause` by asking tmux to resume output for the pane.
-    fn resume_pane(stdin: &Arc<Mutex<ChildStdin>>, pane_id: &str) {
+    ///
+    /// Written from the reader thread, which answers to nobody, but it is still
+    /// a command tmux answers — and a link slow enough to pause a pane is one
+    /// where other commands are in flight to take that answer.
+    fn resume_pane(stdin: &Arc<Mutex<ChildStdin>>, replies: &ResponseQueue, pane_id: &str) {
         let cmd = format!(
-            "refresh-client -A '{}:continue'\n",
+            "refresh-client -A '{}:continue'",
             pane_id.replace('\'', "'\\''")
         );
-        if let Ok(mut s) = stdin.lock() {
-            let _ = s.write_all(cmd.as_bytes());
-            let _ = s.flush();
-        }
+        let _ = Self::write_unanswered(stdin, replies, &[cmd]);
     }
 
     /// A pane paused on purpose (`hide_pane`) stays paused; one the server
     /// paused for falling behind is resumed.
-    fn on_pause(stdin: &Arc<Mutex<ChildStdin>>, hidden: &HiddenPanes, pane_id: &str) {
+    fn on_pause(
+        stdin: &Arc<Mutex<ChildStdin>>,
+        replies: &ResponseQueue,
+        hidden: &HiddenPanes,
+        pane_id: &str,
+    ) {
         if !hidden.lock().is_ok_and(|h| h.contains_key(pane_id)) {
-            Self::resume_pane(stdin, pane_id);
+            Self::resume_pane(stdin, replies, pane_id);
         }
     }
 
@@ -2062,37 +2065,89 @@ impl ControlMode {
         blocks: usize,
         splice: Option<String>,
     ) -> Result<Receiver<CommandResponse>> {
-        let (tx, rx) = sync_channel(1);
-
-        {
-            // Lock order: stdin first, queue only for the brief push/pop.
-            // Holding stdin across enqueue AND write keeps the FIFO waiter
-            // order matching the on-wire command order for concurrent senders
-            // (a backend caller vs the hook poller) — while never holding the
-            // queue lock across the pipe write, so a write blocked on a wedged
-            // transport can't stall the reader thread (whose response dispatch
-            // needs the queue lock) or any other `send_command` caller beyond
-            // the command itself.
-            let mut stdin = stdin
-                .lock()
-                .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
-            {
-                let mut queue = response_queue
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?;
-                queue.push_back(Waiter { tx, blocks, splice });
-            }
-            if let Err(e) = writeln!(stdin, "{cmd}").and_then(|()| stdin.flush()) {
-                // Un-enqueue our waiter — still under the stdin lock, so no
-                // other sender can have pushed after us: the back is ours.
-                if let Ok(mut queue) = response_queue.lock() {
-                    queue.pop_back();
-                }
-                return Err(e.into());
-            }
-        }
-
+        // Lock order: stdin first, queue only for the brief push/pop.
+        // Holding stdin across enqueue AND write keeps the FIFO waiter order
+        // matching the on-wire command order for concurrent senders (a backend
+        // caller vs the hook poller) — while never holding the queue lock
+        // across the pipe write, so a write blocked on a wedged transport can't
+        // stall the reader thread (whose response dispatch needs the queue
+        // lock) or any other `send_command` caller beyond the command itself.
+        let mut stdin = stdin
+            .lock()
+            .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
+        let rx = Self::enqueue_locked(&mut stdin, response_queue, cmd, blocks, splice)?;
+        stdin.flush()?;
         Ok(rx)
+    }
+
+    /// [`Self::enqueue_command_on`]'s push and write, for a caller already
+    /// holding the stdin lock. Not flushed.
+    fn enqueue_locked(
+        stdin: &mut ChildStdin,
+        response_queue: &ResponseQueue,
+        cmd: &str,
+        blocks: usize,
+        splice: Option<String>,
+    ) -> Result<Receiver<CommandResponse>> {
+        let (tx, rx) = sync_channel(1);
+        response_queue
+            .lock()
+            .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?
+            .push_back(Waiter { tx, blocks, splice });
+        if let Err(e) = writeln!(stdin, "{cmd}") {
+            // Un-enqueue our waiter — still under the stdin lock, so no other
+            // sender can have pushed after us: the back is ours.
+            if let Ok(mut queue) = response_queue.lock() {
+                queue.pop_back();
+            }
+            return Err(e.into());
+        }
+        Ok(rx)
+    }
+
+    /// Write `cmds` — one command each, with or without a trailing newline —
+    /// as one burst no other sender can split, keeping a place in the reply
+    /// queue for each and waiting for none.
+    ///
+    /// For what is written without a caller to read the answer: keystrokes,
+    /// and the reader thread's own resume of a paused pane. Their answers used
+    /// to be left without a place, and the reader handed each one to the next
+    /// command in line — a pid lookup answered empty, a window listing that
+    /// said the host held nothing — and every later answer one command off
+    /// until the queue next ran dry.
+    fn write_unanswered(
+        stdin: &Arc<Mutex<ChildStdin>>,
+        response_queue: &ResponseQueue,
+        cmds: &[String],
+    ) -> Result<()> {
+        let mut stdin = stdin
+            .lock()
+            .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
+        for cmd in cmds {
+            Self::enqueue_locked(
+                &mut stdin,
+                response_queue,
+                cmd.trim_end_matches('\n'),
+                1,
+                None,
+            )?;
+        }
+        stdin.flush()?;
+        Ok(())
+    }
+
+    /// A writer for `pane_id`'s keystrokes on this connection.
+    pub(in crate::backend) fn writer(
+        &self,
+        pane_id: String,
+        input: Arc<dyn PaneInput>,
+    ) -> ControlModeWriter {
+        ControlModeWriter {
+            stdin: Arc::clone(&self.stdin),
+            replies: Arc::clone(&self.response_queue),
+            pane_id,
+            input,
+        }
     }
 
     /// Wait for an enqueued command's answer, for at most `budget`.
@@ -2231,23 +2286,6 @@ impl ControlMode {
             None,
         )
         .map(drop)
-    }
-
-    /// Send a command without waiting for a response.
-    ///
-    /// **Caution**: The response (`%begin`/`%end`) will still arrive on the
-    /// control mode stream. If a `send_command` call follows before the
-    /// response is consumed, the nowait response may steal the waiter.
-    /// Only use this when no `send_command` follows, or when the caller
-    /// is the reader thread itself (e.g., pause resume).
-    pub(in crate::backend) fn send_command_nowait(&self, cmd: &str) -> Result<()> {
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
-        writeln!(stdin, "{cmd}")?;
-        stdin.flush()?;
-        Ok(())
     }
 }
 

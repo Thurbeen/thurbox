@@ -960,6 +960,7 @@ fn written_by(input: FakeInput, buf: &[u8]) -> String {
     {
         let mut writer = ControlModeWriter {
             stdin: Arc::new(Mutex::new(stdin)),
+            replies: ResponseQueue::default(),
             pane_id: "%1".to_string(),
             input: Arc::new(input),
         };
