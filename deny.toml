@@ -4,7 +4,13 @@
 [advisories]
 # Deny crates with security vulnerabilities
 version = 2
-ignore = []
+ignore = [
+    # Added 2026-10-18. zbus 6 absorbed these crates; notify-rust 4.18.2 (latest)
+    # still requires zbus 5. Drop once https://github.com/hoodie/notify-rust/pull/294 ships.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, via notify-rust -> zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, via notify-rust -> zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, via notify-rust -> zbus 5" },
+]
 
 [licenses]
 # License policy — version 2 denies all licenses not explicitly allowed
