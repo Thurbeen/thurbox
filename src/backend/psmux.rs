@@ -115,8 +115,10 @@ impl TmuxCompatible for Psmux {
     /// targets the session and finds the window by its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
 
-    /// psmux has no `remain-on-exit`. Long enough for Windows PowerShell to
-    /// start and fail to find the program it was told to run.
+    /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
+    /// with a light profile to start and fail to find the program it was told
+    /// to run; a slow profile (conda, oh-my-posh) can outlast it, which only
+    /// misses a dead window — it never refuses a live one.
     const SPAWN_SETTLE: Option<std::time::Duration> = Some(std::time::Duration::from_millis(1500));
 
     /// No `if-shell -F` to decide with: the last instance to paint wins.
@@ -418,9 +420,12 @@ const EXIT_REPORT: &str =
 /// psmux ignores `new-window -e` — env vars never reach the window's
 /// process — so they are folded into the script itself (`Set-Item Env:K
 /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
-/// PowerShell **single** quotes (`''` = literal `'`). A raw `"` or newline in
-/// a value is neutralized to a space: Windows PowerShell 5.1 hands an
-/// embedded `"` to the program unescaped, which splits the argument there.
+/// PowerShell **single** quotes (`''` = literal `'`). A raw `"` in a value is
+/// neutralized to a space: Windows PowerShell 5.1 hands an embedded `"` to the
+/// program unescaped, which splits the argument there. A newline is too, a
+/// rule kept from when the script itself rode the window's command line,
+/// where a shell ends the command at one; encoded it would survive, but no
+/// agent's argv or env relies on an embedded newline.
 ///
 /// The script is not what the window runs: psmux runs a single-string window
 /// command through the shell it resolves, which is `cmd.exe` on a server

@@ -933,9 +933,10 @@ reference to read before touching that path.
   first, and Windows OpenSSH sets `SHELL=cmd.exe` for everything it starts, so
   a server thurbox starts over ssh ran the bare script as `cmd.exe /C …` and
   every window died at once. `default-shell` cannot help — it only applies to a
-  window created with no command. Encoded, the program is one token of
-  `[A-Za-z0-9+/=]` that psmux spawns directly and no shell on the way reads as
-  syntax; the heartbeat keeper's loop goes the same way. Control-mode spawns
+  window created with no command. Encoded, the program is four plain tokens
+  whose script argument is restricted to `[A-Za-z0-9+/=]`, so psmux spawns it
+  directly and no shell on the way reads any of it as syntax; the heartbeat
+  keeper's loop goes the same way. Control-mode spawns
   (`psmux_window_command`) frame it in double quotes; the
   headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
