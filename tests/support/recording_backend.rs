@@ -358,7 +358,7 @@ impl SessionBackend for RecordingBackend {
         })
     }
 
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<thurbox::backend::PaneId> {
         let name = window_name_for(spec.role, spec.owner.name);
         let mut state = self.lock(format!("create_window {name} {}", spec.owner.session_id))?;
         let pane = state.issue();
@@ -379,7 +379,7 @@ impl SessionBackend for RecordingBackend {
             hook: None,
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);
-        Ok(pane)
+        thurbox::backend::PaneId::new(pane)
     }
 
     fn locate(&self, owner: Owner<'_>) -> Result<Placed> {

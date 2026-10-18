@@ -132,7 +132,10 @@ path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D)
 psmux has **no `remain-on-exit`**, so an agent window closes with its agent
 and reads `Missing` — which is also why `create_window` looks for the window
 again after `SPAWN_SETTLE` and refuses one that is already gone rather than
-report it created. The agent window's PowerShell ends by piping
+report it created. psmux answers no `-P`, so the local spawn learns its pane
+id by diffing the `tb-<name>` panes listed before and after `new-window`
+(psmux never reuses one), and the check matches that id only: a live
+namesake never vouches for a dead new window (#1456). The agent window's PowerShell ends by piping
 `LASTEXITCODE` into `thurbox-cli session exited`, which records an `exited`
 event with the status and the pane tail. Each repairer relaunch is logged as
 `relaunched`, and three within ten minutes hold the next one back and mark

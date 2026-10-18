@@ -19,8 +19,8 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::backend::contract::{
-    AdoptedSession, DiscoveredSession, Key, Owner, PaneSize, PaneState, Placed, SessionBackend,
-    SpawnedSession, WindowRole, WindowSpec,
+    AdoptedSession, DiscoveredSession, Key, Owner, PaneId, PaneSize, PaneState, Placed,
+    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
@@ -1379,7 +1379,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// [`SessionBackend::create_window`] on a host: the control-mode spawn,
     /// through a connection dropped once the window exists. The host's server
     /// keeps the window for an interface to adopt later.
-    fn create_remote_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_remote_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
         let backend = self.transient();
         backend
             .check_available()
@@ -1404,18 +1404,19 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.owner.name
             );
         }
-        backend.confirm_spawned(spec, &spawned.backend_id)?;
-        Ok(spawned.backend_id)
+        let pane_id = PaneId::new(spawned.backend_id)?;
+        backend.confirm_spawned(spec, &pane_id)?;
+        Ok(pane_id)
     }
 
-    /// Refuse a window that is already gone [`TmuxCompatible::SPAWN_SETTLE`]
-    /// after it was created. `pane_id` is the created pane where the server
-    /// answered with one; an empty one (no `-P` answer) is matched by the
-    /// window's name, so only a name with no live window at all is refused.
+    /// Refuse a window whose pane is already gone
+    /// [`TmuxCompatible::SPAWN_SETTLE`] after it was created. Only `pane_id`
+    /// itself counts: a live namesake under the same `tb-<name>` is another
+    /// session's window (issue #1456).
     ///
     /// A listing that does not answer refuses nothing: the window was
     /// created, and a question left unanswered is not evidence it died.
-    fn confirm_spawned(&self, spec: &WindowSpec<'_>, pane_id: &str) -> Result<()> {
+    fn confirm_spawned(&self, spec: &WindowSpec<'_>, pane_id: &PaneId) -> Result<()> {
         let Some(settle) = M::SPAWN_SETTLE else {
             return Ok(());
         };
@@ -1430,15 +1431,20 @@ impl<M: TmuxCompatible> Server<M> {
         };
         if panes
             .iter()
-            .any(|(id, dead)| !dead && (pane_id.is_empty() || id == pane_id))
+            .any(|(id, dead)| !dead && id == pane_id.as_str())
         {
             return Ok(());
         }
-        bail!(
+        Err(self.spawn_exited(spec, &window_name))
+    }
+
+    /// Why a create is refused when its window closed with its program.
+    fn spawn_exited(&self, spec: &WindowSpec<'_>, window_name: &str) -> anyhow::Error {
+        anyhow::anyhow!(
             "window {window_name} exited within {}ms of starting `{}`: {} keeps no \
              window once its program exits, so nothing of it is left to read. Check \
              that `{}` runs on {}",
-            settle.as_millis(),
+            M::SPAWN_SETTLE.unwrap_or_default().as_millis(),
             spec.command,
             self.transport.mux(),
             spec.command,
@@ -2792,11 +2798,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .collect())
     }
 
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
         if self.transport.is_remote() {
             return self.create_remote_window(spec);
         }
-        let pane_id = self.create_local_window(spec)?;
+        let pane_id = PaneId::new(self.create_local_window(spec)?)?;
         self.confirm_spawned(spec, &pane_id)?;
         Ok(pane_id)
     }
@@ -4138,10 +4144,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// read below.
     ///
     /// A server without [`TmuxCompatible::ONE_SHOT_SPAWN_ANSWERS`] is not asked
-    /// for the id, and an empty string is returned, so the window is found by
-    /// its name instead (like its other carve-outs, where it has no window
-    /// options to stamp either). With no id to weigh, a non-zero status is the
-    /// whole answer there, exactly as before.
+    /// for the id: it is the one pane under the window's name that was not
+    /// there before `new-window` ([`Self::new_named_pane`]). With no id to
+    /// weigh, a non-zero status is the whole answer there.
     fn create_local_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
         let session_id = spec.owner.session_id;
         // Ensure the session exists and is configured, without opening a
@@ -4181,6 +4186,13 @@ impl<M: TmuxCompatible> Server<M> {
         // id it would otherwise be written against is not known until the list
         // returns.
         let stamped = M::WINDOW_OPTIONS;
+        let before = if M::ONE_SHOT_SPAWN_ANSWERS {
+            Vec::new()
+        } else {
+            self.window_panes(&window_name).with_context(|| {
+                format!("list the windows named {window_name} before adding one")
+            })?
+        };
         let run_new_window = || {
             let mut tmux = self.new_window_command(
                 &window_name,
@@ -4221,8 +4233,6 @@ impl<M: TmuxCompatible> Server<M> {
             std::thread::sleep(std::time::Duration::from_millis(250));
             output = run_new_window()?;
         }
-        // A server that does not answer is found by the window name — the only
-        // handle that path has either way.
         let pane_id = if M::ONE_SHOT_SPAWN_ANSWERS {
             new_window_pane_id(&output.stdout)
         } else {
@@ -4263,12 +4273,45 @@ impl<M: TmuxCompatible> Server<M> {
                 self.socket()
             );
         }
+        let pane_id = if M::ONE_SHOT_SPAWN_ANSWERS {
+            pane_id
+        } else {
+            self.new_named_pane(spec, &window_name, &before)?
+        };
         // What stamping does after writing a stamp. A server without window
-        // options writes none (ADR-13), and its windows are found by name.
+        // options writes none (ADR-13).
         if stamped {
             let _ = self.retire_duplicate_windows(session_id, spec.role);
         }
         Ok(pane_id)
+    }
+
+    /// The pane `new-window` just made on a server that does not answer `-P`:
+    /// the one under `window_name` that `before` did not list. psmux does not
+    /// reuse pane ids within a server's life, so a new id is the new window,
+    /// and a namesake — allowed, and unstamped there (ADR-13) — is never taken
+    /// for it. No new id means the window already closed with its program.
+    fn new_named_pane(
+        &self,
+        spec: &WindowSpec<'_>,
+        window_name: &str,
+        before: &[(String, bool)],
+    ) -> Result<String> {
+        let after = self
+            .window_panes(window_name)
+            .with_context(|| format!("list the windows named {window_name} after adding one"))?;
+        let mut fresh = after
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| !before.iter().any(|(old, _)| old == id));
+        match (fresh.next(), fresh.next()) {
+            (Some(id), None) => Ok(id),
+            (None, _) => Err(self.spawn_exited(spec, window_name)),
+            (Some(_), Some(_)) => bail!(
+                "more than one window named {window_name} appeared while creating one, so \
+                 which is this session's cannot be told"
+            ),
+        }
     }
 
     /// The `new-window` command list [`Self::create_local_window`] runs: the

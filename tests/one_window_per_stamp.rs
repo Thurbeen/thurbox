@@ -74,6 +74,7 @@ fn spawn(session_id: &str, name: &str) -> String {
         },
     )
     .unwrap_or_else(|e| panic!("spawn {name}: {e:#}"))
+    .into()
 }
 
 /// Every pane on the test's server with the window and stamp it carries.

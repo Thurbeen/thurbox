@@ -494,7 +494,7 @@ fn respawn(
         })
         .map_err(|e| format!("re-spawn: {e:#}"))?;
     // The row still carries the pane the delete killed; the fresh one is what
-    // every later read must target (empty on psmux — the name fallback stands).
+    // every later read must target.
     match db
         .claim_backend_id(session.id, &pane, |target, other| {
             super::server_key(target) == super::server_key(other)

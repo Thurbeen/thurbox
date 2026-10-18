@@ -1003,9 +1003,23 @@ mod tests {
                  test -f \"$session\" ;;\n\
                list-windows)\n\
                  test -f \"$session\" || exit 1\n\
-                 if [ -f \"$attempts.window_created\" ] && [ \"$scenario\" != window_dies ]; then\n\
-                   echo '%1|tb-check|0'\n\
-                 fi ;;\n\
+                 case \"$scenario\" in\n\
+                   namesake_*)\n\
+                     echo '%1|tb-check|0'\n\
+                     if [ -f \"$attempts.window_created\" ]; then\n\
+                       if [ \"$scenario\" = namesake_lives ]; then\n\
+                         echo '%2|tb-check|0'\n\
+                       elif [ \"$scenario\" = namesake_dies_later ] && \
+                            [ ! -f \"$attempts.listed\" ]; then\n\
+                         touch \"$attempts.listed\"\n\
+                         echo '%2|tb-check|0'\n\
+                       fi\n\
+                     fi ;;\n\
+                   *)\n\
+                     if [ -f \"$attempts.window_created\" ] && [ \"$scenario\" != window_dies ]; then\n\
+                       echo '%1|tb-check|0'\n\
+                     fi ;;\n\
+                 esac ;;\n\
                display-message) echo '3.3.8' ;;\n\
                new-session)\n\
                  if [ \"$scenario\" = needs_unsized_bootstrap ]; then\n\
@@ -1328,6 +1342,62 @@ mod tests {
         assert!(root.path().join("attempts.window_created").exists());
         assert!(error.contains("tb-check exited"), "{error}");
         assert!(error.contains("`no-such-agent`"), "{error}");
+    }
+
+    #[cfg(unix)]
+    fn check_spec(env: &HashMap<String, String>) -> crate::backend::contract::WindowSpec<'_> {
+        crate::backend::contract::WindowSpec {
+            owner: crate::backend::contract::Owner::new("session-id", "check"),
+            role: crate::backend::contract::WindowRole::Agent,
+            command: "no-such-agent",
+            args: &[],
+            cwd: None,
+            env,
+        }
+    }
+
+    /// A namesake is allowed, and psmux windows carry no stamp, so a live
+    /// `tb-check` that was there before says nothing about the new one: a
+    /// window that never showed up is refused next to it (issue #1456).
+    #[cfg(unix)]
+    #[test]
+    fn psmux_refuses_a_dead_window_next_to_a_live_namesake() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "namesake_dies");
+        let env = HashMap::new();
+
+        let error = backend
+            .create_window(&check_spec(&env))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tb-check exited"), "{error}");
+    }
+
+    /// The new window's pane is the one checked after the settle, not any live
+    /// pane under its name.
+    #[cfg(unix)]
+    #[test]
+    fn psmux_refuses_its_own_pane_dying_while_a_namesake_lives() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "namesake_dies_later");
+        let env = HashMap::new();
+
+        let error = backend
+            .create_window(&check_spec(&env))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tb-check exited"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_answers_the_new_pane_beside_a_live_namesake() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "namesake_lives");
+        let env = HashMap::new();
+
+        let pane = backend.create_window(&check_spec(&env)).expect("created");
+        assert_eq!(pane.as_str(), "%2");
     }
 
     #[cfg(unix)]

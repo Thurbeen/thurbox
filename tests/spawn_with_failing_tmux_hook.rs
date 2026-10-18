@@ -96,6 +96,7 @@ fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
             env: &HashMap::new(),
         },
     )
+    .map(String::from)
 }
 
 /// A server the hook has been installed on — and the control that says the same
