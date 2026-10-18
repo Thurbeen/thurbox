@@ -190,6 +190,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # The release ships an aarch64 Linux tarball, and `checksums` needs every
+  # build leg, so an arch-only break (a `c_char` that is `u8` here but `i8` on
+  # x86_64 and macOS) would block the whole release. Native, so no cross.
+  arm-clippy:
+    name: Clippy (aarch64 Linux)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
   nextest:
     name: Nextest
     needs: changes
@@ -604,6 +620,7 @@ jobs:
       - changes
       - fmt
       - clippy
+      - arm-clippy
       - nextest
       - windows-clippy
       - windows-test

@@ -131,6 +131,11 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
                 <td><code>thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz</code></td>
               </tr>
               <tr>
+                <td>Linux (musl)</td>
+                <td>aarch64</td>
+                <td><code>thurbox-v{ver}-aarch64-unknown-linux-musl.tar.gz</code></td>
+              </tr>
+              <tr>
                 <td>macOS</td>
                 <td>Apple Silicon</td>
                 <td><code>thurbox-v{ver}-aarch64-apple-darwin.tar.gz</code></td>
@@ -239,9 +244,8 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <code>tmux</code>
             and
             <code>git</code>
-            as dependencies. Supported on macOS Apple Silicon and Linux x86_64 (Intel macOS and
-            aarch64 Linux have no release binary &mdash; use the one-liner or build from source
-            there).
+            as dependencies. Supported on macOS Apple Silicon and Linux x86_64 and aarch64 (Intel
+            macOS has no release binary &mdash; build from source there).
           </p>
 
           <h2 id="arch-linux">

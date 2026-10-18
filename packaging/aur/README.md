@@ -5,7 +5,7 @@ Two packages are provided here:
 | Directory      | AUR name      | What it does                                              |
 | -------------- | ------------- | -------------------------------------------------------- |
 | `thurbox/`     | `thurbox`     | Builds from the release **source** tarball with `cargo`. |
-| `thurbox-bin/` | `thurbox-bin` | Installs the **prebuilt** x86_64 (musl) release tarball.  |
+| `thurbox-bin/` | `thurbox-bin` | Installs the **prebuilt** musl release tarball (x86_64, aarch64). |
 
 Both install two binaries — `thurbox` (TUI) and `thurbox-cli` — plus the
 MIT `LICENSE`. They `provides`/`conflicts` each other, so only one can be
@@ -17,8 +17,8 @@ installed at a time.
   Its `build()` exports `THURBOX_RELEASE_VERSION="v$pkgver"` so the TUI
   reports the real version — without it `build.rs` falls back to the
   `0.0.0-dev` marker baked into `Cargo.toml`.
-- `thurbox-bin` is fast and needs no Rust toolchain, but is x86_64-only
-  (no aarch64-Linux release artifact is published) and uses the
+- `thurbox-bin` is fast and needs no Rust toolchain, but only covers the
+  arches with a release artifact (x86_64 and aarch64) and uses the
   statically-linked musl tarball.
 
 > Note: upstream's `thurbox-cli --version` reports `0.0.0-dev` in both
