@@ -133,6 +133,28 @@ pub fn powershell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
+/// A Windows PowerShell script as one program invocation:
+/// `powershell.exe -NoLogo -EncodedCommand <base64 of its UTF-16LE text>`.
+///
+/// A psmux window command is a single string run by whichever shell psmux
+/// resolves — since psmux 3.4.0 (#683) `$SHELL` first, which Windows OpenSSH
+/// sets to `cmd.exe` for every process it starts, so a server started over
+/// ssh hands a bare PowerShell script to `cmd.exe /C` and the window dies.
+/// Naming the interpreter makes the script run in PowerShell whatever that
+/// shell is. Encoded, the string is letters, digits, `+`, `/` and `=` only,
+/// which no layer between here and the pane — ssh, a `cmd.exe` login shell,
+/// psmux's tokenizer, a shell psmux may still route it through — reads as
+/// syntax. No `-NoProfile`: psmux ran the script as
+/// `powershell -NoLogo -Command`, which loads the profile, and still does.
+pub fn powershell_launcher(script: &str) -> String {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!(
+        "powershell.exe -NoLogo -EncodedCommand {}",
+        base64::engine::general_purpose::STANDARD.encode(utf16)
+    )
+}
+
 /// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
 /// `wsl.exe -d <distro>`.
 ///
