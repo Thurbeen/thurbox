@@ -783,3 +783,47 @@ fn an_ambiguous_name_is_never_adopted_or_replaced() {
         assert!(doc.contains('2'), "the refusal counts the matches: {doc}");
     }
 }
+
+/// `--fields` picks the columns of a list in every format that has columns.
+///
+/// It used to reach only the TOON renderer: `--text` printed the default table
+/// whatever was asked for, and an unknown field rendered as a column of nulls
+/// in TOON rather than being refused. One resolved set now feeds both, so the
+/// two cannot drift, and a field no row carries is a usage error in both.
+#[test]
+fn fields_selects_the_columns_of_text_and_toon_alike() {
+    let env = Env::new();
+    seed_session(&env, "alpha", "claude");
+
+    let text = env.run(&["session", "list", "--fields", "name,agent", "--text"]);
+    let rendered = String::from_utf8_lossy(&text.stdout).to_string();
+    assert!(text.status.success(), "{rendered}");
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["NAME   AGENT", "alpha  claude"],
+        "--text shows exactly the columns asked for:\n{rendered}"
+    );
+
+    let toon = env.run(&["session", "list", "--fields", "name,agent", "--toon"]);
+    let rendered = String::from_utf8_lossy(&toon.stdout).to_string();
+    assert!(toon.status.success(), "{rendered}");
+    assert!(
+        rendered.starts_with("sessions[1]{name,agent}:\n  alpha,claude"),
+        "--toon shows the same columns:\n{rendered}"
+    );
+
+    for format in ["--text", "--toon"] {
+        let out = env.run(&["session", "list", "--fields", "name,colour", format]);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "an unknown field is a usage error under {format}: {stdout}"
+        );
+        assert!(
+            stdout.contains("colour"),
+            "the error names the field it refused under {format}: {stdout}"
+        );
+    }
+}

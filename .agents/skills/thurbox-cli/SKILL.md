@@ -468,7 +468,9 @@ The shape that follows from that:
   (`src/cli/home.rs`). Exit 0.
 - **List views default to three or four fields**, the ones that let an agent
   decide what to look at next; `--fields <list>|all` asks for others and
-  `--json` gives the whole record. Free text is capped in the TOON view only,
+  `--json` gives the whole record. `--fields` is resolved once
+  (`CommandOutput::select_fields`) and drives the `--text` table and the TOON
+  table alike; a field no row carries exits 2 in every format. Free text is capped in the TOON view only,
   with the total and `--full` named in place — never in `--json`, which is
   what `session capture … --json | jq -r .output` needs.
 - **A zero-result answer says so and names what it searched**, rather than
