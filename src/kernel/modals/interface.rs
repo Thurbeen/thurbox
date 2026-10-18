@@ -1228,6 +1228,19 @@ mod tests {
         let keys = footer(&tab, &[trusted]);
         assert!(keys.contains("revoke"), "{keys}");
 
+        // Changed under its pin: it holds nothing, so `t` grants rather than revokes.
+        let mut replaced = installed_top();
+        replaced.trust = FileTrust::Replaced;
+        let keys = footer(&tab, std::slice::from_ref(&replaced));
+        assert!(keys.contains("trust") && !keys.contains("revoke"), "{keys}");
+        assert_eq!(
+            InterfaceTab::default().trust(&[replaced]).1,
+            Some(Edit::Trust {
+                file: installed_top().path,
+                trusted: true,
+            })
+        );
+
         let doc = [file("README.md", Kind::Doc)];
         let keys = footer(&tab, &doc);
         assert!(!keys.contains("turn"), "a doc does not draw: {keys}");
