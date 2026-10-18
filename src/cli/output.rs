@@ -616,6 +616,47 @@ mod tests {
     }
 
     #[test]
+    fn selected_fields_drive_the_text_table_with_absent_values_dashed() {
+        let mut out = CommandOutput::new(
+            json!([{ "name": "one", "branch": null }, { "name": "two", "branch": "main" }]),
+            "default table",
+        )
+        .list("sessions", &["name"]);
+        out.select_fields(vec!["branch".into(), "name".into()])
+            .expect("both fields are carried");
+        assert_eq!(
+            Format::Human.render(&out),
+            "BRANCH  NAME\n-       one\nmain    two"
+        );
+    }
+
+    #[test]
+    fn selecting_all_keeps_the_commands_own_text_table() {
+        let mut out = CommandOutput::new(json!([{ "name": "one" }]), "default table")
+            .list("sessions", &["name"]);
+        out.select_fields(Vec::new()).expect("all is always valid");
+        assert_eq!(Format::Human.render(&out), "default table");
+        assert!(out.agent.fields.is_empty());
+    }
+
+    #[test]
+    fn an_empty_list_has_no_rows_to_refuse_a_field_against() {
+        let mut out =
+            CommandOutput::new(json!([]), "No active sessions.").list("sessions", &["name"]);
+        out.select_fields(vec!["anything".into()])
+            .expect("nothing to check against");
+        assert_eq!(Format::Human.render(&out), "No active sessions.");
+    }
+
+    #[test]
+    fn fields_leave_an_output_that_is_not_a_labelled_list_alone() {
+        let mut out = CommandOutput::new(json!({ "id": "a" }), "id: a");
+        out.select_fields(vec!["colour".into()])
+            .expect("a record has no columns to refuse");
+        assert_eq!(Format::Human.render(&out), "id: a");
+    }
+
+    #[test]
     fn toon_says_so_when_there_is_nothing_rather_than_printing_a_bare_list() {
         let out = CommandOutput::new(json!([]), "none")
             .list("tasks", &["id"])
