@@ -437,7 +437,7 @@ fn cell(value: Option<&Value>) -> String {
     }
 }
 
-/// Render an aligned, left-justified text table:a header row followed by data
+/// Render an aligned, left-justified text table: a header row followed by data
 /// rows, columns padded to the widest cell, two-space gutters, no trailing
 /// whitespace. Returns headers only when `rows` is empty (callers usually print
 /// an explicit "none" line instead).
