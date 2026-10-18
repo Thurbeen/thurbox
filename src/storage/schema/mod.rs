@@ -177,9 +177,47 @@ pub fn apply_connection_pragmas(conn: &Connection) -> rusqlite::Result<()> {
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     // Must come first: the WAL pragma below itself needs the write lock.
     conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    enable_wal(conn)?;
     apply_connection_pragmas(conn)?;
 
+    // The whole pass runs under one write lock, so two processes opening the
+    // same file cannot both run a data step (issue #1475): the second waits on
+    // `busy_timeout`, then reads the version the first committed. Foreign keys
+    // are off for its length because the v15/v16 rebuilds turn them off
+    // themselves, and that pragma is a no-op inside a transaction.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let pass = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .and_then(|tx| {
+            create_and_migrate(conn)?;
+            tx.commit()
+        });
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    pass
+}
+
+/// Switch a new file to WAL, waiting out a peer doing the same.
+///
+/// The switch reads under a shared lock and then escalates to an exclusive
+/// one. Two processes doing that on a new file at once is a lock deadlock,
+/// which SQLite settles by failing one with `SQLITE_BUSY` **without consulting
+/// `busy_timeout`** — so the wait is spelled out here. Once the peer's switch
+/// lands this is a no-op that takes no write lock.
+fn enable_wal(conn: &Connection) -> rusqlite::Result<()> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS metadata (
@@ -429,6 +467,18 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             },
         )
         .unwrap_or(0);
+
+    // A binary left running after an upgrade — or an older one started by hand
+    // — would otherwise write rows its schema does not describe.
+    if version > SCHEMA_VERSION {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some(format!(
+                "the database is at schema v{version}, newer than this thurbox \
+                 (v{SCHEMA_VERSION}) knows; run the newer thurbox"
+            )),
+        ));
+    }
 
     // Each migration step is gated on the stored version and applied in order.
     // Steps are extracted into helpers to keep this dispatcher flat.

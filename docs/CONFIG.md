@@ -1802,3 +1802,14 @@ their own if absent — are now re-asserted on **every open**, not only on an
 upgrade. A healthy database changes nothing and pays a handful of catalogue
 reads. Steps that rewrite or seed data stay gated on the version, because
 applying one twice does not mean what applying it once meant.
+
+The TUI, every agent hook's `thurbox-cli` and the host CLIs open the same file,
+so the whole pass on open runs in one `BEGIN IMMEDIATE` transaction and reads
+the version inside it: a second process opening an old database at the same
+time waits, then finds it already migrated, instead of running a data step
+again. Switching a brand-new file to WAL is retried for the same reason: two
+processes doing it at once deadlock on the file lock, and SQLite fails one
+without waiting. A database whose `schema_version` is **newer** than the binary knows is
+refused with an error naming both versions — a thurbox left running after an
+update, or an older one started by hand, would otherwise write rows its schema
+does not describe. Run the newer thurbox against it.

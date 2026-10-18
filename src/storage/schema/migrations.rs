@@ -766,13 +766,14 @@ pub(super) fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<(
     if !table_exists(conn, "repo_bookmarks")? || column_exists(conn, "repo_bookmarks", "host")? {
         return Ok(());
     }
-    // Transactional (unlike the PRAGMA-toggling rebuilds above, nothing here
-    // forbids it): the version is only bumped after all steps, so a crash
+    // Atomic: the version is only bumped after all steps, so a crash
     // mid-rebuild would otherwise strand a `repo_bookmarks_v39` orphan that
-    // makes every re-run — and thus every DB open — fail. The DROP prefix
-    // additionally repairs an orphan left by a pre-fix binary.
+    // makes every re-run — and thus every DB open — fail. A savepoint rather
+    // than `BEGIN`, because `schema::initialize` already holds a transaction
+    // around the whole pass. The DROP prefix additionally repairs an orphan
+    // left by a pre-fix binary.
     conn.execute_batch(
-        "BEGIN;
+        "SAVEPOINT migrate_v39;
         DROP TABLE IF EXISTS repo_bookmarks_v39;
         CREATE TABLE repo_bookmarks_v39 (
             host         TEXT NOT NULL DEFAULT '',
@@ -789,7 +790,7 @@ pub(super) fn migrate_v39_bookmark_host(conn: &Connection) -> rusqlite::Result<(
             FROM repo_bookmarks;
         DROP TABLE repo_bookmarks;
         ALTER TABLE repo_bookmarks_v39 RENAME TO repo_bookmarks;
-        COMMIT;",
+        RELEASE migrate_v39;",
     )
 }
 
@@ -1047,8 +1048,8 @@ pub(super) fn migrate_v47_wsl_loopback_repair_owed(conn: &Connection) -> rusqlit
 /// only refresh liveness or publish telemetry from changes requiring a rebuild.
 /// The triggers cover every table conservatively, including legacy writers.
 /// Re-asserted after additive migrations so their new columns are covered.
+/// Atomic with the rest of the pass under `schema::initialize`'s write lock.
 pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Result<()> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS snapshot_versions (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -1134,5 +1135,5 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
              UPDATE snapshot_versions SET hooks_version = hooks_version + 1 WHERE singleton = 1; END;",
         )?;
     }
-    tx.commit()
+    Ok(())
 }
