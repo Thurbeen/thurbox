@@ -603,23 +603,18 @@ fn split_last(src: &str) -> (String, String) {
 /// on the `src@version` it came from **and** its contents. Doing that at each call
 /// site invites a caller that checks only one half.
 ///
-/// `lock` is `None` when `plugins.lock` could not be read. That fails closed for
-/// a grant made to a pin: without the lock an installed file would be judged as
-/// the user's own, and a changed one would keep its grant as merely `Drifted`.
+/// A grant made to a pin needs a lock entry to match it. When the lock is
+/// missing, unreadable or has no entry for the file, the file would otherwise be
+/// judged as the user's own, and a changed one would keep its grant as merely
+/// `Drifted` — so it fails closed instead.
 pub fn trust_of(
     dir: &Path,
     relative: &str,
-    lock: Option<&PluginLock>,
+    lock: &PluginLock,
     registry: &super::registry::Registry,
 ) -> super::inventory::Trust {
     let absolute = dir.join(relative);
     let key = absolute.to_string_lossy();
-    let unread = PluginLock::default();
-    let lock = match lock {
-        Some(lock) => lock,
-        None if registry.trusted_pin(&key).is_some() => return super::inventory::Trust::Untrusted,
-        None => &unread,
-    };
     let current = std::fs::read_to_string(&absolute)
         .ok()
         .map(|text| digest(&text));
@@ -632,6 +627,7 @@ pub fn trust_of(
             &entry.pin_key(),
             current.as_deref(),
         ),
+        None if registry.trusted_pin(&key).is_some() => super::inventory::Trust::Untrusted,
         None => super::inventory::Trust::resolve(registry.trusted_digest(&key), current.as_deref()),
     }
 }
@@ -647,10 +643,10 @@ pub fn granted<'a>(
     files: impl IntoIterator<Item = &'a str>,
     registry: &super::registry::Registry,
 ) -> Vec<String> {
-    let lock = read_lock(dir).ok();
+    let lock = read_lock(dir).unwrap_or_default();
     files
         .into_iter()
-        .filter(|file| trust_of(dir, file, lock.as_ref(), registry).grants())
+        .filter(|file| trust_of(dir, file, &lock, registry).grants())
         .map(str::to_string)
         .collect()
 }
@@ -1678,7 +1674,7 @@ mod tests {
 
         let mut registry = super::super::registry::Registry::load();
         assert_eq!(
-            trust_of(&dir, file, Some(&lock), &registry),
+            trust_of(&dir, file, &lock, &registry),
             super::super::inventory::Trust::Untrusted,
             "a first install still asks"
         );
@@ -1687,7 +1683,7 @@ mod tests {
             .trust_installed(&absolute, "atlas@v1", "-- v1\n")
             .expect("trust");
         assert_eq!(
-            trust_of(&dir, file, Some(&lock), &registry),
+            trust_of(&dir, file, &lock, &registry),
             super::super::inventory::Trust::Trusted
         );
 
@@ -1703,7 +1699,7 @@ mod tests {
         )
         .expect("deliver");
         assert_eq!(
-            trust_of(&dir, file, Some(&lock), &registry),
+            trust_of(&dir, file, &lock, &registry),
             super::super::inventory::Trust::Untrusted,
             "moving the pin asks again"
         );
@@ -1714,19 +1710,19 @@ mod tests {
             .trust_installed(&absolute, "atlas@v2", "-- v2\n")
             .expect("trust");
         assert_eq!(
-            trust_of(&dir, file, Some(&lock), &registry),
+            trust_of(&dir, file, &lock, &registry),
             super::super::inventory::Trust::Trusted
         );
         std::fs::write(dir.join(file), "-- swapped\n").expect("re-tag");
         assert_eq!(
-            trust_of(&dir, file, Some(&lock), &registry),
+            trust_of(&dir, file, &lock, &registry),
             super::super::inventory::Trust::Replaced,
             "same version, different contents — the hole the digest closes"
         );
         assert_eq!(
-            trust_of(&dir, file, None, &registry),
+            trust_of(&dir, file, &PluginLock::default(), &registry),
             super::super::inventory::Trust::Untrusted,
-            "an unreadable lock must not turn it into a file of the user's own"
+            "no lock entry must not turn it into a file of the user's own"
         );
 
         // An UNMANAGED file stays on the contents-only rule, untouched by any of
@@ -1736,12 +1732,12 @@ mod tests {
         let mine_absolute = dir.join(mine).to_string_lossy().into_owned();
         registry.trust(&mine_absolute, "-- mine\n").expect("trust");
         assert_eq!(
-            trust_of(&dir, mine, Some(&lock), &registry),
+            trust_of(&dir, mine, &lock, &registry),
             super::super::inventory::Trust::Trusted
         );
         std::fs::write(dir.join(mine), "-- edited\n").expect("edit");
         assert_eq!(
-            trust_of(&dir, mine, Some(&lock), &registry),
+            trust_of(&dir, mine, &lock, &registry),
             super::super::inventory::Trust::Drifted
         );
         std::env::remove_var("THURBOX_CONFIG_DIR");

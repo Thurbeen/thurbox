@@ -691,10 +691,11 @@ fn editing_your_own_trusted_file_keeps_run() {
     assert_eq!(host.drain_runs().len(), 1);
 }
 
-#[test]
-fn an_unreadable_lock_grants_nothing_to_an_installed_file() {
-    // Without the lock an installed file looks like the user's own, and an edit
-    // to one keeps its grant. A record that carries a pin says otherwise.
+/// Trust an installed file, change it, damage the lock with `damage`, and assert
+/// the grant is gone. A record that carries a pin is a grant to an installed
+/// version; without a lock entry to match it, the file would be judged as the
+/// user's own and a changed one would keep `run`.
+fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
     let (home, ui) = interface(&[]);
     std::env::set_var("THURBOX_CONFIG_DIR", home.path());
     let file = "plugins/91_asks.lua";
@@ -707,13 +708,31 @@ fn an_unreadable_lock_grants_nothing_to_an_installed_file() {
         )
         .expect("trust");
     std::fs::write(ui.join(file), asker("asks", "swapped", true)).expect("change");
-    std::fs::write(thurbox::kernel::packages::lock_path(&ui), "not [ toml").expect("corrupt");
+    damage(&ui);
 
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
     render(&host, "asks");
-    assert!(
-        host.drain_runs().is_empty(),
-        "a corrupt lock must fail closed"
-    );
+    assert!(host.drain_runs().is_empty(), "the lock must fail closed");
+}
+
+#[test]
+fn a_corrupt_lock_grants_nothing_to_an_installed_file() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        std::fs::write(thurbox::kernel::packages::lock_path(ui), "not [ toml").expect("corrupt");
+    });
+}
+
+#[test]
+fn a_missing_lock_grants_nothing_to_an_installed_file() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        std::fs::remove_file(thurbox::kernel::packages::lock_path(ui)).expect("delete");
+    });
+}
+
+#[test]
+fn a_lock_without_the_files_entry_grants_nothing_to_it() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        thurbox::kernel::packages::write_lock(ui, &Default::default()).expect("empty lock");
+    });
 }
