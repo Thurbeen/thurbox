@@ -267,9 +267,7 @@ fn asks(row: &Row) -> Option<String> {
         FileTrust::Untrusted => " — not granted; t grants it",
         FileTrust::Trusted => " — granted; t revokes it",
         FileTrust::Drifted => " — granted, but the file changed since; t revokes it",
-        FileTrust::Replaced => {
-            " — not granted: it changed since you trusted this version; t trusts it as it is"
-        }
+        FileTrust::Replaced => " — not granted: changed since trusted; t grants it",
         FileTrust::NotAsked => "",
     };
     Some(format!("asks to: {}{standing}", wants.join(", ")))
