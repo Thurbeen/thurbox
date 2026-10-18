@@ -1344,6 +1344,7 @@ mod tests {
         assert!(error.contains("`no-such-agent`"), "{error}");
     }
 
+    #[cfg(unix)]
     fn check_spec(env: &HashMap<String, String>) -> crate::backend::contract::WindowSpec<'_> {
         crate::backend::contract::WindowSpec {
             owner: crate::backend::contract::Owner::new("session-id", "check"),
