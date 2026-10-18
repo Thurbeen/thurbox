@@ -816,7 +816,12 @@ has the rationale; the shape:
   `~/.local/share/thurbox/bin/` on the host (`thurbox-dev/bin/` for a
   dev build, which then uses the host's `thurbox-dev` database and
   socket — dev and release stay as separate there as they are locally)
-  — never on PATH; an install the user makes later wins. That first
+  — never on PATH. That path is the one probed first, so the provisioned
+  copy stays in use until it becomes incompatible (another major, or a
+  schema older than the caller's, when the caller provisions over it), even
+  after the user installs thurbox on the host; removing
+  `<data dir>/bin/thurbox-cli` there is how they get their own install used.
+  That first
   session creates the
   host's database at the standard location, so a later full install
   finds every session already there. A dev build ships its own sibling

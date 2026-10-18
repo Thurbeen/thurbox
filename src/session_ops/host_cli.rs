@@ -21,8 +21,11 @@ use serde_json::Value;
 use crate::session::HostDef;
 
 /// Where a provisioned CLI lands, under the host's thurbox data directory —
-/// deliberately *not* on PATH: it is thurbox's, and an install the user makes
-/// later (`install.sh`) wins as soon as its major matches.
+/// deliberately *not* on PATH, since it is thurbox's. It is also the slot the
+/// probe tries first (`probe_script_posix`, `probe_script_windows`), so a
+/// provisioned copy stays in use until it is incompatible, even after the user
+/// installs thurbox on the host; removing it is how they get their own install
+/// used.
 pub const HOST_BIN_DIR: &str = "bin";
 
 /// How long a host that answered "no usable CLI" is left alone before it is
@@ -1761,9 +1764,11 @@ mod tests {
         );
         assert!(posix.contains("version --json"));
         let windows = probe_script_windows();
+        let own = format!("\\{flavour}\\bin\\thurbox-cli.exe");
+        assert!(windows.contains(&own), "{windows}");
         assert!(
-            windows.contains(&format!("\\{flavour}\\bin\\thurbox-cli.exe")),
-            "{windows}"
+            windows.find(&own) < windows.find("'thurbox-cli'"),
+            "the flavour's own copy is tried before PATH"
         );
         assert!(windows.contains("version --json"));
     }
