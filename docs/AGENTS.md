@@ -56,6 +56,12 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 | `omp` | `omp` | `--session-dir {home}/.omp/…/thurbox-{id} --continue` | — (none) | **path-pinned** (`--session-dir <dir>`) | `external_files` → `~/.omp/agent/extensions/` |
 | `shell` | `bash -i` (`powershell -NoLogo` on Windows) | — (none) | — (none) | none | none (see below) |
 
+`claude`, `codex` and `vibe` also ship `telemetry_env` / `telemetry_args`,
+applied only while `[telemetry]` is on; `copilot`, `omp` and `opencode` need
+only the spec's `OTEL_EXPORTER_OTLP_*` variables, which every session gets, and
+`antigravity`, `pi` and `aider` have no native OTel. See
+[CONFIG.md](CONFIG.md#telemetry--opentelemetry-for-sessions).
+
 ### Multi-repo directory scope
 
 The built-in Claude definition sets

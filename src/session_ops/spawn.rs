@@ -411,6 +411,12 @@ fn spawn(
         req.task_id,
         req.key.as_deref(),
     );
+    let telemetry_args = super::telemetry::apply(
+        &mut config,
+        &agent_def,
+        &req.name,
+        &crate::agent::settings_config::load_quiet().telemetry,
+    );
 
     report(SpawnPhase::Backend);
     let member_dirs = launch_member_dirs(&primary_cwd, &worktrees, &additional_dirs, host.as_ref());
@@ -424,6 +430,7 @@ fn spawn(
             .chain(agent_def.build_directory_args(&member_dirs))
             .collect();
     }
+    args.extend(telemetry_args);
 
     // Asked before the launch rather than after it: this is the one moment
     // thurbox knows both which binary it is about to ask for and that the user

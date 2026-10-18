@@ -184,7 +184,8 @@ pub struct World<'a> {
 
 enum Open {
     Help(help::HelpModal),
-    Settings(settings::SettingsModal),
+    // Boxed: it holds a whole `Settings`, several times the next variant.
+    Settings(Box<settings::SettingsModal>),
     Theme(theme::ThemeModal),
     Palette(palette::PaletteModal),
 }
@@ -260,7 +261,7 @@ impl Modals {
         }
         self.open = Some(match kind {
             ModalKind::Help => Open::Help(help::HelpModal::default()),
-            ModalKind::Settings => Open::Settings(settings::SettingsModal::default()),
+            ModalKind::Settings => Open::Settings(Box::default()),
             ModalKind::Theme => Open::Theme(theme::ThemeModal::default()),
             ModalKind::Palette => Open::Palette(palette::PaletteModal::default()),
         });

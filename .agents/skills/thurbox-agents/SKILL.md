@@ -127,6 +127,15 @@ per-arg-patch families (claude, aider) need it; the config-dir agents
 config dir, so a rebrand sharing that dir already reports. thurbox bakes in no
 agent knowledge — the *user* asserts the family.
 
+**Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only
+while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at
+spawn, restart, `agent_launch_plan` and `session_process_env`), with `{otlp_endpoint}` /
+`{otlp_protocol}` substituted. Every local session also gets the spec's
+`OTEL_EXPORTER_OTLP_*`; every session, remote too, gets
+`OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`. Built-ins: claude (env),
+codex (`-c otel.*` args), vibe (env); an entry omitting both keys gains the
+built-in's in memory, explicit empty opts out. ADR-36.
+
 ### Multi-repo sessions (symlink workspace)
 
 A session can span several repositories (the repo picker allows multiple;

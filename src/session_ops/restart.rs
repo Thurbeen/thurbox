@@ -96,6 +96,12 @@ pub(crate) fn build_restart_plan(
     if let Some(note) = degraded {
         tracing::warn!("restart of '{}': {note}", session.name);
     }
+    let telemetry_args = super::telemetry::apply(
+        &mut config,
+        &def,
+        &session.name,
+        &crate::agent::settings_config::load_quiet().telemetry,
+    );
     let codex_builtin = def.name == "codex" && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin {
         db.get_session_meta(session.id, "thurbox.codex_conversation_id")
@@ -143,6 +149,7 @@ pub(crate) fn build_restart_plan(
             .env
             .insert(super::CODEX_PICKER_ENV.into(), "1".into());
     }
+    args.extend(telemetry_args);
 
     Ok(RestartPlan {
         window_name: session.name.clone(),

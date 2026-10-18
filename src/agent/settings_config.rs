@@ -130,6 +130,17 @@ config_version = 1
 # [remote]
 # transitive_sessions = true
 
+# OpenTelemetry: turn on each agent's own exporter for the sessions thurbox
+# spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
+# naming the thurbox session, and each agent's telemetry_env / telemetry_args
+# from agents.toml. Local sessions only; read at every spawn and restart.
+# [telemetry]
+# enabled = false
+# endpoint = "http://localhost:4318"
+# protocol = "http/protobuf"
+# headers = {}                  # e.g. { authorization = "Bearer ..." }
+# configure_agents = true
+
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────

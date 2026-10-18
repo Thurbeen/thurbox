@@ -144,7 +144,16 @@ resume_latest = false       # true = id-less "resume last session in cwd"
 # hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
                             #   the built-in hooks extension wires its status
                             #   hooks under this custom agent's name too
+telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
+# telemetry_args = []       # appended only while [telemetry] is on
 ```
+
+`telemetry_env` and `telemetry_args` apply only while `settings.toml`'s
+[`[telemetry]`](#telemetry--opentelemetry-for-sessions) is on, with
+`{otlp_endpoint}` and `{otlp_protocol}` substituted. The built-ins `claude`,
+`codex` and `vibe` carry them; an entry that omits both keys and matches a
+built-in's `name` and `command` gets the built-in's in memory, and an explicit
+empty value opts out.
 
 `additional_dir_args` is optional and normally empty. It scopes each resolved
 member checkout of a multi-repo session, with `{dir}` substituted as one
@@ -960,6 +969,45 @@ each host's own sessions and drops the rows already taken on, without deleting
 anything anywhere. Read by every mirror pass, so a change applies on the next
 one (within 10 s in the TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
 has the rule.
+
+### `[telemetry]` — OpenTelemetry for sessions
+
+Turns on each agent's **own** OpenTelemetry exporter for the sessions thurbox
+spawns, pointed at one OTLP collector. thurbox exports nothing itself yet; it
+configures what the agents already have (ADR-36).
+
+```toml
+[telemetry]
+enabled = false
+endpoint = "http://localhost:4318"
+protocol = "http/protobuf"
+headers = {}                 # e.g. { authorization = "Bearer …" }
+configure_agents = true
+```
+
+With `enabled` and `configure_agents` both on, every local session gets:
+
+- the OTel spec's `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`
+  and, when `headers` is set, `OTEL_EXPORTER_OTLP_HEADERS` — enough on their own
+  for `copilot`, `omp` and `opencode`;
+- `OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`, `thurbox.session.name`
+  and `thurbox.agent` appended to any value already in the environment, so a
+  backend can group an agent's telemetry by session;
+- the agent's own `telemetry_env` / `telemetry_args` from
+  [agents.toml](#agentstoml): `CLAUDE_CODE_ENABLE_TELEMETRY` and the metrics
+  and logs exporters for `claude`, per-session `-c otel.*` overrides for `codex`
+  (it ignores the spec's endpoint variable and is always sent `binary`, which
+  is protobuf), and `VIBE_ENABLE_OTEL` / `VIBE_OTEL_ENDPOINT` for `vibe`.
+
+A variable the session's own `--env` sets wins. A remote session gets only the
+resource attributes: `localhost` there is the host, so no exporter is configured
+for it. `antigravity`, `pi` and `aider` have no native OTel.
+
+The table is read at every spawn and restart, so a change applies to the next
+one; a running agent keeps the environment it launched with. The variables are
+in the pane's environment, so everything run in the session inherits them,
+including any OTel-instrumented tool the agent starts, and the agent process can
+read `headers`.
 
 ### `[notifications]` — OS notification settings
 

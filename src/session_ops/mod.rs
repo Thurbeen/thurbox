@@ -28,6 +28,7 @@ pub mod set_key;
 #[cfg(test)]
 mod shared_tests;
 pub mod spawn;
+pub(crate) mod telemetry;
 pub mod windows;
 pub mod wsl_loopback;
 
@@ -593,12 +594,19 @@ pub fn agent_launch_plan(
         _ => None,
     };
     let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), hooks);
+    let telemetry_args = telemetry::apply(
+        &mut config,
+        &def,
+        session.map_or("", |s| s.name.as_str()),
+        &crate::agent::settings_config::load_quiet().telemetry,
+    );
     let member_dirs = session
         .and_then(|s| s.cwd.as_ref().map(|primary| (s, primary)))
         .map_or_else(Vec::new, |(s, primary)| {
             spawn::launch_member_dirs(primary, &s.worktrees, &s.additional_dirs, host.as_ref())
         });
-    let (command, args) = build_agent_invocation(&def, &config, &member_dirs);
+    let (command, mut args) = build_agent_invocation(&def, &config, &member_dirs);
+    args.extend(telemetry_args);
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -642,6 +650,19 @@ pub fn session_process_env(
         session.agent_session_id.as_deref().unwrap_or_default(),
         None,
         session.key.as_deref(),
+    );
+    // The pane holds the telemetry env too. Only an exact registry entry
+    // contributes its `telemetry_env`: a command session has none, and the
+    // registry's default agent is not what its pane runs.
+    let def = crate::agent::agent_config::load_for_launch()
+        .get(&session.agent)
+        .cloned()
+        .unwrap_or_default();
+    telemetry::apply(
+        &mut config,
+        &def,
+        &session.name,
+        &crate::agent::settings_config::load_quiet().telemetry,
     );
     if session.agent_session_id.is_none() {
         config.env.remove("THURBOX_SESSION_ID");

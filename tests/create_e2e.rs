@@ -2203,3 +2203,242 @@ fn an_unknown_agent_is_refused_rather_than_replaced_by_the_default() {
     );
     assert!(db.list_active_sessions().unwrap().is_empty());
 }
+
+// ── Agent-native telemetry (issue #1465, ADR-36) ─────────────────────────────
+//
+// What thurbox *passes* with `[telemetry]` on: the OTel spec variables, each
+// agent's `telemetry_env` / `telemetry_args`, and the `thurbox.session.id`
+// resource attribute — not what any agent does with them.
+
+#[cfg(unix)]
+const OTLP_ENDPOINT: &str = "http://collector.test:4318";
+
+#[cfg(unix)]
+const TELEMETRY_ON: &str = "[telemetry]\nenabled = true\n\
+                            endpoint = \"http://collector.test:4318\"\n\
+                            headers = { x-token = \"abc\" }\n";
+
+/// What a telemetry probe saw: its arguments, and every OTel-related variable.
+#[cfg(unix)]
+struct Seen {
+    args: Vec<String>,
+    env: std::collections::BTreeMap<String, String>,
+}
+
+#[cfg(unix)]
+fn read_seen(capture: &Path) -> Seen {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let text = loop {
+        if let Ok(text) = std::fs::read_to_string(capture) {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agent did not record its launch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut seen = Seen {
+        args: Vec::new(),
+        env: Default::default(),
+    };
+    for line in text.lines() {
+        if let Some(arg) = line.strip_prefix("ARG ") {
+            seen.args.push(arg.to_string());
+        } else if let Some((k, v)) = line.split_once('=') {
+            seen.env.insert(k.to_string(), v.to_string());
+        }
+    }
+    seen
+}
+
+/// The OTel-related subset of an environment, as the probe filters it.
+#[cfg(unix)]
+fn otel_subset(
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    env.iter()
+        .filter(|(k, _)| {
+            k.starts_with("OTEL_") || k.starts_with("VIBE_") || *k == "CLAUDE_CODE_ENABLE_TELEMETRY"
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Spawn one session of the built-in `agent`, its command swapped for a probe,
+/// under `settings`; return what it saw at spawn, after a restart, the env
+/// `session exec` hands a child, and the session id.
+#[cfg(unix)]
+fn telemetry_probe(
+    agent: &str,
+    settings: &str,
+) -> (
+    Seen,
+    Seen,
+    std::collections::BTreeMap<String, String>,
+    thurbox::session::SessionId,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    // The test process's own OTel environment must not stand in for what
+    // thurbox injects.
+    for (k, _) in std::env::vars() {
+        if k.starts_with("OTEL_") || k == "CLAUDE_CODE_ENABLE_TELEMETRY" {
+            std::env::remove_var(k);
+        }
+    }
+    std::fs::write(
+        thurbox::agent::settings_config::settings_config_path().unwrap(),
+        settings,
+    )
+    .unwrap();
+    let capture = home.path().join("launch");
+    let probe = home.path().join("probe-agent");
+    std::fs::write(
+        &probe,
+        "#!/bin/sh\n{ for a in \"$@\"; do printf 'ARG %s\\n' \"$a\"; done; \
+         env | grep -E '^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY=|VIBE_)' | sort; \
+         } > \"$CAPTURE.tmp\" && mv \"$CAPTURE.tmp\" \"$CAPTURE\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut def = thurbox::agent::agent_config::builtin_registry()
+        .get(agent)
+        .unwrap()
+        .clone();
+    def.command = probe.display().to_string();
+    // The whole registry, not the entry alone: a map-valued key such as
+    // `telemetry_env` serializes as a table of its own, which only nests under
+    // `[[agents]]` when the serializer knows it is inside one.
+    let registry = thurbox::session::AgentRegistry {
+        config_version: None,
+        default: agent.into(),
+        agents: vec![def],
+    };
+    std::fs::write(
+        config.join("agents.toml"),
+        toml::to_string(&registry).unwrap(),
+    )
+    .unwrap();
+
+    let repo = home.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let db = thurbox::storage::Database::open_in_memory().unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "probe, one".into(),
+            repo_path: repo,
+            agent: Some(agent.into()),
+            env: [("CAPTURE".into(), capture.display().to_string())].into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let first = read_seen(&capture);
+    std::fs::remove_file(&capture).unwrap();
+    thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id).unwrap();
+    let second = read_seen(&capture);
+    let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    let exec = otel_subset(&thurbox::session_ops::session_process_env(&db, &row).unwrap());
+    (first, second, exec, spawned.session_id)
+}
+
+#[test]
+#[cfg(unix)]
+fn telemetry_gives_claude_the_spec_env_its_switch_and_the_session_attributes() {
+    if !have_tmux() {
+        return;
+    }
+    let (spawn, restart, exec, id) = telemetry_probe("claude", TELEMETRY_ON);
+    for env in [&spawn.env, &restart.env] {
+        assert_eq!(env["OTEL_EXPORTER_OTLP_ENDPOINT"], OTLP_ENDPOINT);
+        assert_eq!(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
+        assert_eq!(env["OTEL_EXPORTER_OTLP_HEADERS"], "x-token=abc");
+        assert_eq!(env["CLAUDE_CODE_ENABLE_TELEMETRY"], "1");
+        assert_eq!(env["OTEL_METRICS_EXPORTER"], "otlp");
+        assert_eq!(env["OTEL_LOGS_EXPORTER"], "otlp");
+        let attrs = &env["OTEL_RESOURCE_ATTRIBUTES"];
+        assert!(
+            attrs.contains(&format!("thurbox.session.id={id}")),
+            "{attrs}"
+        );
+        // A comma or space in a name would split or corrupt the list: the
+        // value is percent-encoded, as the OTel spec asks.
+        assert!(
+            attrs.contains("thurbox.session.name=probe%2C%20one"),
+            "{attrs}"
+        );
+        assert!(attrs.contains("thurbox.agent=claude"), "{attrs}");
+    }
+    // What `session exec` hands a child is what the pane holds.
+    assert_eq!(exec, spawn.env);
+}
+
+#[test]
+#[cfg(unix)]
+fn telemetry_gives_codex_config_overrides_with_the_endpoint_substituted() {
+    if !have_tmux() {
+        return;
+    }
+    let (spawn, restart, _, _) = telemetry_probe("codex", TELEMETRY_ON);
+    for seen in [&spawn, &restart] {
+        let overrides: Vec<&str> = seen
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert!(
+            overrides.contains(
+                &"otel.exporter={otlp-http={endpoint=\"http://collector.test:4318/v1/logs\",\
+                  protocol=\"binary\"}}"
+            ),
+            "{:?}",
+            seen.args
+        );
+        assert!(
+            overrides
+                .iter()
+                .any(|o| o.starts_with("otel.metrics_exporter=")
+                    && o.contains("http://collector.test:4318/v1/metrics")),
+            "{:?}",
+            seen.args
+        );
+        assert!(
+            !seen.args.iter().any(|a| a.contains("{otlp_endpoint}")),
+            "{:?}",
+            seen.args
+        );
+        assert_eq!(seen.env["OTEL_EXPORTER_OTLP_ENDPOINT"], OTLP_ENDPOINT);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn telemetry_off_or_not_configuring_agents_passes_nothing() {
+    if !have_tmux() {
+        return;
+    }
+    for (agent, settings) in [
+        ("claude", String::new()),
+        ("claude", "[telemetry]\nenabled = false\n".into()),
+        ("codex", format!("{TELEMETRY_ON}configure_agents = false\n")),
+    ] {
+        let (spawn, restart, exec, _) = telemetry_probe(agent, &settings);
+        for seen in [&spawn, &restart] {
+            assert!(seen.env.is_empty(), "{settings}: {:?}", seen.env);
+            assert!(
+                !seen.args.iter().any(|a| a.contains("otel")),
+                "{settings}: {:?}",
+                seen.args
+            );
+        }
+        assert!(exec.is_empty(), "{settings}: {exec:?}");
+    }
+}
