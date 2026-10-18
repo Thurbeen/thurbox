@@ -34,7 +34,8 @@ fn terminal_hint() -> Option<String> {
     if let Some(tty) = std::env::var_os("SSH_TTY") {
         return Some(tty.to_string_lossy().into_owned());
     }
-    let mut buffer = [0i8; 256];
+    // `c_char` is `u8` on aarch64 Linux and `i8` on x86_64, so name it.
+    let mut buffer: [libc::c_char; 256] = [0; 256];
     let status = unsafe { libc::ttyname_r(libc::STDIN_FILENO, buffer.as_mut_ptr(), buffer.len()) };
     (status == 0).then(|| {
         unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }

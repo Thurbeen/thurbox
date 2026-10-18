@@ -213,6 +213,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb
       - run: cargo nextest run --all --profile ci
 
+  # aarch64 Linux gate. The release builds `aarch64-unknown-linux-musl`, and one
+  # failing build leg blocks the whole release, so an arch-only break (`c_char`
+  # is `u8` here, `i8` on x86_64) has to fail a PR instead. Native arm runner,
+  # same lint as `clippy`.
+  linux-aarch64-clippy:
+    name: Clippy (Linux aarch64)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
   # Native-Windows gate (psmux backend selection, known-folder paths, toast
   # notifications, junction workspaces), split into two parallel jobs so the heavy
   # Windows compile isn't serialized: clippy-driver and rustc don't share
@@ -605,6 +622,7 @@ jobs:
       - fmt
       - clippy
       - nextest
+      - linux-aarch64-clippy
       - windows-clippy
       - windows-test
       - deny

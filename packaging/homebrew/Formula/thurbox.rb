@@ -11,8 +11,9 @@
 # Only the platforms with a published release artifact are supported:
 #   - macOS arm64 (Apple Silicon) -> aarch64-apple-darwin
 #   - Linux x86_64                -> x86_64-unknown-linux-musl (static)
-# Intel macOS and aarch64 Linux have no release binary, so they are omitted
-# (brew reports "no available formula" on those platforms).
+#   - Linux aarch64               -> aarch64-unknown-linux-musl (static)
+# Intel macOS has no release binary, so it is omitted (brew reports "no
+# available formula" there).
 class Thurbox < Formula
   desc "TUI for orchestrating multiple coding-agent CLI sessions in persistent tmux panels"
   homepage "https://github.com/Thurbeen/thurbox"
@@ -33,6 +34,10 @@ class Thurbox < Formula
     on_intel do
       url "https://github.com/Thurbeen/thurbox/releases/download/v#{version}/thurbox-v#{version}-x86_64-unknown-linux-musl.tar.gz"
       sha256 "182ebaf3a3842bc76bbf0bbe536300bdcfb5ced2c4a302668d4590276d4d51a3"
+    end
+    on_arm do
+      url "https://github.com/Thurbeen/thurbox/releases/download/v#{version}/thurbox-v#{version}-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 

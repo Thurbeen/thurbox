@@ -97,9 +97,13 @@
   grep -q "darwin-aarch64) echo \"aarch64-apple-darwin\"" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script does not map unshipped platforms (linux-aarch64, darwin-x86_64)" {
-  # cd.yml builds no .tar.gz for these, so get_target must NOT resolve them.
-  run grep -E "linux-aarch64\)|darwin-x86_64\)" "${BATS_TEST_DIRNAME}/install.sh"
+@test "script maps linux-aarch64 to musl" {
+  grep -q "linux-aarch64) echo \"aarch64-unknown-linux-musl\"" "${BATS_TEST_DIRNAME}/install.sh"
+}
+
+@test "script does not map unshipped platforms (darwin-x86_64)" {
+  # cd.yml builds no .tar.gz for it, so get_target must NOT resolve it.
+  run grep -E "darwin-x86_64\)" "${BATS_TEST_DIRNAME}/install.sh"
   [ "$status" -ne 0 ]
 }
 

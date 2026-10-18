@@ -66,12 +66,13 @@ detect_platform() {
 }
 
 # Map platform to Rust target. Restricted to the platforms the release matrix
-# (cd.yml) actually builds a .tar.gz for: Linux x86_64 (we pick the portable
-# musl tarball) and Apple-silicon macOS. Linux aarch64 and Intel macOS have no
-# build, so they error cleanly rather than 404 on a missing download.
+# (cd.yml) actually builds a .tar.gz for: Linux x86_64 and aarch64 (we pick the
+# portable musl tarballs) and Apple-silicon macOS. Intel macOS has no build, so
+# it errors cleanly rather than 404 on a missing download.
 get_target() {
   case "$1" in
     linux-x86_64) echo "x86_64-unknown-linux-musl" ;;
+    linux-aarch64) echo "aarch64-unknown-linux-musl" ;;
     darwin-aarch64) echo "aarch64-apple-darwin" ;;
     *) error "Unsupported platform: $1 (no release artifact is built for it)"; return 1 ;;
   esac

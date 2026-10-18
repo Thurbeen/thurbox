@@ -69,10 +69,10 @@ pub enum UpdateOutcome {
 
 /// Map an OS/arch pair to the release artifact's Rust target triple. Mirrors
 /// `scripts/install.sh`'s `get_target`, and is restricted to the platforms
-/// `cd.yml`'s release matrix actually builds a `.tar.gz` for — Linux x86_64 (we
-/// pick the portable musl tarball) and Apple-silicon macOS — so an update never
-/// 404s on a missing artifact. Linux aarch64 and Intel macOS have no build, so
-/// they error cleanly here rather than pointing at a download that isn't there.
+/// `cd.yml`'s release matrix actually builds a `.tar.gz` for — Linux x86_64 and
+/// aarch64 (we pick the portable musl tarballs) and Apple-silicon macOS — so an
+/// update never 404s on a missing artifact. Intel macOS has no build, so it
+/// errors cleanly here rather than pointing at a download that isn't there.
 /// Pure (takes os/arch) so it's testable; note Rust spells these
 /// `"macos"`/`"aarch64"` where `uname` says `darwin`/`arm64`, but they map to
 /// the same triples.
@@ -84,6 +84,7 @@ pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     let arch = arch.to_ascii_lowercase();
     match (os.as_str(), arch.as_str()) {
         ("linux", "x86_64" | "amd64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64" | "arm64") => Ok("aarch64-unknown-linux-musl"),
         ("macos" | "darwin", "aarch64" | "arm64") => Ok("aarch64-apple-darwin"),
         ("windows", "x86_64" | "amd64") => Ok("x86_64-pc-windows-msvc"),
         _ => Err(format!(
@@ -988,8 +989,9 @@ mod tests {
     /// Windows artifact is a `.zip`, served by `archive_name`). `target_triple`
     /// / `current_target` must only ever resolve to one of these — anything
     /// else would 404 on download.
-    const SHIPPED_TRIPLES: [&str; 3] = [
+    const SHIPPED_TRIPLES: [&str; 4] = [
         "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
     ];
@@ -1012,6 +1014,15 @@ mod tests {
         assert_eq!(
             target_triple("Linux", "x86_64").unwrap(),
             "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("linux", "aarch64").unwrap(),
+            "aarch64-unknown-linux-musl"
+        );
+        // Some aarch64 distributions' `uname -m` prints `arm64`.
+        assert_eq!(
+            target_triple("Linux", "arm64").unwrap(),
+            "aarch64-unknown-linux-musl"
         );
         assert_eq!(
             target_triple("windows", "AMD64").unwrap(),
@@ -1054,8 +1065,7 @@ mod tests {
         // rather than resolve to a non-existent one.
         assert!(target_triple("windows", "arm64").is_err());
         assert!(target_triple("linux", "riscv64").is_err());
-        // aarch64 Linux and Intel macOS are intentionally not shipped.
-        assert!(target_triple("linux", "aarch64").is_err());
+        // Intel macOS is intentionally not shipped.
         assert!(target_triple("macos", "x86_64").is_err());
     }
 

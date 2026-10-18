@@ -44,7 +44,7 @@ Every push to `main` automatically triggers the release workflow:
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major)
    - Creates lightweight git tag: `v{version}` (e.g., v1.0.0)
    - Pushes tag to origin
-   - Builds binaries for 4 platforms (3 Unix `.tar.gz` + 1 Windows `.zip`;
+   - Builds binaries for 5 platforms (4 Unix `.tar.gz` + 1 Windows `.zip`;
      version passed via environment variable)
    - Generates changelog from commits
    - Publishes GitHub Release with binaries and release notes
@@ -68,9 +68,10 @@ Every push to `main` automatically triggers the release workflow:
 
 Each release includes:
 
-- Binaries for 4 platforms:
+- Binaries for 5 platforms:
   - `thurbox-v{ver}-x86_64-unknown-linux-gnu.tar.gz`
   - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
+  - `thurbox-v{ver}-aarch64-unknown-linux-musl.tar.gz`
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
   - `thurbox-v{ver}-x86_64-pc-windows-msvc.zip` (the Windows artifact
     extracted by `install.ps1` / packaged by Chocolatey + winget)
@@ -88,7 +89,7 @@ package channels (each gated on its secret, skipped on forks):
   `Thurbeen/homebrew-thurbox` tap over SSH. Needs the `HOMEBREW_TAP_DEPLOY_KEY`
   secret (a write deploy key on the tap repo; the org blocks cross-repo PATs).
   Install: `brew install thurbeen/thurbox/thurbox`. Supports macOS arm64
-  (`aarch64-apple-darwin`) + Linux x86_64 (`x86_64-unknown-linux-musl`).
+  (`aarch64-apple-darwin`) + Linux x86_64/aarch64 (`*-unknown-linux-musl`).
 - **AUR** (`publish-aur`): bumps + pushes `thurbox`/`thurbox-bin` PKGBUILDs.
   Needs `AUR_SSH_PRIVATE_KEY`.
 - **Chocolatey** (`publish-chocolatey`): bumps `<version>` in
@@ -196,9 +197,10 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 Both installers share the same shape: ASCII banner, platform detection, version
 resolution (GitHub API → releases-page scrape fallback), SHA256 checksum
 verification, extract, post-install hints. From the same release, `install.sh`
-pulls the `.tar.gz` for `x86_64-unknown-linux-musl` / `aarch64-apple-darwin`
-(Linux x86_64 + Apple-silicon macOS — the only platforms it installs onto; it
-errors cleanly on any other), while `install.ps1` pulls
+pulls the `.tar.gz` for `x86_64-unknown-linux-musl` /
+`aarch64-unknown-linux-musl` / `aarch64-apple-darwin` (Linux x86_64 + aarch64 and
+Apple-silicon macOS — the only platforms it installs onto; it errors cleanly on
+any other), while `install.ps1` pulls
 **`thurbox-<ver>-x86_64-pc-windows-msvc.zip`** (the Windows artifact built by
 `cd.yml`) and extracts it with the built-in `Expand-Archive` (no tar needed).
 ARM64 Windows installs the x86_64 build (runs under x64 emulation).

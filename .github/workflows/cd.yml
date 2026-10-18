@@ -116,7 +116,7 @@ jobs:
           # the website is versioned as `feat(ui)`/`fix(ui)`. Those change no
           # byte of the shipped binary, yet each cut a release (v1.2.13..v1.3.0
           # were four CSS-only releases, one of them a *minor*). Every such
-          # release also re-runs the 4-platform build and pushes to Homebrew/AUR/
+          # release also re-runs the full platform build and pushes to Homebrew/AUR/
           # Chocolatey/winget — the moderated channels that then rate-limit us.
           #
           # So gate on the diff as well: release only when something a user
@@ -247,6 +247,9 @@ jobs:
             os: ubuntu-latest
             use_cross: false
           - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
           - target: aarch64-apple-darwin
