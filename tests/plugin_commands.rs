@@ -690,3 +690,30 @@ fn editing_your_own_trusted_file_keeps_run() {
     render(&host, "asks");
     assert_eq!(host.drain_runs().len(), 1);
 }
+
+#[test]
+fn an_unreadable_lock_grants_nothing_to_an_installed_file() {
+    // Without the lock an installed file looks like the user's own, and an edit
+    // to one keeps its grant. A record that carries a pin says otherwise.
+    let (home, ui) = interface(&[]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let file = "plugins/91_asks.lua";
+    let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
+    thurbox::kernel::registry::Registry::load()
+        .trust_installed(
+            &ui.join(file).to_string_lossy(),
+            &pin,
+            &asker("asks", "k", true),
+        )
+        .expect("trust");
+    std::fs::write(ui.join(file), asker("asks", "swapped", true)).expect("change");
+    std::fs::write(thurbox::kernel::packages::lock_path(&ui), "not [ toml").expect("corrupt");
+
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert!(
+        host.drain_runs().is_empty(),
+        "a corrupt lock must fail closed"
+    );
+}

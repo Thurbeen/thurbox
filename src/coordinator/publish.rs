@@ -289,14 +289,19 @@ impl App {
         if !self.trust_stale {
             return;
         }
-        let lock = thurbox::kernel::packages::read_lock(&self.ui_dir).unwrap_or_default();
+        let lock = thurbox::kernel::packages::read_lock(&self.ui_dir).ok();
         self.trust = self
             .sources
             .keys()
             .map(|path| {
                 (
                     path.clone(),
-                    thurbox::kernel::packages::trust_of(&self.ui_dir, path, &lock, &self.registry),
+                    thurbox::kernel::packages::trust_of(
+                        &self.ui_dir,
+                        path,
+                        lock.as_ref(),
+                        &self.registry,
+                    ),
                 )
             })
             .collect();

@@ -2085,7 +2085,9 @@ file again. A file you wrote yourself is different: editing it reads
 `trusted · modified` and keeps its grant, since it is yours to change.
 
 What the Interface tab says is what the plugin holds: the grant the kernel enforces
-and the row you read come from one decision (`packages::trust_of`).
+and the row you read come from one decision (`packages::trust_of`). If `plugins.lock` cannot
+be read, a grant made to a version is withdrawn rather than judged as if the file
+were your own.
 
 ### There is no lazy loading
 
