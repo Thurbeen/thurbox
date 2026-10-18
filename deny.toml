@@ -4,7 +4,14 @@
 [advisories]
 # Deny crates with security vulnerabilities
 version = 2
-ignore = []
+ignore = [
+    # zbus 6 absorbed these crates, but notify-rust 4.18.2 (the latest) still
+    # pulls zbus 5. Unmaintained notices, not vulnerabilities, with no safe
+    # upgrade: drop these once notify-rust moves to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via notify-rust -> zbus 5; no release on zbus 6 yet" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via notify-rust -> zbus 5; no release on zbus 6 yet" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via notify-rust -> zbus 5; no release on zbus 6 yet" },
+]
 
 [licenses]
 # License policy — version 2 denies all licenses not explicitly allowed
