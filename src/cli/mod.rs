@@ -496,7 +496,9 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
         output.agent.max_text = None;
     }
     if let Some(spec) = &cli.fields {
-        output.agent.fields = parse_fields(spec);
+        output
+            .select_fields(parse_fields(spec))
+            .map_err(|e| CommandError::with_code(e, EXIT_USAGE))?;
     }
 
     println!("{}", format.render(&output));
