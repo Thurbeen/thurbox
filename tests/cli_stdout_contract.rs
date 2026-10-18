@@ -38,6 +38,11 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_inside(None, args)
+    }
+
+    /// [`Env::run`] as a pane whose `THURBOX_SESSION` is `session`.
+    fn run_inside(&self, session: Option<&str>, args: &[&str]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
         cmd.args(args);
         cmd.env("HOME", self.path("home"));
@@ -54,6 +59,9 @@ impl Env {
         cmd.env("TMUX_TMPDIR", self.path("tmux"));
         cmd.env_remove("THURBOX_SESSION");
         cmd.env_remove("THURBOX_SESSION_ID");
+        if let Some(session) = session {
+            cmd.env("THURBOX_SESSION", session);
+        }
         cmd.output().expect("run thurbox-cli")
     }
 }
@@ -824,6 +832,50 @@ fn fields_selects_the_columns_of_text_and_toon_alike() {
         assert!(
             stdout.contains("colour"),
             "the error names the field it refused under {format}: {stdout}"
+        );
+    }
+}
+
+/// A pane whose `THURBOX_SESSION` names a session this database has no row
+/// for — a remote peer spawned it — is not told the variable is unset.
+///
+/// Both verbs that resolve the calling session used to collapse "unset" and
+/// "set but unknown here" into one message, and every agent hook in such a
+/// pane then sent its reader looking for a missing variable that was there.
+#[test]
+fn a_calling_session_unknown_here_is_told_apart_from_none() {
+    let env = Env::new();
+    let stranger = "f47ffda2-e686-420c-a9ad-8fc746ef841a";
+    let database = env.path("data").join("thurbox.db");
+
+    for args in [
+        &["message", "inbox", "--json"][..],
+        &["session", "signal", "--state", "working", "--json"][..],
+    ] {
+        let doc = sole_document(&env.run_inside(Some(stranger), args));
+        let error = doc["error"].as_str().unwrap_or_default();
+        assert!(error.contains(stranger), "{args:?} names the value: {doc}");
+        assert!(
+            error.contains(&database.display().to_string()),
+            "{args:?} names the database it looked in: {doc}"
+        );
+        assert!(
+            !error.contains("unset") && !error.contains("not inside"),
+            "{args:?} does not claim the variable is missing: {doc}"
+        );
+
+        let doc = sole_document(&env.run_inside(Some("not-a-uuid"), args));
+        let error = doc["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("not-a-uuid") && !error.contains("unset"),
+            "{args:?} names a value that is no session id at all: {doc}"
+        );
+
+        let doc = sole_document(&env.run(args));
+        let error = doc["error"].as_str().unwrap_or_default();
+        assert!(
+            (error.contains("unset") || error.contains("not inside")) && !error.contains(stranger),
+            "{args:?} still says when there is no calling session: {doc}"
         );
     }
 }
