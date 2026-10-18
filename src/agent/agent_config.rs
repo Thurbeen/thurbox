@@ -432,19 +432,7 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
                         agent.resume_latest = false;
                     }
                     upgrade_seeded_omp_args(&mut agent);
-                    // Registries seeded before telemetry existed gain the
-                    // built-in switches; either key present, even empty, is
-                    // the user's own answer.
-                    if entry.get("telemetry_env").is_none() && entry.get("telemetry_args").is_none()
-                    {
-                        if let Some(builtin) = builtins
-                            .get(&agent.name)
-                            .filter(|b| b.command == agent.command)
-                        {
-                            agent.telemetry_env = builtin.telemetry_env.clone();
-                            agent.telemetry_args = builtin.telemetry_args.clone();
-                        }
-                    }
+                    upgrade_seeded_telemetry(&mut agent, entry, &builtins);
                     agents.push(agent);
                 }
             }
@@ -471,6 +459,23 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
 /// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
 /// that names the entry) when it is malformed so the caller can skip it. Unknown
 /// fields within a valid entry are reported but kept.
+/// Give an entry seeded before telemetry existed its built-in's
+/// `telemetry_env` / `telemetry_args`. Either key present, even empty, is the
+/// user's own answer, and only an entry whose `name` and `command` both match
+/// a built-in is one.
+fn upgrade_seeded_telemetry(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
+    if entry.get("telemetry_env").is_some() || entry.get("telemetry_args").is_some() {
+        return;
+    }
+    if let Some(builtin) = builtins
+        .get(&agent.name)
+        .filter(|b| b.command == agent.command)
+    {
+        agent.telemetry_env = builtin.telemetry_env.clone();
+        agent.telemetry_args = builtin.telemetry_args.clone();
+    }
+}
+
 fn deserialize_agent(
     entry: &toml::Value,
     index: usize,
