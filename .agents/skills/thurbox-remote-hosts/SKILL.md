@@ -111,7 +111,10 @@ asked of the server by `check_psmux_version` — ADR-13 has why) — older psmux
 paste command, and has **no per-window options**. So thurbox re-encodes
 keystrokes from the primitives psmux does support (`psmux_send_keys_commands`),
 using one named key for each arrow or navigation sequence, folds
-env + command into **one token** of PowerShell (`psmux_window_powershell`),
+env + command into **one** PowerShell script (`psmux_window_powershell`)
+launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`,
+`shell::powershell_launcher`) — never a bare script, which psmux ≥ 3.4.0 runs
+through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH —
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /
@@ -127,7 +130,9 @@ workaround has non-obvious quoting/tokenizing constraints — **read the psmux
 divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
 psmux has **no `remain-on-exit`**, so an agent window closes with its agent
-and reads `Missing`. The agent window's PowerShell therefore ends by piping
+and reads `Missing` — which is also why `create_window` looks for the window
+again after `SPAWN_SETTLE` and refuses one that is already gone rather than
+report it created. The agent window's PowerShell ends by piping
 `LASTEXITCODE` into `thurbox-cli session exited`, which records an `exited`
 event with the status and the pane tail. Each repairer relaunch is logged as
 `relaunched`, and three within ten minutes hold the next one back and mark

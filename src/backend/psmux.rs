@@ -26,7 +26,7 @@ use crate::backend::tmux_compat::control_mode::{ControlPolicy, PaneInput, SEND_K
 use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
-use crate::shell::{powershell_quote, HostLauncher};
+use crate::shell::{powershell_launcher, powershell_quote, HostLauncher};
 
 /// psmux.
 pub struct Psmux;
@@ -115,6 +115,12 @@ impl TmuxCompatible for Psmux {
     /// targets the session and finds the window by its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
 
+    /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
+    /// with a light profile to start and fail to find the program it was told
+    /// to run; a slow profile (conda, oh-my-posh) can outlast it, which only
+    /// misses a dead window — it never refuses a live one.
+    const SPAWN_SETTLE: Option<std::time::Duration> = Some(std::time::Duration::from_millis(1500));
+
     /// No `if-shell -F` to decide with: the last instance to paint wins.
     const CONDITIONAL_RESIZE: bool = false;
 
@@ -160,7 +166,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// None: psmux ignores `new-window -e`, so the environment is folded into
-    /// the window command (`psmux_window_powershell`).
+    /// the window's script (`psmux_window_powershell`).
     fn env_flags(_env: &HashMap<String, String>) -> String {
         String::new()
     }
@@ -176,7 +182,7 @@ impl TmuxCompatible for Psmux {
     }
 
     /// One argv token: the environment and the program as the PowerShell
-    /// `psmux_window_powershell` builds, since `-e` would be ignored.
+    /// launch `psmux_window_program` builds, since `-e` would be ignored.
     fn push_window_program(
         cmd: &mut Command,
         window_name: &str,
@@ -184,7 +190,7 @@ impl TmuxCompatible for Psmux {
         args: &[String],
         env: &HashMap<String, String>,
     ) {
-        cmd.arg(psmux_window_powershell(window_name, command, args, env));
+        cmd.arg(psmux_window_program(window_name, command, args, env));
     }
 
     /// psmux's own `send-paste`, which wraps and writes the payload itself (see
@@ -295,7 +301,7 @@ impl TmuxCompatible for Psmux {
 /// hook-state option.
 fn hook_poll_command(session: &str) -> String {
     // Double-quoted framing: psmux's tokenizer passes `'` through `"…"` tokens
-    // but mangles adjacent `'…'` segments (see [`psmux_window_command`]). The
+    // but concatenates adjacent `'…'` segments (verified against 3.3.6). The
     // session name is user-authored hosts.toml text embedded in a wire command,
     // so it gets the same double-quote framing, minus the `"`/`\` it can't
     // carry — mirroring the socket sanitization in `hook_signal_command`.
@@ -407,32 +413,25 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
 const EXIT_REPORT: &str =
     "; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
 
-/// Build the PowerShell command a psmux window runs: set the env vars, then
+/// Build the PowerShell script a psmux window runs: set the env vars, then
 /// launch the agent — and, in an agent window, report its exit
 /// ([`EXIT_REPORT`]).
 ///
 /// psmux ignores `new-window -e` — env vars never reach the window's
-/// process — so they are folded into the command itself (`Set-Item Env:K
-/// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). psmux runs
-/// the window command via `powershell -NoLogo -Command <string>`, whose
-/// Win32 command line strips unescaped double quotes — so all quoting is
-/// PowerShell **single** quotes (`''` = literal `'`), which Win32
-/// tokenization passes through. A raw `"` or newline would break the outer
-/// framing on either delivery path (below) with no escape that survives,
-/// so both are neutralized to spaces.
+/// process — so they are folded into the script itself (`Set-Item Env:K
+/// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
+/// PowerShell **single** quotes (`''` = literal `'`). A raw `"` in a value is
+/// neutralized to a space: Windows PowerShell 5.1 hands an embedded `"` to the
+/// program unescaped, which splits the argument there. A newline is too, a
+/// rule kept from when the script itself rode the window's command line,
+/// where a shell ends the command at one; encoded it would survive, but no
+/// agent's argv or env relies on an embedded newline.
 ///
-/// Two callers deliver this string as **one unit** (verified against psmux
-/// 3.3.6; both needed because psmux drops what tmux would keep):
-/// - [`psmux_window_command`] wraps it in
-///   double quotes for a control-mode `new-window` line, whose parser keeps
-///   only the *first* trailing token (tmux joins them) — the agent launched
-///   with no args. psmux's tokenizer concatenates adjacent `'…'` segments
-///   but passes `'` through `"…"` tokens untouched (backslash is literal
-///   everywhere, so `C:\` paths are safe) — hence single quotes inside,
-///   double quotes outside.
-/// - the headless spawn passes it verbatim as a single argv token
-///   ([`TmuxCompatible::push_window_program`]; the argv path joins trailing
-///   tokens fine, but still ignores `-e`).
+/// The script is not what the window runs: psmux runs a single-string window
+/// command through the shell it resolves, which is `cmd.exe` on a server
+/// started over Windows OpenSSH (psmux 3.4.0 #683, `cached_shell` and
+/// `build_command` in its `src/pane.rs`). [`psmux_window_program`] names the
+/// interpreter around it.
 fn psmux_window_powershell(
     window_name: &str,
     command: &str,
@@ -458,8 +457,33 @@ fn psmux_window_powershell(
     ps
 }
 
-/// [`psmux_window_powershell`] framed as one
-/// **double-quoted** control-mode token for a `new-window` line.
+/// The program a psmux window runs: [`psmux_window_powershell`] handed to
+/// `powershell.exe` explicitly ([`powershell_launcher`]), so it runs in
+/// PowerShell whichever shell psmux would have picked.
+///
+/// Two callers deliver it as **one unit** (both needed because psmux drops
+/// what tmux would keep):
+/// - [`psmux_window_command`] wraps it in double quotes for a control-mode
+///   `new-window` line, whose parser keeps only the *first* trailing token
+///   (tmux joins them).
+/// - the headless spawn passes it verbatim as a single argv token
+///   ([`TmuxCompatible::push_window_program`]; the argv path joins trailing
+///   tokens fine, but still ignores `-e`).
+///
+/// Either way psmux 3.4.0 spawns it directly — a bare program with
+/// arguments and no shell metacharacter (`try_direct_spawn`) — and an older
+/// one through its shell, where the encoded script means nothing either.
+fn psmux_window_program(
+    window_name: &str,
+    command: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+) -> String {
+    powershell_launcher(&psmux_window_powershell(window_name, command, args, env))
+}
+
+/// [`psmux_window_program`] framed as one **double-quoted** control-mode
+/// token for a `new-window` line.
 fn psmux_window_command(
     window_name: &str,
     command: &str,
@@ -468,7 +492,7 @@ fn psmux_window_command(
 ) -> String {
     format!(
         "\"{}\"",
-        psmux_window_powershell(window_name, command, args, env)
+        psmux_window_program(window_name, command, args, env)
     )
 }
 
@@ -977,7 +1001,11 @@ mod tests {
                    exit 1\n\
                  fi\n\
                  test -f \"$session\" ;;\n\
-               list-windows) test -f \"$session\" ;;\n\
+               list-windows)\n\
+                 test -f \"$session\" || exit 1\n\
+                 if [ -f \"$attempts.window_created\" ] && [ \"$scenario\" != window_dies ]; then\n\
+                   echo '%1|tb-check|0'\n\
+                 fi ;;\n\
                display-message) echo '3.3.8' ;;\n\
                new-session)\n\
                  if [ \"$scenario\" = needs_unsized_bootstrap ]; then\n\
@@ -1277,6 +1305,31 @@ mod tests {
         assert!(root.path().join("attempts.window_created").exists());
     }
 
+    /// psmux keeps no window once its program exits, so `new-window`
+    /// succeeding says nothing about whether the program started: a window
+    /// gone by the time it is looked for again is a failed create, not a
+    /// session reported `created` with nothing behind it.
+    #[cfg(unix)]
+    #[test]
+    fn psmux_refuses_a_window_that_died_at_once() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "window_dies");
+        let env = HashMap::new();
+        let spec = crate::backend::contract::WindowSpec {
+            owner: crate::backend::contract::Owner::new("session-id", "check"),
+            role: crate::backend::contract::WindowRole::Agent,
+            command: "no-such-agent",
+            args: &[],
+            cwd: None,
+            env: &env,
+        };
+
+        let error = backend.create_window(&spec).unwrap_err().to_string();
+        assert!(root.path().join("attempts.window_created").exists());
+        assert!(error.contains("tb-check exited"), "{error}");
+        assert!(error.contains("`no-such-agent`"), "{error}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn psmux_stops_after_three_failed_cold_bootstraps() {
@@ -1437,37 +1490,89 @@ mod tests {
         assert!(!args.iter().any(|a| a.contains('\n') || a.contains('\x1b')));
     }
 
+    /// The script a window program hands `powershell.exe`, decoded back.
+    fn decoded_script(program: &str) -> String {
+        let encoded = program
+            .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
+            .unwrap_or_else(|| panic!("not an explicit PowerShell launch: {program}"));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64");
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16(&units).expect("UTF-16LE")
+    }
+
     #[test]
     fn psmux_window_command_is_one_double_quoted_token() {
         let args = vec!["--session-id".to_string(), "abc-123".to_string()];
         let cmd = psmux_window_command("tbs-x", "claude", &args, &HashMap::new());
-        assert_eq!(cmd, "\"& 'claude' '--session-id' 'abc-123'\"");
+        let program = cmd
+            .strip_prefix('"')
+            .and_then(|c| c.strip_suffix('"'))
+            .expect("double-quoted");
+        assert_eq!(
+            decoded_script(program),
+            "& 'claude' '--session-id' 'abc-123'"
+        );
+    }
+
+    /// The window runs PowerShell by name, whatever shell psmux resolves: on a
+    /// server started over Windows OpenSSH that shell is `cmd.exe`, which
+    /// killed every window handed a bare PowerShell script. Nothing in the
+    /// program is syntax to `cmd.exe`, PowerShell or psmux's tokenizer, and it
+    /// is the same program on the control-mode and the headless argv path.
+    #[test]
+    fn the_window_program_names_powershell_and_carries_no_shell_syntax() {
+        let mut env = HashMap::new();
+        env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
+        let args = vec!["it's".to_string(), "a & b | c; %PATH% $x".to_string()];
+        let program = psmux_window_program("tb-x", "C:\\Tools\\claude.exe", &args, &env);
+        let tokens: Vec<&str> = program.split(' ').collect();
+        assert_eq!(
+            tokens[..3],
+            ["powershell.exe", "-NoLogo", "-EncodedCommand"]
+        );
+        assert_eq!(tokens.len(), 4, "{program}");
+        assert!(tokens[3]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')));
+        assert_eq!(
+            decoded_script(&program),
+            psmux_window_powershell("tb-x", "C:\\Tools\\claude.exe", &args, &env)
+        );
+
+        let mut cmd = Command::new("psmux");
+        Psmux::push_window_program(&mut cmd, "tb-x", "C:\\Tools\\claude.exe", &args, &env);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv, [program]);
     }
 
     #[test]
-    fn psmux_window_command_folds_env_as_set_item() {
+    fn psmux_window_script_folds_env_as_set_item() {
         // `Set-Item Env:K 'v'` (not `$env:K`) keeps the string `$`-free; sorted
         // for determinism. Values with spaces survive the PS single quotes.
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         env.insert("B".to_string(), "x y".to_string());
-        let cmd = psmux_window_command("tbs-x", "claude", &[], &env);
         assert_eq!(
-            cmd,
-            "\"Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'\""
+            psmux_window_powershell("tbs-x", "claude", &[], &env),
+            "Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'"
         );
     }
 
     #[test]
     fn an_agent_window_reports_its_exit() {
-        let cmd = psmux_window_command("tb-x", "claude", &[], &HashMap::new());
         assert_eq!(
-            cmd,
-            "\"& 'claude'; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore \
-             | thurbox-cli session exited\""
+            psmux_window_powershell("tb-x", "claude", &[], &HashMap::new()),
+            "& 'claude'; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore \
+             | thurbox-cli session exited"
         );
-        // The report rides inside the one token, and stays free of what that
-        // token cannot carry.
         assert!(!EXIT_REPORT.contains(['"', '\n', '$', '{', '}']));
     }
 
@@ -1480,14 +1585,13 @@ mod tests {
     }
 
     #[test]
-    fn psmux_window_command_escapes_and_sanitizes() {
-        // A literal ' doubles (PowerShell escaping); a raw " or newline would
-        // terminate the outer token / split the control-mode line, so both are
-        // neutralized to spaces. Backslash paths pass through untouched (psmux
-        // treats backslash literally everywhere).
+    fn psmux_window_script_escapes_and_sanitizes() {
+        // A literal ' doubles (PowerShell escaping); a raw " or newline is
+        // neutralized to a space (Windows PowerShell 5.1 would hand the program
+        // an unescaped `"`). Backslash paths pass through untouched.
         let args = vec!["it's".to_string(), "say \"hi\"\nnow".to_string()];
-        let cmd = psmux_window_command("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
-        assert_eq!(cmd, "\"& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'\"");
+        let cmd = psmux_window_powershell("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
+        assert_eq!(cmd, "& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'");
     }
 
     #[test]
@@ -1502,10 +1606,11 @@ mod tests {
         };
         let backend = PsmuxBackend::for_host(&host);
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
+        let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new());
         assert_eq!(
-            Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()),
-            "\"& 'claude'\"",
-            "the window's command is the PowerShell token, never a POSIX wrap"
+            decoded_script(cmd.trim_matches('"')),
+            "& 'claude'",
+            "the window's command is the PowerShell launch, never a POSIX wrap"
         );
     }
 

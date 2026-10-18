@@ -924,13 +924,20 @@ reference to read before touching that path.
 - **`new-window` trailing tokens are not joined** (psmux keeps only the first
   and drops the rest — the agent launched with **no args**) and **`new-window
   -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
-  `psmux::psmux_window_powershell` folds env + command into **one token**
-  of PowerShell (`Set-Item Env:K 'v'; & 'claude' '--session-id' …` — psmux runs
-  it via `powershell -NoLogo -Command`, whose Win32 command line strips
-  unescaped double quotes, hence PowerShell single-quoting throughout;
-  backslash is literal in psmux's parser, so `C:\` paths survive). Control-mode
-  spawns (`psmux_window_command`) frame it in double quotes (psmux's tokenizer
-  concatenates adjacent `'…'` segments but passes `'` through `"…"` tokens); the
+  `psmux::psmux_window_powershell` folds env + command into **one** PowerShell
+  script (`Set-Item Env:K 'v'; & 'claude' '--session-id' …`, PowerShell
+  single-quoting throughout), and `psmux_window_program` hands it to
+  `powershell.exe -NoLogo -EncodedCommand <base64>` explicitly. psmux runs a
+  single-string window command through the shell it resolves (`cached_shell` /
+  `build_command`, psmux `src/pane.rs`): since 3.4.0 (#683) that is `$SHELL`
+  first, and Windows OpenSSH sets `SHELL=cmd.exe` for everything it starts, so
+  a server thurbox starts over ssh ran the bare script as `cmd.exe /C …` and
+  every window died at once. `default-shell` cannot help — it only applies to a
+  window created with no command. Encoded, the program is four plain tokens
+  whose script argument is restricted to `[A-Za-z0-9+/=]`, so psmux spawns it
+  directly and no shell on the way reads any of it as syntax; the heartbeat
+  keeper's loop goes the same way. Control-mode spawns
+  (`psmux_window_command`) frame it in double quotes; the
   headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
   data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance

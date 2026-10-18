@@ -125,6 +125,13 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// and retains it by.
     const ONE_SHOT_SPAWN_ANSWERS: bool;
 
+    /// How long after `create_window` to look for the window again, on a
+    /// server whose window closes with its program (no `remain-on-exit`):
+    /// there, a program that cannot start leaves nothing behind, and a create
+    /// that only asked whether `new-window` ran reported a session that never
+    /// started. `None` where a dead pane stays to be seen.
+    const SPAWN_SETTLE: Option<std::time::Duration> = None;
+
     /// Whether a resize can be made conditional on who sizes the window
     /// (`if-shell -F` over [`SIZER_OPTION`]). Where it cannot, the last
     /// instance to paint a pane sizes it.
@@ -264,6 +271,29 @@ pub const TMUX_SESSION: &str = if cfg!(dev_build) {
 /// another; `the_discover_format_reads_both_stamps` pins them to the constants.
 const DISCOVER_FORMAT: &str =
     "#{pane_id}|#{window_name}|#{pane_dead}|#{@thurbox_session}|#{@thurbox_role}";
+
+/// What [`SessionBackend::window_panes`] lists, read by [`named_panes`].
+const WINDOW_PANES_FORMAT: &str = "#{pane_id}|#{window_name}|#{pane_dead}";
+
+/// The panes of the windows named exactly `window_name` in a
+/// [`WINDOW_PANES_FORMAT`] listing, each with whether it is dead.
+fn named_panes(listing: &str, window_name: &str) -> Vec<(String, bool)> {
+    let mut found = Vec::new();
+    for line in listing.lines() {
+        let parts: Vec<&str> = line.trim().splitn(3, '|').collect();
+        if parts.len() < 3 || parts[1] != window_name {
+            continue;
+        }
+        // An unparseable id is dropped rather than reported dead: the caller
+        // would try to kill it, and a target tmux cannot resolve is not a
+        // corpse, it is noise.
+        if !control_mode::is_valid_pane_id(parts[0]) {
+            continue;
+        }
+        found.push((parts[0].to_string(), parse_pane_dead(parts[2])));
+    }
+    found
+}
 
 /// What `new-window -P -F` is asked to answer with: the pane to attach to, and
 /// the window whose close will be that pane's death notice.
@@ -1374,7 +1404,60 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.owner.name
             );
         }
+        backend.confirm_spawned(spec, &spawned.backend_id)?;
         Ok(spawned.backend_id)
+    }
+
+    /// Refuse a window that is already gone [`TmuxCompatible::SPAWN_SETTLE`]
+    /// after it was created. `pane_id` is the created pane where the server
+    /// answered with one; an empty one (no `-P` answer) is matched by the
+    /// window's name, so only a name with no live window at all is refused.
+    ///
+    /// A listing that does not answer refuses nothing: the window was
+    /// created, and a question left unanswered is not evidence it died.
+    fn confirm_spawned(&self, spec: &WindowSpec<'_>, pane_id: &str) -> Result<()> {
+        let Some(settle) = M::SPAWN_SETTLE else {
+            return Ok(());
+        };
+        std::thread::sleep(settle);
+        let window_name = window_name_for(spec.role, spec.owner.name);
+        let panes = match self.spawned_panes(&window_name) {
+            Ok(panes) => panes,
+            Err(e) => {
+                warn!("could not confirm window {window_name} after creating it: {e:#}");
+                return Ok(());
+            }
+        };
+        if panes
+            .iter()
+            .any(|(id, dead)| !dead && (pane_id.is_empty() || id == pane_id))
+        {
+            return Ok(());
+        }
+        bail!(
+            "window {window_name} exited within {}ms of starting `{}`: {} keeps no \
+             window once its program exits, so nothing of it is left to read. Check \
+             that `{}` runs on {}",
+            settle.as_millis(),
+            spec.command,
+            self.transport.mux(),
+            spec.command,
+            self.name
+        )
+    }
+
+    /// [`SessionBackend::window_panes`], asked through the control connection
+    /// where there is one: a one-shot listing over ssh is re-read by the
+    /// host's login shell, and `cmd.exe` takes the format's `|` for a pipe.
+    fn spawned_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
+        if !self.attached() {
+            return self.window_panes(window_name);
+        }
+        let listing = self.ctrl_command(&format!(
+            "list-windows -t {} -F '{WINDOW_PANES_FORMAT}'",
+            self.session
+        ))?;
+        Ok(named_panes(&listing, window_name))
     }
 
     /// What `owner`'s `role` window is, where the listing alone could not say.
@@ -2668,23 +2751,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             "-t",
             &self.session,
             "-F",
-            "#{pane_id}|#{window_name}|#{pane_dead}",
+            WINDOW_PANES_FORMAT,
         ])?;
-        let mut found = Vec::new();
-        for line in listing.lines() {
-            let parts: Vec<&str> = line.splitn(3, '|').collect();
-            if parts.len() < 3 || parts[1] != window_name {
-                continue;
-            }
-            // An unparseable id is dropped rather than reported dead: the caller
-            // would try to kill it, and a target tmux cannot resolve is not a
-            // corpse, it is noise.
-            if !control_mode::is_valid_pane_id(parts[0]) {
-                continue;
-            }
-            found.push((parts[0].to_string(), parse_pane_dead(parts[2])));
-        }
-        Ok(found)
+        Ok(named_panes(&listing, window_name))
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
@@ -2724,10 +2793,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
-        match self.transport.is_remote() {
-            true => self.create_remote_window(spec),
-            false => self.create_local_window(spec),
+        if self.transport.is_remote() {
+            return self.create_remote_window(spec);
         }
+        let pane_id = self.create_local_window(spec)?;
+        self.confirm_spawned(spec, &pane_id)?;
+        Ok(pane_id)
     }
 
     fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
@@ -3740,9 +3811,11 @@ const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
 /// The keeper's loop, as the window command: `program args…` every `every`,
 /// in the shell of the machine the server runs on (`platform`) — a POSIX one,
-/// or on Windows PowerShell, which is how psmux runs a window command
-/// (`powershell -NoLogo -Command`). Handed over as **one argv token** either
-/// way, which on psmux also dodges its trailing-token handling.
+/// or on Windows a PowerShell script handed to `powershell.exe` explicitly
+/// ([`crate::shell::powershell_launcher`]), since psmux runs a window command
+/// in whichever shell it resolves, `cmd.exe` on a server started over ssh.
+/// Handed over as **one argv token** either way, which on psmux also dodges
+/// its trailing-token handling.
 fn heartbeat_loop_command(
     platform: Platform,
     program: &Path,
@@ -3767,10 +3840,10 @@ fn heartbeat_loop_command(
                 .chain(args.iter().cloned())
                 .map(|a| crate::shell::powershell_quote(&a))
                 .collect();
-            format!(
+            crate::shell::powershell_launcher(&format!(
                 "while ($true) {{ & {} *> $null; Start-Sleep {secs} }}",
                 argv.join(" ")
-            )
+            ))
         }
     }
 }
@@ -6300,5 +6373,34 @@ ERROR: something ps printed
         assert!(parser.screen().contents().contains("line1"));
         parser.screen_mut().set_scrollback(0);
         assert!(parser.screen().contents().contains("line10"));
+    }
+
+    /// The Windows keeper names its interpreter, like every psmux window: a
+    /// server started over Windows OpenSSH would otherwise hand the loop to
+    /// `cmd.exe` and the keeper window would close at once.
+    #[test]
+    fn the_windows_heartbeat_loop_runs_in_named_powershell() {
+        use base64::Engine as _;
+        let program = heartbeat_loop_command(
+            Platform::Windows,
+            Path::new("C:\\bin\\thurbox-cli.exe"),
+            &["automation".to_string(), "tick".to_string()],
+            std::time::Duration::from_secs(30),
+        );
+        let encoded = program
+            .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
+            .expect("an explicit PowerShell launch");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64");
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).expect("UTF-16LE"),
+            "while ($true) { & 'C:\\bin\\thurbox-cli.exe' 'automation' 'tick' *> $null; \
+             Start-Sleep 30 }"
+        );
     }
 }

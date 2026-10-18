@@ -466,8 +466,14 @@ $panes = (psmux -L $Socket list-panes -a -F '#{window_name} #{pane_dead}') -join
 Assert ($panes -match "tb-$name 0") "agent window alive on scoped socket ($Socket)"
 
 # The window process must carry the folded env + argv (psmux drops -e and
-# joined tokens; the deployed build must route around both).
-$procs = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'Set-Item Env:THURBOX_SESSION' }).CommandLine -join "`n"
+# joined tokens; the deployed build must route around both). The window runs
+# `powershell.exe -EncodedCommand <base64 of UTF-16LE>`, so the script is only
+# readable once decoded.
+$procs = (Get-CimInstance Win32_Process | ForEach-Object {
+  if ($_.CommandLine -match '-EncodedCommand\s+([A-Za-z0-9+/=]+)') {
+    [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
+  }
+} | Where-Object { $_ -match 'Set-Item Env:THURBOX_SESSION' }) -join "`n"
 Assert ($procs -match [regex]::Escape($json.id)) "THURBOX_SESSION env folded into the window command"
 Assert ($procs -match "'$Agent'") "agent argv delivered ($Agent)"
 
