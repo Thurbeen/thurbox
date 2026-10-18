@@ -193,6 +193,7 @@ fn trust_word(trust: FileTrust) -> Option<&'static str> {
         FileTrust::Untrusted => Some("untrusted"),
         FileTrust::Trusted => Some("trusted"),
         FileTrust::Drifted => Some("trusted, changed"),
+        FileTrust::Replaced => Some("untrusted, changed"),
     }
 }
 
@@ -266,6 +267,9 @@ fn asks(row: &Row) -> Option<String> {
         FileTrust::Untrusted => " — not granted; t grants it",
         FileTrust::Trusted => " — granted; t revokes it",
         FileTrust::Drifted => " — granted, but the file changed since; t revokes it",
+        FileTrust::Replaced => {
+            " — not granted: it changed since you trusted this version; t trusts it as it is"
+        }
         FileTrust::NotAsked => "",
     };
     Some(format!("asks to: {}{standing}", wants.join(", ")))
@@ -489,7 +493,7 @@ impl InterfaceTab {
                 None,
             );
         }
-        let granting = row.trust == FileTrust::Untrusted;
+        let granting = !row.trust.grants();
         (
             None,
             Some(Edit::Trust {
@@ -690,7 +694,7 @@ impl InterfaceTab {
                 hints.push(("d", " delete  "));
             }
             match row.trust {
-                FileTrust::Untrusted => hints.push(("t", " trust  ")),
+                FileTrust::Untrusted | FileTrust::Replaced => hints.push(("t", " trust  ")),
                 FileTrust::Trusted | FileTrust::Drifted => hints.push(("t", " revoke  ")),
                 FileTrust::NotAsked => {}
             }

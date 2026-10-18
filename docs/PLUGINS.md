@@ -2069,18 +2069,23 @@ is selected, and a `lib/<name>/` module a package brought is traced to it too.
 The grant itself is recorded against the **source and version** it was made for,
 not against the file's contents alone:
 
-| `src@version` | contents | reads as |
-|---|---|---|
-| matches | match | `trusted` — including a reinstall |
-| differs | — | not granted; you are asked again |
-| matches | differ | `installed · modified` |
+| `src@version` | contents | reads as | granted |
+|---|---|---|---|
+| matches | match | `trusted` — including a reinstall | yes |
+| differs | — | `untrusted`; you are asked again | no |
+| matches | differ | `untrusted · modified` | no |
 
 Both halves matter. Recording only the contents would report every ordinary release
 as tampering and teach you to dismiss the warning. Recording only `src@version`
 would let a source re-tag the same version with something else and keep a
 capability you granted to what that version used to be. That last row is the one to
 notice — it is the same warning as a local edit, because from outside they are
-indistinguishable.
+indistinguishable, and either way the capability is withdrawn until you trust the
+file again. A file you wrote yourself is different: editing it reads
+`trusted · modified` and keeps its grant, since it is yours to change.
+
+What the Interface tab says is what the plugin holds: the grant the kernel enforces
+and the row you read come from one decision (`packages::trust_of`).
 
 ### There is no lazy loading
 

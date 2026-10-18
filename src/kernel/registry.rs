@@ -684,12 +684,10 @@ impl Registry {
         Ok(off)
     }
 
-    /// Has the user trusted this file with the capabilities it declares?
-    pub fn is_trusted(&self, path: &str) -> bool {
-        self.trusted.contains_key(path)
-    }
-
     /// The contents trusted, if any — so a caller can notice they have changed.
+    ///
+    /// A record is not a grant: whether it still holds the capabilities is
+    /// `packages::trust_of`, which also weighs the pin and the file on disk.
     pub fn trusted_digest(&self, path: &str) -> Option<&str> {
         self.trusted.get(path).map(Granted::digest)
     }
@@ -1925,22 +1923,22 @@ mod tests {
         std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
         let mut registry = Registry::default();
-        assert!(!registry.is_trusted("/ui/plugins/mine.lua"));
+        assert!(!registry.trusted_digest("/ui/plugins/mine.lua").is_some());
 
         registry
             .trust("/ui/plugins/mine.lua", "return {}")
             .expect("trust");
-        assert!(registry.is_trusted("/ui/plugins/mine.lua"));
+        assert!(registry.trusted_digest("/ui/plugins/mine.lua").is_some());
         let recorded = registry
             .trusted_digest("/ui/plugins/mine.lua")
             .expect("a digest is recorded");
         assert_eq!(recorded, super::super::bundled::digest("return {}"));
 
         // Trusting one file says nothing about another.
-        assert!(!registry.is_trusted("/ui/plugins/other.lua"));
+        assert!(!registry.trusted_digest("/ui/plugins/other.lua").is_some());
 
         registry.revoke("/ui/plugins/mine.lua").expect("revoke");
-        assert!(!registry.is_trusted("/ui/plugins/mine.lua"));
+        assert!(!registry.trusted_digest("/ui/plugins/mine.lua").is_some());
         // Revoking what was never trusted is a state, not a transition.
         registry
             .revoke("/ui/plugins/never.lua")
@@ -1963,7 +1961,7 @@ mod tests {
 
         let read = Registry::load();
         assert!(
-            read.is_trusted("/ui/plugins/mine.lua"),
+            read.trusted_digest("/ui/plugins/mine.lua").is_some(),
             "a decision that does not survive a restart is not a decision"
         );
 

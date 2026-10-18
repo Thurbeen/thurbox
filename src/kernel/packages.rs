@@ -626,6 +626,25 @@ pub fn trust_of(
     }
 }
 
+/// Which of `files` hold the capabilities they declare, relative as given.
+///
+/// The grant the host enforces, decided by the same [`trust_of`] the Interface
+/// tab draws. Reading the bare record instead — "is there a grant for this
+/// path" — kept `run` on a pane the screen called untrusted after an update
+/// moved its pin.
+pub fn granted<'a>(
+    dir: &Path,
+    files: impl IntoIterator<Item = &'a str>,
+    registry: &super::registry::Registry,
+) -> Vec<String> {
+    let lock = read_lock(dir).unwrap_or_default();
+    files
+        .into_iter()
+        .filter(|file| trust_of(dir, file, &lock, registry).grants())
+        .map(str::to_string)
+        .collect()
+}
+
 /// What happened to one entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryReport {
@@ -1691,7 +1710,7 @@ mod tests {
         std::fs::write(dir.join(file), "-- swapped\n").expect("re-tag");
         assert_eq!(
             trust_of(&dir, file, &lock, &registry),
-            super::super::inventory::Trust::Drifted,
+            super::super::inventory::Trust::Replaced,
             "same version, different contents — the hole the digest closes"
         );
 
