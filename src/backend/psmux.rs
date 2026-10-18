@@ -26,7 +26,7 @@ use crate::backend::tmux_compat::control_mode::{ControlPolicy, PaneInput, SEND_K
 use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
-use crate::shell::{powershell_launcher, powershell_quote, HostLauncher};
+use crate::shell::{powershell_launcher, powershell_quote, HostLauncher, WINDOWS_CMD_LINE_MAX};
 
 /// psmux.
 pub struct Psmux;
@@ -177,7 +177,7 @@ impl TmuxCompatible for Psmux {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    ) -> String {
+    ) -> Result<String> {
         psmux_window_command(window_name, command, args, env)
     }
 
@@ -189,8 +189,9 @@ impl TmuxCompatible for Psmux {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    ) {
-        cmd.arg(psmux_window_program(window_name, command, args, env));
+    ) -> Result<()> {
+        cmd.arg(psmux_window_program(window_name, command, args, env)?);
+        Ok(())
     }
 
     /// psmux's own `send-paste`, which wraps and writes the payload itself (see
@@ -473,13 +474,18 @@ fn psmux_window_powershell(
 /// Either way psmux 3.4.0 spawns it directly — a bare program with
 /// arguments and no shell metacharacter (`try_direct_spawn`) — and an older
 /// one through its shell, where the encoded script means nothing either.
+///
+/// Agent `args` and `env` come from config with no bound, so a long one can
+/// take the program past what that shell runs: refused here with
+/// [`crate::shell::CommandLineTooLong`], before anything reaches psmux.
 fn psmux_window_program(
     window_name: &str,
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
-) -> String {
+) -> Result<String> {
     powershell_launcher(&psmux_window_powershell(window_name, command, args, env))
+        .with_context(|| format!("window {window_name} cannot start on a Windows host"))
 }
 
 /// [`psmux_window_program`] framed as one **double-quoted** control-mode
@@ -489,11 +495,11 @@ fn psmux_window_command(
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
-) -> String {
-    format!(
+) -> Result<String> {
+    Ok(format!(
         "\"{}\"",
-        psmux_window_program(window_name, command, args, env)
-    )
+        psmux_window_program(window_name, command, args, env)?
+    ))
 }
 
 /// The `run-shell` script that pastes the prompt, waits a beat, then presses
@@ -865,11 +871,16 @@ pub fn psmux_quote(s: &str) -> String {
     )
 }
 
-/// Max text bytes per `send-paste` command. The base64 payload travels as a
-/// process argument, and Windows caps a whole command line at ~32,767 chars —
-/// which base64 reaches at ~24 KB of text. 8 KB leaves generous headroom for
-/// the rest of the argv while keeping an ordinary paste a single command.
-const PASTE_CHUNK_BYTES: usize = 8 * 1024;
+/// Max text bytes per `send-paste` command: the most whose base64 payload,
+/// with [`PASTE_ARGV_RESERVE`] for the rest of the line, stays within
+/// [`WINDOWS_CMD_LINE_MAX`]. A paste to a host's server is a one-shot ssh
+/// command, which Windows OpenSSH runs through `cmd.exe`; an 8 KB chunk was
+/// ~10.9K chars there and was refused whole.
+const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_ARGV_RESERVE) / 4 * 3;
+
+/// What a `send-paste` line spends besides its payload: the multiplexer's
+/// path, `-L <socket>`, `send-paste -t <pane>`, and the separators.
+const PASTE_ARGV_RESERVE: usize = 1024;
 
 /// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
 /// decodes the payload as UTF-8 and drops it whole if that fails, so a
@@ -1389,6 +1400,29 @@ mod tests {
         assert!(error.contains("tb-check exited"), "{error}");
     }
 
+    /// An agent whose window program is past what `cmd.exe` will run is
+    /// refused with the reason, before anything reaches psmux — not created as
+    /// a window that dies at once and reads as a dead spawn (issue #1457).
+    #[cfg(unix)]
+    #[test]
+    fn psmux_refuses_a_window_program_past_the_windows_command_line() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "ok");
+        let env = HashMap::new();
+        let args = vec![format!("--append-system-prompt={}", "x".repeat(3_500))];
+        let spec = crate::backend::contract::WindowSpec {
+            args: &args,
+            ..check_spec(&env)
+        };
+
+        let error = format!("{:#}", backend.create_window(&spec).unwrap_err());
+        assert!(error.contains("Windows limit is 8191"), "{error}");
+        assert!(
+            !root.path().join("attempts.window_created").exists(),
+            "new-window ran"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn psmux_answers_the_new_pane_beside_a_live_namesake() {
@@ -1578,7 +1612,7 @@ mod tests {
     #[test]
     fn psmux_window_command_is_one_double_quoted_token() {
         let args = vec!["--session-id".to_string(), "abc-123".to_string()];
-        let cmd = psmux_window_command("tbs-x", "claude", &args, &HashMap::new());
+        let cmd = psmux_window_command("tbs-x", "claude", &args, &HashMap::new()).unwrap();
         let program = cmd
             .strip_prefix('"')
             .and_then(|c| c.strip_suffix('"'))
@@ -1599,7 +1633,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         let args = vec!["it's".to_string(), "a & b | c; %PATH% $x".to_string()];
-        let program = psmux_window_program("tb-x", "C:\\Tools\\claude.exe", &args, &env);
+        let program = psmux_window_program("tb-x", "C:\\Tools\\claude.exe", &args, &env).unwrap();
         let tokens: Vec<&str> = program.split(' ').collect();
         assert_eq!(
             tokens[..3],
@@ -1615,12 +1649,43 @@ mod tests {
         );
 
         let mut cmd = Command::new("psmux");
-        Psmux::push_window_program(&mut cmd, "tb-x", "C:\\Tools\\claude.exe", &args, &env);
+        Psmux::push_window_program(&mut cmd, "tb-x", "C:\\Tools\\claude.exe", &args, &env).unwrap();
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(argv, [program]);
+    }
+
+    /// An ordinary agent window — every `THURBOX_*` variable a spawn sets, a
+    /// pinned session id and the exit report — is well inside the limit
+    /// a Windows host puts on its program (issue #1457).
+    #[test]
+    fn a_typical_agent_window_fits_a_windows_command_line_with_room() {
+        let id = "0b9f3c62-7d1e-4a55-9a43-2f6c1e8d7b10";
+        let env: HashMap<String, String> = [
+            ("THURBOX_SESSION", id),
+            ("THURBOX_SOCKET", "thurbox"),
+            (
+                "THURBOX_METRICS_DIR",
+                "C:\\Users\\user\\AppData\\Local\\thurbox\\metrics",
+            ),
+            (
+                "THURBOX_DATA_DIR",
+                "C:\\Users\\user\\AppData\\Local\\thurbox",
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let args = vec!["--session-id".to_string(), id.to_string()];
+
+        let program = psmux_window_program("tb-check", "claude", &args, &env).unwrap();
+        assert!(
+            program.len() < WINDOWS_CMD_LINE_MAX / 2,
+            "{}",
+            program.len()
+        );
     }
 
     #[test]
@@ -1676,7 +1741,7 @@ mod tests {
         };
         let backend = PsmuxBackend::for_host(&host);
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
-        let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new());
+        let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()).unwrap();
         assert_eq!(
             decoded_script(cmd.trim_matches('"')),
             "& 'claude'",
@@ -2024,9 +2089,22 @@ mod tests {
         assert_eq!(paste_chunks(&exact), vec![exact.as_str()]);
     }
 
-    /// A huge paste is split so no single command line exceeds Windows' ~32 KB
-    /// cap — losslessly, and never mid-character (psmux drops a payload that
-    /// isn't valid UTF-8).
+    /// A full chunk's line fits `cmd.exe`, which runs a one-shot command on a
+    /// Windows ssh host (issue #1457).
+    #[test]
+    fn a_full_paste_chunk_fits_a_windows_command_line() {
+        let args = send_paste_args("%123", &"x".repeat(PASTE_CHUNK_BYTES));
+        let payload = args.last().expect("payload").len();
+        assert!(
+            payload + PASTE_ARGV_RESERVE <= WINDOWS_CMD_LINE_MAX,
+            "{payload}"
+        );
+        assert!(args.concat().len() - payload < PASTE_ARGV_RESERVE);
+    }
+
+    /// A huge paste is split so no single command line exceeds Windows'
+    /// `cmd.exe` cap — losslessly, and never mid-character (psmux drops a
+    /// payload that isn't valid UTF-8).
     #[test]
     fn paste_chunks_splits_large_input_on_char_boundaries() {
         // Multi-byte chars straddling the cut: 2 bytes each, odd-sized prefix.

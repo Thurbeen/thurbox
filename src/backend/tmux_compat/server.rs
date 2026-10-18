@@ -183,29 +183,31 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     }
 
     /// The command a new window runs, as a control-mode `new-window` line
-    /// carries it.
+    /// carries it — or why the server could not run it.
     fn window_command(
         server: &Server<Self>,
         window_name: &str,
         command: &str,
         args: &[String],
         _env: &HashMap<String, String>,
-    ) -> String
+    ) -> Result<String>
     where
         Self: Sized,
     {
-        server.posix_window_command(window_name, command, args)
+        Ok(server.posix_window_command(window_name, command, args))
     }
 
-    /// The environment and program that close a one-shot `new-window`'s argv.
+    /// The environment and program that close a one-shot `new-window`'s argv
+    /// — or why the server could not run it.
     fn push_window_program(
         cmd: &mut Command,
         _window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    ) {
+    ) -> Result<()> {
         push_posix_window_program(cmd, command, args, env);
+        Ok(())
     }
 
     /// The one-shot argv that delivers `text` into `target` as one paste.
@@ -2542,7 +2544,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // The command, its quoting and how the environment reaches it are the
         // multiplexer's: tmux takes joined trailing tokens and `-e`, psmux one
         // folded token.
-        let shell_cmd = M::window_command(self, window_name, command, args, env);
+        let shell_cmd = M::window_command(self, window_name, command, args, env)?;
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", M::quote(&dir.to_string_lossy())),
             None => String::new(),
@@ -3334,7 +3336,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return Ok(());
         }
         self.ensure_heartbeat_session()?;
-        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every);
+        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every)?;
         let out = self
             .mux_command(&[
                 "new-window",
@@ -3827,7 +3829,7 @@ fn heartbeat_loop_command(
     program: &Path,
     args: &[String],
     every: std::time::Duration,
-) -> String {
+) -> Result<String> {
     let secs = every.as_secs().max(1);
     let path = program.display().to_string();
     match platform {
@@ -3836,10 +3838,10 @@ fn heartbeat_loop_command(
                 .chain(args.iter().cloned())
                 .map(|a| shell_escape(&a))
                 .collect();
-            format!(
+            Ok(format!(
                 "while true; do {} >/dev/null 2>&1; sleep {secs}; done",
                 argv.join(" ")
-            )
+            ))
         }
         Platform::Windows => {
             let argv: Vec<String> = std::iter::once(path)
@@ -3850,6 +3852,7 @@ fn heartbeat_loop_command(
                 "while ($true) {{ & {} *> $null; Start-Sleep {secs} }}",
                 argv.join(" ")
             ))
+            .context("the automation heartbeat")
         }
     }
 }
@@ -4201,7 +4204,7 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.args,
                 spec.cwd,
                 spec.env,
-            );
+            )?;
             if stamped {
                 for (option, value) in [
                     (WINDOW_SESSION_OPTION, session_id),
@@ -4326,7 +4329,7 @@ impl<M: TmuxCompatible> Server<M> {
         args: &[String],
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
-    ) -> Command {
+    ) -> Result<Command> {
         let mut tmux = self.mux_command(&["new-window", "-d"]);
         if M::ONE_SHOT_SPAWN_ANSWERS {
             tmux.arg("-a");
@@ -4338,7 +4341,7 @@ impl<M: TmuxCompatible> Server<M> {
         if let Some(dir) = cwd {
             tmux.args(["-c", &dir.to_string_lossy()]);
         }
-        M::push_window_program(&mut tmux, window_name, command, args, env);
+        M::push_window_program(&mut tmux, window_name, command, args, env)?;
 
         // Chained into the same command list as the creation, not sent after
         // it — `birth_options` has the measurement. This path passes `-d`, so
@@ -4351,7 +4354,7 @@ impl<M: TmuxCompatible> Server<M> {
                 tmux.args([key, value]);
             }
         }
-        tmux
+        Ok(tmux)
     }
 
     /// Leave one window carrying `session_id`'s `role` stamp, and say which one
@@ -4710,8 +4713,8 @@ mod tests {
             command: &str,
             args: &[String],
             _: &HashMap<String, String>,
-        ) -> String {
-            server.posix_window_command(window_name, command, args)
+        ) -> Result<String> {
+            Ok(server.posix_window_command(window_name, command, args))
         }
         fn push_window_program(
             cmd: &mut Command,
@@ -4719,8 +4722,9 @@ mod tests {
             command: &str,
             args: &[String],
             env: &HashMap<String, String>,
-        ) {
+        ) -> Result<()> {
             push_posix_window_program(cmd, command, args, env);
+            Ok(())
         }
         fn paste_args(_: &str, _: &str) -> Vec<String> {
             Vec::new()
@@ -5190,6 +5194,7 @@ mod tests {
                 &[],
                 &HashMap::new(),
             )
+            .expect("a shell pane's command")
         };
         let windows = TestBackend::for_host(&windows_host("tmux"));
         assert_eq!(shell_pane(&windows), "powershell");
@@ -6429,7 +6434,8 @@ ERROR: something ps printed
             Path::new("C:\\bin\\thurbox-cli.exe"),
             &["automation".to_string(), "tick".to_string()],
             std::time::Duration::from_secs(30),
-        );
+        )
+        .expect("the keeper fits a Windows command line");
         let encoded = program
             .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
             .expect("an explicit PowerShell launch");
