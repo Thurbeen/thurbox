@@ -285,6 +285,47 @@ impl<'a> Owner<'a> {
     }
 }
 
+/// The pane [`SessionBackend::create_window`] opened. Never empty: a backend
+/// that cannot name the pane it made fails the create instead, because a
+/// window found by its name alone may be a namesake's (issue #1456).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneId(String);
+
+impl PaneId {
+    /// `Err` for an empty id.
+    pub fn new(id: impl Into<String>) -> Result<Self> {
+        let id = id.into();
+        anyhow::ensure!(
+            !id.trim().is_empty(),
+            "the backend named no pane for the new window"
+        );
+        Ok(Self(id))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for PaneId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<PaneId> for String {
+    fn from(id: PaneId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for PaneId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A window to open for its owner.
 pub struct WindowSpec<'a> {
     pub owner: Owner<'a>,
@@ -603,9 +644,8 @@ pub trait SessionBackend: Send + Sync {
     /// as it is created, and return its pane — what [`Self::adopt`] later
     /// attaches to. The headless half of a session's lifecycle: create,
     /// restart and restore open a window through here and nothing attaches to
-    /// it until an interface does. An empty pane id is the answer of a
-    /// backend that cannot report one; the window is then found by its owner.
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String>;
+    /// it until an interface does.
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId>;
 
     /// Where `owner`'s two windows are, from one listing the backend
     /// answered — [`crate::backend::identity::WindowIndex`]'s rule (ADR-25),

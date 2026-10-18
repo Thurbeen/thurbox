@@ -86,7 +86,7 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
         })
         .collect();
 
-    let outcomes: Vec<Result<String, String>> = spawns
+    let outcomes: Vec<Result<thurbox::backend::PaneId, String>> = spawns
         .into_iter()
         .map(|t| t.join().expect("join"))
         .collect();

@@ -805,8 +805,7 @@ fn respawn(
 
     // The new pane is a different one, and the id is how every later read
     // finds it — leaving the old one persisted would point the interface at a
-    // pane that no longer exists. (Empty where the backend can't report an id;
-    // the interface then resolves by window name as before.)
+    // pane that no longer exists.
     match record_pane(db, session, &pane) {
         Recorded::Stored => {}
         Recorded::RowGone => {

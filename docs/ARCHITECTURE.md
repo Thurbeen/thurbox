@@ -1129,6 +1129,22 @@ or the machine has no `thurbox-cli` on PATH. psmux ≥ 3.3.8 does implement
 need a per-server version gate on a const answer, and the reporting above
 works on the 3.3.7 floor.
 
+### A psmux create names its pane, and only that pane proves it started
+
+With no `remain-on-exit`, a program that cannot start leaves no window, so
+`create_window` looks again after `SPAWN_SETTLE` (`confirm_spawned`) and
+refuses a create whose pane is gone. That check matches the created pane's
+id only. A live window under the same `tb-<name>` is a namesake (allowed,
+and unstamped on psmux), and counting it let a dead create pass (#1456).
+
+psmux answers no `new-window -P`, so the local spawn learns the id by
+listing the panes under `tb-<name>` before and after `new-window`: psmux
+never reuses a pane id within a server's life, so the one new id is the new
+window. No new id means it already exited, and two mean a concurrent
+namesake create that cannot be told apart; both refuse the create.
+`create_window` returns a `PaneId`, which cannot be empty, so every backend
+names the pane it made or fails.
+
 ### The host's platform is its own dimension
 
 A session's place (this machine, an ssh host, a WSL distro), the host's OS, the

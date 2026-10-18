@@ -600,6 +600,7 @@ fn launch_window(
             cwd: Some(cwd),
             env,
         })
+        .map(String::from)
         .map_err(
             |e| match crate::agent::preflight::is_missing_dependency(&e) {
                 // Already a sentence naming the binary (or the `ssh`/`wsl.exe`

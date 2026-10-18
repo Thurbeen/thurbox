@@ -484,7 +484,10 @@ mod tests {
         fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
             anyhow::bail!("this stub has no panes to read")
         }
-        fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+        fn create_window(
+            &self,
+            _: &crate::backend::WindowSpec<'_>,
+        ) -> anyhow::Result<crate::backend::PaneId> {
             anyhow::bail!("{}: a stub opens no windows", self.name())
         }
         fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
