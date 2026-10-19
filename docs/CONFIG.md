@@ -1009,9 +1009,9 @@ With `enabled` and `configure_agents` both on, every local session gets:
 
 A variable the session's own `--env` sets wins, except
 `OTEL_RESOURCE_ATTRIBUTES`: the session's value is merged into the inherited
-one, its keys winning a conflict, and thurbox's three keys still win over both. A remote session gets only the
-resource attributes: `localhost` there is the host, so no exporter is configured
-for it. `antigravity`, `pi` and `aider` have no native OTel.
+one, its keys winning a conflict, and thurbox's three keys still win over both.
+A remote session gets only the resource attributes: `localhost` there is the
+host, so no exporter is configured for it. `antigravity`, `pi` and `aider` have no native OTel.
 
 The table is read at every spawn and restart, so a change applies to the next
 one; a running agent keeps the environment it launched with. The variables are

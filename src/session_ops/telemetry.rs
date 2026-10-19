@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_attributes_are_kept_but_never_override_the_session() {
+    fn the_sessions_attributes_are_kept_but_never_override_its_identity() {
         let mut config = config(None);
         config.env.insert(
             RESOURCE_ATTRIBUTES.into(),

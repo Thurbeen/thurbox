@@ -2357,6 +2357,7 @@ fn telemetry_probe(
     let second = read_seen(&capture);
     let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
     let exec = otel_subset(&thurbox::session_ops::session_process_env(&db, &row).unwrap());
+    std::env::remove_var("OTEL_RESOURCE_ATTRIBUTES");
     (first, second, exec, spawned.session_id)
 }
 
