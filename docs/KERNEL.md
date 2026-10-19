@@ -170,11 +170,12 @@ per call (`runs`, `granted`) lives in that view: a finalizer runs inside
 whichever call the collector interrupts, and through its own environment it
 finds only its own plugin's values.
 
-`run` is installed **per call**: `LuaHost::enter` puts the plugin's own `run`
-into its environment, or takes it out. A plugin that was not granted it does not
-get a function that refuses; it gets no function, which is the same world every
-other plugin has always had. Revoking is therefore immediate. `layout.lua` runs
-in an environment of its own that never holds `run`.
+`run` and `files` are installed **per call**: `LuaHost::enter` puts the
+plugin's own `run` and `files` into its environment, or takes them out. A plugin
+that was not granted one does not get a function that refuses; it gets nothing,
+which is the same world every other plugin has always had. Revoking is
+therefore immediate. `layout.lua` runs in an environment of its own that never
+holds either.
 
 A capability once sat in the shared globals as `__run_impl`, and a leading `__`
 is a naming convention rather than a boundary: an untrusted plugin could call
@@ -186,7 +187,7 @@ that wraps `type` gets neither another pane's `run` nor its path on a command.
 
 A capability asked for through `command` cannot be absent, since every plugin
 has `command`. Those are gated where the command is applied instead: the queue
-records the path of the plugin that issued each one, and
+records the path each plugin's own `command` was built with, and
 `Command::requires`/`Command::refusal` decide whether that plugin holds what
 the command needs before the loop applies it — `run` for an exec automation's
 command line, `sessions` for `send`, `create`, `restart` and a force `delete`.

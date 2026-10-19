@@ -503,14 +503,15 @@ per-plugin module cache, modules run in the requirer's env) are created per plug
 reads fall through to the sealed shared globals, writes stay in the plugin's table.
 `string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
 views over a sealed metatable (per plugin, because `rawset` writes into the view;
-`__pairs` never returns the backing table), and the string metatable is sealed. `LuaHost::enter` puts the plugin's own
-`run` into its env, or takes it out, per call; `layout.lua` has an env that never
-holds it. `LuaHost::reachable_globals` is what the environment tripwire reads.
+`__pairs` never returns the backing table), and the string metatable is sealed.
+`LuaHost::enter` puts the plugin's own `run` and `files` into its env, or takes
+them out, per call; `layout.lua` has an env that never holds either.
+`LuaHost::reachable_globals` is what the environment tripwire reads.
 
 **Driving sessions needs `sessions`.** `send`, `create`, `restart` and a force
 `delete` are refused (`Command::requires` → `Command::refusal`, checked in
-`coordinator::commands::refuse_ungranted` against the owner the queue stamped —
-`LuaHost::drain_issued`) unless the issuing file declares `sessions` and holds the
+`coordinator::commands::refuse_ungranted` against the owner bound into the
+issuing plugin's own `command` — `LuaHost::drain_issued`) unless the issuing file declares `sessions` and holds the
 grant. A bundled file byte for byte as shipped is `Trust::Shipped` and holds what
 it declares untrusted — `60_confirm` and `70_new_session` need it — and
 `60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
