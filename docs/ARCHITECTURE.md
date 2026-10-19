@@ -946,8 +946,10 @@ reference to read before touching that path.
   `CommandLineTooLong` before anything reaches psmux: a spawn names the cause
   instead of reading as a window that died. A typical agent window stays under
   half of it; a script past 3,057 UTF-16 units is refused. The one-shot
-  `send-paste` chunk is derived from the same limit (`PASTE_CHUNK_BYTES`), and
-  `session send` goes out in those chunks as an interactive paste does. The
+  `send-paste` chunk is derived from the same limit (`PASTE_CHUNK_BYTES`),
+  sized for the encoded line below at 32/9 chars per payload byte, since a
+  host's socket name alone can send a paste that way (#1503); `session send`
+  goes out in those chunks as an interactive paste does. The
   deferred first prompt's `run-shell` script carries the whole prompt in one
   line that cannot be split, so a script past the limit is refused with
   `CommandLineTooLong` (#1489). Control-mode spawns
@@ -965,8 +967,8 @@ reference to read before touching that path.
   (`TmuxTransport::on_windows`, set by `Server::on_host`) builds its lines with
   `shell::launch_on_windows`: a line of words every such shell passes through
   unquoted (`[A-Za-z0-9-_./:=+%]`, at most one `%`) goes as it is — a
-  control-mode attach and a `send-paste` among them, so the paste chunk keeps
-  its size — and any other runs as `powershell.exe -NoLogo -NoProfile
+  control-mode attach and a `send-paste` with the default socket among them
+  — and any other runs as `powershell.exe -NoLogo -NoProfile
   -NonInteractive -EncodedCommand`, refused past `WINDOWS_CMD_LINE_MAX`. The
   script starts psmux through `ProcessStartInfo` with the arguments quoted for
   the C runtime (`shell::windows_arg_quote`) rather than through `&`, because

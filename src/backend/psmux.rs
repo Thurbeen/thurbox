@@ -889,16 +889,19 @@ pub fn psmux_quote(s: &str) -> String {
     )
 }
 
-/// Max text bytes per `send-paste` command: the most whose base64 payload,
-/// with [`PASTE_ARGV_RESERVE`] for the rest of the line, stays within
-/// [`WINDOWS_CMD_LINE_MAX`]. A paste to a host's server is a one-shot ssh
-/// command, which Windows OpenSSH runs through `cmd.exe`; an 8 KB chunk was
-/// ~10.9K chars there and was refused whole.
-const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_ARGV_RESERVE) / 4 * 3;
+/// Max text bytes per `send-paste` command: the most whose line stays within
+/// [`WINDOWS_CMD_LINE_MAX`] in its longest form. A paste to a host's server is
+/// a one-shot ssh command, and when the host's socket or multiplexer is not a
+/// word every Windows login shell passes through, `launch_on_windows` runs it
+/// as an encoded PowerShell script: base64, then UTF-16, then base64 again,
+/// so a payload byte costs 32/9 chars (issue #1503). Sized for that rather
+/// than the bare line, which a socket name in `hosts.toml` alone can decide.
+const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_LINE_RESERVE) * 9 / 32;
 
-/// What a `send-paste` line spends besides its payload: the multiplexer's
-/// path, `-L <socket>`, `send-paste -t <pane>`, and the separators.
-const PASTE_ARGV_RESERVE: usize = 1024;
+/// What an encoded `send-paste` line spends besides its payload: the
+/// `powershell.exe … -EncodedCommand` prefix, the launch script around the
+/// argv, the multiplexer's path, `-L <socket>` and `send-paste -t <pane>`.
+const PASTE_LINE_RESERVE: usize = 2048;
 
 /// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
 /// decodes the payload as UTF-8 and drops it whole if that fails, so a
@@ -1960,6 +1963,32 @@ mod tests {
         );
     }
 
+    /// A full chunk's line fits the Windows command line a one-shot runs in
+    /// (issue #1457) — bare, and as the encoded PowerShell script a socket
+    /// name with a space (or `@`, `,` …) sends it as, about 3.6 times its
+    /// payload. Sized for the bare line only, a paste over ~2 KB to such a
+    /// host was refused (issue #1503).
+    #[test]
+    fn a_full_paste_chunk_fits_a_windows_command_line() {
+        for (socket, encoded) in [(None, false), (Some("my sock"), true)] {
+            let host = HostDef {
+                name: "winbox".into(),
+                destination: "me@winbox".into(),
+                multiplexer: Some("psmux".into()),
+                socket: socket.map(Into::into),
+                ..Default::default()
+            };
+            let backend = PsmuxBackend::for_host(&host);
+            for text in ["x".repeat(2500), "é".repeat(PASTE_CHUNK_BYTES)] {
+                for paste in Psmux::paste_args("%123", &text) {
+                    let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
+                    let line = host_line(&backend.mux_command(&argv).expect("fits"));
+                    assert_eq!(line.contains("-EncodedCommand"), encoded, "{line}");
+                }
+            }
+        }
+    }
+
     /// One stamp read back from psmux is every window's (ADR-13), so nothing
     /// is read as a stamp, written as one, or retained by window option.
     #[test]
@@ -2251,19 +2280,6 @@ mod tests {
         assert_eq!(paste_chunks("one\ntwo"), vec!["one\ntwo"]);
         let exact = "x".repeat(PASTE_CHUNK_BYTES);
         assert_eq!(paste_chunks(&exact), vec![exact.as_str()]);
-    }
-
-    /// A full chunk's line fits `cmd.exe`, which runs a one-shot command on a
-    /// Windows ssh host (issue #1457).
-    #[test]
-    fn a_full_paste_chunk_fits_a_windows_command_line() {
-        let args = send_paste_args("%123", &"x".repeat(PASTE_CHUNK_BYTES));
-        let payload = args.last().expect("payload").len();
-        assert!(
-            payload + PASTE_ARGV_RESERVE <= WINDOWS_CMD_LINE_MAX,
-            "{payload}"
-        );
-        assert!(args.concat().len() - payload < PASTE_ARGV_RESERVE);
     }
 
     /// A huge paste is split so no single command line exceeds Windows'
