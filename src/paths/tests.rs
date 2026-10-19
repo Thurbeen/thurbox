@@ -631,6 +631,20 @@ fn expand_tilde_backslash_literal_on_unix() {
     assert_eq!(expand_tilde("~\\foo"), PathBuf::from("~\\foo"));
 }
 
+#[cfg(windows)]
+#[test]
+fn native_separators_respells_a_mixed_windows_path() {
+    let got = native_separators(Path::new("C:\\Users\\me\\Documents/thurbox"));
+    assert_eq!(got.to_str(), Some("C:\\Users\\me\\Documents\\thurbox"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn native_separators_leaves_a_unix_backslash_alone() {
+    let got = native_separators(Path::new("/home/me/odd\\name"));
+    assert_eq!(got.to_str(), Some("/home/me/odd\\name"));
+}
+
 #[test]
 fn complete_directory_path_tilde() {
     let temp = tempfile::TempDir::new().unwrap();

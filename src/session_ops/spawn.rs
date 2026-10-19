@@ -239,6 +239,11 @@ fn spawn(
     let choice = resolve_backend(backends, req.host.as_deref(), req.multiplexer.as_deref())?;
     let backend_type = choice.backend_type();
     let host = choice.host.clone();
+    let req = if host.is_none() {
+        with_native_separators(req)
+    } else {
+        req
+    };
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -1089,6 +1094,21 @@ pub(crate) fn resolve_launch_cwd(
         .unwrap_or_else(|| primary_cwd.to_path_buf())
 }
 
+/// A local request's directories in this platform's own spelling (issue #1480),
+/// so one directory is one stored string — repo grouping and dedup compare the
+/// text. Only for a request that resolved to no host: a remote host's paths
+/// are spelled for that host, not this one.
+fn with_native_separators(mut req: SpawnRequest) -> SpawnRequest {
+    req.repo_path = crate::paths::native_separators(&req.repo_path);
+    if let Some(path) = &mut req.existing_worktree {
+        *path = crate::paths::native_separators(path);
+    }
+    for extra in &mut req.extra_repos {
+        extra.repo_path = crate::paths::native_separators(&extra.repo_path);
+    }
+    req
+}
+
 /// Explicit scope for symlink targets, without granting their parent dirs.
 /// Remote paths must be resolved by the agent on its own host, never locally.
 pub(crate) fn launch_member_dirs(
@@ -1716,6 +1736,40 @@ mod tests {
             name: name.into(),
             repo_path: PathBuf::from("/tmp"),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_local_cwd_is_stored_with_the_platforms_own_separators() {
+        // Issue #1480: `~/Documents/thurbox` expands onto a Windows home as
+        // `C:\Users\me\Documents/thurbox`. `Path` equality forgives the mix but
+        // the stored text does not, and repo grouping compares that text.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let config = crate::paths::config_file().unwrap();
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            config.with_file_name("agents.toml"),
+            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+        )
+        .unwrap();
+        let native = temp.path().join("Documents").join("thurbox");
+        std::fs::create_dir_all(&native).unwrap();
+        let mixed = PathBuf::from(format!("{}/Documents/thurbox", temp.path().display()));
+
+        let db = empty_db();
+        // `--host ""` is local too (`resolve_host_flag`), so it is respelled.
+        for (name, host) in [("mixed", None), ("empty-host", Some(String::new()))] {
+            let mut r = req(name);
+            r.repo_path = mixed.clone();
+            r.host = host;
+            let spawned =
+                spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap();
+
+            let stored = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+            let stored = stored.cwd.expect("a cwd").display().to_string();
+            assert_eq!(stored, native.display().to_string(), "{name}");
+            assert_eq!(spawned.cwd.display().to_string(), stored, "{name}");
         }
     }
 

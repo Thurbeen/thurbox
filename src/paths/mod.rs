@@ -629,6 +629,19 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// `path` respelled with this platform's own separator. On Windows both `/` and
+/// `\` separate, so `C:\Users\me\Documents/thurbox` (a `~/…` path expanded onto
+/// a Windows home) names the same directory as its all-`\` spelling but stores
+/// as different text. Elsewhere the path is returned untouched: a `\` there is a
+/// filename character, not a separator.
+pub fn native_separators(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        path.components().collect()
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// Strip a leading `~` + path separator, returning the remainder. Accepts `~/`
 /// everywhere and `~\` on Windows (where `\` is a path separator).
 fn strip_tilde_prefix(path: &str) -> Option<&str> {
