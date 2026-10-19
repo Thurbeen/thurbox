@@ -108,6 +108,22 @@ use rusqlite::Connection;
 /// of the v49 snapshot triggers, so an advance every minute rebuilds nothing.
 pub const SCHEMA_VERSION: u32 = 54;
 
+/// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
+/// binary migrated, recorded as `min_reader_version` in `metadata`.
+///
+/// A downgrade has to keep working, so a newer schema is not refused by itself:
+/// an older thurbox opens a database a newer one migrated, leaves its shape
+/// alone and writes what it knows, which is safe while migrations stay
+/// **additive** — new columns nullable or defaulted, new tables, nothing
+/// renamed, retyped or dropped. Raise this to the new `SCHEMA_VERSION` only in
+/// the migration that breaks that, so the binaries it would break refuse the
+/// database instead of corrupting it. It never moves down: the stored value is
+/// the highest any binary has written.
+///
+/// 53, because v54 only adds `telemetry_export`, a table a v53 thurbox never
+/// reads or writes.
+pub const MIN_READER_VERSION: u32 = 53;
+
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>, Reapply);
@@ -177,9 +193,47 @@ pub fn apply_connection_pragmas(conn: &Connection) -> rusqlite::Result<()> {
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     // Must come first: the WAL pragma below itself needs the write lock.
     conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    enable_wal(conn)?;
     apply_connection_pragmas(conn)?;
 
+    // The whole pass runs under one write lock, so two processes opening the
+    // same file cannot both run a data step (issue #1475): the second waits on
+    // `busy_timeout`, then reads the version the first committed. Foreign keys
+    // are off for its length because the v15/v16 rebuilds turn them off
+    // themselves, and that pragma is a no-op inside a transaction.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let pass = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .and_then(|tx| {
+            create_and_migrate(conn)?;
+            tx.commit()
+        });
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    pass
+}
+
+/// Switch a new file to WAL, waiting out a peer doing the same.
+///
+/// The switch reads under a shared lock and then escalates to an exclusive
+/// one. Two processes doing that on a new file at once is a lock deadlock,
+/// which SQLite settles by failing one with `SQLITE_BUSY` **without consulting
+/// `busy_timeout`** — so the wait is spelled out here. Once the peer's switch
+/// lands this is a no-op that takes no write lock.
+fn enable_wal(conn: &Connection) -> rusqlite::Result<()> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS metadata (
@@ -419,16 +473,28 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Run schema migrations for existing databases.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let version: u32 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'schema_version'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(0))
-            },
-        )
-        .unwrap_or(0);
+    let version = metadata_version(conn, "schema_version");
+
+    // See `MIN_READER_VERSION`: a newer schema alone is no reason to refuse —
+    // a downgrade must keep working — but one that declares this binary too old
+    // is, or it would write rows the schema no longer describes.
+    let min_reader = metadata_version(conn, "min_reader_version");
+    if min_reader > SCHEMA_VERSION {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some(format!(
+                "this database (schema v{version}) needs a thurbox that knows schema \
+                 v{min_reader} or later to use it safely, and this one knows v{SCHEMA_VERSION}; \
+                 update thurbox"
+            )),
+        ));
+    }
+    // The newer binary owns this shape. Re-asserting this one's additive steps
+    // would at best do nothing and at worst rewrite its triggers to an older
+    // spelling, and the version must not be rewound.
+    if version > SCHEMA_VERSION {
+        return Ok(());
+    }
 
     // Each migration step is gated on the stored version and applied in order.
     // Steps are extracted into helpers to keep this dispatcher flat.
@@ -508,8 +574,25 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [SCHEMA_VERSION.to_string()],
         )?;
     }
+    if min_reader < MIN_READER_VERSION {
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('min_reader_version', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [MIN_READER_VERSION.to_string()],
+        )?;
+    }
 
     Ok(())
+}
+
+/// A version stored in `metadata`; absent or unparseable reads as 0.
+fn metadata_version(conn: &Connection, key: &str) -> u32 {
+    conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+        row.get::<_, String>(0)
+    })
+    .ok()
+    .and_then(|value| value.parse().ok())
+    .unwrap_or(0)
 }
 
 // The `ALTER TABLE` migrations below were historically written as
