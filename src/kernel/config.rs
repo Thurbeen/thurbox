@@ -190,6 +190,8 @@ impl Config {
             clipboard: restart_only.clipboard,
             // Live: the mirror reads the file itself on every pass.
             remote: fresh.remote,
+            // Live: every spawn and restart reads the file itself.
+            telemetry: fresh.telemetry,
             scrollback_lines: restart_only.scrollback_lines,
             multiplexer: restart_only.multiplexer,
             // Restart-only because the terminals read it once, when they are

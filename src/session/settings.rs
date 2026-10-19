@@ -77,6 +77,66 @@ pub struct Settings {
     /// Remote-host settings (`[remote]` table).
     #[serde(default)]
     pub remote: RemoteSettings,
+    /// OpenTelemetry settings (`[telemetry]` table). Off by default.
+    #[serde(default)]
+    pub telemetry: TelemetrySettings,
+}
+
+/// OpenTelemetry for the sessions thurbox spawns (`[telemetry]` table).
+///
+/// thurbox configures each agent's *own* OTel exporter rather than exporting
+/// on its behalf: the OTel spec's `OTEL_EXPORTER_OTLP_*` variables for every
+/// session, plus the agent's `telemetry_env` / `telemetry_args` from
+/// `agents.toml` for the switches the spec does not cover. Read at each spawn
+/// and restart, so a change applies to the next one; a running agent keeps the
+/// environment it launched with. See ADR-36 in `docs/ARCHITECTURE.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetrySettings {
+    /// Master switch.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`, `{otlp_endpoint}`).
+    #[serde(default = "default_otlp_endpoint")]
+    pub endpoint: String,
+    /// OTLP protocol (`OTEL_EXPORTER_OTLP_PROTOCOL`, `{otlp_protocol}`).
+    /// `http/protobuf` is the one every native agent exporter accepts.
+    #[serde(default = "default_otlp_protocol")]
+    pub protocol: String,
+    /// OTLP request headers (`OTEL_EXPORTER_OTLP_HEADERS`), e.g. a hosted
+    /// backend's auth token. They sit in the pane's environment, so the agent
+    /// process can read them.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Pass the spec variables and each agent's `telemetry_env` /
+    /// `telemetry_args` to the sessions thurbox spawns.
+    #[serde(default = "default_true")]
+    pub configure_agents: bool,
+}
+
+fn default_otlp_endpoint() -> String {
+    "http://localhost:4318".into()
+}
+fn default_otlp_protocol() -> String {
+    "http/protobuf".into()
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_otlp_endpoint(),
+            protocol: default_otlp_protocol(),
+            headers: Default::default(),
+            configure_agents: true,
+        }
+    }
+}
+
+impl TelemetrySettings {
+    /// Whether spawned sessions get any telemetry configuration at all.
+    pub fn configures_agents(&self) -> bool {
+        self.enabled && self.configure_agents
+    }
 }
 
 /// How sessions on remote hosts are mirrored (`[remote]` table).
@@ -413,6 +473,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
             remote: RemoteSettings::default(),
+            telemetry: TelemetrySettings::default(),
         }
     }
 }

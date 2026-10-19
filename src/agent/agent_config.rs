@@ -35,6 +35,11 @@ const BUILTIN_AGENTS_HEAD: &str = r#"# Thurbox coding-agent definitions.
 # {dir} substituted. `args` is always passed — put extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
 #
+# telemetry_env / telemetry_args apply only while settings.toml's [telemetry]
+# is on, with {otlp_endpoint} and {otlp_protocol} substituted. They carry an
+# agent's own OTel switches; the spec's OTEL_EXPORTER_OTLP_* variables are set
+# for every session already, which is all copilot, omp and opencode need.
+#
 # Unknown keys are reported on startup (and fail `thurbox-cli config
 # validate`) but don't break the load — your agents stay in effect.
 
@@ -48,14 +53,22 @@ additional_dir_args = ["--add-dir", "{dir}"]
 resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]
+telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp" }
 
 # Codex reports its conversation id in the SessionStart hook. Thurbox stores
 # that id separately from its own row identity and addresses it exactly.
+# Its OTel is per-session `-c` overrides, which never touch ~/.codex/config.toml;
+# it ignores OTEL_EXPORTER_OTLP_ENDPOINT and wants a full URL per signal.
 [[agents]]
 name = "codex"
 command = "codex"
 resume_args = ["resume", "{id}"]
 fork_args = ["fork", "{id}"]
+telemetry_args = [
+  "-c", 'otel.exporter={otlp-http={endpoint="{otlp_endpoint}/v1/logs",protocol="binary"}}',
+  "-c", 'otel.metrics_exporter={otlp-http={endpoint="{otlp_endpoint}/v1/metrics",protocol="binary"}}',
+  "-c", 'otel.trace_exporter={otlp-http={endpoint="{otlp_endpoint}/v1/traces",protocol="binary"}}',
+]
 
 # antigravity (the `agy` CLI, the Gemini CLI successor) resumes the latest
 # session in the launch directory via `--continue`; it has no fork (Ctrl+F falls
@@ -94,6 +107,7 @@ resume_latest = true
 [[agents]]
 name = "vibe"
 command = "vibe"
+telemetry_env = { VIBE_ENABLE_OTEL = "true", VIBE_OTEL_ENDPOINT = "{otlp_endpoint}" }
 
 # pi (the pi.dev CLI) accepts a thurbox-generated session id at creation
 # (`--session-id`), so — like claude — it resumes/forks by that exact id.
@@ -178,6 +192,8 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # additional_dir_args = []      # repeated per multi-repo member, with {dir} substituted
 # resume_latest = false         # true ⇒ resume "the last session in this dir"
 #                               #   (id-less flags); leave false to pin by {id}
+# telemetry_env = {}            # set only while [telemetry] is on
+# telemetry_args = []           # appended only while [telemetry] is on
 # hook_schema = "claude"        # OPTIONAL: name the hook FAMILY this CLI speaks
 #                               #   so the built-in `hooks` extension wires its
 #                               #   status hooks as if this were that built-in.
@@ -379,6 +395,7 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         .to_string();
 
     let mut agents = Vec::new();
+    let builtins = builtin_registry();
     match table.get("agents") {
         Some(toml::Value::Array(entries)) => {
             for (index, entry) in entries.iter().enumerate() {
@@ -404,6 +421,7 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
                         agent.resume_latest = false;
                     }
                     upgrade_seeded_omp_args(&mut agent);
+                    upgrade_seeded_telemetry(&mut agent, entry, &builtins);
                     agents.push(agent);
                 }
             }
@@ -425,6 +443,23 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         },
         warnings,
     ))
+}
+
+/// Give an entry seeded before telemetry existed its built-in's
+/// `telemetry_env` / `telemetry_args`. Either key present, even empty, is the
+/// user's own answer, and only an entry whose `name` and `command` both match
+/// a built-in is one.
+fn upgrade_seeded_telemetry(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
+    if entry.get("telemetry_env").is_some() || entry.get("telemetry_args").is_some() {
+        return;
+    }
+    if let Some(builtin) = builtins
+        .get(&agent.name)
+        .filter(|b| b.command == agent.command)
+    {
+        agent.telemetry_env = builtin.telemetry_env.clone();
+        agent.telemetry_args = builtin.telemetry_args.clone();
+    }
 }
 
 /// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
@@ -593,6 +628,37 @@ mod tests {
         let (reg, warnings) = parse_agents_toml(&builtin_agents_toml());
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(reg, builtin_registry());
+    }
+
+    #[test]
+    fn telemetry_switches_upgrade_seeded_builtins_and_preserve_explicit_choices() {
+        let (registry, warnings) = parse_agents_toml(
+            r#"
+[[agents]]
+name = "claude"
+command = "claude"
+[[agents]]
+name = "codex"
+command = "codex"
+telemetry_args = []
+[[agents]]
+name = "vibe"
+command = "my-vibe-wrapper"
+"#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let builtins = builtin_registry();
+        assert_eq!(
+            registry.get("claude").unwrap().telemetry_env,
+            builtins.get("claude").unwrap().telemetry_env
+        );
+        assert_eq!(
+            registry.get("claude").unwrap().telemetry_env["CLAUDE_CODE_ENABLE_TELEMETRY"],
+            "1"
+        );
+        assert!(registry.get("codex").unwrap().telemetry_args.is_empty());
+        assert!(registry.get("vibe").unwrap().telemetry_env.is_empty());
+        assert_eq!(builtins.get("codex").unwrap().telemetry_args.len(), 6);
     }
 
     #[test]

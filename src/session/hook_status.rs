@@ -1274,6 +1274,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: hook_schema.map(str::to_string),
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         }
     }

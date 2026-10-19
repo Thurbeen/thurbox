@@ -11,12 +11,21 @@
 //! beyond serde/std) to satisfy the `session/` architecture rule. The TOML
 //! loading and the `AgentProvider` bridge live in `crate::agent`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Placeholder substituted with a session id in resume/fork/new-session groups.
 /// Exposed so `session_ops` can reconstruct a path-pinned agent's session path
 /// (omp) using the *same* token [`AgentDef::build_args`] substitutes.
 pub const ID_PLACEHOLDER: &str = "{id}";
+
+/// Substituted with `[telemetry] endpoint` in `telemetry_env` /
+/// `telemetry_args`.
+pub const OTLP_ENDPOINT_PLACEHOLDER: &str = "{otlp_endpoint}";
+/// Substituted with `[telemetry] protocol` in `telemetry_env` /
+/// `telemetry_args`.
+pub const OTLP_PROTOCOL_PLACEHOLDER: &str = "{otlp_protocol}";
 
 /// One coding-agent CLI definition.
 ///
@@ -66,6 +75,17 @@ pub struct AgentDef {
     /// (`apply_agent_patches`) and `extensions/hooks/`.
     #[serde(default)]
     pub hook_schema: Option<String>,
+    /// Environment set only while `[telemetry]` is on, for an agent whose OTel
+    /// switch is not the spec's own (`CLAUDE_CODE_ENABLE_TELEMETRY`).
+    /// `{otlp_endpoint}` and `{otlp_protocol}` are substituted. A variable the
+    /// session's own `--env` sets wins.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub telemetry_env: BTreeMap<String, String>,
+    /// Arguments appended only while `[telemetry]` is on, with the same
+    /// substitution — for an agent configured by flags rather than env (codex's
+    /// per-session `-c otel.*` overrides).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub telemetry_args: Vec<String>,
 }
 
 impl AgentDef {
@@ -102,6 +122,27 @@ impl AgentDef {
     /// and there are `resume_args` to emit.
     pub fn resumes_latest(&self) -> bool {
         self.resume_latest && !self.resume_args.is_empty()
+    }
+
+    /// [`Self::telemetry_env`] and [`Self::telemetry_args`] with
+    /// [`OTLP_ENDPOINT_PLACEHOLDER`] and [`OTLP_PROTOCOL_PLACEHOLDER`]
+    /// substituted.
+    pub fn telemetry_launch(
+        &self,
+        endpoint: &str,
+        protocol: &str,
+    ) -> (BTreeMap<String, String>, Vec<String>) {
+        let fill = |t: &str| {
+            t.replace(OTLP_ENDPOINT_PLACEHOLDER, endpoint)
+                .replace(OTLP_PROTOCOL_PLACEHOLDER, protocol)
+        };
+        let env = self
+            .telemetry_env
+            .iter()
+            .map(|(k, v)| (k.clone(), fill(v)))
+            .collect();
+        let args = self.telemetry_args.iter().map(|a| fill(a)).collect();
+        (env, args)
     }
 
     /// Directory-scope arguments, separate from conversation-selection args.
@@ -202,6 +243,8 @@ mod tests {
             new_session_args: vec!["--session-id".into(), "{id}".into()],
             resume_latest: false,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         }
     }
@@ -240,6 +283,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         let args = d.build_args(None, None, Some("ignored"));
@@ -258,6 +303,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         // resume id present, but no {id} token -> tokens unchanged.
@@ -284,6 +331,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         // Flag set but no resume_args -> nothing to emit, so not "resumes latest".
@@ -310,6 +359,8 @@ mod tests {
                     new_session_args: vec![],
                     resume_latest: false,
                     hook_schema: None,
+                    telemetry_env: Default::default(),
+                    telemetry_args: Vec::new(),
                     additional_dir_args: Vec::new(),
                 },
             ],

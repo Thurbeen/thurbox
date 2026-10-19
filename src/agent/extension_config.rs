@@ -1071,6 +1071,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         // claude already exists in the seeded built-ins → not re-added.
@@ -1105,6 +1107,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: None,
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         ensure_agents_registered(&[flow]).unwrap();
@@ -1191,6 +1195,8 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: Some("claude".into()),
+            telemetry_env: Default::default(),
+            telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
         ensure_agents_registered(&[fleet]).unwrap();

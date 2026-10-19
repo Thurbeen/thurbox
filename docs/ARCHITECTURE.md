@@ -2913,3 +2913,28 @@ accepts, and the window label the psmux clash check (`window_namesakes`) still
 guards — and no name-uniqueness is added. Name-based `--on-existing` remains for
 keyless callers. A delegated create against a host CLI older than `--key` fails
 on the unknown flag rather than creating a keyless session.
+
+## ADR-36: Telemetry configures the agents' own exporters
+
+**Choice**: `settings.toml`'s `[telemetry]` configures each spawned agent's
+**native** OpenTelemetry exporter rather than thurbox exporting on its behalf.
+Two layers (`session_ops::telemetry::apply`, called at spawn, restart,
+`agent_launch_plan` and for `session exec`): the OTel spec's `OTEL_EXPORTER_OTLP_*` variables plus
+`OTEL_RESOURCE_ATTRIBUTES` carrying `thurbox.session.id`, set for every session;
+and the agent's `telemetry_env` / `telemetry_args` from `agents.toml`,
+substituted with `{otlp_endpoint}` / `{otlp_protocol}`, for switches the spec
+does not cover. The session's own `--env` wins over both; thurbox's resource
+attributes win over an inherited value for the same keys.
+
+**Why**: tokens, cost, models and tool calls are known only to the agent, and the
+agents that have OTel already export them. Reimplementing that per agent would
+make thurbox agent-aware; the spec layer is agent-neutral, and the per-agent
+layer is data in a user-editable file, so an agent's moving OTel surface is a
+config fix rather than a release. The resource attribute is what lets a backend
+join an agent's telemetry to the thurbox session.
+
+**Limits**: a remote session gets the resource attributes only, since
+`localhost` on a host is the host; a per-host endpoint is a later phase of
+issue #1465, as are thurbox's own session metrics and diagnostic logs. A shared
+host's delegated spawn follows the host's own `[telemetry]`. The variables are
+inherited by everything run in the pane, not only the agent.
