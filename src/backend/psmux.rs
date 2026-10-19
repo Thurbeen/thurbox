@@ -967,7 +967,7 @@ impl PsmuxPaste {
     /// Deliver `text` to `pane_id` as a paste. Blocks until psmux has applied it
     /// (the psmux CLI round-trips a barrier before exiting), so a keystroke
     /// written to control mode afterwards cannot overtake it. Callers reach this
-    /// through the session's writer task, never the UI thread, so the wait only
+    /// through the session's writer thread, never the UI thread, so the wait only
     /// holds back that session's own later input — the ordering we want.
     ///
     /// A paste past [`PASTE_CHUNK_BYTES`] goes out as several commands, each its
