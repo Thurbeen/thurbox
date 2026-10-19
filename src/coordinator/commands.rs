@@ -278,14 +278,18 @@ impl App {
             }
             // Re-read BEFORE reporting: a `session.post_create` names the row
             // the command made, which only exists here once the rows are.
-            self.snapshots.refresh();
-            self.report_finished_commands();
-            // A finished creation is deliberately not acted on here: see
-            // `focus_on_session` for why a session that just spawned does not
-            // pull the view onto itself.
-            self.note_data_change();
-        } else {
-            self.snapshots.refresh_if_due();
+            self.report_after = Some(self.snapshots.request_refresh());
+        }
+        self.snapshots.refresh_if_due();
+        if let Some(ticket) = self.report_after {
+            if self.snapshots.fresh_since(ticket) {
+                self.report_after = None;
+                self.report_finished_commands();
+                // A finished creation is deliberately not acted on here: see
+                // `focus_on_session` for why a session that just spawned does
+                // not pull the view onto itself.
+                self.note_data_change();
+            }
         }
     }
 

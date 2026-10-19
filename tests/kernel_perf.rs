@@ -729,7 +729,14 @@ fn signal(
 
 fn poll_due(store: &mut SnapshotStore, clock: &mut Instant) -> bool {
     *clock += Duration::from_secs(1);
-    store.refresh_if_due_at(*clock)
+    poll_at(store, *clock)
+}
+
+/// One poll, and whether it reloaded the rows. The read runs on the store's
+/// worker, so the answer is waited for here rather than on a later poll.
+fn poll_at(store: &mut SnapshotStore, clock: Instant) -> bool {
+    let applied = store.refresh_if_due_at(clock);
+    applied | store.settle()
 }
 
 #[test]
@@ -741,7 +748,7 @@ fn perf_publications_do_not_reload_the_snapshot() {
         let json = format!(r#"{{"frames":{frames}}}"#);
         writer.set_perf_snapshot(&json).unwrap();
         clock += Duration::from_secs(5);
-        reloads += usize::from(store.refresh_if_due_at(clock));
+        reloads += usize::from(poll_at(&mut store, clock));
         assert_eq!(
             writer.get_perf_snapshot().unwrap().as_deref(),
             Some(json.as_str())
@@ -791,7 +798,7 @@ fn repeated_hook_reports_do_not_reload_the_snapshot() {
         );
         previous = stamp;
         clock = started + Duration::from_secs(60) * call / 33;
-        reloads += usize::from(store.refresh_if_due_at(clock));
+        reloads += usize::from(poll_at(&mut store, clock));
         assert_eq!(
             store
                 .codex_submission_report(&id.to_string())

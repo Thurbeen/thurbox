@@ -391,6 +391,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             .checked_sub(crate::REAP_INTERVAL)
             .unwrap_or_else(Instant::now),
         bookmark_in_flight: false,
+        report_after: None,
         hud: false,
         events: crate::coordinator::events::Events::new(),
         quit: false,

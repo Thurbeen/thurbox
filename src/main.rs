@@ -639,6 +639,10 @@ struct App {
     /// re-reading while the worker is mid-write would publish the old list and
     /// look like the add did nothing.
     bookmark_in_flight: bool,
+    /// The snapshot read finished commands are reported after, once it lands:
+    /// a `session.post_create` names the row the command made, which only
+    /// exists here once the rows are — and the loop never waits for a read.
+    report_after: Option<u64>,
     /// Links found on each live session's screen, keyed by session, and the
     /// output stamp each answer was found at.
     ///

@@ -722,7 +722,8 @@ fn a_held_database_write_lock_does_not_stop_the_interface_painting() {
         [],
     )
     .expect("bump the rows generation");
-    db.execute_batch("BEGIN IMMEDIATE").expect("take the write lock");
+    db.execute_batch("BEGIN IMMEDIATE")
+        .expect("take the write lock");
     // Past one refresh interval, so the rebuild the bump asked for has started.
     std::thread::sleep(Duration::from_secs(1));
 
@@ -733,7 +734,8 @@ fn a_held_database_write_lock_does_not_stop_the_interface_painting() {
         |frame| frame.contains("Keybindings"),
     );
 
-    db.execute_batch("ROLLBACK").expect("release the write lock");
+    db.execute_batch("ROLLBACK")
+        .expect("release the write lock");
     tui.send(ESC);
     tui.wait_gone("Keybindings");
     assert!(tui.quit().success());

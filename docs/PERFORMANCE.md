@@ -303,7 +303,14 @@ next tick), and the restart path's `clear_hook_state` calls
 `thurbox-cli session signal` writes come from another connection and *do* bump
 `data_version`, so they're picked up on the next tick as before.
 
-**The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence.
+**The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence,
+through the one thread that owns its connection (`kernel::snapshot_db`, from
+issue #1474): the event loop sends the poll and applies the answer when it
+lands, so a write lock another process holds stalls that thread's busy wait,
+never a frame. The loop's own writes — acknowledging a `done`, recording a
+pane, a remote hook report, the perf snapshot — queue on the same thread and are
+corrected in place at once; a read answered before the latest queued write is
+discarded and asked again, so it cannot undo a correction.
 Schema v49 adds trigger-maintained row and hook-liveness generations. A commit
 that only publishes perf telemetry moves neither. A same-state hook still
 refreshes the monotonic `hook_state_at` (liveness and the Codex submission race),

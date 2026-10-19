@@ -33,6 +33,7 @@ pub mod runs;
 pub mod search;
 pub mod selection;
 pub mod snapshot;
+mod snapshot_db;
 pub mod terminal;
 pub mod theme;
 pub mod updates;
