@@ -2160,9 +2160,9 @@ dispatched as pane output. A block now ends only at the `%end`/`%error`
 carrying its `%begin`'s time and number; psmux, whose tags are unverified,
 keeps the old framing and, having no snapshots, keeps every grid.
 
-The search reads an off-screen pane back as plain text (no `-e`), asked under
-the backend's control lock and waited for outside it, so its four threads'
-round trips overlap. A hit's `scroll` is exact against the grid a paint then
+The search reads an off-screen pane back as plain text (no `-e`), asked and
+then waited for apart from the asking, so its four threads' round trips
+overlap. A hit's `scroll` is exact against the grid a paint then
 rebuilds, since both are built from the same capture layout.
 
 **Measured** (the interface process, same machine and harness as the table
@@ -2185,8 +2185,8 @@ build:
 | search, warm (a keystroke) | ~11 ms | ~6 ms |
 
 The cold read is what an opened strip does before the first keystroke. A
-restore also holds the backend's control lock for the moment it takes to send
-the request, like any other loop command. `hidden_terminal_secs = 0` restores
+restore sends its request without waiting for the answer, like any other loop
+command. `hidden_terminal_secs = 0` restores
 the old behaviour exactly, including the history capture at attach.
 
 **Guards**: `tests/lazy_terminals.rs` against a real tmux: a session never

@@ -1462,7 +1462,7 @@ impl Session {
     ///
     /// Reports whether it reached the backend. The command is sent rather than
     /// asked (see `tmux_compat::Server::resize`), so what can still fail is the sending
-    /// — a control lock held past the loop's budget. The render path memoizes
+    /// — a connection that is gone or not yet started. The render path memoizes
     /// the size it asked for to keep a round trip off every frame, and a
     /// memoized failure would leave the agent wrapping at the old width with
     /// nothing to trigger another attempt, so it memoizes only on `true`.

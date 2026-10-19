@@ -1070,6 +1070,9 @@ pub(in crate::backend) struct ControlMode {
     alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     child: Mutex<Child>,
+    /// Set by the first [`Self::close`], so a connection closed explicitly is
+    /// not detached and waited for a second time when it drops.
+    closed: AtomicBool,
 }
 
 /// Cap on queued subscription events. Status transitions are rare and the
@@ -1223,6 +1226,7 @@ impl ControlMode {
             alive,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
+            closed: AtomicBool::new(false),
         };
 
         if let Some(command) = policy.flow_control_command {
@@ -2221,8 +2225,7 @@ impl ControlMode {
     /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to
     /// the caller rather than put into the stream — for a reader that wants the
     /// text as it stands (the content search). Returns once asked; the answer
-    /// is [`PendingSnapshot::wait`]ed for separately, so a caller holding the
-    /// backend's control lock can let go of it first and several searches'
+    /// is [`PendingSnapshot::wait`]ed for separately, so several searches'
     /// round trips overlap.
     pub(in crate::backend) fn ask_snapshot(
         &self,
@@ -2293,6 +2296,17 @@ impl ControlMode {
 
 impl Drop for ControlMode {
     fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl ControlMode {
+    /// Detach and tear the connection down. Callable through a shared handle,
+    /// for a backend shutting down while a caller is still mid-command on it.
+    pub(in crate::backend) fn close(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         // Wind down the (detached) hook poller; it observes the flag on
         // its next cycle, or exits via the dead pipe once the child is killed.
         self.alive.store(false, Ordering::Relaxed);
