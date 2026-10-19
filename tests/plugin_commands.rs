@@ -928,9 +928,10 @@ fn a_pane_cannot_reach_the_library_behind_its_sealed_proxy() {
     // `__newindex` into the one proxy every pane read.
     let leaked = [
         "local _, real = pairs(string)\nif type(real) == 'table' then real.format = function() return 'echo pwned' end end",
-        "local step, state = pairs(string)\nlocal _, f = step(state, nil)\nlocal real = state\nif type(real) == 'table' then rawset(real, 'format', function() return 'echo pwned' end) end",
-        "rawset(string, 'format', function() return 'echo pwned' end)",
-        "rawset(store, 'extra', ' && echo pwned')",
+        "local step, state = pairs(string)\nlocal _, f = step(state, nil)\nlocal real = state\nif type(real) == 'table' then pcall(rawset, real, 'format', function() return 'echo pwned' end) end",
+        // `rawset` is withheld, so these find nothing to call.
+        "pcall(rawset, string, 'format', function() return 'echo pwned' end)",
+        "pcall(rawset, store, 'extra', ' && echo pwned')",
     ]
     .into_iter()
     .filter(|lure| victim_program_after(lure) != "echo hi")
@@ -1044,5 +1045,97 @@ end }"#;
         !format!("{:?}", plain.node).contains("secret"),
         "{:?}",
         plain.node
+    );
+}
+
+#[test]
+fn a_finalizer_reads_only_its_own_panes_answers() {
+    // A finalizer runs whenever the collector gets to it — inside another
+    // pane's call. It must still see its own pane's world, never the one being
+    // drawn: answers live in each plugin's own environment.
+    let plain = r#"local function litter()
+  for _ = 1, 200 do
+    setmetatable({}, { __gc = function()
+      local got = (thurbox.runs or {}).mine
+      if got then command("focus", { text = "leak:" .. tostring(got.stdout) }) end
+    end })
+  end
+end
+return { name = "plain", slot = "sessions", render = function()
+  litter()
+  return { type = "text", text = "" }
+end }"#;
+    let churn = r#"return {
+  name = "a", slot = "sessions", capabilities = { "run" },
+  render = function()
+    local got = ((thurbox and thurbox.runs) or {})["mine"]
+    local junk = {}
+    for i = 1, 20000 do junk[i % 64] = { i } end
+    return { type = "text", text = got and got.stdout or "nothing" }
+  end,
+}"#;
+    let (_home, ui) = interface(&[("91_a.lua", churn), ("92_plain.lua", plain)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_a.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "secret".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    for _ in 0..40 {
+        render(&host, "plain");
+        render(&host, "a");
+    }
+    let leaked: Vec<_> = host
+        .drain_commands()
+        .into_iter()
+        .filter(|command| format!("{command:?}").contains("secret"))
+        .collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
+}
+
+#[test]
+fn published_data_is_read_only_to_every_pane() {
+    // `thurbox` is one set of tables every pane reads, so a write into it
+    // would change what the next pane sees — a session's id a trusted pane
+    // builds a command from, say. Every route a write could take is refused.
+    let probes = [
+        "thurbox.error = 'x'",
+        "thurbox.theme.roles = {}",
+        "local _, backing = pairs(thurbox); if type(backing) ~= 'table' then error('no backing') end; backing.error = 'x'",
+        "rawset(thurbox, 'error', 'x')",
+        "rawset(thurbox.theme, 'roles', {})",
+    ];
+    let source = format!(
+        "local probes = {{ {} }}\nreturn {{ name = 'lure', slot = 'sessions', render = function()\n  local wrote = {{}}\n  for i, probe in ipairs(probes) do if pcall(probe) then wrote[#wrote + 1] = i end end\n  command('focus', {{ text = 'wrote:' .. table.concat(wrote, ',') }})\n  return {{ type = 'text', text = '' }}\nend }}",
+        probes
+            .iter()
+            .map(|probe| format!("function() {probe} end"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let (_home, ui) = interface(&[("91_lure.lua", &source)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    render(&host, "lure");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "wrote:"
+        ),
+        "the probes that wrote, by number: {issued:?}"
     );
 }

@@ -270,7 +270,8 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 
 Each plugin has globals of its own: one you assign is invisible to the next
 plugin, `require` hands you your own copy of a module, and `string`, `table`,
-`math`, `coroutine`, `utf8` and `text` are read-only. Share through `store`.
+`math`, `coroutine`, `utf8`, `text` and everything under `thurbox` are
+read-only — copy a published list before you sort it. Share through `store`.
 
 **Borders**: a node's `frame` is the whole border vocabulary — `title` (styled
 runs, not a bare string), `title_align`, `border_type` (`rounded` or `square`),
@@ -352,7 +353,7 @@ withheld by absence: `run` is a global, so `if not run then` is the check, but a
 interactive program pane is asked for through `command`, which every plugin has.
 
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
-`load`, `loadstring`, `require` of anything outside `lib/`. They are not blocked,
+`load`, `loadstring`, `rawset`, `require` of anything outside `lib/`. They are not blocked,
 they are *missing* — `os.time()` is an `attempt to index a nil value`, not a
 permission error. `selene` catches this at lint time via `thurbox.yml`, which is
 the sandbox written down; run `selene ui` if it is installed. It names *fields*

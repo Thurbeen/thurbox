@@ -158,9 +158,17 @@ closure rather than returning the table as its state — and the string
 metatable is sealed so `getmetatable("")` cannot hand one out. `require` has a
 cache per plugin and runs a module in the requiring plugin's environment — a
 shared module would be a table one plugin could rewrite under another, and a
-module's `command(…)` has to act as the plugin that required it. `thurbox` is
-still one shared table of published data; a plugin that writes into it changes
-what others read until the next publish, but cannot act as them.
+module's `command(…)` has to act as the plugin that required it.
+
+`thurbox` is the published data every plugin reads, so it is read-only all the
+way down: each published group is frozen into read-only proxies when it is
+built (`api::freeze`), the top-level table refuses a write, and `pairs` over
+any of them iterates through a closure. Those proxies are shared, which is safe
+because `rawset` — the one way to write past a metatable — is withheld. Each
+plugin reads it through a `thurbox` view of its own, and what the kernel sets
+per call (`runs`, `granted`) lives in that view: a finalizer runs inside
+whichever call the collector interrupts, and through its own environment it
+finds only its own plugin's values.
 
 `run` is installed **per call**: `LuaHost::enter` puts the plugin's own `run`
 into its environment, or takes it out. A plugin that was not granted it does not

@@ -1555,14 +1555,15 @@ impl LuaHost {
     /// it in the same batch must read the finished text — but rerunning the
     /// whole republish per drag report is the expensive path (terminal sync,
     /// links, search, trust, inventory), and none of that moved. This patches
-    /// the one scalar in place, through the published table proxy (`set`,
-    /// so no `state_version` bump — a pure pane reading `selection` is
+    /// the one scalar in place, in the published table's backing (so no
+    /// `state_version` bump — a pure pane reading `selection` is
     /// deliberately not invalidated, matching the field's last-painted
     /// contract). A no-op before the first publish, when the global is still
     /// absent.
     pub fn set_published_selection(&self, selection: &str) {
-        if let Ok(table) = self.lua.globals().get::<Table>("thurbox") {
-            let _ = table.set("selection", selection);
+        // Into the backing table: the published proxy refuses every write.
+        if let Some(table) = api::published_backing(&self.lua) {
+            let _ = table.raw_set("selection", selection);
         }
     }
 
@@ -1667,14 +1668,6 @@ impl LuaHost {
         // to every plugin, and building a table per call for the panes that can
         // never have runs would be a per-frame allocation for nothing.
         if plugin.capabilities.is_empty() {
-            // `thurbox` is one shared table, so what the previous call set is
-            // still there: cleared, or this plugin reads that plugin's output.
-            // Through `set`, the same write path `publish_runs` takes: once
-            // published, `thurbox` is a proxy whose fields a raw write misses.
-            if let Ok(surface) = self.lua.globals().get::<Table>("thurbox") {
-                let _ = surface.set("runs", Value::Nil);
-                let _ = surface.set("granted", Value::Nil);
-            }
             return;
         }
         self.publish_runs(plugin);
@@ -1687,15 +1680,11 @@ impl LuaHost {
         let _ = plugin.env.table.raw_set("run", run);
     }
 
-    /// This plugin's own answers, and nothing else's, as `thurbox.runs`. Set per
-    /// call rather than at publish because `thurbox` is one shared table:
-    /// publishing every plugin's runs into it would let any pane read another's
-    /// output.
-    ///
-    /// The read surface is created if it does not exist yet, so an answer is
-    /// readable without depending on a publish having happened first.
+    /// This plugin's own answers, and nothing else's, as `thurbox.runs` — in
+    /// its own `thurbox` view (`api::Env::thurbox`), which no other plugin's
+    /// code can reach, whenever it runs.
     fn publish_runs(&self, plugin: &Plugin) {
-        let (Some(surface), Ok(table)) = (self.thurbox_table(), self.lua.create_table()) else {
+        let Ok(table) = self.lua.create_table() else {
             return;
         };
         if let Some(answers) = self.run_answers.borrow().get(&plugin.path) {
@@ -1705,27 +1694,11 @@ impl LuaHost {
                 }
             }
         }
-        let _ = surface.set("runs", table);
+        let _ = plugin.env.thurbox.raw_set("runs", table);
     }
 
-    /// The global `thurbox` table, created here when no publish has made it yet.
-    fn thurbox_table(&self) -> Option<Table> {
-        let globals = self.lua.globals();
-        match globals.get::<Table>("thurbox") {
-            Ok(table) => Some(table),
-            // Not `Option::inspect`: that is stable since 1.76 and the MSRV is
-            // 1.75.
-            Err(_) => match self.lua.create_table() {
-                Ok(fresh) => {
-                    let _ = globals.set("thurbox", fresh.clone());
-                    Some(fresh)
-                }
-                Err(_) => None,
-            },
-        }
-    }
-
-    /// What this plugin has actually been granted, as `thurbox.granted.<name>`.
+    /// What this plugin has actually been granted, as `thurbox.granted.<name>`,
+    /// in its own `thurbox` view like its runs.
     ///
     /// Needed because not every capability can be withheld by absence. `run` is
     /// a global, so a plugin checks `if not run then` and draws an honest hint —
@@ -1734,10 +1707,7 @@ impl LuaHost {
     /// way to tell "not trusted" from "still starting". This is that answer, and
     /// it grants nothing: it is a boolean about a decision the user already made.
     fn publish_granted(&self, plugin: &Plugin) {
-        let (Ok(surface), Ok(table)) = (
-            self.lua.globals().get::<Table>("thurbox"),
-            self.lua.create_table(),
-        ) else {
+        let Ok(table) = self.lua.create_table() else {
             return;
         };
         for capability in Capability::ALL {
@@ -1745,7 +1715,7 @@ impl LuaHost {
                 let _ = table.set(capability.as_str(), true);
             }
         }
-        let _ = surface.set("granted", table);
+        let _ = plugin.env.thurbox.raw_set("granted", table);
     }
 
     /// Hand over the answers to every run asked for so far.
@@ -1818,7 +1788,9 @@ impl LuaHost {
                 return Ok(value.clone());
             }
         }
-        let value = build()?;
+        // Frozen before it is cached: a group is reused across frames, so a
+        // write into it would outlive the frame and reach every reader.
+        let value = api::freeze(&self.lua, build()?).map_err(|e| e.to_string())?;
         self.groups.borrow_mut().insert(name, (key, value.clone()));
         Ok(value)
     }

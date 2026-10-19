@@ -377,7 +377,7 @@ because they are off the render path by construction.
 **There is no filesystem, no process spawning and no network.** Not because they
 are blocked — because they are not there. A capability you were not granted is
 absent from the environment, so there is nothing to call. `io`, `os`, `debug`,
-`dofile`, `loadfile`, `print` and `warn` are all withheld.
+`dofile`, `loadfile`, `print`, `warn` and `rawset` are all withheld.
 
 You will hear about it before you run it. `selene ui` checks `ui/` against
 `thurbox.yml`, and `lua-language-server --check ui` against `.luarc.json` — between
