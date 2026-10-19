@@ -114,7 +114,8 @@ using one named key for each arrow or navigation sequence, folds
 env + command into **one** PowerShell script (`psmux_window_powershell`)
 launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`,
 `shell::powershell_launcher`) — never a bare script, which psmux ≥ 3.4.0 runs
-through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH —
+through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH, and
+refused with `CommandLineTooLong` past `shell::WINDOWS_CMD_LINE_MAX` (8191) —
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /

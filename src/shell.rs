@@ -146,14 +146,55 @@ pub fn powershell_quote(s: &str) -> String {
 /// psmux's tokenizer, a shell psmux may still route it through — reads as
 /// syntax. No `-NoProfile`: psmux ran the script as
 /// `powershell -NoLogo -Command`, which loads the profile, and still does.
-pub fn powershell_launcher(script: &str) -> String {
+///
+/// Encoding makes the line `39 + 4 * ceil(2n / 3)` chars for a script of `n`
+/// UTF-16 units, about 2.7 times the script, so it is measured here, the one
+/// place it is built: a line past [`WINDOWS_CMD_LINE_MAX`] is refused with
+/// [`CommandLineTooLong`] rather than handed to a host that fails to start it
+/// without saying why.
+pub fn powershell_launcher(script: &str) -> Result<String, CommandLineTooLong> {
     use base64::Engine as _;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    format!(
+    let line = format!(
         "powershell.exe -NoLogo -EncodedCommand {}",
         base64::engine::general_purpose::STANDARD.encode(utf16)
-    )
+    );
+    if line.len() > WINDOWS_CMD_LINE_MAX {
+        return Err(CommandLineTooLong {
+            len: line.len(),
+            max: WINDOWS_CMD_LINE_MAX,
+        });
+    }
+    Ok(line)
 }
+
+/// The longest command line `cmd.exe` runs (it answers "The command line is
+/// too long." past it), and the bound used for every Windows host rather than
+/// `CreateProcess`'s 32,767: Windows OpenSSH runs a one-shot ssh command
+/// through its default login shell, `cmd.exe`, and a psmux server started
+/// over ssh has `$SHELL=cmd.exe` for any window it routes through a shell. A
+/// line that only fits a local server would fail the same agent on a host.
+pub const WINDOWS_CMD_LINE_MAX: usize = 8191;
+
+/// A command line longer than a Windows host will run, refused before it is
+/// sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandLineTooLong {
+    pub len: usize,
+    pub max: usize,
+}
+
+impl std::fmt::Display for CommandLineTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "command line is {} chars, Windows limit is {}",
+            self.len, self.max
+        )
+    }
+}
+
+impl std::error::Error for CommandLineTooLong {}
 
 /// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
 /// `wsl.exe -d <distro>`.
@@ -377,6 +418,30 @@ fn off_the_terminal(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_powershell_launch_is_39_plus_the_base64_of_its_utf16_script() {
+        for n in [0, 1, 2, 3, 462, 1000, 3000] {
+            let line = powershell_launcher(&"a".repeat(n)).expect("under the limit");
+            assert_eq!(line.len(), 39 + 4 * (2 * n).div_ceil(3), "n = {n}");
+        }
+    }
+
+    /// The last script that fits, and the first that does not: refused with
+    /// the length it would have had.
+    #[test]
+    fn a_powershell_launch_past_the_windows_limit_is_refused() {
+        let fits = (WINDOWS_CMD_LINE_MAX - 39) / 4 * 3 / 2;
+        assert!(powershell_launcher(&"a".repeat(fits)).is_ok());
+        let error = powershell_launcher(&"a".repeat(fits + 1)).unwrap_err();
+        assert_eq!(error.max, WINDOWS_CMD_LINE_MAX);
+        assert_eq!(error.len, 39 + 4 * (2 * (fits + 1)).div_ceil(3));
+        assert!(error.len > WINDOWS_CMD_LINE_MAX);
+        assert_eq!(
+            error.to_string(),
+            format!("command line is {} chars, Windows limit is 8191", error.len)
+        );
+    }
 
     /// How a host is reached is its kind and nothing else: neither its OS nor
     /// its multiplexer changes the launcher, and the launcher names neither —
