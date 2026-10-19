@@ -794,7 +794,8 @@
 ---@field status_rows integer
 
 --- Capabilities THIS plugin has been granted. A boolean about a decision the
---- user already made; it grants nothing.
+--- user already made; it grants nothing. Absent, like `thurbox.runs`, for a
+--- plugin that declares no capability.
 ---@class (exact) thurbox.Granted
 ---@field run? boolean
 ---@field program? boolean

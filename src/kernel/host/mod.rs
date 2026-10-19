@@ -1667,6 +1667,12 @@ impl LuaHost {
         // to every plugin, and building a table per call for the panes that can
         // never have runs would be a per-frame allocation for nothing.
         if plugin.capabilities.is_empty() {
+            // `thurbox` is one shared table, so what the previous call set is
+            // still there: cleared, or this plugin reads that plugin's output.
+            if let Ok(surface) = self.lua.globals().get::<Table>("thurbox") {
+                let _ = surface.raw_set("runs", Value::Nil);
+                let _ = surface.raw_set("granted", Value::Nil);
+            }
             return;
         }
         self.publish_runs(plugin);

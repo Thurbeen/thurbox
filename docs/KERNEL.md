@@ -140,11 +140,18 @@ Reads fall through to the shared globals, which hold only what every plugin may
 have; writes land in the plugin's own table, so a global one plugin sets is
 invisible to the next. `_G` is the plugin's own table and the environment's
 metatable is sealed, so the shared globals are not reachable to write to. The
-shared tables are reached only through views of the plugin's own: `string`,
-`table`, `math`, `coroutine`, `utf8`, `text` and `store` are each an empty table
-per plugin over a sealed metatable, which reads through and refuses a write. Of
-the plugin's own because `rawset` writes past `__newindex` into the view itself,
-and one view every plugin shared would carry that write to all of them. Nothing
+shared tables are reached only through views of the plugin's own: each plugin
+gets an empty table per name over a sealed metatable. `string`, `table`, `math`,
+`coroutine`, `utf8` and `text` read through and refuse a write. `store` is the
+one that takes writes, because it is the bus between panes — a request left for
+another pane, a selection the agent pane follows — and every plugin reads what
+any plugin wrote. Only data crosses it: a write is converted to a stored value
+(strings, numbers, booleans and tables of them; a function or a metatable is
+dropped) and every read hands back a fresh copy, so one pane can tell another
+something but cannot hand it code to run. A pane acting on a request it read
+there — the shipped confirmation — treats it as the asker's words, not its own.
+The views are per plugin because `rawset` writes past `__newindex` into the view
+itself, and one view every plugin shared would carry that write to all of them. Nothing
 on a view leads back to the table behind it — `__pairs` iterates through a
 closure rather than returning the table as its state — and the string
 metatable is sealed so `getmetatable("")` cannot hand one out. `require` has a

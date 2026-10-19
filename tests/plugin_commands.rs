@@ -915,3 +915,83 @@ end }"#;
         "pairs over a sealed table still walks the library"
     );
 }
+
+#[test]
+fn only_data_crosses_the_store() {
+    // `store` is the bus between panes, so a write reaches every reader. What
+    // reaches them is a copy of the data: a function or a metatable the writer
+    // attached does not, so a pane cannot hand another code to run.
+    let writer = r#"return { name = "writer", slot = "sessions", render = function()
+  store.handoff = setmetatable({ text = "hi", run = function() return "pwned" end },
+    { __index = function() return "pwned" end })
+  return { type = "text", text = "" }
+end }"#;
+    let reader = r#"return { name = "reader", slot = "sessions", render = function()
+  local got = store.handoff
+  command("focus", { text = table.concat({ got.text, type(got.run),
+    tostring(getmetatable(got)), tostring(got.missing) }, "/") })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_writer.lua", writer), ("92_reader.lua", reader)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "writer");
+    render(&host, "reader");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "hi/nil/nil/nil"
+        ),
+        "the reader gets the data and nothing that runs"
+    );
+}
+
+#[test]
+fn a_pane_that_declares_nothing_cannot_read_the_last_panes_answers() {
+    // `thurbox.runs` is one field of a shared table, set per call. A pane that
+    // declared no capability skipped that set, so it read whatever the pane
+    // before it was handed.
+    let plain = r#"return { name = "plain", slot = "sessions", render = function()
+  local got = (thurbox.runs or {}).mine
+  return { type = "text", text = got and got.stdout or "none" }
+end }"#;
+    let (_home, ui) = interface(&[("91_a.lua", &reader("a")), ("92_plain.lua", plain)]);
+    let host = LuaHost::new(&ui);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_a.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "secret".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    let ctx = || RenderContext {
+        width: 40,
+        height: 4,
+        focused: true,
+        elapsed: 0.0,
+        frame: 0,
+    };
+    let a = host
+        .render(host.index_of("a").expect("a"), ctx())
+        .expect("a");
+    assert!(
+        format!("{:?}", a.node).contains("secret"),
+        "a reads its own"
+    );
+    let plain = host
+        .render(host.index_of("plain").expect("plain"), ctx())
+        .expect("plain");
+    assert!(
+        !format!("{:?}", plain.node).contains("secret"),
+        "{:?}",
+        plain.node
+    );
+}
