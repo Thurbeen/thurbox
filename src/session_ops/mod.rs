@@ -600,6 +600,7 @@ pub fn agent_launch_plan(
         &mut config,
         &def,
         session.map_or("", |s| s.name.as_str()),
+        host.as_ref(),
         &crate::agent::settings_config::load_quiet().telemetry,
     );
     let member_dirs = session
@@ -660,10 +661,12 @@ pub fn session_process_env(
         .get(&session.agent)
         .cloned()
         .unwrap_or_default();
+    let host = resolve_host(&session.backend_type).flatten();
     telemetry::apply(
         &mut config,
         &def,
         &session.name,
+        host.as_ref(),
         &crate::agent::settings_config::load_quiet().telemetry,
     );
     if session.agent_session_id.is_none() {

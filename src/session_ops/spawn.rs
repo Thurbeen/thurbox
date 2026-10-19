@@ -420,6 +420,7 @@ fn spawn(
         &mut config,
         &agent_def,
         &req.name,
+        host.as_ref(),
         &crate::agent::settings_config::load_quiet().telemetry,
     );
 

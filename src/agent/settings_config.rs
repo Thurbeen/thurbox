@@ -133,7 +133,8 @@ config_version = 1
 # OpenTelemetry: turn on each agent's own exporter for the sessions thurbox
 # spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
 # naming the thurbox session, and each agent's telemetry_env / telemetry_args
-# from agents.toml. Local sessions only; read at every spawn and restart.
+# from agents.toml. A session on a remote host exports to that host's
+# otel_endpoint in hosts.toml instead; read at every spawn and restart.
 # `automation tick` also exports thurbox's own thurbox.* session metrics and
 # one log record per session event, over plain HTTP (point an https backend's
 # endpoint at a local Collector). export_diagnostic_logs also sends the

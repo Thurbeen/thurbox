@@ -17,6 +17,10 @@ mod tmux_server;
 
 use tmux_server::TmuxServer;
 
+#[cfg(unix)]
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
+
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-create-e2e";
 
@@ -2479,4 +2483,165 @@ fn telemetry_off_or_not_configuring_agents_passes_nothing() {
         }
         assert!(exec.is_empty(), "{settings}: {exec:?}");
     }
+}
+
+// A host's own collector (phase 4): `localhost:4318` on a remote host is that
+// host, so a session there exports only to the `otel_endpoint` its `hosts.toml`
+// entry names. Driven from here (sharing off) through a recording backend, so
+// the env and args the window was opened with are exactly what the host's
+// multiplexer would have been handed.
+
+#[cfg(unix)]
+const TELEMETRY_HOSTS_TOML: &str = "[[hosts]]\n\
+     name = \"otelhost\"\n\
+     destination = \"e2e@otelhost.invalid\"\n\
+     otel_endpoint = \"http://collector.otelhost:4318\"\n\
+     share_sessions = false\n\
+     [[hosts]]\n\
+     name = \"plainhost\"\n\
+     destination = \"e2e@plainhost.invalid\"\n\
+     share_sessions = false\n";
+
+#[cfg(unix)]
+const TELEMETRY_PROBE_AGENT: &str = "default = \"probe\"\n\n\
+     [[agents]]\n\
+     name = \"probe\"\n\
+     command = \"sh\"\n\
+     args = []\n\
+     telemetry_args = [\"--otel={otlp_endpoint}/v1/traces\"]\n\
+     [agents.telemetry_env]\n\
+     PROBE_OTEL = \"{otlp_endpoint}|{otlp_protocol}\"\n";
+
+/// Create a `probe` session on `host` and restart it, returning the env and
+/// command of both windows, what `session exec` hands a child, what
+/// `agent_launch_plan` tells a driver to run, and the session id.
+#[cfg(unix)]
+fn remote_telemetry_probe(
+    host: &str,
+) -> (
+    Vec<recording_backend::Window>,
+    std::collections::BTreeMap<String, String>,
+    thurbox::session_ops::LaunchPlan,
+    thurbox::session::SessionId,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session::{Multiplexer, Route, Via};
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    let (home, config) = isolated_config();
+    for (k, _) in std::env::vars() {
+        if k.starts_with("OTEL_") {
+            std::env::remove_var(k);
+        }
+    }
+    std::fs::write(config.join("agents.toml"), TELEMETRY_PROBE_AGENT).unwrap();
+    std::fs::write(config.join("hosts.toml"), TELEMETRY_HOSTS_TOML).unwrap();
+    std::fs::write(
+        thurbox::agent::settings_config::settings_config_path().unwrap(),
+        TELEMETRY_ON,
+    )
+    .unwrap();
+    // An `ssh` that never connects: the host is only ever its backend.
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("ssh"), "#!/bin/sh\nexit 255\n").unwrap();
+    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![bin];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+    for var in ["TMUX", "TMUX_PANE", "THURBOX_SESSION", "THURBOX_SESSION_ID"] {
+        std::env::remove_var(var);
+    }
+    let mut settings = thurbox::session::settings::Settings::default();
+    settings.features.automations = false;
+    thurbox::session::settings::init(settings);
+
+    let route = Route::remote(Via::Ssh, host, Some(Multiplexer::Tmux));
+    let far = recording_backend::RecordingBackend::new(&route);
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    backends.register(route, far.clone());
+
+    let repo = repo();
+    let db = thurbox::storage::Database::open_in_memory().unwrap();
+    let spawned = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "far".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some("probe".into()),
+            host: Some(host.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let id = spawned.session_id.to_string();
+    let mut windows = far.windows_of(&id);
+    thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id).unwrap();
+    windows.extend(far.windows_of(&id));
+    assert_eq!(windows.len(), 2, "spawn and restart each open one window");
+    let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    let exec = otel_subset(&thurbox::session_ops::session_process_env(&db, &row).unwrap());
+    let plan =
+        thurbox::session_ops::agent_launch_plan(&db, &backends, "probe", Some(&row)).unwrap();
+    (windows, exec, plan, spawned.session_id)
+}
+
+#[test]
+#[cfg(unix)]
+fn a_remote_session_exports_to_its_hosts_own_collector() {
+    let (windows, exec, plan, id) = remote_telemetry_probe("otelhost");
+    let host_endpoint = "http://collector.otelhost:4318";
+    for window in &windows {
+        let env = &window.env;
+        assert_eq!(env["OTEL_EXPORTER_OTLP_ENDPOINT"], host_endpoint, "{env:?}");
+        assert_eq!(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
+        assert_eq!(env["OTEL_EXPORTER_OTLP_HEADERS"], "x-token=abc");
+        assert_eq!(env["PROBE_OTEL"], format!("{host_endpoint}|http/protobuf"));
+        assert!(
+            env["OTEL_RESOURCE_ATTRIBUTES"].contains(&format!("thurbox.session.id={id}")),
+            "{env:?}"
+        );
+        assert!(
+            window
+                .command
+                .ends_with(&format!("--otel={host_endpoint}/v1/traces")),
+            "{}",
+            window.command
+        );
+        assert!(
+            !window.command.contains(OTLP_ENDPOINT),
+            "{}",
+            window.command
+        );
+    }
+    assert_eq!(exec, otel_subset(&windows[0].env));
+    let plan_env: std::collections::BTreeMap<_, _> = plan.env.into_iter().collect();
+    assert_eq!(otel_subset(&plan_env), otel_subset(&windows[0].env));
+    assert_eq!(
+        plan.args.last().map(String::as_str),
+        Some("--otel=http://collector.otelhost:4318/v1/traces")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_remote_session_without_a_host_endpoint_gets_only_the_attributes() {
+    let (windows, exec, plan, _) = remote_telemetry_probe("plainhost");
+    for window in &windows {
+        assert_eq!(
+            otel_subset(&window.env).keys().collect::<Vec<_>>(),
+            ["OTEL_RESOURCE_ATTRIBUTES"],
+            "{:?}",
+            window.env
+        );
+        assert!(!window.env.contains_key("PROBE_OTEL"));
+        assert!(!window.command.contains("--otel"), "{}", window.command);
+    }
+    assert_eq!(
+        exec.keys().collect::<Vec<_>>(),
+        ["OTEL_RESOURCE_ATTRIBUTES"]
+    );
+    assert!(!plan.args.iter().any(|a| a.contains("--otel")));
 }

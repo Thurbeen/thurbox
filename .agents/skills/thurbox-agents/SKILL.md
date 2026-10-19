@@ -133,7 +133,9 @@ agent knowledge — the *user* asserts the family.
 while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at
 spawn, restart, `agent_launch_plan` and `session_process_env`), with `{otlp_endpoint}` /
 `{otlp_protocol}` substituted. Every local session also gets the spec's
-`OTEL_EXPORTER_OTLP_*`; every session, remote too, gets
+`OTEL_EXPORTER_OTLP_*`, and so does a remote one whose host sets
+`otel_endpoint` in `hosts.toml` (substituted for `{otlp_endpoint}` there);
+every session, remote too, gets
 `OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`. Built-ins: claude (env),
 codex (`-c otel.*` args), vibe (env); an entry omitting both keys gains the
 built-in's in memory, explicit empty opts out. ADR-36.

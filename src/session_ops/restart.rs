@@ -101,6 +101,7 @@ pub(crate) fn build_restart_plan(
         &mut config,
         &def,
         &session.name,
+        host,
         &crate::agent::settings_config::load_quiet().telemetry,
     );
     let codex_builtin = def.name == "codex" && def.resume_args == ["resume", "{id}"];

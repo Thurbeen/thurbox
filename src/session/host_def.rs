@@ -142,6 +142,14 @@ pub struct HostDef {
     /// `~`-rooted; anything else is ignored.
     #[serde(default)]
     pub path_prepend: Vec<String>,
+    /// The OTLP endpoint a session on this host exports to while
+    /// `[telemetry]` configures agents (ADR-36), as the host reaches it.
+    /// Unset, the session gets only its resource attributes: the local
+    /// `endpoint` names this machine, which on the host is the host itself.
+    /// Not read for a session the host's own CLI creates — that one follows
+    /// the host's own `[telemetry]`.
+    #[serde(default)]
+    pub otel_endpoint: Option<String>,
 }
 
 fn default_share_sessions() -> bool {
@@ -166,6 +174,7 @@ impl Default for HostDef {
             platform: None,
             share_sessions: true,
             path_prepend: Vec::new(),
+            otel_endpoint: None,
         }
     }
 }

@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::session::settings::TelemetrySettings;
-use crate::session::{AgentDef, SessionConfig};
+use crate::session::{AgentDef, HostDef, SessionConfig};
 
 const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
 
@@ -28,14 +28,16 @@ const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
 /// so the session's value is merged into the inherited one instead, its keys
 /// winning, and thurbox's own keys win over both.
 ///
-/// A remote session gets only the resource attributes: `localhost:4318` there
-/// is the host, not this machine, and nothing yet says where the host's
-/// collector is. They still let a backend the host does reach join its
-/// telemetry to the session.
+/// A remote session exports to its host's `otel_endpoint` instead of
+/// `[telemetry] endpoint`: `localhost:4318` there is the host, not this
+/// machine. A host that names none, or a session whose host is not in
+/// `hosts.toml`, gets only the resource attributes, which still let a backend
+/// the host does reach join its telemetry to the session.
 pub(crate) fn apply(
     config: &mut SessionConfig,
     def: &AgentDef,
     session_name: &str,
+    host: Option<&HostDef>,
     telemetry: &TelemetrySettings,
 ) -> Vec<String> {
     if !telemetry.configures_agents() {
@@ -68,14 +70,19 @@ pub(crate) fn apply(
         ],
     );
     config.env.insert(RESOURCE_ATTRIBUTES.into(), attributes);
-    if remote {
-        return Vec::new();
-    }
+    let endpoint = if remote {
+        match host.and_then(|h| h.otel_endpoint.as_deref()) {
+            Some(endpoint) => endpoint,
+            None => return Vec::new(),
+        }
+    } else {
+        telemetry.endpoint.as_str()
+    };
 
     let mut spec = BTreeMap::from([
         (
             "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
-            telemetry.endpoint.clone(),
+            endpoint.to_string(),
         ),
         (
             "OTEL_EXPORTER_OTLP_PROTOCOL".to_string(),
@@ -90,7 +97,7 @@ pub(crate) fn apply(
             .collect();
         spec.insert("OTEL_EXPORTER_OTLP_HEADERS".into(), headers.join(","));
     }
-    let (agent_env, args) = def.telemetry_launch(&telemetry.endpoint, &telemetry.protocol);
+    let (agent_env, args) = def.telemetry_launch(endpoint, &telemetry.protocol);
     for (k, v) in spec.into_iter().chain(agent_env) {
         config.env.entry(k).or_insert(v);
     }
@@ -216,7 +223,7 @@ mod tests {
         config
             .env
             .insert("OTEL_METRICS_EXPORTER".into(), "console".into());
-        apply(&mut config, &def, "s", &on());
+        apply(&mut config, &def, "s", None, &on());
         assert_eq!(
             config.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
             "http://mine:4318"
@@ -233,9 +240,30 @@ mod tests {
             ..AgentDef::default()
         };
         let mut config = config(Some("ssh:devbox"));
-        let args = apply(&mut config, &def, "s", &on());
+        let args = apply(&mut config, &def, "s", None, &on());
         assert!(args.is_empty());
         assert_eq!(config.env.keys().collect::<Vec<_>>(), [RESOURCE_ATTRIBUTES]);
+    }
+
+    #[test]
+    fn a_remote_session_exports_to_its_hosts_endpoint_not_the_local_one() {
+        let def = AgentDef {
+            telemetry_args: vec!["{otlp_endpoint}/v1/logs".into()],
+            ..AgentDef::default()
+        };
+        let host = HostDef {
+            name: "devbox".into(),
+            otel_endpoint: Some("http://collector.devbox:4318".into()),
+            ..HostDef::default()
+        };
+        let mut config = config(Some("ssh:devbox"));
+        let args = apply(&mut config, &def, "s", Some(&host), &on());
+        assert_eq!(args, ["http://collector.devbox:4318/v1/logs"]);
+        assert_eq!(
+            config.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
+            "http://collector.devbox:4318"
+        );
+        assert_eq!(config.env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
     }
 
     #[test]
@@ -246,7 +274,7 @@ mod tests {
             ..AgentDef::default()
         };
         let mut config = config(None);
-        let args = apply(&mut config, &def, "s", &on());
+        let args = apply(&mut config, &def, "s", None, &on());
         assert_eq!(args, ["--otel=http://localhost:4318/v1/traces"]);
         assert_eq!(config.env["P"], "http/protobuf");
     }
