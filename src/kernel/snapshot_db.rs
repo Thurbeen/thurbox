@@ -43,6 +43,14 @@ pub(crate) enum Write {
     Perf(String),
 }
 
+impl Write {
+    /// Whether the store corrected a row in place for this write. Only these
+    /// are counted against a read: see [`Reply::Rows`].
+    pub(crate) fn touches_rows(&self) -> bool {
+        !matches!(self, Self::Perf(_))
+    }
+}
+
 pub(crate) enum Reply {
     /// Every row, read after `writes` writes had been applied — counted the
     /// way the store counts the writes it sends, so a store that has sent
@@ -90,6 +98,7 @@ pub(crate) struct RowsRead {
 pub(crate) struct DbWorker {
     jobs: Sender<Job>,
     pub(crate) replies: Receiver<Reply>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DbWorker {
@@ -112,10 +121,18 @@ impl DbWorker {
                     }
                 }
             });
-        if let Err(e) = spawned {
-            tracing::error!("could not start the snapshot's database thread: {e}");
+        let thread = match spawned {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!("could not start the snapshot's database thread: {e}");
+                None
+            }
+        };
+        Self {
+            jobs,
+            replies,
+            thread,
         }
-        Self { jobs, replies }
     }
 
     pub(crate) fn send(&self, job: Job) {
@@ -123,6 +140,19 @@ impl DbWorker {
         // answers with the rows already held — the same degradation as a
         // database that would not open.
         let _ = self.jobs.send(job);
+    }
+}
+
+/// Waits for the writes still queued, so one sent just before a clean exit is
+/// not lost with the process. The interface has given the terminal back by
+/// then, so a lock held elsewhere delays the exit, not a frame.
+impl Drop for DbWorker {
+    fn drop(&mut self) {
+        // Hanging up is what ends the thread's loop once the queue is empty.
+        drop(std::mem::replace(&mut self.jobs, mpsc::channel().0));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -141,9 +171,10 @@ impl Worker {
         let replies = match job {
             Job::Read { force } => self.read(force),
             Job::Write(write) => {
-                let reply = self.write(write);
-                self.writes += 1;
-                reply.into_iter().collect()
+                if write.touches_rows() {
+                    self.writes += 1;
+                }
+                self.write(write).into_iter().collect()
             }
             Job::Settle(token) => vec![Reply::Settled(token)],
         };

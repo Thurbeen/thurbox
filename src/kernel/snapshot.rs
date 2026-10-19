@@ -1077,7 +1077,11 @@ impl SnapshotStore {
 
     fn send_write(&mut self, write: Write) {
         if let Some(db) = &self.db {
-            self.writes += 1;
+            // Counted the way the worker counts: telemetry corrects no row, so
+            // it must not make a read in flight look stale.
+            if write.touches_rows() {
+                self.writes += 1;
+            }
             db.send(Job::Write(write));
         }
     }
@@ -1134,8 +1138,8 @@ impl SnapshotStore {
                 self.reading = false;
                 if writes != self.writes || !self.patch_hooks(&hooks) {
                     self.reread = true;
-                    self.send_read();
                 }
+                self.send_owed_read();
                 false
             }
             Reply::Unchanged => {
@@ -1151,6 +1155,7 @@ impl SnapshotStore {
                 self.current.taken_at_ms = taken_at_stamp();
                 self.reads_applied = self.reads_sent;
                 self.mark_changed();
+                self.send_owed_read();
                 false
             }
             Reply::Focus(id) => {
@@ -1328,26 +1333,28 @@ impl SnapshotStore {
     /// `done`. Without it the blue dot is permanent, since [`derive_state`]
     /// reads a mark nobody writes.
     ///
-    /// The worker decides from the stored row, which may already say `done`
-    /// before these rows do. The derived status is corrected in place as well:
-    /// this write does not move `PRAGMA data_version` (it is our own
-    /// connection), so a refresh would otherwise re-derive `done` from the row
-    /// it just acknowledged.
+    /// Asked only of a row these rows show as an unseen `done`, so moving the
+    /// selection through any other session queues nothing; the worker checks
+    /// the stored row again before stamping. The derived status is corrected in
+    /// place as well: this write does not move `PRAGMA data_version` (it is our
+    /// own connection), so a refresh would otherwise re-derive `done` from the
+    /// row it just acknowledged.
     pub fn acknowledge(&mut self, session: &str) {
         if self.db.is_none() {
             return;
         }
         let Some(id) = parse_id(session) else { return };
-        self.send_write(Write::Seen(id));
-        if let Some(row) = self
+        let Some(row) = self
             .current
             .sessions
             .iter_mut()
             .find(|row| row.id == session && row.status == SessionState::Done)
-        {
-            row.status = SessionState::Idle;
-            self.mark_changed();
-        }
+        else {
+            return;
+        };
+        row.status = SessionState::Idle;
+        self.mark_changed();
+        self.send_write(Write::Seen(id));
     }
 
     /// Capture the cached report before delivering Enter. The worker compares
@@ -2840,6 +2847,76 @@ mod tests {
              connection must not publish once the row reports for itself"
         );
     }
+    /// A store over a file with one local session whose turn is an unseen
+    /// `done`, and a second connection to the same file.
+    fn store_with_a_finished_turn() -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let database = Database::open(temp.path()).expect("db");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "finished".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        database.upsert_session(&row).expect("persist");
+        database.set_hook_state(row.id, "done").expect("done");
+        let driver = Database::open(temp.path()).expect("second connection");
+        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let id = row.id.to_string();
+        assert_eq!(status_of(&store, &id), SessionState::Done);
+        (temp, driver, store, id)
+    }
+
+    /// The read is queued first, so the worker answers it from the row as it
+    /// stood before the acknowledgment. Applying that answer would put the
+    /// filled dot back, and nothing would read the row again: the write is
+    /// this store's own, so `data_version` never moves for it.
+    #[test]
+    fn a_read_answered_before_a_queued_write_does_not_undo_its_correction() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+
+        store.request_refresh();
+        store.acknowledge(&id);
+        assert_eq!(status_of(&store, &id), SessionState::Idle);
+        store.settle();
+        store.settle();
+
+        assert_eq!(status_of(&store, &id), SessionState::Idle);
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(hook.seen_at >= hook.state_at, "the acknowledgment landed");
+    }
+
+    #[test]
+    fn dropping_the_store_lands_the_writes_still_queued() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+
+        store.acknowledge(&id);
+        drop(store);
+
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(
+            hook.seen_at.is_some() && hook.seen_at >= hook.state_at,
+            "an acknowledgment queued before a clean exit was lost"
+        );
+    }
+
     #[test]
     fn idle_clock_does_not_invalidate_snapshot_rows() {
         let database = Database::open_in_memory().unwrap();
