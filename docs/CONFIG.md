@@ -976,8 +976,8 @@ has the rule.
 ### `[telemetry]` — OpenTelemetry for sessions
 
 Turns on each agent's **own** OpenTelemetry exporter for the sessions thurbox
-spawns, pointed at one OTLP collector. thurbox exports nothing itself yet; it
-configures what the agents already have (ADR-36).
+spawns, pointed at one OTLP collector (ADR-36), and thurbox's own session
+metrics and session event logs, exported by `automation tick` (ADR-37).
 
 ```toml
 [telemetry]
@@ -986,6 +986,9 @@ endpoint = "http://localhost:4318"
 protocol = "http/protobuf"
 headers = {}                 # e.g. { authorization = "Bearer …" }
 configure_agents = true
+export_thurbox_metrics = true
+export_session_events = true
+per_session = false
 ```
 
 With `enabled` and `configure_agents` both on, every local session gets:
@@ -1011,6 +1014,92 @@ one; a running agent keeps the environment it launched with. The variables are
 in the pane's environment, so everything run in the session inherits them,
 including any OTel-instrumented tool the agent starts, and the agent process can
 read `headers`.
+
+#### thurbox's own session metrics and session event logs
+
+What only thurbox knows, the same for every agent: the only telemetry at all
+for `antigravity`, `pi` and `aider`. `automation tick` sends it, so it flows
+whenever the heartbeat runs, with or without the interface open. The tick
+re-reads the table on every run, so a change applies within a minute.
+
+| Metric | Kind | Unit | Attributes |
+|---|---|---|---|
+| `thurbox.sessions` | gauge | `{session}` | `state`, `agent`, `backend` |
+| `thurbox.session.transitions` | counter | `{transition}` | `from`, `to`, `agent` |
+| `thurbox.session.lifecycle` | counter | `{event}` | `reason`, `agent` |
+| `thurbox.session.exits` | counter | `{exit}` | `exit_code`, `agent` |
+| `thurbox.turn.duration` | histogram | `s` | `outcome`, `agent` |
+| `thurbox.blocked.duration` | histogram | `s` | `agent` |
+| `thurbox.session.lifetime` | histogram | `s` | `reason`, `agent` |
+
+- `thurbox.sessions` counts live sessions by the state word `session list`
+  shows, or `lost`. Each state word is reported, at zero when no session is in
+  it.
+- A turn runs from entering `working` to leaving it, and `outcome` is the state
+  it left to. `thurbox.blocked.duration` is time spent waiting on a human. A
+  stop, a loss or a delete in between ends either one unmeasured.
+- `reason` is the [`watch`](ORCHESTRATION.md#watch-for-everything-that-is-not-a-report)
+  vocabulary: `spawned`, `restored`,
+  `stopped`, `lost`, `soft_deleted`, …
+- `per_session = true` adds `thurbox.session.id` to every metric. Each session
+  then becomes a series of its own in the backend.
+
+Each `session_events` row becomes one log record, stamped with when the event
+happened rather than when it was exported: `thurbox.session.created`,
+`thurbox.session.state_changed` (`from`, `to`), `thurbox.session.changed` and
+`thurbox.session.gone` (`reason`, and `exit_code` for an exit). Every record
+carries `thurbox.session.id`, `thurbox.session.name` and `agent`, so a backend
+interleaves them with the agent's own events into one timeline per session. The
+resource is `service.name=thurbox`, `service.version`, `host.name` and
+`thurbox.instance` (the multiplexer socket, which tells a sandbox apart from the
+real instance).
+
+How the export behaves:
+
+- **Plain HTTP and `http/protobuf` only.** Reach an `https` backend through a
+  local Collector. With another `protocol`, thurbox exports nothing of its own
+  and the tick's report says why.
+- **Delta temporality.** Each tick is a fresh process. OTLP backends take
+  deltas as they come; Prometheus needs the Collector's `deltatocumulative`
+  processor (below).
+- **At least once.** The first export starts at the head of the event log, so
+  history from before telemetry was on is not replayed. After that a cursor in
+  the database records how far the export has got, and only one tick exports at
+  a time. A failed export moves nothing, so the same rows go out on the next
+  tick. If metrics are accepted and logs refused, that batch's metrics are
+  counted twice. A tick sends at most 1,000 events; a backlog drains over the
+  following ticks.
+- **Shared hosts** (ADR-24): their sessions are left out. The host's own tick
+  exports them under its own `host.name`.
+- **Never in the way.** A failure is a warning in the log and a `telemetry.error`
+  in `automation tick --json`. A collector that does not answer costs the tick
+  at most a 5-second timeout.
+
+A Collector that takes thurbox's metrics to Prometheus and prints its session
+event logs (`otelcol-contrib`, which ships `deltatocumulative`):
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+processors:
+  deltatocumulative: {}
+exporters:
+  prometheus:
+    endpoint: localhost:9464
+  debug: {}
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [deltatocumulative]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      exporters: [debug]
+```
 
 ### `[notifications]` — OS notification settings
 

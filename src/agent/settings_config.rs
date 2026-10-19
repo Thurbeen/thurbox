@@ -134,12 +134,18 @@ config_version = 1
 # spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
 # naming the thurbox session, and each agent's telemetry_env / telemetry_args
 # from agents.toml. Local sessions only; read at every spawn and restart.
+# `automation tick` also exports thurbox's own thurbox.* session metrics and
+# one log record per session event, over plain HTTP (point an https backend's
+# endpoint at a local Collector).
 # [telemetry]
 # enabled = false
 # endpoint = "http://localhost:4318"
 # protocol = "http/protobuf"
 # headers = {}                  # e.g. { authorization = "Bearer ..." }
 # configure_agents = true
+# export_thurbox_metrics = true
+# export_session_events = true
+# per_session = false           # thurbox.session.id on thurbox's own metrics
 
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)

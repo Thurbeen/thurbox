@@ -2939,6 +2939,43 @@ join an agent's telemetry to the thurbox session.
 
 **Limits**: a remote session gets the resource attributes only, since
 `localhost` on a host is the host; a per-host endpoint is a later phase of
-issue #1465, as are thurbox's own session metrics and diagnostic logs. A shared
-host's delegated spawn follows the host's own `[telemetry]`. The variables are
-inherited by everything run in the pane, not only the agent.
+issue #1465, as are thurbox's diagnostic logs. thurbox's own session metrics
+are ADR-37. A shared host's delegated spawn follows the host's own
+`[telemetry]`. The variables are inherited by everything run in the pane, not
+only the agent.
+
+## ADR-37: thurbox's own session telemetry is exported from the tick
+
+**Choice**: `automation tick` exports thurbox's own `thurbox.*` session metrics
+and one OTLP log record per `session_events` row (`telemetry::export`), over
+OTLP/HTTP protobuf with the OpenTelemetry Rust SDK and a blocking client. The
+metrics are **delta** temporality. How far the log has been exported is a
+cursor in the `telemetry_export` table (schema v54), moved by compare-and-swap
+under a short lease that one exporter holds at a time. A failed export moves
+nothing. The first export starts at the head of the log. Rows on a shared host
+(ADR-24) are left out: that host's own tick exports them.
+
+**Why**: the turn, wait and lifecycle facts are thurbox's, the same for every
+agent, and are the only telemetry at all for an agent with no OTel of its own
+(antigravity, pi, aider). The event log is written by every process that
+changes a session, in the same transaction as the change, so an export read
+from it is right with the interface closed. The heartbeat already runs the tick
+every minute whenever sessions exist, so no new daemon is needed. Each tick is
+a fresh process holding no state between runs, which is why the temporality is
+delta and the cursor lives in the database. The lease keeps the keeper, an OS
+timer and a hand-run `tick` from sending a row twice. Keeping the cursor on a
+failed export makes delivery at-least-once: a duplicate is better than a gap.
+The cursor has a table of its own, outside the v49 snapshot triggers, so an
+advance every minute rebuilds nothing in the interface. A `metadata` key would
+bump `rows_version`.
+
+**Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
+backend is reached through a local Collector. A Prometheus backend needs the
+Collector's `deltatocumulative` processor (sample config in `docs/CONFIG.md`).
+If the metrics export succeeds and the log export then fails, the next tick
+counts that batch's metrics again. Agent attributes and the shared-host test
+both read the session row. An event whose row was removed (`forgotten`) before
+its export is therefore labelled `unknown`, and is exported even when the row
+was a shared host's. A
+`grpc` or `http/json` `protocol` exports nothing of thurbox's own and says so in
+the tick's report.

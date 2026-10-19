@@ -16,8 +16,8 @@ use migrations::{
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
-    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
-    migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v54_telemetry_export, migrate_v5_session_commands, migrate_v6_worktrees_pk,
+    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::Connection;
@@ -103,7 +103,10 @@ use rusqlite::Connection;
 /// through the host registry, and a mirrored host's rows may briefly hold a
 /// stale duplicate — so it is enforced under the creation claim instead
 /// (`session_ops::names::claim_key`).
-pub const SCHEMA_VERSION: u32 = 53;
+/// v54 adds `telemetry_export`: how far `telemetry` has exported the session
+/// event log, and the lease one exporter holds while it does (ADR-37). Kept out
+/// of the v49 snapshot triggers, so an advance every minute rebuilds nothing.
+pub const SCHEMA_VERSION: u32 = 54;
 
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
@@ -391,6 +394,12 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_session_relaunches_session
             ON session_relaunches(session_id, at_ms);
+
+        CREATE TABLE IF NOT EXISTS telemetry_export (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            cursor      INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL DEFAULT 0
+        );
         ",
     )?;
 
@@ -484,6 +493,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (51, migrate_v51_event_exit, Reapply::WhenMissing),
         (52, migrate_v52_lost_rows_forget_pane, Reapply::Never),
         (53, migrate_v53_session_key, Reapply::WhenMissing),
+        (54, migrate_v54_telemetry_export, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {

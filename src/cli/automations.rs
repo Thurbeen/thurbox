@@ -537,6 +537,9 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     // After the mirror above, which is what may just have taken the delete to
     // a host that came back on its own.
     let teardowns = crate::session_ops::retry_owed_remote_teardowns(db, backends);
+    // Last: a collector that is down costs a request timeout, and nothing
+    // above may wait on it.
+    let telemetry = export_telemetry(db);
     Ok(json!({
         "fired": fired,
         "skipped": skipped,
@@ -544,7 +547,56 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
         "synced": synced,
         "reaped": reaped,
         "teardowns": teardowns,
+        "telemetry": telemetry,
     }))
+}
+
+/// Export thurbox's own session metrics and session event logs (ADR-37),
+/// reporting what went — `null` while `[telemetry]` exports nothing. A failure
+/// is logged and reported, never returned: the rows wait for the next tick.
+fn export_telemetry(db: &Database) -> Value {
+    let settings = &crate::session::settings::global().telemetry;
+    if !settings.exports_thurbox() {
+        return Value::Null;
+    }
+    let shared_hosts: std::collections::HashSet<String> = crate::agent::host_config::load_all()
+        .hosts
+        .iter()
+        .filter(|h| h.shareable())
+        .map(|h| h.name.clone())
+        .collect();
+    let sessions = db.list_active_sessions().unwrap_or_default();
+    let facts = super::sessions::SessionFacts::load(db);
+    let lost = db.load_lost_sessions().unwrap_or_default();
+    let registry = crate::agent::agent_config::load_or_seed();
+    let counts: Vec<crate::telemetry::SessionCount> = sessions
+        .iter()
+        .map(|s| crate::telemetry::SessionCount {
+            id: s.id,
+            state: if lost.contains_key(&s.id) {
+                crate::telemetry::LOST.to_string()
+            } else {
+                facts.assess(&registry, s, None).state_word().to_string()
+            },
+            agent: s.agent.clone(),
+            backend: s.backend_type.clone(),
+        })
+        .collect();
+    let identity = crate::telemetry::Identity {
+        version: crate::agent::version_check::current_version().to_string(),
+        instance: crate::backend::instance::local_socket_name(),
+    };
+    match crate::telemetry::export(db, settings, &identity, &counts, &shared_hosts) {
+        Ok(report) => json!({
+            "events": report.events,
+            "cursor": report.cursor,
+            "skipped": report.skipped,
+        }),
+        Err(e) => {
+            tracing::warn!("telemetry export: {e}");
+            json!({ "error": e })
+        }
+    }
 }
 
 /// Execute one automation's action without a TUI, returning the run outcome.

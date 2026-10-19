@@ -27,6 +27,8 @@ pub use session_events::{EventReason, SessionEventKind, SessionEventRow};
 pub use sessions::{DeletedSessionInfo, HookRow, PaneClaim, SessionFacts};
 pub mod sync;
 pub mod tasks;
+mod telemetry_export;
+pub use telemetry_export::{ExportEvent, ExportSession};
 mod worktrees;
 mod wsl_repair;
 pub use wsl_repair::WslLoopbackRepair;

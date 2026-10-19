@@ -919,6 +919,14 @@ units for reboot-proof firing. Concurrent firers are de-duplicated
 by `Database::claim_due_automation` (atomic CAS), so the keeper,
 an OS timer and a hand-run `tick` never double-fire.
 
+The tick ends with thurbox's own OTLP export (`telemetry::export`, ADR-37):
+`thurbox.*` session metrics and one log record per `session_events` row,
+reported as the tick's `telemetry` object (`events`, `cursor`, `skipped`, or
+`error`; `null` while `[telemetry]` exports nothing). It runs last because a
+collector that does not answer costs a request timeout. A lease and a CAS'd
+cursor in `telemetry_export` (schema v54) keep concurrent ticks from sending a
+row twice, and a failed export keeps the cursor so the rows go out next tick.
+
 **No automations pane.** The interface has none, and `[features] automations`
 no longer hides one: its only *effect* in the TUI is gating **arming the
 heartbeat** at startup (`src/main.rs`; it also rides the live-reload merge

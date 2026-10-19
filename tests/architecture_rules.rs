@@ -326,6 +326,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session"],
         allowed_path_only: &[],
     },
+    // thurbox's own OTLP export (ADR-37): reads the event log and the cursor
+    // from `storage`, the settings and route parsing from `session`. The
+    // session counts it is handed are assessed by its caller, `cli`.
+    ModuleRules {
+        name: "telemetry",
+        allowed: &["session", "storage"],
+        allowed_path_only: &[],
+    },
     // `shell` builds the host launchers (ssh/wsl) for reading a remote
     // session's credentials where the agent actually runs.
     ModuleRules {
@@ -383,6 +391,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "paths",
             "notifications",
             "ui_control",
+            "telemetry",
         ],
         // `kernel` for the two subcommands that drive the *interface's* own
         // files — `plugin` (`check` loads the real host: the failures worth

@@ -985,6 +985,22 @@ pub(super) fn migrate_v53_session_key(conn: &Connection) -> rusqlite::Result<()>
     )
 }
 
+/// See [`super::SCHEMA_VERSION`] v54. Also drops any snapshot trigger on the
+/// table: a binary from before v54 re-asserts v49 on every open and would put
+/// them there, and each would rebuild the interface on every export.
+pub(super) fn migrate_v54_telemetry_export(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS telemetry_export (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            cursor      INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL DEFAULT 0
+        );
+        DROP TRIGGER IF EXISTS snapshot_telemetry_export_INSERT;
+        DROP TRIGGER IF EXISTS snapshot_telemetry_export_DELETE;
+        DROP TRIGGER IF EXISTS snapshot_telemetry_export_UPDATE;",
+    )
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.
@@ -1044,7 +1060,7 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
     let tables = conn
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' \
-         AND name NOT LIKE 'sqlite_%' AND name != 'snapshot_versions'",
+         AND name NOT LIKE 'sqlite_%' AND name NOT IN ('snapshot_versions', 'telemetry_export')",
         )?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
