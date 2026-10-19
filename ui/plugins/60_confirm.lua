@@ -61,6 +61,13 @@ local function consequence(kind, options)
   return "Sync " .. name .. " with the branch it came from"
 end
 
+--- The request this last drew, which is the one `y` issues.
+---
+--- Not `store.confirm` read again at the keypress: a float drawn after this one
+--- could replace it between the frame the user read and their answer, and `y`
+--- would then issue a request nobody saw.
+local shown = nil
+
 --- The pending question, if a pane left one it may ask.
 local function pending()
   local ask = store.confirm
@@ -72,6 +79,7 @@ end
 
 local function clear()
   store.confirm = nil
+  shown = nil
 end
 
 return {
@@ -86,7 +94,8 @@ return {
   slot = "float",
   order = 60,
   floats = true,
-  -- This render reads `store.confirm` and the theme and writes nothing, so the
+  -- This render reads `store.confirm` and the theme and writes nothing but
+  -- `shown`, which a reused tree leaves matching what is on screen, so the
   -- kernel may reuse the tree — and floats render every frame even while
   -- closed, so without this the closed state costs a Lua call per frame
   -- forever. `store.confirm` writes bump the state version, which is part of
@@ -98,6 +107,7 @@ return {
 
   render = function(_)
     local ask = pending()
+    shown = ask
     if not ask then
       return { type = "text", text = "" }
     end
@@ -167,7 +177,8 @@ return {
   end,
 
   on_key = function(key)
-    local ask = pending()
+    -- Still pending, and answered with what was on screen.
+    local ask = pending() and shown
     if not ask then
       return false
     end

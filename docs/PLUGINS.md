@@ -1447,6 +1447,12 @@ for good, and those need the `sessions` capability:
   heartbeat types.
 - `delete` with `force = true` removes a worktree that nothing restores.
 - `plugin` restores or removes a file of the interface.
+- `action` naming `kernel.paste` types the clipboard into the focused agent.
+
+Any other `action` runs the handler of the plugin that declared it — but as your
+request: while it runs for you, every command it issues is checked against *your*
+grant, so a pane holding none cannot have a trusted one `send` for it. A key or a
+click the user makes runs the same handler under its own name.
 
 Two verbs need `run` instead: `open` (a URL carries whatever is in it to the network
 without a click) and writing an exec automation's `command`. `program` needs
@@ -1480,9 +1486,11 @@ leaving a question in `store.confirm`, so it forwards only `delete`, `restart`,
 `restore` and `sync`. Every pane writes `store`, so the question is only its
 author's words. The confirmation therefore words what `y` does itself, from the
 command and the session's name, and names the pane that asked. It learns which
-pane that was from `store_writer("confirm")`, which returns the path of the plugin
-that last wrote a `store` key. That record is made by the writer's own view of
-`store`, so no pane can claim another's.
+pane that was from `store_writer("confirm")`, which returns the path of the
+plugin that last wrote a `store` key. That record is made by the writer's own
+view of `store`, so no pane can claim another's. On `y` it issues exactly the
+request it drew, never `store.confirm` read again at the keypress, which a later
+float could have replaced.
 
 ## Running a program you interact with
 

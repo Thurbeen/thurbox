@@ -512,14 +512,17 @@ them out, per call; `layout.lua` has an env that never holds either.
 with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
 pins each): `send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin`
 and a force `delete` need `sessions`; `open` and an exec automation's command need
-`run`; `program` needs `program`. Refused in
+`run`; `program` needs `program`; an `action` naming `kernel.paste` needs
+`sessions`, and any other `action`'s handler issues under the asker's name while
+it runs for another plugin (`LuaHost::acting_for`). Refused in
 `coordinator::commands::refuse_ungranted` against the owner bound into the issuing
 plugin's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
 shipped is `Trust::Shipped` and holds what it declares untrusted — `60_confirm`
 and `70_new_session` need it — and
 `60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
-write `store.confirm`; it words the change itself from the command and names the
-asker via `store_writer` (recorded by the writer's own `store` view).
+write `store.confirm`; it words the change itself from the command, names the
+asker via `store_writer` (recorded by the writer's own `store` view), and on `y`
+issues the request it last drew, not `store.confirm` re-read.
 
 **A plugin can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and

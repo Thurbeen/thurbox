@@ -122,6 +122,24 @@ fn index_of(host: &LuaHost, plugin: &str) -> usize {
 }
 
 /// Build the keypress a terminal would deliver for a canonical chord.
+/// Draw the confirmation, which answers only what it drew — as it does every
+/// frame in the running interface — then press `y` on it.
+fn confirm_yes(host: &LuaHost) {
+    let confirm = index_of(host, "confirm");
+    host.render(
+        confirm,
+        RenderContext {
+            width: 80,
+            height: 24,
+            focused: false,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .expect("draw the question");
+    host.on_key(confirm, &press("y")).expect("confirm");
+}
+
 fn press(chord: &str) -> KeyPress {
     let mut key = KeyPress::default();
     for part in chord.split('+') {
@@ -319,8 +337,7 @@ fn the_session_chords_issue_the_commands_v1_runs() {
         let mut issued = host.drain_commands();
         if chord != "ctrl+o" {
             assert!(issued.is_empty(), "{chord} must ask first");
-            host.on_key(index_of(&host, "confirm"), &press("y"))
-                .expect("confirm");
+            confirm_yes(&host);
             issued = host.drain_commands();
         }
         assert_eq!(issued.len(), 1, "{chord} issued {issued:?}");
@@ -399,8 +416,7 @@ fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
 
     fire(&host, "ctrl+d");
     assert!(host.drain_commands().is_empty());
-    host.on_key(index_of(&host, "confirm"), &press("y"))
-        .expect("confirm");
+    confirm_yes(&host);
     host.drain_commands();
     fire(&host, "ctrl+z");
     let issued = host.drain_commands();
@@ -615,8 +631,7 @@ fn a_bare_d_deletes_nothing_in_the_session_list() {
     // The chord that does asks before deleting.
     fire(&host, "ctrl+d");
     assert!(host.drain_commands().is_empty());
-    host.on_key(index_of(&host, "confirm"), &press("y"))
-        .expect("confirm");
+    confirm_yes(&host);
     let issued = host.drain_commands();
     assert_eq!(issued.len(), 1, "{issued:?}");
     assert_eq!(issued[0].kind(), "delete");

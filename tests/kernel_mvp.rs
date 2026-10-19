@@ -1127,6 +1127,9 @@ fn deleting_from_the_session_list_asks_before_issuing_a_command() {
 
     let issued = ctrl_keys_to_commands(&host, "sessions", 'd');
     assert!(issued.is_empty());
+    // The confirmation answers what it drew, as it does every frame.
+    host.render(index_of(&host, "confirm"), ctx(40, 12, false))
+        .expect("draw the question");
     press_key(&host, "confirm", 'y');
     let issued = host.drain_commands();
     assert_eq!(issued.len(), 1, "{issued:?}");

@@ -192,7 +192,10 @@ records the path each plugin's own `command` was built with, and
 the command needs before the loop applies it — `run` for an exec automation's
 command line or a URL opened unasked, `sessions` for every verb that drives an
 agent or loses something for good. Every variant answers in one exhaustive
-`match` with no catch-all arm, so a new verb does not compile until it decides.
+`match` with no catch-all arm, so a new verb does not compile until it decides. An
+`action` runs the declaring plugin's handler, so while it runs at another
+plugin's request (`LuaHost::acting_for`) what it issues carries the asking
+plugin as owner — the grant that answers is the asker's, never the handler's.
 `program` is checked the same way when its pane is started.
 
 The grant itself comes from one place, `packages::granted` → `trust_of` →

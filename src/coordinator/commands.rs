@@ -147,7 +147,11 @@ impl App {
                     .name_of_path(owner)
                     .and_then(|name| self.host.index_of(name))
                     .unwrap_or(self.focus);
+                // The handler runs at this pane's request, so what it issues is
+                // this pane's request too (`LuaHost::acting_for`).
+                let previous = self.host.acting_for(Some(owner.clone()));
                 self.run_clicked_action(action, asked);
+                self.host.acting_for(previous);
             }
             Command::ActionTarget {
                 owner,
@@ -160,7 +164,9 @@ impl App {
                     .name_of_path(owner)
                     .and_then(|name| self.host.index_of(name))
                     .unwrap_or(self.focus);
+                let previous = self.host.acting_for(Some(owner.clone()));
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
+                self.host.acting_for(previous);
             }
             // The message band is kernel chrome; this is a plugin contributing
             // to it, like a pill or a binding.

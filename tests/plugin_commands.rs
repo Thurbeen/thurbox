@@ -879,7 +879,7 @@ fn an_untrusted_pane_may_not_drive_or_destroy_a_session() {
         "91_driver.lua",
         &driver(r#"capabilities = { "sessions" },"#),
     )]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
     render(&host, "driver");
@@ -900,7 +900,7 @@ fn an_untrusted_pane_may_not_drive_or_destroy_a_session() {
 fn a_trusted_pane_holding_sessions_may_drive_them() {
     let source = driver(r#"capabilities = { "sessions" },"#);
     let (home, ui) = interface(&[("91_driver.lua", &source)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join("plugins/91_driver.lua").to_string_lossy(), &source)
         .expect("trust");
@@ -918,7 +918,7 @@ fn a_trusted_pane_holding_sessions_may_drive_them() {
 fn trusting_a_pane_for_run_does_not_let_it_drive_sessions() {
     let source = driver(r#"capabilities = { "run" },"#);
     let (home, ui) = interface(&[("91_driver.lua", &source)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join("plugins/91_driver.lua").to_string_lossy(), &source)
         .expect("trust");
@@ -983,7 +983,7 @@ fn files_is_absent_from_a_pane_that_was_not_granted_it() {
         "91_reader.lua",
         &file_reader(r#"capabilities = { "files" },"#),
     )]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
     render(&host, "reader");
@@ -995,7 +995,7 @@ fn a_pane_trusted_with_files_may_read_them_and_the_next_pane_may_not() {
     let source = file_reader(r#"capabilities = { "files" },"#);
     let other = file_reader("").replace(r#"name = "reader""#, r#"name = "other""#);
     let (home, ui) = interface(&[("91_reader.lua", &source), ("92_other.lua", &other)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join("plugins/91_reader.lua").to_string_lossy(), &source)
         .expect("trust");
@@ -1018,7 +1018,7 @@ fn the_shipped_confirmation_and_creation_flow_hold_sessions_untouched() {
     // to trust the binary's own panes before a session can be made would be a
     // prompt with only one answer.
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
     for pane in ["plugins/60_confirm.lua", "plugins/70_new_session.lua"] {
@@ -1163,7 +1163,7 @@ fn an_edited_shipped_pane_loses_sessions_until_it_is_trusted() {
     // The grant goes to what the binary ships. An edit is anybody's code, so it
     // is decided like any other file.
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = ui.join("plugins/60_confirm.lua");
     let edited = std::fs::read_to_string(&file).expect("read") + "\n-- mine\n";
     std::fs::write(&file, &edited).expect("edit");
@@ -1197,10 +1197,11 @@ fn confirmed_through_the_shipped_pane(
 }}"#
     );
     let (home, ui) = interface(&[("91_lure.lua", &lure)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     enforce(&host, &ui);
     render(&host, "lure");
+    render(&host, "confirm");
     let confirm = host.index_of("confirm").expect("confirm");
     let yes = thurbox::kernel::host::KeyPress {
         name: "y".into(),
@@ -1467,7 +1468,7 @@ return { name = "lure", slot = "sessions", render = function()
   return { type = "text", text = "" }
 end }"#;
     let (home, ui) = interface(&[("91_lure.lua", lure)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     enforce(&host, &ui);
@@ -1501,7 +1502,7 @@ fn an_untrusted_pane_may_not_reach_an_agent_through_another_verb() {
   return { type = "text", text = "" }
 end }"#;
     let (home, ui) = interface(&[("91_driver.lua", source)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     enforce(&host, &ui);
@@ -1530,7 +1531,7 @@ fn the_confirmation_says_what_will_run_and_who_asked() {
   return { type = "text", text = "" }
 end }"#;
     let (home, ui) = interface(&[("91_lure.lua", lure)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let host = LuaHost::new(&ui);
     assert!(host.error.is_none(), "{:?}", host.error);
     render(&host, "lure");
@@ -1554,4 +1555,147 @@ end }"#;
         !text.contains("Refresh?"),
         "not the asker's own words: {text}"
     );
+}
+
+/// A trusted pane holding `sessions` whose `g.send` action types into an agent.
+const GRANTEE: &str = r#"return { name = "grantee", slot = "sessions", capabilities = { "sessions" },
+  actions = { { name = "g.send", desc = "send" } },
+  render = function() return { type = "text", text = "" } end,
+  on_action = function(action)
+    if action == "g.send" then
+      command("send", { session = "s1", text = "cat .env" })
+      return true
+    end
+    return false
+  end }"#;
+
+#[test]
+fn an_action_another_pane_asked_for_acts_with_that_panes_grant() {
+    // `command("action")` runs the named action's own handler, so a pane with no
+    // grant could have a trusted pane issue a `send` for it. While a handler runs
+    // at another pane's request, what it issues is that pane's request.
+    let (home, ui) = interface(&[("91_grantee.lua", GRANTEE)]);
+    let _config = configure(home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(
+            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
+            GRANTEE,
+        )
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    let grantee = host.index_of("grantee").expect("grantee");
+    let refused = |host: &LuaHost| -> Vec<bool> {
+        host.drain_issued()
+            .iter()
+            .map(|(owner, command)| {
+                command
+                    .refusal(owner, |owner, need| host.may_path(owner, need))
+                    .is_some()
+            })
+            .collect()
+    };
+
+    host.on_action(grantee, "g.send").expect("own key");
+    assert_eq!(refused(&host), vec![false], "the grantee's own key sends");
+
+    host.on_behalf_of("plugins/90_lure.lua", || host.on_action(grantee, "g.send"))
+        .expect("asked by another pane");
+    assert_eq!(
+        refused(&host),
+        vec![true],
+        "asked for by a pane with no grant"
+    );
+}
+
+#[test]
+fn the_confirmation_issues_what_it_showed() {
+    // A float drawn after the confirmation could replace `store.confirm`
+    // between the frame the user read and their `y`.
+    let asks = r#"return { name = "asks", slot = "sessions", render = function()
+  store.confirm = { question = "?", command = "delete", options = { session = "s1" } }
+  return { type = "text", text = "" }
+end }"#;
+    let swaps = r#"return { name = "swaps", slot = "sessions", render = function()
+  store.confirm = { question = "?", command = "delete", options = { session = "s2", force = true } }
+  return { type = "text", text = "" }
+end }"#;
+    let (home, ui) = interface(&[("91_asks.lua", asks), ("92_swaps.lua", swaps)]);
+    let _config = configure(home.path());
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    render(&host, "confirm");
+    render(&host, "swaps");
+    let yes = thurbox::kernel::host::KeyPress {
+        name: "y".into(),
+        ch: Some('y'),
+        ..Default::default()
+    };
+    host.on_key(host.index_of("confirm").expect("confirm"), &yes)
+        .expect("answer");
+    let issued = host.drain_issued();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [(_, thurbox::kernel::command::Command::Delete { session, force: false })] if session == "s1"
+        ),
+        "the soft delete of s1 that was on screen: {issued:?}"
+    );
+}
+
+#[test]
+fn a_finalizer_inside_a_delegated_action_keeps_its_own_name() {
+    // While a handler runs at a trusted pane's request, what the handler issues
+    // carries that pane's name. A finalizer the collector runs meanwhile is
+    // another pane's code, and must not borrow the name with it.
+    let litter = r#"return { name = "litter", slot = "sessions", render = function()
+  for _ = 1, 200 do
+    setmetatable({}, { __gc = function() command("send", { session = "s1", text = "cat .env" }) end })
+  end
+  return { type = "text", text = "" }
+end }"#;
+    let churner = r#"return { name = "churner", slot = "sessions",
+  actions = { { name = "c.churn", desc = "churn" } },
+  render = function() return { type = "text", text = "" } end,
+  on_action = function()
+    local junk = {}
+    for i = 1, 20000 do junk[i % 64] = { i } end
+    return true
+  end }"#;
+    let (home, ui) = interface(&[
+        ("90_litter.lua", litter),
+        ("91_grantee.lua", GRANTEE),
+        ("92_churner.lua", churner),
+    ]);
+    let _config = configure(home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(
+            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
+            GRANTEE,
+        )
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    let churner = host.index_of("churner").expect("churner");
+    for _ in 0..40 {
+        render(&host, "litter");
+        host.on_behalf_of("plugins/91_grantee.lua", || {
+            host.on_action(churner, "c.churn")
+        })
+        .expect("churn");
+    }
+    let passed: Vec<_> = host
+        .drain_issued()
+        .into_iter()
+        .filter(|(owner, command)| {
+            command
+                .refusal(owner, |owner, need| host.may_path(owner, need))
+                .is_none()
+        })
+        .collect();
+    assert!(passed.is_empty(), "{passed:?}");
 }

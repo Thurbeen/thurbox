@@ -845,6 +845,8 @@ pub struct LuaHost {
     /// and a plugin must never be able to run a database write from inside a
     /// render call.
     queue: Queue,
+    /// See [`Self::acting_for`].
+    behalf: Rc<RefCell<Option<String>>>,
     /// Runs plugins asked for, drained once per frame like `queue`.
     ///
     /// Separate from `queue` because a run carries the plugin that asked —
@@ -990,6 +992,7 @@ impl LuaHost {
             current: Rc::new(RefCell::new(String::new())),
             current_path: Rc::new(RefCell::new(String::new())),
             queue: Queue::default(),
+            behalf: Rc::new(RefCell::new(None)),
             runs: Rc::new(RefCell::new(Vec::new())),
             trusted: Rc::new(RefCell::new(Vec::new())),
             disabled: Rc::new(RefCell::new(Vec::new())),
@@ -1061,6 +1064,8 @@ impl LuaHost {
             runs: self.runs.clone(),
             version: self.state_version.clone(),
             writes: self.store_writes.clone(),
+            behalf: self.behalf.clone(),
+            entered: self.current_path.clone(),
         };
 
         let dir = self.ui_dir.join("plugins");
@@ -1187,6 +1192,28 @@ impl LuaHost {
     /// Separate from `on_key`: a declared key is routed by the registry, which
     /// is what lets it be rebound, listed in help, and conflict-checked. Raw
     /// `on_key` stays for panes that need every keystroke (the terminal).
+    /// Run `f` as a request from the plugin at `issuer`: see [`Self::acting_for`].
+    pub fn on_behalf_of<T>(&self, issuer: &str, f: impl FnOnce() -> T) -> T {
+        let previous = self.acting_for(Some(issuer.to_string()));
+        let out = f();
+        self.acting_for(previous);
+        out
+    }
+
+    /// Mark what runs from now on as a request from the plugin at `issuer`, or
+    /// clear the mark with `None`, returning the mark it replaces.
+    ///
+    /// `command("action")` runs the named action's own handler, which may
+    /// belong to a plugin holding a grant the asking one does not. While it
+    /// runs for that pane, every command it issues carries the asking pane as
+    /// its owner, so the gate weighs that pane's grant: a pane with none cannot
+    /// have a trusted one `send` for it. Only the handler's own commands are
+    /// marked — another plugin's finalizer run meanwhile keeps its own name. A
+    /// key or a click the user made runs the handler unmarked.
+    pub fn acting_for(&self, issuer: Option<String>) -> Option<String> {
+        std::mem::replace(&mut *self.behalf.borrow_mut(), issuer)
+    }
+
     pub fn on_action(&self, index: usize, action: &str) -> Result<bool, PluginError> {
         self.on_action_with_args(index, action, &[])
     }

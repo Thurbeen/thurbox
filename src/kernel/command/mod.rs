@@ -627,9 +627,17 @@ impl Command {
             | Command::Theme { .. }
             | Command::Setting { .. }
             | Command::Message { .. }
-            | Command::Emit { .. }
-            | Command::Action { .. }
-            | Command::ActionTarget { .. } => None,
+            | Command::Emit { .. } => None,
+            // The kernel's paste types the clipboard into the focused agent, so
+            // a pane may not press it for the user. Any other action runs its
+            // owner's handler, and what that issues is checked as this pane's
+            // request (`LuaHost::acting_for`).
+            Command::Action { action, .. } | Command::ActionTarget { action, .. }
+                if action == super::clipboard::PASTE_ACTION =>
+            {
+                Some(Capability::Sessions)
+            }
+            Command::Action { .. } | Command::ActionTarget { .. } => None,
             // Issued by the kernel, never parsed from a plugin.
             Command::Reap | Command::Configure { .. } => None,
         }
@@ -663,6 +671,7 @@ impl Command {
             "plugin" => "change a file of the interface",
             "open" => "open a link",
             "program" => "run a program in a pane",
+            "action" => "paste into a session",
             _ => "delete a session for good",
         };
         (!may(owner, need)).then(|| {
@@ -2145,6 +2154,14 @@ mod tests {
                     ..Args::default()
                 }),
                 None,
+            ),
+            (
+                "action",
+                with(Args {
+                    text: Some(super::super::clipboard::PASTE_ACTION.into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
             ),
         ];
         for (verb, args, expected) in verbs {

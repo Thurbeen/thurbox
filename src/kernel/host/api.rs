@@ -49,6 +49,12 @@ pub(super) struct EnvParts {
     pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
     pub version: StateVersion,
     pub writes: super::WriteCount,
+    /// The plugin whose request a handler is running for, while one is: see
+    /// `LuaHost::acting_for`.
+    pub behalf: Rc<RefCell<Option<String>>>,
+    /// The path of the plugin the kernel is calling into, which is the
+    /// handler `behalf` applies to.
+    pub entered: Rc<RefCell<String>>,
 }
 
 /// One plugin's environment, and the capability it holds only while granted.
@@ -92,7 +98,13 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     sealed_views(lua, &table, path)?;
     table.set(
         "command",
-        command_for(lua, parts.queue.clone(), path.to_string())?,
+        command_for(
+            lua,
+            parts.queue.clone(),
+            path.to_string(),
+            parts.behalf.clone(),
+            parts.entered.clone(),
+        )?,
     )?;
     table.set(
         "state",
@@ -686,7 +698,13 @@ fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
 ///
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
-fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Function> {
+fn command_for(
+    lua: &Lua,
+    queue: Queue,
+    owner: String,
+    behalf: Rc<RefCell<Option<String>>>,
+    entered: Rc<RefCell<String>>,
+) -> mlua::Result<mlua::Function> {
     lua.create_function(move |lua, (kind, opts): (String, Option<Table>)| {
         let opts = opts;
         let get_string = |key: &str| -> Option<String> {
@@ -814,7 +832,15 @@ fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Fun
                 store.set(key, value)?;
             }
         }
-        queue.borrow_mut().push((owner.clone(), parsed));
+        // A handler running at another plugin's request issues that request:
+        // its own grant must not answer for a pane that holds none. Only the
+        // handler's own commands: a finalizer of some other plugin that the
+        // collector runs meanwhile is that plugin's code, under its own name.
+        let issuer = match behalf.borrow().as_ref() {
+            Some(asker) if *entered.borrow() == owner => asker.clone(),
+            _ => owner.clone(),
+        };
+        queue.borrow_mut().push((issuer, parsed));
         Ok(())
     })
 }
