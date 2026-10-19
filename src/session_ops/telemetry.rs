@@ -188,7 +188,7 @@ mod tests {
             RESOURCE_ATTRIBUTES.into(),
             "team=infra,thurbox.agent=spoofed,".into(),
         );
-        apply(&mut config, &AgentDef::default(), "a b=c", &on());
+        apply(&mut config, &AgentDef::default(), "a b=c", None, &on());
         let id = config.session_id.unwrap();
         assert_eq!(
             config.env[RESOURCE_ATTRIBUTES],
@@ -209,7 +209,7 @@ mod tests {
             RESOURCE_ATTRIBUTES.into(),
             "thurbox.session.id=old,thurbox.session.name=old".into(),
         );
-        apply(&mut config, &AgentDef::default(), "", &on());
+        apply(&mut config, &AgentDef::default(), "", None, &on());
         assert_eq!(config.env[RESOURCE_ATTRIBUTES], "thurbox.agent=claude");
     }
 
