@@ -1997,3 +1997,55 @@ fn health_reports_presence_and_active_flag() {
     assert!(after.active);
     assert!(after.is_healthy());
 }
+
+/// A heal pass that read the active set before a deactivate must not create
+/// the extension's automations after it (issue #1475): the deactivate has
+/// already swept them, so an exec automation made now would run on schedule
+/// for an extension that is off.
+#[test]
+fn a_heal_for_a_deactivated_extension_creates_no_automation() {
+    let db = Database::open_in_memory().unwrap();
+    let mut def = flow_def();
+    def.sessions.clear();
+    def.automations[0].session_ref = None;
+    def.automations[0].prompt = None;
+    def.automations[0].command = Some("true".into());
+
+    let report =
+        ensure_resources(&db, &crate::backend::registry::inert(), &def, Some("flow")).unwrap();
+
+    assert!(db.list_automations().unwrap().is_empty());
+    assert!(report.automations_created.is_empty());
+}
+
+/// Self-heal's auto-update re-installs from the recorded source, which used to
+/// end in a plain activation: a deactivate that landed while the update was
+/// fetching was undone, and the extension came back on (issue #1475).
+#[test]
+fn a_heal_auto_update_does_not_reactivate_a_deactivated_extension() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let src = tempfile::TempDir::new().unwrap();
+    let (db, _home) = install_then_bump_source(&temp, &src);
+    let def = crate::agent::extension_config::load_manifest("flow").unwrap();
+    assert!(db.remove_active_extension("flow").unwrap());
+
+    let mut messages = Vec::new();
+    heal_version_drift(
+        &db,
+        &crate::backend::registry::inert(),
+        &def,
+        "flow",
+        "9.9.9",
+        true,
+        &mut messages,
+    );
+
+    assert!(
+        !db.get_active_extensions()
+            .unwrap()
+            .iter()
+            .any(|n| n == "flow"),
+        "the update turned the extension back on: {messages:?}"
+    );
+}

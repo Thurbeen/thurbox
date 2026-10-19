@@ -152,8 +152,10 @@ extension at TUI startup (before session restore) and at the top of the headless
 while an extension is active, deleting its session/automation is a **no-op** —
 they are recreated. `extension deactivate` is the real off-switch: it leaves the
 active set **first** and deletes after, and a heal pass already running checks
-the set again under each session's lock, before and after the spawn, so nothing
-it was mid-way through survives the deactivate (issue #1475). Headless
+the set again before and after each session (under its lock) or automation it
+creates, so nothing it was mid-way through survives the deactivate. A heal's
+auto-update re-ensures rather than re-activates, so it cannot turn a deactivated
+extension back on (issue #1475). Headless
 healing needs `[features] automations = true`. Session deletion during CLI
 deactivation follows `[features] soft_delete` (default `false`); `--force`
 always tears down immediately.

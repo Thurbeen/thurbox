@@ -13,8 +13,6 @@ use crate::storage::automations::NewAutomation;
 use crate::storage::Database;
 use crate::sync::current_time_millis;
 
-use super::install::update_extension;
-
 /// What [`ensure_extension`] actually created this pass (empty = everything was
 /// already present). Lets callers toast only on a real (re)creation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -103,7 +101,7 @@ pub fn ensure_extension(
 /// [`ensure_extension`], for self-heal when `healing` names the extension:
 /// every session it creates is then created only while the extension is still
 /// active ([`still_wanted`]).
-fn ensure_resources(
+pub(super) fn ensure_resources(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
@@ -171,6 +169,7 @@ fn ensure_resources(
         ensure_automation(
             db,
             auto,
+            healing,
             target,
             existing_automations.get(&auto.name),
             &mut report,
@@ -244,7 +243,7 @@ fn ensure_keyed_session(
             return Ok(None);
         }
     };
-    if !still_wanted(db, healing, &sess.name, report)? {
+    if !still_wanted(db, healing, &format!("session '{}'", sess.name), report)? {
         return Ok(None);
     }
     let result = crate::session_ops::spawn::spawn_session_holding_key(
@@ -360,7 +359,7 @@ fn create_under_claim(
         ));
         return Ok(None);
     }
-    if !still_wanted(db, healing, &sess.name, report)? {
+    if !still_wanted(db, healing, &format!("session '{}'", sess.name), report)? {
         return Ok(None);
     }
     let result = crate::session_ops::spawn_session_headless(
@@ -376,9 +375,9 @@ fn create_under_claim(
     keep_unless_deactivated(db, backends, healing, sess, result.session_id, report)
 }
 
-/// Whether self-heal may still create `name` for the extension it is healing:
-/// `false`, with the reason in `report`, once the extension has left the active
-/// set. `None` — an activation, which ensures before it joins the set — always
+/// Whether self-heal may still create `what` (a session or an automation, as
+/// the message names it) for the extension it is healing: `false`, with the
+/// reason in `report`, once the extension has left the active set. `None` — an activation, which ensures before it joins the set — always
 /// may.
 ///
 /// Asked under the session's lock, because a heal pass reads the active set
@@ -388,7 +387,7 @@ fn create_under_claim(
 fn still_wanted(
     db: &Database,
     healing: Option<&str>,
-    name: &str,
+    what: &str,
     report: &mut EnsureReport,
 ) -> Result<bool, String> {
     let Some(extension) = healing else {
@@ -401,7 +400,7 @@ fn still_wanted(
         .any(|n| n == extension);
     if !active {
         report.sessions_blocked.push(format!(
-            "session '{name}' was not recreated: extension '{extension}' was deactivated \
+            "{what} was not recreated: extension '{extension}' was deactivated \
              during this pass"
         ));
     }
@@ -420,7 +419,7 @@ fn keep_unless_deactivated(
     id: SessionId,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
-    if !still_wanted(db, healing, &sess.name, report)? {
+    if !still_wanted(db, healing, &format!("session '{}'", sess.name), report)? {
         crate::session_ops::delete_session_headless(db, backends, id, true)?;
         return Ok(None);
     }
@@ -435,6 +434,7 @@ fn keep_unless_deactivated(
 fn ensure_automation(
     db: &Database,
     auto: &ExtensionAutomation,
+    healing: Option<&str>,
     target: Option<SessionId>,
     existing: Option<&Automation>,
     report: &mut EnsureReport,
@@ -465,6 +465,13 @@ fn ensure_automation(
         }
         return Ok(());
     }
+    // Guarded like a session ([`keep_unless_deactivated`]): an exec automation
+    // left behind by a deactivate runs on its schedule for an extension that
+    // is off.
+    let what = format!("automation '{}'", auto.name);
+    if !still_wanted(db, healing, &what, report)? {
+        return Ok(());
+    }
     let schedule = parse_trigger(&auto.trigger, None, None)?;
     let next_run_at = schedule.next_after(current_time_millis(), None);
     let new = NewAutomation {
@@ -476,8 +483,14 @@ fn ensure_automation(
         prompt: auto.prompt.clone().unwrap_or_default(),
         next_run_at,
     };
-    db.create_automation(&new)
+    let id = db
+        .create_automation(&new)
         .map_err(|e| format!("create_automation: {e}"))?;
+    if !still_wanted(db, healing, &what, report)? {
+        db.delete_automation(id)
+            .map_err(|e| format!("delete_automation: {e}"))?;
+        return Ok(());
+    }
     report.automations_created.push(auto.name.clone());
     Ok(())
 }
@@ -507,8 +520,9 @@ pub fn activate_extension(
 /// The set goes first (issue #1475). Deleting first left the extension active
 /// while its sessions went, so a heartbeat tick in between — or a
 /// `session.post_delete` hook running one — recreated each session as soon as
-/// it was gone. A heal pass already running when the set changes finds out
-/// under each session's lock, before and after its spawn.
+/// it was gone. A heal pass already running when the set changes checks it
+/// again before and after each session (under its lock) or automation it
+/// creates, and a heal's auto-update never adds to the set.
 pub fn deactivate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -654,7 +668,7 @@ pub(super) fn heal_version_drift(
         return false;
     }
     if auto_update {
-        match update_extension(db, backends, name, false) {
+        match super::install::update_extension_for_heal(db, backends, name) {
             Ok(report) => {
                 if report.changed {
                     messages.push(format!(
@@ -662,8 +676,8 @@ pub(super) fn heal_version_drift(
                         report.install.version.as_deref().unwrap_or("?")
                     ));
                 }
-                // The update re-activated the extension, so its `ensure` pass
-                // already ran and the caller skips its own. Its refusals are
+                // The update re-ensured the extension's resources, so the
+                // caller skips its own pass. Its refusals are
                 // reported here or nowhere — and "nowhere" on the auto-update
                 // path is the same silence the pass below was changed to break.
                 messages.extend(report.install.ensure.sessions_blocked);
