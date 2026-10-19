@@ -936,7 +936,8 @@ heartbeat** at startup (`src/main.rs`; it also rides the live-reload merge
 as a restart-only flag and is published to Lua in `thurbox.features`). The rows
 are published as `thurbox.automations` and the kernel accepts an `automation`
 command (enable/disable/run/delete — `run_now` only marks it due, so the tick
-stays the one execution path), so a pane is a plugin somebody can write: both
+stays the one execution path, and refuses a disabled automation rather than
+switching it on, as `automation run` does), so a pane is a plugin somebody can write: both
 halves are done and nothing in `ui/` uses them yet.
 
 > A pane is owed. v1's shape — a pane under the session list, sharing one

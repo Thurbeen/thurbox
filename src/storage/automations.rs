@@ -292,12 +292,14 @@ impl Database {
         Ok(updated == 1)
     }
 
-    /// Force an automation to fire on the next dispatcher tick (manual run-now):
-    /// set `next_run_at` to now and ensure it is enabled.
+    /// Force an enabled automation to fire on the next dispatcher tick (manual
+    /// run-now): set `next_run_at` to now. A disabled one is left alone and
+    /// `false` returned — running it must not switch it back on.
     pub fn trigger_automation_now(&self, id: i64) -> rusqlite::Result<bool> {
         let now = current_time_millis() as i64;
         let updated = self.conn.execute(
-            "UPDATE automations SET enabled = 1, next_run_at = ?2, updated_at = ?2 WHERE id = ?1",
+            "UPDATE automations SET next_run_at = ?2, updated_at = ?2 \
+             WHERE id = ?1 AND enabled = 1",
             params![id, now],
         )?;
         Ok(updated > 0)

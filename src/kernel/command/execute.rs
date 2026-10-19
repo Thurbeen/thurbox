@@ -774,8 +774,15 @@ fn automation(
         // Marks it due; the next `automation tick` — the heartbeat keeper's,
         // a cron's, or a hand-run one — executes it, so there is one execution
         // path rather than a second one here. The TUI runs no scheduler.
-        db.trigger_automation_now(id)
-            .map_err(|e| format!("trigger: {e}"))?;
+        if !db
+            .trigger_automation_now(id)
+            .map_err(|e| format!("trigger: {e}"))?
+        {
+            db.get_automation(id)
+                .map_err(|e| format!("get automation: {e}"))?
+                .ok_or_else(|| format!("automation #{id} no longer exists"))?;
+            return Err(format!("automation #{id} is disabled; enable it to run it"));
+        }
     }
     Ok(())
 }
@@ -1224,6 +1231,14 @@ mod tests {
                 agent: Some("claude".into()),
                 ..AutomationDraft::default()
             }
+        }
+
+        /// A run of a row that is gone says so, rather than calling it disabled.
+        #[test]
+        fn running_a_deleted_automation_says_it_no_longer_exists() {
+            let db = Database::open_in_memory().expect("db");
+            let error = automation(&db, 404, None, true, false).unwrap_err();
+            assert_eq!(error, "automation #404 no longer exists");
         }
 
         fn only(db: &Database) -> crate::session::Automation {

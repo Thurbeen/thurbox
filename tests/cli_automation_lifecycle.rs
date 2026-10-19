@@ -126,3 +126,34 @@ fn a_soft_delete_disables_the_send_automations_of_its_session() {
     assert_eq!(after["enabled"], false, "{after}");
     assert_eq!(after["next_run_at"], Value::Null, "{after}");
 }
+
+/// `automation run` fires an automation; it does not switch one on. Marking a
+/// disabled one due used to enable it as a side effect, so it went on firing
+/// on its schedule after the one run that was asked for.
+#[test]
+fn running_a_disabled_automation_leaves_it_disabled() {
+    let env = Env::new();
+    let auto = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "paused",
+        "--trigger",
+        "hourly",
+        "--command",
+        "true",
+        "--disabled",
+    ]));
+
+    let out = env.run(&["automation", "run", &auto]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a disabled automation is refused, not fired: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let after = env.automation(&auto);
+    assert_eq!(after["enabled"], false, "{after}");
+    assert_eq!(after["next_run_at"], Value::Null, "{after}");
+}

@@ -100,7 +100,8 @@ pub enum Action {
         /// Automation id.
         id: i64,
     },
-    /// Fire an automation now (marks it due for the running TUI).
+    /// Fire an enabled automation on the next tick (marks it due). A disabled
+    /// one is refused rather than switched on.
     Run {
         /// Automation id.
         id: i64,
@@ -380,13 +381,19 @@ fn remove_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
 }
 
 /// Handle `automation run`: mark the automation due for the next tick.
+/// Refuses a disabled one, which it would otherwise have to switch on.
 fn trigger_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
     match db.trigger_automation_now(id) {
         Ok(true) => Ok(CommandOutput::new(
             json!({ "triggered": true, "id": id }),
             format!("Triggered automation #{id} (fires on the next tick)."),
         )),
-        Ok(false) => Err(format!("Automation not found: {id}")),
+        Ok(false) => {
+            load(db, id)?;
+            Err(format!(
+                "Automation #{id} is disabled; enable it with `automation edit {id} --enabled` to run it"
+            ))
+        }
         Err(e) => Err(format!("trigger_automation_now: {e}")),
     }
 }
