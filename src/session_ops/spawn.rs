@@ -1757,14 +1757,19 @@ mod tests {
         let mixed = PathBuf::from(format!("{}/Documents/thurbox", temp.path().display()));
 
         let db = empty_db();
-        let mut r = req("mixed");
-        r.repo_path = mixed;
-        let spawned = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap();
+        // `--host ""` is local too (`resolve_host_flag`), so it is respelled.
+        for (name, host) in [("mixed", None), ("empty-host", Some(String::new()))] {
+            let mut r = req(name);
+            r.repo_path = mixed.clone();
+            r.host = host;
+            let spawned =
+                spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap();
 
-        let stored = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
-        let stored = stored.cwd.expect("a cwd").display().to_string();
-        assert_eq!(stored, native.display().to_string());
-        assert_eq!(spawned.cwd.display().to_string(), stored);
+            let stored = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+            let stored = stored.cwd.expect("a cwd").display().to_string();
+            assert_eq!(stored, native.display().to_string(), "{name}");
+            assert_eq!(spawned.cwd.display().to_string(), stored, "{name}");
+        }
     }
 
     #[test]
