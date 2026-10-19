@@ -2022,8 +2022,12 @@ fn resolve_signal_target(
     if let Some(uuid) = session {
         return resolve(db, uuid);
     }
-    crate::cli::identity::calling_session_or_by_agent_id(db)?
-        .ok_or_else(|| "not inside a thurbox session; pass --session <uuid>".into())
+    Ok(
+        crate::cli::identity::calling_session_or_by_agent_id(db)?.require(
+            "not inside a thurbox session; pass --session <uuid>",
+            "--session",
+        )?,
+    )
 }
 
 /// How much captured pane text the TOON view shows before it says how much
