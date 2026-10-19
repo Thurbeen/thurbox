@@ -190,8 +190,11 @@ impl Config {
             clipboard: restart_only.clipboard,
             // Live: the mirror reads the file itself on every pass.
             remote: fresh.remote,
-            // Live: every spawn and restart reads the file itself.
-            telemetry: fresh.telemetry,
+            // Held as booted: the only reader here is the diagnostic-log bridge,
+            // built once at boot (ADR-38), so `restart_only_differs` must keep
+            // comparing against it. Spawns, restarts and the tick read the file
+            // themselves, so the rest of the table still applies live.
+            telemetry: restart_only.telemetry,
             scrollback_lines: restart_only.scrollback_lines,
             multiplexer: restart_only.multiplexer,
             // Restart-only because the terminals read it once, when they are
@@ -274,6 +277,18 @@ mod tests {
         edited.notifications.sound = !edited.notifications.sound;
         assert_eq!(config.adopt(edited), Reloaded::NeedsRestart);
         assert_eq!(config.in_force().notifications, settings().notifications);
+    }
+
+    #[test]
+    fn the_diagnostic_log_bridge_stays_as_booted_until_restart() {
+        // Booted with the bridge off: turning it on needs a restart, and
+        // turning it back off returns to what is running, which does not.
+        let mut config = Config::detached(settings());
+        let mut on = settings();
+        on.telemetry.enabled = true;
+        on.telemetry.export_diagnostic_logs = true;
+        assert_eq!(config.adopt(on), Reloaded::NeedsRestart);
+        assert_eq!(config.adopt(settings()), Reloaded::Live);
     }
 
     #[test]
