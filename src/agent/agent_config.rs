@@ -456,9 +456,6 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
     ))
 }
 
-/// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
-/// that names the entry) when it is malformed so the caller can skip it. Unknown
-/// fields within a valid entry are reported but kept.
 /// Give an entry seeded before telemetry existed its built-in's
 /// `telemetry_env` / `telemetry_args`. Either key present, even empty, is the
 /// user's own answer, and only an entry whose `name` and `command` both match
@@ -476,6 +473,9 @@ fn upgrade_seeded_telemetry(agent: &mut AgentDef, entry: &toml::Value, builtins:
     }
 }
 
+/// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
+/// that names the entry) when it is malformed so the caller can skip it. Unknown
+/// fields within a valid entry are reported but kept.
 fn deserialize_agent(
     entry: &toml::Value,
     index: usize,
