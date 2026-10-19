@@ -891,16 +891,16 @@ pub fn psmux_quote(s: &str) -> String {
 
 /// Max text bytes per `send-paste` command: the most whose line stays within
 /// [`WINDOWS_CMD_LINE_MAX`] in its longest form. A paste to a host's server is
-/// a one-shot ssh command, and when the host's socket or multiplexer is not a
-/// word every Windows login shell passes through, `launch_on_windows` runs it
-/// as an encoded PowerShell script: base64, then UTF-16, then base64 again,
-/// so a payload byte costs 32/9 chars (issue #1503). Sized for that rather
-/// than the bare line, which a socket name in `hosts.toml` alone can decide.
+/// a one-shot ssh command, and when the host's socket name is not a word
+/// every Windows login shell passes through, `launch_on_windows` runs it as an
+/// encoded PowerShell script: base64, then UTF-16, then base64 again, so a
+/// payload byte costs 32/9 chars (issue #1503). Sized for that rather than the
+/// bare line, since the socket name comes unvalidated from `hosts.toml`.
 const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_LINE_RESERVE) * 9 / 32;
 
 /// What an encoded `send-paste` line spends besides its payload: the
 /// `powershell.exe … -EncodedCommand` prefix, the launch script around the
-/// argv, the multiplexer's path, `-L <socket>` and `send-paste -t <pane>`.
+/// argv, the `psmux` program name, `-L <socket>` and `send-paste -t <pane>`.
 const PASTE_LINE_RESERVE: usize = 2048;
 
 /// Split `text` into `send-paste`-sized pieces on **char** boundaries: psmux
