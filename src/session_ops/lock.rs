@@ -67,7 +67,7 @@ pub struct Lock<'a> {
 
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        // Best-effort: a claim that cannot be deleted expires on its own, and
+        // Best-effort: a lease that cannot be deleted expires on its own, and
         // failing an operation that already happened over its bookkeeping
         // would be the worse answer.
         if let Err(e) = self.db.release_lease(&self.subject, self.expires_at) {
@@ -84,7 +84,7 @@ impl Drop for Lock<'_> {
 /// else holds it.
 ///
 /// `None` means "held", not "somebody is definitely working on it": a holder
-/// killed mid-operation leaves its claim behind until it expires. The row is
+/// killed mid-operation leaves its lease behind until it expires. The row is
 /// deleted when the lock is dropped and overwritten by the next lock on that
 /// subject otherwise, so a leaked one is bounded by the subjects ever locked
 /// rather than accumulating.

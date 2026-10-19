@@ -401,7 +401,8 @@ fn still_wanted(
         .any(|n| n == extension);
     if !active {
         report.sessions_blocked.push(format!(
-            "session '{name}' was not recreated: extension '{extension}' was deactivated              during this pass"
+            "session '{name}' was not recreated: extension '{extension}' was deactivated \
+             during this pass"
         ));
     }
     Ok(active)
