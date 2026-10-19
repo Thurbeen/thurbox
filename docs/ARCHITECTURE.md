@@ -2981,3 +2981,34 @@ its export is therefore labelled `unknown`, and is exported even when the row
 was a shared host's. A
 `grpc` or `http/json` `protocol` exports nothing of thurbox's own and says so in
 the tick's report.
+
+## ADR-38: The interface's diagnostic logs are bridged to OTLP, opt-in
+
+**Choice**: with `export_diagnostic_logs` on (and `[telemetry] enabled`), the
+interface adds an `opentelemetry-appender-tracing` layer to its `tracing`
+subscriber, beside the file appender, sending through a batch log processor
+to the same collector (`telemetry::diagnostic`). The layer has a filter of its
+own: WARN and above, from thurbox's own targets only. The file log keeps its
+`thurbox=debug` level and is written exactly as before. Off by default and
+restart-only. `thurbox-cli` never builds the layer.
+
+**Why**: the interface is the one long-running process, so a batch processor
+has time to export, from a thread of its own, without holding up the loop.
+A short-lived command — above all `session signal`, which every agent hook
+runs — would pay a network round-trip per hook, and a timeout per hook while
+the collector is down, stalling the agent; the tick's export (ADR-37) is the one
+CLI path that talks to a collector, and it runs off the heartbeat, not a hook.
+WARN and above, because the file's level is far too much to ship. Thurbox's own
+targets only, because the exporter's HTTP stack logs through `tracing` too and
+would otherwise feed every export into the next. The settings are loaded under
+the file log alone before the global subscriber is installed: whether the
+bridge exists depends on them, and a global subscriber cannot be replaced.
+
+**Limits**: plain HTTP and `http/protobuf` only, as in ADR-37; another protocol
+builds no bridge and logs why to the file. The batch is flushed on a clean
+exit; an exit by signal or panic loses what the processor still held, at most
+about a second of records, which the file log has. A clean exit with the
+collector unreachable waits out the request timeout once. Records carry what
+the log lines carry — paths, session names, host names — which is why the
+bridge is opt-in. A change to the switch, or to the endpoint, protocol or
+headers while it is on, reads as restart-only.

@@ -71,11 +71,14 @@ toml_edit = "0.25"
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 # OpenTelemetry export of thurbox's own session metrics and session event logs
-# (ADR-36, `telemetry`). OTLP over HTTP/protobuf with reqwest's blocking
-# client: `thurbox-cli automation tick` runs without a tokio runtime.
+# (ADR-37, `telemetry`), and of the interface's own diagnostic logs through the
+# tracing bridge (ADR-38). OTLP over HTTP/protobuf with reqwest's blocking
+# client: `thurbox-cli automation tick` runs without a tokio runtime, and the
+# interface's batch processor exports from a thread of its own.
 opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "logs"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["metrics", "logs"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["metrics", "logs", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
 
 # System metrics
 sysinfo = "0.39"

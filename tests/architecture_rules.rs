@@ -328,7 +328,9 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     // thurbox's own OTLP export (ADR-37): reads the event log and the cursor
     // from `storage`, the settings and route parsing from `session`. The
-    // session counts it is handed are assessed by its caller, `cli`.
+    // session counts it is handed are assessed by its caller, `cli`. The
+    // interface's diagnostic-log bridge (ADR-38) is built by `coordinator`,
+    // which hands it the identity it exports under.
     ModuleRules {
         name: "telemetry",
         allowed: &["session", "storage"],
@@ -502,6 +504,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "agent::input",
             "agent::settings_config",
+            "backend::instance",
             "backend::output_wake",
             "backend::wiring",
             "clipboard",
@@ -511,6 +514,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session_ops",
             "shell",
             "storage",
+            "telemetry",
             "ui_control",
         ],
         allowed_path_only: &[],

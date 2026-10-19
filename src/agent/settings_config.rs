@@ -136,7 +136,8 @@ config_version = 1
 # from agents.toml. Local sessions only; read at every spawn and restart.
 # `automation tick` also exports thurbox's own thurbox.* session metrics and
 # one log record per session event, over plain HTTP (point an https backend's
-# endpoint at a local Collector).
+# endpoint at a local Collector). export_diagnostic_logs also sends the
+# interface's own WARN-and-above logs, which can name paths, sessions and hosts.
 # [telemetry]
 # enabled = false
 # endpoint = "http://localhost:4318"
@@ -145,6 +146,7 @@ config_version = 1
 # configure_agents = true
 # export_thurbox_metrics = true
 # export_session_events = true
+# export_diagnostic_logs = false  # the interface's own WARN+ logs; restart-only
 # per_session = false           # thurbox.session.id on thurbox's own metrics
 
 # ──────────────────────────────────────────────────────────────────────────
