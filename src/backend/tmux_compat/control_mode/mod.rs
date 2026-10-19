@@ -634,6 +634,12 @@ pub trait PaneInput: Send + Sync {
     /// (`tmux_paste_commands`). An `Err` drops the paste: typing it out instead
     /// would make every CR in it `Enter`.
     fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>>;
+
+    /// Whether [`Self::paste`] goes around the connection, where nothing orders
+    /// it after the keys queued before it but waiting for them to be written.
+    fn pastes_out_of_band(&self) -> bool {
+        false
+    }
 }
 
 /// Max text bytes per `set-buffer` line of `tmux_paste_commands`. Every
@@ -751,8 +757,12 @@ impl Write for ControlModeWriter {
                 return Ok(buf.len());
             }
             // A paste out of band does not queue behind the keys typed before
-            // it, so it waits for them to be written.
-            self.wait_written();
+            // it, so it waits for them to be written. One down the connection
+            // is ordered by the queue, and waiting would only park this pane's
+            // writer behind a stalled link.
+            if self.input.pastes_out_of_band() {
+                self.wait_written();
+            }
             match self.input.paste(&self.pane_id, text) {
                 Some(Ok(())) => return Ok(buf.len()),
                 Some(Err(e)) => {

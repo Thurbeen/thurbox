@@ -347,6 +347,10 @@ impl PaneInput for PsmuxInput {
     fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>> {
         Some(self.paste.deliver(pane_id, text))
     }
+
+    fn pastes_out_of_band(&self) -> bool {
+        true
+    }
 }
 
 /// The first psmux whose server gives every new pane its own console.

@@ -943,6 +943,10 @@ impl PaneInput for FakeInput {
     fn paste(&self, _: &str, _: &str) -> Option<Result<()>> {
         self.0.map(|deliver| deliver())
     }
+
+    fn pastes_out_of_band(&self) -> bool {
+        self.0.is_some()
+    }
 }
 
 /// What a [`ControlModeWriter`] wrote to its control connection for `buf` —
@@ -2133,4 +2137,29 @@ fn an_out_of_band_paste_waits_for_the_keys_typed_before_it() {
         "the paste ran before the keys typed ahead of it were written"
     );
     assert!(PASTED.load(Ordering::SeqCst), "the paste never ran");
+}
+
+/// A paste that goes down the connection is ordered by the queue like any
+/// key, so it must not wait for the writer: on a stalled link that parked the
+/// pane's writer, and every key after it failed on a full input channel.
+#[cfg(unix)]
+#[test]
+fn a_paste_down_the_connection_does_not_wait_for_the_writer() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (control, mux) = stalled_server(root.path());
+    flood_keys(&control).join().ok();
+    let mut writer = control.writer("%7".to_string(), Arc::new(FakeInput(None)));
+    let (done_tx, done) = sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = done_tx.send(writer.write_all(b"\x1b[200~pasted\x1b[201~").is_ok());
+    });
+    let queued = done.recv_timeout(std::time::Duration::from_secs(1));
+
+    std::fs::write(mux.with_extension("go"), b"").expect("go");
+    std::fs::write(mux.with_extension("drain"), b"").expect("drain");
+    assert_eq!(
+        queued,
+        Ok(true),
+        "a paste down the connection waited on a stalled writer"
+    );
 }
