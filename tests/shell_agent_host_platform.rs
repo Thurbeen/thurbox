@@ -91,11 +91,20 @@ fn the_shell_agent_on_a_windows_host_is_powershell() {
     let repo = tempfile::tempdir().expect("tempdir");
     git(repo.path(), &["init", "-q", "-b", "main"]);
 
-    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
-    let route = Route::remote(Via::Ssh, "winhost", Some(Multiplexer::Psmux));
-    let far = RecordingBackend::new(&route);
-    backends.register(route, far.clone());
-    let backends = thurbox::cli::Backends::ready(backends);
+    let registry = |far: &Arc<RecordingBackend>| {
+        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        backends.register(
+            Route::remote(Via::Ssh, "winhost", Some(Multiplexer::Psmux)),
+            far.clone(),
+        );
+        backends
+    };
+    let far = RecordingBackend::new(&Route::remote(
+        Via::Ssh,
+        "winhost",
+        Some(Multiplexer::Psmux),
+    ));
+    let backends = thurbox::cli::Backends::ready(registry(&far));
     let db = Database::open_in_memory().expect("db");
 
     cli(
@@ -125,4 +134,13 @@ fn the_shell_agent_on_a_windows_host_is_powershell() {
         "the Windows host must get its own shell, not this build's: {command}"
     );
     assert!(!command.contains("bash"), "{command}");
+
+    // What `agent launch-args shell --session` tells a driver to run must be
+    // what the spawn ran.
+    let plan = thurbox::session_ops::agent_launch_plan(&db, &registry(&far), "shell", Some(&row))
+        .expect("the plan for the session");
+    assert_eq!(
+        (plan.command.as_str(), plan.args.as_slice()),
+        ("powershell", ["-NoLogo".to_string()].as_slice())
+    );
 }

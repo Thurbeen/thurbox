@@ -568,6 +568,7 @@ pub fn agent_launch_plan(
         })?,
         None => None,
     };
+    let def = shell_for(def, spawn::platform_of(host.as_ref()));
     let mut config = SessionConfig {
         session_id: session.map(|s| s.id),
         agent_session_id: session.and_then(|s| s.agent_session_id.clone()),
@@ -806,7 +807,8 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
 /// that the agent exists on one side and not the other (#1454).
 ///
 /// `platform` is the machine the session runs on, which the registry — this
-/// machine's — knows nothing about: see [`shell_for`].
+/// machine's — knows nothing about: see [`shell_for`], which
+/// [`agent_launch_plan`] applies too, so the plan matches the launch.
 pub(crate) fn resolve_agent_def(
     requested: Option<&str>,
     platform: crate::session::Platform,
