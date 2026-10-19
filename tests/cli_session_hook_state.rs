@@ -27,6 +27,10 @@ use thurbox::sync::SharedSession;
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
 
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
+
+use recording_backend::RecordingBackend;
 use tmux_server::TmuxServer;
 
 /// A socket of this test's own, so it can never see — or kill — a real session.
@@ -439,15 +443,79 @@ fn a_session_with_no_pane_of_its_own_is_told_apart_from_a_strangers() {
 
     assert_eq!(
         out["hook_corroboration"],
-        Value::String("unknown".into()),
+        Value::String("missing".into()),
         "nothing of this session is running, and nothing may be invented: {out}"
     );
     assert_eq!(out["foreground_process"], Value::Null);
     assert_eq!(
         out["hook_state_contradicted"],
-        Value::Bool(false),
-        "an unresolvable pane disproves nothing: {out}"
+        Value::Bool(true),
+        "the listing holds no window of this row's, which disproves `working`: {out}"
     );
+}
+
+/// `session get --verify` against an in-memory multiplexer on a route no real
+/// adapter serves, so what the listing answers is exactly what the test says.
+fn get_through(
+    db: &Database,
+    id: SessionId,
+    backend: &std::sync::Arc<RecordingBackend>,
+) -> thurbox::cli::output::CommandOutput {
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    backends.register(
+        thurbox::session::Route::local(Some(thurbox::session::Multiplexer::Rmux)),
+        backend.clone(),
+    );
+    run(
+        Action::Get {
+            uuid: id.to_string(),
+            no_verify: false,
+        },
+        db,
+        &thurbox::cli::Backends::ready(backends),
+    )
+    .expect("session get")
+}
+
+#[test]
+fn a_blocked_session_whose_window_is_gone_is_reported_as_contradicted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let route = thurbox::session::Route::local(Some(thurbox::session::Multiplexer::Rmux));
+    let backend = RecordingBackend::new(&route);
+
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("window-gone", "claude", "local:rmux");
+    db.upsert_session(&row).expect("persist");
+    db.set_hook_state(row.id, "blocked").expect("signal");
+
+    // The listing answers, and holds no window of this row's: the server was
+    // restarted, or someone closed the window outside thurbox. That is a
+    // definite "nothing at all", not a pane that could not be read.
+    let out = get_through(&db, row.id, &backend);
+    assert_eq!(
+        out["hook_corroboration"],
+        Value::String("missing".into()),
+        "the listing positively holds no window for this row: {out}"
+    );
+    assert_eq!(
+        out["hook_state_contradicted"],
+        Value::Bool(true),
+        "a `blocked` agent with no window is not blocked on anything: {out}"
+    );
+    assert_eq!(out["hook_state"], Value::String("blocked".into()));
+    assert_eq!(out["foreground_process"], Value::Null);
+
+    // A listing that fails is a different answer — it says nothing about the
+    // window, so it must not disprove the row.
+    backend.set_reachable(false);
+    let out = get_through(&db, row.id, &backend);
+    assert_eq!(
+        out["hook_corroboration"],
+        Value::String("unknown".into()),
+        "a listing that did not answer proves no absence: {out}"
+    );
+    assert_eq!(out["hook_state_contradicted"], Value::Bool(false), "{out}");
 }
 
 #[test]

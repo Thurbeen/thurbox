@@ -478,15 +478,17 @@ fn pane_finding(hook: &Assessment) -> Option<Finding> {
         // health: it means the one check that could have falsified the row
         // could not be run.
         level: match corroboration {
-            Corroboration::Unavailable | Corroboration::Unknown | Corroboration::Dead => {
-                Level::Warn
-            }
+            Corroboration::Unavailable
+            | Corroboration::Unknown
+            | Corroboration::Dead
+            | Corroboration::Missing => Level::Warn,
             _ => Level::Ok,
         },
         detail: match corroboration {
             Corroboration::Unknown => {
                 "no live pane for this session, so its state cannot be checked".into()
             }
+            Corroboration::Missing => "the multiplexer holds no window for this session".into(),
             Corroboration::Dead => "the pane's command has exited (its frame is kept \
                  by remain-on-exit)"
                 .into(),
