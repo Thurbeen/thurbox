@@ -544,3 +544,32 @@ fn a_keystroke_never_answers_the_next_command() {
         wrong.len()
     );
 }
+
+/// A pane the multiplexer reports gone is never adopted: an agent that exits
+/// at spawn leaves an id behind, and adopting it would show the session as a
+/// quiet live one with nothing in it (#1433).
+#[cfg(unix)]
+#[test]
+fn a_pane_reported_gone_is_never_adopted() {
+    use std::collections::HashMap;
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let backend = TmuxBackend::new();
+    backend.ensure_ready().expect("the backend readies");
+    let pane = backend
+        .spawn("tb-gone", "cat", &[], None, &HashMap::new(), 24, 80)
+        .expect("spawn")
+        .backend_id;
+    backend.kill(&pane).expect("kill");
+
+    let adopted = backend.adopt(&pane, 24, 80, None);
+    backend.shutdown();
+    assert!(
+        adopted.is_err(),
+        "a pane the server reported gone was adopted"
+    );
+}

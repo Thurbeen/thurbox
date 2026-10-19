@@ -2615,16 +2615,26 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `capture_ms` here reads 0 on that path; a `None` seed (a mid-run
         // adopt) still captures inline, before connecting so seeded history
         // can't duplicate live output. Best-effort: adoption must survive a
-        // failed capture.
+        // failed capture — except one saying the pane is gone. Nothing after it
+        // notices: psmux answers `display-message` for a missing pane with its
+        // active pane's fields, and the adopted session read as a quiet live
+        // one with no pane behind it (#1433).
         let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
 
         let capture_start = perf_log.then(std::time::Instant::now);
-        let seed = seed.unwrap_or_else(|| {
-            self.capture_history(backend_id).unwrap_or_else(|e| {
-                warn!("Failed to capture history for pane {backend_id}: {e}");
-                Vec::new()
-            })
-        });
+        let seed = match seed {
+            Some(seed) => seed,
+            None => match self.capture_history(backend_id) {
+                Ok(seed) => seed,
+                Err(e) if already_gone(&format!("{e:#}")) => {
+                    bail!("pane {backend_id} is gone: {e:#}")
+                }
+                Err(e) => {
+                    warn!("Failed to capture history for pane {backend_id}: {e}");
+                    Vec::new()
+                }
+            },
+        };
         let capture_ms = capture_start.map(|s| s.elapsed().as_millis() as u64);
 
         let connect_start = perf_log.then(std::time::Instant::now);
@@ -4640,8 +4650,8 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
-/// Whether a kill's failure says its target is already gone — named by its
-/// pane or by its name — which is what the kill wanted.
+/// Whether a failure says its target is already gone — named by its pane or by
+/// its name: what a kill wanted, and what an adopt must not paper over.
 fn already_gone(error: &str) -> bool {
     error.contains("can't find window")
         || error.contains("window not found")
