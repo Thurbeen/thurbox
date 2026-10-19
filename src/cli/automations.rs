@@ -504,8 +504,13 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
             continue;
         }
+        // Opened before the fire, so the row says when it started and a run
+        // that never returns is still there to see.
+        let run = db.start_automation_run(auto.id, current_time_millis());
         let (status, detail, related) = fire_headless(db, backends, &auto);
-        let _ = db.record_automation_run(auto.id, status, &detail, related);
+        if let Ok(run) = run {
+            let _ = db.finish_automation_run(run, status, &detail, related);
+        }
         fired.push(json!({
             "id": auto.id,
             "status": status.as_str(),

@@ -496,7 +496,7 @@
 ---@class (exact) thurbox.AutomationRun
 ---@field id integer
 ---@field started_at integer Unix millis.
----@field status "success"|"error"|"skipped"
+---@field status "running"|"success"|"error"|"skipped"
 ---@field detail string What the run reported: the error, the skip reason or an exec's output tail. The only log a run keeps.
 ---@field session? string The session it sent to or spawned, when it recorded one.
 

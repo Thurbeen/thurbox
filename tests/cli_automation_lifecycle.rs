@@ -157,3 +157,51 @@ fn running_a_disabled_automation_leaves_it_disabled() {
     assert_eq!(after["enabled"], false, "{after}");
     assert_eq!(after["next_run_at"], Value::Null, "{after}");
 }
+
+/// A run's row exists while the run is going, stamped with when it started.
+/// It used to be inserted once the action returned, so `started_at` was the
+/// finish time and a run that never returned left no row at all.
+#[cfg(unix)]
+#[test]
+fn a_run_is_recorded_when_it_starts() {
+    let env = Env::new();
+    let seen = env.path("seen.json");
+    // The command reads its own automation's history mid-run. A fresh
+    // database numbers the first automation 1, asserted below.
+    let command = format!(
+        "'{}' --json automation runs 1 > '{}'",
+        env!("CARGO_BIN_EXE_thurbox-cli"),
+        seen.display()
+    );
+    let auto = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "probe",
+        "--trigger",
+        "hourly",
+        "--command",
+        &command,
+    ]));
+    assert_eq!(auto, "1");
+
+    env.ok(&["automation", "run", &auto]);
+    let before = thurbox::sync::current_time_millis();
+    let tick = env.ok(&["automation", "tick"]);
+    assert_eq!(tick["fired"][0]["status"], "success", "{tick}");
+
+    let during: Value =
+        serde_json::from_str(&std::fs::read_to_string(&seen).expect("the command ran"))
+            .expect("JSON");
+    let running = &during[0];
+    assert_eq!(running["status"], "running", "{during}");
+
+    let runs = env.ok(&["automation", "runs", &auto]);
+    let runs = runs.as_array().expect("a list");
+    assert_eq!(runs.len(), 1, "one run, one row: {runs:?}");
+    assert_eq!(runs[0]["id"], running["id"], "the row is finished in place");
+    assert_eq!(runs[0]["status"], "success");
+    assert_eq!(runs[0]["started_at"], running["started_at"]);
+    let started = runs[0]["started_at"].as_u64().expect("a time");
+    assert!(started >= before, "{started} is before the tick began");
+}

@@ -357,6 +357,48 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Open a run-history entry as `running`, stamped `started_at`, before
+    /// the action fires; [`finish_automation_run`](Self::finish_automation_run)
+    /// writes its outcome over it.
+    pub fn start_automation_run(
+        &self,
+        automation_id: i64,
+        started_at: u64,
+    ) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO automation_runs (automation_id, started_at, status, detail) \
+             VALUES (?1, ?2, ?3, '')",
+            params![
+                automation_id,
+                started_at as i64,
+                AutomationRunStatus::Running.as_str(),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Record the outcome of a run opened by
+    /// [`start_automation_run`](Self::start_automation_run).
+    pub fn finish_automation_run(
+        &self,
+        run_id: i64,
+        status: AutomationRunStatus,
+        detail: &str,
+        related_session: Option<SessionId>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE automation_runs SET status = ?2, detail = ?3, related_session_id = ?4 \
+             WHERE id = ?1",
+            params![
+                run_id,
+                status.as_str(),
+                detail,
+                related_session.map(|id| id.to_string()),
+            ],
+        )?;
+        Ok(())
+    }
+
     /// List the most recent runs for an automation, newest first.
     pub fn list_automation_runs(
         &self,

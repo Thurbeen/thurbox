@@ -193,6 +193,9 @@ impl AutomationAction {
 /// Outcome of a single automation fire, kept for history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationRunStatus {
+    /// Recorded when a fire starts and replaced by its outcome when it ends,
+    /// so a run that never returns still shows.
+    Running,
     Success,
     Error,
     Skipped,
@@ -201,6 +204,7 @@ pub enum AutomationRunStatus {
 impl AutomationRunStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Running => "running",
             Self::Success => "success",
             Self::Error => "error",
             Self::Skipped => "skipped",
@@ -211,6 +215,7 @@ impl AutomationRunStatus {
     /// `Error`.
     pub fn from_db(s: &str) -> Self {
         match s {
+            "running" => Self::Running,
             "success" => Self::Success,
             "skipped" => Self::Skipped,
             _ => Self::Error,
