@@ -2960,3 +2960,79 @@ fn deactivate_carries_on_past_a_session_somebody_else_deleted() {
     );
     assert!(live(&db).is_empty(), "left behind: {:?}", live(&db));
 }
+
+/// The heal's half of a double delete (issue #1475): the deactivate lands
+/// after the healed session's row exists and before the heal looks again, so
+/// it deletes that session first — here from a `session.post_create` hook,
+/// which runs exactly there. The heal then finds its session already gone,
+/// and must count it as cleaned up rather than fail the pass on "not found".
+#[test]
+#[cfg(unix)]
+fn a_heal_finds_the_session_it_spawned_already_deleted_by_a_deactivate() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    // No keeper: its own ticks would heal alongside the one this drives.
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\n",
+    )
+    .unwrap();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("healed.toml"),
+        format!(
+            "name = \"healed\"\n[[sessions]]\nname = \"healed\"\nrepo_path = \"{}\"\n\
+             agent = \"shell\"\n",
+            repo.path().display()
+        ),
+    )
+    .unwrap();
+    cli(&["extension", "activate", "healed"]);
+    let live = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "healed")
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    };
+    cli(&["session", "delete", &live(&db)[0].to_string(), "--force"]);
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.post_create\"\n\
+             command = '{} extension deactivate healed'\n",
+            env!("CARGO_BIN_EXE_thurbox-cli")
+        ),
+    );
+
+    let tick = cli(&["automation", "tick"]);
+
+    assert!(
+        live(&db).is_empty(),
+        "the healed session outlived the deactivate"
+    );
+    assert!(
+        !tick.contains("self-heal failed"),
+        "the heal failed on the session the deactivate had already deleted: {tick}"
+    );
+}
