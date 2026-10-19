@@ -3523,7 +3523,11 @@ fn local_socket_file(dir: &SocketDir, socket: &str) -> bool {
 ///   answers (`others` more servers were bound there too);
 /// - `unanswered <i> <pid> <others> <path>` — the same, and it has not answered;
 /// - `bound <pids> <path>` — a socket file is at `path` and does not answer,
-///   while `pids` are bound to it: nothing is signalled.
+///   while `pids` are bound to it: nothing is signalled. It is given the
+///   same three seconds as `SIGUSR1` first, because a peer's `new-session`
+///   binds the socket between the first `answers` and `bound` — every
+///   relaunch after a reboot searches at once — and a server still starting
+///   then reads as one out of reach.
 ///
 /// The bound-socket question is asked of the kernel, because a server's
 /// command line need not name its socket: `/proc/net/unix` lists each
@@ -3571,6 +3575,9 @@ while [ "$i" -lt "$n" ]; do
   pids=$(bound "$p" | tr '\n' ' ')
   if [ -n "$pids" ]; then
     if [ -e "$p" ]; then
+      t=0
+      while [ "$t" -lt 30 ] && ! answers "$d"; do sleep 0.1; t=$((t + 1)); done
+      if answers "$d"; then echo "answered $i"; exit 0; fi
       echo "bound $(echo $pids | tr ' ' ',') $p"
     else
       set -- $pids
@@ -5004,6 +5011,66 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&parsed.stderr)
         );
+    }
+
+    /// Runs [`LOCATE_BODY`] against one candidate directory holding a
+    /// listening socket bound by this process, with a stand-in multiplexer
+    /// whose `list-sessions` succeeds once `ready` exists.
+    #[cfg(target_os = "linux")]
+    fn locate_beside_a_bound_socket(answer_after: Option<std::time::Duration>) -> ServerFound {
+        let root = tempfile::tempdir().expect("tempdir");
+        let uid = unsafe { libc::getuid() };
+        let sockets = root.path().join(format!("tmux-{uid}"));
+        std::fs::create_dir_all(&sockets).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(sockets.join("located")).unwrap();
+        let ready = root.path().join("ready");
+        let mux = root.path().join("mux");
+        std::fs::write(&mux, format!("#!/bin/sh\ntest -e '{}'\n", ready.display())).unwrap();
+        std::fs::set_permissions(&mux, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let script = locate_script(
+            &[SocketDir::Dir(root.path().display().to_string())],
+            "located",
+        );
+        let starting = answer_after.map(|delay| {
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                std::fs::write(ready, "").unwrap();
+            })
+        });
+        let out = std::process::Command::new("sh")
+            .args(["-c", &script, "sh"])
+            .arg(&mux)
+            .arg("located")
+            .output()
+            .expect("sh");
+        if let Some(starting) = starting {
+            starting.join().unwrap();
+        }
+        parse_located(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    /// The race behind a cold start's `not starting a second server beside
+    /// it`: every relaunch after a reboot looks for the server at once, and a
+    /// peer's `new-session` binds the socket between this search asking it and
+    /// looking for who is bound to it. A server still starting is not one out
+    /// of reach.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_server_that_binds_while_the_search_runs_is_found_not_stuck() {
+        assert_eq!(
+            locate_beside_a_bound_socket(Some(std::time::Duration::from_millis(300))),
+            ServerFound::Answered(0)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bound_socket_that_never_answers_is_still_refused() {
+        assert!(matches!(
+            locate_beside_a_bound_socket(None),
+            ServerFound::Bound { .. }
+        ));
     }
 
     #[test]

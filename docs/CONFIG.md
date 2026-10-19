@@ -1508,8 +1508,10 @@ whichever server owns it now. Only when no server exists is a new one started.
 `thurbox.log` says at INFO which way it went.
 
 A server that exists but cannot be reached — it does not answer `SIGUSR1`
-(stopped, or wedged), or a socket file is there and does not answer while a
-server is bound to it — is an **error**, not an absence: the session list fails
+(stopped, or wedged), or a socket file is there and does not answer within
+three seconds while a server is bound to it — is an **error**, not an absence.
+The three seconds are for a server another relaunch is starting at that moment,
+as every session's does at once after a reboot. The session list fails
 rather than reading as empty, and no `new-session` runs. A second server beside
 it would be the leak again, and the first one's pending `SIGUSR1` would take
 the path from the second once it resumed. The error names the pids; see below.
