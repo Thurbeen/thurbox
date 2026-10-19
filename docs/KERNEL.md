@@ -122,30 +122,46 @@ plugin cannot call something that waits, so the flow asks by leaving a key in
 "Capabilities are absent rather than blocked" is easy while the answer is always
 absent: there is no `os`, no `io`, no `package`, and `thurbox.yml` says so. The
 first capability a plugin can be *granted* breaks that symmetry — it has to be
-present for the plugin that may use it and absent for every other, in one shared
-Lua state.
+present for the plugin that may use it and absent for every other, in one Lua
+state they all share.
 
-So it is installed **per call**. `LuaHost::enter` stamps the current plugin and,
-in the same breath, sets `run` to the implementation or to nil. A plugin that was
-not granted it does not get a function that refuses; it gets no function, which
-is the same world every other plugin has always had. Revoking is therefore
-immediate: the next call builds the environment without it. `enter_nothing` is the
-other half, for Lua that belongs to no plugin — `layout.lua` declares no
-capabilities and has no trust record, so it must not inherit the last grant.
+**Each plugin runs in an environment of its own** (`host::api::plugin_env`).
+Every plugin shares one Lua state, so "the plugin running now" cannot say who
+issued a call: a pane that replaced a global another pane calls — `type`, say —
+would run its own code inside that pane's call, holding its grant and stamped
+with its path. So identity is bound where a function is made, never read from
+who is running. A plugin's chunk gets its own `_ENV`, and `command`, `run`,
+`files`, `state` and `require` are created for that plugin with its path bound
+in. Code a plugin defines resolves those names through its own environment
+wherever it is called from, so a hijacking function acts as its author and
+nobody else.
 
-**Where the implementation itself lives is the whole of whether this works.** It
-is held in the VM's *registry*, never in its globals, because a plugin chunk's
-`_ENV` **is** the globals table: anything parked there is reachable by name from
-every plugin, granted or not. It sat in globals as `__run_impl` once, and a
-leading `__` is a naming convention rather than a boundary — `scrub_globals` can
-only remove names it lists, so an untrusted plugin declaring no capabilities could
-call the other name and get a program run with the user's authority. The registry
-is not addressable from Lua at all and still dies with the VM, which is what the
-globals placement was reaching for. `require`'s module cache moved for the same
-reason: reachable means rewritable, and a rewritten `lib.theme` would be handed to
-every plugin. `tests/kernel_mvp.rs` enumerates the plugin environment and has no
-blanket exemption for a leading underscore — it used to, which is why none of this
-was caught.
+Reads fall through to the shared globals, which hold only what every plugin may
+have; writes land in the plugin's own table, so a global one plugin sets is
+invisible to the next. `_G` is the plugin's own table and the environment's
+metatable is sealed, so the shared globals are not reachable to write to. What
+is reachable and shared is sealed too: `string`, `table`, `math`, `coroutine`,
+`utf8` and `text` are read-only proxies, the string metatable is sealed, and so
+is `store`'s. `require` has a cache per plugin and runs a module in the
+requiring plugin's environment — a shared module would be a table one plugin
+could rewrite under another, and a module's `command(…)` has to act as the
+plugin that required it. `thurbox` is still one shared table of published data;
+a plugin that writes into it changes what others read until the next publish,
+but cannot act as them.
+
+`run` is installed **per call**: `LuaHost::enter` puts the plugin's own `run`
+into its environment, or takes it out. A plugin that was not granted it does not
+get a function that refuses; it gets no function, which is the same world every
+other plugin has always had. Revoking is therefore immediate. `layout.lua` runs
+in an environment of its own that never holds `run`.
+
+A capability once sat in the shared globals as `__run_impl`, and a leading `__`
+is a naming convention rather than a boundary: an untrusted plugin could call
+the other name and get a program run with the user's authority. Nothing a
+plugin may not have is parked anywhere it can name. `tests/kernel_mvp.rs`
+enumerates every global a plugin can reach and has no blanket exemption for a
+leading underscore, and `tests/plugin_commands.rs` holds the hijack: a pane
+that wraps `type` gets neither another pane's `run` nor its path on a command.
 
 The cost, accepted: a plugin must handle the absence, exactly as it handles a
 session having no worktree. `examples/lua/composite.lua` shows the shape — draw

@@ -13,18 +13,15 @@ use super::{
 use crate::kernel::command::{Args, Command, ExtraMember};
 use crate::kernel::events::Field;
 
-/// Install `require`, `state` and `store` into a fresh VM.
-#[allow(clippy::too_many_arguments)]
+/// Install what every plugin shares into a fresh VM: `store`, `text`, the
+/// clock, and the sealed standard library.
+///
+/// What is bound to one plugin — `command`, `run`, `files`, `state`, `require`
+/// — is not here. It goes into that plugin's own environment
+/// ([`plugin_env`]), because every plugin runs in this one Lua state.
 pub(super) fn install_api(
     lua: &Lua,
-    ui_dir: &Path,
     store: Shared,
-    state: Private,
-    current: Rc<RefCell<String>>,
-    queue: Queue,
-    roots: Roots,
-    runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
-    current_path: Rc<RefCell<String>>,
     state_version: StateVersion,
     clock: Rc<std::cell::Cell<f64>>,
     clock_read: Rc<std::cell::Cell<bool>>,
@@ -32,24 +29,123 @@ pub(super) fn install_api(
     store_writes: super::WriteCount,
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
-    install_require(lua, ui_dir)?;
-    install_store(
-        lua,
-        "store",
-        store,
-        state_version.clone(),
-        store_writes.clone(),
-        None,
-    )?;
-    install_private(lua, state, current, state_version, store_writes)?;
-    install_command(lua, queue, current_path.clone())?;
-    install_files(lua, roots)?;
-    install_run(lua, runs, current_path)?;
+    install_store(lua, "store", store, state_version, store_writes, None)?;
     install_clock(lua, clock, clock_read)?;
     install_sample_reads(lua, sample_read)?;
     install_text(lua)?;
+    seal_shared(lua)?;
     Ok(())
 }
+
+/// What a plugin's own environment is built from: the host's handles, shared by
+/// every environment, which each one binds to its own plugin.
+#[derive(Clone)]
+pub(super) struct EnvParts {
+    pub ui_dir: PathBuf,
+    pub state: Private,
+    pub queue: Queue,
+    pub roots: Roots,
+    pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
+    pub version: StateVersion,
+    pub writes: super::WriteCount,
+}
+
+/// One plugin's environment, and the capability it holds only while granted.
+pub(super) struct Env {
+    /// The `_ENV` its chunk, its modules and every function they define run in.
+    pub table: Table,
+    /// `run`, bound to this plugin. Kept out of `table` until the plugin is
+    /// granted it — `LuaHost::enter` puts it there per call.
+    pub run: mlua::Function,
+}
+
+/// Build the environment the plugin at `path` runs in.
+///
+/// Every plugin shares one Lua state, so "the plugin running now" is not who
+/// issued a call: a pane that replaced a global another pane calls would run
+/// its own code inside that pane's call, with its grant. So nothing here asks
+/// who is running. Each plugin's chunk gets its own `_ENV`, and the functions
+/// that act for a plugin — `command`, `run`, `state`, `require` — are created
+/// for it, with its identity bound in. Code a plugin defines resolves those
+/// names through its own environment wherever it is called from, so a
+/// hijacking function acts as its author and nobody else.
+///
+/// Reads fall through to the shared globals, which hold only what every plugin
+/// may have and are sealed ([`seal_shared`]); writes land in the plugin's own
+/// table. `_G` is that table, and its metatable is sealed, so the shared one is
+/// not reachable to write to. `ns` is the key `state` is kept under.
+pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> mlua::Result<Env> {
+    let table = lua.create_table()?;
+    let meta = lua.create_table()?;
+    meta.set("__index", lua.globals())?;
+    meta.set("__metatable", false)?;
+    table.set_metatable(Some(meta))?;
+    table.set("_G", table.clone())?;
+    table.set(
+        "command",
+        command_for(lua, parts.queue.clone(), path.to_string())?,
+    )?;
+    table.set(
+        "state",
+        state_for(
+            lua,
+            parts.state.clone(),
+            ns.to_string(),
+            parts.version.clone(),
+            parts.writes.clone(),
+        )?,
+    )?;
+    table.set("files", files_for(lua, parts.roots.clone())?)?;
+    table.set("require", require_for(lua, &parts.ui_dir, table.clone())?)?;
+    Ok(Env {
+        run: run_for(lua, parts.runs.clone(), path.to_string())?,
+        table,
+    })
+}
+
+/// The shared tables a plugin can reach, made read-only.
+///
+/// A plugin's own `_ENV` keeps a replaced global to itself, but `string.upper =
+/// …` writes into a table every plugin reads — and so does a string method,
+/// through the one metatable all strings share. Each is replaced by a proxy that
+/// reads through and refuses a write, and the string metatable is sealed so
+/// `getmetatable("")` cannot hand out the table behind it.
+fn seal_shared(lua: &Lua) -> mlua::Result<()> {
+    lua.load("getmetatable('').__metatable = false")
+        .set_name("seal")
+        .exec()?;
+    let globals = lua.globals();
+    let next: mlua::Function = globals.get("next")?;
+    for name in SEALED {
+        let Value::Table(inner) = globals.get::<Value>(name)? else {
+            continue;
+        };
+        let proxy = lua.create_table()?;
+        let meta = lua.create_table()?;
+        meta.set("__index", inner.clone())?;
+        meta.set(
+            "__newindex",
+            lua.create_function(move |_, (_, key): (Value, Value)| -> mlua::Result<()> {
+                Err(mlua::Error::runtime(format!(
+                    "{name} is shared by every plugin and cannot be changed (assigning {})",
+                    key.to_string().unwrap_or_default()
+                )))
+            })?,
+        )?;
+        let walk = next.clone();
+        meta.set(
+            "__pairs",
+            lua.create_function(move |_, _: Value| Ok((walk.clone(), inner.clone(), Value::Nil)))?,
+        )?;
+        meta.set("__metatable", false)?;
+        proxy.set_metatable(Some(meta))?;
+        globals.set(name, proxy)?;
+    }
+    Ok(())
+}
+
+/// The library tables every plugin reads, sealed by [`seal_shared`].
+const SEALED: [&str; 6] = ["string", "table", "math", "coroutine", "utf8", "text"];
 
 pub(super) const READ_TAKEN_AT: u8 = 1;
 pub(super) const READ_METRICS: u8 = 2;
@@ -221,31 +317,18 @@ pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
     ctx.set_metatable(Some(meta))
 }
 
-/// The name the `run` implementation is parked under.
-///
-/// Installed once per VM and handed to `run` only while a plugin that may use it
-/// is executing — see `LuaHost::enter`.
-///
-/// It lives in the VM's **registry**, not in globals. A plugin chunk's `_ENV` is
-/// the globals table, so anything parked there is reachable by name from every
-/// plugin whether or not it was granted — a leading `__` is a naming convention,
-/// not a boundary, and `scrub_globals` can only remove names it lists. The
-/// registry is not addressable from Lua at all (`debug` is withheld), and it
-/// still dies with the VM, so a reload cannot leave a stale handle behind.
-pub(super) const RUN_IMPL: &str = "__run_impl";
-
 /// `run(key, program, opts)` — ask for a program and read the answer later.
 ///
 /// Queued, never executed here: the whole point is that a plugin cannot call
-/// anything that waits. The asking plugin is stamped from `current`, so a run
-/// is attributed without the plugin naming itself (and without being able to
-/// claim another's key).
-fn install_run(
+/// anything that waits. Created for one plugin, with its path bound in, so a
+/// run is attributed without the plugin naming itself (and without being able
+/// to claim another's key).
+fn run_for(
     lua: &Lua,
     runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
-    current_path: Rc<RefCell<String>>,
-) -> mlua::Result<()> {
-    let implementation = lua.create_function(
+    owner: String,
+) -> mlua::Result<mlua::Function> {
+    lua.create_function(
         move |_, (key, program, opts): (String, String, Option<Table>)| {
             if key.is_empty() || program.is_empty() {
                 return Err(mlua::Error::runtime(
@@ -304,14 +387,10 @@ fn install_run(
                     .and_then(|t| t.get::<Option<bool>>("refresh").ok().flatten())
                     .unwrap_or(false),
             };
-            runs.borrow_mut().push((current_path.borrow().clone(), ask));
+            runs.borrow_mut().push((owner.clone(), ask));
             Ok(())
         },
-    )?;
-    lua.set_named_registry_value(RUN_IMPL, implementation)?;
-    // Absent until a plugin that may use it runs.
-    lua.globals().set("run", Value::Nil)?;
-    Ok(())
+    )
 }
 
 /// `files.list(session, path)` and `files.read(session, path)`.
@@ -319,7 +398,7 @@ fn install_run(
 /// The capability that is *not* granted here is the point: a plugin gets a
 /// directory listing and a file's text, both rooted at that session's working
 /// directory and refusing anything outside it. It never gets a filesystem.
-fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
+fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
     let files = lua.create_table()?;
 
     let list_roots = roots.clone();
@@ -353,8 +432,7 @@ fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
         })?,
     )?;
 
-    lua.globals().set("files", files)?;
-    Ok(())
+    Ok(files)
 }
 
 /// `command("delete", { session = id })` — the only way a plugin changes state.
@@ -365,8 +443,8 @@ fn install_files(lua: &Lua, roots: Roots) -> mlua::Result<()> {
 ///
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
-fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -> mlua::Result<()> {
-    let command = lua.create_function(move |lua, (kind, opts): (String, Option<Table>)| {
+fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Function> {
+    lua.create_function(move |lua, (kind, opts): (String, Option<Table>)| {
         let opts = opts;
         let get_string = |key: &str| -> Option<String> {
             opts.as_ref()
@@ -377,10 +455,10 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
                 .and_then(|t| t.get::<Option<bool>>(key).ok().flatten())
         };
         let args = Args {
-            // Stamped from the plugin currently executing, NEVER read from the
-            // options table: a plugin that could name its own owner could act as
-            // another one. Same reasoning as `run`'s attribution.
-            owner: current_path.borrow().clone(),
+            // Bound when this plugin's environment was built, NEVER read from
+            // the options table or from whichever plugin is running: either
+            // would let one plugin act as another. Same as `run`'s attribution.
+            owner: owner.clone(),
             argv: opts
                 .as_ref()
                 .and_then(|t| t.get::<Option<Vec<String>>>("args").ok().flatten())
@@ -495,9 +573,7 @@ fn install_command(lua: &Lua, queue: Queue, current_path: Rc<RefCell<String>>) -
         }
         queue.borrow_mut().push(parsed);
         Ok(())
-    })?;
-    lua.globals().set("command", command)?;
-    Ok(())
+    })
 }
 
 /// Globals that read files, load code, or write to the terminal.
@@ -530,25 +606,20 @@ fn scrub_globals(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-/// Where `require`'s module cache lives, in the registry rather than globals.
-const MODULE_CACHE: &str = "__modules";
-
-/// `require("lib.theme")` loads `ui/lib/theme.lua`.
+/// `require("lib.theme")` loads `ui/lib/theme.lua`, for one plugin.
 ///
 /// Ours rather than Lua's, because `package` is withheld: this resolves only
 /// inside the plugin directory, so `require` cannot reach the filesystem at
-/// large. The module cache lives in the VM, so it dies with the VM — which is
-/// what makes shared libraries reload alongside their plugins. It lives in the
-/// VM's *registry* rather than its globals for the reason [`RUN_IMPL`] does: a
-/// global is reachable from every plugin, and one able to rewrite the cache could
-/// hand every other plugin a replaced `lib.theme`.
-fn install_require(lua: &Lua, ui_dir: &Path) -> mlua::Result<()> {
+/// large. Each plugin has its own, with its own module cache, and a module runs
+/// in the requiring plugin's `env`: a module shared between plugins would be a
+/// table one of them could rewrite under the other, and a module's
+/// `command(…)` has to act as the plugin that required it. The cache is held by
+/// this function rather than placed anywhere Lua can name it, and it dies with
+/// the VM, which is what makes shared libraries reload alongside their plugins.
+fn require_for(lua: &Lua, ui_dir: &Path, env: Table) -> mlua::Result<mlua::Function> {
     let root = ui_dir.to_path_buf();
     let cache = lua.create_table()?;
-    lua.set_named_registry_value(MODULE_CACHE, cache)?;
-
-    let require = lua.create_function(move |lua, name: String| {
-        let cache: Table = lua.named_registry_value(MODULE_CACHE)?;
+    lua.create_function(move |lua, name: String| {
         if let Ok(Value::Table(module)) = cache.get::<Value>(name.clone()) {
             return Ok(Value::Table(module));
         }
@@ -563,12 +634,14 @@ fn install_require(lua: &Lua, ui_dir: &Path) -> mlua::Result<()> {
         let source = fs::read_to_string(&path).map_err(|e| {
             mlua::Error::runtime(format!("require({name:?}): {}: {e}", path.display()))
         })?;
-        let value: Value = lua.load(&source).set_name(name.clone()).eval()?;
+        let value: Value = lua
+            .load(&source)
+            .set_name(name.clone())
+            .set_environment(env.clone())
+            .eval()?;
         cache.set(name, value.clone())?;
         Ok(value)
-    })?;
-    lua.globals().set("require", require)?;
-    Ok(())
+    })
 }
 
 /// Install a persisted table under `global`, optionally namespaced per plugin.
@@ -623,35 +696,37 @@ fn install_store(
         })?,
     )?;
 
+    // Sealed: every plugin reads this one table, so one able to replace its
+    // metatable would decide what `store` is for all of them.
+    meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
     lua.globals().set(global, table)?;
     Ok(())
 }
 
-/// `state` — private to the plugin currently being called, and **in memory only**.
+/// `state` — private to one plugin (keyed by `ns`), and **in memory only**.
 ///
 /// It outlives a reload because [`LuaHost::build`] hands the same map to the new VM,
 /// which is what "persistent" in the plugin docs used to mean and read as more than
 /// it was. Nothing serialises it: a plugin's `state` dies with the process, and so
 /// does `store`. Anything a plugin needs after a restart has nowhere to go today —
 /// worth knowing before this word is chosen again.
-fn install_private(
+fn state_for(
     lua: &Lua,
     state: Private,
-    current: Rc<RefCell<String>>,
+    ns: String,
     version: StateVersion,
     writes: super::WriteCount,
-) -> mlua::Result<()> {
+) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
 
     let read = state.clone();
-    let read_ns = current.clone();
+    let read_ns = ns.clone();
     meta.set(
         "__index",
         lua.create_function(move |lua, (_, key): (Table, String)| {
-            let ns = read_ns.borrow().clone();
-            match read.borrow().get(&(ns, key)) {
+            match read.borrow().get(&(read_ns.clone(), key)) {
                 Some(value) => to_lua(lua, value),
                 None => Ok(Value::Nil),
             }
@@ -659,12 +734,11 @@ fn install_private(
     )?;
 
     let write = state;
-    let write_ns = current;
     meta.set(
         "__newindex",
         lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
             count_write(&writes, &value);
-            let ns = write_ns.borrow().clone();
+            let ns = ns.clone();
             let mut slot = write.borrow_mut();
             // Same rule as `store`: only a value that actually moved counts.
             let moved = match from_lua(&value) {
@@ -685,9 +759,9 @@ fn install_private(
         })?,
     )?;
 
+    meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
-    lua.globals().set("state", table)?;
-    Ok(())
+    Ok(table)
 }
 
 /// Count one `store`/`state` assignment, and whether it assigned a table.

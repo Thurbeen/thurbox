@@ -736,3 +736,105 @@ fn a_lock_without_the_files_entry_grants_nothing_to_it() {
         thurbox::kernel::packages::write_lock(ui, &Default::default()).expect("empty lock");
     });
 }
+
+/// A pane holding no grant that replaces the shared `type` with one that asks
+/// for a program and writes an exec automation, then calls the real one.
+const LURE: &str = r#"local real = type
+type = function(value)
+  if run then
+    run("stolen", "echo pwned", { session = "s1" })
+  end
+  command("automation", { action = "create", name = "x", command = "echo pwned" })
+  return real(value)
+end
+return { name = "lure", slot = "sessions", render = function()
+  return { type = "text", text = "" }
+end }"#;
+
+/// A pane trusted with `run` that calls `type` as it draws, as any pane does.
+const VICTIM: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
+  render = function()
+    return { type = "text", text = type(state) }
+  end }"#;
+
+/// Load the lure before the victim, trust the victim, and draw both.
+fn lured() -> (tempfile::TempDir, LuaHost) {
+    let (home, ui) = interface(&[("91_lure.lua", LURE), ("92_victim.lua", VICTIM)]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(&ui.join("plugins/92_victim.lua").to_string_lossy(), VICTIM)
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    render(&host, "lure");
+    render(&host, "victim");
+    (home, host)
+}
+
+#[test]
+fn a_pane_cannot_run_a_program_through_a_global_another_pane_calls() {
+    // Every pane used to share one Lua state, so a pane that replaced `type`
+    // ran its own code inside a trusted pane's call — with that pane's `run`
+    // bound and its path stamped on the ask.
+    let (_home, host) = lured();
+    let runs = host.drain_runs();
+    assert!(runs.iter().all(|(_, ask)| ask.key != "stolen"), "{runs:?}");
+}
+
+#[test]
+fn a_pane_cannot_write_a_command_as_another_pane() {
+    let (_home, host) = lured();
+    for command in host.drain_commands() {
+        if let thurbox::kernel::command::Command::AutomationSave { owner, .. } = &command {
+            assert_ne!(owner, "plugins/92_victim.lua", "{command:?}");
+        }
+    }
+}
+
+#[test]
+fn a_pane_cannot_change_the_library_every_pane_shares() {
+    // A replaced global stays in the pane's own environment, but `string` is one
+    // table every pane reads — and every string's methods come from it.
+    for (lure, says) in [
+        (
+            "string.upper = function() return 'PWNED' end",
+            "string is shared",
+        ),
+        ("getmetatable('').__index = {}", "attempt to index"),
+        ("table.insert = nil", "table is shared"),
+        ("setmetatable(store, {})", "protected metatable"),
+    ] {
+        let source = format!(
+            "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
+        );
+        let (_home, ui) = interface(&[("91_lure.lua", &source)]);
+        let host = LuaHost::new(&ui);
+        let error = host.error.clone().unwrap_or_default();
+        assert!(error.contains(says), "{lure}: {error:?}");
+    }
+}
+
+#[test]
+fn a_global_a_pane_sets_is_its_own() {
+    let writer = r#"shout = function() return "mine" end
+return { name = "writer", slot = "sessions", render = function()
+  return { type = "text", text = "" }
+end }"#;
+    let reader = r#"return { name = "reader", slot = "sessions", render = function()
+  command("focus", { text = tostring(shout) .. "/" .. ("quiet"):upper() })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_writer.lua", writer), ("92_reader.lua", reader)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "writer");
+    render(&host, "reader");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "nil/QUIET"
+        ),
+        "another pane's global is not visible, and the shared library still works"
+    );
+}

@@ -268,6 +268,10 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 | `files` | bounded reads the kernel performs for you |
 | `thurbox.platform` | `os` and `arch`, so a plugin shipping several builds can pick one |
 
+Each plugin has globals of its own: one you assign is invisible to the next
+plugin, `require` hands you your own copy of a module, and `string`, `table`,
+`math`, `coroutine`, `utf8` and `text` are read-only. Share through `store`.
+
 **Borders**: a node's `frame` is the whole border vocabulary — `title` (styled
 runs, not a bare string), `title_align`, `border_type` (`rounded` or `square`),
 `border_style`, `padding`, and `overlay`. The overlay paints runs onto the
