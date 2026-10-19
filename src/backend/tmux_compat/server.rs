@@ -2124,8 +2124,9 @@ impl<M: TmuxCompatible> Server<M> {
     ///
     /// Checked under the lock `shutdown` takes the connection out under, so a
     /// handshake that outlives a quit is torn down instead of left behind.
-    /// Whatever is replaced, and a refused `fresh`, are torn down after the
-    /// lock is let go: a teardown waits on the child.
+    /// Whatever is replaced, and a refused `fresh`, are torn down here, after
+    /// the lock is let go: a teardown waits on the child, and left to the last
+    /// clone's drop it could land on the paint thread.
     fn install(&self, fresh: ControlMode) -> Result<()> {
         let fresh = Arc::new(fresh);
         let replaced = {
@@ -2140,7 +2141,12 @@ impl<M: TmuxCompatible> Server<M> {
             }
         };
         match replaced {
-            Some(_) => Ok(()),
+            Some(old) => {
+                if let Some(old) = old {
+                    old.close();
+                }
+                Ok(())
+            }
             None => {
                 fresh.close();
                 bail!("{} is shut down", self.name)

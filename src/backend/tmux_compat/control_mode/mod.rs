@@ -1064,6 +1064,13 @@ pub(in crate::backend) struct ControlMode {
     /// See [`HiddenPanes`]; shared with the reader thread, which reads
     /// their reports and leaves them paused.
     hidden: HiddenPanes,
+    /// Held across each of [`Self::hide_pane`] and [`Self::show_pane`] — the
+    /// record in `hidden` and the commands it stands for — so the two cannot
+    /// interleave: a hide's pause landing after a concurrent show's resume
+    /// leaves a pane paused with no record, which nothing would ever resume.
+    /// Separate from `hidden`, which the reader thread takes on its way to the
+    /// stdin lock, so holding it across a write never stops stdout being read.
+    visibility: Mutex<()>,
     /// True while this connection lives; cleared on reader EOF and in `Drop`.
     /// The hook poller checks it each cycle so a replaced connection's
     /// poller winds down instead of writing into a dead pipe forever.
@@ -1223,6 +1230,7 @@ impl ControlMode {
             sub_events,
             subscriptions: policy.subscriptions,
             hidden,
+            visibility: Mutex::new(()),
             alive,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
@@ -1961,6 +1969,10 @@ impl ControlMode {
         if !self.subscriptions || !is_valid_pane_id(pane_id) {
             return Ok(false);
         }
+        let _visibility = self
+            .visibility
+            .lock()
+            .map_err(|e| anyhow::anyhow!("visibility lock: {e}"))?;
         let readers = self
             .pane_senders
             .lock()
@@ -1992,6 +2004,10 @@ impl ControlMode {
     /// that is let go stops being held back: tmux keeps a pane paused across
     /// `on`/`off`, so a later adopt of it would otherwise stream nothing.
     pub(in crate::backend) fn show_pane(&self, pane_id: &str) -> Result<()> {
+        let _visibility = self
+            .visibility
+            .lock()
+            .map_err(|e| anyhow::anyhow!("visibility lock: {e}"))?;
         if !self.unhide(pane_id)? {
             return Ok(());
         }
