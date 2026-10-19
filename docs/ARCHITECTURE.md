@@ -936,12 +936,43 @@ reference to read before touching that path.
   window created with no command. Encoded, the program is four plain tokens
   whose script argument is restricted to `[A-Za-z0-9+/=]`, so psmux spawns it
   directly and no shell on the way reads any of it as syntax; the heartbeat
-  keeper's loop goes the same way. Control-mode spawns
+  keeper's loop goes the same way. Encoding costs length — the line is
+  `39 + 4 * ceil(2n / 3)` chars for an `n`-unit script, about 2.7 times it —
+  and agent `args`/`env` are unbounded config, so `shell::powershell_launcher`
+  measures the line it builds against `WINDOWS_CMD_LINE_MAX` (8191, `cmd.exe`'s
+  limit — the login shell of a Windows OpenSSH host, and the `$SHELL` of a psmux
+  server started over it — applied to local servers too, so an agent that runs
+  locally does not fail on a host) and refuses a longer one with
+  `CommandLineTooLong` before anything reaches psmux: a spawn names the cause
+  instead of reading as a window that died. A typical agent window stays under
+  half of it; a script past 3,057 UTF-16 units is refused. The one-shot
+  `send-paste` chunk is derived from the same limit (`PASTE_CHUNK_BYTES`). Control-mode spawns
   (`psmux_window_command`) frame it in double quotes; the
   headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
   data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance
   on Windows, where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
+- **A one-shot command over ssh is read by the host's login shell, which is
+  not POSIX** — `cmd.exe` by Windows OpenSSH's default, PowerShell when
+  `DefaultShell` says so. `cmd.exe` ignores single quotes, so the
+  `posix_quote`d `'#{pane_id}|#{window_name}|…'` of a listing was a pipe into a
+  command named `'#{window_name}'`: remote teardown could not list the host's
+  windows and was left owed (#1460). A transport built for a Windows host
+  (`TmuxTransport::on_windows`, set by `Server::on_host`) builds its lines with
+  `shell::launch_on_windows`: a line of words every such shell passes through
+  unquoted (`[A-Za-z0-9-_./:=+%]`, at most one `%`) goes as it is — a
+  control-mode attach and a `send-paste` among them, so the paste chunk keeps
+  its size — and any other runs as `powershell.exe -NoLogo -NoProfile
+  -NonInteractive -EncodedCommand`, refused past `WINDOWS_CMD_LINE_MAX`. The
+  script starts psmux through `ProcessStartInfo` with the arguments quoted for
+  the C runtime (`shell::windows_arg_quote`) rather than through `&`, because
+  PowerShell 5.1's native-argument passing drops an empty argument and splits
+  one at an embedded `"`; the child inherits the three std handles, so its
+  bytes and exit status are unchanged, and `$ProgressPreference` is silenced
+  because PowerShell writes progress to stderr as CLIXML, which psmux's
+  stderr-is-failure rule would read as an error. `scripts/dev/e2e/real-host.sh
+  <host> cmd-login-test` runs a create and a `share_sessions = false` force
+  delete with every ssh command thurbox-cli sends handed to `cmd.exe /c`.
 - **A paste cannot be key-encoded at all** (the encoding above types each
   embedded CR as Enter, and the `ESC[200~` markers as writes of their own
   rather than around the text — a pasted stack trace
@@ -1128,6 +1159,22 @@ or the machine has no `thurbox-cli` on PATH. psmux ≥ 3.3.8 does implement
 `remain-on-exit`, but the adapter still declares none. Turning it on would
 need a per-server version gate on a const answer, and the reporting above
 works on the 3.3.7 floor.
+
+### A psmux create names its pane, and only that pane proves it started
+
+With no `remain-on-exit`, a program that cannot start leaves no window, so
+`create_window` looks again after `SPAWN_SETTLE` (`confirm_spawned`) and
+refuses a create whose pane is gone. That check matches the created pane's
+id only. A live window under the same `tb-<name>` is a namesake (allowed,
+and unstamped on psmux), and counting it let a dead create pass (#1456).
+
+psmux answers no `new-window -P`, so the local spawn learns the id by
+listing the panes under `tb-<name>` before and after `new-window`: psmux
+never reuses a pane id within a server's life, so the one new id is the new
+window. No new id means it already exited, and two mean a concurrent
+namesake create that cannot be told apart; both refuse the create.
+`create_window` returns a `PaneId`, which cannot be empty, so every backend
+names the pane it made or fails.
 
 ### The host's platform is its own dimension
 
@@ -1828,6 +1875,8 @@ host where that cannot be done (a dev build on a foreign platform, no
 network) or with `share_sessions = false` is used exactly
 as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
 status channel, which are now the **legacy path for non-shareable hosts**.
+Their windows are driven over the transport by the route's backend, so
+`session send`/`key`/`capture` work there too (ADR-30).
 
 **A host CLI is compatible when its major matches and its schema is no older
 than ours** (`host_cli::compatible`). A newer schema within one major is a host
@@ -2553,7 +2602,10 @@ calls a pane-keyed verb on the contract: `send_text`, `send_text_after`,
 `send_key`, `capture`, `pane_state`, `pane_path`. A key crosses the contract as
 `backend::Key`, thurbox's own closed set of spellings; the adapter says it in
 its grammar (`session key` still reports that spelling as `tmux_key`).
-Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24).
+Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24);
+`session send`/`key`/`capture` on a host with no usable CLI — `share_sessions =
+false`, or none found or provisioned — fall through to the registry, as the
+kernel does, and only a backend with no `hosts.toml` entry is refused.
 
 **Why**: the pane helpers were free functions of the tmux adapter that
 resolved `(id, name)` on *this machine's* server whatever the row's route. A

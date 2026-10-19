@@ -115,7 +115,10 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
     };
 
     // Created stamped for its owner, and named by thurbox's convention.
-    let pane = backend.create_window(&spec(owner)).expect("create_window");
+    let pane: String = backend
+        .create_window(&spec(owner))
+        .expect("create_window")
+        .into();
     let listed = backend.discover().expect("discover");
     let window = listed
         .iter()
@@ -160,7 +163,10 @@ pub fn lifecycle(backend: &dyn SessionBackend) {
 
     // A second window for the same owner and role keeps one of the two, and
     // the owner resolves to it: one session, one window per role (ADR-25).
-    let again = backend.create_window(&spec(renamed)).expect("create again");
+    let again: String = backend
+        .create_window(&spec(renamed))
+        .expect("create again")
+        .into();
     assert_eq!(
         backend.locate(renamed).expect("locate").agent,
         Located::At(again.clone()),
@@ -198,6 +204,7 @@ pub fn pane_io(backend: &dyn SessionBackend) {
                 env: &env,
             })
             .expect("create_window")
+            .to_string()
     };
     let pane = open("cat", &[]);
     assert_eq!(
@@ -269,6 +276,7 @@ pub fn status(backend: &dyn SessionBackend) {
                 env: &env,
             })
             .expect("create_window")
+            .to_string()
     };
     let reporting = open(OWNER_C);
     let quiet = open(OWNER_D);

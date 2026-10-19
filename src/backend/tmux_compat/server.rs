@@ -19,8 +19,8 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::backend::contract::{
-    AdoptedSession, DiscoveredSession, Key, Owner, PaneSize, PaneState, Placed, SessionBackend,
-    SpawnedSession, WindowRole, WindowSpec,
+    AdoptedSession, DiscoveredSession, Key, Owner, PaneId, PaneSize, PaneState, Placed,
+    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
@@ -183,29 +183,31 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     }
 
     /// The command a new window runs, as a control-mode `new-window` line
-    /// carries it.
+    /// carries it — or why the server could not run it.
     fn window_command(
         server: &Server<Self>,
         window_name: &str,
         command: &str,
         args: &[String],
         _env: &HashMap<String, String>,
-    ) -> String
+    ) -> Result<String>
     where
         Self: Sized,
     {
-        server.posix_window_command(window_name, command, args)
+        Ok(server.posix_window_command(window_name, command, args))
     }
 
-    /// The environment and program that close a one-shot `new-window`'s argv.
+    /// The environment and program that close a one-shot `new-window`'s argv
+    /// — or why the server could not run it.
     fn push_window_program(
         cmd: &mut Command,
         _window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
-    ) {
+    ) -> Result<()> {
         push_posix_window_program(cmd, command, args, env);
+        Ok(())
     }
 
     /// The one-shot argv that delivers `text` into `target` as one paste.
@@ -846,6 +848,9 @@ impl<M: TmuxCompatible> Server<M> {
             .clone()
             .unwrap_or_else(|| TMUX_SESSION.to_string());
         let mut transport = TmuxTransport::remote(launcher, M::MULTIPLEXER.name());
+        if platform == Platform::Windows {
+            transport = transport.on_windows();
+        }
         if M::SOCKET_DIR && platform == Platform::Posix {
             transport = transport.with_socket_dir(SocketDir::HostData {
                 app: crate::paths::app_dir_name().to_string(),
@@ -875,14 +880,30 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// `<mux> -L <socket> <args…>` on this server, in the directory its
     /// socket was found in ([`Self::socket_dir`]).
-    pub(in crate::backend) fn mux_command(&self, args: &[&str]) -> Command {
-        self.located_transport().tmux_command(&self.socket(), args)
+    pub(in crate::backend) fn mux_command(&self, args: &[&str]) -> Result<Command> {
+        Ok(self
+            .located_transport()
+            .tmux_command(&self.socket(), args)?)
     }
 
     /// The transport, carrying the socket directory the server was found in —
     /// what a control-mode client is started over.
     fn located_transport(&self) -> TmuxTransport {
-        self.transport.clone().with_socket_dir(self.socket_dir())
+        self.host_transport().with_socket_dir(self.socket_dir())
+    }
+
+    /// The transport, carrying the host's `PATH` (`path_prepend`, then its
+    /// login shells', then the launcher's — [`crate::agent::host_path`]), so
+    /// every command thurbox runs there finds the multiplexer where the
+    /// new-session flow's probe found it (#1461). Asked per command rather
+    /// than at construction: the first ask probes the host, and building a
+    /// backend must not wait on one.
+    fn host_transport(&self) -> TmuxTransport {
+        let path = match (&self.host, self.platform) {
+            (Some(host), Platform::Posix) => crate::agent::host_path::assignment_for(host),
+            _ => None,
+        };
+        self.transport.clone().with_path(path)
     }
 
     /// Whether this server's socket directory is thurbox's to choose and to
@@ -1082,7 +1103,7 @@ impl<M: TmuxCompatible> Server<M> {
         let socket = self.socket();
         let script = locate_script(&candidates, &socket);
         let output = self
-            .transport
+            .host_transport()
             .shell_command(&script, &["sh", self.transport.mux(), &socket])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1204,7 +1225,7 @@ impl<M: TmuxCompatible> Server<M> {
         let mut args = vec!["new-session", "-d", "-s", &self.session];
         args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
         let out = self
-            .mux_command(&args)
+            .mux_command(&args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1288,7 +1309,7 @@ impl<M: TmuxCompatible> Server<M> {
         // failure into a message: the whole point is to keep the exit status,
         // because that is the layer talking and the message is only text.
         let output = self
-            .mux_command(&args)
+            .mux_command(&args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1379,7 +1400,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// [`SessionBackend::create_window`] on a host: the control-mode spawn,
     /// through a connection dropped once the window exists. The host's server
     /// keeps the window for an interface to adopt later.
-    fn create_remote_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_remote_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
         let backend = self.transient();
         backend
             .check_available()
@@ -1404,18 +1425,19 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.owner.name
             );
         }
-        backend.confirm_spawned(spec, &spawned.backend_id)?;
-        Ok(spawned.backend_id)
+        let pane_id = PaneId::new(spawned.backend_id)?;
+        backend.confirm_spawned(spec, &pane_id)?;
+        Ok(pane_id)
     }
 
-    /// Refuse a window that is already gone [`TmuxCompatible::SPAWN_SETTLE`]
-    /// after it was created. `pane_id` is the created pane where the server
-    /// answered with one; an empty one (no `-P` answer) is matched by the
-    /// window's name, so only a name with no live window at all is refused.
+    /// Refuse a window whose pane is already gone
+    /// [`TmuxCompatible::SPAWN_SETTLE`] after it was created. Only `pane_id`
+    /// itself counts: a live namesake under the same `tb-<name>` is another
+    /// session's window (issue #1456).
     ///
     /// A listing that does not answer refuses nothing: the window was
     /// created, and a question left unanswered is not evidence it died.
-    fn confirm_spawned(&self, spec: &WindowSpec<'_>, pane_id: &str) -> Result<()> {
+    fn confirm_spawned(&self, spec: &WindowSpec<'_>, pane_id: &PaneId) -> Result<()> {
         let Some(settle) = M::SPAWN_SETTLE else {
             return Ok(());
         };
@@ -1430,15 +1452,20 @@ impl<M: TmuxCompatible> Server<M> {
         };
         if panes
             .iter()
-            .any(|(id, dead)| !dead && (pane_id.is_empty() || id == pane_id))
+            .any(|(id, dead)| !dead && id == pane_id.as_str())
         {
             return Ok(());
         }
-        bail!(
+        Err(self.spawn_exited(spec, &window_name))
+    }
+
+    /// Why a create is refused when its window closed with its program.
+    fn spawn_exited(&self, spec: &WindowSpec<'_>, window_name: &str) -> anyhow::Error {
+        anyhow::anyhow!(
             "window {window_name} exited within {}ms of starting `{}`: {} keeps no \
              window once its program exits, so nothing of it is left to read. Check \
              that `{}` runs on {}",
-            settle.as_millis(),
+            M::SPAWN_SETTLE.unwrap_or_default().as_millis(),
             spec.command,
             self.transport.mux(),
             spec.command,
@@ -1509,7 +1536,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// the one answer.
     fn one_shot(&self, what: &str, args: &[&str]) -> Result<std::process::Output> {
         let output = self
-            .mux_command(args)
+            .mux_command(args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1575,7 +1602,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// Execute a tmux command on the thurbox socket and check for errors.
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = self
-            .mux_command(args)
+            .mux_command(args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -2467,7 +2494,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
-            .mux_command(&["-V"])
+            .mux_command(&["-V"])?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -2536,7 +2563,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // The command, its quoting and how the environment reaches it are the
         // multiplexer's: tmux takes joined trailing tokens and `-e`, psmux one
         // folded token.
-        let shell_cmd = M::window_command(self, window_name, command, args, env);
+        let shell_cmd = M::window_command(self, window_name, command, args, env)?;
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", M::quote(&dir.to_string_lossy())),
             None => String::new(),
@@ -2607,16 +2634,26 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `capture_ms` here reads 0 on that path; a `None` seed (a mid-run
         // adopt) still captures inline, before connecting so seeded history
         // can't duplicate live output. Best-effort: adoption must survive a
-        // failed capture.
+        // failed capture — except one saying the pane is gone. Nothing after it
+        // notices: psmux answers `display-message` for a missing pane with its
+        // active pane's fields, and the adopted session read as a quiet live
+        // one with no pane behind it (#1433).
         let perf_log = std::env::var_os("THURBOX_PERF_LOG").is_some();
 
         let capture_start = perf_log.then(std::time::Instant::now);
-        let seed = seed.unwrap_or_else(|| {
-            self.capture_history(backend_id).unwrap_or_else(|e| {
-                warn!("Failed to capture history for pane {backend_id}: {e}");
-                Vec::new()
-            })
-        });
+        let seed = match seed {
+            Some(seed) => seed,
+            None => match self.capture_history(backend_id) {
+                Ok(seed) => seed,
+                Err(e) if already_gone(&format!("{e:#}")) => {
+                    bail!("pane {backend_id} is gone: {e:#}")
+                }
+                Err(e) => {
+                    warn!("Failed to capture history for pane {backend_id}: {e}");
+                    Vec::new()
+                }
+            },
+        };
         let capture_ms = capture_start.map(|s| s.elapsed().as_millis() as u64);
 
         let connect_start = perf_log.then(std::time::Instant::now);
@@ -2792,11 +2829,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .collect())
     }
 
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
         if self.transport.is_remote() {
             return self.create_remote_window(spec);
         }
-        let pane_id = self.create_local_window(spec)?;
+        let pane_id = PaneId::new(self.create_local_window(spec)?)?;
         self.confirm_spawned(spec, &pane_id)?;
         Ok(pane_id)
     }
@@ -3328,7 +3365,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return Ok(());
         }
         self.ensure_heartbeat_session()?;
-        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every);
+        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every)?;
         let out = self
             .mux_command(&[
                 "new-window",
@@ -3338,7 +3375,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 "-n",
                 HEARTBEAT_WINDOW,
                 &loop_cmd,
-            ])
+            ])?
             .output()
             .map_err(|e| {
                 self.transport
@@ -3363,7 +3400,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     /// failed listing is an unanswered question (`listing_is_absence`).
     fn heartbeat_running(&self) -> Result<bool> {
         let out = self
-            .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])
+            .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -3505,7 +3542,11 @@ fn local_socket_file(dir: &SocketDir, socket: &str) -> bool {
 ///   answers (`others` more servers were bound there too);
 /// - `unanswered <i> <pid> <others> <path>` — the same, and it has not answered;
 /// - `bound <pids> <path>` — a socket file is at `path` and does not answer,
-///   while `pids` are bound to it: nothing is signalled.
+///   while `pids` are bound to it: nothing is signalled. It is given the
+///   same three seconds as `SIGUSR1` first, because a peer's `new-session`
+///   binds the socket between the first `answers` and `bound` — every
+///   relaunch after a reboot searches at once — and a server still starting
+///   then reads as one out of reach.
 ///
 /// The bound-socket question is asked of the kernel, because a server's
 /// command line need not name its socket: `/proc/net/unix` lists each
@@ -3518,6 +3559,11 @@ fn local_socket_file(dir: &SocketDir, socket: &str) -> bool {
 /// `-v` would have interpreted its backslashes.
 const LOCATE_BODY: &str = r#"mux=$1 name=$2 uid=$(id -u)
 answers() { TMUX_TMPDIR=$1 "$mux" -L "$name" list-sessions >/dev/null 2>&1; }
+answers_within() {
+  t=0
+  while [ "$t" -lt 30 ] && ! answers "$1"; do sleep 0.1; t=$((t + 1)); done
+  answers "$1"
+}
 sock() {
   if b=$(cd "$1/tmux-$uid" 2>/dev/null && pwd -P); then :
   elif b=$(cd "$1" 2>/dev/null && pwd -P); then b=$b/tmux-$uid
@@ -3553,6 +3599,7 @@ while [ "$i" -lt "$n" ]; do
   pids=$(bound "$p" | tr '\n' ' ')
   if [ -n "$pids" ]; then
     if [ -e "$p" ]; then
+      if answers_within "$d"; then echo "answered $i"; exit 0; fi
       echo "bound $(echo $pids | tr ' ' ',') $p"
     else
       set -- $pids
@@ -3560,9 +3607,7 @@ while [ "$i" -lt "$n" ]; do
       shift
       mkdir -p -m 700 "${p%/*}"
       if kill -USR1 "$pid" 2>/dev/null; then
-        t=0
-        while [ "$t" -lt 30 ] && ! answers "$d"; do sleep 0.1; t=$((t + 1)); done
-        if answers "$d"; then echo "recovered $i $pid $# $p"; else echo "unanswered $i $pid $# $p"; fi
+        if answers_within "$d"; then echo "recovered $i $pid $# $p"; else echo "unanswered $i $pid $# $p"; fi
         exit 0
       fi
     fi
@@ -3821,7 +3866,7 @@ fn heartbeat_loop_command(
     program: &Path,
     args: &[String],
     every: std::time::Duration,
-) -> String {
+) -> Result<String> {
     let secs = every.as_secs().max(1);
     let path = program.display().to_string();
     match platform {
@@ -3830,10 +3875,10 @@ fn heartbeat_loop_command(
                 .chain(args.iter().cloned())
                 .map(|a| shell_escape(&a))
                 .collect();
-            format!(
+            Ok(format!(
                 "while true; do {} >/dev/null 2>&1; sleep {secs}; done",
                 argv.join(" ")
-            )
+            ))
         }
         Platform::Windows => {
             let argv: Vec<String> = std::iter::once(path)
@@ -3844,6 +3889,7 @@ fn heartbeat_loop_command(
                 "while ($true) {{ & {} *> $null; Start-Sleep {secs} }}",
                 argv.join(" ")
             ))
+            .context("the automation heartbeat")
         }
     }
 }
@@ -4138,10 +4184,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// read below.
     ///
     /// A server without [`TmuxCompatible::ONE_SHOT_SPAWN_ANSWERS`] is not asked
-    /// for the id, and an empty string is returned, so the window is found by
-    /// its name instead (like its other carve-outs, where it has no window
-    /// options to stamp either). With no id to weigh, a non-zero status is the
-    /// whole answer there, exactly as before.
+    /// for the id: it is the one pane under the window's name that was not
+    /// there before `new-window` ([`Self::new_named_pane`]). With no id to
+    /// weigh, a non-zero status is the whole answer there.
     fn create_local_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
         let session_id = spec.owner.session_id;
         // Ensure the session exists and is configured, without opening a
@@ -4151,7 +4196,7 @@ impl<M: TmuxCompatible> Server<M> {
             // The headless twin of the check in `spawn`: the running server's
             // own `#{version}`, since it is its code that births the pane.
             let output = self
-                .mux_command(&["display-message", "-t", &self.session, "-p", "#{version}"])
+                .mux_command(&["display-message", "-t", &self.session, "-p", "#{version}"])?
                 .output()
                 .map_err(|e| {
                     self.transport
@@ -4181,6 +4226,13 @@ impl<M: TmuxCompatible> Server<M> {
         // id it would otherwise be written against is not known until the list
         // returns.
         let stamped = M::WINDOW_OPTIONS;
+        let before = if M::ONE_SHOT_SPAWN_ANSWERS {
+            Vec::new()
+        } else {
+            self.window_panes(&window_name).with_context(|| {
+                format!("list the windows named {window_name} before adding one")
+            })?
+        };
         let run_new_window = || {
             let mut tmux = self.new_window_command(
                 &window_name,
@@ -4189,7 +4241,7 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.args,
                 spec.cwd,
                 spec.env,
-            );
+            )?;
             if stamped {
                 for (option, value) in [
                     (WINDOW_SESSION_OPTION, session_id),
@@ -4221,8 +4273,6 @@ impl<M: TmuxCompatible> Server<M> {
             std::thread::sleep(std::time::Duration::from_millis(250));
             output = run_new_window()?;
         }
-        // A server that does not answer is found by the window name — the only
-        // handle that path has either way.
         let pane_id = if M::ONE_SHOT_SPAWN_ANSWERS {
             new_window_pane_id(&output.stdout)
         } else {
@@ -4263,12 +4313,45 @@ impl<M: TmuxCompatible> Server<M> {
                 self.socket()
             );
         }
+        let pane_id = if M::ONE_SHOT_SPAWN_ANSWERS {
+            pane_id
+        } else {
+            self.new_named_pane(spec, &window_name, &before)?
+        };
         // What stamping does after writing a stamp. A server without window
-        // options writes none (ADR-13), and its windows are found by name.
+        // options writes none (ADR-13).
         if stamped {
             let _ = self.retire_duplicate_windows(session_id, spec.role);
         }
         Ok(pane_id)
+    }
+
+    /// The pane `new-window` just made on a server that does not answer `-P`:
+    /// the one under `window_name` that `before` did not list. psmux does not
+    /// reuse pane ids within a server's life, so a new id is the new window,
+    /// and a namesake — allowed, and unstamped there (ADR-13) — is never taken
+    /// for it. No new id means the window already closed with its program.
+    fn new_named_pane(
+        &self,
+        spec: &WindowSpec<'_>,
+        window_name: &str,
+        before: &[(String, bool)],
+    ) -> Result<String> {
+        let after = self
+            .window_panes(window_name)
+            .with_context(|| format!("list the windows named {window_name} after adding one"))?;
+        let mut fresh = after
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| !before.iter().any(|(old, _)| old == id));
+        match (fresh.next(), fresh.next()) {
+            (Some(id), None) => Ok(id),
+            (None, _) => Err(self.spawn_exited(spec, window_name)),
+            (Some(_), Some(_)) => bail!(
+                "more than one window named {window_name} appeared while creating one, so \
+                 which is this session's cannot be told"
+            ),
+        }
     }
 
     /// The `new-window` command list [`Self::create_local_window`] runs: the
@@ -4283,8 +4366,8 @@ impl<M: TmuxCompatible> Server<M> {
         args: &[String],
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
-    ) -> Command {
-        let mut tmux = self.mux_command(&["new-window", "-d"]);
+    ) -> Result<Command> {
+        let mut tmux = self.mux_command(&["new-window", "-d"])?;
         if M::ONE_SHOT_SPAWN_ANSWERS {
             tmux.arg("-a");
         }
@@ -4295,7 +4378,7 @@ impl<M: TmuxCompatible> Server<M> {
         if let Some(dir) = cwd {
             tmux.args(["-c", &dir.to_string_lossy()]);
         }
-        M::push_window_program(&mut tmux, window_name, command, args, env);
+        M::push_window_program(&mut tmux, window_name, command, args, env)?;
 
         // Chained into the same command list as the creation, not sent after
         // it — `birth_options` has the measurement. This path passes `-d`, so
@@ -4308,7 +4391,7 @@ impl<M: TmuxCompatible> Server<M> {
                 tmux.args([key, value]);
             }
         }
-        tmux
+        Ok(tmux)
     }
 
     /// Leave one window carrying `session_id`'s `role` stamp, and say which one
@@ -4355,6 +4438,7 @@ impl<M: TmuxCompatible> Server<M> {
         }
         let output = self
             .mux_command(&["list-windows", "-t", &self.session, "-F", RETIRE_FORMAT])
+            .ok()?
             .output()
             .ok()?;
         if !output.status.success() {
@@ -4387,7 +4471,7 @@ impl<M: TmuxCompatible> Server<M> {
     fn kill_window_at(&self, target: &str) -> Result<()> {
         let (verb, target) = self.kill_command(target);
         let output = self
-            .mux_command(&[verb, "-t", &target])
+            .mux_command(&[verb, "-t", &target])?
             .output()
             .context("Failed to run tmux kill-window")?;
         if !output.status.success() {
@@ -4594,8 +4678,8 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
-/// Whether a kill's failure says its target is already gone — named by its
-/// pane or by its name — which is what the kill wanted.
+/// Whether a failure says its target is already gone — named by its pane or by
+/// its name: what a kill wanted, and what an adopt must not paper over.
 fn already_gone(error: &str) -> bool {
     error.contains("can't find window")
         || error.contains("window not found")
@@ -4667,8 +4751,8 @@ mod tests {
             command: &str,
             args: &[String],
             _: &HashMap<String, String>,
-        ) -> String {
-            server.posix_window_command(window_name, command, args)
+        ) -> Result<String> {
+            Ok(server.posix_window_command(window_name, command, args))
         }
         fn push_window_program(
             cmd: &mut Command,
@@ -4676,8 +4760,9 @@ mod tests {
             command: &str,
             args: &[String],
             env: &HashMap<String, String>,
-        ) {
+        ) -> Result<()> {
             push_posix_window_program(cmd, command, args, env);
+            Ok(())
         }
         fn paste_args(_: &str, _: &str) -> Vec<String> {
             Vec::new()
@@ -4949,6 +5034,67 @@ mod tests {
         );
     }
 
+    /// Runs [`LOCATE_BODY`] against one candidate directory holding a
+    /// listening socket bound by this process, with a stand-in multiplexer
+    /// whose `list-sessions` succeeds once `ready` exists.
+    #[cfg(target_os = "linux")]
+    fn locate_beside_a_bound_socket(answer_after: Option<std::time::Duration>) -> ServerFound {
+        let root = tempfile::tempdir().expect("tempdir");
+        // SAFETY: `getuid` cannot fail and touches no memory.
+        let uid = unsafe { libc::getuid() };
+        let sockets = root.path().join(format!("tmux-{uid}"));
+        std::fs::create_dir_all(&sockets).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(sockets.join("located")).unwrap();
+        let ready = root.path().join("ready");
+        let mux = root.path().join("mux");
+        std::fs::write(&mux, format!("#!/bin/sh\ntest -e '{}'\n", ready.display())).unwrap();
+        std::fs::set_permissions(&mux, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let script = locate_script(
+            &[SocketDir::Dir(root.path().display().to_string())],
+            "located",
+        );
+        let starting = answer_after.map(|delay| {
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                std::fs::write(ready, "").unwrap();
+            })
+        });
+        let out = std::process::Command::new("sh")
+            .args(["-c", &script, "sh"])
+            .arg(&mux)
+            .arg("located")
+            .output()
+            .expect("sh");
+        if let Some(starting) = starting {
+            starting.join().unwrap();
+        }
+        parse_located(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    /// The race behind a cold start's `not starting a second server beside
+    /// it`: every relaunch after a reboot looks for the server at once, and a
+    /// peer's `new-session` binds the socket between this search asking it and
+    /// looking for who is bound to it. A server still starting is not one out
+    /// of reach.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_server_that_binds_while_the_search_runs_is_found_not_stuck() {
+        assert_eq!(
+            locate_beside_a_bound_socket(Some(std::time::Duration::from_millis(300))),
+            ServerFound::Answered(0)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bound_socket_that_never_answers_is_still_refused() {
+        assert!(matches!(
+            locate_beside_a_bound_socket(None),
+            ServerFound::Bound { .. }
+        ));
+    }
+
     #[test]
     fn build_shell_command_simple() {
         let cmd = TestBackend::build_shell_command("claude", &[]);
@@ -5037,6 +5183,7 @@ mod tests {
         let argv: Vec<String> = backend
             .transport
             .tmux_command("s", &[])
+            .expect("command")
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -5147,6 +5294,7 @@ mod tests {
                 &[],
                 &HashMap::new(),
             )
+            .expect("a shell pane's command")
         };
         let windows = TestBackend::for_host(&windows_host("tmux"));
         assert_eq!(shell_pane(&windows), "powershell");
@@ -5273,6 +5421,46 @@ mod tests {
         assert_eq!(
             backend.login_wrap_for_remote("claude"),
             "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
+        );
+    }
+
+    /// The commands thurbox runs on a host itself resolve the multiplexer on
+    /// the `PATH` its probe found it on, as the window command does (#1461):
+    /// a Mac's Homebrew tmux is on the login `PATH`, not sshd's.
+    #[test]
+    fn a_hosts_multiplexer_commands_carry_its_login_path() {
+        let host = crate::session::HostDef {
+            name: "mux-command-path".into(),
+            destination: "me@mac".into(),
+            path_prepend: vec!["/opt/x/bin".into()],
+            ..Default::default()
+        };
+        crate::agent::host_path::seed(
+            &host,
+            Some(crate::agent::host_path::HostEnv {
+                home: Some("/Users/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/opt/homebrew/bin".into(), "/usr/bin".into()]),
+                sh_login: None,
+                multiplexers: vec![crate::session::Multiplexer::Tmux],
+            }),
+        );
+        let backend = TestBackend::for_host(&host);
+        let argv: Vec<String> = backend
+            .mux_command(&["-V"])
+            .expect("command")
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let line = argv.join(" ");
+        let assignment = "PATH=/opt/x/bin:/opt/homebrew/bin:/usr/bin; export PATH; ";
+        assert!(
+            line.contains(&format!("{assignment}exec")),
+            "the multiplexer command does not set the host's PATH: {line}"
+        );
+        assert!(
+            line.ends_with(&format!("sh tmux -L {} -V", backend.socket())),
+            "the multiplexer runs through the PATH-setting sh: {line}"
         );
     }
 
@@ -6386,7 +6574,8 @@ ERROR: something ps printed
             Path::new("C:\\bin\\thurbox-cli.exe"),
             &["automation".to_string(), "tick".to_string()],
             std::time::Duration::from_secs(30),
-        );
+        )
+        .expect("the keeper fits a Windows command line");
         let encoded = program
             .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
             .expect("an explicit PowerShell launch");

@@ -441,8 +441,8 @@ pub struct Terminals {
     /// Panes found by window name, per backend: `tb-<name>` → pane id.
     ///
     /// The legacy resolution path: rows persisted before local spawns recorded
-    /// their pane id (and psmux spawns, which cannot report one) carry no id of
-    /// their own, and are matched to a pane through this listing. Without it
+    /// their pane id (and psmux spawns from before they learned theirs) carry
+    /// no id of their own, and are matched to a pane through this listing. Without it
     /// such a session is real, its agent is running, and the interface says
     /// "session has no pane yet" forever. It also validates a *carried* id —
     /// see [`Self::pane_is_stale`].
@@ -625,7 +625,7 @@ impl Terminals {
     ///
     /// A row with no pane id of its own is resolved by **window name** — the
     /// legacy path for rows persisted before local spawns recorded their pane id
-    /// (and for psmux, which cannot report one). A successful name-resolved
+    /// (and psmux spawns from before they learned theirs). A successful name-resolved
     /// adoption is queued for the loop to persist, so it happens once per row.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_discovered();
@@ -2873,7 +2873,10 @@ mod tests {
         fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
             anyhow::bail!("this stub has no panes to read")
         }
-        fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+        fn create_window(
+            &self,
+            _: &crate::backend::WindowSpec<'_>,
+        ) -> anyhow::Result<crate::backend::PaneId> {
             anyhow::bail!("{}: a stub opens no windows", self.name())
         }
         fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
@@ -3083,7 +3086,10 @@ mod tests {
         fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
             anyhow::bail!("this stub has no panes to read")
         }
-        fn create_window(&self, _: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+        fn create_window(
+            &self,
+            _: &crate::backend::WindowSpec<'_>,
+        ) -> anyhow::Result<crate::backend::PaneId> {
             anyhow::bail!("{}: a stub opens no windows", self.name())
         }
         fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {

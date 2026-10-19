@@ -326,7 +326,9 @@ fn killing_a_split_window_takes_the_whole_window() {
 ///
 /// The host is a stand-in: `ssh` runs its remote command here and `psmux`
 /// is this machine's tmux, so the adapter's psmux path runs for real against
-/// a private server.
+/// a private server. Its login shell is this machine's `sh`, so the entry
+/// says it is POSIX: a Windows one's commands are quoted for `cmd.exe` and
+/// PowerShell, which `sh` cannot run.
 #[cfg(unix)]
 #[test]
 fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
@@ -415,6 +417,7 @@ fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
         name: "psmuxhost".into(),
         destination: DEST.into(),
         multiplexer: Some("psmux".into()),
+        platform: Some(thurbox::session::Platform::Posix),
         share_sessions: false,
         socket: Some(server.socket().to_string()),
         session: Some("probe".into()),
@@ -542,5 +545,34 @@ fn a_keystroke_never_answers_the_next_command() {
         "{} of 50 commands right after a keystroke were not answered with the pane typed \
          into (attempts {wrong:?})",
         wrong.len()
+    );
+}
+
+/// A pane the multiplexer reports gone is never adopted: an agent that exits
+/// at spawn leaves an id behind, and adopting it would show the session as a
+/// quiet live one with nothing in it (#1433).
+#[cfg(unix)]
+#[test]
+fn a_pane_reported_gone_is_never_adopted() {
+    use std::collections::HashMap;
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let backend = TmuxBackend::new();
+    backend.ensure_ready().expect("the backend readies");
+    let pane = backend
+        .spawn("tb-gone", "cat", &[], None, &HashMap::new(), 24, 80)
+        .expect("spawn")
+        .backend_id;
+    backend.kill(&pane).expect("kill");
+
+    let adopted = backend.adopt(&pane, 24, 80, None);
+    backend.shutdown();
+    assert!(
+        adopted.is_err(),
+        "a pane the server reported gone was adopted"
     );
 }

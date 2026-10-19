@@ -42,9 +42,8 @@ use tmux_server::TmuxServer;
 
 const SOCKET: &str = "thurbox-pane-io-routing";
 
-/// Driven directly: sharing off, so the kernel and the sweeps reach the host
-/// through its backend, and a CLI pane verb delegates to the host's own CLI
-/// (which the stand-in `ssh` refuses).
+/// Driven directly: sharing off, so the kernel, the sweeps and the CLI's pane
+/// verbs all reach the host through its backend, never its own CLI.
 const HOSTS_TOML: &str = "[[hosts]]\n\
      name = \"probehost\"\n\
      destination = \"e2e@probehost.invalid\"\n\
@@ -705,17 +704,15 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
     .expect("task run");
     assert_screen_shows(far, &far_pane, "task for the host", "task run");
 
-    // The CLI's pane verbs delegate to the host's own CLI, which the stand-in
-    // cannot reach: an honest refusal, and still nothing local.
-    assert!(
-        cli(
-            &db,
-            backends,
-            &["session", "send", &uuid, "cli for the host"]
-        )
-        .is_err(),
-        "a send the host's CLI never answered reported success"
-    );
+    // Sharing is off, so the CLI's pane verbs drive the host's window through
+    // the route's backend too, never the local namesake.
+    cli(
+        &db,
+        backends,
+        &["session", "send", &uuid, "cli for the host"],
+    )
+    .expect("cli send to the host's row");
+    assert_screen_shows(far, &far_pane, "cli for the host", "session send");
 
     // Give a mistyped delivery the Enter delay to land before reading.
     std::thread::sleep(Duration::from_millis(500));
@@ -724,6 +721,64 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
         !screen.contains("host"),
         "the local namesake received the host row's text: {screen:?}"
     );
+}
+
+/// A host with sharing off has no `thurbox-cli` of thurbox's to delegate to,
+/// so `session send`, `key` and `capture` drive its window over the route's
+/// backend, as the kernel does — without ever asking the host's CLI.
+#[test]
+fn pane_verbs_drive_a_window_on_a_host_with_sharing_off() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let (backends, far) = (&reg.cli, &reg.far);
+    let id = SessionId::default();
+    let uuid = id.to_string();
+    let pane = far.open("tb-far", &uuid, WindowRole::Agent);
+    seed_row(&db, id, "far", "ssh:probehost:rmux", &pane, "/srv/far");
+
+    cli(
+        &db,
+        backends,
+        &["session", "send", &uuid, "typed on the host", "--no-enter"],
+    )
+    .expect("send --no-enter");
+    assert_screen_shows(far, &pane, "typed on the host", "session send --no-enter");
+    cli(&db, backends, &["session", "key", &uuid, "escape"]).expect("key");
+    assert_screen_shows(far, &pane, "<escape>", "session key");
+    let captured = cli(&db, backends, &["session", "capture", &uuid]).expect("capture");
+    assert!(
+        captured["output"]
+            .as_str()
+            .is_some_and(|out| out.contains("typed on the host")),
+        "capture reads the host's pane: {captured}"
+    );
+    assert_eq!(instance.ssh_log(), "", "no verb asked the host's own CLI");
+    instance.assert_tmux_untouched("the host's verbs");
+}
+
+/// A row whose host is not in `hosts.toml` names no machine to reach, and is
+/// still refused rather than driven.
+#[test]
+fn a_pane_verb_on_an_unknown_host_is_refused() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let id = SessionId::default();
+    seed_row(&db, id, "gone", "ssh:nohost:rmux", "%0", "/srv/gone");
+    let uuid = id.to_string();
+    let refused =
+        cli(&db, &reg.cli, &["session", "send", &uuid, "nowhere"]).expect_err("send to no host");
+    assert!(refused.contains("not in hosts.toml"), "{refused}");
+    instance.assert_tmux_untouched("the refusal");
 }
 
 /// A route nothing here serves is refused by name, not typed on the local

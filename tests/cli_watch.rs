@@ -717,3 +717,48 @@ fn verify_names_the_agent_running_in_the_sessions_pane() {
         "the pane runs codex: {present}"
     );
 }
+
+/// `--verify` keeps a listing that holds no window of the row's apart from one
+/// that could not be read: the window was closed outside thurbox, so a
+/// `blocked` written for it is contradicted rather than left standing.
+#[test]
+fn verify_contradicts_an_active_state_whose_window_is_gone() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    // The server answers its listing, and holds only a stranger's window.
+    let started = env.server.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "thurbox-dev",
+        "-n",
+        "someone-else",
+        "sh",
+    ]);
+    assert!(started.status.success(), "start the server: {started:?}");
+
+    let db = env.db();
+    let id = seed_on(&db, "gone", "local-tmux");
+    let watch = env.watch(&["--json", "--verify", "--for-secs", "30"]);
+    settle();
+
+    db.set_hook_state(id, "blocked").expect("blocked");
+    let event = loop {
+        let event = watch.event("the blocked transition");
+        if event["to_state"] == Value::String("blocked".into()) {
+            break event;
+        }
+    };
+    assert_eq!(
+        event["hook_state_contradicted"],
+        Value::Bool(true),
+        "no window of this row's is on the server: {event}"
+    );
+}

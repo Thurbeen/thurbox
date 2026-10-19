@@ -114,7 +114,11 @@ using one named key for each arrow or navigation sequence, folds
 env + command into **one** PowerShell script (`psmux_window_powershell`)
 launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`,
 `shell::powershell_launcher`) — never a bare script, which psmux ≥ 3.4.0 runs
-through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH —
+through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH, and
+refused with `CommandLineTooLong` past `shell::WINDOWS_CMD_LINE_MAX` (8191) —
+quotes every one-shot command for a `cmd.exe` or PowerShell login shell rather
+than POSIX (`TmuxTransport::on_windows` → `shell::launch_on_windows`: plain
+words as they are, anything else as an encoded PowerShell script; #1460) —
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /
@@ -132,7 +136,10 @@ path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D)
 psmux has **no `remain-on-exit`**, so an agent window closes with its agent
 and reads `Missing` — which is also why `create_window` looks for the window
 again after `SPAWN_SETTLE` and refuses one that is already gone rather than
-report it created. The agent window's PowerShell ends by piping
+report it created. psmux answers no `-P`, so the local spawn learns its pane
+id by diffing the `tb-<name>` panes listed before and after `new-window`
+(psmux never reuses one), and the check matches that id only: a live
+namesake never vouches for a dead new window (#1456). The agent window's PowerShell ends by piping
 `LASTEXITCODE` into `thurbox-cli session exited`, which records an `exited`
 event with the status and the pane tail. Each repairer relaunch is logged as
 `relaunched`, and three within ten minutes hold the next one back and mark
@@ -290,11 +297,14 @@ session), never on the loop, ADR-P12).
   `PATH` on the pane (`tmux_compat::server::path_prefix_args`), so the host's login `PATH`
   (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
   included, bounded by `timeout` and a 15 s kill) is assigned in front of every
-  POSIX script `host_cli` runs and inside `login_wrap_for_remote`: hosts.toml
+  POSIX script `host_cli` runs, inside `login_wrap_for_remote`, and in front of
+  every multiplexer command and `shell_command` script (`TmuxTransport::with_path`,
+  set per command by `Server::host_transport` — tmux and rmux alike, #1461): hosts.toml
   `path_prepend`, then the login shells', then the launcher's, de-duplicated.
-  No answer = no change plus a warning. Tests never probe: an unseeded host is
+  No answer = no change plus a warning; a later successful picker probe
+  (`record_probe`) replaces a cached failure. Tests never probe: an unseeded host is
   "no answer" under `cfg(test)`; seed one with `host_path::seed`.
-  The same probe names each multiplexer on that merged `PATH` (`@mux` lines,
+  The same probe names each multiplexer on that merged `PATH`, `path_prepend` included (`@mux` lines,
   `HostEnv::multiplexers`): the new-session picker offers only those
   (`host_path::multiplexers_found`: never waited for, asked only while the
   flow is open, its own cache re-asked after `MUX_TTL`; `seed_multiplexers`
@@ -340,7 +350,9 @@ session), never on the loop, ADR-P12).
   pane-option status channel — is the **legacy path** for a host that cannot
   be delegated to (no artifact, no network, a host schema older than ours that
   provisioning cannot upgrade, `share_sessions = false`); `session create` then reports `sharing` and `session sync --adopt`
-  registers such rows on the host later. `session signal` also sets the pane
+  registers such rows on the host later. `session send`/`key`/`capture` on such
+  a host drive its window over the transport through the registry (ADR-30)
+  instead of refusing. `session signal` also sets the pane
   option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
   host's (`session restart --if-missing`). A fork stays on the legacy path.
   Docs: `docs/FEATURES.md` → Shared sessions.

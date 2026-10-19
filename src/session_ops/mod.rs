@@ -139,7 +139,8 @@ pub fn send_text_confirmed(
     } else {
         COMPOSER_WAIT
     };
-    let before = composer::wait_while(backend, &pane, Composer::Holding, wait);
+    let shell = composer::is_shell(backend, &pane);
+    let before = composer::wait_while(backend, &pane, shell, Composer::Holding, wait);
     if before == Composer::Holding && !force {
         return Ok(SendOutcome::ComposerBusy);
     }
@@ -153,7 +154,7 @@ pub fn send_text_confirmed(
     send_text_with_status(db, backends, session, text, false)?;
     let typed = composer::wait_for_sent(backend, &pane, text, SUBMIT_WAIT);
     press_enter(db, backend, &pane, session)?;
-    let after = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    let after = composer::wait_while(backend, &pane, shell, Composer::Holding, SUBMIT_WAIT);
     let unsent = after == Composer::Holding
         && composer::read_line(backend, &pane).is_some_and(|l| composer::ends_with_sent(&l, text));
     if !unsent {
@@ -167,7 +168,7 @@ pub fn send_text_confirmed(
         });
     }
     press_enter(db, backend, &pane, session)?;
-    let retried = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    let retried = composer::wait_while(backend, &pane, shell, Composer::Holding, SUBMIT_WAIT);
     Ok(SendOutcome::Typed {
         submitted: match retried {
             Composer::Empty => Some(true),
@@ -555,13 +556,10 @@ pub fn agent_launch_plan(
     session: Option<&crate::sync::SharedSession>,
 ) -> Result<LaunchPlan, String> {
     let registry = crate::agent::agent_config::load_or_seed();
-    let def = registry.get(agent).cloned().ok_or_else(|| {
-        let known: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
-        format!(
-            "no agent named '{agent}' in agents.toml; known agents: {}",
-            known.join(", ")
-        )
-    })?;
+    let def = registry
+        .get(agent)
+        .cloned()
+        .ok_or_else(|| unknown_agent(&registry, agent))?;
     let host = match session {
         Some(s) => resolve_host(&s.backend_type).ok_or_else(|| {
             format!(
@@ -571,6 +569,7 @@ pub fn agent_launch_plan(
         })?,
         None => None,
     };
+    let def = shell_for(def, spawn::platform_of(host.as_ref()));
     let mut config = SessionConfig {
         session_id: session.map(|s| s.id),
         agent_session_id: session.and_then(|s| s.agent_session_id.clone()),
@@ -710,7 +709,8 @@ pub fn fork_session_headless(
 
     let codex_builtin = source.agent == "codex"
         && recipe.is_none()
-        && resolve_agent_def(Some("codex")).resume_args == ["resume", "{id}"];
+        && resolve_agent_def(Some("codex"), crate::session::Platform::local())
+            .is_ok_and(|d| d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
             db.get_session_meta(source.id, "thurbox.codex_conversation_id")
@@ -802,19 +802,64 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
     }
 }
 
-pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::AgentDef {
+/// The agent to launch: the one named, or the registry's default when none is
+/// (`None` or empty). A name the registry does not define is an error, never
+/// the default — on a shared host the host's refusal is the caller's only sign
+/// that the agent exists on one side and not the other (#1454).
+///
+/// `platform` is the machine the session runs on, which the registry — this
+/// machine's — knows nothing about: see [`shell_for`], which
+/// [`agent_launch_plan`] applies too, so the plan matches the launch.
+pub(crate) fn resolve_agent_def(
+    requested: Option<&str>,
+    platform: crate::session::Platform,
+) -> Result<crate::session::AgentDef, String> {
     let registry = crate::agent::agent_config::load_for_launch();
-    requested
-        .filter(|n| !n.is_empty())
-        .and_then(|n| registry.get(n))
-        .or_else(|| registry.default_agent())
-        .cloned()
-        .unwrap_or_else(|| {
-            crate::agent::agent_config::builtin_registry()
-                .default_agent()
-                .cloned()
-                .expect("built-in registry always has a default agent")
-        })
+    let def = match requested.filter(|n| !n.is_empty()) {
+        Some(name) => registry
+            .get(name)
+            .cloned()
+            .ok_or_else(|| unknown_agent(&registry, name))?,
+        None => default_agent_def(&registry),
+    };
+    Ok(shell_for(def, platform))
+}
+
+/// The stock `shell` entry, spelled for whichever platform seeded it, becomes
+/// `platform`'s own shell (#1458): `bash -i` sent to a Windows host starts WSL
+/// rather than a Windows shell. Only the command and args are swapped, and only
+/// while they are still a stock pair — a `shell` the user changed is theirs.
+fn shell_for(
+    mut def: crate::session::AgentDef,
+    platform: crate::session::Platform,
+) -> crate::session::AgentDef {
+    let stock = crate::session::Platform::ALL.map(crate::shell::shell_agent_def);
+    if stock
+        .iter()
+        .any(|s| def.name == s.name && def.command == s.command && def.args == s.args)
+    {
+        let own = crate::shell::shell_agent_def(platform);
+        def.command = own.command;
+        def.args = own.args;
+    }
+    def
+}
+
+fn default_agent_def(registry: &crate::session::AgentRegistry) -> crate::session::AgentDef {
+    registry.default_agent().cloned().unwrap_or_else(|| {
+        crate::agent::agent_config::builtin_registry()
+            .default_agent()
+            .cloned()
+            .expect("built-in registry always has a default agent")
+    })
+}
+
+fn unknown_agent(registry: &crate::session::AgentRegistry, name: &str) -> String {
+    let known: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
+    format!(
+        "no agent named '{name}' in agents.toml; known agents: {}",
+        known.join(", ")
+    )
 }
 
 /// Placeholder in an [`AgentDef`](crate::session::AgentDef)'s arg groups,

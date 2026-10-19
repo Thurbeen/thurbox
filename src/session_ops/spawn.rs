@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::session::{ExtraRepo, HostDef, SessionConfig, SessionId};
+use crate::session::{ExtraRepo, HostDef, Platform, SessionConfig, SessionId};
 use crate::storage::Database;
 use crate::sync::{SharedSession, SharedWorktree};
 
@@ -290,7 +290,7 @@ fn spawn(
     let recipe = super::launch_recipe(&req);
     let mut agent_def = match &recipe {
         Some(r) => super::recipe_agent_def(r),
-        None => super::resolve_agent_def(req.agent.as_deref()),
+        None => super::resolve_agent_def(req.agent.as_deref(), platform_of(host.as_ref()))?,
     };
     let agent_name = agent_def.name.clone();
 
@@ -600,6 +600,7 @@ fn launch_window(
             cwd: Some(cwd),
             env,
         })
+        .map(String::from)
         .map_err(
             |e| match crate::agent::preflight::is_missing_dependency(&e) {
                 // Already a sentence naming the binary (or the `ssh`/`wsl.exe`
@@ -1305,6 +1306,11 @@ fn strip_literal_signals(args: Vec<String>) -> (Vec<String>, Vec<String>) {
         }
     }
     (kept, dropped)
+}
+
+/// The platform a session on `host` runs on — this machine's when local.
+pub(crate) fn platform_of(host: Option<&HostDef>) -> Platform {
+    host.map_or_else(Platform::local, HostDef::platform)
 }
 
 /// Adapt an agent def for launch on an optional remote host: rewrite/ship its
@@ -2064,24 +2070,52 @@ mod tests {
     }
 
     #[test]
-    fn resolve_agent_def_derives_name_with_fallback() {
+    fn resolve_agent_def_falls_back_only_when_none_is_named() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         // An explicit, seeded agent wins and its name round-trips.
-        assert_eq!(super::super::resolve_agent_def(Some("codex")).name, "codex");
-        // Empty/None/unknown fall back to the registry default.
-        assert_eq!(
-            super::super::resolve_agent_def(Some("")).name,
-            DEFAULT_AGENT_NAME
+        let resolve = |n| super::super::resolve_agent_def(n, Platform::local()).map(|d| d.name);
+        assert_eq!(resolve(Some("codex")).unwrap(), "codex");
+        // Empty/None fall back to the registry default; an unknown name is
+        // refused, naming what is defined.
+        assert_eq!(resolve(Some("")).unwrap(), DEFAULT_AGENT_NAME);
+        assert_eq!(resolve(None).unwrap(), DEFAULT_AGENT_NAME);
+        let err = resolve(Some("no-such-agent")).unwrap_err();
+        assert!(
+            err.starts_with("no agent named 'no-such-agent' in agents.toml; known agents: "),
+            "{err}"
         );
-        assert_eq!(
-            super::super::resolve_agent_def(None).name,
-            DEFAULT_AGENT_NAME
-        );
-        assert_eq!(
-            super::super::resolve_agent_def(Some("no-such-agent")).name,
-            DEFAULT_AGENT_NAME
-        );
+        assert!(err.contains("codex"), "{err}");
+    }
+
+    /// #1458: the stock `shell` follows the session's host, in both
+    /// directions, while one the user changed is launched as written.
+    #[test]
+    fn the_stock_shell_follows_the_host_platform() {
+        use crate::session::platform::simulate_local;
+        let command = |p| {
+            let d = super::super::resolve_agent_def(Some("shell"), p).unwrap();
+            format!("{} {}", d.command, d.args.join(" "))
+        };
+        for built_for in Platform::ALL {
+            simulate_local(built_for, || {
+                let temp = tempfile::TempDir::new().unwrap();
+                let _guard = crate::paths::TestPathGuard::new(temp.path());
+                assert_eq!(command(Platform::Windows), "powershell -NoLogo");
+                assert_eq!(command(Platform::Posix), "bash -i");
+            });
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let agents = crate::agent::agent_config::agents_config_path().unwrap();
+        std::fs::create_dir_all(agents.parent().unwrap()).unwrap();
+        std::fs::write(
+            &agents,
+            "[[agents]]\nname = \"shell\"\ncommand = \"bash\"\nargs = [\"-l\"]\n",
+        )
+        .unwrap();
+        assert_eq!(command(Platform::Windows), "bash -l");
     }
 
     #[test]

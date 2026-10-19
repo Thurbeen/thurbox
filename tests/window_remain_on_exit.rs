@@ -351,7 +351,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     let listed = tmux(&["list-windows", "-a", "-F", "#{pane_id}"]);
     let alive = String::from_utf8_lossy(&listed.stdout)
         .lines()
-        .any(|line| line == pane);
+        .any(|line| line == pane.as_str());
 
     assert!(
         alive,

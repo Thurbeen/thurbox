@@ -37,6 +37,10 @@
 #                   THURBOX_* env asserted intact) and thurbox.exe boots to a
 #                   frame that shows it. Scoped via THURBOX_SOCKET (needs a
 #                   deploy of a build that supports it). Default agent: claude
+#   cmd-login-test  `test`, then `session delete --force` with share_sessions
+#                   = false, with every ssh command thurbox-cli sends run
+#                   through `cmd.exe /c` — Windows OpenSSH's default login
+#                   shell — whatever the host's own DefaultShell is (#1460)
 #   transfer-test   ship a 1 MiB binary to the host the way session sharing
 #                   provisions its thurbox-cli, and check it arrived intact
 #                   (tests/windows_host_transfer.rs; fails rather than hangs)
@@ -101,8 +105,11 @@ SSH_OPTS=(
   -o ControlMaster=auto -o "ControlPath=$CM_DIR/%C" -o ControlPersist=60
   -o ConnectTimeout=8
 )
+# Resolved once: `cmd-login-test` puts a stand-in `ssh` first on PATH for
+# thurbox-cli, and the harness's own calls must not go through it.
+SSH_BIN="$(command -v ssh)"
 # shellcheck disable=SC2029 # client-side expansion builds the remote command
-ssh_host() { ssh "${SSH_OPTS[@]}" "$DEST" "$@"; }
+ssh_host() { "$SSH_BIN" "${SSH_OPTS[@]}" "$DEST" "$@"; }
 scp_host() { scp -q "${SSH_OPTS[@]}" "$@"; }
 # Probe-style query: remote stdout, CR-stripped, empty (not fatal) on failure.
 remote_out() { ssh_host "$@" 2> /dev/null | tr -d '\r' || true; }
@@ -337,6 +344,7 @@ cmd_test() {
     echo "socket = \"$LAB_SOCKET\""
     echo "session = \"$LAB_SOCKET\""
     echo "worktrees_dir = \"$LAB_DIR/worktrees\""
+    [ -n "${LAB_HOSTS_EXTRA:-}" ] && echo "$LAB_HOSTS_EXTRA"
   } > "$tmp/config/hosts.toml"
   cat > "$tmp/config/agents.toml" <<EOF
 default = "shell"
@@ -347,11 +355,11 @@ EOF
 
   log "creating an ssh:lab session via thurbox-cli (isolated DB)"
   export THURBOX_CONFIG_DIR="$tmp/config" THURBOX_DATA_DIR="$tmp/data"
-  local result backend
+  local result backend id
   result="$(e2e_create_and_get \
     --name "$E2E_NAME" --host lab --repo-path "$repo" \
     --agent shell --worktree-branch "$E2E_BRANCH" --base-branch main)" || exit 1
-  read -r _ backend <<<"$result"
+  read -r id backend <<<"$result"
 
   # Confirm the artifacts really live on the machine, inside our private server.
   local windows worktrees
@@ -359,9 +367,60 @@ EOF
     | tr -d '\r' | grep -c "^tb-$E2E_NAME\$" || true)"
   worktrees="$(ssh_host "git -C $repo worktree list" 2> /dev/null | grep -c "$E2E_NAME" || true)"
 
-  e2e_assert "ssh:lab" "$backend" "$windows" "$worktrees" \
+  e2e_assert "ssh:lab:$MUX" "$backend" "$windows" "$worktrees" \
     "remote SSH session created on $DEST ($HOST_OS)" \
-    "expected ssh:lab + a remote window + a remote worktree"
+    "expected ssh:lab:$MUX + a remote window + a remote worktree" || return 1
+  [ -n "${LAB_FORCE_DELETE:-}" ] || return 0
+
+  log "force-deleting it (share_sessions = false: thurbox-cli tears down itself)"
+  local deleted
+  deleted="$(e2e_cli session delete --force "$id")" || die "session delete failed"
+  windows="$(ssh_host "$MUX -L $LAB_SOCKET list-windows -t $LAB_SOCKET -F \"#{window_name}\"" 2> /dev/null \
+    | tr -d '\r' | grep -c "^tb-$E2E_NAME\$" || true)"
+  log "delete said: $deleted"
+  log "remote windows left = $windows"
+  if [ "$windows" -eq 0 ] && ! printf '%s' "$deleted" | grep -q '"remote_teardown_owed":true'; then
+    pass "force delete tore the session down on $DEST"
+  else
+    fail "expected no window left and no remote teardown owed"
+  fi
+}
+
+# A Windows host whose OpenSSH login shell is cmd.exe, the default, without
+# changing the host: a stand-in `ssh` first on thurbox-cli's PATH joins the
+# remote words as ssh does and hands the line to `cmd.exe /c`, as sshd does.
+# The line rides as a PowerShell literal and goes to cmd.exe verbatim through
+# ProcessStartInfo — PowerShell 5.1's own native-argument quoting would alter
+# it. Handles are inherited, so stdin, stdout, stderr and the status are
+# cmd.exe's.
+cmd_cmd_login_test() {
+  require_windows
+  local bin="$WORKDIR/cmd-login-bin"
+  mkdir -p "$bin"
+  cat > "$bin/ssh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+opts=()
+while [ $# -gt 0 ] && [ "$1" != "$CMD_LOGIN_DEST" ]; do opts+=("$1"); shift; done
+[ $# -gt 0 ] || exec "$CMD_LOGIN_SSH" "${opts[@]}"
+shift
+[ $# -gt 0 ] || exec "$CMD_LOGIN_SSH" "${opts[@]}" "$CMD_LOGIN_DEST"
+line="$*"
+script="\$ProgressPreference = 'SilentlyContinue'
+\$s = New-Object System.Diagnostics.ProcessStartInfo
+\$s.FileName = 'cmd.exe'
+\$s.Arguments = '/c ' + '${line//\'/\'\'}'
+\$s.UseShellExecute = \$false
+\$p = [System.Diagnostics.Process]::Start(\$s)
+\$p.WaitForExit()
+exit \$p.ExitCode"
+encoded="$(printf '%s' "$script" | iconv -f utf-8 -t utf-16le | base64 -w0)"
+exec "$CMD_LOGIN_SSH" "${opts[@]}" "$CMD_LOGIN_DEST" \
+  powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand "$encoded"
+SHIM
+  chmod +x "$bin/ssh"
+  export CMD_LOGIN_SSH="$SSH_BIN" CMD_LOGIN_DEST="$DEST" PATH="$bin:$PATH"
+  LAB_HOSTS_EXTRA="share_sessions = false" LAB_FORCE_DELETE=1 cmd_test
 }
 
 cmd_clean() {
@@ -663,6 +722,7 @@ case "$VERB" in
   deploy)     cmd_deploy ;;
   run)        cmd_run ;;
   native-test) cmd_native_test "$@" ;;
+  cmd-login-test) cmd_cmd_login_test ;;
   transfer-test) cmd_transfer_test ;;
   test-suite) cmd_test_suite ;;
   wsl-setup)  cmd_wsl_setup "$@" ;;

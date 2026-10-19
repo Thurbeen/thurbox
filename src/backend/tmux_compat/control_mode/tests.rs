@@ -1457,6 +1457,7 @@ impl ThrowawayServer {
                     "24",
                 ],
             )
+            .expect("command")
             .output();
         match started {
             Ok(out) if out.status.success() => Some(Self { socket }),
@@ -1525,12 +1526,14 @@ fn a_control_client_can_skip_flow_control_on_a_server_that_rejects_it() {
         fn drop(&mut self) {
             let _ = TmuxTransport::local("rmux")
                 .tmux_command(&self.0, &["kill-server"])
+                .expect("command")
                 .output();
         }
     }
     let _cleanup = Cleanup(socket.clone());
     let started = transport
         .tmux_command(&socket, &["new-session", "-d", "-s", "probe"])
+        .expect("command")
         .output()
         .expect("start server");
     assert!(started.status.success(), "{started:?}");
@@ -1574,6 +1577,7 @@ impl Drop for ThrowawayServer {
     fn drop(&mut self) {
         let _ = TmuxTransport::local("tmux")
             .tmux_command(&self.socket, &["kill-server"])
+            .expect("command")
             .output();
         // tmux does not unlink its socket when the server exits, so a killed
         // server still leaves a dead socket file in the shared socket
@@ -1727,6 +1731,7 @@ fn a_captured_line_that_reads_like_the_protocol_is_only_content() {
                 &format!("sh -c 'cat {}; exec sleep 100'", script.display()),
             ],
         )
+        .expect("command")
         .output()
         .expect("new-window");
     let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();

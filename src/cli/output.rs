@@ -107,6 +107,47 @@ impl CommandOutput {
         self
     }
 
+    /// Apply `--fields` to a labelled list: the one place the column set is
+    /// resolved, so the text table and the TOON table cannot disagree.
+    ///
+    /// A field no row carries is refused rather than shown as a column of
+    /// blanks — a typo would otherwise read as "every session lacks this". With
+    /// no rows there is nothing to check against, and nothing to show either.
+    /// An empty set (`all`) keeps the command's own full rendering. Outputs that
+    /// are not a labelled list have no columns, so the flag leaves them alone.
+    pub fn select_fields(&mut self, fields: Vec<String>) -> Result<(), String> {
+        let (Some(label), Some(rows)) = (&self.agent.label, self.json.as_array()) else {
+            return Ok(());
+        };
+        let objects: Vec<_> = rows.iter().filter_map(Value::as_object).collect();
+        if let Some(unknown) = fields
+            .iter()
+            .find(|f| !objects.is_empty() && !objects.iter().any(|o| o.contains_key(*f)))
+        {
+            let mut known: Vec<&str> = objects
+                .iter()
+                .flat_map(|o| o.keys().map(String::as_str))
+                .collect();
+            known.sort_unstable();
+            known.dedup();
+            return Err(format!(
+                "unknown field '{unknown}' for {label}; known: {}",
+                known.join(",")
+            ));
+        }
+        if !fields.is_empty() && !objects.is_empty() {
+            let headers: Vec<String> = fields.iter().map(|f| f.to_uppercase()).collect();
+            let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+            let cells: Vec<Vec<String>> = objects
+                .iter()
+                .map(|o| fields.iter().map(|f| cell(o.get(f))).collect())
+                .collect();
+            self.human = table(&headers, &cells);
+        }
+        self.agent.fields = fields;
+        Ok(())
+    }
+
     /// Name the collection a *document* wraps, without trimming its fields.
     ///
     /// For an answer that is an object carrying a list among other facts: the
@@ -385,6 +426,17 @@ fn cap_strings(value: &Value, limit: usize) -> Value {
     }
 }
 
+/// One JSON value as a text-table cell: a string bare, an absent or null value
+/// as `-` (as [`dash`] does for the hand-built tables), anything else as JSON.
+fn cell(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => "-".to_string(),
+        Some(Value::String(s)) if s.is_empty() => "-".to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
 /// Render an aligned, left-justified text table: a header row followed by data
 /// rows, columns padded to the widest cell, two-space gutters, no trailing
 /// whitespace. Returns headers only when `rows` is empty (callers usually print
@@ -561,6 +613,47 @@ mod tests {
         );
         // The dropped field is still in --json: trimming is the agent view only.
         assert!(Format::Json.render(&out).contains("\"extra\""));
+    }
+
+    #[test]
+    fn selected_fields_drive_the_text_table_with_absent_values_dashed() {
+        let mut out = CommandOutput::new(
+            json!([{ "name": "one", "branch": null }, { "name": "two", "branch": "main" }]),
+            "default table",
+        )
+        .list("sessions", &["name"]);
+        out.select_fields(vec!["branch".into(), "name".into()])
+            .expect("both fields are carried");
+        assert_eq!(
+            Format::Human.render(&out),
+            "BRANCH  NAME\n-       one\nmain    two"
+        );
+    }
+
+    #[test]
+    fn selecting_all_keeps_the_commands_own_text_table() {
+        let mut out = CommandOutput::new(json!([{ "name": "one" }]), "default table")
+            .list("sessions", &["name"]);
+        out.select_fields(Vec::new()).expect("all is always valid");
+        assert_eq!(Format::Human.render(&out), "default table");
+        assert!(out.agent.fields.is_empty());
+    }
+
+    #[test]
+    fn an_empty_list_has_no_rows_to_refuse_a_field_against() {
+        let mut out =
+            CommandOutput::new(json!([]), "No active sessions.").list("sessions", &["name"]);
+        out.select_fields(vec!["anything".into()])
+            .expect("nothing to check against");
+        assert_eq!(Format::Human.render(&out), "No active sessions.");
+    }
+
+    #[test]
+    fn fields_leave_an_output_that_is_not_a_labelled_list_alone() {
+        let mut out = CommandOutput::new(json!({ "id": "a" }), "id: a");
+        out.select_fields(vec!["colour".into()])
+            .expect("a record has no columns to refuse");
+        assert_eq!(Format::Human.render(&out), "id: a");
     }
 
     #[test]

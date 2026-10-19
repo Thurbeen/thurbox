@@ -5,7 +5,8 @@
 //! session created by v2 had a running agent, a real tmux window, and an
 //! interface insisting it had "no pane yet". Local spawns record their pane id
 //! now, but the name path remains the legacy ramp for rows persisted before
-//! that (and for psmux, which cannot report one), so it stays under test.
+//! that (and psmux spawns from before they learned theirs), so it stays under
+//! test.
 //!
 //! Driven against a real tmux server on a private socket, because the thing under
 //! test is precisely the round trip: a window exists, its name is derivable from

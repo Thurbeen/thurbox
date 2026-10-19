@@ -124,17 +124,14 @@ resume_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}", "--co
 new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
 "#;
 
-/// The `shell` built-in, spelled for the platform's own interactive shell.
+/// The `shell` built-in as seeded, around this machine's
+/// [`crate::shell::shell_agent_def`] — which a session on a host of the other
+/// platform is given instead when its entry is still this stock one
+/// (`session_ops::resolve_agent_def`).
 ///
 /// Split out of the seed document because it is the one entry whose `command`
-/// is not the same string everywhere: this repo supports native Windows, where
-/// the multiplexer is psmux and `bash` is not the shell.
-///
-/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a pane
-/// executes what is sent to it but renders no prompt and no echo, which starves
-/// anything reading the screen to decide whether the session is ready — the
-/// pane looks blank and working at the same time.
-#[cfg(not(windows))]
+/// is not the same string everywhere, and the seeded file has to say what will
+/// actually launch here.
 const SHELL_AGENT_TOML: &str = r#"
 # A plain interactive shell. The one built-in that is not a coding agent: it
 # exists so a session can be *anything* — you run whatever you like in it, and
@@ -142,33 +139,25 @@ const SHELL_AGENT_TOML: &str = r#"
 # resume/fork groups because a shell has no conversation to resume: restarting
 # one replays this recipe in the same directory (its history and cwd live on
 # disk, so it barely notices), and `--resume` is refused rather than silently
-# starting fresh.
+# starting fresh. Left as seeded, a session on a host of the other platform
+# gets that host's shell instead (bash -i or powershell -NoLogo).
 [[agents]]
 name = "shell"
-command = "bash"
-args = ["-i"]
-"#;
-
-/// [`SHELL_AGENT_TOML`] for native Windows, where the multiplexer is psmux and
-/// the interactive shell is PowerShell. `-NoLogo` only drops the banner; the
-/// session is interactive because no `-Command` is passed.
-#[cfg(windows)]
-const SHELL_AGENT_TOML: &str = r#"
-# A plain interactive shell — see the POSIX note in agent_config.rs. Declares no
-# resume/fork groups: a shell has no conversation to resume.
-[[agents]]
-name = "shell"
-command = "powershell"
-args = ["-NoLogo"]
+command = "{command}"
+args = {args}
 "#;
 
 /// The seed document: the built-in agent definitions as they are written to a
 /// fresh `agents.toml`, and the source [`builtin_registry`] parses.
 ///
 /// A function rather than a `const` because one entry (`shell`) differs by
-/// platform, and the seeded file has to say what will actually launch there.
+/// platform.
 pub fn builtin_agents_toml() -> String {
-    format!("{BUILTIN_AGENTS_HEAD}{SHELL_AGENT_TOML}{BUILTIN_AGENTS_TAIL}")
+    let shell = crate::shell::shell_agent_def(crate::session::Platform::local());
+    let shell = SHELL_AGENT_TOML
+        .replace("{command}", &shell.command)
+        .replace("{args}", &format!("{:?}", shell.args));
+    format!("{BUILTIN_AGENTS_HEAD}{shell}{BUILTIN_AGENTS_TAIL}")
 }
 
 const BUILTIN_AGENTS_TAIL: &str = r#"# ──────────────────────────────────────────────────────────────────────────

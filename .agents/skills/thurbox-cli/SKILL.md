@@ -192,7 +192,8 @@ a spawn that must make a multiplexer window before it has a row.
 
 ### Any command can be a session
 
-`--agent` names an `agents.toml` entry; `--command` **is** the definition:
+`--agent` names an `agents.toml` entry (an unknown name is refused, never
+replaced by the default); `--command` **is** the definition:
 
 ```bash
 # A shell — the ready-made form, and a built-in agent
@@ -366,7 +367,10 @@ Each line carries:
 `reason` is what a bare event name could not say: a `gone` used to mean both
 deletes, and only one of them is restorable. `hook_state_contradicted` is
 `null` — *not checked* — unless you pass `--verify`, which costs a multiplexer
-query and a `ps` per event, the same trade `session list --verify` makes.
+query and a `ps` per event, the same trade `session list --verify` makes. A
+session whose window the listing no longer holds reads `hook_corroboration:
+"missing"` and contradicts a `working`/`blocked` row; a listing that failed
+reads `unknown` and contradicts nothing.
 
 `state` is the same `SessionState` word every other surface answers with, and
 it is derived from the event's **own** `to_state` so two transitions inside one
@@ -429,8 +433,10 @@ header to declare), `--json` for one JSON object per line. `--pretty` is
 
 `send`, `key`, `capture` and `exec` work on a `--host` session: they delegate to
 that host's own `thurbox-cli` (the mechanism the mirror pass already uses).
-A refusal survives only where delegation is genuinely impossible — no
-`hosts.toml` entry, or no reachable CLI there — and says which.
+Where the host has no usable CLI — `share_sessions = false`, or none could be
+found or provisioned — `send`, `key` and `capture` drive the window over the
+host's transport through the registry instead (ADR-30). Only a backend with no
+`hosts.toml` entry is refused, and says so.
 
 ### `runtime` — what thurbox runs that is not a session
 
@@ -468,7 +474,9 @@ The shape that follows from that:
   (`src/cli/home.rs`). Exit 0.
 - **List views default to three or four fields**, the ones that let an agent
   decide what to look at next; `--fields <list>|all` asks for others and
-  `--json` gives the whole record. Free text is capped in the TOON view only,
+  `--json` gives the whole record. `--fields` is resolved once
+  (`CommandOutput::select_fields`) and drives the `--text` table and the TOON
+  table alike; a field no row carries exits 2 in every format. Free text is capped in the TOON view only,
   with the total and `--full` named in place — never in `--json`, which is
   what `session capture … --json | jq -r .output` needs.
 - **A zero-result answer says so and names what it searched**, rather than
@@ -511,8 +519,10 @@ unsubmitted in the agent's composer — an integration that verifies what it typ
 before submitting cannot use the submitting form, because that fires every steer
 the instant it is typed. `send` types only into an **empty input line**: the
 text left of the cursor on its row (`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE` — tmux; read by
-`session_ops::composer`) must be prompt chrome alone — at most one prompt glyph, so a shell prompt
-carrying more (`user@box:~$`) reads as busy and needs `--force`. While it holds someone's
+`session_ops::composer`) must be prompt chrome alone — at most one prompt glyph — or, when the pane's foreground is an
+interactive shell (`session::is_interactive_shell`), the shell's own prompt: one word ending in
+`$ % # >` (`bash-5.3$`, `user@box:~$`) or `PS <path>>`. Any other prompt shape reads as busy and
+needs `--force`. While it holds someone's
 typing, `send` waits `COMPOSER_WAIT`, then hands the text over as `message send`
 does — the agent's own inbox, else the mailbox (kind `session-send`), and a
 mailbox-only result exits non-zero; either way `sent` and `submitted` read
@@ -535,9 +545,9 @@ newline cannot submit the line before it. Locally the verbs go through the
 backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
 `send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
 (`delegate_to_host` in `src/cli/sessions.rs`), which records their effects in
-the host's own database. The refusal survives only where delegation is
-genuinely impossible: a backend with no `hosts.toml` entry, or one whose
-`thurbox-cli` could not be reached.
+the host's own database. A host with no usable `thurbox-cli` (sharing off, or
+none reachable) falls through to the registry path, which drives its window
+over the transport; only a backend with no `hosts.toml` entry is refused.
 
 ### A pane can run an agent thurbox did not launch
 

@@ -208,7 +208,10 @@ pub(crate) mod tests {
         fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
             anyhow::bail!("this stub has no panes to read")
         }
-        fn create_window(&self, spec: &crate::backend::WindowSpec<'_>) -> anyhow::Result<String> {
+        fn create_window(
+            &self,
+            spec: &crate::backend::WindowSpec<'_>,
+        ) -> anyhow::Result<crate::backend::PaneId> {
             let mut windows = self.windows.lock().unwrap();
             let pane = format!("%{}", windows.len());
             windows.push((
@@ -217,7 +220,7 @@ pub(crate) mod tests {
                 spec.owner.name.to_string(),
                 spec.role,
             ));
-            Ok(pane)
+            crate::backend::PaneId::new(pane)
         }
         fn locate(
             &self,

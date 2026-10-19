@@ -134,7 +134,11 @@ own, which is the point.
   (`SessionBackend::pane_state` on the row's backend — on tmux, one
   `display-message` plus one `ps`) and reports
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
-  `hook_state` with the inference. `session list` skips the probe unless
+  `hook_state` with the inference. The listing's three answers stay apart
+  (`cli::sessions::probe_pane`, shared with `watch --verify`): a window found
+  is classified, a listing holding none is `missing` (contradicts
+  `working`/`blocked`), a listing that failed is `unknown` (contradicts
+  nothing). `session list` skips the probe unless
   `--verify`; a remote session is never probed and answers `unavailable`.
   Without the probe those fields are `null`, meaning **not checked** — a
   different answer from `false`, and the one reason `state` can read

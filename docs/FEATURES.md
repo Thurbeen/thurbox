@@ -217,9 +217,13 @@ consumer's.
 The decisive check is the pane rather than the clock. `session get`
 resolves the pane's true foreground process (one multiplexer query plus
 one `ps`) and reports `hook_corroboration` — `agent`, `foreign-agent`,
-`shell`, `other`, `dead`, `unknown`, or `unavailable` — plus
+`shell`, `other`, `dead`, `missing`, `unknown`, or `unavailable` — plus
 `hook_state_contradicted`, which is true when a `working` or `blocked`
-row sits over a pane holding a bare shell or nothing at all. It is
+row sits over a pane holding a bare shell or nothing at all. `missing`
+means the multiplexer answered its window listing and holds no window of
+the session's (the server restarted, or the window was closed outside
+thurbox), so it contradicts; `unknown` is a listing or a read that did
+not answer, which proves no absence and contradicts nothing. It is
 **reported, never applied**: `hook_state` keeps exactly the value the
 agent wrote, because overwriting a report with an inference is how a
 state becomes unfalsifiable. `session list` skips the probe unless
@@ -2285,7 +2289,11 @@ rather than an interface anyone has to implement.
 distinction matters at restart, not at spawn:
 
 - A **registry agent** is resolved by name at every launch. That indirection is
-  a feature — fix `agents.toml`, restart, and the fix takes effect.
+  a feature — fix `agents.toml`, restart, and the fix takes effect. A name the
+  file does not define is refused at create, listing the agents it does define,
+  never replaced by the default — on a shared host that refusal is the host's,
+  relayed verbatim. A restart whose agent has since been removed launches the
+  default instead, with a warning in the log: the session already exists.
 - A **command session** has no entry to re-resolve, so its **launch recipe**
   (command, args, env) is persisted on its row and replayed verbatim. Without
   that it would restart into nothing and lose its `--env` on the first respawn.
@@ -2705,13 +2713,19 @@ placeholder cannot reach. It reads the cursor's row **left of the cursor**
 (`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE`),
 and calls the line empty only when what is there is whitespace, box drawing
 and at most one prompt glyph; the dim suggestion an idle agent draws sits to
-the cursor's right and never counts. A busy line is not typed onto: the text
+the cursor's right and never counts. When the pane's foreground is an
+interactive shell (by name, given options only — `bash -c …` is a program
+running), the shell's own prompt counts as empty too: one word ending in `$`,
+`%`, `#` or `>` (`bash-5.3$`, `user@box:~$`) or PowerShell's `PS <path>>`.
+Only there, because in an agent's composer the same row is as likely the
+wrapped end of a long line ending in `%`. A busy line is not typed onto: the text
 goes the way `message send` delivers it. After Enter the same reading confirms
 the line left, and one more Enter goes only to a line that still ends with the
 text sent, never to a dialog that replaced it. Its limits are the ones a
 screen imposes: a cursor moved back into a draft reads as a bare prompt, a
-shell prompt carrying more than its glyph (`user@box:~$`) reads as typed text
-and needs `--force`, and where the row cannot be read the send reports
+shell's wrapped line that is one word ending in a glyph reads as its prompt, a
+prompt of any other shape (one with a space before its glyph) reads as typed
+text and needs `--force`, and where the row cannot be read the send reports
 `submitted: null` rather than a guess.
 
 ### Finding the recipient's inbox

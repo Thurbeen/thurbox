@@ -379,8 +379,12 @@ pub enum Corroboration {
     /// The pane's command has exited; `remain-on-exit` kept the frame. Whatever
     /// the row still says, nothing is running.
     Dead,
+    /// The multiplexer answered its window listing and holds no window of
+    /// this session's: the server restarted, or the window was closed outside
+    /// thurbox. A definite absence, unlike [`Self::Unknown`].
+    Missing,
     /// Nothing could be resolved (no `ps`, a multiplexer that answers no
-    /// format, a pane that went away between reads).
+    /// format or no listing, a pane that went away between reads).
     Unknown,
     /// Not checkable from here — a remote session's pane lives on its own
     /// host's multiplexer.
@@ -395,6 +399,7 @@ impl Corroboration {
             Corroboration::Shell => "shell",
             Corroboration::Other => "other",
             Corroboration::Dead => "dead",
+            Corroboration::Missing => "missing",
             Corroboration::Unknown => "unknown",
             Corroboration::Unavailable => "unavailable",
         }
@@ -418,7 +423,7 @@ impl Corroboration {
     pub fn agent_present(&self) -> Option<bool> {
         match self {
             Corroboration::Agent | Corroboration::ForeignAgent(_) => Some(true),
-            Corroboration::Shell | Corroboration::Dead => Some(false),
+            Corroboration::Shell | Corroboration::Dead | Corroboration::Missing => Some(false),
             // `Other` is a command the agent (or the user) is running; it says
             // nothing about whether the agent is still behind it.
             Corroboration::Other | Corroboration::Unknown | Corroboration::Unavailable => None,
@@ -456,6 +461,33 @@ fn executable_name(argv0: &str) -> &str {
         .unwrap_or(argv0)
         .trim_start_matches('-');
     base.strip_suffix(".exe").unwrap_or(base)
+}
+
+/// Whether a pane's foreground is an interactive shell sitting at its own
+/// prompt: a shell by name, and — when its argv is known — given options only.
+/// An operand is a script or a `-c` command line the shell is running, whose
+/// screen is that program's, not a prompt.
+pub fn is_interactive_shell(process: Option<&str>, command_line: Option<&str>) -> bool {
+    let Some(name) = process.map(executable_name).filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    if !SHELLS.contains(&name) {
+        return false;
+    }
+    let Some(line) = command_line else {
+        return true;
+    };
+    let mut argv = line.split_whitespace();
+    argv.next();
+    argv.all(|arg| match arg.strip_prefix('-') {
+        // A POSIX cluster holding `c` (`-c`, `-lc`) takes a command line.
+        Some(flags) if flags.chars().all(|c| c.is_ascii_lowercase()) => !flags.contains('c'),
+        // PowerShell's options that run a command or a script.
+        Some(flags) => !["command", "file", "encodedcommand"]
+            .iter()
+            .any(|o| flags.eq_ignore_ascii_case(o)),
+        None => false,
+    })
 }
 
 /// Whether `command_line` runs `program` **in command position** rather than
@@ -671,16 +703,20 @@ pub fn classify_foreground(
 /// Whether the reported state and the pane contradict each other.
 ///
 /// Only the two *active* states can be contradicted: `working` and `blocked`
-/// both assert that an agent is there to be working or waiting, and an empty or
-/// dead pane says it is not. `done` and `idle` assert nothing about a live
-/// process — an agent that finished its turn and exited is not a contradiction.
+/// both assert that an agent is there to be working or waiting, and an empty,
+/// dead or missing pane says it is not. `done` and `idle` assert nothing about
+/// a live process — an agent that finished its turn and exited is not a
+/// contradiction.
 ///
 /// A contradiction is **reported, never applied**: the stored `hook_state` is
 /// left exactly as the agent wrote it, because overwriting an agent's own
 /// report with an inference is how a state becomes unfalsifiable.
 pub fn contradicts(state: Option<&str>, corroboration: &Corroboration) -> bool {
     matches!(state, Some("working" | "blocked"))
-        && matches!(corroboration, Corroboration::Shell | Corroboration::Dead)
+        && matches!(
+            corroboration,
+            Corroboration::Shell | Corroboration::Dead | Corroboration::Missing
+        )
 }
 
 /// Where a session's reported state came from.
@@ -1654,6 +1690,18 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_window_contradicts_only_an_active_state() {
+        let missing = Corroboration::Missing;
+        assert_eq!(missing.as_str(), "missing");
+        assert_eq!(missing.agent_present(), Some(false));
+        assert!(contradicts(Some("working"), &missing));
+        assert!(contradicts(Some("blocked"), &missing));
+        assert!(!contradicts(Some("done"), &missing));
+        assert!(!contradicts(Some("idle"), &missing));
+        assert_eq!(best_state(None, None, None, Some(&missing)), None);
+    }
+
+    #[test]
     fn an_agent_thurbox_did_not_launch_is_still_seen() {
         // The externally-driven shape: the session's agent is a bare shell (so
         // thurbox wired no hooks and nothing ever signalled), and a driver
@@ -1903,5 +1951,21 @@ mod tests {
         // The agent is probably still there behind it, so this never
         // contradicts an active state.
         assert!(!contradicts(Some("working"), &other));
+    }
+
+    #[test]
+    fn an_interactive_shell_is_one_given_options_only() {
+        let shell = |p: &str, l: Option<&str>| is_interactive_shell(Some(p), l);
+        assert!(shell("bash", None));
+        assert!(shell("-zsh", Some("-zsh")));
+        assert!(shell("bash", Some("bash --norc --noprofile -i")));
+        assert!(shell("pwsh.exe", Some("pwsh.exe -NoLogo")));
+        assert!(!shell("sh", Some("sh -c 'stty -echo; read x'")));
+        assert!(!shell("bash", Some("bash -lc claude")));
+        assert!(!shell("bash", Some("bash ./run.sh")));
+        assert!(!shell("pwsh", Some("pwsh -Command Get-Item")));
+        assert!(!shell("claude", Some("claude --resume")));
+        assert!(!shell("node", None));
+        assert!(!is_interactive_shell(None, None));
     }
 }

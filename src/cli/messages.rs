@@ -11,7 +11,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::cli::delivery::{self, DeliveredVia};
-use crate::cli::identity::calling_session;
+use crate::cli::identity::{caller, calling_session};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::{SessionId, SessionMessage};
@@ -205,9 +205,10 @@ fn read_inbox(
 ) -> Result<CommandOutput, CommandError> {
     let recipient = match for_session {
         Some(ref r) => resolve_uuid_or_name(db, r)?,
-        None => calling_session(db).ok_or_else(|| {
-            "no --for given and THURBOX_SESSION is unset (not running inside a session)".to_string()
-        })?,
+        None => caller(db)?.require(
+            "no --for given and THURBOX_SESSION is unset (not running inside a session)",
+            "--for",
+        )?,
     };
     let messages = if claim {
         db.claim_messages(recipient.id, limit)

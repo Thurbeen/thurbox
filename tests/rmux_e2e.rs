@@ -152,7 +152,8 @@ fn rmux_create_restart_rename_restore_relaunch_and_delete() {
             cwd: None,
             env: &Default::default(),
         })
-        .expect("hook pane");
+        .expect("hook pane")
+        .to_string();
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline
         && !backend

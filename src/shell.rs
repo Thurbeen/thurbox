@@ -146,14 +146,61 @@ pub fn powershell_quote(s: &str) -> String {
 /// psmux's tokenizer, a shell psmux may still route it through — reads as
 /// syntax. No `-NoProfile`: psmux ran the script as
 /// `powershell -NoLogo -Command`, which loads the profile, and still does.
-pub fn powershell_launcher(script: &str) -> String {
+///
+/// Encoding makes the line `39 + 4 * ceil(2n / 3)` chars for a script of `n`
+/// UTF-16 units, about 2.7 times the script, so it is measured here, the one
+/// place it is built: a line past [`WINDOWS_CMD_LINE_MAX`] is refused with
+/// [`CommandLineTooLong`] rather than handed to a host that fails to start it
+/// without saying why.
+pub fn powershell_launcher(script: &str) -> Result<String, CommandLineTooLong> {
+    encoded_powershell("-NoLogo", script)
+}
+
+/// `powershell.exe <switches> -EncodedCommand <base64>`, refused past
+/// [`WINDOWS_CMD_LINE_MAX`].
+fn encoded_powershell(switches: &str, script: &str) -> Result<String, CommandLineTooLong> {
     use base64::Engine as _;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    format!(
-        "powershell.exe -NoLogo -EncodedCommand {}",
+    let line = format!(
+        "powershell.exe {switches} -EncodedCommand {}",
         base64::engine::general_purpose::STANDARD.encode(utf16)
-    )
+    );
+    if line.len() > WINDOWS_CMD_LINE_MAX {
+        return Err(CommandLineTooLong {
+            len: line.len(),
+            max: WINDOWS_CMD_LINE_MAX,
+        });
+    }
+    Ok(line)
 }
+
+/// The longest command line `cmd.exe` runs (it answers "The command line is
+/// too long." past it), and the bound used for every Windows host rather than
+/// `CreateProcess`'s 32,767: Windows OpenSSH runs a one-shot ssh command
+/// through its default login shell, `cmd.exe`, and a psmux server started
+/// over ssh has `$SHELL=cmd.exe` for any window it routes through a shell. A
+/// line that only fits a local server would fail the same agent on a host.
+pub const WINDOWS_CMD_LINE_MAX: usize = 8191;
+
+/// A command line longer than a Windows host will run, refused before it is
+/// sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandLineTooLong {
+    pub len: usize,
+    pub max: usize,
+}
+
+impl std::fmt::Display for CommandLineTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "command line is {} chars, Windows limit is {}",
+            self.len, self.max
+        )
+    }
+}
+
+impl std::error::Error for CommandLineTooLong {}
 
 /// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
 /// `wsl.exe -d <distro>`.
@@ -263,7 +310,8 @@ impl HostLauncher {
 /// on the host it reaches.
 ///
 /// Through a launcher the tokens are re-split by the host's login shell, so
-/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged).
+/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged);
+/// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
 /// command line exactly as the adapter wrote it.
@@ -282,6 +330,99 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd
         }
     }
+}
+
+/// [`launch`] on a native-Windows host, whose login shell — `cmd.exe` by
+/// Windows OpenSSH's default, PowerShell when configured — re-reads the line
+/// ssh hands it. No one quoting survives both: `cmd.exe` ignores the single
+/// quotes [`posix_quote`] writes, so a `|` inside them starts a pipe (issue
+/// #1460).
+///
+/// Words every such shell passes through unchanged (`is_bare_windows_word`)
+/// go as they are, which keeps a control-mode attach and a `send-paste`'s
+/// base64 at their own length. Any other line runs as an encoded PowerShell
+/// script, whose base64 no shell reads as syntax. The script starts `program`
+/// itself with the arguments as one command line quoted for the C runtime
+/// ([`windows_arg_quote`]): PowerShell 5.1's own native-argument quoting drops
+/// an empty argument and splits one at an embedded `"`. The child inherits
+/// stdin, stdout and stderr, so its bytes reach this machine untouched and its
+/// exit status is the script's. Progress output is silenced, since PowerShell
+/// writes it to stderr as a CLIXML document that a multiplexer whose stderr
+/// is its failure channel would read as an error.
+pub fn launch_on_windows(
+    launcher: &HostLauncher,
+    program: &str,
+    args: &[&str],
+) -> Result<Command, CommandLineTooLong> {
+    let mut cmd = launcher.command();
+    let words = || std::iter::once(&program).chain(args);
+    // `cmd.exe` expands a `%name%` pair, so a line has at most one `%` bare.
+    let percents: usize = words().map(|w| w.matches('%').count()).sum();
+    if percents <= 1 && words().all(|w| is_bare_windows_word(w)) {
+        cmd.args(words());
+        return Ok(cmd);
+    }
+    let line = args
+        .iter()
+        .map(|a| windows_arg_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "$ProgressPreference = 'SilentlyContinue'\n\
+         $s = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $s.FileName = {}\n\
+         $s.Arguments = {}\n\
+         $s.UseShellExecute = $false\n\
+         $p = [System.Diagnostics.Process]::Start($s)\n\
+         $p.WaitForExit()\n\
+         exit $p.ExitCode",
+        powershell_quote(program),
+        powershell_quote(&line)
+    );
+    cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
+    Ok(cmd)
+}
+
+/// Whether `word` reaches a program unchanged, unquoted, through each login
+/// shell a Windows OpenSSH server may run a command in: `cmd.exe`,
+/// PowerShell and a POSIX `sh`. Not `,`, which PowerShell reads as an array
+/// and passes as two arguments.
+fn is_bare_windows_word(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '+' | '%')
+        })
+}
+
+/// One argument as a Windows program's C runtime reads it back out of the
+/// single command line `CreateProcess` hands it — the MSVC rules psmux, git
+/// and every Rust program split argv by. Quoted only when it has to be (empty,
+/// whitespace or a `"`); inside the quotes a `"`, and the backslashes before
+/// it or before the closing quote, are escaped.
+pub fn windows_arg_quote(s: &str) -> String {
+    if !s.is_empty() && !s.contains([' ', '\t', '\n', '\x0b', '"']) {
+        return s.to_string();
+    }
+    let mut out = String::from('"');
+    let mut backslashes = 0;
+    for c in s.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
 }
 
 /// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
@@ -374,9 +515,136 @@ fn off_the_terminal(cmd: &mut Command) {
     }
 }
 
+/// The built-in `shell` agent for a machine running `platform`: that
+/// machine's own interactive shell.
+///
+/// Both spellings are always compiled in, because the platform that matters
+/// is the session's host, not this build's (#1458): a Linux thurbox spawning on
+/// a Windows host must send it PowerShell.
+///
+/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a pane
+/// executes what is sent to it but renders no prompt and no echo, which starves
+/// anything reading the screen to decide whether the session is ready — the
+/// pane looks blank and working at the same time. On Windows `-NoLogo` only
+/// drops the banner; the session is interactive because no `-Command` is
+/// passed.
+pub fn shell_agent_def(platform: crate::session::Platform) -> crate::session::AgentDef {
+    let (command, args) = match platform {
+        crate::session::Platform::Posix => ("bash", "-i"),
+        crate::session::Platform::Windows => ("powershell", "-NoLogo"),
+    };
+    crate::session::AgentDef {
+        name: "shell".into(),
+        command: command.into(),
+        args: vec![args.into()],
+        ..crate::session::AgentDef::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_powershell_launch_is_39_plus_the_base64_of_its_utf16_script() {
+        for n in [0, 1, 2, 3, 462, 1000, 3000] {
+            let line = powershell_launcher(&"a".repeat(n)).expect("under the limit");
+            assert_eq!(line.len(), 39 + 4 * (2 * n).div_ceil(3), "n = {n}");
+        }
+    }
+
+    /// The last script that fits, and the first that does not: refused with
+    /// the length it would have had.
+    #[test]
+    fn a_powershell_launch_past_the_windows_limit_is_refused() {
+        let fits = (WINDOWS_CMD_LINE_MAX - 39) / 4 * 3 / 2;
+        assert!(powershell_launcher(&"a".repeat(fits)).is_ok());
+        let error = powershell_launcher(&"a".repeat(fits + 1)).unwrap_err();
+        assert_eq!(error.max, WINDOWS_CMD_LINE_MAX);
+        assert_eq!(error.len, 39 + 4 * (2 * (fits + 1)).div_ceil(3));
+        assert!(error.len > WINDOWS_CMD_LINE_MAX);
+        assert_eq!(
+            error.to_string(),
+            format!("command line is {} chars, Windows limit is 8191", error.len)
+        );
+    }
+
+    /// The cases PowerShell 5.1's own argument passing gets wrong, measured
+    /// against Windows PowerShell 5.1: an empty argument vanished, `a"b`
+    /// arrived as `ab`, and `a b\` as `a b"`.
+    #[test]
+    fn a_windows_argument_is_quoted_for_the_c_runtime() {
+        for (arg, quoted) in [
+            ("plain", "plain"),
+            ("C:\\a\\b", "C:\\a\\b"),
+            ("#{pane_id}|#{window_name}", "#{pane_id}|#{window_name}"),
+            ("", "\"\""),
+            ("a b", "\"a b\""),
+            ("a\"b", "\"a\\\"b\""),
+            ("a b\\", "\"a b\\\\\""),
+            ("a\\\"b", "\"a\\\\\\\"b\""),
+        ] {
+            assert_eq!(windows_arg_quote(arg), quoted, "{arg:?}");
+        }
+    }
+
+    fn windows_ssh() -> HostLauncher {
+        HostLauncher::Ssh {
+            destination: "me@winbox".into(),
+            ssh_opts: Vec::new(),
+        }
+    }
+
+    fn remote_words(cmd: &Command) -> Vec<String> {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dest = args.iter().position(|a| a == "me@winbox").expect("dest");
+        args[dest + 1..].to_vec()
+    }
+
+    /// Words every Windows login shell passes through go unchanged, so a
+    /// control-mode attach keeps its stdin on psmux itself and a `send-paste`
+    /// keeps its base64 payload at its own length.
+    #[test]
+    fn a_line_of_plain_words_reaches_a_windows_host_as_it_is() {
+        for args in [
+            &["-L", "thurbox", "-C", "attach-session", "-t", "thurbox"][..],
+            &["-L", "thurbox", "send-paste", "-t", "%3", "aGk+Lz0="][..],
+        ] {
+            let cmd = launch_on_windows(&windows_ssh(), "psmux", args).expect("fits");
+            let mut expected = vec!["psmux".to_string()];
+            expected.extend(args.iter().map(|a| a.to_string()));
+            assert_eq!(remote_words(&cmd), expected);
+        }
+    }
+
+    /// `cmd.exe` expands a `%name%` pair, and `,` is a PowerShell array: a
+    /// line with either is encoded, never sent bare.
+    #[test]
+    fn a_line_any_windows_shell_could_read_as_syntax_is_encoded() {
+        for args in [
+            &["swap-pane", "-s", "%1", "-t", "%2"][..],
+            &["display-message", "-p", "a,b"][..],
+            &["list-windows", "-F", "#{pane_id}|#{window_name}"][..],
+        ] {
+            let cmd = launch_on_windows(&windows_ssh(), "psmux", args).expect("fits");
+            let words = remote_words(&cmd);
+            assert_eq!(
+                words[..5],
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand"
+                ],
+                "{args:?}"
+            );
+            assert_eq!(words.len(), 6, "{args:?}");
+        }
+    }
 
     /// How a host is reached is its kind and nothing else: neither its OS nor
     /// its multiplexer changes the launcher, and the launcher names neither —

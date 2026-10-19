@@ -15,8 +15,11 @@
 //! -l` and `/bin/sh -l`, stdin closed, each under `timeout` — cached for the
 //! process, and spliced in front of what the launcher gives:
 //! `path_prepend` (hosts.toml), then the login shells', then the launcher's,
-//! de-duplicated in that order. A host whose shells cannot be read keeps
-//! today's `PATH` with a warning; nothing here can fail a session.
+//! de-duplicated in that order. The same `PATH` leads the multiplexer commands
+//! thurbox runs there (`TmuxTransport::with_path`), so a binary only a login
+//! shell finds — Homebrew's tmux on a Mac — runs as the probe offered it. A
+//! host whose shells cannot be read keeps today's `PATH` with a warning;
+//! nothing here can fail a session.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -56,7 +59,7 @@ pub struct HostEnv {
     /// `/bin/sh -lc`: `~/.profile`, the one login file every POSIX shell's
     /// user is likely to have, and the fallback for an unreadable `$SHELL`.
     pub sh_login: Option<Vec<String>>,
-    /// The multiplexers found on the merged login `PATH`, in
+    /// The multiplexers found on `path_prepend` and the merged login `PATH`, in
     /// [`Multiplexer::ALL`] order: what the new-session flow may offer here.
     pub multiplexers: Vec<Multiplexer>,
 }
@@ -67,11 +70,19 @@ pub struct HostEnv {
 /// **last** sentinel is kept, so an rc file that echoes something on a login
 /// shell cannot end up as a `PATH` component. `-l` without `-i` and stdin on
 /// `/dev/null`: nothing here can print a prompt or wait for input. Last, each
-/// multiplexer found on those `PATH`s and the launcher's is named on an `@mux`
-/// line — one probe answers both questions a host is asked.
-pub fn probe_script() -> String {
+/// multiplexer found on `prepend` (hosts.toml `path_prepend`), those `PATH`s
+/// and the launcher's — the order [`plan`] gives the commands that run it — is
+/// named on an `@mux` line: one probe answers both questions a host is asked.
+pub fn probe_script(prepend: &[String]) -> String {
     let names: Vec<&str> = Multiplexer::ALL.iter().map(|mux| mux.name()).collect();
     let names = names.join(" ");
+    let mut prepend: Vec<Component> = prepend.iter().filter_map(|e| expand(e, None)).collect();
+    dedup(&mut prepend);
+    let prepend = if prepend.is_empty() {
+        String::new()
+    } else {
+        shell_assignment(&PathPlan::Prepend(prepend))
+    };
     format!(
         "exec </dev/null; t=; command -v timeout >/dev/null 2>&1 && t='timeout {SHELL_TIMEOUT_SECS}'; \
          printf '@home %s\\n' \"$HOME\"; printf '@base %s\\n' \"$PATH\"; \
@@ -81,7 +92,7 @@ pub fn probe_script() -> String {
          r /bin/sh sh; s=${{SHELL:-}}; \
          [ -n \"$s\" ] || s=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
          [ -n \"$s\" ] && [ -x \"$s\" ] && r \"$s\" shell; \
-         PATH=\"${{L#:}}${{L:+:}}$PATH\"; for m in {names}; do \
+         PATH=\"${{L#:}}${{L:+:}}$PATH\"; {prepend}for m in {names}; do \
          command -v \"$m\" >/dev/null 2>&1 && printf '@mux %s\\n' \"$m\"; done; exit 0"
     )
 }
@@ -307,7 +318,7 @@ fn reprobe(host: &HostDef, key: String) {
     let host = host.clone();
     std::thread::spawn(move || {
         let env = run_bounded(
-            HostLauncher::for_host(&host).shell_c(&probe_script()),
+            HostLauncher::for_host(&host).shell_c(&probe_script(&host.path_prepend)),
             PROBE_TIMEOUT,
         )
         .and_then(|out| parse_probe(&out));
@@ -319,14 +330,17 @@ fn reprobe(host: &HostDef, key: String) {
 }
 
 /// Store what a background probe of the host keyed `key` said. Its `PATH`
-/// fills that cache only on success and only where it is empty: that cache is
-/// never re-asked, so a failure there would leave a host that was down at the
-/// first ask without its login `PATH` for the rest of the process, and a
-/// spawn's own answer is never replaced.
+/// fills that cache only on success, and only where it is empty or holds a
+/// failure: that cache is never re-asked on its own, so a host that was down
+/// at the first ask — a multiplexer command at startup, typically — would
+/// otherwise run without its login `PATH` for the rest of the process. An
+/// answer already read is never replaced.
 fn record_probe(key: &str, env: Option<HostEnv>) {
     if let (Some(env), Ok(mut c)) = (env.as_ref(), cache().lock()) {
-        c.entry(key.to_string())
-            .or_insert_with(|| Some(env.clone()));
+        let slot = c.entry(key.to_string()).or_insert(None);
+        if slot.is_none() {
+            *slot = Some(env.clone());
+        }
     }
     if let Ok(mut c) = mux_cache().lock() {
         c.insert(
@@ -366,7 +380,7 @@ pub fn seed(host: &HostDef, env: Option<HostEnv>) {
 
 fn probe(host: &HostDef) -> Option<HostEnv> {
     let env = run_bounded(
-        HostLauncher::for_host(host).shell_c(&probe_script()),
+        HostLauncher::for_host(host).shell_c(&probe_script(&host.path_prepend)),
         PROBE_TIMEOUT,
     )
     .and_then(|out| parse_probe(&out));
@@ -572,7 +586,7 @@ mod tests {
         std::fs::set_permissions(&rmux, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
-            .arg(probe_script())
+            .arg(probe_script(&[]))
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
             .env("HOME", dir.path());
@@ -584,6 +598,57 @@ mod tests {
             "{:?}",
             env.multiplexers
         );
+    }
+
+    /// `path_prepend` leads the `PATH` a host's multiplexer commands run on,
+    /// so a multiplexer only it holds is one the new-session flow may offer.
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_script_finds_a_multiplexer_on_path_prepend() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("brew/bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let rmux = dir.join("rmux");
+        std::fs::write(&rmux, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&rmux, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(probe_script(&s(&["~/brew/bin"])))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", home.path());
+        let env = run_bounded(cmd, PROBE_TIMEOUT)
+            .and_then(|out| parse_probe(&out))
+            .expect("the probe answers");
+        assert!(
+            env.multiplexers.contains(&Multiplexer::Rmux),
+            "{:?}",
+            env.multiplexers
+        );
+    }
+
+    /// Multiplexer commands are the first to read a host's `PATH`, often at
+    /// startup: a host down then must not keep its login `PATH` out of them
+    /// once the new-session flow's probe reaches it.
+    #[test]
+    fn a_later_probe_replaces_a_cached_failure_but_not_an_answer() {
+        let host = HostDef {
+            name: "down-at-startup".into(),
+            destination: "me@later".into(),
+            ..Default::default()
+        };
+        let key = host.backend_name();
+        seed(&host, None);
+        let found = env(&["/usr/bin"], Some(&["/opt/homebrew/bin"]), None);
+        record_probe(&key, Some(found.clone()));
+        assert_eq!(
+            cache().lock().unwrap().get(&key),
+            Some(&Some(found.clone()))
+        );
+
+        record_probe(&key, Some(env(&["/bin"], None, None)));
+        assert_eq!(cache().lock().unwrap().get(&key), Some(&Some(found)));
     }
 
     #[test]
@@ -705,7 +770,7 @@ mod tests {
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
         let out = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(probe_script())
+            .arg(probe_script(&[]))
             .env("HOME", home.path())
             .env("SHELL", &shell)
             .env("PATH", "/usr/bin:/bin")
