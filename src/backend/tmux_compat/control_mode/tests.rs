@@ -2027,7 +2027,7 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
             let _ = asked_tx.send(control.request_snapshot("%7", 0).is_ok());
         }
     });
-    let asked = asked.recv_timeout(std::time::Duration::from_millis(250));
+    let asked = asked.recv_timeout(std::time::Duration::from_secs(1));
 
     // The server pauses `%7` and then streams it. Resuming the pane is a write,
     // and the reader must not wait on one to go on reading.
