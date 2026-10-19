@@ -743,6 +743,9 @@ pub struct Server<M: TmuxCompatible> {
     /// [`Self::reconnect_control`], so a handshake happens once however many
     /// callers find the connection missing or dead, and outside `control`.
     connecting: Mutex<()>,
+    /// Connections replaced but still answering what was sent on them
+    /// ([`ControlMode::retire`]), for [`SessionBackend::shutdown`] to close.
+    retiring: Mutex<Vec<std::sync::Weak<ControlMode>>>,
     /// Set by [`SessionBackend::shutdown`]: from then on no connection is
     /// opened, so a worker still holding the registry as the process quits
     /// cannot bring back the one quit just closed.
@@ -826,6 +829,7 @@ impl<M: TmuxCompatible> Server<M> {
             name: name.into(),
             control: Mutex::new(None),
             connecting: Mutex::new(()),
+            retiring: Mutex::new(Vec::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             sizer: sizer_name(),
             host: None,
@@ -1367,6 +1371,7 @@ impl<M: TmuxCompatible> Server<M> {
             name: self.name.clone(),
             control: Mutex::new(None),
             connecting: Mutex::new(()),
+            retiring: Mutex::new(Vec::new()),
             closed: std::sync::atomic::AtomicBool::new(self.is_closed()),
             sizer: sizer_name(),
             host: self.host.clone(),
@@ -2124,9 +2129,10 @@ impl<M: TmuxCompatible> Server<M> {
     ///
     /// Checked under the lock `shutdown` takes the connection out under, so a
     /// handshake that outlives a quit is torn down instead of left behind.
-    /// Whatever is replaced, and a refused `fresh`, are torn down here, after
-    /// the lock is let go: a teardown waits on the child, and left to the last
-    /// clone's drop it could land on the paint thread.
+    /// Whatever is replaced is retired rather than closed: other callers may
+    /// be waiting on it for answers to commands that have already run. Both it
+    /// and a refused `fresh` are dealt with after the lock is let go, since a
+    /// teardown waits on the child.
     fn install(&self, fresh: ControlMode) -> Result<()> {
         let fresh = Arc::new(fresh);
         let replaced = {
@@ -2143,7 +2149,11 @@ impl<M: TmuxCompatible> Server<M> {
         match replaced {
             Some(old) => {
                 if let Some(old) = old {
-                    old.close();
+                    if let Ok(mut retiring) = self.retiring.lock() {
+                        retiring.retain(|weak| weak.strong_count() > 0);
+                        retiring.push(Arc::downgrade(&old));
+                    }
+                    old.retire();
                 }
                 Ok(())
             }
@@ -2155,7 +2165,11 @@ impl<M: TmuxCompatible> Server<M> {
     }
 
     /// Send a command via control mode and return the response.
-    /// On broken pipe or timeout, reconnects control mode and retries once.
+    ///
+    /// A connection that fails is replaced, but the command is sent again only
+    /// when tmux cannot have seen it — the write itself failed. One that was
+    /// written and never answered may have run, and running a `new-window`
+    /// twice opens two windows, so the caller hears the failure instead.
     fn ctrl_command(&self, cmd: &str) -> Result<String> {
         self.ctrl_command_list(&[cmd])
     }
@@ -2171,10 +2185,17 @@ impl<M: TmuxCompatible> Server<M> {
         let ctrl = self.connection()?;
         match ctrl.send_command_list(cmds, blocks) {
             Ok(val) => Ok(val),
-            Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
+            Err(err) if is_broken_pipe(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
                 self.reconnect_control(Some(&ctrl))?;
                 self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks))
+            }
+            Err(err) if is_recv_timeout(&err) => {
+                warn!("Control mode error, reconnecting: {err:#}");
+                if let Err(e) = self.reconnect_control(Some(&ctrl)) {
+                    debug!("reconnect after an unanswered command failed: {e:#}");
+                }
+                Err(err)
             }
             Err(err) => Err(err),
         }
@@ -2824,8 +2845,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return self.discover_answered();
         }
         // Once control mode is up, route through `ctrl_command` so a dead
-        // connection is transparently reconnected + retried (like every other
-        // control-mode call) instead of failing the discovery.
+        // connection is reconnected, and the listing retried when it never
+        // reached tmux (like every other control-mode call).
         let result = self.ctrl_command(&format!(
             "list-windows -t {} -F '{DISCOVER_FORMAT}'",
             self.session
@@ -3299,6 +3320,14 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .store(true, std::sync::atomic::Ordering::Release);
         let taken = self.control.lock().ok().and_then(|mut c| c.take());
         if let Some(control) = taken {
+            control.close();
+        }
+        let retiring = self
+            .retiring
+            .lock()
+            .map(|mut retiring| std::mem::take(&mut *retiring))
+            .unwrap_or_default();
+        for control in retiring.iter().filter_map(std::sync::Weak::upgrade) {
             control.close();
         }
     }
@@ -5009,6 +5038,57 @@ mod tests {
         assert!(resized.is_ok(), "{resized:?}");
         assert!(took < LOOP_COMMAND_BUDGET / 2, "the paint waited {took:?}");
         reconnect.join().expect("reconnect").expect("reconnected");
+    }
+
+    /// Another caller's reconnect must not take the connection out from under a
+    /// command already sent on it: closing it lost the answer, and the caller
+    /// resent the command on the new connection — a `new-window` that tmux had
+    /// already run opened a second window.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_in_flight_across_a_reconnect_runs_once_and_is_answered() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let first = backend.connection().expect("connection");
+        let in_flight = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.ctrl_command("list-windows -a")
+        });
+        await_log(&mux, |log| log.contains("list-windows"));
+
+        backend
+            .reconnect_control(Some(&first))
+            .expect("reconnected");
+        let answered = in_flight.join().expect("in-flight caller");
+
+        assert!(answered.is_ok(), "{answered:?}");
+        let log = std::fs::read_to_string(mux.with_extension("log")).expect("log");
+        assert_eq!(log.matches("list-windows").count(), 1, "{log}");
+    }
+
+    /// A command written whose answer never came may have run, so it is not
+    /// sent again — the caller hears the failure instead. Only a write that
+    /// failed outright, which tmux never saw, is retried.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_whose_answer_was_lost_is_not_resent() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let first = backend.connection().expect("connection");
+        let in_flight = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.ctrl_command("list-windows -a")
+        });
+        await_log(&mux, |log| log.contains("list-windows"));
+
+        first.close();
+        let answered = in_flight.join().expect("in-flight caller");
+
+        assert!(answered.is_err(), "{answered:?}");
+        let log = std::fs::read_to_string(mux.with_extension("log")).expect("log");
+        assert_eq!(log.matches("list-windows").count(), 1, "{log}");
     }
 
     /// The whole point of the fix: what tmux is handed must not need tmux's own

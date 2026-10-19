@@ -1029,6 +1029,9 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const GRACEFUL_EXIT_POLLS: u32 = 10;
 const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// How often a retiring connection checks whether anybody still holds it.
+const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// A live tmux control mode connection.
 ///
 /// Commands are sent serially (stdin lock ensures ordering) and responses arrive
@@ -1541,6 +1544,15 @@ impl ControlMode {
 
         // EOF — control mode connection ended. Close all pane senders so readers get EOF.
         debug!("Control reader thread exiting");
+        Self::drop_panes(&pane_senders, &pane_windows, &pane_sizes);
+    }
+
+    /// Forget every pane this connection serves, which is EOF for their readers.
+    fn drop_panes(
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        pane_sizes: &PaneSizesMapShared,
+    ) {
         if let Ok(mut senders) = pane_senders.lock() {
             senders.clear();
         }
@@ -2317,8 +2329,38 @@ impl Drop for ControlMode {
 }
 
 impl ControlMode {
+    /// Take a replaced connection out of service without failing what is
+    /// already in flight on it.
+    ///
+    /// Its panes are let go at once — EOF for their readers, as a closed
+    /// connection gives — so it never streams alongside its replacement. Its
+    /// replies keep arriving: a command already sent may have run, and losing
+    /// its answer would leave the caller unable to tell. It is closed once no
+    /// caller holds it any more, or after `COMMAND_TIMEOUT`, the longest any
+    /// of them waits.
+    pub(in crate::backend) fn retire(self: Arc<Self>) {
+        Self::drop_panes(&self.pane_senders, &self.pane_windows, &self.pane_sizes);
+        let spawned = std::thread::Builder::new()
+            .name("control-retire".into())
+            .spawn({
+                let this = Arc::clone(&self);
+                move || {
+                    let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+                    while Arc::strong_count(&this) > 1 && std::time::Instant::now() < deadline {
+                        std::thread::sleep(RETIRE_POLL);
+                    }
+                    this.close();
+                }
+            });
+        if spawned.is_err() {
+            self.close();
+        }
+    }
+
     /// Detach and tear the connection down. Callable through a shared handle,
     /// for a backend shutting down while a caller is still mid-command on it.
+    /// A caller still waiting for an answer is told at once that none is
+    /// coming, rather than left to wait out `COMMAND_TIMEOUT`.
     pub(in crate::backend) fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -2354,6 +2396,9 @@ impl ControlMode {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+        }
+        if let Ok(mut queue) = self.response_queue.lock() {
+            queue.clear();
         }
 
         // Reader thread should exit now that the child is dead (stdout closed).
