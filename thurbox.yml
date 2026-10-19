@@ -64,9 +64,6 @@ globals:
   rawlen:
     args:
       - type: "..."
-  rawset:
-    args:
-      - type: "..."
   select:
     args:
       - type: "..."

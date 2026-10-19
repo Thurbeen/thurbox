@@ -369,6 +369,7 @@ impl LuaHost {
         )?;
 
         *self.epoch.borrow_mut() = Some(*epoch);
+        super::api::freeze_fields(&self.lua, &table).map_err(|e| e.to_string())?;
         let observed = super::api::observe_samples(&self.lua, table, self.sample_read.clone())
             .map_err(|e| e.to_string())?;
         set(&self.lua.globals(), "thurbox", observed)

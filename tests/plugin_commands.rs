@@ -21,6 +21,54 @@ fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf
     (home, ui)
 }
 
+/// Point `THURBOX_CONFIG_DIR` at `home` for as long as the guard lives.
+///
+/// The variable is process-wide and trust is read from it, so tests that set
+/// it hold one lock: under a threaded `cargo test`, another test could move it
+/// between a test granting trust and reading the grant back.
+fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
+    static CONFIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = CONFIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::set_var("THURBOX_CONFIG_DIR", home);
+    guard
+}
+
+/// Publish an empty snapshot the way the running interface does every frame,
+/// which is what puts the published `thurbox` table in place.
+fn publish(host: &LuaHost) {
+    let themes = thurbox::kernel::theme::Themes::load(None);
+    let registry = thurbox::kernel::registry::Registry::default();
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&thurbox::kernel::host::Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
+        snapshot: &Default::default(),
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: None,
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+}
+
 fn render(host: &LuaHost, name: &str) {
     let index = host.index_of(name).unwrap_or_else(|| panic!("no {name}"));
     host.render(
@@ -623,7 +671,7 @@ fn enforce(host: &LuaHost, ui: &std::path::Path) {
 #[test]
 fn an_update_that_moves_the_pin_takes_run_away() {
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -655,7 +703,7 @@ fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
     // A source re-tagging the same version, or a local edit to an installed file:
     // the grant was made to other contents and must not ride along.
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -678,7 +726,7 @@ fn editing_your_own_trusted_file_keeps_run() {
     // A file the user wrote is theirs to edit; the row says `trusted · modified`
     // and the grant stands, which is what the row says.
     let (home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join(file).to_string_lossy(), &asker("asks", "k", true))
@@ -697,7 +745,7 @@ fn editing_your_own_trusted_file_keeps_run() {
 /// user's own and a changed one would keep `run`.
 fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -735,4 +783,435 @@ fn a_lock_without_the_files_entry_grants_nothing_to_it() {
     changed_installed_file_without_its_lock_entry(|ui| {
         thurbox::kernel::packages::write_lock(ui, &Default::default()).expect("empty lock");
     });
+}
+
+/// A pane holding no grant that replaces the shared `type` with one that asks
+/// for a program and writes an exec automation, then calls the real one.
+const LURE: &str = r#"local real = type
+type = function(value)
+  if run then
+    run("stolen", "echo pwned", { session = "s1" })
+  end
+  command("automation", { action = "create", name = "x", command = "echo pwned" })
+  return real(value)
+end
+return { name = "lure", slot = "sessions", render = function()
+  return { type = "text", text = "" }
+end }"#;
+
+/// A pane trusted with `run` that calls `type` as it draws, as any pane does.
+const VICTIM: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
+  render = function()
+    return { type = "text", text = type(state) }
+  end }"#;
+
+/// Load the lure before the victim, trust the victim, and draw both.
+fn lured() -> (tempfile::TempDir, LuaHost) {
+    let (home, ui) = interface(&[("91_lure.lua", LURE), ("92_victim.lua", VICTIM)]);
+    let _config = configure(home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(&ui.join("plugins/92_victim.lua").to_string_lossy(), VICTIM)
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    render(&host, "lure");
+    render(&host, "victim");
+    (home, host)
+}
+
+#[test]
+fn a_pane_cannot_run_a_program_through_a_global_another_pane_calls() {
+    // Every pane used to share one Lua state, so a pane that replaced `type`
+    // ran its own code inside a trusted pane's call — with that pane's `run`
+    // bound and its path stamped on the ask.
+    let (_home, host) = lured();
+    let runs = host.drain_runs();
+    assert!(runs.iter().all(|(_, ask)| ask.key != "stolen"), "{runs:?}");
+}
+
+#[test]
+fn a_pane_cannot_write_a_command_as_another_pane() {
+    let (_home, host) = lured();
+    for command in host.drain_commands() {
+        if let thurbox::kernel::command::Command::AutomationSave { owner, .. } = &command {
+            assert_ne!(owner, "plugins/92_victim.lua", "{command:?}");
+        }
+    }
+}
+
+#[test]
+fn a_pane_cannot_change_the_library_every_pane_shares() {
+    // A replaced global stays in the pane's own environment, but `string` is one
+    // table every pane reads — and every string's methods come from it.
+    for (lure, says) in [
+        (
+            "string.upper = function() return 'PWNED' end",
+            "string is shared",
+        ),
+        ("getmetatable('').__index = {}", "attempt to index"),
+        ("table.insert = nil", "table is shared"),
+        ("setmetatable(store, {})", "protected metatable"),
+    ] {
+        let source = format!(
+            "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
+        );
+        let (_home, ui) = interface(&[("91_lure.lua", &source)]);
+        let host = LuaHost::new(&ui);
+        let error = host.error.clone().unwrap_or_default();
+        assert!(error.contains(says), "{lure}: {error:?}");
+    }
+}
+
+#[test]
+fn a_global_a_pane_sets_is_its_own() {
+    let writer = r#"shout = function() return "mine" end
+return { name = "writer", slot = "sessions", render = function()
+  return { type = "text", text = "" }
+end }"#;
+    let reader = r#"return { name = "reader", slot = "sessions", render = function()
+  command("focus", { text = tostring(shout) .. "/" .. ("quiet"):upper() })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_writer.lua", writer), ("92_reader.lua", reader)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "writer");
+    render(&host, "reader");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "nil/QUIET"
+        ),
+        "another pane's global is not visible, and the shared library still works"
+    );
+}
+
+/// A run-trusted pane that builds its command line with `string.format`, and
+/// with a value read from `store`, as it draws.
+const FORMATTER: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
+  render = function()
+    run("k", string.format("echo %s", "hi") .. tostring(store.extra or ""), { session = "s1" })
+    return { type = "text", text = "" }
+  end }"#;
+
+/// Load `lure` before [`FORMATTER`], trust the victim, draw both, and return
+/// the program the victim asked for.
+fn victim_program_after(lure: &str) -> String {
+    let source = format!(
+        "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
+    );
+    let (home, ui) = interface(&[("91_lure.lua", &source), ("92_victim.lua", FORMATTER)]);
+    let _config = configure(home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(
+            &ui.join("plugins/92_victim.lua").to_string_lossy(),
+            FORMATTER,
+        )
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{lure}: {:?}", host.error);
+    enforce(&host, &ui);
+    render(&host, "lure");
+    render(&host, "victim");
+    let runs = host.drain_runs();
+    match runs.as_slice() {
+        [(owner, ask)] if owner == "plugins/92_victim.lua" => ask.program.clone(),
+        other => panic!("{lure}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_pane_cannot_reach_the_library_behind_its_sealed_proxy() {
+    // Each of these once reached the table every pane shares: `pairs` handed out
+    // the backing table as its iteration state, and `rawset` wrote past
+    // `__newindex` into the one proxy every pane read.
+    let leaked = [
+        "local _, real = pairs(string)\nif type(real) == 'table' then real.format = function() return 'echo pwned' end end",
+        "local step, state = pairs(string)\nlocal _, f = step(state, nil)\nlocal real = state\nif type(real) == 'table' then pcall(rawset, real, 'format', function() return 'echo pwned' end) end",
+        // `rawset` is withheld, so these find nothing to call.
+        "pcall(rawset, string, 'format', function() return 'echo pwned' end)",
+        "pcall(rawset, store, 'extra', ' && echo pwned')",
+    ]
+    .into_iter()
+    .filter(|lure| victim_program_after(lure) != "echo hi")
+    .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "these reached the shared library: {leaked:#?}"
+    );
+}
+
+#[test]
+fn iterating_a_sealed_library_still_lists_it() {
+    let lister = r#"return { name = "lister", slot = "sessions", render = function()
+  local count = 0
+  for name, value in pairs(string) do
+    if type(value) == "function" then count = count + 1 end
+  end
+  command("focus", { text = tostring(count > 10) .. "/" .. tostring(#string) })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_lister.lua", lister)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "lister");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/0"
+        ),
+        "pairs over a sealed table still walks the library"
+    );
+}
+
+#[test]
+fn only_data_crosses_the_store() {
+    // `store` is the bus between panes, so a write reaches every reader. What
+    // reaches them is a copy of the data: a function or a metatable the writer
+    // attached does not, so a pane cannot hand another code to run.
+    let writer = r#"return { name = "writer", slot = "sessions", render = function()
+  store.handoff = setmetatable({ text = "hi", run = function() return "pwned" end },
+    { __index = function() return "pwned" end })
+  return { type = "text", text = "" }
+end }"#;
+    let reader = r#"return { name = "reader", slot = "sessions", render = function()
+  local got = store.handoff
+  command("focus", { text = table.concat({ got.text, type(got.run),
+    tostring(getmetatable(got)), tostring(got.missing) }, "/") })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_writer.lua", writer), ("92_reader.lua", reader)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "writer");
+    render(&host, "reader");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "hi/nil/nil/nil"
+        ),
+        "the reader gets the data and nothing that runs"
+    );
+}
+
+#[test]
+fn a_pane_that_declares_nothing_cannot_read_the_last_panes_answers() {
+    // `thurbox.runs` is one field of a shared table, set per call. A pane that
+    // declared no capability skipped that set, so it read whatever the pane
+    // before it was handed.
+    let plain = r#"return { name = "plain", slot = "sessions", render = function()
+  local got = (thurbox.runs or {}).mine
+  return { type = "text", text = got and got.stdout or "none" }
+end }"#;
+    let (_home, ui) = interface(&[("91_a.lua", &reader("a")), ("92_plain.lua", plain)]);
+    let host = LuaHost::new(&ui);
+    // After a publish, as in the running interface: `thurbox` is then the
+    // published proxy, whose fields a raw write does not reach.
+    publish(&host);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_a.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "secret".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    let ctx = || RenderContext {
+        width: 40,
+        height: 4,
+        focused: true,
+        elapsed: 0.0,
+        frame: 0,
+    };
+    let a = host
+        .render(host.index_of("a").expect("a"), ctx())
+        .expect("a");
+    assert!(
+        format!("{:?}", a.node).contains("secret"),
+        "a reads its own"
+    );
+    let plain = host
+        .render(host.index_of("plain").expect("plain"), ctx())
+        .expect("plain");
+    assert!(
+        !format!("{:?}", plain.node).contains("secret"),
+        "{:?}",
+        plain.node
+    );
+}
+
+#[test]
+fn a_finalizer_reads_only_its_own_panes_answers() {
+    // A finalizer runs whenever the collector gets to it — inside another
+    // pane's call. It must still see its own pane's world, never the one being
+    // drawn: answers live in each plugin's own environment.
+    let plain = r#"local function litter()
+  for _ = 1, 200 do
+    setmetatable({}, { __gc = function()
+      local got = (thurbox.runs or {}).mine
+      if got then command("focus", { text = "leak:" .. tostring(got.stdout) }) end
+    end })
+  end
+end
+return { name = "plain", slot = "sessions", render = function()
+  litter()
+  return { type = "text", text = "" }
+end }"#;
+    let churn = r#"return {
+  name = "a", slot = "sessions", capabilities = { "run" },
+  render = function()
+    local got = ((thurbox and thurbox.runs) or {})["mine"]
+    local junk = {}
+    for i = 1, 20000 do junk[i % 64] = { i } end
+    return { type = "text", text = got and got.stdout or "nothing" }
+  end,
+}"#;
+    let (_home, ui) = interface(&[("91_a.lua", churn), ("92_plain.lua", plain)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_a.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "secret".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    for _ in 0..40 {
+        render(&host, "plain");
+        render(&host, "a");
+    }
+    let leaked: Vec<_> = host
+        .drain_commands()
+        .into_iter()
+        .filter(|command| format!("{command:?}").contains("secret"))
+        .collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
+}
+
+#[test]
+fn published_data_is_read_only_to_every_pane() {
+    // `thurbox` is one set of tables every pane reads, so a write into it
+    // would change what the next pane sees — a session's id a trusted pane
+    // builds a command from, say. Every route a write could take is refused.
+    let probes = [
+        "thurbox.error = 'x'",
+        "thurbox.theme.roles = {}",
+        "local _, backing = pairs(thurbox); if type(backing) ~= 'table' then error('no backing') end; backing.error = 'x'",
+        "rawset(thurbox, 'error', 'x')",
+        "rawset(thurbox.theme, 'roles', {})",
+    ];
+    let source = format!(
+        "local probes = {{ {} }}\nreturn {{ name = 'lure', slot = 'sessions', render = function()\n  local wrote = {{}}\n  for i, probe in ipairs(probes) do if pcall(probe) then wrote[#wrote + 1] = i end end\n  command('focus', {{ text = 'wrote:' .. table.concat(wrote, ',') }})\n  return {{ type = 'text', text = '' }}\nend }}",
+        probes
+            .iter()
+            .map(|probe| format!("function() {probe} end"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let (_home, ui) = interface(&[("91_lure.lua", &source)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    render(&host, "lure");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "wrote:"
+        ),
+        "the probes that wrote, by number: {issued:?}"
+    );
+}
+
+#[test]
+fn a_published_table_saved_to_store_or_state_keeps_its_contents() {
+    // Published data is read-only proxies, empty underneath. Copied into
+    // `store` or `state` raw, it was saved empty; it is copied through.
+    let saver = r#"return { name = "saver", slot = "sessions", render = function()
+  store.saved = thurbox.theme
+  state.saved = thurbox.theme
+  local from_store, from_state = store.saved, state.saved
+  command("focus", { text = tostring(from_store and from_store.roles ~= nil)
+    .. "/" .. tostring(from_state and from_state.roles ~= nil) })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_saver.lua", saver)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    render(&host, "saver");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/true"
+        ),
+        "{issued:?}"
+    );
+}
+
+#[test]
+fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
+    // A pane's `thurbox` is its own view: published data plus its own answers.
+    // Saved whole, it must keep both, and count as reading all of it, as
+    // iterating it does — the loop fetches remote diffs only for a pane that
+    // reads them.
+    let saver = r#"return { name = "saver", slot = "sessions", capabilities = { "run" },
+  render = function()
+    store.saved = thurbox
+    local saved = store.saved or {}
+    local mine = (saved.runs or {}).mine
+    command("focus", { text = tostring(mine and mine.stdout) .. "/" .. tostring(saved.theme ~= nil) })
+    return { type = "text", text = "" }
+  end }"#;
+    let (_home, ui) = interface(&[("91_saver.lua", saver)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_saver.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "own".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    host.take_diffs_read();
+    render(&host, "saver");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "own/true"
+        ),
+        "{issued:?}"
+    );
+    assert!(
+        host.take_diffs_read(),
+        "copying all of it reads the diffs too"
+    );
 }

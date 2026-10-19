@@ -352,6 +352,14 @@ and takes no input, and the message band says why, once per failure.
 | `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
 
+**Your globals are your own.** Each plugin runs in an environment of its own: a
+global you assign is invisible to every other plugin, and `require` gives you your
+own copy of a module. Share through `store`. The library everyone reads —
+`string`, `table`, `math`, `coroutine`, `utf8`, `text` — is read-only, so
+`string.upper = …` fails the load rather than changing another pane. This is what
+lets a grant belong to one file: code you write always acts as you, whichever
+pane happens to call it.
+
 That is worth stating on its own, because it is easy to read `require` as "the
 `lib/` the interface shipped": **a pure-Lua library can be vendored into a plugin's
 own repository and required from there**, with no kernel change and no capability.
@@ -369,7 +377,7 @@ because they are off the render path by construction.
 **There is no filesystem, no process spawning and no network.** Not because they
 are blocked — because they are not there. A capability you were not granted is
 absent from the environment, so there is nothing to call. `io`, `os`, `debug`,
-`dofile`, `loadfile`, `print` and `warn` are all withheld.
+`dofile`, `loadfile`, `print`, `warn` and `rawset` are all withheld.
 
 You will hear about it before you run it. `selene ui` checks `ui/` against
 `thurbox.yml`, and `lua-language-server --check ui` against `.luarc.json` — between

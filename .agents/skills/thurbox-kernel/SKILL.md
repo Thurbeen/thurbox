@@ -495,13 +495,17 @@ deliberately **not a sandbox** — a program thurbox spawns has the user's autho
 and the position is that thurbox can only refuse to run things unasked.
 `examples/lua/composite.lua` is the worked example.
 
-The implementation lives per-call: `LuaHost::enter` stamps the current plugin and, in
-the same breath, binds `run` to the implementation or to nil, and `enter_nothing` is
-the other half for Lua that belongs to no plugin (`layout.lua` declares no
-capabilities). The implementation itself is held in the VM's **registry**, never its
-globals, because a plugin chunk's `_ENV` *is* the globals table — it sat there as
-`__run_impl` once, which handed every untrusted plugin the capability under a second
-name.
+**Every plugin runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
+is shared, so identity is bound where a function is made, never read from who is
+running — a pane that wrapped `type` used to run inside a trusted pane's call with
+its `run` and its path. `command`, `run`, `files`, `state` and `require` (with a
+per-plugin module cache, modules run in the requirer's env) are created per plugin;
+reads fall through to the sealed shared globals, writes stay in the plugin's table.
+`string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
+views over a sealed metatable (per plugin, because `rawset` writes into the view;
+`__pairs` never returns the backing table), and the string metatable is sealed. `LuaHost::enter` puts the plugin's own
+`run` into its env, or takes it out, per call; `layout.lua` has an env that never
+holds it. `LuaHost::reachable_globals` is what the environment tripwire reads.
 
 **A plugin can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and

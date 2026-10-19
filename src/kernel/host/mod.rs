@@ -38,7 +38,7 @@ mod api;
 mod load;
 mod publish;
 
-use self::api::{clean_error, install_api, RUN_IMPL};
+use self::api::{clean_error, install_api, Env, EnvParts};
 pub(crate) use self::api::{columns, take_left};
 use self::load::{load_arrangement, load_plugin, new_vm, read_float, Budget};
 use self::publish::run_to_lua;
@@ -264,6 +264,8 @@ pub struct Plugin {
     pub actions: Vec<ActionDecl>,
     order: f64,
     def: Table,
+    /// The environment its chunk runs in — see [`api::plugin_env`].
+    env: Env,
 }
 
 /// Something a plugin may ask to be able to do that ordinary Lua here cannot.
@@ -1013,14 +1015,7 @@ impl LuaHost {
         let lua = new_vm().map_err(|e| e.to_string())?;
         install_api(
             &lua,
-            &self.ui_dir,
             self.store.clone(),
-            self.state.clone(),
-            self.current.clone(),
-            self.queue.clone(),
-            self.roots.clone(),
-            self.runs.clone(),
-            self.current_path.clone(),
             self.state_version.clone(),
             self.clock.clone(),
             self.clock_read.clone(),
@@ -1028,6 +1023,15 @@ impl LuaHost {
             self.store_writes.clone(),
         )
         .map_err(|e| e.to_string())?;
+        let parts = EnvParts {
+            ui_dir: self.ui_dir.clone(),
+            state: self.state.clone(),
+            queue: self.queue.clone(),
+            roots: self.roots.clone(),
+            runs: self.runs.clone(),
+            version: self.state_version.clone(),
+            writes: self.store_writes.clone(),
+        };
 
         let dir = self.ui_dir.join("plugins");
         let mut files: Vec<PathBuf> = fs::read_dir(&dir)
@@ -1064,7 +1068,7 @@ impl LuaHost {
             if !path.is_file() || disabled.iter().any(|off| off == &relative) {
                 continue;
             }
-            plugins.push(load_plugin(&lua, &path, &relative)?);
+            plugins.push(load_plugin(&lua, &parts, &path, &relative)?);
         }
         for path in files {
             let name = path
@@ -1080,7 +1084,7 @@ impl LuaHost {
             if disabled.iter().any(|off| off == &relative) {
                 continue;
             }
-            plugins.push(load_plugin(&lua, &path, &relative)?);
+            plugins.push(load_plugin(&lua, &parts, &path, &relative)?);
         }
         drop(disabled);
         // An EMPTY directory is not an error: removing every pane is something
@@ -1121,7 +1125,7 @@ impl LuaHost {
             }
         }
 
-        let layout = load_arrangement(&lua, &self.ui_dir)?;
+        let layout = load_arrangement(&lua, &parts)?;
         Ok((lua, plugins, layout))
     }
 
@@ -1551,14 +1555,15 @@ impl LuaHost {
     /// it in the same batch must read the finished text — but rerunning the
     /// whole republish per drag report is the expensive path (terminal sync,
     /// links, search, trust, inventory), and none of that moved. This patches
-    /// the one scalar in place, through the published table proxy (`set`,
-    /// so no `state_version` bump — a pure pane reading `selection` is
+    /// the one scalar in place, in the published table's backing (so no
+    /// `state_version` bump — a pure pane reading `selection` is
     /// deliberately not invalidated, matching the field's last-painted
     /// contract). A no-op before the first publish, when the global is still
     /// absent.
     pub fn set_published_selection(&self, selection: &str) {
-        if let Ok(table) = self.lua.globals().get::<Table>("thurbox") {
-            let _ = table.set("selection", selection);
+        // Into the backing table: the published proxy refuses every write.
+        if let Some(table) = api::published_backing(&self.lua) {
+            let _ = table.raw_set("selection", selection);
         }
     }
 
@@ -1595,25 +1600,36 @@ impl LuaHost {
     }
 
     /// Take the commands plugins issued since the last drain.
-    /// Make `plugin` the current one, and give it exactly the capabilities it
-    /// has been granted.
+    /// The other half of [`Self::enter`], for Lua that runs outside any plugin.
     ///
-    /// Capabilities are **installed and removed per call** rather than once at
-    /// load, because every plugin shares one Lua state: a global installed for
-    /// one would be reachable by all. Setting it to nil for a plugin that was
-    /// not granted it is what makes "capabilities are absent rather than
-    /// blocked" true here — `run` is not a function that refuses, it is not a
-    /// function (design D7).
-    /// The other half of [`Self::enter`]: withdraw every per-plugin capability.
-    ///
-    /// For Lua that runs outside any plugin. `enter` installs `run` for the plugin
-    /// about to be called and nothing takes it away afterwards, so code entered
-    /// without it would inherit the last grant — and be attributed to the last
-    /// plugin, since that is what stamps the asking path.
+    /// `layout.lua` runs in an environment of its own that never holds `run`,
+    /// so there is nothing to withdraw — only the current plugin to forget, so
+    /// the layout's work is not attributed to whichever pane ran last.
     fn enter_nothing(&self) {
         self.current.borrow_mut().clear();
         self.current_path.borrow_mut().clear();
-        let _ = self.lua.globals().set("run", Value::Nil);
+    }
+
+    /// Every name the plugin at `index` can reach as a global: its own
+    /// environment's and the shared ones beneath it.
+    ///
+    /// For the test that pins the plugin environment. Lua cannot list the shared
+    /// half itself — the environment's metatable is sealed — so it is read here.
+    #[doc(hidden)]
+    pub fn reachable_globals(&self, index: usize) -> Vec<String> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut collect = |table: Table| {
+            for (key, _) in table.pairs::<Value, Value>().flatten() {
+                if let Some(name) = key.as_string() {
+                    names.insert(name.to_string_lossy());
+                }
+            }
+        };
+        if let Some(plugin) = self.plugins.get(index) {
+            collect(plugin.env.table.clone());
+        }
+        collect(self.lua.globals());
+        names.into_iter().collect()
     }
 
     /// May this plugin use `capability`?
@@ -1637,32 +1653,38 @@ impl LuaHost {
             .is_some_and(|plugin| self.may(plugin, capability))
     }
 
+    /// Make `plugin` the current one, and give it exactly the capabilities it
+    /// has been granted.
+    ///
+    /// Installed **per call** rather than once at load so a grant revoked on
+    /// the Interface tab is gone on the next call. `run` goes into the plugin's
+    /// own environment or is taken out of it: not a function that refuses, but
+    /// no function at all (design D7).
     fn enter(&self, plugin: &Plugin) {
         *self.current.borrow_mut() = plugin.file.clone();
         *self.current_path.borrow_mut() = plugin.path.clone();
-        let granted = self.may(plugin, Capability::Run);
         // Only a plugin that asked for a capability can have answers, so every
         // other one skips the rest. Worth the check: `enter` runs on every call
         // to every plugin, and building a table per call for the panes that can
         // never have runs would be a per-frame allocation for nothing.
         if plugin.capabilities.is_empty() {
-            let _ = self.lua.globals().set("run", Value::Nil);
             return;
         }
         self.publish_runs(plugin);
         self.publish_granted(plugin);
-        self.install_run(granted);
+        let run = if self.may(plugin, Capability::Run) {
+            Value::Function(plugin.env.run.clone())
+        } else {
+            Value::Nil
+        };
+        let _ = plugin.env.table.raw_set("run", run);
     }
 
-    /// This plugin's own answers, and nothing else's, as `thurbox.runs`. Set per
-    /// call rather than at publish because `thurbox` is one shared table:
-    /// publishing every plugin's runs into it would let any pane read another's
-    /// output.
-    ///
-    /// The read surface is created if it does not exist yet, so an answer is
-    /// readable without depending on a publish having happened first.
+    /// This plugin's own answers, and nothing else's, as `thurbox.runs` — in
+    /// its own `thurbox` view (`api::Env::thurbox`), which no other plugin's
+    /// code can reach, whenever it runs.
     fn publish_runs(&self, plugin: &Plugin) {
-        let (Some(surface), Ok(table)) = (self.thurbox_table(), self.lua.create_table()) else {
+        let Ok(table) = self.lua.create_table() else {
             return;
         };
         if let Some(answers) = self.run_answers.borrow().get(&plugin.path) {
@@ -1672,27 +1694,11 @@ impl LuaHost {
                 }
             }
         }
-        let _ = surface.set("runs", table);
+        let _ = plugin.env.thurbox.raw_set("runs", table);
     }
 
-    /// The global `thurbox` table, created here when no publish has made it yet.
-    fn thurbox_table(&self) -> Option<Table> {
-        let globals = self.lua.globals();
-        match globals.get::<Table>("thurbox") {
-            Ok(table) => Some(table),
-            // Not `Option::inspect`: that is stable since 1.76 and the MSRV is
-            // 1.75.
-            Err(_) => match self.lua.create_table() {
-                Ok(fresh) => {
-                    let _ = globals.set("thurbox", fresh.clone());
-                    Some(fresh)
-                }
-                Err(_) => None,
-            },
-        }
-    }
-
-    /// What this plugin has actually been granted, as `thurbox.granted.<name>`.
+    /// What this plugin has actually been granted, as `thurbox.granted.<name>`,
+    /// in its own `thurbox` view like its runs.
     ///
     /// Needed because not every capability can be withheld by absence. `run` is
     /// a global, so a plugin checks `if not run then` and draws an honest hint —
@@ -1701,10 +1707,7 @@ impl LuaHost {
     /// way to tell "not trusted" from "still starting". This is that answer, and
     /// it grants nothing: it is a boolean about a decision the user already made.
     fn publish_granted(&self, plugin: &Plugin) {
-        let (Ok(surface), Ok(table)) = (
-            self.lua.globals().get::<Table>("thurbox"),
-            self.lua.create_table(),
-        ) else {
+        let Ok(table) = self.lua.create_table() else {
             return;
         };
         for capability in Capability::ALL {
@@ -1712,29 +1715,7 @@ impl LuaHost {
                 let _ = table.set(capability.as_str(), true);
             }
         }
-        let _ = surface.set("granted", table);
-    }
-
-    /// Point the global `run` at the implementation when `granted`, and at
-    /// nothing otherwise.
-    ///
-    /// Resolved out of the VM rather than held in Rust, because a reload
-    /// replaces the VM and a cached handle would outlive the state it came
-    /// from. Out of the *registry* rather than globals, because globals is
-    /// every plugin's `_ENV` — see `RUN_IMPL`.
-    fn install_run(&self, granted: bool) {
-        let globals = self.lua.globals();
-        match granted
-            .then(|| self.lua.named_registry_value::<Value>(RUN_IMPL))
-            .transpose()
-        {
-            Ok(Some(implementation)) => {
-                let _ = globals.set("run", implementation);
-            }
-            _ => {
-                let _ = globals.set("run", Value::Nil);
-            }
-        }
+        let _ = plugin.env.thurbox.raw_set("granted", table);
     }
 
     /// Hand over the answers to every run asked for so far.
@@ -1807,7 +1788,9 @@ impl LuaHost {
                 return Ok(value.clone());
             }
         }
-        let value = build()?;
+        // Frozen before it is cached: a group is reused across frames, so a
+        // write into it would outlive the frame and reach every reader.
+        let value = api::freeze(&self.lua, build()?).map_err(|e| e.to_string())?;
         self.groups.borrow_mut().insert(name, (key, value.clone()));
         Ok(value)
     }

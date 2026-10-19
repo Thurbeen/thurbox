@@ -1637,12 +1637,7 @@ fn the_granted_capability_set_matches_a_declared_list() {
         r#"
         return {
           name = "probe", slot = "a",
-          render = function()
-            local names = {}
-            for key in pairs(_G) do names[#names + 1] = key end
-            table.sort(names)
-            return { text = table.concat(names, " ") }
-          end,
+          render = function() return { text = "" } end,
         }
         "#,
     )
@@ -1650,7 +1645,7 @@ fn the_granted_capability_set_matches_a_declared_list() {
 
     let host = LuaHost::new(dir.path());
     publish(&host, &snapshot(Vec::new()));
-    let globals = paint(&host, index_of(&host, "probe"), 400, 1).join(" ");
+    let globals = host.reachable_globals(index_of(&host, "probe")).join(" ");
 
     // Everything thurbox added must be on the list. Lua's own value types
     // (string, table, math…) are the stdlib we deliberately opened.

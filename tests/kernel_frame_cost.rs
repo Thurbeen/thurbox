@@ -1332,10 +1332,11 @@ fn observed_publication_preserves_raw_reads_and_iteration() {
         end
         local a = rawget(thurbox, "taken_at_ms") == 1234 and fields.taken_at_ms == 1234 and next_fields.taken_at_ms == 1234
         local b = rawequal(rawget(thurbox, "metrics"), thurbox.metrics) and rawequal(fields.metrics, thurbox.metrics)
-        rawset(thurbox, "custom", "kept")
-        local c = thurbox.custom == "kept" and rawget(thurbox, "custom") == "kept"
+        -- Read-only to every pane: `rawset` is withheld and a write is refused.
+        local c = rawset == nil and not pcall(function() thurbox.custom = "kept" end)
+            and thurbox.custom == nil
         local plain = { value = 7 }
-        local d = rawget(plain, "value") == 7 and rawset(plain, "value", 8) == plain and plain.value == 8
+        local d = rawget(plain, "value") == 7 and rawget(thurbox.theme, "roles") ~= nil
         return {text = tostring(a and b and c and d)}
     end}"#).unwrap();
     let host = LuaHost::new(dir.path());

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use mlua::{Lua, Table, Value, VmState};
 
-use super::api::clean_error;
+use super::api::{clean_error, plugin_env, EnvParts};
 use super::{
     instruction_budget, memory_limit, plugin_stdlib, Arrangement, Capability, Float, Plugin,
 };
@@ -79,16 +79,20 @@ impl Drop for Budget<'_> {
 ///
 /// A parse error here fails the whole reload, exactly like a broken plugin —
 /// so the previous arrangement keeps running rather than the screen collapsing.
-pub(super) fn load_arrangement(lua: &Lua, ui_dir: &Path) -> Result<Arrangement, String> {
-    let path = ui_dir.join("layout.lua");
+pub(super) fn load_arrangement(lua: &Lua, parts: &EnvParts) -> Result<Arrangement, String> {
+    let path = parts.ui_dir.join("layout.lua");
     let source = match fs::read_to_string(&path) {
         Ok(source) => source,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Arrangement::Missing),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
+    // An environment of its own like any plugin's, under an owner no grant
+    // names: the arrangement asks for nothing.
+    let env = plugin_env(lua, parts, "", "").map_err(|e| format!("layout.lua: {e}"))?;
     let value: Value = lua
         .load(&source)
         .set_name("layout.lua")
+        .set_environment(env.table)
         .eval()
         .map_err(|e| format!("layout.lua: {}", clean_error(&e)))?;
     match value {
@@ -104,16 +108,23 @@ pub(super) fn load_arrangement(lua: &Lua, ui_dir: &Path) -> Result<Arrangement, 
 /// `relative` is the path within the interface directory, carried through
 /// rather than re-derived: the kernel writes and removes files by that name, so
 /// it must be the same string everywhere.
-pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plugin, String> {
+pub(super) fn load_plugin(
+    lua: &Lua,
+    parts: &EnvParts,
+    path: &Path,
+    relative: &str,
+) -> Result<Plugin, String> {
     let file = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string());
     let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
+    let env = plugin_env(lua, parts, relative, &file).map_err(|e| format!("{file}: {e}"))?;
     let value: Value = lua
         .load(&source)
         .set_name(file.clone())
+        .set_environment(env.table.clone())
         .eval()
         .map_err(|e| format!("{file}: {}", clean_error(&e)))?;
 
@@ -229,6 +240,7 @@ pub(super) fn load_plugin(lua: &Lua, path: &Path, relative: &str) -> Result<Plug
         commands,
         actions,
         def,
+        env,
     })
 }
 
