@@ -22,10 +22,18 @@ local modal = require("lib.modal")
 local theme = require("lib.theme")
 local widgets = require("lib.widgets")
 
---- The pending question, if a pane left one.
+--- The commands a question may end in.
+---
+--- `store` is written by every pane, and this one holds `sessions` because it
+--- ships with thurbox — so anything it would forward, any pane could issue
+--- through it. A `send` or a `create` behind a question its author wrote is the
+--- capability laundered, so only the changes the shipped panes ask about pass.
+local FORWARDS = { delete = true, restart = true, restore = true, sync = true }
+
+--- The pending question, if a pane left one it may ask.
 local function pending()
   local ask = store.confirm
-  if type(ask) ~= "table" or not ask.question then
+  if type(ask) ~= "table" or not ask.question or not FORWARDS[ask.command] then
     return nil
   end
   return ask
@@ -37,6 +45,9 @@ end
 
 return {
   name = "confirm",
+  -- A force delete and a restart are issued from here, on the user's `y`.
+  -- Granted without asking while this file is the one thurbox ships.
+  capabilities = { "sessions" },
   ui_state = function()
     return { open = pending() ~= nil }
   end,
@@ -118,9 +129,7 @@ return {
       -- snapshot, and a question left up meanwhile would invite a second yes.
       local kind, options = ask.command, ask.options
       clear()
-      if type(kind) == "string" and kind ~= "" then
-        command(kind, type(options) == "table" and options or {})
-      end
+      command(kind, type(options) == "table" and options or {})
       return true
     end
     -- Everything else is swallowed: a modal that let keys through to the pane

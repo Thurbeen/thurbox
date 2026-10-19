@@ -184,6 +184,20 @@ enumerates every global a plugin can reach and has no blanket exemption for a
 leading underscore, and `tests/plugin_commands.rs` holds the hijack: a pane
 that wraps `type` gets neither another pane's `run` nor its path on a command.
 
+A capability asked for through `command` cannot be absent, since every plugin
+has `command`. Those are gated where the command is applied instead: the queue
+records the path of the plugin that issued each one, and
+`Command::requires`/`Command::refusal` decide whether that plugin holds what
+the command needs before the loop applies it — `run` for an exec automation's
+command line, `sessions` for `send`, `create`, `restart` and a force `delete`.
+`program` is checked the same way when its pane is started.
+
+The grant itself comes from one place, `packages::granted` → `trust_of` →
+`Trust::grants`, the same decision the Interface tab draws. A bundled file that
+is byte for byte what the binary ships is `Shipped` and holds what it declares
+without a trust record — the confirmation and the creation flow need `sessions`
+before anyone could press `t` — and an edited one is decided like any other file.
+
 The cost, accepted: a plugin must handle the absence, exactly as it handles a
 session having no worktree. `examples/lua/composite.lua` shows the shape — draw
 what is missing, not a blank pane.

@@ -24,9 +24,11 @@ return {
   name = "std_reads",
   render = function()
     local read = {
-      -- granted (2)
+      -- granted (4)
       tostring(thurbox.granted.run),
       tostring(thurbox.granted.program),
+      tostring(thurbox.granted.sessions),
+      tostring(thurbox.granted.files),
       -- platform (2)
       tostring(thurbox.platform.os),
       tostring(thurbox.platform.arch),

@@ -190,7 +190,8 @@ whose call took the time.
   "help.open" })` runs a declared action — which is how a **key handler** opens
   help, settings, themes or the palette, rather than painting a `role =
   "action:…"` node and hoping for a click.
-- **No granting yourself a capability.** A pane that wants to run a program says so
+- **No granting yourself a capability.** A pane that wants to run a program, type
+  into or create a session (`sessions`) or read a session's files (`files`) says so
   with `capabilities = { … }`, and the *user* grants it in settings
   (`Ctrl+,` → `]` → `t`). You cannot do that step for them, and you should not
   edit `ui.json` to fake it. Draw the untrusted state honestly instead.

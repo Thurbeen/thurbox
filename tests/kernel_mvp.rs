@@ -1616,13 +1616,12 @@ fn the_granted_capability_set_matches_a_declared_list() {
     // Capabilities are introduced with their consumer, never
     // ahead of one. This is the tripwire — a new global in the plugin
     // environment has to be added here deliberately.
-    const GRANTED: [&str; 7] = [
+    //
+    // `files` is not on it: a session's directory holds its `.env`, so the two
+    // rooted reads are present only for a plugin granted the `files`
+    // capability, as `run` is (`tests/plugin_commands.rs`).
+    const GRANTED: [&str; 6] = [
         "require", "state", "store", "command", "thurbox",
-        // Two rooted reads — directory entries and a file's text — confined to
-        // a session's working directory. NOT a filesystem: there is no open,
-        // no write, no path outside the root. Granted with its consumer (the
-        // file viewer).
-        "files",
         // Display width, which Lua cannot compute for itself: `#` counts bytes
         // and `utf8.len` counts codepoints. Pure measurement — it reads
         // nothing and reaches nothing.
@@ -2447,36 +2446,40 @@ fn a_pane_creates_and_edits_an_automation_with_typed_fields() {
     let painted = paint(&host, index_of(&host, "pane"), 40, 1).join("");
     assert!(painted.starts_with("false false"), "{painted}");
     assert_eq!(
-        host.drain_commands(),
+        host.drain_issued(),
         vec![
-            Command::AutomationSave {
-                owner: "plugins/10_pane.lua".into(),
-                id: None,
-                draft: AutomationDraft {
-                    name: Some("nightly".into()),
-                    trigger: Some("daily".into()),
-                    time: Some("09:30".into()),
-                    weekday: Some(1),
-                    timezone: Some("UTC".into()),
-                    prompt: Some("it's $(rm -rf ~)".into()),
-                    enabled: Some(false),
-                    repo: Some("/srv/app".into()),
-                    branch: Some("feat/x".into()),
-                    base: Some("main".into()),
-                    agent: Some("claude".into()),
-                    ..AutomationDraft::default()
+            (
+                "plugins/10_pane.lua".to_string(),
+                Command::AutomationSave {
+                    id: None,
+                    draft: AutomationDraft {
+                        name: Some("nightly".into()),
+                        trigger: Some("daily".into()),
+                        time: Some("09:30".into()),
+                        weekday: Some(1),
+                        timezone: Some("UTC".into()),
+                        prompt: Some("it's $(rm -rf ~)".into()),
+                        enabled: Some(false),
+                        repo: Some("/srv/app".into()),
+                        branch: Some("feat/x".into()),
+                        base: Some("main".into()),
+                        agent: Some("claude".into()),
+                        ..AutomationDraft::default()
+                    },
                 },
-            },
-            Command::AutomationSave {
-                owner: "plugins/10_pane.lua".into(),
-                id: Some(7),
-                draft: AutomationDraft {
-                    name: Some("renamed".into()),
-                    command: Some("make sync".into()),
-                    timezone: Some(String::new()),
-                    ..AutomationDraft::default()
+            ),
+            (
+                "plugins/10_pane.lua".to_string(),
+                Command::AutomationSave {
+                    id: Some(7),
+                    draft: AutomationDraft {
+                        name: Some("renamed".into()),
+                        command: Some("make sync".into()),
+                        timezone: Some(String::new()),
+                        ..AutomationDraft::default()
+                    },
                 },
-            },
+            ),
         ]
     );
 }

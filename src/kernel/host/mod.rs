@@ -132,7 +132,9 @@ type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
 type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 /// Commands a plugin issued this frame, drained by the loop.
-type Queue = Rc<RefCell<Vec<Command>>>;
+/// Each command with the path of the plugin that issued it, stamped by the
+/// kernel — empty for Lua that belongs to no plugin.
+type Queue = Rc<RefCell<Vec<(String, Command)>>>;
 
 /// Finished runs, keyed by the plugin that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
@@ -285,6 +287,19 @@ pub enum Capability {
     /// every few seconds did not agree to "may hold a process open indefinitely
     /// and feed it what I type", so the grant is asked for separately.
     Program,
+    /// Start, restart, type into or permanently delete a session.
+    ///
+    /// The commands that drive an agent or destroy something. `send` puts words
+    /// in an agent's mouth, `create` and `restart` launch one, and a force
+    /// `delete` removes a worktree nothing restores. A pane holding none of these
+    /// can still ask the user through the bundled confirmation, which holds this
+    /// grant and issues the command only on their `y`.
+    Sessions,
+    /// Read a session's files: `files.list` and `files.read`.
+    ///
+    /// A worktree holds `.env` files and keys, so reading one is not something
+    /// every pane that draws a list may do.
+    Files,
 }
 
 impl Capability {
@@ -292,6 +307,8 @@ impl Capability {
         match self {
             Capability::Run => "run",
             Capability::Program => "program",
+            Capability::Sessions => "sessions",
+            Capability::Files => "files",
         }
     }
 
@@ -305,6 +322,8 @@ impl Capability {
         match self {
             Capability::Run => "runs programs and reads their output",
             Capability::Program => "runs a program you interact with",
+            Capability::Sessions => "starts, restarts, types into and deletes sessions",
+            Capability::Files => "reads the files in a session's directory",
         }
     }
 
@@ -317,12 +336,19 @@ impl Capability {
         match name {
             "run" => Some(Capability::Run),
             "program" => Some(Capability::Program),
+            "sessions" => Some(Capability::Sessions),
+            "files" => Some(Capability::Files),
             _ => None,
         }
     }
 
     /// Every capability, for a message naming what was available.
-    pub const ALL: [Capability; 2] = [Capability::Run, Capability::Program];
+    pub const ALL: [Capability; 4] = [
+        Capability::Run,
+        Capability::Program,
+        Capability::Sessions,
+        Capability::Files,
+    ];
 }
 
 /// A key, flattened to what Lua needs to know about it.
@@ -1657,9 +1683,9 @@ impl LuaHost {
     /// has been granted.
     ///
     /// Installed **per call** rather than once at load so a grant revoked on
-    /// the Interface tab is gone on the next call. `run` goes into the plugin's
-    /// own environment or is taken out of it: not a function that refuses, but
-    /// no function at all (design D7).
+    /// the Interface tab is gone on the next call. `run` and `files` go into
+    /// the plugin's own environment or are taken out of it: not a function that
+    /// refuses, but no function at all (design D7).
     fn enter(&self, plugin: &Plugin) {
         *self.current.borrow_mut() = plugin.file.clone();
         *self.current_path.borrow_mut() = plugin.path.clone();
@@ -1678,6 +1704,12 @@ impl LuaHost {
             Value::Nil
         };
         let _ = plugin.env.table.raw_set("run", run);
+        let files = if self.may(plugin, Capability::Files) {
+            Value::Table(plugin.env.files.clone())
+        } else {
+            Value::Nil
+        };
+        let _ = plugin.env.table.raw_set("files", files);
     }
 
     /// This plugin's own answers, and nothing else's, as `thurbox.runs` — in
@@ -1757,6 +1789,15 @@ impl LuaHost {
     }
 
     pub fn drain_commands(&self) -> Vec<Command> {
+        self.drain_issued()
+            .into_iter()
+            .map(|(_, command)| command)
+            .collect()
+    }
+
+    /// [`Self::drain_commands`], each with the path of the plugin that issued
+    /// it — what [`Command::refusal`] checks the grant of.
+    pub fn drain_issued(&self) -> Vec<(String, Command)> {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
 

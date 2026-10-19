@@ -194,6 +194,7 @@ fn trust_word(trust: FileTrust) -> Option<&'static str> {
         FileTrust::Trusted => Some("trusted"),
         FileTrust::Drifted => Some("trusted, changed"),
         FileTrust::Replaced => Some("untrusted, changed"),
+        FileTrust::Shipped => Some("shipped"),
     }
 }
 
@@ -268,6 +269,7 @@ fn asks(row: &Row) -> Option<String> {
         FileTrust::Trusted => " — granted; t revokes it",
         FileTrust::Drifted => " — granted, but the file changed since; t revokes it",
         FileTrust::Replaced => " — not granted: changed since trusted; t grants it",
+        FileTrust::Shipped => " — granted: shipped with thurbox, unchanged",
         FileTrust::NotAsked => "",
     };
     Some(format!("asks to: {}{standing}", wants.join(", ")))
@@ -491,6 +493,15 @@ impl InterfaceTab {
                 None,
             );
         }
+        if row.trust == FileTrust::Shipped {
+            return (
+                Some(format!(
+                    "{} is shipped with thurbox and holds what it asks for; space turns it off",
+                    row.path
+                )),
+                None,
+            );
+        }
         let granting = !row.trust.grants();
         (
             None,
@@ -694,7 +705,7 @@ impl InterfaceTab {
             match row.trust {
                 FileTrust::Untrusted | FileTrust::Replaced => hints.push(("t", " trust  ")),
                 FileTrust::Trusted | FileTrust::Drifted => hints.push(("t", " revoke  ")),
-                FileTrust::NotAsked => {}
+                FileTrust::NotAsked | FileTrust::Shipped => {}
             }
         }
         hints.push(("[/]", " tab"));
@@ -1238,6 +1249,24 @@ mod tests {
                 trusted: true,
             })
         );
+
+        // The binary's own copy holds its grant with no record to revoke, so `t`
+        // explains rather than writing a decision that would change nothing.
+        let mut shipped = row(
+            "plugins/60_confirm.lua",
+            Source::Bundled,
+            FileState::Present,
+        );
+        shipped.capabilities = vec![Capability::Sessions];
+        shipped.trust = FileTrust::Shipped;
+        let keys = footer(&tab, std::slice::from_ref(&shipped));
+        assert!(
+            !keys.contains("trust") && !keys.contains("revoke"),
+            "{keys}"
+        );
+        let (said, edit) = InterfaceTab::default().trust(&[shipped]);
+        assert_eq!(edit, None);
+        assert!(said.is_some_and(|said| said.contains("space turns it off")));
 
         let doc = [file("README.md", Kind::Doc)];
         let keys = footer(&tab, &doc);

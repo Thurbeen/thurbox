@@ -607,6 +607,9 @@ fn split_last(src: &str) -> (String, String) {
 /// missing, unreadable or has no entry for the file, the file would otherwise be
 /// judged as the user's own, and a changed one would keep its grant as merely
 /// `Drifted` — so it fails closed instead.
+///
+/// A bundled file whose contents are the embedded copy is `Shipped`, whatever
+/// the record says, unless a package delivered it.
 pub fn trust_of(
     dir: &Path,
     relative: &str,
@@ -615,9 +618,13 @@ pub fn trust_of(
 ) -> super::inventory::Trust {
     let absolute = dir.join(relative);
     let key = absolute.to_string_lossy();
-    let current = std::fs::read_to_string(&absolute)
-        .ok()
-        .map(|text| digest(&text));
+    let text = std::fs::read_to_string(&absolute).ok();
+    let current = text.as_deref().map(digest);
+    let shipped = text.as_deref().is_some_and(|text| {
+        super::bundled::BUNDLED
+            .iter()
+            .any(|(name, contents)| *name == relative && *contents == text)
+    });
 
     match lock.covering(relative) {
         Some(entry) => super::inventory::Trust::resolve_installed(
@@ -627,6 +634,7 @@ pub fn trust_of(
             &entry.pin_key(),
             current.as_deref(),
         ),
+        None if shipped => super::inventory::Trust::Shipped,
         None if registry.trusted_pin(&key).is_some() => super::inventory::Trust::Untrusted,
         None => super::inventory::Trust::resolve(registry.trusted_digest(&key), current.as_deref()),
     }

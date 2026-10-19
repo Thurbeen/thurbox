@@ -1417,6 +1417,9 @@ end
 
 return {
   name = "new_session",
+  -- `create` is issued from here. Granted without asking while this file is
+  -- the one thurbox ships.
+  capabilities = { "sessions" },
   ui_state = function()
     local flow = load()
     if not flow then

@@ -507,6 +507,15 @@ views over a sealed metatable (per plugin, because `rawset` writes into the view
 `run` into its env, or takes it out, per call; `layout.lua` has an env that never
 holds it. `LuaHost::reachable_globals` is what the environment tripwire reads.
 
+**Driving sessions needs `sessions`.** `send`, `create`, `restart` and a force
+`delete` are refused (`Command::requires` → `Command::refusal`, checked in
+`coordinator::commands::refuse_ungranted` against the owner the queue stamped —
+`LuaHost::drain_issued`) unless the issuing file declares `sessions` and holds the
+grant. A bundled file byte for byte as shipped is `Trust::Shipped` and holds what
+it declares untrusted — `60_confirm` and `70_new_session` need it — and
+`60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
+write `store.confirm`.
+
 **A plugin can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and
 the loop calls it once per change, off the render path, under the render's

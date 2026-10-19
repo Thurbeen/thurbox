@@ -161,9 +161,6 @@ pub enum Command {
     AutomationSave {
         id: Option<i64>,
         draft: AutomationDraft,
-        /// The plugin that issued it, by path — stamped by the kernel, and
-        /// checked against [`Command::requires`] before it is applied.
-        owner: String,
     },
     /// Copy a surface's terminal contents to the clipboard.
     ///
@@ -584,27 +581,54 @@ impl Command {
     /// through the platform shell, so writing one is gated exactly as running
     /// one is: without `run`, a pane may toggle, run and delete automations and
     /// edit everything else about them, but never author what an exec runs.
+    ///
+    /// `send`, `create` and `restart` drive an agent and a force `delete` loses
+    /// a worktree for good, so each needs `sessions`. A soft delete does not:
+    /// the restore list undoes it.
     pub fn requires(&self) -> Option<super::host::Capability> {
+        use super::host::Capability;
         match self {
+            Command::Guarded { inner, .. } => inner.requires(),
             Command::AutomationSave { draft, .. } if draft.command.is_some() => {
-                Some(super::host::Capability::Run)
+                Some(Capability::Run)
             }
+            Command::Send { .. }
+            | Command::Create { .. }
+            | Command::Restart { .. }
+            | Command::Delete { force: true, .. } => Some(Capability::Sessions),
             _ => None,
         }
     }
 
-    /// Why a plugin `may` not have this applied, when it may not.
+    /// Why the plugin at `owner` may not have this applied, when it may not.
     ///
     /// The coordinator's whole decision, kept here so it is tested without a
-    /// running interface: `may(owner, capability)` is the host's grant check.
-    pub fn refusal(&self, may: impl Fn(&str, super::host::Capability) -> bool) -> Option<String> {
+    /// running interface: `may(owner, capability)` is the host's grant check,
+    /// and `owner` is the path the kernel stamped when the command was issued —
+    /// empty for Lua that belongs to no plugin, which holds no grant.
+    pub fn refusal(
+        &self,
+        owner: &str,
+        may: impl Fn(&str, super::host::Capability) -> bool,
+    ) -> Option<String> {
         let need = self.requires()?;
-        let Command::AutomationSave { owner, .. } = self else {
-            return None;
+        let who = if owner.is_empty() {
+            "Lua outside any plugin"
+        } else {
+            owner
+        };
+        let doing = match self.kind() {
+            "automation" => "write an automation's command",
+            "send" => "type into a session",
+            "create" => "create a session",
+            "restart" => "restart a session",
+            _ => "delete a session for good",
         };
         (!may(owner, need)).then(|| {
             format!(
-                "{owner} may not write an automation's command — trust it in settings → Interface"
+                "{who} may not {doing} without the {:?} capability — declare it and trust \
+                 the file in settings → Interface",
+                need.as_str()
             )
         })
     }
@@ -850,7 +874,6 @@ impl Command {
                 return Ok(Command::AutomationSave {
                     id: None,
                     draft: automation_draft(&args),
-                    owner: args.owner.clone(),
                 })
             }
             Some("edit") => {
@@ -860,7 +883,6 @@ impl Command {
                 return Ok(Command::AutomationSave {
                     id: Some(id),
                     draft: automation_draft(&args),
-                    owner: args.owner.clone(),
                 });
             }
             Some(other) => {
@@ -1884,10 +1906,14 @@ mod tests {
             },
         )
         .expect("parse");
-        let refused = create.refusal(|_, _| false).expect("refused");
+        let refused = create
+            .refusal("plugins/30_x.lua", |_, _| false)
+            .expect("refused");
         assert!(refused.contains("plugins/30_x.lua"), "{refused}");
         assert_eq!(
-            create.refusal(|owner, need| owner == "plugins/30_x.lua" && need == Capability::Run),
+            create.refusal("plugins/30_x.lua", |owner, need| owner
+                == "plugins/30_x.lua"
+                && need == Capability::Run),
             None
         );
         let rename = Command::parse(
@@ -1901,7 +1927,7 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(
-            rename.refusal(|_, _| false),
+            rename.refusal("plugins/30_x.lua", |_, _| false),
             None,
             "no command, no grant needed"
         );

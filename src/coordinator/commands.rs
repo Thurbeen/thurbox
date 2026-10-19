@@ -20,12 +20,41 @@ impl App {
     /// Draining here rather than inside the render call is what keeps `command()`
     /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
-        for command in self.host.drain_commands() {
-            if self.apply_local_command(&command, terminal) {
+        for (owner, command) in self.host.drain_issued() {
+            if self.refuse_ungranted(&owner, &command)
+                || self.apply_local_command(&command, terminal)
+            {
                 continue;
             }
             self.dispatch_tracked(command);
         }
+    }
+
+    /// Refuse a plugin's command that needs a grant its issuer does not hold,
+    /// reporting why. `true` = refused, and nothing else is done with it.
+    ///
+    /// Here rather than on a worker, which knows no grant: an exec automation's
+    /// command is a command line the heartbeat runs, and `send`, `create`,
+    /// `restart` and a force `delete` drive an agent or destroy a worktree, so
+    /// each is checked against the issuer's grant before anything applies it.
+    fn refuse_ungranted(
+        &mut self,
+        owner: &str,
+        command: &thurbox::kernel::command::Command,
+    ) -> bool {
+        let Some(error) = command.refusal(owner, |owner, need| self.host.may_path(owner, need))
+        else {
+            return false;
+        };
+        let subject = command.subject();
+        self.enqueue_event(
+            thurbox::kernel::events::Event::new("command.failed")
+                .with("kind", Some(command.kind()))
+                .with("subject", subject.as_deref())
+                .with("error", Some(error.as_str())),
+        );
+        self.report(error, Level::Error);
+        true
     }
 
     /// The commands the loop applies itself, because they touch something no
@@ -37,20 +66,6 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> bool {
         use thurbox::kernel::command::Command;
-        // Refused here rather than on a worker, which knows no grant: an exec
-        // automation's command is a command line the heartbeat runs, so a pane
-        // may write one only if it may run programs at all.
-        if let Some(error) = command.refusal(|owner, need| self.host.may_path(owner, need)) {
-            let subject = command.subject();
-            self.enqueue_event(
-                thurbox::kernel::events::Event::new("command.failed")
-                    .with("kind", Some(command.kind()))
-                    .with("subject", subject.as_deref())
-                    .with("error", Some(error.as_str())),
-            );
-            self.report(error, Level::Error);
-            return true;
-        }
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
             // state a worker thread cannot reach, and it is instant, so nothing is

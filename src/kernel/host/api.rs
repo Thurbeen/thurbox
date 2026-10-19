@@ -57,6 +57,8 @@ pub(super) struct Env {
     /// `run`, bound to this plugin. Kept out of `table` until the plugin is
     /// granted it — `LuaHost::enter` puts it there per call.
     pub run: mlua::Function,
+    /// `files`, kept out of `table` the same way until granted.
+    pub files: Table,
     /// This plugin's `thurbox`: the published data, read through, plus the
     /// values that are this plugin's alone (`runs`, `granted`), which
     /// `LuaHost::enter` sets here and nowhere every plugin reads.
@@ -69,7 +71,7 @@ pub(super) struct Env {
 /// issued a call: a pane that replaced a global another pane calls would run
 /// its own code inside that pane's call, with its grant. So nothing here asks
 /// who is running. Each plugin's chunk gets its own `_ENV`, and the functions
-/// that act for a plugin — `command`, `run`, `state`, `require` — are created
+/// that act for a plugin — `command`, `run`, `files`, `state`, `require` — are created
 /// for it, with its identity bound in. Code a plugin defines resolves those
 /// names through its own environment wherever it is called from, so a
 /// hijacking function acts as its author and nobody else.
@@ -101,13 +103,13 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
             parts.writes.clone(),
         )?,
     )?;
-    table.set("files", files_for(lua, parts.roots.clone())?)?;
     table.set("require", require_for(lua, &parts.ui_dir, table.clone())?)?;
     let thurbox = thurbox_view(lua)?;
     table.raw_set("thurbox", thurbox.clone())?;
     Ok(Env {
         thurbox,
         run: run_for(lua, parts.runs.clone(), path.to_string())?,
+        files: files_for(lua, parts.roots.clone())?,
         table,
     })
 }
@@ -586,9 +588,10 @@ fn run_for(
 
 /// `files.list(session, path)` and `files.read(session, path)`.
 ///
-/// The capability that is *not* granted here is the point: a plugin gets a
-/// directory listing and a file's text, both rooted at that session's working
-/// directory and refusing anything outside it. It never gets a filesystem.
+/// Bounded twice. A plugin gets a directory listing and a file's text, both
+/// rooted at that session's working directory and refusing anything outside
+/// it — never a filesystem. And it gets even that only when granted `files`
+/// (`LuaHost::enter`), because a worktree's `.env` is inside that root.
 fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
     let files = lua.create_table()?;
 
@@ -762,7 +765,7 @@ fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Fun
                 store.set(key, value)?;
             }
         }
-        queue.borrow_mut().push(parsed);
+        queue.borrow_mut().push((owner.clone(), parsed));
         Ok(())
     })
 }

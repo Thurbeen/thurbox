@@ -157,6 +157,11 @@ pub enum Trust {
     /// cannot be told apart from here. Not granted, because the grant was made to
     /// other contents.
     Replaced,
+    /// A file thurbox ships, exactly as it ships it. Granted what it declares
+    /// without asking: it is the binary's own code, and the bundled panes need
+    /// `sessions` before anyone can create one. Edited, it is judged like any
+    /// other file, because the grant went to the shipped contents.
+    Shipped,
 }
 
 impl Trust {
@@ -167,6 +172,7 @@ impl Trust {
             Trust::Trusted => "trusted",
             Trust::Drifted => "trusted · modified",
             Trust::Replaced => "untrusted · modified",
+            Trust::Shipped => "shipped",
         }
     }
 
@@ -176,7 +182,7 @@ impl Trust {
     /// user reads go through, so the screen cannot say "untrusted" while the
     /// plugin still holds `run`.
     pub fn grants(self) -> bool {
-        matches!(self, Trust::Trusted | Trust::Drifted)
+        matches!(self, Trust::Trusted | Trust::Drifted | Trust::Shipped)
     }
 
     /// Resolve one file's standing from what was trusted and what is on disk.
@@ -431,6 +437,7 @@ mod tests {
         );
         assert!(!Trust::Untrusted.grants());
         assert!(!Trust::NotAsked.grants());
+        assert!(Trust::Shipped.grants(), "the binary's own copy");
     }
 
     /// The design's table, row by row. An installed file is judged on the version
