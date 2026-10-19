@@ -53,7 +53,7 @@ pub(crate) fn apply(
         .then(|| std::env::var(RESOURCE_ATTRIBUTES).ok())
         .flatten();
     let session_id = config.session_id.map(|id| id.to_string());
-    let attributes = merge(
+    let attributes = resource_attributes(
         &merge(
             process.as_deref().unwrap_or_default(),
             config
@@ -65,14 +65,7 @@ pub(crate) fn apply(
             ("thurbox.session.id", session_id.as_deref().unwrap_or("")),
             ("thurbox.session.name", session_name),
             ("thurbox.agent", &config.agent),
-        ]
-        .iter()
-        .filter(|(_, v)| !v.is_empty())
-        // As the spec asks: a session name with a comma or `=` would
-        // otherwise split the list.
-        .map(|(k, v)| format!("{k}={}", percent_encode(v)))
-        .collect::<Vec<_>>()
-        .join(","),
+        ],
     );
     config.env.insert(RESOURCE_ATTRIBUTES.into(), attributes);
     if remote {
@@ -105,30 +98,42 @@ pub(crate) fn apply(
 }
 
 /// `base` with `over` appended, any pair of `base` whose key `over` also sets
-/// dropped, so `over` wins a conflict. Merging thurbox's own attributes last is
-/// what stops the session's identity being claimed from outside.
+/// dropped, so `over` wins a conflict.
 fn merge(base: &str, over: &str) -> String {
-    let pairs = |list: &str| -> Vec<String> {
-        list.split(',')
-            .filter(|pair| !pair.trim().is_empty())
-            .map(str::to_string)
-            .collect()
-    };
-    let key = |pair: &str| {
-        pair.split('=')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
-    let over = pairs(over);
-    let overridden: Vec<String> = over.iter().map(|pair| key(pair)).collect();
+    let over: Vec<String> = pairs(over).collect();
+    let overridden: Vec<&str> = over.iter().map(|pair| key(pair)).collect();
     pairs(base)
-        .into_iter()
         .filter(|pair| !overridden.contains(&key(pair)))
-        .chain(over)
+        .chain(over.iter().cloned())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// `inherited` with thurbox's own non-empty attributes appended, every earlier
+/// value for one of thurbox's keys dropped - empty or not - so the session's
+/// identity can neither be claimed from outside nor outlive a launch that has
+/// none. Values are percent-encoded, as the spec asks: a session name with a
+/// comma or `=` would otherwise split the list.
+fn resource_attributes(inherited: &str, ours: &[(&str, &str)]) -> String {
+    let added = ours
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k}={}", percent_encode(v)));
+    pairs(inherited)
+        .filter(|pair| !ours.iter().any(|(k, _)| *k == key(pair)))
+        .chain(added)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn pairs(list: &str) -> impl Iterator<Item = String> + '_ {
+    list.split(',')
+        .filter(|pair| !pair.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn key(pair: &str) -> &str {
+    pair.split('=').next().unwrap_or_default().trim()
 }
 
 /// RFC 3986 percent-encoding of everything outside the unreserved set.
@@ -164,9 +169,10 @@ mod tests {
         }
     }
 
+    // Remote, so this process's own OTEL_RESOURCE_ATTRIBUTES stays out of it.
     #[test]
     fn the_sessions_attributes_are_kept_but_never_override_its_identity() {
-        let mut config = config(None);
+        let mut config = config(Some("ssh:devbox"));
         config.env.insert(
             RESOURCE_ATTRIBUTES.into(),
             "team=infra,thurbox.agent=spoofed,".into(),
@@ -180,6 +186,20 @@ mod tests {
                  thurbox.agent=claude"
             )
         );
+    }
+
+    #[test]
+    fn a_launch_with_no_session_drops_an_inherited_session_identity() {
+        let mut config = SessionConfig {
+            session_id: None,
+            ..config(Some("ssh:devbox"))
+        };
+        config.env.insert(
+            RESOURCE_ATTRIBUTES.into(),
+            "thurbox.session.id=old,thurbox.session.name=old".into(),
+        );
+        apply(&mut config, &AgentDef::default(), "", &on());
+        assert_eq!(config.env[RESOURCE_ATTRIBUTES], "thurbox.agent=claude");
     }
 
     #[test]
