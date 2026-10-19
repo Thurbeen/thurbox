@@ -926,6 +926,9 @@ reported as the tick's `telemetry` object (`events`, `cursor`, `skipped`, or
 collector that does not answer costs a request timeout. A lease and a CAS'd
 cursor in `telemetry_export` (schema v54) keep concurrent ticks from sending a
 row twice, and a failed export keeps the cursor so the rows go out next tick.
+No other CLI command talks to a collector: the interface's diagnostic-log bridge
+(`telemetry::diagnostic`, ADR-38) is built by the TUI only, so a hook's
+`session signal` never waits on the network.
 
 **No automations pane.** The interface has none, and `[features] automations`
 no longer hides one: its only *effect* in the TUI is gating **arming the

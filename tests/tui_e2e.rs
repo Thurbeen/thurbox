@@ -44,6 +44,9 @@ mod tmux_server;
 
 use tmux_server::TmuxServer;
 
+#[path = "support/otlp_collector.rs"]
+mod otlp_collector;
+
 /// How long a frame is given to show something before the test gives up.
 /// Generous because a cold CI runner pays for the first paint with the Lua
 /// interface load and the SQLite open.
@@ -698,6 +701,88 @@ fn a_signal_restores_the_terminal_before_exiting() {
     // Only the bytes written AFTER the boot count, so a `…l` from setup could
     // not satisfy this.
     assert_terminal_restored(&tui.raw_since(taken), "a signalled exit");
+}
+
+// --- diagnostic logs over OTLP ---------------------------------------------
+
+/// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
+/// collector, at WARN and above only, while the file log keeps everything
+/// (ADR-38, issue #1465 phase 3). The WARN comes from the interface's first
+/// read of an `agents.toml` with a key it does not know.
+#[test]
+fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+    use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
+
+    let collector = otlp_collector::Collector::start();
+    let profile = Profile::new();
+    let settings = profile.path("config/settings.toml");
+    let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
+    seeded.push_str(&format!(
+        "\n[telemetry]\nenabled = true\nendpoint = \"{}\"\nexport_diagnostic_logs = true\n",
+        collector.endpoint()
+    ));
+    std::fs::write(&settings, seeded).expect("write settings");
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "config_version = 1\ndefault = \"claude\"\nstray_key = 1\n\n\
+         [[agents]]\nname = \"claude\"\ncommand = \"claude\"\n",
+    )
+    .expect("write agents.toml");
+
+    let mut tui = Tui::spawn_with(&profile, 24, 80, |cmd| {
+        // A suite run inside a session with [telemetry] on inherits these.
+        for (key, _) in std::env::vars() {
+            if key.starts_with("OTEL_") {
+                cmd.env_remove(key);
+            }
+        }
+    });
+    tui.wait_for("No sessions yet");
+
+    let body = |record: &opentelemetry_proto::tonic::logs::v1::LogRecord| match record
+        .body
+        .as_ref()
+        .and_then(|b| b.value.as_ref())
+    {
+        Some(Value::StringValue(s)) => s.clone(),
+        other => format!("{other:?}"),
+    };
+    // Sent by the batch processor while the interface runs, not only at exit.
+    let mut records = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while !records
+        .iter()
+        .any(|r| body(r).contains("unknown field `stray_key`"))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the WARN never reached the collector; got {:?}\n--- thurbox.log ---\n{}",
+            records.iter().map(body).collect::<Vec<_>>(),
+            tui.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        records.extend(otlp_collector::logs(&collector.take()));
+    }
+    assert!(tui.quit().success());
+    records.extend(otlp_collector::logs(&collector.take()));
+
+    let below_warn: Vec<_> = records
+        .iter()
+        .filter(|r| r.severity_number < SeverityNumber::Warn as i32)
+        .map(|r| (r.severity_text.clone(), body(r)))
+        .collect();
+    assert!(
+        below_warn.is_empty(),
+        "only WARN and above is exported: {below_warn:?}"
+    );
+    // The file log is unchanged: still at its own level, so it holds the INFO
+    // lines the collector was right not to get, and the WARN as well.
+    let file = tui.log_tail();
+    assert!(
+        file.contains(" INFO thurbox") && file.contains("unknown field `stray_key`"),
+        "the file log keeps every level:\n{file}"
+    );
 }
 
 // --- the kernel-owned overlays ---------------------------------------------

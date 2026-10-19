@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::Layer as _;
 
 use thurbox::kernel::command::CommandBus;
 use thurbox::kernel::diff::DiffStore;
@@ -110,14 +113,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         .ok();
     let (writer, guard) = tracing_appender::non_blocking(log_appender(log_dir));
     Box::leak(Box::new(guard));
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("thurbox=debug".parse().unwrap_or_default()),
-        )
-        .with_writer(writer)
-        .with_ansi(false)
-        .init();
+    let file_layer = || {
+        tracing_subscriber::fmt::layer()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("thurbox=debug".parse().unwrap_or_default()),
+            )
+    };
 
     // Startup phases are timed unconditionally: this runs once, so the two
     // `Instant` reads per phase cost nothing measurable, and the numbers are
@@ -130,12 +134,40 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // to `audit_retention_days` — and v1 loads them at the same point for the same
     // reason. Without this call `settings::global()` hands out `Settings::default`
     // and the whole file is ignored, however carefully it was written.
+    //
+    // Loaded under the file log alone, because the global subscriber depends on
+    // what it says: `[telemetry]` decides whether diagnostic logs are bridged to
+    // a collector too (ADR-38), and a global subscriber cannot be replaced.
     let phase = Instant::now();
-    // Before the load, so a key v2.32.0 wrote is noted once here rather than
-    // reported as unknown on every start.
-    let layout_note = thurbox::agent::settings_config::retire_layout_preset();
-    let (config, config_warnings) = thurbox::kernel::config::Config::load();
+    let (layout_note, (config, config_warnings)) = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(file_layer()),
+        || {
+            // Before the load, so a key v2.32.0 wrote is noted once here rather
+            // than reported as unknown on every start.
+            let layout_note = thurbox::agent::settings_config::retire_layout_preset();
+            (layout_note, thurbox::kernel::config::Config::load())
+        },
+    );
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
+
+    let identity = thurbox::telemetry::Identity {
+        version: env!("THURBOX_VERSION").to_string(),
+        instance: thurbox::backend::instance::local_socket_name(),
+    };
+    let (bridge, bridge_error) = match thurbox::telemetry::diagnostic::layer(
+        &thurbox::session::settings::global().telemetry,
+        &identity,
+    ) {
+        Ok(bridge) => (bridge, None),
+        Err(e) => (None, Some(e)),
+    };
+    tracing_subscriber::registry()
+        .with(file_layer())
+        .with(bridge)
+        .init();
+    if let Some(e) = bridge_error {
+        tracing::warn!("{e}");
+    }
 
     // The one registry this process drives every backend through, built here
     // and handed to each consumer: attach, the command workers and the startup
@@ -415,6 +447,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // another as the registry's last owner drops it.
     drop(app);
     backends.shutdown_all();
+    thurbox::telemetry::diagnostic::shutdown();
     result
 }
 

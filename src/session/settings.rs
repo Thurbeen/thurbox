@@ -118,6 +118,11 @@ pub struct TelemetrySettings {
     /// Export one OTLP log record per session event from `automation tick`.
     #[serde(default = "default_true")]
     pub export_session_events: bool,
+    /// Bridge the interface's own WARN-and-above `tracing` events to the
+    /// collector (ADR-38). Restart-only: the subscriber is built once, at
+    /// boot. Off by default — it serves debugging thurbox itself.
+    #[serde(default)]
+    pub export_diagnostic_logs: bool,
     /// Label thurbox's own metrics with `thurbox.session.id`. Off by default:
     /// every session then becomes a series of its own in the backend. The
     /// session event records always carry it.
@@ -142,6 +147,7 @@ impl Default for TelemetrySettings {
             configure_agents: true,
             export_thurbox_metrics: true,
             export_session_events: true,
+            export_diagnostic_logs: false,
             per_session: false,
         }
     }
@@ -156,6 +162,22 @@ impl TelemetrySettings {
     /// Whether `automation tick` exports anything of thurbox's own.
     pub fn exports_thurbox(&self) -> bool {
         self.enabled && (self.export_thurbox_metrics || self.export_session_events)
+    }
+
+    /// Whether the interface bridges its diagnostic logs to the collector.
+    pub fn exports_diagnostic_logs(&self) -> bool {
+        self.enabled && self.export_diagnostic_logs
+    }
+
+    /// Whether the interface's diagnostic-log bridge, built once at boot,
+    /// would be built differently from `other`. The rest of the table is live.
+    fn diagnostic_bridge_differs(&self, other: &Self) -> bool {
+        let on = self.exports_diagnostic_logs();
+        on != other.exports_diagnostic_logs()
+            || (on
+                && (self.endpoint != other.endpoint
+                    || self.protocol != other.protocol
+                    || self.headers != other.headers))
     }
 }
 
@@ -475,6 +497,7 @@ impl Settings {
             || self.features.notifications != other.features.notifications
             || self.features.version_check != other.features.version_check
             || self.features.auto_update != other.features.auto_update
+            || self.telemetry.diagnostic_bridge_differs(&other.telemetry)
     }
 }
 
@@ -728,6 +751,26 @@ mod tests {
 
         // Identical settings never differ.
         assert!(!base.restart_only_differs(&base.clone()));
+    }
+
+    #[test]
+    fn only_the_diagnostic_log_bridge_makes_telemetry_restart_only() {
+        let off = Settings::default();
+        let mut moved = off.clone();
+        moved.telemetry.enabled = true;
+        moved.telemetry.endpoint = "http://collector:4318".into();
+        assert!(
+            !off.restart_only_differs(&moved),
+            "spawns and ticks read [telemetry] live"
+        );
+
+        let mut bridged = moved.clone();
+        bridged.telemetry.export_diagnostic_logs = true;
+        assert!(moved.restart_only_differs(&bridged));
+
+        let mut elsewhere = bridged.clone();
+        elsewhere.telemetry.endpoint = "http://other:4318".into();
+        assert!(bridged.restart_only_differs(&elsewhere));
     }
 
     #[test]

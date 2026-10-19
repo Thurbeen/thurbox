@@ -977,7 +977,8 @@ has the rule.
 
 Turns on each agent's **own** OpenTelemetry exporter for the sessions thurbox
 spawns, pointed at one OTLP collector (ADR-36), and thurbox's own session
-metrics and session event logs, exported by `automation tick` (ADR-37).
+metrics and session event logs, exported by `automation tick` (ADR-37), and,
+opt-in, the interface's own diagnostic logs (ADR-38).
 
 ```toml
 [telemetry]
@@ -988,6 +989,7 @@ headers = {}                 # e.g. { authorization = "Bearer …" }
 configure_agents = true
 export_thurbox_metrics = true
 export_session_events = true
+export_diagnostic_logs = false
 per_session = false
 ```
 
@@ -1101,6 +1103,25 @@ service:
       receivers: [otlp]
       exporters: [debug]
 ```
+
+#### thurbox's own diagnostic logs
+
+`export_diagnostic_logs = true` sends the interface's own log lines at `WARN`
+and above to the collector's `/v1/logs`, under the same resource as the tick's
+export. They serve debugging thurbox itself, not observing sessions, so the
+switch is off by default.
+
+- **Interface only.** `thurbox-cli` never sends its log lines: a command an
+  agent hook runs must not wait on a collector.
+- **The log file is unchanged.** `thurbox.log.<date>` keeps every level it had
+  and is the only log while telemetry is off or the collector is unreachable.
+- **Restart-only.** The interface builds its logging once, at start; changing
+  the switch, or the endpoint, protocol or headers while it is on, applies on
+  the next start.
+- **What they contain**: the same text as the log file, which can name paths,
+  sessions and hosts.
+- Plain HTTP and `http/protobuf` only, as above. Records still queued when the
+  interface is killed by a signal are lost; the log file has them.
 
 ### `[notifications]` — OS notification settings
 

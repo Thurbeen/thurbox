@@ -12,7 +12,11 @@
 //! database (`storage::telemetry_export`). The agents' own telemetry is not
 //! here: ADR-36 configures their exporters, and both streams carry
 //! `thurbox.session.id` so a backend joins them.
+//!
+//! [`diagnostic`] is the third stream: the interface's own `tracing` events,
+//! opt-in, bridged to the same collector (ADR-38).
 
+pub mod diagnostic;
 mod summary;
 
 use std::collections::{HashMap, HashSet};

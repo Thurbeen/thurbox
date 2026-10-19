@@ -64,7 +64,7 @@ backend::rmux        → session, shell, backend::contract,
 git                  → session, paths, shell
 storage              → session, sync, paths
 sync                 → session
-telemetry            → session, storage           (ADR-37 OTLP export)
+telemetry            → session, storage           (ADR-37/38 OTLP export)
 usage                → session, shell           [path-only: paths]
 session_ops          → session, storage, git, sync, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
@@ -91,9 +91,9 @@ paths                (leaf utility — no crate-internal references)
 ui_control           → paths
 shell                → session                 (a host entry → its launcher)
 coordinator          → agent::{input, settings_config},
-                       backend::{output_wake, wiring}, clipboard,
+                       backend::{instance, output_wake, wiring}, clipboard,
                        kernel, paths, session, session_ops, shell, storage,
-                       ui_control
+                       telemetry, ui_control
 ```
 
 `agent` holds coding-agent definitions and their config and never touches
