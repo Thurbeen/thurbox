@@ -297,11 +297,14 @@ session), never on the loop, ADR-P12).
   `PATH` on the pane (`tmux_compat::server::path_prefix_args`), so the host's login `PATH`
   (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
   included, bounded by `timeout` and a 15 s kill) is assigned in front of every
-  POSIX script `host_cli` runs and inside `login_wrap_for_remote`: hosts.toml
+  POSIX script `host_cli` runs, inside `login_wrap_for_remote`, and in front of
+  every multiplexer command and `shell_command` script (`TmuxTransport::with_path`,
+  set per command by `Server::host_transport` — tmux and rmux alike, #1461): hosts.toml
   `path_prepend`, then the login shells', then the launcher's, de-duplicated.
-  No answer = no change plus a warning. Tests never probe: an unseeded host is
+  No answer = no change plus a warning; a later successful picker probe
+  (`record_probe`) replaces a cached failure. Tests never probe: an unseeded host is
   "no answer" under `cfg(test)`; seed one with `host_path::seed`.
-  The same probe names each multiplexer on that merged `PATH` (`@mux` lines,
+  The same probe names each multiplexer on that merged `PATH`, `path_prepend` included (`@mux` lines,
   `HostEnv::multiplexers`): the new-session picker offers only those
   (`host_path::multiplexers_found`: never waited for, asked only while the
   flow is open, its own cache re-asked after `MUX_TTL`; `seed_multiplexers`

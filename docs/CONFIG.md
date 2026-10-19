@@ -302,7 +302,7 @@ configured hosts, error shown.
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
-| `path_prepend` | no | `[]` | directories put first on the agent's `PATH` on the host, absolute or `~/`-rooted (`~` = the host's `$HOME`) — for what the host's login shell cannot report |
+| `path_prepend` | no | `[]` | directories put first on the `PATH` of every command thurbox runs on a POSIX host — the multiplexer, the delegated `thurbox-cli` and the agent's pane — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 
 **The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
 non-login environment — `wsl.exe -e` skips the user's shell entirely, so
@@ -311,7 +311,9 @@ not even `~/.zshenv` is read — which has none of `~/.local/bin`,
 `PATH` once per host and process (`$SHELL -lc`, the passwd shell when
 `$SHELL` is unset, and `/bin/sh -lc`; stdin closed, never `-i`, 5 s each
 under `timeout`, 15 s overall) and gives every command it runs there —
-the delegated `thurbox-cli`, and so the agent's pane — `path_prepend`,
+the multiplexer itself (so a Homebrew tmux in `/opt/homebrew/bin`, which
+only a macOS login shell puts on the `PATH`, is found), the delegated
+`thurbox-cli`, and so the agent's pane — `path_prepend`,
 then the login shells' `PATH`, then the launcher's own (on WSL that
 includes the Windows `PATH` WSL appends unless `appendWindowsPath =
 false`), each directory once. A host whose shells cannot be read keeps
@@ -374,7 +376,8 @@ registered, native to its platform (tmux on POSIX and WSL, psmux on native
 Windows, RMUX on either), and installed there. Locally that is a `PATH`
 lookup. For an SSH or WSL host it is the probe that already reads the host's
 login `PATH` (see `path_prepend` above), which also names each multiplexer it
-finds; it runs in the background only while the new-session flow is open,
+finds there — on the same `PATH`, `path_prepend` first, that thurbox then runs
+it on; it runs in the background only while the new-session flow is open,
 and is asked again once its answer is a minute old, so the picker never waits
 on a host and a host that was down, or has since had a multiplexer installed,
 is read again. Until it answers, and on a native-Windows host, which

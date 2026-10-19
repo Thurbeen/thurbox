@@ -111,6 +111,9 @@ pub struct TmuxTransport {
     /// The host is native Windows, so a line reaches `cmd.exe` or PowerShell
     /// rather than a POSIX shell ([`crate::shell::launch_on_windows`]).
     windows: bool,
+    /// Run on the host before the multiplexer or a [`Self::shell_command`]
+    /// script — see [`Self::with_path`]. POSIX hosts only.
+    path: Option<String>,
 }
 
 /// Environment variables a tmux/psmux server reads to resolve a *nested*
@@ -147,6 +150,7 @@ impl TmuxTransport {
             mux: mux.into(),
             socket_dir: SocketDir::Inherited,
             windows: false,
+            path: None,
         }
     }
 
@@ -157,6 +161,7 @@ impl TmuxTransport {
             mux: mux.into(),
             socket_dir: SocketDir::Inherited,
             windows: false,
+            path: None,
         }
     }
 
@@ -170,6 +175,16 @@ impl TmuxTransport {
     /// This transport, with every command it builds carrying `dir`.
     pub fn with_socket_dir(mut self, dir: SocketDir) -> Self {
         self.socket_dir = dir;
+        self
+    }
+
+    /// This transport, with every command it runs on a POSIX host behind
+    /// `assignment` (`PATH=…; export PATH; `, from
+    /// [`crate::agent::host_path::assignment_for`]), so the multiplexer
+    /// resolves on the `PATH` the probe that offered it searched rather than
+    /// on sshd's non-login one. `None` leaves the `PATH` alone.
+    pub fn with_path(mut self, assignment: Option<String>) -> Self {
+        self.path = assignment;
         self
     }
 
@@ -191,6 +206,10 @@ impl TmuxTransport {
     /// missing — its `$HOME` is not known here. [`SocketDir::Inherited`] adds
     /// nothing on either side.
     ///
+    /// A host's `PATH` assignment ([`Self::with_path`]) goes in front of the
+    /// multiplexer the same way, through the same `sh -c`, so tmux and rmux
+    /// resolve their binary alike whatever socket directory they carry.
+    ///
     /// On a Windows host ([`Self::on_windows`]) the line is built by
     /// [`crate::shell::launch_on_windows`], which refuses one past the
     /// Windows command-line limit.
@@ -202,6 +221,11 @@ impl TmuxTransport {
         let mut cmd = match (&self.launcher, &self.socket_dir) {
             (Some(launcher), SocketDir::Inherited) if self.windows => {
                 crate::shell::launch_on_windows(launcher, &self.mux, &argv)?
+            }
+            (Some(_), SocketDir::Inherited) if self.path.is_some() => {
+                let mut args = vec!["sh", self.mux.as_str()];
+                args.extend(argv);
+                self.shell_command("exec \"$@\"", &args)
             }
             (_, SocketDir::Inherited) => {
                 crate::shell::launch(self.launcher.as_ref(), &self.mux, &argv)
@@ -229,6 +253,8 @@ impl TmuxTransport {
     /// `sh -c <script> <args…>` on the machine the multiplexer runs on — the
     /// first of `args` is `$0`. For the questions only a shell there can
     /// answer: where a directory resolves, which process has a socket bound.
+    /// On a host the script runs behind its `PATH` assignment
+    /// ([`Self::with_path`]), so a script that runs the multiplexer finds it.
     pub fn shell_command(&self, script: &str, args: &[&str]) -> Command {
         let mut cmd = match &self.launcher {
             None => {
@@ -236,7 +262,10 @@ impl TmuxTransport {
                 cmd.arg("-c").arg(script).args(args);
                 cmd
             }
-            Some(launcher) => launcher.shell_c_args(script, args),
+            Some(launcher) => match &self.path {
+                Some(path) => launcher.shell_c_args(&format!("{path}{script}"), args),
+                None => launcher.shell_c_args(script, args),
+            },
         };
         strip_mux_nesting_env(&mut cmd);
         cmd
@@ -481,6 +510,63 @@ mod tests {
         assert!(script.contains("XDG_DATA_HOME"), "{script}");
         assert!(script.contains("mkdir -p -m 700"), "{script}");
         assert_eq!(args[args.len() - 8..args.len() - 6], ["sh", "-c"]);
+    }
+
+    /// A host's `PATH` leads every multiplexer command, with a socket
+    /// directory (tmux) or without one (rmux), so both resolve the binary
+    /// alike (#1461).
+    #[test]
+    fn a_hosts_path_leads_its_multiplexer_commands_with_or_without_a_socket_dir() {
+        let path = "PATH=/opt/homebrew/bin:/usr/bin; export PATH; ";
+        for (mux, dir) in [
+            (
+                "tmux",
+                SocketDir::HostData {
+                    app: "thurbox".into(),
+                },
+            ),
+            ("rmux", SocketDir::Inherited),
+        ] {
+            let t = ssh("me@mac", vec![], mux)
+                .with_socket_dir(dir)
+                .with_path(Some(path.into()));
+            let (prog, args) = program_and_args(&t.tmux_command("s", &["-V"]).expect("command"));
+            assert_eq!(prog, "ssh");
+            assert_eq!(args[args.len() - 5..], ["sh", mux, "-L", "s", "-V"]);
+            let script = &args[args.len() - 6];
+            assert!(
+                script.starts_with(&posix_quote(path)[..path.len()]),
+                "{script}"
+            );
+            assert!(script.contains("exec \"$@\""), "{script}");
+        }
+    }
+
+    /// The questions asked of a host's shell run on its `PATH` too: the
+    /// socket search runs the multiplexer to see which server answers.
+    #[test]
+    fn a_hosts_path_leads_its_shell_commands_but_not_a_local_one() {
+        let path = "PATH=/opt/homebrew/bin; export PATH; ";
+        let (_, args) = program_and_args(
+            &ssh("me@mac", vec![], "tmux")
+                .with_path(Some(path.into()))
+                .shell_command("true", &["sh"]),
+        );
+        assert!(args
+            .iter()
+            .any(|a| a.contains("PATH=/opt/homebrew/bin; export PATH; true")));
+        let (_, args) = program_and_args(&local().shell_command("true", &["sh"]));
+        assert_eq!(args, ["-c", "true", "sh"]);
+    }
+
+    #[test]
+    fn a_remote_command_without_a_path_is_launched_as_it_was() {
+        let (_, args) = program_and_args(
+            &ssh("me@box", vec![], "rmux")
+                .tmux_command("s", &["-V"])
+                .unwrap(),
+        );
+        assert_eq!(args[args.len() - 4..], ["rmux", "-L", "s", "-V"]);
     }
 
     #[test]
