@@ -189,8 +189,9 @@ pub fn delete_session_headless(
 }
 
 /// The delete taken from here: mark the row, tear down what `force` asks for,
-/// fire the post hooks. Shared by the plain path and by a delegated delete the
-/// host could not take (see [`is_unknown_session`]).
+/// disable the send automations aimed at it, fire the post hooks. Shared by
+/// the plain path and by a delegated delete the host could not take (see
+/// [`is_unknown_session`]).
 fn finish_locally(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -238,10 +239,12 @@ fn finish_locally_with(
             );
             report.remote_teardown_owed = false;
         }
-        report.disabled_automations = db
-            .disable_send_automations_for_session(session.id)
-            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
     }
+    // Soft or forced, as the delegated path above does: a send aimed at a
+    // deleted session has nothing to type into.
+    report.disabled_automations = db
+        .disable_send_automations_for_session(session.id)
+        .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
 
     report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
 
@@ -1270,21 +1273,19 @@ mod tests {
     }
 
     #[test]
-    fn soft_delete_without_force_leaves_no_side_effects() {
+    fn soft_delete_tears_nothing_down_but_disables_its_sends() {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session(&db, "demo");
-
-        // Send automation targeting the session — should survive a soft delete.
         let auto = send_automation(&db, id, "noop");
 
         let report =
             delete_session_headless(&db, &crate::backend::registry::inert(), id, false).unwrap();
         assert!(!report.killed_window);
         assert!(report.removed_worktrees.is_empty());
-        assert_eq!(report.disabled_automations, 0);
+        assert_eq!(report.disabled_automations, 1);
 
         assert!(db.get_session_by_id(id).unwrap().is_none());
-        assert!(db.get_automation(auto).unwrap().unwrap().enabled);
+        assert!(!db.get_automation(auto).unwrap().unwrap().enabled);
     }
 
     #[test]

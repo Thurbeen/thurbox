@@ -203,15 +203,15 @@ pub enum Action {
     ///
     /// By default kills owned windows, removes worktrees thurbox created,
     /// and disables send automations immediately. Set `[features] soft_delete`
-    /// = true or pass --soft to keep windows and worktrees for undo instead.
+    /// = true or pass --soft to keep windows and worktrees for undo instead;
+    /// send automations are disabled either way.
     /// --force always tears down immediately, regardless of the setting.
     /// With --json, a flagless delete stays soft for legacy sharing peers;
     /// JSON callers must pass --force for immediate teardown.
     Delete {
         /// Session UUID.
         uuid: String,
-        /// Also kill the window, remove worktrees, and cancel
-        /// pending scheduled commands for this session.
+        /// Also kill the window and remove worktrees for this session.
         #[arg(long, conflicts_with = "soft")]
         force: bool,
         /// Keep the session undoable, overriding `[features] soft_delete`.
@@ -3709,8 +3709,8 @@ mod tests {
 
     #[test]
     fn explicit_soft_delete_leaves_session_recoverable() {
-        // `session delete --soft` only soft-deletes the DB row,
-        // leaving its automations enabled and the session restorable.
+        // `session delete --soft` marks the DB row and disables the sends
+        // aimed at it, leaving the session restorable.
         let db = db();
         let id = SessionId::default();
         let shared = SharedSession {
@@ -3755,11 +3755,11 @@ mod tests {
         .unwrap();
         assert_eq!(v["deleted"], true);
         assert_eq!(v["forced"], false);
-        assert_eq!(v["disabled_automations"], 0);
+        assert_eq!(v["disabled_automations"], 1);
 
-        // Row is soft-deleted but recoverable; the automation is untouched.
+        // Row is soft-deleted but recoverable; the send aimed at it is off.
         assert!(db.get_session_by_id(id).unwrap().is_none());
-        assert!(db.get_automation(auto).unwrap().unwrap().enabled);
+        assert!(!db.get_automation(auto).unwrap().unwrap().enabled);
         let restored = run(
             Action::Restore {
                 session: id.to_string(),

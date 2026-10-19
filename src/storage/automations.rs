@@ -316,7 +316,7 @@ impl Database {
     }
 
     /// Disable every `send` automation that targets a session — used when a
-    /// session is force-deleted so its one-shots don't fire against a dead pane.
+    /// session is deleted, soft or forced, so nothing fires against a dead pane.
     pub fn disable_send_automations_for_session(
         &self,
         session_id: SessionId,

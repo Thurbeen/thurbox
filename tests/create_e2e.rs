@@ -857,10 +857,8 @@ fn delete_probe_with_format(
     let tombstone = db.get_deleted_session_by_id(id).unwrap().unwrap();
     assert_eq!(tombstone.force_deleted, !undoable);
     assert_eq!(wt.exists(), undoable);
-    assert_eq!(
-        db.get_automation(automation).unwrap().unwrap().enabled,
-        undoable
-    );
+    // Soft or forced: a send aimed at a deleted session is disabled either way.
+    assert!(!db.get_automation(automation).unwrap().unwrap().enabled);
     let panes = Command::new("tmux")
         .args(["-L", SOCKET, "list-panes", "-a", "-F", "#{pane_id}"])
         .output()
