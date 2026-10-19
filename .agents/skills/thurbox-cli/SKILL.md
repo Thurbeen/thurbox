@@ -192,7 +192,8 @@ a spawn that must make a multiplexer window before it has a row.
 
 ### Any command can be a session
 
-`--agent` names an `agents.toml` entry; `--command` **is** the definition:
+`--agent` names an `agents.toml` entry (an unknown name is refused, never
+replaced by the default); `--command` **is** the definition:
 
 ```bash
 # A shell — the ready-made form, and a built-in agent
