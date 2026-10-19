@@ -21,6 +21,54 @@ fn interface(plugins: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf
     (home, ui)
 }
 
+/// Point `THURBOX_CONFIG_DIR` at `home` for as long as the guard lives.
+///
+/// The variable is process-wide and trust is read from it, so tests that set
+/// it hold one lock: under a threaded `cargo test`, another test could move it
+/// between a test granting trust and reading the grant back.
+fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
+    static CONFIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = CONFIG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::set_var("THURBOX_CONFIG_DIR", home);
+    guard
+}
+
+/// Publish an empty snapshot the way the running interface does every frame,
+/// which is what puts the published `thurbox` table in place.
+fn publish(host: &LuaHost) {
+    let themes = thurbox::kernel::theme::Themes::load(None);
+    let registry = thurbox::kernel::registry::Registry::default();
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&thurbox::kernel::host::Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
+        snapshot: &Default::default(),
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: None,
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &Default::default(),
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+}
+
 fn render(host: &LuaHost, name: &str) {
     let index = host.index_of(name).unwrap_or_else(|| panic!("no {name}"));
     host.render(
@@ -623,7 +671,7 @@ fn enforce(host: &LuaHost, ui: &std::path::Path) {
 #[test]
 fn an_update_that_moves_the_pin_takes_run_away() {
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -655,7 +703,7 @@ fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
     // A source re-tagging the same version, or a local edit to an installed file:
     // the grant was made to other contents and must not ride along.
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -678,7 +726,7 @@ fn editing_your_own_trusted_file_keeps_run() {
     // A file the user wrote is theirs to edit; the row says `trusted · modified`
     // and the grant stands, which is what the row says.
     let (home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join(file).to_string_lossy(), &asker("asks", "k", true))
@@ -697,7 +745,7 @@ fn editing_your_own_trusted_file_keeps_run() {
 /// user's own and a changed one would keep `run`.
 fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
     let (home, ui) = interface(&[]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     let file = "plugins/91_asks.lua";
     let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
     thurbox::kernel::registry::Registry::load()
@@ -760,7 +808,7 @@ const VICTIM: &str = r#"return { name = "victim", slot = "sessions", capabilitie
 /// Load the lure before the victim, trust the victim, and draw both.
 fn lured() -> (tempfile::TempDir, LuaHost) {
     let (home, ui) = interface(&[("91_lure.lua", LURE), ("92_victim.lua", VICTIM)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
         .trust(&ui.join("plugins/92_victim.lua").to_string_lossy(), VICTIM)
         .expect("trust");
@@ -854,7 +902,7 @@ fn victim_program_after(lure: &str) -> String {
         "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
     );
     let (home, ui) = interface(&[("91_lure.lua", &source), ("92_victim.lua", FORMATTER)]);
-    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let _config = configure(home.path());
     thurbox::kernel::registry::Registry::load()
         .trust(
             &ui.join("plugins/92_victim.lua").to_string_lossy(),
@@ -957,6 +1005,9 @@ fn a_pane_that_declares_nothing_cannot_read_the_last_panes_answers() {
 end }"#;
     let (_home, ui) = interface(&[("91_a.lua", &reader("a")), ("92_plain.lua", plain)]);
     let host = LuaHost::new(&ui);
+    // After a publish, as in the running interface: `thurbox` is then the
+    // published proxy, whose fields a raw write does not reach.
+    publish(&host);
     let mut answers = std::collections::HashMap::new();
     answers.insert(
         "plugins/91_a.lua".to_string(),

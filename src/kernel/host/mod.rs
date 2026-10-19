@@ -1669,9 +1669,11 @@ impl LuaHost {
         if plugin.capabilities.is_empty() {
             // `thurbox` is one shared table, so what the previous call set is
             // still there: cleared, or this plugin reads that plugin's output.
+            // Through `set`, the same write path `publish_runs` takes: once
+            // published, `thurbox` is a proxy whose fields a raw write misses.
             if let Ok(surface) = self.lua.globals().get::<Table>("thurbox") {
-                let _ = surface.raw_set("runs", Value::Nil);
-                let _ = surface.raw_set("granted", Value::Nil);
+                let _ = surface.set("runs", Value::Nil);
+                let _ = surface.set("granted", Value::Nil);
             }
             return;
         }

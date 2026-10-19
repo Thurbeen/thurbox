@@ -149,10 +149,11 @@ any plugin wrote. Only data crosses it: a write is converted to a stored value
 (strings, numbers, booleans and tables of them; a function or a metatable is
 dropped) and every read hands back a fresh copy, so one pane can tell another
 something but cannot hand it code to run. A pane acting on a request it read
-there — the shipped confirmation — treats it as the asker's words, not its own.
+there issues it with its own `command`, under its own name: the shipped
+confirmation forwards the one in `store.confirm` only after the user's keypress.
 The views are per plugin because `rawset` writes past `__newindex` into the view
-itself, and one view every plugin shared would carry that write to all of them. Nothing
-on a view leads back to the table behind it — `__pairs` iterates through a
+itself, and one view every plugin shared would carry that write to all of them.
+Nothing on a view leads back to the table behind it — `__pairs` iterates through a
 closure rather than returning the table as its state — and the string
 metatable is sealed so `getmetatable("")` cannot hand one out. `require` has a
 cache per plugin and runs a module in the requiring plugin's environment — a
