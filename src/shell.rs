@@ -153,10 +153,16 @@ pub fn powershell_quote(s: &str) -> String {
 /// [`CommandLineTooLong`] rather than handed to a host that fails to start it
 /// without saying why.
 pub fn powershell_launcher(script: &str) -> Result<String, CommandLineTooLong> {
+    encoded_powershell("-NoLogo", script)
+}
+
+/// `powershell.exe <switches> -EncodedCommand <base64>`, refused past
+/// [`WINDOWS_CMD_LINE_MAX`].
+fn encoded_powershell(switches: &str, script: &str) -> Result<String, CommandLineTooLong> {
     use base64::Engine as _;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let line = format!(
-        "powershell.exe -NoLogo -EncodedCommand {}",
+        "powershell.exe {switches} -EncodedCommand {}",
         base64::engine::general_purpose::STANDARD.encode(utf16)
     );
     if line.len() > WINDOWS_CMD_LINE_MAX {
@@ -304,7 +310,8 @@ impl HostLauncher {
 /// on the host it reaches.
 ///
 /// Through a launcher the tokens are re-split by the host's login shell, so
-/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged).
+/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged);
+/// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
 /// command line exactly as the adapter wrote it.
@@ -323,6 +330,99 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd
         }
     }
+}
+
+/// [`launch`] on a native-Windows host, whose login shell — `cmd.exe` by
+/// Windows OpenSSH's default, PowerShell when configured — re-reads the line
+/// ssh hands it. No one quoting survives both: `cmd.exe` ignores the single
+/// quotes [`posix_quote`] writes, so a `|` inside them starts a pipe (issue
+/// #1460).
+///
+/// Words every such shell passes through unchanged (`is_bare_windows_word`)
+/// go as they are, which keeps a control-mode attach and a `send-paste`'s
+/// base64 at their own length. Any other line runs as an encoded PowerShell
+/// script, whose base64 no shell reads as syntax. The script starts `program`
+/// itself with the arguments as one command line quoted for the C runtime
+/// ([`windows_arg_quote`]): PowerShell 5.1's own native-argument quoting drops
+/// an empty argument and splits one at an embedded `"`. The child inherits
+/// stdin, stdout and stderr, so its bytes reach this machine untouched and its
+/// exit status is the script's. Progress output is silenced, since PowerShell
+/// writes it to stderr as a CLIXML document that a multiplexer whose stderr
+/// is its failure channel would read as an error.
+pub fn launch_on_windows(
+    launcher: &HostLauncher,
+    program: &str,
+    args: &[&str],
+) -> Result<Command, CommandLineTooLong> {
+    let mut cmd = launcher.command();
+    let words = || std::iter::once(&program).chain(args);
+    // `cmd.exe` expands a `%name%` pair, so a line has at most one `%` bare.
+    let percents: usize = words().map(|w| w.matches('%').count()).sum();
+    if percents <= 1 && words().all(|w| is_bare_windows_word(w)) {
+        cmd.args(words());
+        return Ok(cmd);
+    }
+    let line = args
+        .iter()
+        .map(|a| windows_arg_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "$ProgressPreference = 'SilentlyContinue'\n\
+         $s = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $s.FileName = {}\n\
+         $s.Arguments = {}\n\
+         $s.UseShellExecute = $false\n\
+         $p = [System.Diagnostics.Process]::Start($s)\n\
+         $p.WaitForExit()\n\
+         exit $p.ExitCode",
+        powershell_quote(program),
+        powershell_quote(&line)
+    );
+    cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
+    Ok(cmd)
+}
+
+/// Whether `word` reaches a program unchanged, unquoted, through each login
+/// shell a Windows OpenSSH server may run a command in: `cmd.exe`,
+/// PowerShell and a POSIX `sh`. Not `,`, which PowerShell reads as an array
+/// and passes as two arguments.
+fn is_bare_windows_word(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '+' | '%')
+        })
+}
+
+/// One argument as a Windows program's C runtime reads it back out of the
+/// single command line `CreateProcess` hands it — the MSVC rules psmux, git
+/// and every Rust program split argv by. Quoted only when it has to be (empty,
+/// whitespace or a `"`); inside the quotes a `"`, and the backslashes before
+/// it or before the closing quote, are escaped.
+pub fn windows_arg_quote(s: &str) -> String {
+    if !s.is_empty() && !s.contains([' ', '\t', '\n', '\x0b', '"']) {
+        return s.to_string();
+    }
+    let mut out = String::from('"');
+    let mut backslashes = 0;
+    for c in s.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
 }
 
 /// Build a `wsl.exe -d <distro>` [`Command`], ready for the caller to append
@@ -441,6 +541,83 @@ mod tests {
             error.to_string(),
             format!("command line is {} chars, Windows limit is 8191", error.len)
         );
+    }
+
+    /// The cases PowerShell 5.1's own argument passing gets wrong, measured
+    /// against Windows PowerShell 5.1: an empty argument vanished, `a"b`
+    /// arrived as `ab`, and `a b\` as `a b"`.
+    #[test]
+    fn a_windows_argument_is_quoted_for_the_c_runtime() {
+        for (arg, quoted) in [
+            ("plain", "plain"),
+            ("C:\\a\\b", "C:\\a\\b"),
+            ("#{pane_id}|#{window_name}", "#{pane_id}|#{window_name}"),
+            ("", "\"\""),
+            ("a b", "\"a b\""),
+            ("a\"b", "\"a\\\"b\""),
+            ("a b\\", "\"a b\\\\\""),
+            ("a\\\"b", "\"a\\\\\\\"b\""),
+        ] {
+            assert_eq!(windows_arg_quote(arg), quoted, "{arg:?}");
+        }
+    }
+
+    fn windows_ssh() -> HostLauncher {
+        HostLauncher::Ssh {
+            destination: "me@winbox".into(),
+            ssh_opts: Vec::new(),
+        }
+    }
+
+    fn remote_words(cmd: &Command) -> Vec<String> {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dest = args.iter().position(|a| a == "me@winbox").expect("dest");
+        args[dest + 1..].to_vec()
+    }
+
+    /// Words every Windows login shell passes through go unchanged, so a
+    /// control-mode attach keeps its stdin on psmux itself and a `send-paste`
+    /// keeps its base64 payload at its own length.
+    #[test]
+    fn a_line_of_plain_words_reaches_a_windows_host_as_it_is() {
+        for args in [
+            &["-L", "thurbox", "-C", "attach-session", "-t", "thurbox"][..],
+            &["-L", "thurbox", "send-paste", "-t", "%3", "aGk+Lz0="][..],
+        ] {
+            let cmd = launch_on_windows(&windows_ssh(), "psmux", args).expect("fits");
+            let mut expected = vec!["psmux".to_string()];
+            expected.extend(args.iter().map(|a| a.to_string()));
+            assert_eq!(remote_words(&cmd), expected);
+        }
+    }
+
+    /// `cmd.exe` expands a `%name%` pair, and `,` is a PowerShell array: a
+    /// line with either is encoded, never sent bare.
+    #[test]
+    fn a_line_any_windows_shell_could_read_as_syntax_is_encoded() {
+        for args in [
+            &["swap-pane", "-s", "%1", "-t", "%2"][..],
+            &["display-message", "-p", "a,b"][..],
+            &["list-windows", "-F", "#{pane_id}|#{window_name}"][..],
+        ] {
+            let cmd = launch_on_windows(&windows_ssh(), "psmux", args).expect("fits");
+            let words = remote_words(&cmd);
+            assert_eq!(
+                words[..5],
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand"
+                ],
+                "{args:?}"
+            );
+            assert_eq!(words.len(), 6, "{args:?}");
+        }
     }
 
     /// How a host is reached is its kind and nothing else: neither its OS nor

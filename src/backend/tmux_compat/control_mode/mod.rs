@@ -1130,7 +1130,7 @@ impl ControlMode {
         // -C (single C): control mode with echo — works with piped stdin.
         // -CC (double C) requires a TTY and fails with "tcgetattr: Inappropriate ioctl".
         let mut child = transport
-            .tmux_command(socket, &["-C", "attach-session", "-t", session])
+            .tmux_command(socket, &["-C", "attach-session", "-t", session])?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

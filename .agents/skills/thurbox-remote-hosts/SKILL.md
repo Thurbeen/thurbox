@@ -116,6 +116,9 @@ launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`
 `shell::powershell_launcher`) — never a bare script, which psmux ≥ 3.4.0 runs
 through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH, and
 refused with `CommandLineTooLong` past `shell::WINDOWS_CMD_LINE_MAX` (8191) —
+quotes every one-shot command for a `cmd.exe` or PowerShell login shell rather
+than POSIX (`TmuxTransport::on_windows` → `shell::launch_on_windows`: plain
+words as they are, anything else as an encoded PowerShell script; #1460) —
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /

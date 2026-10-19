@@ -848,6 +848,9 @@ impl<M: TmuxCompatible> Server<M> {
             .clone()
             .unwrap_or_else(|| TMUX_SESSION.to_string());
         let mut transport = TmuxTransport::remote(launcher, M::MULTIPLEXER.name());
+        if platform == Platform::Windows {
+            transport = transport.on_windows();
+        }
         if M::SOCKET_DIR && platform == Platform::Posix {
             transport = transport.with_socket_dir(SocketDir::HostData {
                 app: crate::paths::app_dir_name().to_string(),
@@ -877,8 +880,10 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// `<mux> -L <socket> <args…>` on this server, in the directory its
     /// socket was found in ([`Self::socket_dir`]).
-    pub(in crate::backend) fn mux_command(&self, args: &[&str]) -> Command {
-        self.located_transport().tmux_command(&self.socket(), args)
+    pub(in crate::backend) fn mux_command(&self, args: &[&str]) -> Result<Command> {
+        Ok(self
+            .located_transport()
+            .tmux_command(&self.socket(), args)?)
     }
 
     /// The transport, carrying the socket directory the server was found in —
@@ -1206,7 +1211,7 @@ impl<M: TmuxCompatible> Server<M> {
         let mut args = vec!["new-session", "-d", "-s", &self.session];
         args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
         let out = self
-            .mux_command(&args)
+            .mux_command(&args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1290,7 +1295,7 @@ impl<M: TmuxCompatible> Server<M> {
         // failure into a message: the whole point is to keep the exit status,
         // because that is the layer talking and the message is only text.
         let output = self
-            .mux_command(&args)
+            .mux_command(&args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1517,7 +1522,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// the one answer.
     fn one_shot(&self, what: &str, args: &[&str]) -> Result<std::process::Output> {
         let output = self
-            .mux_command(args)
+            .mux_command(args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1583,7 +1588,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// Execute a tmux command on the thurbox socket and check for errors.
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = self
-            .mux_command(args)
+            .mux_command(args)?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -2475,7 +2480,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
-            .mux_command(&["-V"])
+            .mux_command(&["-V"])?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -3346,7 +3351,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 "-n",
                 HEARTBEAT_WINDOW,
                 &loop_cmd,
-            ])
+            ])?
             .output()
             .map_err(|e| {
                 self.transport
@@ -3371,7 +3376,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     /// failed listing is an unanswered question (`listing_is_absence`).
     fn heartbeat_running(&self) -> Result<bool> {
         let out = self
-            .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])
+            .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])?
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -4159,7 +4164,7 @@ impl<M: TmuxCompatible> Server<M> {
             // The headless twin of the check in `spawn`: the running server's
             // own `#{version}`, since it is its code that births the pane.
             let output = self
-                .mux_command(&["display-message", "-t", &self.session, "-p", "#{version}"])
+                .mux_command(&["display-message", "-t", &self.session, "-p", "#{version}"])?
                 .output()
                 .map_err(|e| {
                     self.transport
@@ -4330,7 +4335,7 @@ impl<M: TmuxCompatible> Server<M> {
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
     ) -> Result<Command> {
-        let mut tmux = self.mux_command(&["new-window", "-d"]);
+        let mut tmux = self.mux_command(&["new-window", "-d"])?;
         if M::ONE_SHOT_SPAWN_ANSWERS {
             tmux.arg("-a");
         }
@@ -4401,6 +4406,7 @@ impl<M: TmuxCompatible> Server<M> {
         }
         let output = self
             .mux_command(&["list-windows", "-t", &self.session, "-F", RETIRE_FORMAT])
+            .ok()?
             .output()
             .ok()?;
         if !output.status.success() {
@@ -4433,7 +4439,7 @@ impl<M: TmuxCompatible> Server<M> {
     fn kill_window_at(&self, target: &str) -> Result<()> {
         let (verb, target) = self.kill_command(target);
         let output = self
-            .mux_command(&[verb, "-t", &target])
+            .mux_command(&[verb, "-t", &target])?
             .output()
             .context("Failed to run tmux kill-window")?;
         if !output.status.success() {
@@ -5084,6 +5090,7 @@ mod tests {
         let argv: Vec<String> = backend
             .transport
             .tmux_command("s", &[])
+            .expect("command")
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();

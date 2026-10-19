@@ -952,6 +952,27 @@ reference to read before touching that path.
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
   data-dir derivation in ADR-12) so test/sandbox tooling can scope an instance
   on Windows, where every `-L <name>` resolves machine-wide (no `TMUX_TMPDIR`).
+- **A one-shot command over ssh is read by the host's login shell, which is
+  not POSIX** — `cmd.exe` by Windows OpenSSH's default, PowerShell when
+  `DefaultShell` says so. `cmd.exe` ignores single quotes, so the
+  `posix_quote`d `'#{pane_id}|#{window_name}|…'` of a listing was a pipe into a
+  command named `'#{window_name}'`: remote teardown could not list the host's
+  windows and was left owed (#1460). A transport built for a Windows host
+  (`TmuxTransport::on_windows`, set by `Server::on_host`) builds its lines with
+  `shell::launch_on_windows`: a line of words every such shell passes through
+  unquoted (`[A-Za-z0-9-_./:=+%]`, at most one `%`) goes as it is — a
+  control-mode attach and a `send-paste` among them, so the paste chunk keeps
+  its size — and any other runs as `powershell.exe -NoLogo -NoProfile
+  -NonInteractive -EncodedCommand`, refused past `WINDOWS_CMD_LINE_MAX`. The
+  script starts psmux through `ProcessStartInfo` with the arguments quoted for
+  the C runtime (`shell::windows_arg_quote`) rather than through `&`, because
+  PowerShell 5.1's native-argument passing drops an empty argument and splits
+  one at an embedded `"`; the child inherits the three std handles, so its
+  bytes and exit status are unchanged, and `$ProgressPreference` is silenced
+  because PowerShell writes progress to stderr as CLIXML, which psmux's
+  stderr-is-failure rule would read as an error. `scripts/dev/e2e/real-host.sh
+  <host> cmd-login-test` runs a create and a `share_sessions = false` force
+  delete with every ssh command thurbox-cli sends handed to `cmd.exe /c`.
 - **A paste cannot be key-encoded at all** (the encoding above types each
   embedded CR as Enter, and the `ESC[200~` markers as writes of their own
   rather than around the text — a pasted stack trace

@@ -326,7 +326,9 @@ fn killing_a_split_window_takes_the_whole_window() {
 ///
 /// The host is a stand-in: `ssh` runs its remote command here and `psmux`
 /// is this machine's tmux, so the adapter's psmux path runs for real against
-/// a private server.
+/// a private server. Its login shell is this machine's `sh`, so the entry
+/// says it is POSIX: a Windows one's commands are quoted for `cmd.exe` and
+/// PowerShell, which `sh` cannot run.
 #[cfg(unix)]
 #[test]
 fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
@@ -415,6 +417,7 @@ fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
         name: "psmuxhost".into(),
         destination: DEST.into(),
         multiplexer: Some("psmux".into()),
+        platform: Some(thurbox::session::Platform::Posix),
         share_sessions: false,
         socket: Some(server.socket().to_string()),
         session: Some("probe".into()),

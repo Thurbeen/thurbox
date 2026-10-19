@@ -971,7 +971,7 @@ impl PsmuxPaste {
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = self
             .transport
-            .tmux_command(&self.socket, &argv)
+            .tmux_command(&self.socket, &argv)?
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -1793,6 +1793,66 @@ mod tests {
         assert_eq!(
             hook_poll_command("a\"b\\c"),
             "list-panes -s -t \"abc\" -F \"#{pane_id} #{@thurbox_state}\""
+        );
+    }
+
+    /// The line ssh hands a Windows host's login shell: its words after the
+    /// destination, space-joined, as ssh sends them.
+    fn host_line(cmd: &Command) -> String {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dest = args.iter().position(|a| a == "me@winbox").expect("dest");
+        args[dest + 1..].join(" ")
+    }
+
+    /// Windows OpenSSH runs a one-shot command through its login shell —
+    /// `cmd.exe` by default, PowerShell when configured — and `cmd.exe`
+    /// ignores single quotes, so a POSIX-quoted `'#{pane_id}|#{window_name}'`
+    /// was a pipe into a command named `'#{window_name}'`, and remote teardown
+    /// could not list the host's windows (issue #1460). The line must be words
+    /// no shell reads as syntax, and still carry psmux's argv exactly.
+    #[test]
+    fn a_one_shot_reaches_a_windows_login_shell_as_plain_words() {
+        let host = HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..Default::default()
+        };
+        let backend = PsmuxBackend::for_host(&host);
+        let format = "#{pane_id}|#{window_name}|#{pane_dead}";
+        let line = host_line(
+            &backend
+                .mux_command(&["list-windows", "-t", "thurbox", "-F", format])
+                .expect("command"),
+        );
+
+        let syntax: Vec<char> = line
+            .chars()
+            .filter(|c| !(c.is_ascii_alphanumeric() || " -_./:=+%".contains(*c)))
+            .collect();
+        assert!(
+            syntax.is_empty(),
+            "{syntax:?} reaches the login shell: {line}"
+        );
+
+        let encoded = line.rsplit(' ').next().expect("payload");
+        let utf16 = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("base64");
+        let units: Vec<u16> = utf16
+            .chunks(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        let script = String::from_utf16(&units).expect("utf-16");
+        assert!(
+            script.contains(&format!(
+                "$s.Arguments = '-L {} list-windows -t thurbox -F {format}'",
+                crate::backend::instance::host_socket(&host)
+            )),
+            "{script}"
         );
     }
 
