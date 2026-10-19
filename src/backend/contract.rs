@@ -567,6 +567,8 @@ pub trait SessionBackend: Send + Sync {
     /// to prepend to the live stream (see [`Self::capture_history`]);
     /// `None` makes the backend capture it itself — the two paths produce the
     /// same bytes, `Some` just lets restore overlap the captures (ADR-P9).
+    /// Errs when the backend reports the pane gone, rather than connecting to
+    /// nothing.
     fn adopt(
         &self,
         backend_id: &str,
