@@ -2812,25 +2812,39 @@ impl SessionFacts {
         if crate::session::Route::is_remote_key(&s.backend_type) {
             return hook.pane_unavailable();
         }
-        // The agent *binary*, not the agent name: `antigravity` runs `agy`, and
-        // the pane's foreground process is spelled the way it was invoked.
-        let command = registry
-            .get(agent)
-            .map(|d| d.command.clone())
-            .unwrap_or_else(|| agent.to_string());
-        let pane = crate::session_ops::windows::agent_pane(backends, s)
-            .ok()
-            .flatten()
-            .and_then(|(backend, pane)| backend.pane_state(&pane).ok())
-            .unwrap_or_default();
-        hook.with_pane(
-            &command,
-            registry,
-            pane.foreground_process.as_deref(),
-            pane.foreground_command.as_deref(),
-            pane.dead,
-        )
+        probe_pane(hook, registry, agent, backends, s)
     }
+}
+
+/// Fold what the pane holds into `hook`, keeping the listing's three answers
+/// apart: a window found is classified, a listing that holds none is
+/// [`Corroboration::Missing`](crate::session::Corroboration::Missing), and a
+/// listing that failed is `Unknown` — it proves no absence.
+pub(crate) fn probe_pane(
+    hook: crate::session::Assessment,
+    registry: &crate::session::AgentRegistry,
+    agent: &str,
+    backends: &crate::backend::BackendRegistry,
+    s: &SharedSession,
+) -> crate::session::Assessment {
+    // The agent *binary*, not the agent name: `antigravity` runs `agy`, and
+    // the pane's foreground process is spelled the way it was invoked.
+    let command = registry
+        .get(agent)
+        .map(|d| d.command.clone())
+        .unwrap_or_else(|| agent.to_string());
+    let pane = match crate::session_ops::windows::agent_pane(backends, s) {
+        Ok(None) => return hook.with_corroboration(crate::session::Corroboration::Missing),
+        Ok(Some((backend, pane))) => backend.pane_state(&pane).unwrap_or_default(),
+        Err(_) => crate::backend::PaneState::default(),
+    };
+    hook.with_pane(
+        &command,
+        registry,
+        pane.foreground_process.as_deref(),
+        pane.foreground_command.as_deref(),
+        pane.dead,
+    )
 }
 
 /// A deleted row as `session list --deleted` prints it: the session's facts

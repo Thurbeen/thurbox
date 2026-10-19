@@ -478,15 +478,17 @@ fn pane_finding(hook: &Assessment) -> Option<Finding> {
         // health: it means the one check that could have falsified the row
         // could not be run.
         level: match corroboration {
-            Corroboration::Unavailable | Corroboration::Unknown | Corroboration::Dead => {
-                Level::Warn
-            }
+            Corroboration::Unavailable
+            | Corroboration::Unknown
+            | Corroboration::Dead
+            | Corroboration::Missing => Level::Warn,
             _ => Level::Ok,
         },
         detail: match corroboration {
             Corroboration::Unknown => {
                 "no live pane for this session, so its state cannot be checked".into()
             }
+            Corroboration::Missing => "the multiplexer holds no window for this session".into(),
             Corroboration::Dead => "the pane's command has exited (its frame is kept \
                  by remain-on-exit)"
                 .into(),
@@ -955,6 +957,30 @@ mod tests {
         // hooks really do shell out to it.
         let local = diagnose_agent(&row("s", "claude", "local-tmux"), &hook, true, None);
         assert_eq!(level_of(&local, "cli"), Level::Fail);
+    }
+
+    #[test]
+    fn a_missing_window_warns_and_disproves_an_active_row() {
+        let idle = Assessment::from_hooks(&registry(), "claude", Some("idle"), Some(0), None, 0)
+            .with_corroboration(Corroboration::Missing);
+        let finding = pane_finding(&idle).expect("a pane answer");
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding.detail.contains("no window"),
+            "got {}",
+            finding.detail
+        );
+
+        let blocked =
+            Assessment::from_hooks(&registry(), "claude", Some("blocked"), Some(0), None, 0)
+                .with_corroboration(Corroboration::Missing);
+        let finding = pane_finding(&blocked).expect("a pane answer");
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding.detail.contains("'blocked'"),
+            "got {}",
+            finding.detail
+        );
     }
 
     #[test]

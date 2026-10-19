@@ -404,24 +404,7 @@ fn assess(
     if crate::session::Route::is_remote_key(&session.backend_type) {
         return hook.pane_unavailable();
     }
-    // The agent *binary*, not the agent name: `antigravity` runs `agy`, and the
-    // pane's foreground process is spelled the way it was invoked.
-    let command = registry
-        .get(&facts.agent)
-        .map(|d| d.command.clone())
-        .unwrap_or_else(|| facts.agent.clone());
-    let pane = crate::session_ops::windows::agent_pane(backends, session)
-        .ok()
-        .flatten()
-        .and_then(|(backend, pane)| backend.pane_state(&pane).ok())
-        .unwrap_or_default();
-    hook.with_pane(
-        &command,
-        registry,
-        pane.foreground_process.as_deref(),
-        pane.foreground_command.as_deref(),
-        pane.dead,
-    )
+    crate::cli::sessions::probe_pane(hook, registry, &facts.agent, backends, session)
 }
 
 /// The columns the non-JSON renderings show, in the order they answer "what

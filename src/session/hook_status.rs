@@ -379,8 +379,12 @@ pub enum Corroboration {
     /// The pane's command has exited; `remain-on-exit` kept the frame. Whatever
     /// the row still says, nothing is running.
     Dead,
+    /// The multiplexer answered its window listing and holds no window of
+    /// this session's: the server restarted, or the window was closed outside
+    /// thurbox. A definite absence, unlike [`Self::Unknown`].
+    Missing,
     /// Nothing could be resolved (no `ps`, a multiplexer that answers no
-    /// format, a pane that went away between reads).
+    /// format or no listing, a pane that went away between reads).
     Unknown,
     /// Not checkable from here — a remote session's pane lives on its own
     /// host's multiplexer.
@@ -395,6 +399,7 @@ impl Corroboration {
             Corroboration::Shell => "shell",
             Corroboration::Other => "other",
             Corroboration::Dead => "dead",
+            Corroboration::Missing => "missing",
             Corroboration::Unknown => "unknown",
             Corroboration::Unavailable => "unavailable",
         }
@@ -418,7 +423,7 @@ impl Corroboration {
     pub fn agent_present(&self) -> Option<bool> {
         match self {
             Corroboration::Agent | Corroboration::ForeignAgent(_) => Some(true),
-            Corroboration::Shell | Corroboration::Dead => Some(false),
+            Corroboration::Shell | Corroboration::Dead | Corroboration::Missing => Some(false),
             // `Other` is a command the agent (or the user) is running; it says
             // nothing about whether the agent is still behind it.
             Corroboration::Other | Corroboration::Unknown | Corroboration::Unavailable => None,
@@ -671,16 +676,20 @@ pub fn classify_foreground(
 /// Whether the reported state and the pane contradict each other.
 ///
 /// Only the two *active* states can be contradicted: `working` and `blocked`
-/// both assert that an agent is there to be working or waiting, and an empty or
-/// dead pane says it is not. `done` and `idle` assert nothing about a live
-/// process — an agent that finished its turn and exited is not a contradiction.
+/// both assert that an agent is there to be working or waiting, and an empty,
+/// dead or missing pane says it is not. `done` and `idle` assert nothing about
+/// a live process — an agent that finished its turn and exited is not a
+/// contradiction.
 ///
 /// A contradiction is **reported, never applied**: the stored `hook_state` is
 /// left exactly as the agent wrote it, because overwriting an agent's own
 /// report with an inference is how a state becomes unfalsifiable.
 pub fn contradicts(state: Option<&str>, corroboration: &Corroboration) -> bool {
     matches!(state, Some("working" | "blocked"))
-        && matches!(corroboration, Corroboration::Shell | Corroboration::Dead)
+        && matches!(
+            corroboration,
+            Corroboration::Shell | Corroboration::Dead | Corroboration::Missing
+        )
 }
 
 /// Where a session's reported state came from.
@@ -1651,6 +1660,18 @@ mod tests {
         let dead = classify_foreground("claude", &known, Some("claude"), None, Some(true));
         assert_eq!(dead, Corroboration::Dead);
         assert!(contradicts(Some("working"), &dead));
+    }
+
+    #[test]
+    fn a_missing_window_contradicts_only_an_active_state() {
+        let missing = Corroboration::Missing;
+        assert_eq!(missing.as_str(), "missing");
+        assert_eq!(missing.agent_present(), Some(false));
+        assert!(contradicts(Some("working"), &missing));
+        assert!(contradicts(Some("blocked"), &missing));
+        assert!(!contradicts(Some("done"), &missing));
+        assert!(!contradicts(Some("idle"), &missing));
+        assert_eq!(best_state(None, None, None, Some(&missing)), None);
     }
 
     #[test]

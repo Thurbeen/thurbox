@@ -217,9 +217,13 @@ consumer's.
 The decisive check is the pane rather than the clock. `session get`
 resolves the pane's true foreground process (one multiplexer query plus
 one `ps`) and reports `hook_corroboration` — `agent`, `foreign-agent`,
-`shell`, `other`, `dead`, `unknown`, or `unavailable` — plus
+`shell`, `other`, `dead`, `missing`, `unknown`, or `unavailable` — plus
 `hook_state_contradicted`, which is true when a `working` or `blocked`
-row sits over a pane holding a bare shell or nothing at all. It is
+row sits over a pane holding a bare shell or nothing at all. `missing`
+means the multiplexer answered its window listing and holds no window of
+the session's (the server restarted, or the window was closed outside
+thurbox), so it contradicts; `unknown` is a listing or a read that did
+not answer, which proves no absence and contradicts nothing. It is
 **reported, never applied**: `hook_state` keeps exactly the value the
 agent wrote, because overwriting a report with an inference is how a
 state becomes unfalsifiable. `session list` skips the probe unless

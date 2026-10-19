@@ -367,7 +367,10 @@ Each line carries:
 `reason` is what a bare event name could not say: a `gone` used to mean both
 deletes, and only one of them is restorable. `hook_state_contradicted` is
 `null` — *not checked* — unless you pass `--verify`, which costs a multiplexer
-query and a `ps` per event, the same trade `session list --verify` makes.
+query and a `ps` per event, the same trade `session list --verify` makes. A
+session whose window the listing no longer holds reads `hook_corroboration:
+"missing"` and contradicts a `working`/`blocked` row; a listing that failed
+reads `unknown` and contradicts nothing.
 
 `state` is the same `SessionState` word every other surface answers with, and
 it is derived from the event's **own** `to_state` so two transitions inside one
