@@ -3540,6 +3540,11 @@ fn local_socket_file(dir: &SocketDir, socket: &str) -> bool {
 /// `-v` would have interpreted its backslashes.
 const LOCATE_BODY: &str = r#"mux=$1 name=$2 uid=$(id -u)
 answers() { TMUX_TMPDIR=$1 "$mux" -L "$name" list-sessions >/dev/null 2>&1; }
+answers_within() {
+  t=0
+  while [ "$t" -lt 30 ] && ! answers "$1"; do sleep 0.1; t=$((t + 1)); done
+  answers "$1"
+}
 sock() {
   if b=$(cd "$1/tmux-$uid" 2>/dev/null && pwd -P); then :
   elif b=$(cd "$1" 2>/dev/null && pwd -P); then b=$b/tmux-$uid
@@ -3575,9 +3580,7 @@ while [ "$i" -lt "$n" ]; do
   pids=$(bound "$p" | tr '\n' ' ')
   if [ -n "$pids" ]; then
     if [ -e "$p" ]; then
-      t=0
-      while [ "$t" -lt 30 ] && ! answers "$d"; do sleep 0.1; t=$((t + 1)); done
-      if answers "$d"; then echo "answered $i"; exit 0; fi
+      if answers_within "$d"; then echo "answered $i"; exit 0; fi
       echo "bound $(echo $pids | tr ' ' ',') $p"
     else
       set -- $pids
@@ -3585,9 +3588,7 @@ while [ "$i" -lt "$n" ]; do
       shift
       mkdir -p -m 700 "${p%/*}"
       if kill -USR1 "$pid" 2>/dev/null; then
-        t=0
-        while [ "$t" -lt 30 ] && ! answers "$d"; do sleep 0.1; t=$((t + 1)); done
-        if answers "$d"; then echo "recovered $i $pid $# $p"; else echo "unanswered $i $pid $# $p"; fi
+        if answers_within "$d"; then echo "recovered $i $pid $# $p"; else echo "unanswered $i $pid $# $p"; fi
         exit 0
       fi
     fi
@@ -5019,6 +5020,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn locate_beside_a_bound_socket(answer_after: Option<std::time::Duration>) -> ServerFound {
         let root = tempfile::tempdir().expect("tempdir");
+        // SAFETY: `getuid` cannot fail and touches no memory.
         let uid = unsafe { libc::getuid() };
         let sockets = root.path().join(format!("tmux-{uid}"));
         std::fs::create_dir_all(&sockets).unwrap();
