@@ -940,11 +940,13 @@ reference to read before touching that path.
   `39 + 4 * ceil(2n / 3)` chars for an `n`-unit script, about 2.7 times it —
   and agent `args`/`env` are unbounded config, so `shell::powershell_launcher`
   measures the line it builds against `WINDOWS_CMD_LINE_MAX` (8191, `cmd.exe`'s
-  limit, which every launch here passes through) and refuses a longer one with
+  limit — the login shell of a Windows OpenSSH host, and the `$SHELL` of a psmux
+  server started over it — applied to local servers too, so an agent that runs
+  locally does not fail on a host) and refuses a longer one with
   `CommandLineTooLong` before anything reaches psmux: a spawn names the cause
-  instead of reading as a window that died. A typical agent window is ~1.3K
-  chars; a script past ~3K is refused. The one-shot `send-paste` chunk is
-  derived from the same limit (`PASTE_CHUNK_BYTES`). Control-mode spawns
+  instead of reading as a window that died. A typical agent window stays under
+  half of it; a script past 3,057 UTF-16 units is refused. The one-shot
+  `send-paste` chunk is derived from the same limit (`PASTE_CHUNK_BYTES`). Control-mode spawns
   (`psmux_window_command`) frame it in double quotes; the
   headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the

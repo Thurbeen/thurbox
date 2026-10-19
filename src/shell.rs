@@ -169,10 +169,11 @@ pub fn powershell_launcher(script: &str) -> Result<String, CommandLineTooLong> {
 }
 
 /// The longest command line `cmd.exe` runs (it answers "The command line is
-/// too long." past it). It, not `CreateProcess`'s 32,767, is the bound on a
-/// Windows host: Windows OpenSSH runs every ssh command through its default
-/// login shell, `cmd.exe`, and psmux runs a window's command through the
-/// `$SHELL` that OpenSSH set to `cmd.exe` as well.
+/// too long." past it), and the bound used for every Windows host rather than
+/// `CreateProcess`'s 32,767: Windows OpenSSH runs a one-shot ssh command
+/// through its default login shell, `cmd.exe`, and a psmux server started
+/// over ssh has `$SHELL=cmd.exe` for any window it routes through a shell. A
+/// line that only fits a local server would fail the same agent on a host.
 pub const WINDOWS_CMD_LINE_MAX: usize = 8191;
 
 /// A command line longer than a Windows host will run, refused before it is
