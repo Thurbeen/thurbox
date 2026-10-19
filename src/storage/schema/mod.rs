@@ -108,6 +108,19 @@ use rusqlite::Connection;
 /// of the v49 snapshot triggers, so an advance every minute rebuilds nothing.
 pub const SCHEMA_VERSION: u32 = 54;
 
+/// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
+/// binary migrated, recorded as `min_reader_version` in `metadata`.
+///
+/// A downgrade has to keep working, so a newer schema is not refused by itself:
+/// an older thurbox opens a database a newer one migrated, leaves its shape
+/// alone and writes what it knows, which is safe while migrations stay
+/// **additive** — new columns nullable or defaulted, new tables, nothing
+/// renamed, retyped or dropped. Raise this to the new `SCHEMA_VERSION` only in
+/// the migration that breaks that, so the binaries it would break refuse the
+/// database instead of corrupting it. It never moves down: the stored value is
+/// the highest any binary has written.
+pub const MIN_READER_VERSION: u32 = 53;
+
 /// A single migration step: applied when the stored version is below `target`,
 /// and — for a [`Reapply::WhenMissing`] step — on every open besides.
 type MigrationStep = (u32, fn(&Connection) -> rusqlite::Result<()>, Reapply);
@@ -457,27 +470,27 @@ fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Run schema migrations for existing databases.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let version: u32 = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key = 'schema_version'",
-            [],
-            |row| {
-                let val: String = row.get(0)?;
-                Ok(val.parse().unwrap_or(0))
-            },
-        )
-        .unwrap_or(0);
+    let version = metadata_version(conn, "schema_version");
 
-    // A binary left running after an upgrade — or an older one started by hand
-    // — would otherwise write rows its schema does not describe.
-    if version > SCHEMA_VERSION {
+    // See `MIN_READER_VERSION`: a newer schema alone is no reason to refuse —
+    // a downgrade must keep working — but one that declares this binary too old
+    // is, or it would write rows the schema no longer describes.
+    let min_reader = metadata_version(conn, "min_reader_version");
+    if min_reader > SCHEMA_VERSION {
         return Err(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
             Some(format!(
-                "the database is at schema v{version}, newer than this thurbox \
-                 (v{SCHEMA_VERSION}) knows; run the newer thurbox"
+                "this database (schema v{version}) needs a thurbox that knows schema \
+                 v{min_reader} or later to use it safely, and this one knows v{SCHEMA_VERSION}; \
+                 update thurbox"
             )),
         ));
+    }
+    // The newer binary owns this shape. Re-asserting this one's additive steps
+    // would at best do nothing and at worst rewrite its triggers to an older
+    // spelling, and the version must not be rewound.
+    if version > SCHEMA_VERSION {
+        return Ok(());
     }
 
     // Each migration step is gated on the stored version and applied in order.
@@ -558,8 +571,25 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [SCHEMA_VERSION.to_string()],
         )?;
     }
+    if min_reader < MIN_READER_VERSION {
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('min_reader_version', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [MIN_READER_VERSION.to_string()],
+        )?;
+    }
 
     Ok(())
+}
+
+/// A version stored in `metadata`; absent or unparseable reads as 0.
+fn metadata_version(conn: &Connection, key: &str) -> u32 {
+    conn.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+        row.get::<_, String>(0)
+    })
+    .ok()
+    .and_then(|value| value.parse().ok())
+    .unwrap_or(0)
 }
 
 // The `ALTER TABLE` migrations below were historically written as

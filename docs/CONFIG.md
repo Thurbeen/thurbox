@@ -1809,7 +1809,16 @@ the version inside it: a second process opening an old database at the same
 time waits, then finds it already migrated, instead of running a data step
 again. Switching a brand-new file to WAL is retried for the same reason: two
 processes doing it at once deadlock on the file lock, and SQLite fails one
-without waiting. A database whose `schema_version` is **newer** than the binary knows is
-refused with an error naming both versions — a thurbox left running after an
-update, or an older one started by hand, would otherwise write rows its schema
-does not describe. Run the newer thurbox against it.
+without waiting.
+
+A downgrade keeps working. A database whose `schema_version` is **newer** than
+the binary knows still opens: the older thurbox runs none of its own steps
+against it, leaves the version alone, and writes only what it knows. That is
+safe because migrations stay **additive** — new columns nullable or defaulted,
+new tables, nothing renamed, retyped or dropped. A migration that has to break
+that also raises `min_reader_version` in `metadata` (`MIN_READER_VERSION` in
+`src/storage/schema/mod.rs`) to its own schema version. A thurbox whose schema
+version is below that value then refuses the database with an error naming
+both versions and saying to update, rather than writing rows the schema no
+longer describes. The value only ever rises. Binaries released before
+`min_reader_version` existed do not read it.

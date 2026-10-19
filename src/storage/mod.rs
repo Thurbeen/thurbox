@@ -18,7 +18,7 @@ mod relaunches;
 pub mod repo_bookmarks;
 pub mod review;
 mod schema;
-pub use schema::SCHEMA_VERSION;
+pub use schema::{MIN_READER_VERSION, SCHEMA_VERSION};
 pub mod session_events;
 mod session_meta;
 mod sessions;

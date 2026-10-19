@@ -147,39 +147,104 @@ fn processes_opening_a_fresh_database_at_once_all_succeed() {
             stored_version(&env.database()),
             thurbox::storage::SCHEMA_VERSION
         );
+        assert_eq!(
+            metadata(&env.database(), "min_reader_version"),
+            Some(thurbox::storage::MIN_READER_VERSION.to_string()),
+            "a new database says which binaries may open it"
+        );
     }
 }
 
-/// A binary left running after `thurbox update` — or an older one started by
-/// hand — must not write to a schema it does not know.
+fn set_metadata(path: &Path, key: &str, value: u32) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value.to_string()),
+        )
+        .unwrap();
+}
+
+fn metadata(path: &Path, key: &str) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .unwrap()
+}
+
+/// A downgrade keeps working: a newer thurbox's additive migration — here a
+/// column and a table this binary has never heard of — leaves a database an
+/// older one still opens, without rewinding the version or touching what the
+/// newer one added.
 #[test]
-fn an_older_binary_refuses_a_newer_database() {
+fn an_older_binary_opens_a_database_a_newer_one_migrated() {
     let env = Env::new();
     let first = env.cli().output().unwrap();
     assert!(first.status.success(), "{}", output(&first));
     let newer = thurbox::storage::SCHEMA_VERSION + 1;
     Connection::open(env.database())
         .unwrap()
-        .execute(
-            "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-            [newer.to_string()],
+        .execute_batch(
+            "ALTER TABLE sessions ADD COLUMN from_the_future TEXT;
+             CREATE TABLE from_the_future (id INTEGER PRIMARY KEY);",
         )
         .unwrap();
+    set_metadata(&env.database(), "schema_version", newer);
 
     let out = env.cli().output().unwrap();
 
     assert!(
-        !out.status.success(),
-        "opened a v{newer} database it does not know"
-    );
-    assert!(
-        output(&out).contains("newer"),
-        "the refusal says why:\n{}",
+        out.status.success(),
+        "an older thurbox refused a v{newer} database it can read:\n{}",
         output(&out)
     );
     assert_eq!(
         stored_version(&env.database()),
         newer,
-        "the stored version was rewritten"
+        "the stored version was rewound"
+    );
+    let kept: bool = Connection::open(env.database())
+        .unwrap()
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'from_the_future'")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(kept, "the newer binary's column was dropped");
+}
+
+/// What a downgrade cannot survive is declared by the database, not guessed
+/// from its version: a newer thurbox that made an incompatible change raises
+/// `min_reader_version` past this binary, and this binary then refuses rather
+/// than writing rows the schema no longer describes.
+#[test]
+fn an_older_binary_refuses_a_database_it_cannot_read() {
+    let env = Env::new();
+    let first = env.cli().output().unwrap();
+    assert!(first.status.success(), "{}", output(&first));
+    let newer = thurbox::storage::SCHEMA_VERSION + 1;
+    set_metadata(&env.database(), "schema_version", newer);
+    set_metadata(&env.database(), "min_reader_version", newer);
+
+    let out = env.cli().output().unwrap();
+
+    assert!(
+        !out.status.success(),
+        "opened a database that says v{newer} is the oldest safe reader"
+    );
+    assert!(
+        output(&out).contains("update thurbox"),
+        "the refusal says what to do:\n{}",
+        output(&out)
+    );
+    assert_eq!(stored_version(&env.database()), newer);
+    assert_eq!(
+        metadata(&env.database(), "min_reader_version"),
+        Some(newer.to_string()),
+        "the refusal rewrote the database"
     );
 }
