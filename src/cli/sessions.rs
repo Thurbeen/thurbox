@@ -320,8 +320,9 @@ pub enum Action {
     /// the mailbox, which exits non-zero. After Enter it checks the line left
     /// the composer, presses Enter once more if the text is still there, and
     /// reports `submitted` — exiting non-zero when it never left.
-    /// Local sessions only: the pane lives on this machine's server, so a
-    /// session on a `--host` runs `thurbox-cli` there instead.
+    /// A session on a shareable `--host` is driven by that host's own
+    /// `thurbox-cli`; on any other host thurbox drives the window over the
+    /// host's transport.
     Send {
         /// Session UUID.
         uuid: String,
@@ -341,7 +342,7 @@ pub enum Action {
     ///
     /// The companion to `session send --no-enter`: `escape` and `ctrl-c`
     /// interrupt a turn, `ctrl-u` clears a composer line, `enter` submits what
-    /// is typed. Local sessions only, like `session send`.
+    /// is typed. Reaches a session on a `--host` as `session send` does.
     ///
     /// On native Windows the local multiplexer is psmux, which is only known to
     /// implement `enter`, `escape`, `tab`, `backspace` and `ctrl-<letter>`. A
@@ -364,8 +365,8 @@ pub enum Action {
     /// `foreground_command` (what is running in the pane's tty right now, argv0
     /// and full command line), and `foreground_cwd` (where that process is —
     /// unlike `session get`'s `cwd`, which is where the session was launched).
-    /// Any of them is `null` when it cannot be determined. Local sessions only:
-    /// a session created with `--host` has no pane on this machine.
+    /// Any of them is `null` when it cannot be determined. Reaches a session on
+    /// a `--host` as `session send` does.
     Capture {
         /// Session UUID.
         uuid: String,
@@ -1762,8 +1763,8 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
 /// foreground process and live cwd are additive JSON fields, so a caller that
 /// only ever read `output` sees exactly what it always did.
 ///
-/// A session on a host is captured by that host's own CLI (see
-/// [`delegate_to_host`]), like every pane verb.
+/// A session on a host is captured by that host's own CLI where it has one
+/// (see [`delegate_to_host`]), like every pane verb.
 fn capture_pane(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -2666,10 +2667,12 @@ pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, C
 /// how to run its own CLI on a host — the mirror pass does it on every tick —
 /// so a pane verb means the same thing on every machine.
 ///
-/// `Ok(None)` means "this is local, carry on". `Ok(Some(output))` is the host's
-/// own answer, already a document. The refusal survives only where delegation
-/// is genuinely impossible: a host with no `hosts.toml` entry, or one whose
-/// `thurbox-cli` could not be found or provisioned.
+/// `Ok(None)` means "drive the pane from here": the session is local, or its
+/// host has no usable `thurbox-cli` — sharing is off, or none could be found
+/// or provisioned — so the caller reaches the window through the route's
+/// backend in the registry, as the kernel does (ADR-30). `Ok(Some(output))` is
+/// the host's own answer, already a document. Only a host with no `hosts.toml`
+/// entry is refused here: it names no machine to reach either way.
 fn delegate_to_host(
     session: &SharedSession,
     args: &[&str],
@@ -2686,13 +2689,9 @@ fn delegate_to_host(
                 session.name, session.backend_type
             )
         })?;
-    let cli = crate::session_ops::host_cli::delegated(&host).ok_or_else(|| {
-        format!(
-            "session '{}' runs on '{}', and no thurbox-cli could be reached there — \
-             run this command on that host",
-            session.name, host.name
-        )
-    })?;
+    let Some(cli) = crate::session_ops::host_cli::delegated(&host) else {
+        return Ok(None);
+    };
     let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
     let human = answer
         .get("output")

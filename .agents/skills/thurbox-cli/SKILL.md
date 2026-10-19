@@ -433,8 +433,10 @@ header to declare), `--json` for one JSON object per line. `--pretty` is
 
 `send`, `key`, `capture` and `exec` work on a `--host` session: they delegate to
 that host's own `thurbox-cli` (the mechanism the mirror pass already uses).
-A refusal survives only where delegation is genuinely impossible — no
-`hosts.toml` entry, or no reachable CLI there — and says which.
+Where the host has no usable CLI — `share_sessions = false`, or none could be
+found or provisioned — `send`, `key` and `capture` drive the window over the
+host's transport through the registry instead (ADR-30). Only a backend with no
+`hosts.toml` entry is refused, and says so.
 
 ### `runtime` — what thurbox runs that is not a session
 
@@ -543,9 +545,9 @@ newline cannot submit the line before it. Locally the verbs go through the
 backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
 `send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
 (`delegate_to_host` in `src/cli/sessions.rs`), which records their effects in
-the host's own database. The refusal survives only where delegation is
-genuinely impossible: a backend with no `hosts.toml` entry, or one whose
-`thurbox-cli` could not be reached.
+the host's own database. A host with no usable `thurbox-cli` (sharing off, or
+none reachable) falls through to the registry path, which drives its window
+over the transport; only a backend with no `hosts.toml` entry is refused.
 
 ### A pane can run an agent thurbox did not launch
 

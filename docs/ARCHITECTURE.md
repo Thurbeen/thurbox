@@ -1875,6 +1875,8 @@ host where that cannot be done (a dev build on a foreign platform, no
 network) or with `share_sessions = false` is used exactly
 as ADR-13 describes: worktrees over ssh, the hooks rewrite, the pane-option
 status channel, which are now the **legacy path for non-shareable hosts**.
+Their windows are driven over the transport by the route's backend, so
+`session send`/`key`/`capture` work there too (ADR-30).
 
 **A host CLI is compatible when its major matches and its schema is no older
 than ours** (`host_cli::compatible`). A newer schema within one major is a host
@@ -2600,7 +2602,10 @@ calls a pane-keyed verb on the contract: `send_text`, `send_text_after`,
 `send_key`, `capture`, `pane_state`, `pane_path`. A key crosses the contract as
 `backend::Key`, thurbox's own closed set of spellings; the adapter says it in
 its grammar (`session key` still reports that spelling as `tmux_key`).
-Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24).
+Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24);
+`session send`/`key`/`capture` on a host with no usable CLI — `share_sessions =
+false`, or none found or provisioned — fall through to the registry, as the
+kernel does, and only a backend with no `hosts.toml` entry is refused.
 
 **Why**: the pane helpers were free functions of the tmux adapter that
 resolved `(id, name)` on *this machine's* server whatever the row's route. A
