@@ -24,7 +24,9 @@ const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
 /// its spawn did. Idempotent, which `agent_launch_plan` relies on: it applies
 /// this over an environment `session_process_env` already applied it to. A variable the
 /// session's own `--env` sets wins over layers 1 and 2: it is the caller's
-/// explicit choice for this one session.
+/// explicit choice for this one session. `OTEL_RESOURCE_ATTRIBUTES` is a list,
+/// so the session's value is merged into the inherited one instead, its keys
+/// winning, and thurbox's own keys win over both.
 ///
 /// A remote session gets only the resource attributes: `localhost:4318` there
 /// is the host, not this machine, and nothing yet says where the host's
@@ -43,19 +45,34 @@ pub(crate) fn apply(
         .backend
         .as_deref()
         .is_some_and(crate::session::Route::is_remote_key);
-    let inherited = config.env.get(RESOURCE_ATTRIBUTES).cloned().or_else(|| {
-        (!remote)
-            .then(|| std::env::var(RESOURCE_ATTRIBUTES).ok())
-            .flatten()
-    });
+    // The session's own value merges into thurbox's environment rather than
+    // replacing it: an attribute the operator set for every session survives a
+    // session that adds its own. A remote session has no inherited value: this
+    // process's environment is not the host's.
+    let process = (!remote)
+        .then(|| std::env::var(RESOURCE_ATTRIBUTES).ok())
+        .flatten();
     let session_id = config.session_id.map(|id| id.to_string());
-    let attributes = resource_attributes(
-        inherited.as_deref(),
+    let attributes = merge(
+        &merge(
+            process.as_deref().unwrap_or_default(),
+            config
+                .env
+                .get(RESOURCE_ATTRIBUTES)
+                .map_or("", String::as_str),
+        ),
         &[
             ("thurbox.session.id", session_id.as_deref().unwrap_or("")),
             ("thurbox.session.name", session_name),
             ("thurbox.agent", &config.agent),
-        ],
+        ]
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        // As the spec asks: a session name with a comma or `=` would
+        // otherwise split the list.
+        .map(|(k, v)| format!("{k}={}", percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join(","),
     );
     config.env.insert(RESOURCE_ATTRIBUTES.into(), attributes);
     if remote {
@@ -87,25 +104,31 @@ pub(crate) fn apply(
     args
 }
 
-/// `inherited` with thurbox's own non-empty attributes appended, any earlier value for
-/// one of thurbox's keys dropped so the session's identity cannot be claimed
-/// from outside. Values are percent-encoded, as the spec asks: a session name
-/// with a comma or `=` would otherwise split the list.
-fn resource_attributes(inherited: Option<&str>, ours: &[(&str, &str)]) -> String {
-    let kept = inherited
-        .unwrap_or_default()
-        .split(',')
-        .filter(|pair| !pair.trim().is_empty())
-        .filter(|pair| {
-            let key = pair.split('=').next().unwrap_or_default().trim();
-            !ours.iter().any(|(k, _)| *k == key)
-        })
-        .map(str::to_string);
-    let added = ours
-        .iter()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(k, v)| format!("{k}={}", percent_encode(v)));
-    kept.chain(added).collect::<Vec<_>>().join(",")
+/// `base` with `over` appended, any pair of `base` whose key `over` also sets
+/// dropped, so `over` wins a conflict. Merging thurbox's own attributes last is
+/// what stops the session's identity being claimed from outside.
+fn merge(base: &str, over: &str) -> String {
+    let pairs = |list: &str| -> Vec<String> {
+        list.split(',')
+            .filter(|pair| !pair.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let key = |pair: &str| {
+        pair.split('=')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let over = pairs(over);
+    let overridden: Vec<String> = over.iter().map(|pair| key(pair)).collect();
+    pairs(base)
+        .into_iter()
+        .filter(|pair| !overridden.contains(&key(pair)))
+        .chain(over)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// RFC 3986 percent-encoding of everything outside the unreserved set.
@@ -143,16 +166,19 @@ mod tests {
 
     #[test]
     fn inherited_attributes_are_kept_but_never_override_the_session() {
-        let merged = resource_attributes(
-            Some("team=infra,thurbox.agent=spoofed,"),
-            &[
-                ("thurbox.agent", "claude"),
-                ("thurbox.session.name", "a b=c"),
-            ],
+        let mut config = config(None);
+        config.env.insert(
+            RESOURCE_ATTRIBUTES.into(),
+            "team=infra,thurbox.agent=spoofed,".into(),
         );
+        apply(&mut config, &AgentDef::default(), "a b=c", &on());
+        let id = config.session_id.unwrap();
         assert_eq!(
-            merged,
-            "team=infra,thurbox.agent=claude,thurbox.session.name=a%20b%3Dc"
+            config.env[RESOURCE_ATTRIBUTES],
+            format!(
+                "team=infra,thurbox.session.id={id},thurbox.session.name=a%20b%3Dc,\
+                 thurbox.agent=claude"
+            )
         );
     }
 

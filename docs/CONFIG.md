@@ -1007,7 +1007,9 @@ With `enabled` and `configure_agents` both on, every local session gets:
   (it ignores the spec's endpoint variable and is always sent `binary`, which
   is protobuf), and `VIBE_ENABLE_OTEL` / `VIBE_OTEL_ENDPOINT` for `vibe`.
 
-A variable the session's own `--env` sets wins. A remote session gets only the
+A variable the session's own `--env` sets wins, except
+`OTEL_RESOURCE_ATTRIBUTES`: the session's value is merged into the inherited
+one, its keys winning a conflict, and thurbox's three keys still win over both. A remote session gets only the
 resource attributes: `localhost` there is the host, so no exporter is configured
 for it. `antigravity`, `pi` and `aider` have no native OTel.
 

@@ -2267,11 +2267,14 @@ fn otel_subset(
 
 /// Spawn one session of the built-in `agent`, its command swapped for a probe,
 /// under `settings`; return what it saw at spawn, after a restart, the env
-/// `session exec` hands a child, and the session id.
+/// `session exec` hands a child, and the session id. `attributes` is the
+/// `OTEL_RESOURCE_ATTRIBUTES` thurbox inherits and the one the session's own
+/// `--env` sets.
 #[cfg(unix)]
 fn telemetry_probe(
     agent: &str,
     settings: &str,
+    attributes: Option<(&str, &str)>,
 ) -> (
     Seen,
     Seen,
@@ -2289,6 +2292,11 @@ fn telemetry_probe(
         if k.starts_with("OTEL_") || k == "CLAUDE_CODE_ENABLE_TELEMETRY" {
             std::env::remove_var(k);
         }
+    }
+    let mut env = std::collections::BTreeMap::new();
+    if let Some((inherited, session)) = attributes {
+        std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", inherited);
+        env.insert("OTEL_RESOURCE_ATTRIBUTES".into(), session.into());
     }
     std::fs::write(
         thurbox::agent::settings_config::settings_config_path().unwrap(),
@@ -2335,7 +2343,10 @@ fn telemetry_probe(
             name: "probe, one".into(),
             repo_path: repo,
             agent: Some(agent.into()),
-            env: [("CAPTURE".into(), capture.display().to_string())].into(),
+            env: env
+                .into_iter()
+                .chain([("CAPTURE".into(), capture.display().to_string())])
+                .collect(),
             ..Default::default()
         },
     )
@@ -2355,7 +2366,7 @@ fn telemetry_gives_claude_the_spec_env_its_switch_and_the_session_attributes() {
     if !have_tmux() {
         return;
     }
-    let (spawn, restart, exec, id) = telemetry_probe("claude", TELEMETRY_ON);
+    let (spawn, restart, exec, id) = telemetry_probe("claude", TELEMETRY_ON, None);
     for env in [&spawn.env, &restart.env] {
         assert_eq!(env["OTEL_EXPORTER_OTLP_ENDPOINT"], OTLP_ENDPOINT);
         assert_eq!(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
@@ -2386,7 +2397,7 @@ fn telemetry_gives_codex_config_overrides_with_the_endpoint_substituted() {
     if !have_tmux() {
         return;
     }
-    let (spawn, restart, _, _) = telemetry_probe("codex", TELEMETRY_ON);
+    let (spawn, restart, _, _) = telemetry_probe("codex", TELEMETRY_ON, None);
     for seen in [&spawn, &restart] {
         let overrides: Vec<&str> = seen
             .args
@@ -2421,6 +2432,32 @@ fn telemetry_gives_codex_config_overrides_with_the_endpoint_substituted() {
 
 #[test]
 #[cfg(unix)]
+fn a_sessions_own_resource_attributes_merge_into_the_inherited_ones() {
+    if !have_tmux() {
+        return;
+    }
+    let (spawn, restart, exec, id) = telemetry_probe(
+        "claude",
+        TELEMETRY_ON,
+        Some((
+            "team=infra,deployment.environment.name=prod",
+            "factory.task.id=t1,team=agents,thurbox.agent=spoofed",
+        )),
+    );
+    for env in [&spawn.env, &restart.env, &exec] {
+        assert_eq!(
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+            format!(
+                "deployment.environment.name=prod,factory.task.id=t1,team=agents,\
+                 thurbox.session.id={id},thurbox.session.name=probe%2C%20one,\
+                 thurbox.agent=claude"
+            )
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn telemetry_off_or_not_configuring_agents_passes_nothing() {
     if !have_tmux() {
         return;
@@ -2430,7 +2467,7 @@ fn telemetry_off_or_not_configuring_agents_passes_nothing() {
         ("claude", "[telemetry]\nenabled = false\n".into()),
         ("codex", format!("{TELEMETRY_ON}configure_agents = false\n")),
     ] {
-        let (spawn, restart, exec, _) = telemetry_probe(agent, &settings);
+        let (spawn, restart, exec, _) = telemetry_probe(agent, &settings, None);
         for seen in [&spawn, &restart] {
             assert!(seen.env.is_empty(), "{settings}: {:?}", seen.env);
             assert!(
