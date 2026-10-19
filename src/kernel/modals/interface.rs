@@ -193,6 +193,7 @@ fn trust_word(trust: FileTrust) -> Option<&'static str> {
         FileTrust::Untrusted => Some("untrusted"),
         FileTrust::Trusted => Some("trusted"),
         FileTrust::Drifted => Some("trusted, changed"),
+        FileTrust::Replaced => Some("untrusted, changed"),
     }
 }
 
@@ -266,6 +267,7 @@ fn asks(row: &Row) -> Option<String> {
         FileTrust::Untrusted => " — not granted; t grants it",
         FileTrust::Trusted => " — granted; t revokes it",
         FileTrust::Drifted => " — granted, but the file changed since; t revokes it",
+        FileTrust::Replaced => " — not granted: changed since trusted; t grants it",
         FileTrust::NotAsked => "",
     };
     Some(format!("asks to: {}{standing}", wants.join(", ")))
@@ -489,7 +491,7 @@ impl InterfaceTab {
                 None,
             );
         }
-        let granting = row.trust == FileTrust::Untrusted;
+        let granting = !row.trust.grants();
         (
             None,
             Some(Edit::Trust {
@@ -690,7 +692,7 @@ impl InterfaceTab {
                 hints.push(("d", " delete  "));
             }
             match row.trust {
-                FileTrust::Untrusted => hints.push(("t", " trust  ")),
+                FileTrust::Untrusted | FileTrust::Replaced => hints.push(("t", " trust  ")),
                 FileTrust::Trusted | FileTrust::Drifted => hints.push(("t", " revoke  ")),
                 FileTrust::NotAsked => {}
             }
@@ -1223,6 +1225,19 @@ mod tests {
         trusted.trust = FileTrust::Trusted;
         let keys = footer(&tab, &[trusted]);
         assert!(keys.contains("revoke"), "{keys}");
+
+        // Changed under its pin: it holds nothing, so `t` grants rather than revokes.
+        let mut replaced = installed_top();
+        replaced.trust = FileTrust::Replaced;
+        let keys = footer(&tab, std::slice::from_ref(&replaced));
+        assert!(keys.contains("trust") && !keys.contains("revoke"), "{keys}");
+        assert_eq!(
+            InterfaceTab::default().trust(&[replaced]).1,
+            Some(Edit::Trust {
+                file: installed_top().path,
+                trusted: true,
+            })
+        );
 
         let doc = [file("README.md", Kind::Doc)];
         let keys = footer(&tab, &doc);

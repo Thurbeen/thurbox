@@ -308,17 +308,11 @@ impl App {
     /// Relative, because that is `Plugin::path`; trust is stored absolute so two
     /// interface directories cannot share it, so this is where the two meet.
     pub(crate) fn publish_trust(&self) {
-        let trusted: Vec<String> = self
-            .host
-            .plugins
-            .iter()
-            .map(|plugin| plugin.path.clone())
-            .filter(|path| {
-                let absolute = self.ui_dir.join(path);
-                self.registry.is_trusted(&absolute.to_string_lossy())
-            })
-            .collect();
-        self.host.set_trusted(trusted);
+        self.host.set_trusted(thurbox::kernel::packages::granted(
+            &self.ui_dir,
+            self.host.plugins.iter().map(|plugin| plugin.path.as_str()),
+            &self.registry,
+        ));
     }
 
     /// Tell the host which plugins the user turned off.

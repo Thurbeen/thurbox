@@ -147,10 +147,16 @@ pub enum Trust {
     /// simply absent from it.
     Untrusted,
     Trusted,
-    /// Trusted, and its contents have changed since. Not a refusal — the
-    /// capability still works — but the one thing the user would want to know
-    /// before it keeps working.
+    /// A file the user wrote, trusted, and edited since. Still granted — it is
+    /// theirs to edit, and revoking on every save would make trust unusable for
+    /// the files people actually write — but the one thing they would want to
+    /// know before it keeps working.
     Drifted,
+    /// An **installed** file at the version that was trusted, whose contents are
+    /// no longer what was trusted: edited locally or re-tagged upstream, which
+    /// cannot be told apart from here. Not granted, because the grant was made to
+    /// other contents.
+    Replaced,
 }
 
 impl Trust {
@@ -160,7 +166,17 @@ impl Trust {
             Trust::Untrusted => "untrusted",
             Trust::Trusted => "trusted",
             Trust::Drifted => "trusted · modified",
+            Trust::Replaced => "untrusted · modified",
         }
+    }
+
+    /// Does this standing hold the capabilities the file declares?
+    ///
+    /// The one rule both the enforced grant (`packages::granted`) and the row the
+    /// user reads go through, so the screen cannot say "untrusted" while the
+    /// plugin still holds `run`.
+    pub fn grants(self) -> bool {
+        matches!(self, Trust::Trusted | Trust::Drifted)
     }
 
     /// Resolve one file's standing from what was trusted and what is on disk.
@@ -193,7 +209,7 @@ impl Trust {
     /// |---|---|---|---|
     /// | matches | match | `Trusted` | including a reinstall, silently |
     /// | differs | — | `Untrusted` | the pin moved; ask again |
-    /// | matches | differ | `Drifted` | edited locally, **or re-tagged upstream** |
+    /// | matches | differ | `Replaced` | edited locally, **or re-tagged upstream** |
     ///
     /// That last row is the one that cannot be dropped: keying on `src@version`
     /// alone would let an upstream substitution keep the capability — a hole opened
@@ -212,7 +228,7 @@ impl Trust {
             Some((_, was)) => match current_digest {
                 None => Trust::Trusted,
                 Some(now) if was == now => Trust::Trusted,
-                Some(_) => Trust::Drifted,
+                Some(_) => Trust::Replaced,
             },
         }
     }
@@ -405,6 +421,18 @@ mod tests {
         assert_eq!(Trust::resolve(Some("a"), None), Trust::Trusted);
     }
 
+    #[test]
+    fn only_trusted_and_an_edited_own_file_hold_the_grant() {
+        assert!(Trust::Trusted.grants());
+        assert!(Trust::Drifted.grants(), "the user's own file, edited");
+        assert!(
+            !Trust::Replaced.grants(),
+            "an installed file, changed under its pin"
+        );
+        assert!(!Trust::Untrusted.grants());
+        assert!(!Trust::NotAsked.grants());
+    }
+
     /// The design's table, row by row. An installed file is judged on the version
     /// it came from AND its contents, and each half catches a failure the other
     /// cannot.
@@ -431,7 +459,7 @@ mod tests {
         // Edited locally at the granted version.
         assert_eq!(
             Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", Some("mine")),
-            Trust::Drifted
+            Trust::Replaced
         );
         // THE ROW THAT CANNOT BE DROPPED: same source, same version, different
         // contents — an upstream re-tag. Keying the grant on `src@version` alone
@@ -440,7 +468,7 @@ mod tests {
         // to reduce warning fatigue.
         assert_eq!(
             Trust::resolve_installed(Some(("atlas@v1", "a")), "atlas@v1", Some("swapped")),
-            Trust::Drifted
+            Trust::Replaced
         );
         // Unreadable now: reported as trusted, because "changed" is a claim we
         // cannot make — the same answer the unmanaged rule gives.

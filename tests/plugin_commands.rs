@@ -582,3 +582,157 @@ fn each_capability_says_what_it_would_let_a_file_do() {
         Capability::Program.describe()
     );
 }
+
+/// Deliver `contents` as version `version` of a package, the way `plugin update`
+/// does, and return the lock entry's `src@version`.
+fn deliver_package(ui: &std::path::Path, file: &str, version: &str, contents: &str) -> String {
+    use thurbox::kernel::packages;
+    use thurbox::session::plugin_spec::PluginEntry;
+    let entry = PluginEntry {
+        src: "atlas".into(),
+        file: file.into(),
+        pin: Some(version.into()),
+    };
+    let mut lock = packages::read_lock(ui).expect("lock");
+    packages::deliver(
+        ui,
+        &entry,
+        "src",
+        version,
+        &[packages::Payload {
+            file: file.into(),
+            contents: contents.into(),
+        }],
+        &mut lock,
+    )
+    .expect("deliver");
+    packages::write_lock(ui, &lock).expect("write lock");
+    lock.covering(file).expect("covered").pin_key()
+}
+
+/// The grant the host enforces, computed the way the running interface does.
+fn enforce(host: &LuaHost, ui: &std::path::Path) {
+    let registry = thurbox::kernel::registry::Registry::load();
+    host.set_trusted(thurbox::kernel::packages::granted(
+        ui,
+        host.plugins.iter().map(|plugin| plugin.path.as_str()),
+        &registry,
+    ));
+}
+
+#[test]
+fn an_update_that_moves_the_pin_takes_run_away() {
+    let (home, ui) = interface(&[]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let file = "plugins/91_asks.lua";
+    let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
+    thurbox::kernel::registry::Registry::load()
+        .trust_installed(
+            &ui.join(file).to_string_lossy(),
+            &pin,
+            &asker("asks", "k", true),
+        )
+        .expect("trust");
+
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert_eq!(host.drain_runs().len(), 1, "trusted at v1, so it may run");
+
+    // The interface reloads after an update, which is when the grant is recomputed.
+    deliver_package(&ui, file, "v2", &asker("asks", "k2", true));
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert!(
+        host.drain_runs().is_empty(),
+        "the settings screen reads v2 as untrusted, so run must be absent"
+    );
+}
+
+#[test]
+fn an_installed_file_whose_contents_changed_under_its_pin_loses_run() {
+    // A source re-tagging the same version, or a local edit to an installed file:
+    // the grant was made to other contents and must not ride along.
+    let (home, ui) = interface(&[]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let file = "plugins/91_asks.lua";
+    let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
+    thurbox::kernel::registry::Registry::load()
+        .trust_installed(
+            &ui.join(file).to_string_lossy(),
+            &pin,
+            &asker("asks", "k", true),
+        )
+        .expect("trust");
+    std::fs::write(ui.join(file), asker("asks", "swapped", true)).expect("re-tag");
+
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert!(host.drain_runs().is_empty(), "same pin, other contents");
+}
+
+#[test]
+fn editing_your_own_trusted_file_keeps_run() {
+    // A file the user wrote is theirs to edit; the row says `trusted · modified`
+    // and the grant stands, which is what the row says.
+    let (home, ui) = interface(&[("91_asks.lua", &asker("asks", "k", true))]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let file = "plugins/91_asks.lua";
+    thurbox::kernel::registry::Registry::load()
+        .trust(&ui.join(file).to_string_lossy(), &asker("asks", "k", true))
+        .expect("trust");
+    std::fs::write(ui.join(file), asker("asks", "edited", true)).expect("edit");
+
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert_eq!(host.drain_runs().len(), 1);
+}
+
+/// Trust an installed file, change it, damage the lock with `damage`, and assert
+/// the grant is gone. A record that carries a pin is a grant to an installed
+/// version; without a lock entry to match it, the file would be judged as the
+/// user's own and a changed one would keep `run`.
+fn changed_installed_file_without_its_lock_entry(damage: impl FnOnce(&std::path::Path)) {
+    let (home, ui) = interface(&[]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    let file = "plugins/91_asks.lua";
+    let pin = deliver_package(&ui, file, "v1", &asker("asks", "k", true));
+    thurbox::kernel::registry::Registry::load()
+        .trust_installed(
+            &ui.join(file).to_string_lossy(),
+            &pin,
+            &asker("asks", "k", true),
+        )
+        .expect("trust");
+    std::fs::write(ui.join(file), asker("asks", "swapped", true)).expect("change");
+    damage(&ui);
+
+    let host = LuaHost::new(&ui);
+    enforce(&host, &ui);
+    render(&host, "asks");
+    assert!(host.drain_runs().is_empty(), "the lock must fail closed");
+}
+
+#[test]
+fn a_corrupt_lock_grants_nothing_to_an_installed_file() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        std::fs::write(thurbox::kernel::packages::lock_path(ui), "not [ toml").expect("corrupt");
+    });
+}
+
+#[test]
+fn a_missing_lock_grants_nothing_to_an_installed_file() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        std::fs::remove_file(thurbox::kernel::packages::lock_path(ui)).expect("delete");
+    });
+}
+
+#[test]
+fn a_lock_without_the_files_entry_grants_nothing_to_it() {
+    changed_installed_file_without_its_lock_entry(|ui| {
+        thurbox::kernel::packages::write_lock(ui, &Default::default()).expect("empty lock");
+    });
+}

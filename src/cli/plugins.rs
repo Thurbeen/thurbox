@@ -581,6 +581,7 @@ fn list() -> Result<CommandOutput, String> {
     let host = crate::kernel::host::LuaHost::new(&dir);
     let sources = crate::kernel::bundled::sources(&dir);
     let registry = crate::kernel::registry::Registry::load();
+    let lock = crate::kernel::packages::read_lock(&dir).unwrap_or_default();
     // The name each managed file answers to. `name` below is what the pane calls
     // itself — or, when it failed to load, its bare filename — and neither is a key
     // `remove` or `update` accepts. A listing whose name column cannot be pasted
@@ -611,16 +612,7 @@ fn list() -> Result<CommandOutput, String> {
         &Default::default(),
         &placed,
         host.error.as_deref(),
-        // Trust is a decision the user made in a running interface; from here it
-        // is read, not judged — so this reports what was recorded and nothing
-        // about whether the file has changed since.
-        &|path| {
-            let absolute = dir.join(path);
-            match registry.is_trusted(&absolute.to_string_lossy()) {
-                true => crate::kernel::inventory::Trust::Trusted,
-                false => crate::kernel::inventory::Trust::Untrusted,
-            }
-        },
+        &|path| crate::kernel::packages::trust_of(&dir, path, &lock, &registry),
         &|path| registry.is_disabled(&dir.join(path).to_string_lossy()),
     );
 

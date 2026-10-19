@@ -485,7 +485,11 @@ timeout, four at a time with the rest queued.
 This is the first capability that reaches outside thurbox, so it is granted **per
 plugin**: declare `capabilities = { "run" }` and get nothing until the user trusts
 the file (settings → Interface → `t`). Trust is keyed by absolute path with the
-digest recorded, so a changed trusted file reads `trusted · modified`. It is
+digest recorded, so a changed trusted file reads `trusted · modified` and keeps the
+grant — unless it is installed, where the same change reads `untrusted · modified`
+and withdraws it. The enforced grant (`packages::granted`, fed to `set_trusted`)
+and the row both go through `packages::trust_of` → `Trust::grants`; never gate on
+the bare registry record. It is
 deliberately **not a sandbox** — a program thurbox spawns has the user's authority —
 and the position is that thurbox can only refuse to run things unasked.
 `examples/lua/composite.lua` is the worked example.

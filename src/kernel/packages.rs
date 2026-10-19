@@ -602,6 +602,11 @@ fn split_last(src: &str) -> (String, String) {
 /// to get wrong: a file the user wrote is judged on its contents, an installed one
 /// on the `src@version` it came from **and** its contents. Doing that at each call
 /// site invites a caller that checks only one half.
+///
+/// A grant made to a pin needs a lock entry to match it. When the lock is
+/// missing, unreadable or has no entry for the file, the file would otherwise be
+/// judged as the user's own, and a changed one would keep its grant as merely
+/// `Drifted` — so it fails closed instead.
 pub fn trust_of(
     dir: &Path,
     relative: &str,
@@ -622,8 +627,28 @@ pub fn trust_of(
             &entry.pin_key(),
             current.as_deref(),
         ),
+        None if registry.trusted_pin(&key).is_some() => super::inventory::Trust::Untrusted,
         None => super::inventory::Trust::resolve(registry.trusted_digest(&key), current.as_deref()),
     }
+}
+
+/// Which of `files` hold the capabilities they declare, relative as given.
+///
+/// The grant the host enforces, decided by the same [`trust_of`] the Interface
+/// tab draws. Reading the bare record instead — "is there a grant for this
+/// path" — kept `run` on a pane the screen called untrusted after an update
+/// moved its pin.
+pub fn granted<'a>(
+    dir: &Path,
+    files: impl IntoIterator<Item = &'a str>,
+    registry: &super::registry::Registry,
+) -> Vec<String> {
+    let lock = read_lock(dir).unwrap_or_default();
+    files
+        .into_iter()
+        .filter(|file| trust_of(dir, file, &lock, registry).grants())
+        .map(str::to_string)
+        .collect()
 }
 
 /// What happened to one entry.
@@ -1691,8 +1716,13 @@ mod tests {
         std::fs::write(dir.join(file), "-- swapped\n").expect("re-tag");
         assert_eq!(
             trust_of(&dir, file, &lock, &registry),
-            super::super::inventory::Trust::Drifted,
+            super::super::inventory::Trust::Replaced,
             "same version, different contents — the hole the digest closes"
+        );
+        assert_eq!(
+            trust_of(&dir, file, &PluginLock::default(), &registry),
+            super::super::inventory::Trust::Untrusted,
+            "no lock entry must not turn it into a file of the user's own"
         );
 
         // An UNMANAGED file stays on the contents-only rule, untouched by any of
