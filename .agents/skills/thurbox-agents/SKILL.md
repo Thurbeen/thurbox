@@ -20,7 +20,9 @@ plus `shell` on first run.
 
 `shell` is the one seeded entry that is not a coding agent: the platform's own
 interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows, where
-the multiplexer is psmux). It exists so a session can be *anything*, and it is
+the multiplexer is psmux). The platform is the session's host: while the entry is
+still a stock pair, `session_ops::resolve_agent_def` swaps in the host's own
+(`shell::shell_agent_def`); an edited `shell` is launched as written. It exists so a session can be *anything*, and it is
 the ready-made form of `session create --command`. Because it declares no
 `resume_args`/`fork_args`, it also documents the rule by example: those groups
 are the **conversation address**, and an entry without them can be restarted but

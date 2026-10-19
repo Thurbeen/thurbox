@@ -515,6 +515,32 @@ fn off_the_terminal(cmd: &mut Command) {
     }
 }
 
+/// The built-in `shell` agent for a machine running `platform`: that
+/// machine's own interactive shell.
+///
+/// Both spellings are always compiled in, because the platform that matters
+/// is the session's host, not this build's (#1458): a Linux thurbox spawning on
+/// a Windows host must send it PowerShell.
+///
+/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a pane
+/// executes what is sent to it but renders no prompt and no echo, which starves
+/// anything reading the screen to decide whether the session is ready — the
+/// pane looks blank and working at the same time. On Windows `-NoLogo` only
+/// drops the banner; the session is interactive because no `-Command` is
+/// passed.
+pub fn shell_agent_def(platform: crate::session::Platform) -> crate::session::AgentDef {
+    let (command, args) = match platform {
+        crate::session::Platform::Posix => ("bash", "-i"),
+        crate::session::Platform::Windows => ("powershell", "-NoLogo"),
+    };
+    crate::session::AgentDef {
+        name: "shell".into(),
+        command: command.into(),
+        args: vec![args.into()],
+        ..crate::session::AgentDef::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
