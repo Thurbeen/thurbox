@@ -1139,3 +1139,30 @@ fn published_data_is_read_only_to_every_pane() {
         "the probes that wrote, by number: {issued:?}"
     );
 }
+
+#[test]
+fn a_published_table_saved_to_store_or_state_keeps_its_contents() {
+    // Published data is read-only proxies, empty underneath. Copied into
+    // `store` or `state` raw, it was saved empty; it is copied through.
+    let saver = r#"return { name = "saver", slot = "sessions", render = function()
+  store.saved = thurbox.theme
+  state.saved = thurbox.theme
+  local from_store, from_state = store.saved, state.saved
+  command("focus", { text = tostring(from_store and from_store.roles ~= nil)
+    .. "/" .. tostring(from_state and from_state.roles ~= nil) })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_saver.lua", saver)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    render(&host, "saver");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/true"
+        ),
+        "{issued:?}"
+    );
+}

@@ -864,7 +864,7 @@ fn install_store(
     let write = store;
     meta.set(
         "__newindex",
-        lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
+        lua.create_function(move |lua, (_, key, value): (Table, String, Value)| {
             count_write(&writes, &value);
             let mut slot = write.borrow_mut();
             // Compared before storing. A pane may write the same value on every
@@ -872,7 +872,7 @@ fn install_store(
             // and treating that as a change would move the version 40 times a
             // second and invalidate every cached tree, which is the difference
             // between this mechanism working and doing nothing at all.
-            let moved = match from_lua(&value) {
+            let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&key) == Some(&persisted) {
                         false
@@ -930,12 +930,12 @@ fn state_for(
     let write = state;
     meta.set(
         "__newindex",
-        lua.create_function(move |_, (_, key, value): (Table, String, Value)| {
+        lua.create_function(move |lua, (_, key, value): (Table, String, Value)| {
             count_write(&writes, &value);
             let ns = ns.clone();
             let mut slot = write.borrow_mut();
             // Same rule as `store`: only a value that actually moved counts.
-            let moved = match from_lua(&value) {
+            let moved = match from_lua(lua, &value) {
                 Some(persisted) => {
                     if slot.get(&(ns.clone(), key.clone())) == Some(&persisted) {
                         false
@@ -984,7 +984,7 @@ fn to_lua(lua: &Lua, value: &Persisted) -> mlua::Result<Value> {
     })
 }
 
-fn from_lua(value: &Value) -> Option<Persisted> {
+fn from_lua(lua: &Lua, value: &Value) -> Option<Persisted> {
     match value {
         Value::Nil => None,
         Value::Boolean(b) => Some(Persisted::Bool(*b)),
@@ -992,10 +992,11 @@ fn from_lua(value: &Value) -> Option<Persisted> {
         Value::Number(n) => Some(Persisted::Num(*n)),
         Value::String(s) => Some(Persisted::Str(s.to_string_lossy())),
         Value::Table(table) => {
+            let table = contents(lua, table);
             let mut entries = Vec::new();
             for pair in table.pairs::<Value, Value>() {
                 let (key, entry) = pair.ok()?;
-                if let (Some(key), Some(entry)) = (from_lua(&key), from_lua(&entry)) {
+                if let (Some(key), Some(entry)) = (from_lua(lua, &key), from_lua(lua, &entry)) {
                     entries.push((key, entry));
                 }
             }
@@ -1011,6 +1012,33 @@ fn from_lua(value: &Value) -> Option<Persisted> {
         }
         _ => None,
     }
+}
+
+/// The table whose entries `table` holds: itself, or — for a read-only view
+/// of published data, which is empty underneath — what it reads through to.
+/// Copied raw, a published table saved into `store` or `state` was empty.
+fn contents(lua: &Lua, table: &Table) -> Table {
+    let lookup = |name: &str, key: &Table| -> Option<Table> {
+        lua.named_registry_value::<Table>(name)
+            .ok()?
+            .raw_get::<Option<Table>>(key.clone())
+            .ok()
+            .flatten()
+    };
+    if let Some(inner) = lookup(FROZEN, table).or_else(|| lookup(PUBLISHED_TABLES, table)) {
+        return inner;
+    }
+    let is_view = lua
+        .named_registry_value::<Table>(VIEWS)
+        .ok()
+        .and_then(|views| views.raw_get::<bool>(table.clone()).ok())
+        .unwrap_or(false);
+    if is_view {
+        if let Some(backing) = published_backing(lua) {
+            return backing;
+        }
+    }
+    table.clone()
 }
 
 /// A total order over table keys, for [`from_lua`]'s canonical order. Keys
