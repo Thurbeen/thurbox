@@ -2891,3 +2891,72 @@ fn a_deactivate_during_a_heal_leaves_neither_session_nor_automation() {
         "the healed exec automation outlived the deactivate"
     );
 }
+
+/// A declared session that is already gone by the time deactivate reaches it
+/// (issue #1475): a heal pass that found the extension deactivated deletes the
+/// session it just spawned, and deactivate's own list still names it. Here a
+/// `session.pre_delete` hook deletes the second session while the first is
+/// deleted, the same shape. Deactivate must still clean up the rest rather
+/// than stop at "not found".
+#[test]
+#[cfg(unix)]
+fn deactivate_carries_on_past_a_session_somebody_else_deleted() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\n",
+    )
+    .unwrap();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut manifest = String::from("name = \"trio\"\n");
+    for name in ["trio-a", "trio-b", "trio-c"] {
+        manifest.push_str(&format!(
+            "[[sessions]]\nname = \"{name}\"\nrepo_path = \"{}\"\nagent = \"shell\"\n",
+            repo.path().display()
+        ));
+    }
+    std::fs::write(dir.join("trio.toml"), manifest).unwrap();
+    assert!(cli(&["extension", "activate", "trio"]).status.success());
+    let live = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name.starts_with("trio-"))
+            .map(|s| s.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(live(&db).len(), 3);
+    let once = config.join("deleted-b");
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.pre_delete\"\n\
+             command = '[ -e {once} ] || {{ touch {once}; {cli} session delete trio-b --force; }}'\n",
+            once = once.display(),
+            cli = env!("CARGO_BIN_EXE_thurbox-cli"),
+        ),
+    );
+
+    let out = cli(&["extension", "deactivate", "trio"]);
+
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(live(&db).is_empty(), "left behind: {:?}", live(&db));
+}

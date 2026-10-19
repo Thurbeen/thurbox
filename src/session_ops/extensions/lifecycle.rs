@@ -420,11 +420,39 @@ fn keep_unless_deactivated(
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
     if !still_wanted(db, healing, &format!("session '{}'", sess.name), report)? {
-        crate::session_ops::delete_session_headless(db, backends, id, true)?;
+        delete_unless_gone(db, backends, id, true)?;
         return Ok(None);
     }
     report.sessions_created.push(sess.name.clone());
     Ok(Some(id))
+}
+
+/// Delete session `id`, or find it already gone: `true` when this call deleted
+/// it.
+///
+/// A heal that found its extension deactivated and the deactivate itself both
+/// delete the session the heal just spawned, and either may get there first.
+/// The one that comes second must count the session as cleaned up rather than
+/// fail on "not found" — a deactivate that stopped there left the rest of the
+/// extension's sessions alive.
+fn delete_unless_gone(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    id: SessionId,
+    force: bool,
+) -> Result<bool, String> {
+    match crate::session_ops::delete_session_headless(db, backends, id, force) {
+        Ok(_) => Ok(true),
+        Err(_)
+            if db
+                .get_session_by_id(id)
+                .map_err(|e| format!("get_session_by_id: {e}"))?
+                .is_none() =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Ensure a single declared automation exists and points at `target` (its
@@ -566,8 +594,9 @@ pub fn deactivate_extension(
             None => session_ids.get(&sess.name).copied(),
         };
         if let Some(id) = found {
-            crate::session_ops::delete_session_headless(db, backends, id, force)?;
-            report.sessions_deleted.push(sess.name.clone());
+            if delete_unless_gone(db, backends, id, force)? {
+                report.sessions_deleted.push(sess.name.clone());
+            }
         }
     }
 
